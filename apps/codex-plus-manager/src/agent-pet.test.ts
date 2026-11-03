@@ -276,7 +276,8 @@ test("Codex 「拓展」详情页挂拓展的设置面板：重画时搬回同�
 test("管理器里没有桌宠专属代码：「设置」按钮放在行上，有设置页的拓展打开它自己的设置页", () => {
   assert.doesNotMatch(app, /AgentPet|agentPet"|AGENT_PET/);
   assert.match(app, /aria-label=\{tf\("\{0\} 设置", \[displayName\]\)\}/);
-  assert.match(app, /\{configOpen && settingsPage \? \(\s*<ExtensionManagerPanel\s*kind="settings"/);
-  assert.match(app, /\{configOpen && !settingsPage && configSchema\.length \? \(\s*<ExtensionConfigForm/);
+  // 设置在行下面展开（包一层 cx-row-expand 放进同一张卡片）。
+  assert.match(app, /\{configOpen && settingsPage \? \(\s*(?:<div className="cx-row-expand">)?<ExtensionManagerPanel\s*kind="settings"/);
+  assert.match(app, /\{configOpen && !settingsPage && configSchema\.length \? \(\s*(?:<div className="cx-row-expand">)?<ExtensionConfigForm/);
   assert.doesNotMatch(app, /t\("Codex 用量挂件"\)|WhaleBalanceSettingsFields/);
 });

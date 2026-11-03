@@ -289,72 +289,105 @@
   .plugin-market-search { order: 1; flex-basis: 100%; }
 }
 
-/* ── 紧凑布局：工具栏不套卡片，卡片高度随内容、说明两行、底部一行操作 ──
+/* ── 紧凑布局：一条工具条 + 筛选胶囊，轻卡片（无边框底色卡、两行说明、底部一行操作） ──
    选择器都带 .shell：正式版里 styles.css 在组件样式之后加载，同权重的 .panel { padding: 0 } 会把卡片内边距清零。 */
 .shell .plugin-market-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
+  flex-direction: column;
+  gap: 12px;
 }
-.shell .plugin-market-toolbar .plugin-market-controls {
-  flex: 1 1 560px;
+.shell .plugin-market-toolbar .plugin-market-source {
+  width: 128px;
+  flex: none;
+}
+.shell .plugin-market-toolbar .plugin-market-source .app-select-trigger {
+  min-height: 34px;
+  border-radius: 999px;
 }
 .shell .plugin-market-toolbar .plugin-market-summary {
   margin: 0;
+  font-size: 12px;
+}
+.shell .plugin-market-feedback {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.shell .plugin-market-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .shell .plugin-market-grid {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
 }
 .shell .plugin-market-card {
+  display: flex;
   height: auto;
+  flex-direction: column;
   gap: 10px;
   padding: 14px 16px;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
 }
-.shell .plugin-market-card > :first-child,
-.shell .plugin-market-card > :last-child {
+.shell .plugin-market-card > .plugin-market-card-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
   padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.shell .plugin-market-card > .plugin-market-card-heading {
+.shell .plugin-market-card > .plugin-market-card-main:hover strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.shell .plugin-market-card .plugin-market-card-heading {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0;
   min-width: 0;
 }
-.shell .plugin-market-card-heading h3 {
-  flex: 1;
+.shell .plugin-market-card-heading strong {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
+  color: hsl(var(--foreground));
   font-size: 13.5px;
-  font-weight: 600;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
-  -webkit-line-clamp: 1;
 }
 .shell .plugin-market-card .plugin-market-package {
   width: 16px;
   height: 16px;
+  color: hsl(var(--muted-foreground));
 }
-.shell .plugin-market-card .plugin-market-status {
-  display: flex;
-  flex: none;
-  gap: 4px;
-  margin: 0;
+.shell .plugin-market-card .cx-badge svg {
+  width: 12px;
+  height: 12px;
 }
 .shell .plugin-market-card .plugin-market-description {
   min-height: calc(2 * 1.55em);
-  font-size: 12px;
+  max-height: calc(2 * 1.55em);
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
   -webkit-line-clamp: 2;
 }
 .shell .plugin-market-card > .plugin-market-card-foot {
+  display: flex;
   flex: none;
   flex-direction: row;
-  justify-content: flex-start;
-}
-.shell .plugin-market-card-foot {
-  display: flex;
+  padding: 0;
   align-items: center;
   gap: 8px;
   margin-top: auto;
@@ -379,11 +412,10 @@
   gap: 4px;
   margin: 0;
 }
+.shell .plugin-market-card-actions .cx-secondary {
+  height: 28px;
+}
 /* 卸载是破坏性操作，悬停时用危险色提示（#2701）。 */
 .shell .plugin-market-card-actions .plugin-market-uninstall:hover:not(:disabled) {
   color: hsl(var(--destructive));
 }
-
-/* 插件筛选下拉（AppSelect） */
-.shell .plugin-market-filter .app-select { width: 150px; }
-.shell .plugin-market-filter .app-select-trigger { min-height: 36px; font-weight: 500; }

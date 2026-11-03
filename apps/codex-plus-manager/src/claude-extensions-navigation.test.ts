@@ -42,6 +42,7 @@ function functionSource(name: string) {
 const navigationNames = [
   "routes", "routeTool", "globalNavigationRoutes", "gatewayNavigationRoutes", "managementNavigationRoutes",
   "navAliasRoute", "toolNavigationRoutes", "multiAgentRoutes", "providerRoutes", "routeVisible", "visibleRoutes",
+  "settingsModeRoutes", "customizeRoutes",
 ];
 const navigationSource = navigationNames.map((name) => `const ${declaration(name).getText(app)};`).join("\n");
 const icons = [...text.matchAll(/icon: (\w+)/g)].map((match) => match[1]);
@@ -65,7 +66,7 @@ function elementText(node: any): string {
 function harness() {
   const navigations: string[] = [];
   const context = vm.createContext({
-    ...Object.fromEntries([...icons, "ChevronDown", "Search", "Plus", "AgentGlyph", "Loader2", "Square", "Play", "Sun", "Moon", "Languages", "ArrowUp"].map((name) => [name, name])),
+    ...Object.fromEntries([...icons, "ChevronDown", "Search", "Plus", "AgentGlyph", "Loader2", "Square", "Play", "Sun", "Moon", "Languages", "ArrowUp", "ArrowLeft"].map((name) => [name, name])),
     React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
     t: (value: string) => value,
     tf: (value: string, args: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
@@ -79,10 +80,10 @@ function harness() {
     APP_LOGO_URL: "logo.png",
     managerNavPages: () => [],
   });
-  vm.runInContext(transpile(`${navigationSource}\n${functionSource("AppSidebar")}
+  vm.runInContext(transpile(`const Fragment = "Fragment";\nconst navigationSections = [];\nconst agentTabGroups = () => [];\n${navigationSource}\n${functionSource("AppSidebar")}
     globalThis.sidebar = AppSidebar;
     globalThis.routes = routes;
-    globalThis.codexLaunchVisible = (route, activeTool) => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
+    globalThis.codexLaunchVisible = (route, activeTool, extensionHost = "codex") => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
   return {
     context,
     routes: context.routes as Array<{ id: string; tool?: string; tools?: string[] }>,
@@ -108,18 +109,18 @@ test("拓展管理只向 Codex 和 Claude 开放，保留原本 Codex 主归属"
   assert.equal(pageVisibleForTool(h.routes.find((route) => route.id === "enhance"), "claude"), false);
 });
 
-test("实际侧栏在 Claude 下可打开同一拓展管理页，Grok 保持隐藏", () => {
+test("万物皆拓展是独立入口，不随侧栏当前 Agent 显隐；宿主在页内切换，和侧栏不联动", () => {
+  // 「万物皆拓展」是侧栏第一个入口，无论侧栏选的是哪个 Agent 都在，点了都去同一页。
+  const extensions = (sidebar: Element) => elements(sidebar).find((node) => node.props["data-nav"] === "extensions");
   for (const activeTool of ["codex", "claude", "grok", "opencode"]) {
     const h = harness();
-    const entry = elements(h.sidebar(activeTool)).find((node) => node.props["data-tour"] === "nav-userScripts");
-    assert.equal(Boolean(entry), activeTool === "codex" || activeTool === "claude", activeTool);
-    if (entry) {
-      entry.props.onClick();
-      assert.deepEqual(h.navigations, ["userScripts"]);
-    }
+    const entry = extensions(h.sidebar(activeTool));
+    assert.ok(entry, activeTool);
+    entry.props.onClick();
+    assert.deepEqual(h.navigations, ["userScripts"]);
   }
   const h = harness();
-  assert.ok(elements(h.sidebar("claude", "enhance")).some((node) => node.props["data-tour"] === "nav-userScripts"));
+  assert.ok(extensions(h.sidebar("claude", "enhance")), "只用增强功能时也保留万物皆拓展");
   assert.equal(agentVisible("codex", "claude"), false, "原来的只管理 Codex 模式仍不显示 Claude");
 });
 
@@ -129,15 +130,18 @@ test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保�
   // 旧入口即使保留主归属，也不因此改变全局管理的可见行为。
   mcp.tool = "codex";
   const entries = elements(h.sidebar("claude"));
-  for (const route of ["context", "skills", "sessions"]) {
-    assert.ok(entries.some((node) => node.props["data-tour"] === `nav-${route}`), route);
+  // MCP、Skills 在同一页的胶囊里，会话单独一个入口；都不随宿主隐藏。
+  for (const key of ["customize", "sessions"]) {
+    assert.ok(entries.some((node) => node.props["data-nav"] === key), key);
   }
 });
 
 test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重启", () => {
   const { context } = harness();
-  assert.equal(context.codexLaunchVisible("userScripts", "codex"), true);
-  assert.equal(context.codexLaunchVisible("userScripts", "claude"), false);
+  // 拓展页的重启按钮看页内选的宿主，不看侧栏当前的 Agent。
+  assert.equal(context.codexLaunchVisible("userScripts", "codex", "codex"), true);
+  assert.equal(context.codexLaunchVisible("userScripts", "codex", "claude"), false);
+  assert.equal(context.codexLaunchVisible("userScripts", "claude", "codex"), true);
   assert.equal(context.codexLaunchVisible("enhance", "codex"), true);
   assert.equal(context.codexLaunchVisible("overview", "codex"), true);
   assert.equal(context.codexLaunchVisible("overview", "grok"), false);
@@ -145,12 +149,12 @@ test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重
   assert.match(text, /onRestart: \(\) => void actions\.restart\(\)/);
 });
 
-test("共享宿主范围同时用于切换 Agent、迟到导航和命令面板", () => {
+test("tools 限定的页面随侧栏 Agent 过滤，万物皆拓展除外", () => {
   const switchTool = declaration("switchTool").getText(app);
   assert.match(switchTool, /if \(!pageVisibleForTool\(currentRoute, toolId\)\)/);
   assert.match(switchTool, /if \(destination\) await navigate\(destination\);\s*else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\("overview"\)/);
-  assert.match(text, /if \(currentRoute\?\.tools && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\)/);
-  assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && !pageVisibleForTool\(item, activeTool\)\) return null/);
+  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\)/);
+  assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && routeId !== "userScripts" && !pageVisibleForTool\(item, activeTool\)\) return null/);
 });
 
 test("只有明确声明 Claude 适配的拓展才显示 Claude Code 宿主标签", () => {
@@ -185,6 +189,8 @@ function extensionHarness() {
       }];
     },
     useMemo: (compute: () => unknown) => compute(),
+    // 打开页面时市场还没读过就自动读一次：记下调用，渲染时不执行副作用。
+    useEffect: () => undefined,
     agentVisible, extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost,
     defaultMarketSort, parseMarketTime, sortMarketScripts,
     formatMarketUpdatedAt: (value: string) => value,
@@ -245,8 +251,9 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
 }
 
 test("页内宿主切换绑定共享路由并传递当前宿主", () => {
-  assert.match(text, /<UserScriptsScreen host=\{extensionHostForTool\(activeTool\)\}/);
-  assert.match(text, /onHostChange=\{\(host\) => void switchTool\(host, "userScripts"\)\}/);
+  // 宿主是页面自己的状态：切宿主不调 switchTool，不改侧栏当前的 Agent。
+  assert.match(text, /<UserScriptsScreen host=\{extensionHost\} focus=\{agentFocus\} onHostChange=\{setExtensionHost\}/);
+  assert.doesNotMatch(text, /switchTool\(host, "userScripts"\)/);
   for (const host of ["codex", "claude"] as const) {
     const h = extensionHarness();
     const props = extensionScreenProps(h, host);
@@ -267,7 +274,7 @@ test("页内宿主切换绑定共享路由并传递当前宿主", () => {
   }
 });
 
-test("拓展页宿主切换遵守只管理 Codex 模式，其余模式保留双宿主", () => {
+test("拓展页宿主切换遵守只管理 Codex 模式（只有一个宿主时不显示切换），其余模式保留双宿主", () => {
   const invocation = text.split("\n").find((line) => line.includes("<UserScriptsScreen"));
   assert.ok(invocation);
   assert.match(invocation, /\bfocus=\{agentFocus\}/);
@@ -278,7 +285,7 @@ test("拓展页宿主切换遵守只管理 Codex 模式，其余模式保留双�
     assert.ok(hero);
     assert.equal(hero.props.focus, focus);
     const controls = elements(h.render("ExtensionsHero", hero.props)).filter((node) => node.type === "button");
-    assert.ok(controls.some((node) => elementText(node).trim() === "Codex"));
+    assert.equal(controls.some((node) => elementText(node).trim() === "Codex"), focus !== "codex");
     const claude = controls.find((node) => elementText(node).trim() === "Claude");
     assert.equal(Boolean(claude), focus !== "codex", String(focus));
     if (claude) {
@@ -296,14 +303,16 @@ test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排�
   const rows = nodes.filter((node) => node.type === h.context.ScriptRow);
   assert.deepEqual(rows.map((node) => node.props.script.key), ["user:claude-on", "user:claude-off"]);
   assert.ok(rows.every((node) => node.props.host === "claude" && node.props.globalEnabled === true));
-  assert.ok(nodes.some((node) => elementText(node).includes("适配 Claude 的拓展 2 个，已启用 1 个")));
-  for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary"]) {
+  // 「已启用」「未启用」两节按 Claude 开关分组，数量就是原来摘要里的「已启用 N 个」。
+  const sections = nodes.filter((node) => node.type === "CxSection").map((node) => [node.props.title, node.props.count]);
+  assert.deepEqual(sections, [["已启用", 1], ["未启用", 1]]);
+  for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary", "CxFilters"]) {
     assert.equal(nodes.some((node) => node.type === component), false, component);
   }
-  assert.equal(nodes.some((node) => node.props["aria-label"] === "下次启动跳过拓展"), false);
+  assert.equal(nodes.some((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展"), false);
   assert.equal(nodes.some((node) => node.props.role === "tab"), false);
-  assert.equal(nodes.some((node) => node.type === "Button" && elementText(node) === "热重载拓展"), false);
-  const open = nodes.find((node) => node.type === "Button" && elementText(node) === "Claude 增强版");
+  assert.equal(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")), false);
+  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 增强版"));
   assert.ok(open);
   open.props.onClick();
   assert.deepEqual(h.calls, [["openClaude"]]);
@@ -315,11 +324,17 @@ test("切换回 Codex 保留原市场和本地列表，包括只声明旧能力�
   let nodes = elements(h.render("UserScriptsScreen", props));
   assert.ok(nodes.some((node) => node.type === "CuratedPackagesSection"));
   assert.ok(nodes.some((node) => node.type === "ExtensionCreatorCard"));
-  assert.ok(nodes.some((node) => node.props["aria-label"] === "下次启动跳过拓展"));
-  assert.ok(nodes.some((node) => node.type === "Button" && elementText(node) === "热重载拓展"));
-  const localTab = nodes.find((node) => node.props.role === "tab" && elementText(node).startsWith("本地拓展"));
-  assert.ok(localTab);
-  localTab.props.onClick();
+  // 「下次启动跳过拓展」收进三点菜单，仍然读写同一个设置。
+  const skip = nodes.find((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展");
+  assert.ok(skip);
+  assert.equal(skip.props.checked, true);
+  assert.ok(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")));
+  // 来源筛选是一排胶囊（精选 / 社区 / 本地 / 我发布的 / dsh 插件）。
+  const filters = nodes.find((node) => node.type === "CxFilters");
+  assert.ok(filters);
+  assert.deepEqual(Array.from(filters.props.items, (item: { id: string }) => item.id), ["market", "community", "local", "mine", "dsh"]);
+  assert.equal(filters.props.value, "market");
+  filters.props.onChange("local");
   nodes = elements(h.render("UserScriptsScreen", props));
   assert.deepEqual(nodes.filter((node) => node.type === h.context.ScriptRow).map((node) => node.props.script.key), [
     "user:codex", "user:claude-off", "user:claude-on",
@@ -335,11 +350,20 @@ test("总开关读取和写入当前宿主，不复用另一个宿主的设置",
   for (const host of ["codex", "claude"] as const) {
     const h = extensionHarness();
     const nodes = elements(h.render("UserScriptsScreen", extensionScreenProps(h, host)));
-    const control = nodes.find((node) => node.props["aria-label"] === (host === "claude" ? "启用 Claude 拓展" : "启用本地拓展"));
+    // 整体开关收进三点菜单（勾选项）；关着时顶部一条提示带「启用」。
+    const control = nodes.find((node) => node.type === "MenuItem" && elementText(node) === (host === "claude" ? "启用 Claude 拓展" : "启用本地拓展"));
     assert.ok(control);
     assert.equal(control.props.checked, host === "claude");
-    control.props.onChange();
+    control.props.onClick();
     assert.deepEqual(h.calls, [["setUserScriptsEnabled", host === "codex", host]]);
+    const banner = nodes.find((node) => node.type === "CxBanner");
+    assert.equal(Boolean(banner), host === "codex", "只有关着的宿主才显示提示");
+    if (banner) {
+      const enable = elements(banner.props.children).find((node) => node.type === "button");
+      assert.ok(enable);
+      enable.props.onClick();
+      assert.deepEqual(h.calls.at(-1), ["setUserScriptsEnabled", true, "codex"]);
+    }
   }
 });
 

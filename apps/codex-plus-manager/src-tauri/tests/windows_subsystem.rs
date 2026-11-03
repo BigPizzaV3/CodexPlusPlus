@@ -535,7 +535,9 @@ fn manager_update_install_keeps_visible_progress_bar() {
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
 
-    assert!(app_tsx.contains("下载并运行安装包"));
+    // 有可用更新时后台先下好安装包：按钮按是否下好写「安装 / 下载并安装」，弹窗里写「立即安装 / 立即更新」。
+    assert!(app_tsx.contains("t(\"下载并安装\")"));
+    assert!(app_tsx.contains("t(\"立即安装\")"));
     assert!(app_tsx.contains("updateInstallProgress"));
     assert!(app_tsx.contains("安装包更新进度"));
     assert!(app_tsx.contains("completedTitle={t(\"上次更新结果\")}"));

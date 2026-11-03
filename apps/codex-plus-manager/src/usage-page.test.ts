@@ -31,7 +31,8 @@ test("平均耗时只按计过时的请求算；费用跳过 0", () => {
 
 test("用量页：费用并进统计格，明细是带表头的表格，没填价格时不占费用列", () => {
   const usage = read("GatewayUsage.tsx");
-  assert.match(usage, /data-kind="cost"/);
+  // 费用是数字一排（CxStats）的第一格。
+  assert.match(usage, /<CxStats\s+items=\{\[\s*\{\s*label: t\("估算费用"\)/);
   assert.doesNotMatch(usage, /gw-usage-cost/);
   assert.match(usage, /gw-usage-row gw-usage-row-head/);
   assert.match(usage, /data-cost=\{anyCost\}/);

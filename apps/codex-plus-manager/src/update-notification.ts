@@ -80,6 +80,15 @@ export class UpdateNotifications {
     // 用户主动检查始终可查看更新；“关闭”“跳过此版本”“今日不再提示”只影响自动提醒。
     if (manual) return true;
     if (this.dismissedVersions.has(update.latestVersion)) return false;
+    return this.shouldRemind(update, now);
+  }
+
+  /**
+   * 侧栏底部的「新版本」卡片要不要显示。后台检查到新版本不再弹窗，只靠这张卡片提醒；
+   * 「跳过此版本」「今日不再提示」会把它藏起来，「关闭提示」只关弹窗、卡片还在。
+   */
+  shouldRemind(update: UpdateCandidate, now = new Date()): boolean {
+    if (update.status !== "ok" || !update.updateAvailable || !update.latestVersion) return false;
     if (this.preferences && isVersionSkipped(update.latestVersion, this.preferences.skippedVersion)) return false;
     const today = localDay(now);
     if (this.mutedDay === today) return false;

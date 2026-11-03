@@ -388,6 +388,7 @@ pub fn run() {
             gateway_commands::save_gateway_binding,
             gateway_commands::preview_gateway_disconnect,
             gateway_commands::disable_gateway_binding,
+            gateway_commands::disable_gateway_binding_full_switch,
             gateway_commands::use_gateway_own_model,
             gateway_commands::save_gateway_own_models_shown,
             gateway_commands::rotate_gateway_token,
@@ -543,6 +544,7 @@ pub fn run() {
             commands::check_update,
             commands::skip_update_version,
             commands::perform_update,
+            commands::download_update,
             commands::load_watcher_state,
             commands::set_watcher_enabled,
             commands::set_watcher_start_minimized,
@@ -937,6 +939,15 @@ fn build_main_window<R: tauri::Runtime>(
     .focused(visible)
     .inner_size(1180.0, 820.0)
     .min_inner_size(960.0, 720.0);
+    // macOS 去掉系统标题栏：红黄绿按钮浮在侧栏左上角（系统默认位置，中心约在顶部 14px），页面标题占据标题栏那一行。
+    // 不用 traffic_light_position：实测首次显示时不生效，缩放后又可能跳回，按钮和标题会对不齐。
+    // 前端据此给 <html> 加 mac-titlebar（见 mac-titlebar.ts），留出按钮位置并把标题行做成拖动区域。
+    #[cfg(target_os = "macos")]
+    {
+        main_window_builder = main_window_builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
     if let Some(icon) = app.default_window_icon().cloned() {
         main_window_builder = main_window_builder.icon(icon)?;
     }
