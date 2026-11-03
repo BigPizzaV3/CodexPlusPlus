@@ -136,7 +136,7 @@ import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, importCandidates, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -4823,6 +4823,36 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [codexAppRunning]);
+  /**
+   * 「连接与供应商」页的「经网关」：和「Agent 接入」页打开 Codex 开关同一条命令（save_gateway_binding），
+   * 沿用上次的接入设置（默认模型等）；供应商池是空的或模型不在池里时说明原因并带去对应页面。
+   * 切回直连走「断开并还原」（先预览再确认），见 legacyDisconnectOpen。
+   */
+  const [codexConnecting, setCodexConnecting] = useState(false);
+  const connectCodexGateway = async () => {
+    if (codexConnecting) return;
+    setCodexConnecting(true);
+    try {
+      const loaded = await invoke<GatewayResult>("load_gateway");
+      const payload = loaded.gateway && Array.isArray(loaded.pool) ? (loaded as GatewayPayload) : null;
+      const previous = payload?.gateway.bindings?.codex;
+      const draft = draftFromBinding(previous);
+      const issue = validateDraft(draft, payload);
+      if (issue) {
+        await showNotice(t("切换到网关"), t(issue), "failed");
+        void navigate(issue.includes("供应商池是空的") ? "gatewayProviders" : "gateway");
+        return;
+      }
+      const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true } });
+      publishGatewayPayload(result);
+      await refreshSettings(true);
+      await showNotice(t("切换到网关"), result.message, isSuccessStatus(result.status as Status) ? "ok" : "failed");
+    } catch (error) {
+      await showNotice(t("切换到网关"), stringifyError(error), "failed");
+    } finally {
+      setCodexConnecting(false);
+    }
+  };
   // 「启动 / 重启 Codex」：Codex 页面的顶栏按钮和侧栏播放键共用一份状态，都走 actions.launch / actions.restart。
   const codexToolEntry = toolEntries.find((entry) => entry.id === "codex");
   const codexLaunch: CodexLaunchState = {
@@ -5061,6 +5091,8 @@ export function App() {
               connection={(
                 <LegacyRelayGatewayHint
                   form={settingsForm}
+                  connecting={codexConnecting}
+                  onConnect={() => void connectCodexGateway()}
                   onDisconnect={() => setLegacyDisconnectOpen(true)}
                   onManageAgents={() => void navigate("gateway")}
                   onOpenGateway={() => void navigate("gatewayProviders")}
@@ -7385,11 +7417,16 @@ function LegacyRelayGatewayHint({
   onOpenGateway,
   onManageAgents,
   onDisconnect,
+  onConnect,
+  connecting = false,
 }: {
   form: BackendSettings;
   onOpenGateway: () => void;
   onManageAgents: () => void;
   onDisconnect: () => void;
+  /** 一键切到网关（沿用上次的接入设置）；不传时退回打开「Agent 接入」。 */
+  onConnect?: () => void;
+  connecting?: boolean;
 }) {
   const managed = form.relayProfiles.find((profile) => profile.id === CODEX_GATEWAY_RELAY_ID);
   const onGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
@@ -7421,8 +7458,38 @@ function LegacyRelayGatewayHint({
       : managed
         ? t("Codex 已从网关切回直连")
         : t("建议改用新版网关");
+  const connect = onConnect ?? onManageAgents;
+  // 两段式切换：经网关 ⇄ 直连。切到网关是一步；切回直连先预览要还原哪些文件，再确认。
+  const modeSwitch = orphan ? null : (
+    <div aria-label={t("Codex 的连接方式")} className="mg-segmented cx-connection-switch" role="radiogroup">
+      <button
+        aria-checked={viaGateway}
+        data-active={viaGateway}
+        disabled={connecting || viaGateway || !form.relayProfilesEnabled}
+        onClick={connect}
+        role="radio"
+        title={form.relayProfilesEnabled ? t("Codex 改走 Codex++ 网关，用供应商池里的模型；新开的会话生效") : t("先在页面底部「高级」里打开供应商配置切换")}
+        type="button"
+      >
+        {connecting ? <Loader2 className="animate-spin" /> : <Waypoints />}
+        {t("经网关")}
+      </button>
+      <button
+        aria-checked={!onGateway}
+        data-active={!onGateway}
+        disabled={!onGateway}
+        onClick={onDisconnect}
+        role="radio"
+        title={t("断开网关，还原接入前的直连配置；会先列出要还原的文件，确认后才改")}
+        type="button"
+      >
+        <Cable />
+        {t("直连")}
+      </button>
+    </div>
+  );
   return (
-    <CxSection className="cx-codex-connection" title={<span title={status}>{t("连接方式")}</span>}>
+    <CxSection aside={modeSwitch} className="cx-codex-connection" title={<span title={status}>{t("连接方式")}</span>}>
       {orphan ? (
         <CxBanner
           detail={t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}
@@ -7447,6 +7514,8 @@ function LegacyRelayGatewayHint({
               : t("用供应商池里的模型：多 Key 轮换、按模型路由、出错自动换下一家")
             : t("所有 Agent 共用一个供应商池：多 Key 轮换、按模型路由、出错自动换下一家")}
           icon={<CxStatusIcon tone={viaGateway ? "ok" : undefined}><Waypoints /></CxStatusIcon>}
+          // 整行可点：没走网关时点这一行就切到网关。
+          onClick={!onGateway && !connecting && form.relayProfilesEnabled ? connect : undefined}
           title={t("经 Codex++ 网关")}
           tooltip={status}
         >
@@ -7459,7 +7528,10 @@ function LegacyRelayGatewayHint({
               </Menu>
             </>
           ) : orphan ? null : (
-            <button className="cx-secondary" onClick={onManageAgents} type="button">{managed ? t("重新接入") : t("接入网关")}</button>
+            <Menu>
+              <MenuItem onClick={onManageAgents}>{t("在「Agent 接入」里选默认模型")}</MenuItem>
+              <MenuItem onClick={onOpenGateway}>{t("打开供应商池")}</MenuItem>
+            </Menu>
           )}
         </CxRow>
         <CxRow
@@ -7470,6 +7542,8 @@ function LegacyRelayGatewayHint({
               ? tf("Codex 直接请求「{0}」，不经网关", [direct.name || t("未命名供应商")])
               : t("Codex 直接请求下面选中的供应商，不经网关")}
           icon={<CxStatusIcon tone={!onGateway && direct ? "ok" : undefined}><Cable /></CxStatusIcon>}
+          // 整行可点：走网关时点这一行切回直连（先预览要还原的文件）。
+          onClick={viaGateway ? onDisconnect : undefined}
           title={t("直连")}
         />
       </CxCard>

@@ -118,6 +118,12 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "断开网关，还原接入前的直连配置；会先列出要还原的文件，确认后才改": "Disconnect the gateway and restore the direct config from before; lists the files to restore and only changes them after you confirm",
+  "先在页面底部「高级」里打开供应商配置切换": "Turn on provider config switching under Advanced at the bottom first",
+  "Codex 改走 Codex++ 网关，用供应商池里的模型；新开的会话生效": "Codex goes through the Codex++ gateway and uses models from the provider pool; takes effect in new sessions",
+  "在「Agent 接入」里选默认模型": "Pick the default model under Agent access",
+  "切换到网关": "Switch to gateway",
+  "Codex 的连接方式": "Codex connection method",
   "组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。Agent 里以 group/<id> 出现。": "A group lets an agent pick several models as one: which to try first, whether to pin a session, who to fall back to on errors — all set on the card. It appears in agents as group/<id>.",
   "隐藏这个组": "Hide this group",
   "组操作": "Group actions",

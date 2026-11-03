@@ -343,6 +343,22 @@ test("置顶推荐位只放在网关总览一处，各 Agent 的概览不再重�
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
 });
 
+test("Codex 在「经网关」和「直连」之间一键切换：切到网关沿用上次接入设置，切回直连先预览还原", () => {
+  const app = functionSource("App");
+  // 切到网关：和「Agent 接入」开关同一条命令，沿用上次的绑定；池空或模型不在池里时说明原因并带去对应页面。
+  assert.match(app, /const draft = draftFromBinding\(previous\);\n\s*const issue = validateDraft\(draft, payload\);/);
+  assert.match(app, /invoke<GatewayResult>\("save_gateway_binding", \{ agent: "codex", binding: \{ \.\.\.bindingFromDraft\(draft, previous\), enabled: true \} \}\)/);
+  assert.match(app, /onConnect=\{\(\) => void connectCodexGateway\(\)\}/);
+  const hint = functionSource("LegacyRelayGatewayHint");
+  // 两段式切换在「连接方式」标题右侧；切回直连走 onDisconnect（断开并还原的预览对话框）。
+  assert.match(hint, /className="mg-segmented cx-connection-switch" role="radiogroup"/);
+  assert.match(hint, /onClick=\{connect\}\n\s*role="radio"/);
+  assert.match(hint, /onClick=\{onDisconnect\}\n\s*role="radio"/);
+  // 两行也可以整行点：没走网关时点网关一行切过去，走网关时点直连一行切回。
+  assert.match(hint, /onClick=\{!onGateway && !connecting && form\.relayProfilesEnabled \? connect : undefined\}/);
+  assert.match(hint, /onClick=\{viaGateway \? onDisconnect : undefined\}/);
+});
+
 test("直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
   const link = functionSource("useCodexPoolLink");
   // 复制走网关「导入供应商」同一条命令；只认直连供应商（codex）和聚合供应商（aggregate）两种来源。

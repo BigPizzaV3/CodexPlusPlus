@@ -808,3 +808,44 @@
   margin: 0 14px 14px;
   width: calc(100% - 28px);
 }
+
+/* 「连接方式」右侧的两段式切换：经网关 ⇄ 直连。 */
+:root .shell .cx-connection-switch {
+  display: inline-flex;
+  gap: 2px;
+}
+
+:root .shell .cx-connection-switch button {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .cx-connection-switch button svg {
+  width: 13px;
+  height: 13px;
+}
+
+:root .shell .cx-connection-switch button:hover:not(:disabled) {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-connection-switch button[data-active="true"] {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  cursor: default;
+}
+
+:root .shell .cx-connection-switch button:disabled:not([data-active="true"]) {
+  opacity: 0.5;
+  cursor: default;
+}
