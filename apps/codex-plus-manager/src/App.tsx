@@ -325,6 +325,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
+import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -11159,87 +11160,83 @@ function AboutScreen({
   diagnostics: DiagnosticsResult | null;
   actions: Actions;
 }) {
+  const version = overview?.current_version ?? update?.currentVersion ?? "-";
+  const openUrl = (url: string) => void actions.openExternalUrl(url);
   return (
     <>
-      <Panel id="app-settings-update">
-        <CardHead title={t("版本与更新")} detail={t("从 GitHub Release 下载安装包更新")} />
-        <CardContent>
-          {/* 一行摘要 + 操作；发布说明在下面，下载进度只在下载时出现。 */}
-          <div className="app-update-summary">
-            <div className="app-update-copy">
-              <strong>Codex++ {overview?.current_version ?? update?.currentVersion ?? "-"}</strong>
-              <span data-tone={update?.updateAvailable ? "new" : undefined}>
-                {update?.updateAvailable && update.latestVersion
-                  ? tf("有新版本 {0}", [update.latestVersion])
-                  : update?.latestVersion
-                    ? t("已是最新版本")
-                    : t("尚未检查更新")}
-                {update?.updateAvailable && update.assetName ? ` · ${update.assetName}` : ""}
-              </span>
-            </div>
-            <div className="app-update-actions">
-              <Button onClick={() => void actions.checkUpdate()} variant={update?.updateAvailable ? "secondary" : "default"}>{t("检查更新")}</Button>
+      <div className="cx-set-group" id="app-settings-update">
+        <CxSection>
+          <CxCard>
+            {/* 一行摘要 + 一个操作：有新版本时主按钮是「下载并运行安装包」，检查更新退到旁边。 */}
+            <CxRow
+              badges={update?.updateAvailable && update.latestVersion ? <CxBadge tone="ok">{tf("有新版本 {0}", [update.latestVersion])}</CxBadge> : null}
+              detail={
+                <>
+                  {update?.updateAvailable && update.latestVersion
+                    ? t("从 GitHub Release 下载安装包更新")
+                    : update?.latestVersion
+                      ? t("已是最新版本")
+                      : t("尚未检查更新")}
+                  {update?.updateAvailable && update.assetName ? ` · ${update.assetName}` : ""}
+                </>
+              }
+              icon={<img alt="" src={APP_LOGO_URL} />}
+              title={`Codex++ ${version}`}
+            >
+              <button className="cx-secondary" onClick={() => void actions.checkUpdate()} type="button"><RefreshCw />{t("检查更新")}</button>
               {update?.updateAvailable ? (
-                <Button disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()}>
+                <button className="cx-primary" disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()} type="button">
+                  <Download />
                   {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
-                </Button>
-              ) : null}
-            </div>
-          </div>
-          {/* 改的是设置草稿，由同页 GlobalSettingsScreen 的自动保存落盘（#1272）。 */}
-          <div className="global-settings-list app-update-preferences">
-            <div className="global-setting-row">
-              <div className="global-setting-copy">
-                <strong>{t("启动时自动检查更新")}</strong>
-                <span>{t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}</span>
-              </div>
-              <div className="global-setting-actions">
-                <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
-              </div>
-            </div>
-          </div>
-          {update?.updateAvailable && update.releaseSummary ? (
-            <details className="app-update-notes">
-              <summary>{tf("{0} 更新说明", [update.latestVersion ?? ""])}</summary>
-              <ReleaseNotes markdown={update.releaseSummary} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
-            </details>
-          ) : null}
-          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
-        </CardContent>
-      </Panel>
-      <Panel id="app-settings-about">
-        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
-        <CardContent className="app-about">
-          <dl className="app-about-facts">
-            <div><dt>{t("Codex 版本")}</dt><dd>{overview?.codex_version ?? t("未检测到")}</dd></div>
-            <div>
-              <dt>{t("项目地址")}</dt>
-              <dd>
-                <button className="app-about-link" onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} type="button">
-                  github.com/BigPizzaV3/CodexPlusPlus
-                  <ExternalLink aria-hidden="true" className="h-3 w-3" />
                 </button>
-              </dd>
-            </div>
-          </dl>
-          <div className="app-about-links">
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} size="sm" variant="secondary">
-              <ExternalLink className="h-3.5 w-3.5" />
-              {t("反馈问题")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} size="sm" variant="secondary">
-              <MessageCircle className="h-3.5 w-3.5" />
-              Discord
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} size="sm" variant="secondary">
-              <MessageCircle className="h-3.5 w-3.5" />
-              Telegram
-            </Button>
-          </div>
-        </CardContent>
-      </Panel>
-      <div className="app-settings-anchor" id="app-settings-logs"><LogsPanel logs={logs} actions={actions} /></div>
-      <div className="app-settings-anchor" id="app-settings-diagnostics"><DiagnosticsPanel diagnostics={diagnostics} actions={actions} /></div>
+              ) : null}
+            </CxRow>
+            {/* 改的是设置草稿，由同页 GlobalSettingsScreen 的自动保存落盘（#1272）。 */}
+            <CxRow
+              detail={t("打开时及运行期间每隔几小时检查一次")}
+              title={t("启动时自动检查更新")}
+              tooltip={t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}
+            >
+              <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
+            </CxRow>
+            {update?.updateAvailable && update.releaseSummary ? (
+              <details className="app-update-notes cx-set-disclosure">
+                <summary>{tf("{0} 更新说明", [update.latestVersion ?? ""])}</summary>
+                <div className="cx-set-block"><ReleaseNotes markdown={update.releaseSummary} onOpenUrl={openUrl} /></div>
+              </details>
+            ) : null}
+          </CxCard>
+          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
+        </CxSection>
+      </div>
+      <div className="cx-set-group" id="app-settings-about">
+        <CxSection>
+          <CxCard>
+            <CxRow detail={t("本地 Codex 增强、管理工具和安装包维护")} icon={<img alt="" src={APP_LOGO_URL} />} title={`Codex++ ${version}`} />
+            <CxRow title={t("Codex 版本")}>
+              <span className="cx-set-value">{overview?.codex_version ?? t("未检测到")}</span>
+            </CxRow>
+            <CxRow detail="github.com/BigPizzaV3/CodexPlusPlus" onClick={() => openUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} title={t("项目地址")}>
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("反馈与社区")}>
+          <CxCard>
+            <CxRow detail={t("在 GitHub Issues 报告问题或提建议")} icon={<Github />} onClick={() => openUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} title={t("反馈问题")}>
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+            <CxRow detail="discord.gg/y96kX7A76v" icon={<MessageCircle />} onClick={() => openUrl("https://discord.gg/y96kX7A76v")} title="Discord">
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+            <CxRow detail="t.me/CodexPlusPlus" icon={<MessageCircle />} onClick={() => openUrl("https://t.me/CodexPlusPlus")} title="Telegram">
+              <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      </div>
+      <div className="cx-set-group" id="app-settings-logs"><LogsPanel logs={logs} actions={actions} /></div>
+      <div className="cx-set-group" id="app-settings-diagnostics"><DiagnosticsPanel diagnostics={diagnostics} actions={actions} /></div>
     </>
   );
 }
@@ -11362,7 +11359,6 @@ function GlobalSettingsScreen({
   theme,
   themePreference,
   actions,
-  onOpenAgentSettings,
   onOpenTour,
   agentFocus,
   onOpenAgentFocus,
@@ -11381,114 +11377,85 @@ function GlobalSettingsScreen({
   const settingsPath = settings?.settings_path ?? "";
   const trayPanel = useTrayPanelSetting();
   const lightweight = useLightweightModeSetting();
-  // 每一项都是同一种行：左边标题 + 说明，右边操作。路径只在「配置文件路径」里出现一次。
+  const themeOptions: AppSelectOption<ThemePreference>[] = [
+    { value: "system", label: t("跟随系统") },
+    { value: "light", label: t("浅色") },
+    { value: "dark", label: t("深色") },
+  ];
+  // 参照 Cursor 设置页：页面标题就是分类名，每节一个卡片外的小标题 + 一张行卡片；
+  // 说明只写一行，长说明放悬停提示。自动保存状态挂到标题栏，只在保存中 / 出错时出现。
   return (
-    <div className="settings-page global-settings-page">
-      <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
-      <Panel id="app-settings-general">
-        <CardHead title={t("基础设置")} detail="" />
-        <CardContent className="global-settings-list">
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("界面主题")}</strong>
-              <span>{themePreference === "system"
+    <>
+      <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
+      <div className="cx-set-group" id="app-settings-general">
+        <CxSection title={t("外观")}>
+          <CxCard>
+            <CxRow
+              title={t("界面主题")}
+              detail={themePreference === "system"
                 ? `${t("跟随系统外观，当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`
-                : `${t("当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`}</span>
-            </div>
-            <div className="global-setting-actions">
-              <div aria-label={t("界面主题")} className="segmented" role="group">
-                {([
-                  ["system", t("跟随系统")],
-                  ["light", t("浅色")],
-                  ["dark", t("深色")],
-                ] as const).map(([value, label]) => (
-                  <button
-                    aria-pressed={themePreference === value}
-                    className={themePreference === value ? "active" : ""}
-                    key={value}
-                    onClick={() => actions.setThemePreference(value)}
-                    type="button"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("点击托盘图标弹出快捷面板")}</strong>
-              <span>{trayPanel.error || t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}</span>
-            </div>
-            <div className="global-setting-actions">
+                : `${t("当前为")}${theme === "dark" ? t("深色") : t("浅色")}${t("模式。")}`}
+            >
+              <AppSelect ariaLabel={t("界面主题")} className="cx-set-select" onChange={(value) => actions.setThemePreference(value)} options={themeOptions} size="sm" value={themePreference} />
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("窗口与托盘")}>
+          <CxCard>
+            <CxRow
+              detail={trayPanel.error || t("单击托盘图标查看状态、启动 Codex、切换供应商")}
+              title={t("点击托盘图标弹出快捷面板")}
+              tooltip={t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}
+            >
               <Switch disabled={trayPanel.enabled === null || trayPanel.saving} label={t("点击托盘图标弹出快捷面板")} on={trayPanel.enabled ?? true} onToggle={() => void trayPanel.toggle()} />
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("关闭窗口后释放界面内存")}</strong>
-              <span>{lightweight.error || t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}</span>
-            </div>
-            <div className="global-setting-actions">
+            </CxRow>
+            <CxRow
+              detail={lightweight.error || t("后台服务照常运行，再次打开时重新加载界面")}
+              title={t("关闭窗口后释放界面内存")}
+              tooltip={t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}
+            >
               <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("使用模式")}</strong>
-              <span>{agentFocusDescription(agentFocus)}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={onOpenAgentFocus}>{t("修改")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("新手引导")}</strong>
-              <span>{t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={onOpenTour}>{t("重新打开引导")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("Codex 专属设置")}</strong>
-              <span>{t("启动参数等只作用于 Codex 的选项，在 Codex 菜单的「设置」里。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={onOpenAgentSettings}>{t("打开 Codex 设置")}</Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel id="app-settings-config">
-        <CardHead title={t("配置文件")} detail={t("settings.json 的备份、迁移与存放位置")} />
-        <CardContent className="global-settings-list">
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("配置备份与迁移")}</strong>
-              <span>{t("导出文件包含供应商 API Key 等敏感信息；导入只会读入草稿，检查后仍需点击保存设置。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={() => void actions.exportSettings()}>{t("导出完整配置")}</Button>
-              <Button size="sm" variant="secondary" onClick={() => void actions.importSettings()}>{t("导入配置草稿")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("配置文件路径")}</strong>
-              <code className="global-setting-path" title={settingsPath}>{settingsPath || "—"}</code>
-              <span>{t("只迁移 settings.json；日志、备份、Skills 和运行状态仍留在原状态目录。更换后建议重新打开管理器。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button size="sm" variant="secondary" onClick={() => void actions.chooseSettingsPath()}>{t("选择路径")}</Button>
-              <Button size="sm" variant="secondary" onClick={() => void actions.resetSettingsPath()}>{t("恢复默认路径")}</Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-    </div>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("入门")}>
+          <CxCard>
+            <CxRow detail={agentFocus === "codex" ? t("只管理 Codex") : agentFocus === "enhance" ? t("只用增强功能") : t("全部功能")} title={t("使用模式")} tooltip={agentFocusDescription(agentFocus)}>
+              <button className="cx-secondary" onClick={onOpenAgentFocus} type="button">{t("修改")}</button>
+            </CxRow>
+            <CxRow detail={t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")} title={t("新手引导")}>
+              <button className="cx-secondary" onClick={onOpenTour} type="button">{t("重新打开引导")}</button>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      </div>
+      <div className="cx-set-group" id="app-settings-config">
+        <CxSection title={t("配置备份与迁移")}>
+          <CxCard>
+            <CxRow detail={t("包含供应商 API Key 等敏感信息，请妥善保管")} title={t("导出完整配置")}>
+              <button className="cx-secondary" onClick={() => void actions.exportSettings()} type="button"><Upload />{t("导出")}</button>
+            </CxRow>
+            <CxRow detail={t("读入为草稿，检查无误后自动保存")} title={t("导入配置草稿")} tooltip={t("导出文件包含供应商 API Key 等敏感信息；导入只会读入草稿，检查后仍需点击保存设置。")}>
+              <button className="cx-secondary" onClick={() => void actions.importSettings()} type="button"><Download />{t("导入")}</button>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+        <CxSection title={t("存放位置")}>
+          <CxCard>
+            <CxRow
+              detail={<code className="cx-set-path" title={settingsPath}>{settingsPath || "—"}</code>}
+              title={t("配置文件路径")}
+              tooltip={t("只迁移 settings.json；日志、备份、Skills 和运行状态仍留在原状态目录。更换后建议重新打开管理器。")}
+            >
+              <button className="cx-secondary" onClick={() => void actions.chooseSettingsPath()} type="button">{t("更改…")}</button>
+              <Menu>
+                <MenuItem onClick={() => void actions.resetSettingsPath()}>{t("恢复默认路径")}</MenuItem>
+              </Menu>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      </div>
+    </>
   );
 }
 
@@ -11499,11 +11466,22 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
       ? tf("日志大小 {0}，仅显示末尾 {1} 行", [formatBytes(logs.fileSize), logs.lines])
       : tf("日志大小 {0}", [formatBytes(logs.fileSize)])
     : "";
+  // 等宽文本卡片：一个主操作（复制），刷新与清理收进三点菜单。
   return (
-    <Panel>
-      <CardHead title={t("最近日志")} detail={logs?.path ?? ""} />
-      <CardContent>
-        {logDetail ? <p className="field-hint">{logDetail}</p> : null}
+    <CxSection
+      aside={
+        <>
+          {logDetail ? <span title={logs?.path ?? ""}>{logDetail}</span> : null}
+          <button className="cx-secondary" onClick={() => void actions.copyLogs()} type="button"><Copy />{t("复制")}</button>
+          <Menu>
+            <MenuItem onClick={() => void actions.refreshLogs()}>{t("刷新")}</MenuItem>
+            <MenuItem danger onClick={() => void actions.clearLogs()}>{t("清理日志")}</MenuItem>
+          </Menu>
+        </>
+      }
+      title={t("最近日志")}
+    >
+      <CxCard className="cx-set-mono-card">
         <div className="log-lines">
           {lines.length ? (
             lines.map((line, index) => (
@@ -11516,34 +11494,29 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
             <div className="empty">{t("暂无日志。")}</div>
           )}
         </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshLogs()} size="sm" variant="secondary">{t("刷新")}</Button>
-          <Button size="sm" variant="secondary" onClick={() => void actions.clearLogs()}>
-            {t("清理日志")}
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => void actions.copyLogs()}>
-            {t("复制")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
+      </CxCard>
+      {logs?.path ? <code className="cx-set-caption">{logs.path}</code> : null}
+    </CxSection>
   );
 }
 
 function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
   return (
-    <Panel>
-      <CardHead title={t("诊断报告")} detail={t("包含版本、路径、设置和平台信息")} />
-      <CardContent>
-        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
-        <Toolbar>
-          <Button onClick={() => void actions.refreshDiagnostics()} size="sm" variant="secondary">{t("重新生成")}</Button>
-          <Button size="sm" variant="secondary" onClick={() => void actions.copyDiagnostics()}>
-            {t("复制报告")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
+    <CxSection
+      aside={
+        <>
+          <button className="cx-secondary" onClick={() => void actions.copyDiagnostics()} type="button"><Copy />{t("复制报告")}</button>
+          <Menu>
+            <MenuItem onClick={() => void actions.refreshDiagnostics()}>{t("重新生成")}</MenuItem>
+          </Menu>
+        </>
+      }
+      title={t("诊断报告")}
+    >
+      <CxCard className="cx-set-mono-card">
+        <Textarea aria-label={t("诊断报告")} className="log-view" readOnly title={t("包含版本、路径、设置和平台信息")} value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
+      </CxCard>
+    </CxSection>
   );
 }
 

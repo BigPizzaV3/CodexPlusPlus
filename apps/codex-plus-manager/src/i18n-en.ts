@@ -12,6 +12,18 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "入门": "Getting started",
+  "包含供应商 API Key 等敏感信息，请妥善保管": "Contains sensitive data such as provider API keys; keep it safe",
+  "单击托盘图标查看状态、启动 Codex、切换供应商": "Click the tray icon to see status, launch Codex and switch providers",
+  "反馈与社区": "Feedback & community",
+  "后台服务照常运行，再次打开时重新加载界面": "Background services keep running; the UI reloads when reopened",
+  "在 GitHub Issues 报告问题或提建议": "Report issues or suggest ideas on GitHub Issues",
+  "存放位置": "Location",
+  "导出": "Export",
+  "打开时及运行期间每隔几小时检查一次": "Checks on launch and every few hours while running",
+  "更改…": "Change…",
+  "窗口与托盘": "Window & tray",
+  "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
   "聚合网关": "Aggregate Gateway",

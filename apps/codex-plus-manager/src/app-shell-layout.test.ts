@@ -441,7 +441,7 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
 test("设置页「版本与更新」：已是最新时不显示旧版本的安装包和说明；有新版本时说明收进可展开区", () => {
   const about = functionSource("AboutScreen");
   assert.match(about, /update\?\.updateAvailable && update\.assetName \?/);
-  assert.match(about, /\{update\?\.updateAvailable && update\.releaseSummary \? \(\n\s*<details className="app-update-notes">/);
+  assert.match(about, /\{update\?\.updateAvailable && update\.releaseSummary \? \(\n\s*<details className="app-update-notes[^"]*">/);
   assert.doesNotMatch(about, /<Metric label=\{t\("状态"\)\}/);
 });
 
