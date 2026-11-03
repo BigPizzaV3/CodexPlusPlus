@@ -721,3 +721,122 @@
   display: block;
   gap: 0;
 }
+
+/* ── Claude 增强（ClaudeLocalizationScreen） ───────────────── */
+
+:root .shell .claude-localization-page.cx-page {
+  display: flex;
+  max-width: none;
+  align-items: stretch;
+}
+
+:root .shell .claude-localization-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .claude-localization-page .claude-l10n-hero {
+  padding: 0;
+  border: 0;
+  background: hsl(var(--card));
+}
+
+:root .shell .claude-localization-page .claude-l10n-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+}
+
+:root .shell .claude-localization-page > .claude-l10n-hint {
+  margin: 0;
+  padding: 0 4px;
+  border: 0;
+}
+
+:root .shell .claude-localization-page .claude-l10n-progress {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .claude-localization-page .claude-l10n-progress-pct {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .claude-localization-page .claude-l10n-progress-fill {
+  background: hsl(var(--foreground) / 0.7);
+}
+
+:root .shell .claude-localization-page .claude-l10n-warning {
+  font-weight: 500;
+}
+
+:root .shell .claude-l10n-section-note {
+  overflow: hidden;
+  max-width: 520px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 增强开关：一张卡里一行一项（原来是三列小卡）。 */
+:root .shell .claude-localization-page .claude-l10n-feature-grid {
+  display: block;
+  padding: 0 14px;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row {
+  height: auto;
+  align-items: center;
+  margin: 0;
+  padding: 13px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > * + .switch-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row strong {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row small {
+  display: -webkit-box;
+  max-width: 720px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin-top: 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Computer Use 下面那句「二选一」：缩进跟在开关下面，不再单独一块。 */
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .claude-l10n-hint {
+  margin: -6px 0 0;
+  padding: 0 0 12px;
+  border: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:root .shell .claude-localization-page .claude-bash-timeout-editor {
+  margin: 0 0 14px;
+  border: 0;
+  border-left: 2px solid hsl(var(--cx-row-divider));
+  border-radius: 0;
+  background: transparent;
+}
+
+:root .shell .claude-localization-page .claude-bash-timeout-editor .switch-row {
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+}

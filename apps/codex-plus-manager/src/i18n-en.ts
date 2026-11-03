@@ -23,6 +23,9 @@ export const EN_PLAIN: Record<string, string> = {
   "按供应商启动": "Launch by provider",
   "重启此 Codex 实例；修改供应商或 Key 后重启才会生效": "Restart this Codex instance; provider or key changes take effect after a restart",
   "多开只用「旧版供应商配置」里的供应商与 Key，「供应商池」（网关）的不会出现在这里": "Multi-launch only uses providers and keys from Legacy provider config; gateway Provider pool entries do not appear here",
+  "先制作增强版副本，完成后自动启动": "Builds the enhanced copy first, then launches it",
+  "首次启动会先制作独立副本，官方应用不改动": "The first launch builds a separate copy; the official app stays untouched",
+  "重启增强版后应用": "Applies after restarting the enhanced app",
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
   // ----

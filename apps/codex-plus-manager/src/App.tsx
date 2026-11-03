@@ -15889,7 +15889,7 @@ function ClaudeLocalizationScreen() {
       .catch(() => undefined);
   }, []);
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
-    if (pending.current) return;
+    if (pending.current) return false;
     pending.current = true;
     statusGeneration.current++;
     setBusy(action); setError(null);
@@ -15908,18 +15908,21 @@ function ClaudeLocalizationScreen() {
       } : current);
     }
     if (action === "prepare") setProgress({ percent: 0, message: t("准备开始…") });
+    let succeeded = false;
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
       if (launching && result.status !== "ok") clearLaunchNotice();
       accept(result);
+      succeeded = result.status === "ok";
     } catch (cause) { if (mounted.current) { if (launching) clearLaunchNotice(); setError(stringifyError(cause)); } }
     finally {
       pending.current = false;
       if (mounted.current) setBusy(null);
       if (action === "prepare") setTimeout(() => { if (mounted.current) setProgress(null); }, 1500);
     }
+    return succeeded;
   };
   const toggleVoiceInput = async (enabled: boolean) => {
     if (pending.current) return;
@@ -16044,294 +16047,283 @@ function ClaudeLocalizationScreen() {
     timer = setTimeout(() => void poll(), 1000);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [s?.bashTimeoutPending, s?.running, busy]);
-  const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
+  // 原来是「制作 → 启动 → 开增强」三步：现在右上角一个「启动增强版」，没制作或需要更新时先自动制作再启动。
+  const needsPrepare = Boolean(s && (!s.prepared || s.needsRebuild));
+  const canLaunch = Boolean(s?.supported && s.nodeAvailable && (s.prepared || needsPrepare));
+  const launchEnhanced = async () => {
+    if (needsPrepare && !(await act("prepare"))) return;
+    await act("launch");
+  };
+  const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
+  const meta = [
+    `${t("官方版本")} ${!s ? t("未检测") : s.sourceVersion || t("未检测到")}`,
+    `${t("副本版本")} ${s?.copyVersion || t("未准备")}`,
+    `${t("外壳语言")} ${s?.shellLocale || t("未设置")}`,
+    `${t("官方词条")} ${s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}`,
+  ].join(" · ");
+  const prepareLabel = busy === "prepare"
+    ? t("制作中…")
+    : s?.needsRebuild
+      ? t("更新副本")
+      : s?.prepared
+        ? t("重新制作增强版")
+        : t("制作增强版");
+  const prepareHint = t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。");
   return (
-    <div className="claude-localization-page">
+    <div className="claude-localization-page cx-page">
       {topbarSlot
         ? createPortal(
-            <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")} title={t("启动增强版")}>
+            <Button
+              disabled={busy !== null || !canLaunch}
+              onClick={() => void launchEnhanced()}
+              title={needsPrepare ? t("先制作增强版副本，完成后自动启动") : t("启动增强版")}
+            >
               <Rocket className="h-4 w-4" />
-              {busy === "launch" ? t("启动中…") : t("启动增强版")}
+              {busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动增强版")}
             </Button>,
             topbarSlot,
           )
         : null}
-      {/* 顶部通栏：所有增强共同的前置条件。状态和操作放在第一屏，不用滚动就能点到。 */}
-      <Panel className="claude-l10n-hero">
-        <CardContent className="claude-l10n-hero-body">
-          <div className="claude-l10n-hero-head">
-            <div className="claude-l10n-hero-title">
-              <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
-              <div>
-                <strong>{t("受管增强版")}</strong>
-                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
-              </div>
-            </div>
-            <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
-              <i aria-hidden="true" />
-              {statusText}
-            </span>
+      {/* 顶部最多几条一次性的提示：检测中 / 未安装、错误、Bash 时限确认、制作进度。 */}
+      {!s ? (
+        <p className="claude-l10n-hint">
+          {busy === "detect"
+            ? t("正在读取 Claude 安装状态，只读检测，不会修改应用。")
+            : t("没有读到安装状态，点击“检测 Claude”重试；检测不会修改应用。")}
+        </p>
+      ) : null}
+      {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
+      {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
+        <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
+      ) : null}
+      {progress ? (
+        <div
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={progress.percent}
+          className="claude-l10n-progress"
+          role="progressbar"
+        >
+          <div className="claude-l10n-progress-head">
+            <span>{progress.message || t("处理中…")}</span>
+            <span className="claude-l10n-progress-pct">{progress.percent}%</span>
           </div>
-          {/* 三步进度：原来右栏的「上手步骤」收成一排，完成的步骤打勾。 */}
-          <ol className="claude-l10n-progress-steps">
-            <li data-done={s?.prepared ? "true" : "false"}>
-              <span aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
-              <div><strong>{t("制作增强版")}</strong><small>{t("官方 Claude.app 与 app.asar 保持原样")}</small></div>
-            </li>
-            <li data-done={s?.running ? "true" : "false"}>
-              <span aria-hidden="true">{s?.running ? "✓" : "2"}</span>
-              <div><strong>{t("启动增强版")}</strong><small>{t("右上角启动，增强在启动时注入")}</small></div>
-            </li>
-            <li data-done="false">
-              <span aria-hidden="true">3</span>
-              <div><strong>{t("开启需要的增强")}</strong><small>{t("下方各项独立开关，重启副本后应用")}</small></div>
-            </li>
-          </ol>
-          {/* 版本与词表信息只作参考，收成一行小字。 */}
-          <dl className="claude-l10n-meta">
-            <div><dt>{t("官方版本")}</dt><dd title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</dd></div>
-            <div><dt>{t("副本版本")}</dt><dd title={s?.copyVersion || undefined}>{s?.copyVersion || t("未准备")}</dd></div>
-            <div><dt>{t("外壳语言")}</dt><dd>{s?.shellLocale || t("未设置")}</dd></div>
-            <div><dt>{t("官方词条")}</dt><dd>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}</dd></div>
-          </dl>
-          {s?.supported && !s.prepared ? (
-            <p className="claude-l10n-hint">
-              <Info className="h-4 w-4" />
-              {t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}
-            </p>
-          ) : null}
-          {!s ? (
-            <p className="claude-l10n-hint">
-              {busy === "detect"
-                ? t("正在读取 Claude 安装状态，只读检测，不会修改应用。")
-                : t("没有读到安装状态，点击“检测 Claude”重试；检测不会修改应用。")}
-            </p>
-          ) : !s.supported ? (
-            <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
-          ) : null}
-          {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
-          {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
-            <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
-          ) : null}
-          {progress ? (
+          <div className="claude-l10n-progress-track">
             <div
-              aria-valuemax={100}
-              aria-valuemin={0}
-              aria-valuenow={progress.percent}
-              className="claude-l10n-progress"
-              role="progressbar"
-            >
-              <div className="claude-l10n-progress-head">
-                <span>{progress.message || t("处理中…")}</span>
-                <span className="claude-l10n-progress-pct">{progress.percent}%</span>
-              </div>
-              <div className="claude-l10n-progress-track">
-                <div
-                  className="claude-l10n-progress-fill"
-                  style={{ width: `${Math.min(100, Math.max(2, progress.percent))}%` }}
+              className="claude-l10n-progress-fill"
+              style={{ width: `${Math.min(100, Math.max(2, progress.percent))}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {/* 增强版状态一行：版本与词表收成一行小字；制作 / 检测 / 检查在右侧，启动在页头右上角。 */}
+      <CxCard className="claude-l10n-hero">
+        <CxRow
+          badges={<CxBadge tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "neutral"}>{statusText}</CxBadge>}
+          detail={<span title={t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}>{s && !s.supported
+            ? t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")
+            : s?.supported && !s.prepared ? t("首次启动会先制作独立副本，官方应用不改动") : meta}</span>}
+          icon={<CxStatusIcon tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "off"}><PackageOpen /></CxStatusIcon>}
+          title={t("受管增强版")}
+        >
+          <div className="claude-l10n-actions">
+            {needsPrepare || !s ? (
+              <button className="cx-secondary" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={prepareHint} type="button">
+                <PackageOpen />
+                {prepareLabel}
+              </button>
+            ) : (
+              <button aria-label={prepareLabel} className="cx-icon-button" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={`${prepareLabel}：${prepareHint}`} type="button">
+                <PackageOpen />
+                <span className="sr-only">{prepareLabel}</span>
+              </button>
+            )}
+            <button className="cx-icon-button" disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} title={t("检查增强版")} type="button">
+              <ShieldCheck />
+              <span className="sr-only">{t("检查增强版")}</span>
+            </button>
+            <button className="cx-icon-button" disabled={busy !== null} onClick={() => void refresh()} title={t("检测 Claude")} type="button">
+              <RefreshCw className={busy === "detect" ? "animate-spin" : ""} />
+              <span className="sr-only">{busy === "detect" ? t("检测中…") : t("检测 Claude")}</span>
+            </button>
+          </div>
+        </CxRow>
+      </CxCard>
+
+      {/* 增强开关一节：每项一行，各自独立、即点即存，重启增强版后应用。 */}
+      <CxSection
+        aside={s?.supported && !s.prepared ? (
+          <span className="claude-l10n-section-note">{t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}</span>
+        ) : (
+          <span className="claude-l10n-section-note" title={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}>{t("重启增强版后应用")}</span>
+        )}
+        className="claude-l10n-features"
+        title={t("增强功能")}
+      >
+        <CxCard className="claude-l10n-feature-grid">
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.localization)}
+              disabled={busy !== null || !s?.supported}
+              onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("界面汉化")}</strong>
+              <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.voiceInput)}
+              disabled={busy !== null || !s?.supported}
+              onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("语音输入")}</strong>
+              <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.computerUse)}
+              disabled={busy !== null || !s?.supported || s?.computerUseSupported === false}
+              onChange={(event) => void toggleComputerUse(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("Computer Use")}</strong>
+              <small title={s?.computerUseSupported === false
+                ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}
+              >{s?.computerUseSupported === false
+                ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          {s?.computerUseSupported !== false ? (
+            s?.computerUse && claudeDesktopCuConnected ? (
+              <p className="claude-l10n-hint is-warning" role="alert">
+                {t("Claude Desktop 同时接入了「Computer Use」页的 codex-plus-cu：同一个对话里会有两套电脑控制，Claude 可能混着调用、互相抢前台，同一个应用也要确认两次。建议二选一：保留这里的开关，就到「Computer Use」页撤销 Claude Desktop 的接入；或者关掉这里的开关。")}
+              </p>
+            ) : (
+              <p className="claude-l10n-hint">
+                {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
+              </p>
+            )
+          ) : null}
+          <label className="switch-row compact claude-bash-timeout-master">
+            <input
+              aria-label={t("解锁 Bash 时间限制")}
+              checked={Boolean(bashTimeout?.enabled)}
+              disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
+              onChange={(event) => {
+                if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("解锁 Bash 时间限制")}</strong>
+              <small title={t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          {bashTimeout?.enabled ? (
+            <div className="claude-bash-timeout-editor">
+              <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
+              <label className="switch-row compact claude-bash-timeout-toggle">
+                <input
+                  aria-label={t("修改默认等待时间")}
+                  checked={bashTimeout.defaultEnabled}
+                  disabled={busy !== null && busy !== "bashTimeout"}
+                  onChange={(event) => void saveBashTimeout({
+                    ...bashTimeout,
+                    defaultEnabled: event.currentTarget.checked,
+                  })}
+                  type="checkbox"
                 />
+                <span>
+                  <strong>{t("修改默认等待时间")}</strong>
+                  <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <div className="claude-bash-timeout-value">
+                <span>{t("默认等待时间")}</span>
+                <Input
+                  aria-label={t("默认等待时间（秒）")}
+                  disabled={busy !== null || !bashTimeout.defaultEnabled}
+                  max={2147423}
+                  min={1}
+                  onChange={(event) => {
+                    setBashTimeoutDefaultText(event.currentTarget.value);
+                    const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                    setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
+                  }}
+                  onBlur={() => {
+                    setBashTimeoutDefaultText(null);
+                    void saveBashTimeout(bashTimeout);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                  type="number"
+                  value={bashTimeoutDefaultText ?? bashTimeout.defaultSeconds}
+                />
+                <span>{t("秒")}</span>
+              </div>
+              <label className="switch-row compact claude-bash-timeout-toggle">
+                <input
+                  aria-label={t("修改最大等待时间")}
+                  checked={bashTimeout.maxEnabled}
+                  disabled={busy !== null && busy !== "bashTimeout"}
+                  onChange={(event) => void saveBashTimeout({
+                    ...bashTimeout,
+                    maxEnabled: event.currentTarget.checked,
+                  })}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("修改最大等待时间")}</strong>
+                  <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <div className="claude-bash-timeout-value">
+                <span>{t("最大等待时间")}</span>
+                <Input
+                  aria-label={t("最大等待时间（秒）")}
+                  disabled={busy !== null || !bashTimeout.maxEnabled}
+                  max={2147423}
+                  min={1}
+                  onChange={(event) => {
+                    setBashTimeoutMaxText(event.currentTarget.value);
+                    const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                    setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
+                  }}
+                  onBlur={() => {
+                    setBashTimeoutMaxText(null);
+                    void saveBashTimeout(bashTimeout);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                  type="number"
+                  value={bashTimeoutMaxText ?? bashTimeout.maxSeconds}
+                />
+                <span>{t("秒")}</span>
               </div>
             </div>
           ) : null}
-          {/* 制作在左，检测类的次要操作收在右边，窄时整组换行而不是剩一个按钮掉下去。启动在页头右上角。 */}
-          <div className="claude-l10n-actions">
-            <div className="claude-l10n-actions-primary">
-            <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
-              <PackageOpen className="h-4 w-4" />
-              {busy === "prepare"
-                ? t("制作中…")
-                : s?.needsRebuild
-                  ? t("更新副本")
-                  : s?.prepared
-                    ? t("重新制作增强版")
-                    : t("制作增强版")}
-            </Button>
-            </div>
-            <div className="claude-l10n-actions-secondary">
-              <Button disabled={busy !== null} onClick={() => void refresh()} variant="secondary">
-                <RefreshCw className={`h-4 w-4 ${busy === "detect" ? "animate-spin" : ""}`} />
-                {busy === "detect" ? t("检测中…") : t("检测 Claude")}
-              </Button>
-              <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
-                <ShieldCheck className="h-4 w-4" />{t("检查增强版")}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      {/* 增强项铺满整行、三列并排：每一项都跑在上方的受管副本上，汉化只是其中之一。 */}
-      <div className="claude-l10n-column claude-l10n-features">
-        <Panel>
-          <CardHead
-            title={t("增强功能")}
-            detail={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}
-          />
-          <CardContent className="claude-l10n-feature-grid">
-            <label className="switch-row compact">
-              <input
-                checked={Boolean(s?.localization)}
-                disabled={busy !== null || !s?.supported}
-                onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("界面汉化")}</strong>
-                <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            <label className="switch-row compact">
-              <input
-                checked={Boolean(s?.voiceInput)}
-                disabled={busy !== null || !s?.supported}
-                onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("语音输入")}</strong>
-                <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            <label className="switch-row compact">
-              <input
-                checked={Boolean(s?.computerUse)}
-                disabled={busy !== null || !s?.supported || s?.computerUseSupported === false}
-                onChange={(event) => void toggleComputerUse(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("Computer Use")}</strong>
-                <small>{s?.computerUseSupported === false
-                  ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
-                  : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            {s?.computerUseSupported !== false ? (
-              s?.computerUse && claudeDesktopCuConnected ? (
-                <p className="claude-l10n-hint is-warning" role="alert">
-                  {t("Claude Desktop 同时接入了「Computer Use」页的 codex-plus-cu：同一个对话里会有两套电脑控制，Claude 可能混着调用、互相抢前台，同一个应用也要确认两次。建议二选一：保留这里的开关，就到「Computer Use」页撤销 Claude Desktop 的接入；或者关掉这里的开关。")}
-                </p>
-              ) : (
-                <p className="claude-l10n-hint">
-                  {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
-                </p>
-              )
-            ) : null}
-            <label className="switch-row compact claude-bash-timeout-master">
-              <input
-                aria-label={t("解锁 Bash 时间限制")}
-                checked={Boolean(bashTimeout?.enabled)}
-                disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
-                onChange={(event) => {
-                  if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
-                }}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("解锁 Bash 时间限制")}</strong>
-                <small>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            {bashTimeout?.enabled ? (
-              <div className="claude-bash-timeout-editor">
-                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
-                <label className="switch-row compact claude-bash-timeout-toggle">
-                  <input
-                    aria-label={t("修改默认等待时间")}
-                    checked={bashTimeout.defaultEnabled}
-                    disabled={busy !== null && busy !== "bashTimeout"}
-                    onChange={(event) => void saveBashTimeout({
-                      ...bashTimeout,
-                      defaultEnabled: event.currentTarget.checked,
-                    })}
-                    type="checkbox"
-                  />
-                  <span>
-                    <strong>{t("修改默认等待时间")}</strong>
-                    <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
-                  </span>
-                  <ToggleVisual />
-                </label>
-                <div className="claude-bash-timeout-value">
-                  <span>{t("默认等待时间")}</span>
-                  <Input
-                    aria-label={t("默认等待时间（秒）")}
-                    disabled={busy !== null || !bashTimeout.defaultEnabled}
-                    max={2147423}
-                    min={1}
-                    onChange={(event) => {
-                      setBashTimeoutDefaultText(event.currentTarget.value);
-                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
-                      setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
-                    }}
-                    onBlur={() => {
-                      setBashTimeoutDefaultText(null);
-                      void saveBashTimeout(bashTimeout);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                    }}
-                    type="number"
-                    value={bashTimeoutDefaultText ?? bashTimeout.defaultSeconds}
-                  />
-                  <span>{t("秒")}</span>
-                </div>
-                <label className="switch-row compact claude-bash-timeout-toggle">
-                  <input
-                    aria-label={t("修改最大等待时间")}
-                    checked={bashTimeout.maxEnabled}
-                    disabled={busy !== null && busy !== "bashTimeout"}
-                    onChange={(event) => void saveBashTimeout({
-                      ...bashTimeout,
-                      maxEnabled: event.currentTarget.checked,
-                    })}
-                    type="checkbox"
-                  />
-                  <span>
-                    <strong>{t("修改最大等待时间")}</strong>
-                    <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
-                  </span>
-                  <ToggleVisual />
-                </label>
-                <div className="claude-bash-timeout-value">
-                  <span>{t("最大等待时间")}</span>
-                  <Input
-                    aria-label={t("最大等待时间（秒）")}
-                    disabled={busy !== null || !bashTimeout.maxEnabled}
-                    max={2147423}
-                    min={1}
-                    onChange={(event) => {
-                      setBashTimeoutMaxText(event.currentTarget.value);
-                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
-                      setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
-                    }}
-                    onBlur={() => {
-                      setBashTimeoutMaxText(null);
-                      void saveBashTimeout(bashTimeout);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                    }}
-                    type="number"
-                    value={bashTimeoutMaxText ?? bashTimeout.maxSeconds}
-                  />
-                  <span>{t("秒")}</span>
-                </div>
-              </div>
-            ) : null}
-            {s?.supported && !s.prepared ? (
-              <p className="claude-l10n-hint">
-                {t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}
-              </p>
-            ) : null}
-          </CardContent>
-        </Panel>
-      </div>
+        </CxCard>
+      </CxSection>
     </div>
   );
 }
