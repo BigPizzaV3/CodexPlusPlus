@@ -951,3 +951,31 @@
 :root .shell .gw-pool-row .gw-pool-edit:focus-visible {
   opacity: 1;
 }
+
+/* 发现本机已登录的订阅账号：列表下面一行小字，点开再导入。 */
+:root .shell .gw-local-logins {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+:root .shell .gw-local-logins-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+:root .shell .gw-local-logins-toggle {
+  margin: 0 4px;
+}
+
+:root .shell .gw-local-logins-action {
+  margin-left: 4px;
+  color: hsl(var(--foreground));
+}
+
+:root .shell .gw-local-logins-dismiss {
+  width: 22px;
+  height: 22px;
+  color: hsl(var(--muted-foreground));
+}

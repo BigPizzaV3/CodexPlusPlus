@@ -241,9 +241,6 @@ export function ProvidersView({
           </button>
         ) : null}
       </div>
-      {localLogins.length && localDismissed !== localKey ? (
-        <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
-      ) : null}
       {pool.length ? (
         // 拖动排序按 listRef 里所有行的位置算，「已关闭」那一组也在里面，拖动时相对顺序不乱。
         <div className="gw-pool-lists" ref={listRef}>
@@ -266,6 +263,9 @@ export function ProvidersView({
             </>
           ) : null}
         </div>
+      ) : null}
+      {localLogins.length && localDismissed !== localKey ? (
+        <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
       ) : null}
       {payload !== null && pool.length === 0 ? (
         <div className="gw-card gw-pool-empty">
@@ -457,29 +457,39 @@ function useLocalLogins(enabled: boolean, poolKey: string) {
   return found;
 }
 
+/**
+ * 发现本机已登录的订阅账号：列表下面一行小字（「发现 2 个本机已登录的订阅账号：Cursor、Kiro · 导入」），
+ * 点开才列出账号逐个导入；不再整块卡片压在供应商列表上面。× 关掉这次的提示，长期不想看到在「网关」页关掉。
+ */
 function LocalLoginsCard({ found, busy, pending, onImport, onDismiss }: { found: LocalLogin[]; busy: boolean; pending: string | null; onImport: (id: string) => void; onDismiss: () => void }) {
+  const [open, setOpen] = useState(false);
+  const names = found.map((item) => maskAccountName(item.name)).join("、");
   return (
-    <div className="gw-card">
-      <div className="gw-setting-row">
-        <div>
-          <strong>{tf("发现本机已登录的 {0} 个订阅账号", [found.length])}</strong>
-          <small>{t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关」页关掉「发现本机已登录的订阅账号」。")}</small>
-        </div>
-        <span />
-        <button aria-label={t("关闭")} className="gw-icon-button" onClick={onDismiss} type="button"><X className="h-4 w-4" /></button>
+    <div className="gw-local-logins">
+      <div className="gw-local-logins-line">
+        <button aria-expanded={open} className="gw-pool-off-toggle gw-local-logins-toggle" onClick={() => setOpen(!open)} title={t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关」页关掉「发现本机已登录的订阅账号」。")} type="button">
+          <ChevronRight className="h-3.5 w-3.5" />
+          {tf("发现 {0} 个本机已登录的订阅账号：{1}", [found.length, names])}
+          <span className="gw-local-logins-action">{t("导入")}</span>
+        </button>
+        <button aria-label={t("关闭")} className="gw-icon-button gw-local-logins-dismiss" onClick={onDismiss} title={t("这次不再提示")} type="button"><X className="h-3.5 w-3.5" /></button>
       </div>
-      {found.map((item) => (
-        <div className="gw-setting-row" key={`${item.id}:${item.account}`}>
-          <div>
-            <strong>{maskAccountName(item.name)}</strong>
-            <small>{item.account ? maskAccountName(item.account) : t("本机官方客户端已登录")}</small>
-          </div>
-          <span />
-          <button className="gw-text-button strong" disabled={busy || pending !== null} onClick={() => onImport(item.id)} type="button">
-            {pending === `sub:${item.id}` ? t("导入中…") : t("导入")}
-          </button>
+      {open ? (
+        <div className="gw-card gw-local-logins-card">
+          {found.map((item) => (
+            <div className="gw-setting-row" key={`${item.id}:${item.account}`}>
+              <div>
+                <strong>{maskAccountName(item.name)}</strong>
+                <small>{item.account ? maskAccountName(item.account) : t("本机官方客户端已登录")}</small>
+              </div>
+              <span />
+              <button className="gw-text-button strong" disabled={busy || pending !== null} onClick={() => onImport(item.id)} type="button">
+                {pending === `sub:${item.id}` ? t("导入中…") : t("导入")}
+              </button>
+            </div>
+          ))}
         </div>
-      ))}
+      ) : null}
     </div>
   );
 }
