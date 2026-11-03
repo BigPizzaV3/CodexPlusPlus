@@ -6419,142 +6419,124 @@ function SharedServiceSettings({
     </label>
   );
   const retry = form.protocolProxyAutoRetry;
+  const retryModeLabel = form.protocolProxyAutoRetryMode === "buffered" ? t("整段缓冲") : form.protocolProxyAutoRetryMode === "streaming-legacy" ? t("流式（旧行为）") : t("流式（推荐）");
+  const sharedHint = t("网关和旧版本地协议代理共用这些设置");
+  // 本地服务一节、请求避震一节。避震的五个参数默认值够用，收进折叠区，摘要里显示当前值。
   return (
     <div className="gw-shared-settings">
-      <SectionLabel aside={autoSave}>{t("本地服务（新旧共用）")}</SectionLabel>
-      <div className="gw-card">
-        {health.map((item) => (
-          <div className="gw-setting-row" key={item.title}>
-            <div>
-              <strong>{item.title}</strong>
-              <small title={item.detail}>{item.detail}</small>
-            </div>
-            <span />
-            <span className="gw-pill" data-tone={tone(item)}>{statusLabel(item.status)}</span>
-          </div>
-        ))}
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("请求体上限")}</strong>
-            <small title={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}>
-              {t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
-            </small>
-          </div>
-          <span />
-          {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
-        </div>
-      </div>
+      {autoSave ? <TopbarActions><span className="cx-set-autosave">{autoSave}</span></TopbarActions> : null}
+      <CxSection title={<span title={sharedHint}>{t("本地服务")}</span>}>
+        <CxCard>
+          {health.map((item) => (
+            <CxRow detail={item.detail} key={item.title} title={item.title} tooltip={item.detail}>
+              <CxBadge tone={tone(item) === "ok" ? "ok" : tone(item) === "warning" ? "warn" : "neutral"}>{statusLabel(item.status)}</CxBadge>
+            </CxRow>
+          ))}
+          <CxRow
+            detail={t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
+            title={t("请求体上限")}
+            tooltip={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}
+          >
+            {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
+          </CxRow>
+        </CxCard>
+      </CxSection>
 
-      <SectionLabel>{t("请求避震（新旧共用）")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("启用请求避震")}</strong>
-            <small>
-              {retry
-                ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过网关和旧版本地协议代理的请求。")
-                : t("已关闭：上游过载或限流时，错误直接交给 Agent。")}
-            </small>
-          </div>
-          <span />
-          <Switch label={t("启用请求避震")} on={retry} onToggle={() => onFormChange({ ...form, protocolProxyAutoRetry: !retry })} />
-        </div>
-        {retry ? (
-          <>
-            <div className="gw-setting-row">
-              <div>
-                <strong>{t("最多自动重试次数")}</strong>
-                <small>{t("0–20 次；次数用尽后把错误交给 Agent。")}</small>
-              </div>
-              <span />
-              {number(form.protocolProxyAutoRetryMaxAttempts, 0, 20, t("次"), (next) => onFormChange({ ...form, protocolProxyAutoRetryMaxAttempts: next }))}
-            </div>
-            <div className="gw-setting-row">
-              <div>
-                <strong>{t("首次重试间隔")}</strong>
-                <small>{t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")}</small>
-              </div>
-              <span />
-              {number(form.protocolProxyAutoRetryIntervalSeconds, 0, 30, t("秒"), (next) => onFormChange({ ...form, protocolProxyAutoRetryIntervalSeconds: next }))}
-            </div>
-            <div className="gw-setting-row">
-              <div>
-                <strong>{t("避震模式")}</strong>
-                <small title={t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}>
-                  {form.protocolProxyAutoRetryMode === "buffered"
-                    ? t("始终由代理重试，但要等整段生成完才显示。")
-                    : form.protocolProxyAutoRetryMode === "streaming-legacy"
-                      ? t("旧版流式行为，仅在新版有问题时使用。")
-                      : t("保留实时输出；正文出现前遇到过载由代理重试。")}
-                </small>
-              </div>
-              <span />
-              <AppSelect
-                label={t("避震模式")}
-                onChange={(next) => onFormChange({ ...form, protocolProxyAutoRetryMode: next })}
-                options={[
-                  { value: "streaming", label: t("流式（推荐）"), hint: t("保留实时输出；正文出现前遇到过载由代理重试。") },
-                  { value: "streaming-legacy", label: t("流式（旧行为）"), hint: t("旧版流式行为，仅在新版有问题时使用。") },
-                  { value: "buffered", label: t("整段缓冲"), hint: t("始终由代理重试，但要等整段生成完才显示。") },
-                ]}
-                value={form.protocolProxyAutoRetryMode}
-                menuWidth={300}
-              />
-            </div>
-            {form.protocolProxyAutoRetryMode === "streaming" ? (
-              <div className="gw-setting-row">
-                <div>
-                  <strong>{t("首字提交延迟")}</strong>
-                  <small>{t("出现正文后再缓冲的时长，0 表示立即提交。")}</small>
-                </div>
-                <span />
-                {number(form.protocolProxyAutoRetryCommitDelayMs, 0, 10000, "ms", (next) => onFormChange({ ...form, protocolProxyAutoRetryCommitDelayMs: next }), 100)}
-              </div>
-            ) : null}
-            {/* 状态码编辑不能放进 <label>：WebKit 会把点击转发给第一个按钮，一次删掉两个状态码。 */}
-            <div className="gw-setting-row gw-setting-row-stacked">
-              <div>
-                <strong>{t("重试的 HTTP 状态码")}</strong>
-                <small>{t("命中时退避重发。默认不选；常用 429（限流）和 5xx（服务端故障）。")}</small>
-              </div>
-              <div className="gw-retry-codes" role="group" aria-label={t("重试的 HTTP 状态码")}>
-                {form.protocolProxyAutoRetryStatusCodes.map((status) => (
-                  <button
-                    className="gw-chip gw-retry-code"
-                    key={status}
-                    onClick={() => setRetryStatusCodes(form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status))}
-                    title={t("点击移除")}
-                    type="button"
-                  >
-                    {status} ×
-                  </button>
-                ))}
-                <input
-                  aria-label={t("输入状态码后回车")}
-                  className="gw-retry-input"
-                  inputMode="numeric"
-                  onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addRetryStatusCodes();
-                    }
-                  }}
-                  placeholder={t("加状态码，回车")}
-                  value={retryStatusInput}
+      <CxSection title={<span title={sharedHint}>{t("请求避震")}</span>}>
+        <CxCard>
+          <CxRow
+            detail={retry
+              ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过网关和旧版本地协议代理的请求。")
+              : t("已关闭：上游过载或限流时，错误直接交给 Agent。")}
+            title={t("启用请求避震")}
+          >
+            <Switch label={t("启用请求避震")} on={retry} onToggle={() => onFormChange({ ...form, protocolProxyAutoRetry: !retry })} />
+          </CxRow>
+          {retry ? (
+            <details className="cx-set-disclosure">
+              <summary>
+                {t("重试参数")}
+                <span className="cx-set-summary-hint">
+                  {[tf("最多 {0} 次", [form.protocolProxyAutoRetryMaxAttempts]), tf("间隔 {0} 秒", [form.protocolProxyAutoRetryIntervalSeconds]), retryModeLabel].join(" · ")}
+                </span>
+              </summary>
+              <CxRow detail={t("0–20 次；次数用尽后把错误交给 Agent。")} title={t("最多自动重试次数")}>
+                {number(form.protocolProxyAutoRetryMaxAttempts, 0, 20, t("次"), (next) => onFormChange({ ...form, protocolProxyAutoRetryMaxAttempts: next }))}
+              </CxRow>
+              <CxRow detail={t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")} title={t("首次重试间隔")}>
+                {number(form.protocolProxyAutoRetryIntervalSeconds, 0, 30, t("秒"), (next) => onFormChange({ ...form, protocolProxyAutoRetryIntervalSeconds: next }))}
+              </CxRow>
+              <CxRow
+                detail={form.protocolProxyAutoRetryMode === "buffered"
+                  ? t("始终由代理重试，但要等整段生成完才显示。")
+                  : form.protocolProxyAutoRetryMode === "streaming-legacy"
+                    ? t("旧版流式行为，仅在新版有问题时使用。")
+                    : t("保留实时输出；正文出现前遇到过载由代理重试。")}
+                title={t("避震模式")}
+                tooltip={t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}
+              >
+                <AppSelect
+                  className="cx-set-select"
+                  label={t("避震模式")}
+                  onChange={(next) => onFormChange({ ...form, protocolProxyAutoRetryMode: next })}
+                  options={[
+                    { value: "streaming", label: t("流式（推荐）"), hint: t("保留实时输出；正文出现前遇到过载由代理重试。") },
+                    { value: "streaming-legacy", label: t("流式（旧行为）"), hint: t("旧版流式行为，仅在新版有问题时使用。") },
+                    { value: "buffered", label: t("整段缓冲"), hint: t("始终由代理重试，但要等整段生成完才显示。") },
+                  ]}
+                  size="sm"
+                  value={form.protocolProxyAutoRetryMode}
+                  menuWidth={300}
                 />
+              </CxRow>
+              {form.protocolProxyAutoRetryMode === "streaming" ? (
+                <CxRow detail={t("出现正文后再缓冲的时长，0 表示立即提交。")} title={t("首字提交延迟")}>
+                  {number(form.protocolProxyAutoRetryCommitDelayMs, 0, 10000, "ms", (next) => onFormChange({ ...form, protocolProxyAutoRetryCommitDelayMs: next }), 100)}
+                </CxRow>
+              ) : null}
+              <CxRow detail={t("命中时退避重发。默认不选；常用 429（限流）和 5xx（服务端故障）。")} title={t("重试的 HTTP 状态码")}>
                 <button
-                  className="gw-text-button"
+                  className="cx-secondary"
                   onClick={() => setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...COMMON_RETRY_STATUS_CODES])}
                   type="button"
                 >
                   {t("填入常用")}
                 </button>
+              </CxRow>
+              {/* 状态码编辑不能放进 <label>：WebKit 会把点击转发给第一个按钮，一次删掉两个状态码。 */}
+              <div className="cx-set-block">
+                <div className="gw-retry-codes" role="group" aria-label={t("重试的 HTTP 状态码")}>
+                  {form.protocolProxyAutoRetryStatusCodes.map((status) => (
+                    <button
+                      className="gw-chip gw-retry-code"
+                      key={status}
+                      onClick={() => setRetryStatusCodes(form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status))}
+                      title={t("点击移除")}
+                      type="button"
+                    >
+                      {status} ×
+                    </button>
+                  ))}
+                  <input
+                    aria-label={t("输入状态码后回车")}
+                    className="gw-retry-input"
+                    inputMode="numeric"
+                    onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addRetryStatusCodes();
+                      }
+                    }}
+                    placeholder={t("加状态码，回车")}
+                    value={retryStatusInput}
+                  />
+                </div>
               </div>
-            </div>
-          </>
-        ) : null}
-      </div>
+            </details>
+          ) : null}
+        </CxCard>
+      </CxSection>
     </div>
   );
 }

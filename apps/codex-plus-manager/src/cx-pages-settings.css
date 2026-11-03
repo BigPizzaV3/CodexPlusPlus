@@ -235,3 +235,47 @@
 :root .shell .cx-set-footer .cx-primary {
   height: 30px;
 }
+
+/* ── 网关分类 ───────────────────────────────────────────────── */
+
+:root .shell .cx-set-autosave .settings-autosave > span:not(.is-dirty):not(.is-error) {
+  display: none;
+}
+
+:root .shell .cx-set-icon-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-set-icon-button:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-set-icon-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 没有三点菜单的行留出同宽的空位，复制按钮上下对齐。 */
+:root .shell .cx-set-menu-spacer {
+  display: inline-block;
+  width: 30px;
+}
+
+:root .shell .screen[data-settings-mode="true"] .gw-shared-settings {
+  margin-top: 20px;
+}
+
+:root .shell .cx-row-controls .gw-unit-input {
+  width: 120px;
+  height: 30px;
+}

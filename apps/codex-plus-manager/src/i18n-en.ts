@@ -12,6 +12,9 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "网关和旧版本地协议代理共用这些设置": "Shared by the gateway and the legacy local protocol proxy",
+  "重试参数": "Retry parameters",
+  "接入地址": "Endpoints",
   "只在开机登录打开时生效": "Only when opened at login",
   "已有 Codex 会先恢复，不会重复启动": "A running Codex is restored instead of launched again",
   "开机登录时只留在托盘": "Stay in the tray when opened at login",
@@ -3214,6 +3217,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "最多 {0} 次": "Up to {0} tries",
+  "间隔 {0} 秒": "{0}s interval",
   // ----
   "新版本 {0}": "Version {0} available",
   "{0} 个 Agent 已接入": "{0} agents connected",

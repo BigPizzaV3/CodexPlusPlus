@@ -307,8 +307,10 @@ test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 s
 test("代理设置按归属拆开：本地服务与请求避震移到网关设置（新旧共用），旧版页只留旧版专用的两项", () => {
   assert.match(text, /id: "relayEnvironment", get label\(\) \{ return t\("旧版代理设置"\); \}/);
   const shared = functionSource("SharedServiceSettings");
-  assert.match(shared, /t\("本地服务（新旧共用）"\)/);
-  assert.match(shared, /className="gw-setting-row"/);
+  // 两节：本地服务、请求避震；标题悬停说明新旧共用。
+  assert.match(shared, /t\("本地服务"\)/);
+  assert.match(shared, /t\("网关和旧版本地协议代理共用这些设置"\)/);
+  assert.match(shared, /<CxSection /);
   assert.match(shared, /protocolProxyAutoRetry/);
   assert.match(shared, /helperMaxRequestBodyMib/);
   const legacy = functionSource("ProxySettingsScreen");
