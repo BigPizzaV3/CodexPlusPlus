@@ -358,7 +358,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 <details>
   <summary><strong>纯 API Key 如何开启原生 Fast</strong></summary>
 
-1. 打开「Codex → 内置拓展 → 常用增强」，开启增强总开关与「原生 Fast 强制解锁」（默认关闭）。
+1. 打开「Codex → 内置拓展」，开启顶部的「启用内置拓展」总开关与「原生 Fast 强制解锁」（默认关闭）。
 2. 直连模式在「Codex → 连接与供应商」中为该模型设置「Fast（priority）支持」并保存；网关模式下模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。
 3. 从 Codex++ 重启 Codex，在模型菜单中选择 **⚡ Fast**。
 

@@ -230,7 +230,7 @@ Settings that depend on renderer injection generally require saving and restarti
 
 **Force unlock native Fast** gives pure API-key setups access to Codex's native **Standard / ⚡ Fast** controls for supported models, using the existing model and reasoning-effort menus.
 
-1. Open **Codex → Built-in extensions → Common enhancements** and enable both the enhancement master switch and **Force unlock native Fast** (disabled by default).
+1. Open **Codex → Built-in extensions** and enable both the **Enable built-in extensions** master switch at the top and **Force unlock native Fast** (disabled by default).
 2. Make sure the model declares a Fast service tier. In direct mode, open that model's settings in **Codex → Connection & providers**, set **Fast (priority) support**, and save the model and provider. In gateway mode, a model group supports Fast when every member does.
 3. Save the enhancement settings and restart Codex from Codex++. Open the model or reasoning-effort menu and select **⚡ Fast**, or select **Standard** to switch back.
 
