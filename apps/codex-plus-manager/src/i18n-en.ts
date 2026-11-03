@@ -36,6 +36,8 @@ export const EN_PLAIN: Record<string, string> = {
   "在下面填 npm 包名、git 地址或选本地目录。": "Enter an npm package, a git URL, or pick a local folder below.",
   "导入插件": "Import plugin",
   "从插件市场索引导入": "Import from a plugin market index",
+  "部分仓库读取失败": "Some repositories couldn't be read",
+  "启用到 Agent": "Enable for agents",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
@@ -3224,6 +3226,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "列表更新于 {0} 分钟前": "Updated {0} min ago",
   "已接入 Codex · {0} 个工具": "Connected to Codex · {0} tools",
   "{0} 项不兼容": "{0} incompatible",
+  "已启用 {0} 个 Skill": "{0} Skills enabled",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----

@@ -116,7 +116,7 @@
 }
 
 :root .shell .user-script-menu-spacer {
-  width: 30px;
+  width: 28px;
   flex: none;
 }
 
@@ -194,4 +194,127 @@
 
 :root .shell .cx-row-expand.dsh-plugin-card[data-enabled="false"] {
   opacity: 1;
+}
+
+/* ── Skills ──────────────────────────────────────────────────── */
+
+:root .shell .cx-skill-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+:root .shell .cx-skill-groups .mg-skill-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+:root .shell .cx-skill-groups .mg-skill-group[data-dragging="true"] {
+  position: relative;
+  z-index: 2;
+  opacity: 0.85;
+}
+
+/* 分组标题：卡片外的小标题（拖动柄 + 折叠箭头 + 名字 + 数量），右侧和行里的 Agent 胶囊同一列是这一组的批量开关。 */
+:root .shell .cx-skill-group-head {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 14px 0 0;
+}
+
+:root .shell .cx-skill-group-head .mg-skill-drag,
+:root .shell .cx-skill-group-head .mg-skill-drag-placeholder {
+  display: inline-flex;
+  width: 20px;
+  height: 24px;
+  flex: none;
+  color: hsl(var(--muted-foreground) / 0.7);
+}
+
+:root .shell .cx-skill-group-head .mg-skill-drag {
+  cursor: grab;
+}
+
+:root .shell .cx-skill-group-toggle {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.92);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-skill-group-toggle svg {
+  flex: none;
+  align-self: center;
+  color: hsl(var(--muted-foreground));
+  transition: transform 0.15s ease;
+}
+
+:root .shell .cx-skill-group-toggle strong {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-skill-group-aside {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 批量开关：全开实心、部分开半实心（虚线描边），全关描边。 */
+:root .shell .cx-skill-batch[aria-pressed="mixed"] {
+  border-style: dashed;
+  border-color: hsl(var(--status-success) / 0.45);
+  background: hsl(var(--status-success) / 0.05);
+  color: hsl(var(--foreground) / 0.85);
+}
+
+:root .shell .cx-skill-menu-spacer {
+  width: 28px;
+  flex: none;
+}
+
+:root .shell .cx-skill-row .cx-skill-source {
+  overflow: hidden;
+  max-width: 220px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-skill-row .cx-row-controls > span {
+  display: inline-flex;
+}
+
+:root .shell .cx-skill-failures {
+  max-height: 120px;
+  margin: 2px 0 0;
+  padding-left: 16px;
+  overflow: auto;
+}
+
+:root .shell .cx-skill-repo-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root .shell .mg-skills-page .cx-filters-trailing .mg-icon-button {
+  color: hsl(var(--muted-foreground));
 }
