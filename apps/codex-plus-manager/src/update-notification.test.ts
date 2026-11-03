@@ -87,3 +87,20 @@ test("update preferences default to automatic checks for old settings and parse 
   assert.equal(isVersionSkipped("nightly", "nightly"), true);
   assert.equal(isVersionSkipped("nightly-2", "nightly"), false);
 });
+
+test("侧栏卡片提醒：跳过此版本、今日不再提示会藏起来；关闭弹窗只关弹窗，卡片还在", () => {
+  const today = new Date(2026, 10, 3);
+  const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "" });
+  const candidate = { status: "ok", latestVersion: "v2.3.0", updateAvailable: true };
+  assert.equal(notifications.shouldRemind(candidate, today), true);
+  notifications.dismiss("v2.3.0");
+  assert.equal(notifications.shouldPrompt(candidate, false, today), false);
+  assert.equal(notifications.shouldRemind(candidate, today), true);
+  notifications.muteToday(today);
+  assert.equal(notifications.shouldRemind(candidate, today), false);
+  assert.equal(notifications.shouldRemind(candidate, new Date(2026, 10, 4)), true);
+  notifications.skipVersion("v2.3.0");
+  assert.equal(notifications.shouldRemind(candidate, new Date(2026, 10, 4)), false);
+  assert.equal(notifications.shouldRemind({ ...candidate, updateAvailable: false }, today), false);
+});

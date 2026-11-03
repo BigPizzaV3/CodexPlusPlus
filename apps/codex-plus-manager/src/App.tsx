@@ -3216,9 +3216,12 @@ export function App() {
       // 后台检查失败时保留上次可用的安装包，手动检查仍显示错误。
       if (request.manual || result.status !== "failed") setUpdate(result);
       if (result.status !== "failed") void downloadUpdateInBackground(result);
-      if (updateNotifications.current.shouldPrompt(result, request.manual)) {
+      // 后台检查到新版本不弹窗：安装包在后台下载，侧栏底部卡片提示「已下载 · 点击安装」，点了再弹窗。
+      // 只有用户主动点「检查更新」才直接弹窗。
+      if (!request.manual) return;
+      if (updateNotifications.current.shouldPrompt(result, true)) {
         setUpdatePrompt(result);
-      } else if (request.manual) {
+      } else {
         showNotice(t("GitHub Release 检查"), result.message, result.status);
       }
     } catch (error) {
@@ -5009,8 +5012,9 @@ export function App() {
         onOpenExtensionPage={openExtensionPage}
         onToggleTheme={actions.toggleTheme}
         onOpenPalette={() => setPaletteOpen(true)}
-        pendingUpdateVersion={update?.updateAvailable && update.latestVersion ? update.latestVersion : null}
+        pendingUpdateVersion={update?.latestVersion && updateNotifications.current.shouldRemind(update) ? update.latestVersion : null}
         pendingUpdateReady={Boolean(update?.updateAvailable && update.latestVersion && (update.downloaded || (updateDownload?.version === update.latestVersion && updateDownload.state === "ready")))}
+        pendingUpdateProgress={update?.latestVersion && updateDownload?.version === update.latestVersion && updateDownload.state === "downloading" ? (updateDownload.percent ?? -1) : null}
         onOpenUpdate={() => { if (update) setUpdatePrompt(update); }}
         settingsSections={settingsSections}
         onOpenSettings={(next, sections) => {
@@ -16642,6 +16646,7 @@ function AppSidebar({
   onOpenPalette,
   pendingUpdateVersion,
   pendingUpdateReady = false,
+  pendingUpdateProgress = null,
   onOpenUpdate,
   codexRun,
   soloAgent,
@@ -16681,6 +16686,8 @@ function AppSidebar({
   pendingUpdateVersion: string | null;
   /** 新版本的安装包已经在后台下好：卡片直接写「点击安装」。 */
   pendingUpdateReady?: boolean;
+  /** 后台正在下载安装包：0–100，进度未知时为 -1；没在下载为 null。 */
+  pendingUpdateProgress?: number | null;
   onOpenUpdate: () => void;
   /** 整体设置页当前显示的卡片。 */
   settingsSections?: string[];
@@ -16954,8 +16961,10 @@ function AppSidebar({
       {setupCard}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
-          <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{pendingUpdateReady ? tf("新版本 {0} 已下载", [pendingUpdateVersion]) : tf("新版本 {0}", [pendingUpdateVersion])}</span>
-          <span className="cx-side-card-action">{pendingUpdateReady ? t("点击安装") : t("查看更新")}</span>
+          <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{pendingUpdateReady ? tf("新版本 {0} 已下载", [pendingUpdateVersion]) : pendingUpdateProgress !== null ? tf("正在下载新版本 {0}", [pendingUpdateVersion]) : tf("新版本 {0}", [pendingUpdateVersion])}</span>
+          <span className="cx-side-card-action">
+            {pendingUpdateReady ? t("点击安装") : pendingUpdateProgress !== null ? (pendingUpdateProgress >= 0 ? `${Math.round(pendingUpdateProgress)}%` : t("下载中…")) : t("查看更新")}
+          </span>
         </button>
       ) : enhanceOnly || setupCard ? null : (
         <button className={`cx-side-card ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">

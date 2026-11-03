@@ -24,7 +24,7 @@ const release = {
   releaseSummary: "### 新增\n- **更新弹窗**", updateAvailable: true, assetName: "update.dmg", assetUrl: "https://example.test/update.dmg",
 };
 
-test("actual update check keeps About data, honors mute, and allows manual prompts", async () => {
+test("actual update check keeps About data, never prompts in the background, and allows manual prompts", async () => {
   const notices: unknown[] = [];
   const updates: unknown[] = [];
   const prompts: unknown[] = [];
@@ -41,14 +41,16 @@ test("actual update check keeps About data, honors mute, and allows manual promp
     updateNotifications: { current: notifications }, showNotice: (...args: unknown[]) => notices.push(args),
     t: (value: string) => value, stringifyError: String, ensureUpdatePreferences: async () => {},
   });
+  // 后台检查到新版本不弹窗：只记下结果（侧栏卡片和「版本与更新」据此提示）。
   await check(true);
-  assert.deepEqual(prompts, [release]);
+  assert.deepEqual(prompts, []);
+  assert.equal(updates.length, 1);
   notifications.muteToday();
   await check(true);
-  assert.equal(prompts.length, 1);
+  assert.equal(prompts.length, 0);
   assert.equal(updates.length, 2, "About remains usable while automatic reminders are muted");
   await check(false);
-  assert.equal(prompts.length, 2);
+  assert.equal(prompts.length, 1, "manual checks open the dialog even when muted");
   response = { ...release, status: "failed" };
   await check(true);
   assert.equal(updates.length, 3, "background failures preserve the previous usable release");
@@ -116,13 +118,15 @@ test("background checks load saved preferences first, honor auto-check off and s
   notifications.setPreferences(saved);
   await check(true);
   assert.equal(requests, 2);
-  assert.equal(prompts.length, 1, "a skipped version is not prompted again in the background");
+  assert.equal(prompts.length, 1, "background checks never open the dialog");
+  assert.equal(notifications.shouldRemind(release), false, "a skipped version hides the sidebar reminder");
   assert.equal(notices.length, 0);
   await check(false);
   assert.equal(prompts.length, 2, "manual checks still show the skipped version");
   response = { ...release, latestVersion: "v1.12.0" };
   await check(true);
-  assert.equal(prompts.length, 3, "a newer release than the skipped one prompts again");
+  assert.equal(prompts.length, 2);
+  assert.equal(notifications.shouldRemind(response), true, "a newer release than the skipped one is reminded again");
 });
 
 test("installing the prompted release prevents duplicate downloads and preserves retry data on failure", async () => {
