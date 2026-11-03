@@ -644,6 +644,19 @@ test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态�
   assert.match(text, /const codexRunningPollMs = 5_000;/);
 });
 
+test("外部启动、没挂载增强脚本的 Codex：健康检查提示并给「重启并挂载」，侧栏停止按钮染色", () => {
+  const health = functionSource("healthItems");
+  assert.match(health, /overview\?\.runtime_health\?\.codex_unattached\n    \? \{/);
+  assert.match(health, /status: "unattached",\n      ok: false,/);
+  assert.match(health, /action: "restart" as const,/);
+  const overview = functionSource("OverviewScreen");
+  assert.match(overview, /item\.action === "restart" \? \(\n\s+<button className="cx-secondary" onClick=\{\(\) => void actions\.restart\(\)\}/);
+  assert.match(functionSource("statusLabel"), /unattached: t\("未挂载"\)/);
+  assert.match(functionSource("App"), /unattached: Boolean\(overview\?\.runtime_health\?\.codex_unattached\)/);
+  assert.match(text, /data-unattached=\{codexRun\.running && codexRun\.unattached\}/);
+  assert.match(readSource("./cursor-ui.css"), /\.cx-side-run\[data-unattached="true"\]:not\(:disabled\) \{\n  color: hsl\(var\(--status-warning\)\);/);
+});
+
 test("拓展是侧栏一级入口，不再藏在 Codex 页签里；Grok 不在侧栏 Agent 列表", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const routeTool"));
   assert.doesNotMatch(sections, /"userScripts"/, "拓展不再出现在 Agent 页签里");

@@ -402,7 +402,14 @@ type OverviewResult = CommandResult<{
   silent_shortcut: PathState;
   management_shortcut: PathState;
   latest_launch: LaunchStatus | null;
-  runtime_health: { codex_app: RuntimeServiceState; local_server: RuntimeServiceState; debugger: RuntimeServiceState; protocol_conversion_enabled: boolean | null };
+  runtime_health: {
+    codex_app: RuntimeServiceState;
+    local_server: RuntimeServiceState;
+    debugger: RuntimeServiceState;
+    protocol_conversion_enabled: boolean | null;
+    /** Codex 在运行但不是经 Codex++ 启动的（外部启动、增强脚本未挂载）；旧后端没有这个字段。 */
+    codex_unattached?: boolean;
+  };
   current_version: string;
   update_status: string;
   settings_path: string;
@@ -5024,7 +5031,7 @@ export function App() {
           void navigate(next);
         }}
         onExitSettings={() => void navigate(lastMainRoute.current)}
-        codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex() }}
+        codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex(), unattached: Boolean(overview?.runtime_health?.codex_unattached) }}
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
       {agentFocusOpen ? <AgentFocusDialog initial={agentFocus} onDone={closeAgentFocus} onCancel={cancelAgentFocus} /> : null}
@@ -6420,6 +6427,11 @@ function OverviewScreen({
       title={item.title}
     >
       <CxBadge tone={item.ok ? (statusClass(item.status) === "good" ? "ok" : "neutral") : statusClass(item.status) === "bad" ? "danger" : "warn"}>{statusLabel(item.status)}</CxBadge>
+      {"action" in item && item.action === "restart" ? (
+        <button className="cx-secondary" onClick={() => void actions.restart()} type="button">
+          <RotateCcw aria-hidden="true" />{t("重启并挂载")}
+        </button>
+      ) : null}
     </CxRow>
   );
   return (
@@ -16833,7 +16845,7 @@ function AppSidebar({
   focus: AgentFocus;
   /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
       unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
-  codexRun: { running: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
+  codexRun: { running: boolean; unattached: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
   tools: ToolEntry[];
   activeTool: ToolId;
   route: Route;
@@ -17071,10 +17083,11 @@ function AppSidebar({
                     aria-label={codexRun.running ? t("停止 Codex") : t("启动 Codex")}
                     className="cx-side-run"
                     data-running={codexRun.running}
+                    data-unattached={codexRun.running && codexRun.unattached}
                     data-unavailable={!codexRun.running && Boolean(codexRun.unavailableReason)}
                     disabled={codexRun.busy || (!codexRun.running && Boolean(codexRun.unavailableReason))}
                     onClick={codexRun.running ? codexRun.onStop : codexRun.onStart}
-                    title={codexRun.busy ? t("处理中…") : codexRun.running ? t("停止 Codex") : codexRun.unavailableReason ?? t("启动 Codex")}
+                    title={codexRun.busy ? t("处理中…") : codexRun.running ? (codexRun.unattached ? t("Codex 不是经 Codex++ 启动的，增强脚本未挂载（在概览里重启即可挂载）· 停止 Codex") : t("停止 Codex")) : codexRun.unavailableReason ?? t("启动 Codex")}
                     type="button"
                   >
                     {codexRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : codexRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}
@@ -18205,6 +18218,7 @@ function statusLabel(status: string) {
     off: t("未启用"),
     connected: t("已连接"),
     disconnected: t("未连接"),
+    unattached: t("未挂载"),
     unknown: t("未知"),
   };
   return labels[status] ?? status;
@@ -18234,7 +18248,7 @@ function truncateSessionDeletePreview(value: string) {
 
 /// 概览健康检查的各项。每项带自己的图标；本地服务器与协议转换拆成两项：
 /// 协议转换跑在本地服务器里，但两者状态独立（服务器在跑、转换没开是常态）。
-function healthItems(overview: OverviewResult | null): Array<{ title: string; status: string; ok: boolean; detail: string; icon: LucideIcon }> {
+function healthItems(overview: OverviewResult | null): Array<{ title: string; status: string; ok: boolean; detail: string; icon: LucideIcon; action?: "restart" }> {
   const conversionEnabled = overview?.runtime_health?.protocol_conversion_enabled;
   const serviceItem = (title: string, state: RuntimeServiceState | undefined, icon: LucideIcon) => ({
     title,
@@ -18258,7 +18272,17 @@ function healthItems(overview: OverviewResult | null): Array<{ title: string; st
   // 调试连接依赖 Codex 在运行：Codex 没启动时连不上是预期内的，显示为中性的「等待启动」而不是警告。
   const debuggerState = overview?.runtime_health?.debugger;
   const codexRunning = overview?.runtime_health?.codex_app?.status === "running";
-  const debuggerHealth = debuggerState && debuggerState.status !== "connected" && !codexRunning
+  // Codex 从 Dock / Finder 等外部启动时没带调试端口，增强脚本挂不上：提示原因，并给「重启并挂载」。
+  const debuggerHealth = overview?.runtime_health?.codex_unattached
+    ? {
+      title: t("调试连接状态"),
+      status: "unattached",
+      ok: false,
+      detail: t("Codex 不是经 Codex++ 启动的，增强脚本没有挂载；重启 Codex 即可挂载"),
+      icon: Bug,
+      action: "restart" as const,
+    }
+    : debuggerState && debuggerState.status !== "connected" && !codexRunning
     ? {
       title: t("调试连接状态"),
       status: "waiting",

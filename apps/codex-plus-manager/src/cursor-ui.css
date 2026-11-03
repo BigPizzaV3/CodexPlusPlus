@@ -269,6 +269,11 @@
   color: hsl(var(--status-success));
 }
 
+/* 外部启动、增强脚本未挂载的 Codex：停止按钮染成提醒色。 */
+:root .shell .cx-side-run[data-unattached="true"]:not(:disabled) {
+  color: hsl(var(--status-warning));
+}
+
 :root .shell .cx-side-run:disabled {
   opacity: 0.4;
   cursor: default;

@@ -573,6 +573,29 @@ mod process_identity_tests {
         );
     }
 
+    /// 外部启动（Dock / Finder）的主进程不带调试端口，「停止 Codex」靠这个集合找到它；
+    /// 带端口的主实例 / 多开实例和辅助进程都不能落进来。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_codex_scan_without_debug_port_keeps_only_externally_launched_main() {
+        let processes = [
+            "  61 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+            "  62 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9229",
+            "  63 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port 9301",
+            "  64 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer",
+            "  65 /Applications/Codex++.app/Contents/MacOS/CodexPlusPlus",
+        ];
+        let identifiers = |app_dir: &Path| match app_dir.to_string_lossy().as_ref() {
+            "/Applications/ChatGPT.app" => Some("com.openai.codex".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            macos_codex_process_ids_without_debug_port_with(processes, identifiers),
+            vec![61]
+        );
+    }
+
     /// bundle id 读不到（二进制 plist / 文件缺失）时才退回可执行名判据。
     #[cfg(target_os = "macos")]
     #[test]
@@ -2339,6 +2362,55 @@ fn macos_codex_process_ids_for_debug_port<'a>(
     ids.sort_unstable();
     ids.dedup();
     ids
+}
+
+/// macOS：没带任何 `--remote-debugging-port` 的官方 App 主进程，
+/// 即从 Dock / Finder / Spotlight 外部启动的 Codex。
+#[cfg(target_os = "macos")]
+pub fn find_macos_codex_processes_without_debug_port() -> Vec<u32> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    macos_codex_process_ids_without_debug_port_with(
+        String::from_utf8_lossy(&output.stdout).lines(),
+        read_macos_bundle_identifier,
+    )
+}
+
+/// 外部启动的判据：主进程参数里没有调试端口。Codex++ 拉起的主实例和多开实例
+/// 都带各自的端口，不会落进这个集合，按它结束不会误杀多开。
+#[cfg(any(target_os = "macos", test))]
+fn macos_codex_process_ids_without_debug_port_with<'a>(
+    process_lines: impl IntoIterator<Item = &'a str>,
+    bundle_identifier: impl Fn(&Path) -> Option<String>,
+) -> Vec<u32> {
+    macos_codex_process_ids_with(
+        process_lines
+            .into_iter()
+            .filter(|line| !line.contains("--remote-debugging-port")),
+        bundle_identifier,
+    )
+}
+
+/// macOS：结束主 Codex 并等待退出（「停止 Codex」与重启共用）。
+///
+/// 按端口匹配到就只结束那几个；一个都没匹配到时，退回结束没带调试端口的主进程——
+/// 那是外部启动的 Codex，只按端口找会认为「没在运行」而停不掉它。
+#[cfg(target_os = "macos")]
+pub fn stop_main_codex_processes_and_wait(debug_port: u16) {
+    if !find_macos_codex_processes_for_debug_port(debug_port).is_empty() {
+        stop_codex_processes_for_debug_port_and_wait(debug_port);
+        return;
+    }
+    terminate_macos_processes_and_wait(
+        find_macos_codex_processes_without_debug_port(),
+        find_macos_codex_processes_without_debug_port,
+        RESTART_STOP_WAIT_TIMEOUT_MS,
+        RESTART_STOP_WAIT_INTERVAL_MS,
+    );
 }
 
 #[cfg(target_os = "macos")]

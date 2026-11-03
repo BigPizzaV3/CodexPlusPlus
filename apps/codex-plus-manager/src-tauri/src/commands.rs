@@ -2592,15 +2592,28 @@ fn stop_main_codex_process(debug_port: u16) -> anyhow::Result<()> {
     // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
     // 这里允许「按端口没匹配到就退回全局结束」，否则会卡在
     // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
+    // macOS 上按端口没匹配到时，退回结束没带调试端口的主进程（外部启动的 Codex）。
     #[cfg(windows)]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(debug_port, true);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    codex_plus_core::watcher::stop_main_codex_processes_and_wait(debug_port);
+    #[cfg(not(any(windows, target_os = "macos")))]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(debug_port);
     anyhow::ensure!(
         !codex_plus_core::cdp::endpoint_available(debug_port),
         "Codex 进程尚未退出"
     );
+    anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
     Ok(())
+}
+
+/// 主 Codex 开着却没带调试端口：从 Dock / Finder 等外部启动，调试端口探测不到它。
+/// 只在 macOS 上能精确区分它和多开实例；其它平台维持「只认调试端口」。
+fn main_codex_running_without_debug_port() -> bool {
+    #[cfg(target_os = "macos")]
+    return !codex_plus_core::watcher::find_macos_codex_processes_without_debug_port().is_empty();
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 fn wait_native_browser_shutdown()
@@ -2624,7 +2637,9 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
-    if !codex_plus_core::cdp::endpoint_available(request.debug_port) {
+    if !codex_plus_core::cdp::endpoint_available(request.debug_port)
+        && !main_codex_running_without_debug_port()
+    {
         return ok("Codex 没有在运行。", json!({}));
     }
     let Ok(_guard) = relay_switch_mutex().try_lock() else {
