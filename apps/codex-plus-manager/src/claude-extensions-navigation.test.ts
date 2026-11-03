@@ -189,6 +189,8 @@ function extensionHarness() {
       }];
     },
     useMemo: (compute: () => unknown) => compute(),
+    // 打开页面时市场还没读过就自动读一次：记下调用，渲染时不执行副作用。
+    useEffect: () => undefined,
     agentVisible, extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost,
     defaultMarketSort, parseMarketTime, sortMarketScripts,
     formatMarketUpdatedAt: (value: string) => value,
@@ -300,14 +302,16 @@ test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排�
   const rows = nodes.filter((node) => node.type === h.context.ScriptRow);
   assert.deepEqual(rows.map((node) => node.props.script.key), ["user:claude-on", "user:claude-off"]);
   assert.ok(rows.every((node) => node.props.host === "claude" && node.props.globalEnabled === true));
-  assert.ok(nodes.some((node) => elementText(node).includes("适配 Claude 的拓展 2 个，已启用 1 个")));
-  for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary"]) {
+  // 「已启用」「未启用」两节按 Claude 开关分组，数量就是原来摘要里的「已启用 N 个」。
+  const sections = nodes.filter((node) => node.type === "CxSection").map((node) => [node.props.title, node.props.count]);
+  assert.deepEqual(sections, [["已启用", 1], ["未启用", 1]]);
+  for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary", "CxFilters"]) {
     assert.equal(nodes.some((node) => node.type === component), false, component);
   }
-  assert.equal(nodes.some((node) => node.props["aria-label"] === "下次启动跳过拓展"), false);
+  assert.equal(nodes.some((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展"), false);
   assert.equal(nodes.some((node) => node.props.role === "tab"), false);
-  assert.equal(nodes.some((node) => node.type === "Button" && elementText(node) === "热重载拓展"), false);
-  const open = nodes.find((node) => node.type === "Button" && elementText(node) === "Claude 增强版");
+  assert.equal(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")), false);
+  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 增强版"));
   assert.ok(open);
   open.props.onClick();
   assert.deepEqual(h.calls, [["openClaude"]]);
@@ -319,11 +323,17 @@ test("切换回 Codex 保留原市场和本地列表，包括只声明旧能力�
   let nodes = elements(h.render("UserScriptsScreen", props));
   assert.ok(nodes.some((node) => node.type === "CuratedPackagesSection"));
   assert.ok(nodes.some((node) => node.type === "ExtensionCreatorCard"));
-  assert.ok(nodes.some((node) => node.props["aria-label"] === "下次启动跳过拓展"));
-  assert.ok(nodes.some((node) => node.type === "Button" && elementText(node) === "热重载拓展"));
-  const localTab = nodes.find((node) => node.props.role === "tab" && elementText(node).startsWith("本地拓展"));
-  assert.ok(localTab);
-  localTab.props.onClick();
+  // 「下次启动跳过拓展」收进三点菜单，仍然读写同一个设置。
+  const skip = nodes.find((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展");
+  assert.ok(skip);
+  assert.equal(skip.props.checked, true);
+  assert.ok(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")));
+  // 来源筛选是一排胶囊（精选 / 社区 / 本地 / 我发布的 / dsh 插件）。
+  const filters = nodes.find((node) => node.type === "CxFilters");
+  assert.ok(filters);
+  assert.deepEqual(Array.from(filters.props.items, (item: { id: string }) => item.id), ["market", "community", "local", "mine", "dsh"]);
+  assert.equal(filters.props.value, "market");
+  filters.props.onChange("local");
   nodes = elements(h.render("UserScriptsScreen", props));
   assert.deepEqual(nodes.filter((node) => node.type === h.context.ScriptRow).map((node) => node.props.script.key), [
     "user:codex", "user:claude-off", "user:claude-on",
@@ -339,11 +349,20 @@ test("总开关读取和写入当前宿主，不复用另一个宿主的设置",
   for (const host of ["codex", "claude"] as const) {
     const h = extensionHarness();
     const nodes = elements(h.render("UserScriptsScreen", extensionScreenProps(h, host)));
-    const control = nodes.find((node) => node.props["aria-label"] === (host === "claude" ? "启用 Claude 拓展" : "启用本地拓展"));
+    // 整体开关收进三点菜单（勾选项）；关着时顶部一条提示带「启用」。
+    const control = nodes.find((node) => node.type === "MenuItem" && elementText(node) === (host === "claude" ? "启用 Claude 拓展" : "启用本地拓展"));
     assert.ok(control);
     assert.equal(control.props.checked, host === "claude");
-    control.props.onChange();
+    control.props.onClick();
     assert.deepEqual(h.calls, [["setUserScriptsEnabled", host === "codex", host]]);
+    const banner = nodes.find((node) => node.type === "CxBanner");
+    assert.equal(Boolean(banner), host === "codex", "只有关着的宿主才显示提示");
+    if (banner) {
+      const enable = elements(banner.props.children).find((node) => node.type === "button");
+      assert.ok(enable);
+      enable.props.onClick();
+      assert.deepEqual(h.calls.at(-1), ["setUserScriptsEnabled", true, "codex"]);
+    }
   }
 });
 

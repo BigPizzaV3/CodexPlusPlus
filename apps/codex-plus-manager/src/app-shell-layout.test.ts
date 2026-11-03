@@ -234,13 +234,14 @@ test("旧版 Codex 供应商配置页顶部：没接入时建议改用新版网�
   assert.match(text, /id: "relay", get label\(\) \{ return t\("旧版供应商配置"\); \}/);
 });
 
-test("Skills 与 MCP 共用一张多 Agent 表：每个 Agent 一列勾选，不再有页面自己的配色和按钮尺寸", () => {
+test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
   const extra = readSource("./ManagementExtra.tsx");
   const css = readSource("./ManagementPages.css");
-  assert.match(extra, /className="mg-matrix mg-agent-matrix mg-skill-matrix"/);
+  assert.match(extra, /<CxRow className="cx-skill-row"/);
   assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
-  assert.match(extra, /agentColumns\.map\(\(agent\) => <AgentColumn /);
-  assert.match(extra, /agentColumns\.map\(\(agent\) => <MatrixCell /);
+  // 行里每个可见 Agent 一枚开关；分组标题同一列是这一组的批量开关。
+  assert.match(extra, /agentColumns\.map\(\(agent\) => <AgentToggle /);
+  assert.match(extra, /agentColumns\.map\(\(agent\) => <GroupAgentSelect /);
   assert.doesNotMatch(extra, /mg-agent-toggle|mg-skill-group-select/);
   assert.doesNotMatch(css, /\.dark \.mg-skills-page|\.mg-skills-page \.mg-primary|\.mg-skills-page :is\(\.mg-button/);
 });

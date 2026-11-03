@@ -19,6 +19,49 @@ export const EN_PLAIN: Record<string, string> = {
   "在已接入的 Agent 里发一条消息试试。": "Send a message from a connected agent to try it.",
   // ----
   // cx-pages:resources —— resources 组新增词条写在这一行下面
+  "社区": "Community",
+  "更多操作": "More actions",
+  "搜索拓展：名称、作者、描述或标签": "Search extensions: name, author, description or tag",
+  "搜索适配 Claude 的拓展": "Search Claude-compatible extensions",
+  "本地拓展已整体关闭": "Local extensions are turned off",
+  "Claude 拓展已关闭": "Claude extensions are turned off",
+  "下次启动会跳过拓展": "Extensions will be skipped on next launch",
+  "取消跳过": "Don't skip",
+  "正在读取拓展市场…": "Loading the extension market…",
+  "浏览精选": "Browse featured",
+  "界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。": "UI, commands, tools, hooks and model requests can all be taken over by extensions; describe one in a Codex chat to build it.",
+  "再点一次取消接入": "Click again to disconnect",
+  "对话造拓展已接入": "Build-by-chat connected",
+  "Codex++ 自带的功能，开关与参数在「内置拓展」页管理": "Features shipped with Codex++; toggles and options live on the Built-in Extensions page",
+  "资源超限": "Assets too large",
+  "已安装的拓展被下架": "Installed extensions were delisted",
+  "GitHub 星数": "GitHub stars",
+  "安装前会列出它要的全部权限": "All requested permissions are listed before installing",
+  "需要更新 Codex++": "Needs a newer Codex++",
+  "只安装你信任的作者的拓展；安装前会列出它要的权限。": "Only install extensions from authors you trust; requested permissions are listed before installing.",
+  "还没有发布过拓展。": "You haven't published any extensions yet.",
+  "在「本地」里点拓展包的「…」→「发布到 GitHub」。": "In Local, open a package's \"…\" menu → \"Publish to GitHub\".",
+  "没有找到 Node 运行时": "No Node runtime found",
+  "dsh 插件 MCP 未接入 Codex": "dsh plugin MCP isn't connected to Codex",
+  "改动在新开 Codex 对话后生效": "Changes apply to new Codex chats",
+  "在下面填 npm 包名、git 地址或选本地目录。": "Enter an npm package, a git URL, or pick a local folder below.",
+  "导入插件": "Import plugin",
+  "从插件市场索引导入": "Import from a plugin market index",
+  "部分仓库读取失败": "Some repositories couldn't be read",
+  "启用到 Agent": "Enable for agents",
+  "未知目录": "Unknown folder",
+  "会话索引": "Session index",
+  "精选": "Featured",
+  "对话造拓展": "Build by chat",
+  "接入中…": "Connecting…",
+  "取消中…": "Disconnecting…",
+  "审核": "Review",
+  "可疑": "Suspicious",
+  "新开一个 Codex 对话，说「帮我做个拓展：…」即可；不造拓展时可取消接入，省下工具说明占用的上下文": "Open a new Codex chat and say \"Build me an extension: …\". Disconnect when you're not building extensions to save the context taken by tool descriptions",
+  "已取消接入，新开的 Codex 对话不再加载拓展创作工具；要造拓展时再接入": "Disconnected. New Codex chats no longer load the extension-building tools; connect again when you want to build one",
+  "在 Codex 对话里描述需求，agent 直接写出拓展并热重载": "Describe what you want in a Codex chat; the agent writes the extension and hot-reloads it",
+  "Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。": "Codex++ is built on an everything-is-an-extension architecture: the UI, commands, tools available to the model, agent-loop hooks, and the requests and replies sent to the model can all be taken over by extensions. Say the word in a Codex chat and you can build your own.",
+  "你在本机编写并发布的拓展，在「本地拓展」里管理": "An extension you wrote and published from this machine; manage it under Local",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
@@ -3239,6 +3282,12 @@ export const EN_TEMPLATE: Record<string, string> = {
   "缓存命中 {0}%": "{0}% cache hits",
   // ----
   // cx-pages:resources —— resources 组新增词条写在这一行下面
+  "已启用 {0} / 共 {1} 项": "{0} of {1} enabled",
+  "列表更新于 {0} 分钟前": "Updated {0} min ago",
+  "已接入 Codex · {0} 个工具": "Connected to Codex · {0} tools",
+  "{0} 项不兼容": "{0} incompatible",
+  "已启用 {0} 个 Skill": "{0} Skills enabled",
+  "再显示 {0} 个": "Show {0} more",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
