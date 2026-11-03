@@ -347,18 +347,20 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
-test("置顶推荐位：网关总览顶部一条大横幅，其他每个页面在侧栏底部轮播，同一页不重复出现", () => {
+test("置顶推荐位：网关总览顶部一条大横幅，其他每个页面右下角悬浮窗，同一页不重复出现", () => {
   assert.match(functionSource("App"), /\{route === "hub" \? <SponsorBoard ads=\{ads\} actions=\{actions\} \/> : null\}/);
-  assert.match(functionSource("App"), /sponsor=\{route === "hub" \? null : <SidebarSponsor ads=\{ads\} /);
+  assert.match(functionSource("App"), /\{route === "hub" \? null : <FloatingSponsor ads=\{ads\} /);
   assert.doesNotMatch(functionSource("OverviewScreen"), /SponsorBoard/);
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
-  // 主模式和设置模式都放侧栏赞助卡。
-  assert.equal((functionSource("AppSidebar").match(/\{sponsor\}/g) ?? []).length, 2);
-  // 两边共用一个取数函数：只读置顶位，过期的不显示；侧栏卡明确标「推广」，悬停时不轮换。
-  const sidebarSponsor = functionSource("SidebarSponsor");
-  assert.match(sidebarSponsor, /featuredAds\(ads\)/);
-  assert.match(sidebarSponsor, /t\("推广"\)/);
-  assert.match(sidebarSponsor, /if \(items\.length < 2 \|\| paused\) return;/);
+  assert.equal((text.match(/<FloatingSponsor /g) ?? []).length, 1);
+  // 两边共用一个取数函数：只读置顶位，过期的不显示；悬浮窗明确标「推广」，悬停或收起时不轮换。
+  const floating = functionSource("FloatingSponsor");
+  assert.match(floating, /featuredAds\(ads\)/);
+  assert.match(floating, /t\("推广"\)/);
+  assert.match(floating, /if \(items\.length < 2 \|\| paused \|\| collapsed\) return;/);
+  // 能收起成小胶囊；记住的是这一批赞助位，换了新的会重新展开。
+  assert.match(floating, /const collapsed = Boolean\(signature\) && collapsedFor === signature;/);
+  assert.match(floating, /window\.localStorage\.setItem\(SPONSOR_FLOAT_KEY, value\)/);
   assert.match(functionSource("featuredAds"), /filter\(\(ad\) => !isExpiredAd\(ad\)\)/);
 });
 

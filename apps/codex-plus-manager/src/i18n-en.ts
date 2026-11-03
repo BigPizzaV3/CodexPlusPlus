@@ -121,6 +121,8 @@ export const EN_PLAIN: Record<string, string> = {
   "推广": "Sponsored",
   "了解更多": "Learn more",
   "切换推广": "Switch sponsor",
+  "收起推广": "Minimize sponsor",
+  "展开推广": "Show sponsor",
   "Codex 正由 Codex++ 网关接管": "Codex is managed by the Codex++ gateway",
   "Clash TUN、代理环境变量、.env 文件都正常": "Clash TUN, proxy environment variables and .env are all fine",
   "中转站环境检测": "Relay environment check",

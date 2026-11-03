@@ -378,23 +378,33 @@
   stroke-width: 1.7;
 }
 
-/* 侧栏赞助卡：每个页面都看得见；图在上、标题+「推广」、两行说明、亮点、行动按钮。 */
-:root .shell .cx-side-sponsor {
-  position: relative;
-  flex: none;
-  margin: 8px 0 0;
+/* 右下角赞助悬浮窗：每个页面都看得见；图在上、标题+「推广」、两行说明、亮点、行动按钮。
+   层级在弹窗遮罩（60）和 toast（1100）之下，不挡对话框和提示。 */
+:root .shell .cx-float-sponsor {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  width: 280px;
+  animation: cx-float-sponsor-in 220ms ease-out;
 }
 
-:root .shell .cx-side-sponsor-main {
+@keyframes cx-float-sponsor-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+:root .shell .cx-float-sponsor-main {
   display: flex;
   width: 100%;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
   overflow: hidden;
-  padding: 0 0 10px;
+  padding: 0 0 12px;
   border: 1px solid hsl(var(--border));
-  border-radius: 10px;
+  border-radius: 12px;
   background: hsl(var(--card));
+  box-shadow: 0 12px 32px hsl(0 0% 0% / 0.28), 0 2px 6px hsl(0 0% 0% / 0.12);
   color: hsl(var(--foreground) / 0.9);
   font: inherit;
   text-align: left;
@@ -402,12 +412,12 @@
   transition: border-color 120ms ease, transform 120ms ease;
 }
 
-:root .shell .cx-side-sponsor-main:hover {
+:root .shell .cx-float-sponsor-main:hover {
   border-color: hsl(var(--input));
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
-:root .shell .cx-side-sponsor-image {
+:root .shell .cx-float-sponsor-image {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 5;
@@ -415,16 +425,16 @@
   border-bottom: 1px solid hsl(var(--border));
 }
 
-:root .shell .cx-side-sponsor-head {
+:root .shell .cx-float-sponsor-head {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 8px 12px 0;
-  font-size: 12.5px;
+  padding: 10px 14px 0;
+  font-size: 13px;
 }
 
-:root .shell .cx-side-sponsor-head strong {
+:root .shell .cx-float-sponsor-head strong {
   overflow: hidden;
   min-width: 0;
   flex: 1;
@@ -432,7 +442,7 @@
   white-space: nowrap;
 }
 
-:root .shell .cx-side-sponsor-head svg {
+:root .shell .cx-float-sponsor-head svg {
   width: 14px;
   height: 14px;
   flex: none;
@@ -449,62 +459,89 @@
   line-height: 15px;
 }
 
-:root .shell .cx-side-sponsor-text {
+:root .shell .cx-float-sponsor-text {
   display: -webkit-box;
   overflow: hidden;
-  padding: 0 12px;
+  padding: 0 14px;
   color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-:root .shell .cx-side-sponsor-chips {
+:root .shell .cx-float-sponsor-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding: 0 12px;
+  padding: 0 14px;
 }
 
-:root .shell .cx-side-sponsor-chips span {
+:root .shell .cx-float-sponsor-chips span {
   padding: 1px 7px;
   border-radius: 999px;
   background: hsl(var(--accent));
   color: hsl(var(--foreground) / 0.78);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
-:root .shell .cx-side-sponsor-cta {
+:root .shell .cx-float-sponsor-cta {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 12px 0;
+  padding: 2px 14px 0;
   color: hsl(var(--foreground));
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 
-:root .shell .cx-side-sponsor-cta svg {
+:root .shell .cx-float-sponsor-cta svg {
   width: 12px;
   height: 12px;
   transition: transform 120ms ease;
 }
 
-:root .shell .cx-side-sponsor-main:hover .cx-side-sponsor-cta svg {
+:root .shell .cx-float-sponsor-main:hover .cx-float-sponsor-cta svg {
   transform: translateX(2px);
 }
 
-/* 多条时右下角的小圆点，点了直接切。 */
-:root .shell .cx-side-sponsor-dots {
+/* 右上角收起按钮：压在图上，半透明底保证看得清。 */
+:root .shell .cx-float-sponsor-close {
   position: absolute;
-  right: 10px;
-  bottom: 12px;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: hsl(0 0% 0% / 0.45);
+  color: hsl(0 0% 100% / 0.9);
+  cursor: pointer;
+}
+
+:root .shell .cx-float-sponsor-close:hover {
+  background: hsl(0 0% 0% / 0.65);
+}
+
+:root .shell .cx-float-sponsor-close svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 多条时右下角的小圆点，点了直接切。 */
+:root .shell .cx-float-sponsor-dots {
+  position: absolute;
+  right: 14px;
+  bottom: 15px;
   display: flex;
   gap: 4px;
 }
 
-:root .shell .cx-side-sponsor-dots button {
+:root .shell .cx-float-sponsor-dots button {
   width: 6px;
   height: 6px;
   padding: 0;
@@ -514,25 +551,59 @@
   cursor: pointer;
 }
 
-:root .shell .cx-side-sponsor-dots button[aria-selected="true"] {
+:root .shell .cx-float-sponsor-dots button[aria-selected="true"] {
   width: 14px;
   background: hsl(var(--foreground) / 0.7);
 }
 
-/* 窗口矮时不挤占导航：先去掉图，再矮只留标题行和按钮。 */
-@media (max-height: 780px) {
-  :root .shell .cx-side-sponsor-image {
-    display: none;
-  }
-
-  :root .shell .cx-side-sponsor-main {
-    padding-top: 2px;
-  }
+/* 收起后：右下角一个小胶囊，点了重新展开。 */
+:root .shell .cx-float-sponsor-pill {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: inline-flex;
+  max-width: 240px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 5px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--card));
+  box-shadow: 0 6px 18px hsl(0 0% 0% / 0.22);
+  color: hsl(var(--foreground) / 0.88);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
-@media (max-height: 620px) {
-  :root .shell .cx-side-sponsor-text,
-  :root .shell .cx-side-sponsor-chips {
+:root .shell .cx-float-sponsor-pill:hover {
+  border-color: hsl(var(--input));
+}
+
+:root .shell .cx-float-sponsor-pill img,
+:root .shell .cx-float-sponsor-pill > svg {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 999px;
+  object-fit: cover;
+}
+
+:root .shell .cx-float-sponsor-pill > svg {
+  padding: 4px;
+}
+
+:root .shell .cx-float-sponsor-pill > span:not(.cx-side-sponsor-tag) {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窗口矮时少挡内容：去掉图。 */
+@media (max-height: 700px) {
+  :root .shell .cx-float-sponsor-image {
     display: none;
   }
 }

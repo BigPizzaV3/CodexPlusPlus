@@ -4991,7 +4991,6 @@ export function App() {
     <div className={`shell ${theme}`}>
       <AppSidebar
         setupCard={setupCard}
-        sponsor={route === "hub" ? null : <SidebarSponsor ads={ads} onOpen={(url) => void actions.openExternalUrl(url)} />}
         tools={shownTools}
         soloAgent={soloAgent}
         focus={agentFocus}
@@ -5438,6 +5437,7 @@ export function App() {
           onDismiss={() => void dismissPendingDreamSkinCommunity()}
         />
       ) : null}
+      {route === "hub" ? null : <FloatingSponsor ads={ads} onOpen={(url) => void actions.openExternalUrl(url)} />}
     </div>
   );
 }
@@ -6292,42 +6292,67 @@ function featuredAds(ads: AdsResult | null): AdItem[] {
   return sourceAds.filter((ad) => !isExpiredAd(ad));
 }
 
+const SPONSOR_FLOAT_KEY = "codex-plus.sponsor-float-collapsed";
+
 /**
- * 侧栏里的赞助卡：每个页面都看得见（网关总览页顶部已有大横幅，那里不再重复）。
+ * 右下角的赞助悬浮窗：每个页面都看得见（网关总览页顶部已有大横幅，那里不再重复）。
  * 有多个赞助位时每 8 秒轮换一个，鼠标停在卡片上时不换；整张卡可点，在浏览器里打开。
+ * 可以收起成一个小胶囊（记住收起状态）；赞助位换了新的一批会重新展开一次。
  * 标「推广」：用户一眼知道这是广告，不冒充功能入口。
  */
-function SidebarSponsor({ ads, onOpen }: { ads: AdsResult | null; onOpen: (url: string) => void }) {
+function FloatingSponsor({ ads, onOpen }: { ads: AdsResult | null; onOpen: (url: string) => void }) {
   const items = featuredAds(ads);
+  const signature = items.map(adIdentity).join("|");
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [collapsedFor, setCollapsedFor] = useState(() => {
+    try { return window.localStorage.getItem(SPONSOR_FLOAT_KEY) ?? ""; } catch { return ""; }
+  });
+  const collapsed = Boolean(signature) && collapsedFor === signature;
   useEffect(() => {
-    if (items.length < 2 || paused) return;
+    if (items.length < 2 || paused || collapsed) return;
     const timer = window.setInterval(() => setIndex((current) => (current + 1) % items.length), 8000);
     return () => window.clearInterval(timer);
-  }, [items.length, paused]);
+  }, [items.length, paused, collapsed]);
   if (!items.length) return null;
   const ad = items[index % items.length];
-  const highlights = (ad.highlights ?? []).filter(Boolean).slice(0, 2);
+  const highlights = (ad.highlights ?? []).filter(Boolean).slice(0, 3);
+  const setCollapsed = (next: boolean) => {
+    const value = next ? signature : "";
+    setCollapsedFor(value);
+    try { window.localStorage.setItem(SPONSOR_FLOAT_KEY, value); } catch { /* 存不了就只在本次收起 */ }
+  };
+  if (collapsed) {
+    return (
+      <button className="cx-float-sponsor-pill" onClick={() => setCollapsed(false)} title={t("展开推广")} type="button">
+        {ad.image ? <img alt="" src={ad.image} /> : <Sparkles aria-hidden="true" />}
+        <span>{formatAdTitle(ad.title)}</span>
+        <span className="cx-side-sponsor-tag">{t("推广")}</span>
+      </button>
+    );
+  }
   return (
-    <div className="cx-side-sponsor" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
-      <button className="cx-side-sponsor-main" onClick={() => onOpen(ad.url)} title={ad.description} type="button">
-        {ad.image ? <img alt="" className="cx-side-sponsor-image" src={ad.image} /> : null}
-        <span className="cx-side-sponsor-head">
+    <aside aria-label={t("推广")} className="cx-float-sponsor" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
+      <button aria-label={t("收起推广")} className="cx-float-sponsor-close" onClick={() => setCollapsed(true)} title={t("收起推广")} type="button">
+        <X aria-hidden="true" />
+      </button>
+      <button className="cx-float-sponsor-main" key={adIdentity(ad)} onClick={() => onOpen(ad.url)} title={ad.description} type="button">
+        {ad.image ? <img alt="" className="cx-float-sponsor-image" src={ad.image} /> : null}
+        <span className="cx-float-sponsor-head">
           {ad.image ? null : <Sparkles aria-hidden="true" />}
           <strong>{formatAdTitle(ad.title)}</strong>
           <span className="cx-side-sponsor-tag">{t("推广")}</span>
         </span>
-        <span className="cx-side-sponsor-text">{ad.description}</span>
+        <span className="cx-float-sponsor-text">{ad.description}</span>
         {highlights.length ? (
-          <span className="cx-side-sponsor-chips">
+          <span className="cx-float-sponsor-chips">
             {highlights.map((item) => <span key={item}>{item}</span>)}
           </span>
         ) : null}
-        <span className="cx-side-sponsor-cta">{t("了解更多")}<ArrowRight aria-hidden="true" /></span>
+        <span className="cx-float-sponsor-cta">{t("了解更多")}<ArrowRight aria-hidden="true" /></span>
       </button>
       {items.length > 1 ? (
-        <span className="cx-side-sponsor-dots" role="tablist" aria-label={t("切换推广")}>
+        <span className="cx-float-sponsor-dots" role="tablist" aria-label={t("切换推广")}>
           {items.map((item, itemIndex) => (
             <button
               aria-label={formatAdTitle(item.title)}
@@ -6340,7 +6365,7 @@ function SidebarSponsor({ ads, onOpen }: { ads: AdsResult | null; onOpen: (url: 
           ))}
         </span>
       ) : null}
-    </div>
+    </aside>
   );
 }
 
@@ -16707,12 +16732,9 @@ function AppSidebar({
   onOpenSettings,
   onExitSettings,
   setupCard = null,
-  sponsor = null,
 }: {
   /** 入门清单（没完成、没关掉时）：放在侧栏底部，替代网关状态卡。 */
   setupCard?: ReactNode;
-  /** 赞助卡：每个页面都在侧栏底部显示（网关总览页由页面顶部的大横幅代替）。 */
-  sponsor?: ReactNode;
   /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
   extensionPages?: ManagerExtensionPage[];
   activeExtensionKey?: string | null;
@@ -16818,7 +16840,6 @@ function AppSidebar({
           })}
           {!shown.length ? <p className="cx-side-empty">{t("没有匹配的设置")}</p> : null}
         </nav>
-        {sponsor}
         <footer className="cx-side-foot">
           <span className="cx-side-version">{version ? `Codex++ ${version}` : "Codex++"}</span>
           <button aria-label={languageLabel} className="cx-icon-button" onClick={() => toggleLanguage()} title={languageLabel} type="button">
@@ -17005,7 +17026,6 @@ function AppSidebar({
         ) : null}
       </nav>
 
-      {sponsor}
       {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则是网关状态；有新版本时换成更新提示。 */}
       {setupCard}
       {pendingUpdateVersion ? (
