@@ -5011,21 +5011,6 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
         })
 }
 
-/// 智谱 Response API 独立在 `/api/v1` 下；其 `input_image` 不接受
-/// OpenAI Responses 的 `detail` 字段（#2870）。
-fn upstream_is_zhipu_responses_api(relay: &crate::settings::RelayProfile) -> bool {
-    let Ok(url) = reqwest::Url::parse(relay.base_url.trim()) else {
-        return false;
-    };
-    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-
-    (host == "open.bigmodel.cn" || host.ends_with(".open.bigmodel.cn"))
-        && url
-            .path()
-            .trim_end_matches('/')
-            .eq_ignore_ascii_case("/api/v1")
-}
-
 /// 只处理 Responses `input[].content[]` 与 `function_call_output.output[]`
 /// 里的 `input_image`；其他协议中的图片块保持原样。
 fn strip_input_image_details(body: &mut Value) -> bool {
@@ -5868,14 +5853,11 @@ async fn upstream_request_parts(
     ) {
         request_json["model"] = json!(auto_review_model);
     }
-    // 智谱 Response API 不认 Codex 的 input_image.detail（#2870），收到会返回
-    // 泛化的 invalid_request。只在原生 Responses 直连时按供应商剥离。
-    if relay.protocol == RelayProtocol::Responses
-        && upstream_is_zhipu_responses_api(relay)
-        && strip_input_image_details(&mut request_json)
-    {
+    // 部分 Responses 上游不认 Codex 的 input_image.detail（#2870），收到会返回
+    // 泛化的 invalid_request。供应商级开关打开后在转发前剥离。
+    if relay.strips_responses_image_detail() && strip_input_image_details(&mut request_json) {
         let _ = crate::diagnostic_log::append_diagnostic_log(
-            "protocol_proxy.zhipu_image_detail_compat",
+            "protocol_proxy.strip_responses_image_detail",
             json!({ "relayId": relay.id }),
         );
     }
@@ -13721,10 +13703,9 @@ mod parallel_tool_call_pairing_tests {
         assert!(!strip_image_generation_tool(&mut untouched));
     }
 
-    /// #2870：智谱原生 Responses 不认 `input_image.detail`；只在智谱 `/api/v1`
-    /// Responses 路径剥离，其他供应商保持 OpenAI 语义。
+    /// #2870：供应商开关打开时剥离 `input_image.detail`；默认关闭保持 OpenAI 语义。
     #[tokio::test]
-    async fn zhipu_responses_strips_input_image_detail_only_for_zhipu() {
+    async fn responses_strips_input_image_detail_only_when_enabled() {
         let body = || json!({
             "model": "glm-5.3-flash",
             "input": [
@@ -13735,15 +13716,29 @@ mod parallel_tool_call_pairing_tests {
             ]
         });
 
-        let zhipu = crate::settings::RelayProfile {
+        let mut enabled = crate::settings::RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: crate::settings::RelayMode::PureApi,
             base_url: "https://open.bigmodel.cn/api/v1".into(),
             api_key: "sk-test".into(),
             ..Default::default()
         };
+        assert!(!enabled.strips_responses_image_detail());
         let (_, out, _, _) = upstream_request_parts(
-            &zhipu,
+            &enabled,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        assert_eq!(out["input"][0]["content"][1]["detail"], "original");
+
+        enabled.strip_responses_image_detail = true;
+        assert!(enabled.strips_responses_image_detail());
+        let (_, out, _, _) = upstream_request_parts(
+            &enabled,
             body(),
             "/v1/responses",
             None,
@@ -13754,37 +13749,20 @@ mod parallel_tool_call_pairing_tests {
         let image = &out["input"][0]["content"][1];
         assert_eq!(image["type"], "input_image");
         assert!(image.get("detail").is_none(), "{image}");
-
-        let other = crate::settings::RelayProfile {
-            protocol: RelayProtocol::Responses,
-            relay_mode: crate::settings::RelayMode::PureApi,
-            base_url: "https://relay.example.test/api/v1".into(),
-            api_key: "sk-test".into(),
-            ..Default::default()
-        };
-        let (_, out, _, _) = upstream_request_parts(
-            &other,
-            body(),
-            "/v1/responses",
-            None,
-            false,
-            None,
-            ProxySessionHeaders::default(),
-        ).await.unwrap();
-        assert_eq!(out["input"][0]["content"][1]["detail"], "original");
     }
 
-    /// 智谱原生 Responses 的 tool 输出同样可能出现 `input_image.detail`；
+    /// 开关打开后，tool 输出里的 `input_image.detail` 也一并剥离；
     /// `function_call_output.output[]` 与普通消息一起剥离。
     #[tokio::test]
-    async fn zhipu_responses_strips_tool_output_image_detail() {
-        let zhipu = crate::settings::RelayProfile {
+    async fn responses_strips_tool_output_image_detail_when_enabled() {
+        let mut relay = crate::settings::RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: crate::settings::RelayMode::PureApi,
             base_url: "https://open.bigmodel.cn/api/v1".into(),
             api_key: "sk-test".into(),
             ..Default::default()
         };
+        relay.strip_responses_image_detail = true;
         let body = json!({
             "model": "glm-5.3-flash",
             "input": [
@@ -13796,7 +13774,7 @@ mod parallel_tool_call_pairing_tests {
             ]
         });
         let (_, out, _, _) = upstream_request_parts(
-            &zhipu,
+            &relay,
             body,
             "/v1/responses",
             None,

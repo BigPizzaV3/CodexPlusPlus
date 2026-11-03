@@ -281,6 +281,17 @@ export function ProviderFormDialog({
                   <small>{t("Codex 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发给这个供应商前从 tools 里去掉它（及指向它的 tool_choice）。默认关闭。")}</small>
                 </span>
               </label>
+              <label className="pf-switch">
+                <input
+                  checked={draft.stripResponsesImageDetail === true}
+                  onChange={(event) => update({ stripResponsesImageDetail: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("移除 Responses 图片 detail 字段")}</strong>
+                  <small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail。默认关闭。")}</small>
+                </span>
+              </label>
             </section>
           ) : null}
 
