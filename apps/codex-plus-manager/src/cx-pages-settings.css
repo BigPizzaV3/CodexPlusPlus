@@ -368,17 +368,13 @@
 
 /* ── 首页：状态、精选推荐、常用入口、更多推荐 ───────────────────── */
 
-/* 精选推荐两列。卡片是 div 不是 button：旧版 WebKit 里 button 做网格项会按图片原始宽度撑开，
+/* 精选推荐：置顶位有几个就排几列，一行均分宽度（列数由页面按数量写在 style 上）。
+   卡片是 div 不是 button：旧版 WebKit 里 button 做网格项会按图片原始宽度撑开，
    把第二张挤出屏幕、整页变宽；图片也用固定高度，不依赖 aspect-ratio。 */
 :root .shell .home-heroes {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   min-width: 0;
-}
-
-:root .shell .home-heroes[data-count="1"] {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 :root .shell .home-hero {
@@ -508,6 +504,14 @@
   font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+:root .shell .home-heroes[data-dense] .home-hero-host {
+  display: none;
+}
+
+:root .shell .home-heroes[data-dense] .home-hero-foot {
+  justify-content: flex-end;
 }
 
 :root .shell .home-hero-cta {
@@ -686,10 +690,6 @@
 }
 
 @media (max-width: 860px) {
-  :root .shell .home-heroes {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   :root .shell .home-shortcuts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

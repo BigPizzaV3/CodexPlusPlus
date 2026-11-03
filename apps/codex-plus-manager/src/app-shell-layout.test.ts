@@ -359,9 +359,10 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   // 只管增强时不显示网关一行，入口也按使用模式过滤。
   assert.match(home, /\{enhanceOnly \? null : \(/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
-  // 推荐：大横幅只用置顶位（最多两张），推荐池的赞助商不能上横幅；其他赞助商全部列出不折叠；同一家去重；明确标「推广」。
-  assert.match(home, /const heroes = topAds\.slice\(0, 2\);/);
-  assert.match(home, /const rest = \[\.\.\.topAds\.slice\(heroes\.length\), \.\.\.pool\.filter\(\(ad\) => ad\.type === "sponsor"\)\];/);
+  // 推荐：置顶位不管几个都上横幅、一行均分宽度，不挪去别处；推荐池的赞助商不能上横幅；其他赞助商全部列出不折叠；同一家去重；明确标「推广」。
+  assert.match(home, /const heroes = topAds;/);
+  assert.match(home, /const rest = pool\.filter\(\(ad\) => ad\.type === "sponsor"\);/);
+  assert.match(home, /gridTemplateColumns: `repeat\(\$\{heroes\.length\}, minmax\(0, 1fr\)\)`/);
   assert.match(home, /\{rest\.map\(\(ad\) => \(/);
   assert.doesNotMatch(home, /showAllAds|rest\.slice\(0, 3\)/);
   assert.match(home, /!topIdentities\.has\(adIdentity\(ad\)\)/);

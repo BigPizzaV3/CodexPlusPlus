@@ -10988,7 +10988,7 @@ function SessionsScreen({
 
 /// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐和其他赞助商，最下面是常用入口。
 ///
-/// 推荐：大卡片只放置顶位（最多两个），推荐池里的赞助商全部列出，两列小卡片，紧跟在精选下面。
+/// 推荐：置顶位全部做大卡片，排成一行均分宽度；推荐池里的赞助商全部列出，两列小卡片，紧跟在精选下面。
 /// 置顶位和推荐池里同一家常有两个 id、同一个落地页，按 adIdentity 去重。只展示赞助商，普通推荐不显示。
 function HomeScreen({
   ads,
@@ -11020,8 +11020,8 @@ function HomeScreen({
   const topIdentities = new Set(topAds.map(adIdentity));
   const pool = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad) && !topIdentities.has(adIdentity(ad)));
   // 大横幅只放置顶位（top_ad / topAds），没有置顶位就不显示；推荐池里的赞助商只进下面的列表。
-  const heroes = topAds.slice(0, 2);
-  const rest = [...topAds.slice(heroes.length), ...pool.filter((ad) => ad.type === "sponsor")];
+  const heroes = topAds;
+  const rest = pool.filter((ad) => ad.type === "sponsor");
   const open = (ad: AdItem) => void actions.openExternalUrl(ad.url);
 
   const shortcuts: Array<{ route: Route; label: string; detail: string; icon: LucideIcon }> = [
@@ -11105,7 +11105,7 @@ function HomeScreen({
 
       {heroes.length ? (
         <CxSection aside={<span>{t("赞助商推荐：支持 Codex++ 的服务")}</span>} title={t("精选推荐")}>
-          <div className="home-heroes" data-count={heroes.length}>
+          <div className="home-heroes" data-dense={heroes.length >= 3 || undefined} style={{ gridTemplateColumns: `repeat(${heroes.length}, minmax(0, 1fr))` }}>
             {heroes.map((ad) => (
               <div
                 className="home-hero"
