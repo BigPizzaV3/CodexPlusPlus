@@ -1628,3 +1628,17 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* 管理类页面（连接与供应商、多开、MCP、Skills、会话列表…）按内容长高，整页滚动。
+   原来 .mg-page 被 flex 限高并 overflow: hidden，内容一多，带 overflow: hidden 的卡片（如「连接方式」）
+   会被压成 0 高。Codex 会话页的列表自己滚动，不在此列。 */
+:root .shell .screen.management-screen > .cx-page:not(.mg-session-page) {
+  flex: none;
+  height: auto;
+  min-height: auto;
+  overflow: visible;
+}
+
+:root .shell .cx-page > * {
+  flex-shrink: 0;
+}

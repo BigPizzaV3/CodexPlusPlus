@@ -236,9 +236,9 @@ function McpEditor({ entry, kind, present, agents, onClose, onSave, notify, busy
   const [error, setError] = useState(""); const [loading, setLoading] = useState(Boolean(entry && kind === "mcp")); const [saving, setSaving] = useState(false);
   const loadBody = async (value: string) => {
     const result = await invoke<Result & { form: McpForm }>("parse_mcp_entry", { tomlBody: value });
-    if (!succeeded(result)) throw new Error(result.message); setForm(result.form); setBody(value);
+    if (!succeeded(result) || !result.form) throw new Error(result.message || t("无法解析这个 MCP 配置")); setForm(result.form); setBody(value);
   };
-  useEffect(() => { if (!entry || kind !== "mcp") return; let active = true; void invoke<Result & { form: McpForm }>("parse_mcp_entry", { tomlBody: entry.tomlBody }).then((result) => { if (!active) return; if (succeeded(result)) setForm(result.form); else { setError(result.message); setMode("toml"); } }).catch((e) => { if (active) { setError(String(e)); setMode("toml"); } }).finally(() => { if (active) setLoading(false); }); return () => { active = false; }; }, []);
+  useEffect(() => { if (!entry || kind !== "mcp") return; let active = true; void invoke<Result & { form: McpForm }>("parse_mcp_entry", { tomlBody: entry.tomlBody }).then((result) => { if (!active) return; if (succeeded(result) && result.form) setForm(result.form); else { setError(result.message); setMode("toml"); } }).catch((e) => { if (active) { setError(String(e)); setMode("toml"); } }).finally(() => { if (active) setLoading(false); }); return () => { active = false; }; }, []);
   const [commandCheck, setCommandCheck] = useState<{ code: string; message: string; replacementCommand: string | null } | null>(null);
   const [checkingCommand, setCheckingCommand] = useState(false);
   const commandSequence = useRef(0);

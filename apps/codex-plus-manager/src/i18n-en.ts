@@ -118,6 +118,7 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "无法解析这个 MCP 配置": "Couldn't parse this MCP config",
   "完成增强配置": "Finish enhancement setup",
   "添加供应商并接入": "Add a provider and connect",
   "开始使用": "Getting started",
