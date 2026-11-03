@@ -1,6 +1,7 @@
 /**
- * 会话：Codex、Claude Code、Grok 的本地会话放在一起，可以复制恢复命令或删除。
+ * 会话：Codex、Claude Code（含 Claude Desktop 里的）、Grok 的本地会话放在一起，可以复制恢复命令或删除。
  * 删除前确认；Codex 会话走它自己的删除（带备份），Claude Code / Grok 的会话移进废纸篓，可以找回。
+ * Claude Desktop 的会话由后端按 Desktop 的会话记录合并（标题、归档状态以 Desktop 为准），删除要求 Desktop 已退出。
  */
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,7 +12,7 @@ import { agentName, filterSessions, relativeTime, shortPath, type AgentSessionVi
 import { AGENT_ICONS, AgentIcon, type Notify } from "./gateway-ui";
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
-import { CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxToolbar } from "./cx-layout";
+import { CxBadge, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxToolbar } from "./cx-layout";
 import { normalizeProjectPath } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
 
@@ -94,7 +95,9 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     const confirmed = await appConfirm(
       session.agent === "codex"
         ? tf("删除 Codex 会话「{0}」？删除前会自动备份。", [title])
-        : tf("删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。", [agentName(session.agent), title]),
+        : session.surface === "desktop"
+          ? tf("从 Claude Desktop 删除会话「{0}」？会话记录和对话文件会移到废纸篓。需要先退出 Claude Desktop。", [title])
+          : tf("删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。", [agentName(session.agent), title]),
       { title: t("删除会话"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed) return;
@@ -119,7 +122,8 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     }
   };
   const copyCommand = async (session: AgentSessionView) => {
-    const command = session.agent === "codex" ? `codex resume ${session.id}` : `${session.agent} --resume ${session.id}`;
+    const id = session.resumeId ?? session.id;
+    const command = session.agent === "codex" ? `codex resume ${id}` : `${session.agent} --resume ${id}`;
     const text = session.cwd ? `cd ${JSON.stringify(session.cwd)} && ${command}` : command;
     try {
       await navigator.clipboard.writeText(text);
@@ -181,6 +185,12 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
                     icon={<AgentIcon agent={session.agent} className="gw-session-agent" />}
                     key={key}
                     title={session.title || t("（没有标题）")}
+                    badges={session.surface === "desktop" || session.archived ? (
+                      <>
+                        {session.surface === "desktop" ? <CxBadge title={t("Claude Desktop 里的会话")}>Desktop</CxBadge> : null}
+                        {session.archived ? <CxBadge>{t("已归档")}</CxBadge> : null}
+                      </>
+                    ) : undefined}
                     tooltip={`${agentName(session.agent)} · ${session.cwd || t("（没有目录）")}`}
                   >
                     <span className="cx-session-time">{when.args.length ? tf(when.text, when.args) : t(when.text)}</span>

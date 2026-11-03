@@ -152,8 +152,9 @@ pub struct CommunityEntry {
     pub icon: String,
     #[serde(default)]
     pub keywords: Vec<String>,
-    pub engine: u64,
-    /// `engines.codexpp` 不高于本机拓展 API 版本。
+    /// 整数表示拓展 API 版本，字符串表示 Codex++ 的 semver 范围。
+    pub engine: Value,
+    /// 本机拓展 API 或 Codex++ 版本满足 `engines.codexpp`。
     pub compatible: bool,
     /// 默认分支清单声明的能力；实际安装版本的权限在 prepare 时重新读。
     pub permissions: Value,
@@ -256,9 +257,21 @@ pub fn community_entry(repo: &SearchRepo, raw_base: &str, manifest: &Value) -> a
     if version.is_empty() {
         bail!("清单缺少 version");
     }
-    let engine = match map.get("engines").and_then(|engines| engines.get("codexpp")) {
-        None => EXTENSION_API_VERSION,
-        Some(value) => value.as_u64().context("engines.codexpp 必须是正整数")?,
+    let engine = map
+        .get("engines")
+        .and_then(|engines| engines.get("codexpp"))
+        .cloned()
+        .unwrap_or_else(|| json!(EXTENSION_API_VERSION));
+    let compatible = match &engine {
+        Value::String(range) => crate::extension_semver::satisfies(
+            crate::extension_semver::codexpp_version(),
+            range,
+        )
+        .context("engines.codexpp 版本范围无效")?,
+        value => {
+            value.as_u64().context("engines.codexpp 必须是正整数或 semver 范围字符串")?
+                <= EXTENSION_API_VERSION
+        }
     };
     let icon = text("icon");
     // 图标只认 GitHub 上的地址：任意外链会让每个打开市场的人都去访问作者指定的主机。
@@ -295,7 +308,7 @@ pub fn community_entry(repo: &SearchRepo, raw_base: &str, manifest: &Value) -> a
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
-        compatible: engine <= EXTENSION_API_VERSION,
+        compatible,
         engine,
         permissions: manifest_permissions(manifest),
         id,
@@ -661,6 +674,12 @@ impl CommunityStore {
             None => fetch_entry(&client, endpoints, repo).await?,
         };
         if !entry.compatible {
+            if let Some(range) = entry.engine.as_str() {
+                bail!(
+                    "这个拓展需要 Codex++ {range}，当前版本为 {}",
+                    crate::extension_semver::codexpp_version()
+                );
+            }
             bail!(
                 "这个拓展需要拓展 API v{}，当前 Codex++ 提供 v{}，请先升级 Codex++",
                 entry.engine,

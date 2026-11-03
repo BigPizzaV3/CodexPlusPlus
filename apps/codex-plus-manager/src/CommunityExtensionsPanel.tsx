@@ -40,7 +40,7 @@ type Entry = {
   homepage: string;
   icon: string;
   keywords: string[];
-  engine: number;
+  engine: number | string;
   compatible: boolean;
   permissions: Permissions;
   installed: Installed;
@@ -77,6 +77,12 @@ export function request<T>(action: string, payload?: unknown): Promise<T> {
 
 export function errorText(error: unknown): string {
   return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
+}
+
+function engineWarning(engine: Entry["engine"]): string {
+  return typeof engine === "number"
+    ? tf("需要拓展 API v{0}，请先更新 Codex++", [engine])
+    : tf("需要 Codex++ {0}，当前版本不兼容", [engine]);
 }
 
 /** 按风险从高到低列出声明的能力；空数组表示只是页面脚本以外什么也没有。 */
@@ -219,7 +225,7 @@ export function CommunityExtensionsPanel({
       entry.version ? `v${entry.version}` : "",
       entry.license,
       entry.pushedAt ? tf("更新于 {0}", [entry.pushedAt.slice(0, 10)]) : "",
-      !entry.compatible ? tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine]) : "",
+      !entry.compatible ? engineWarning(entry.engine) : "",
     ].filter(Boolean).join(" · ");
     const local = entry.installed?.channel === "local";
     return (

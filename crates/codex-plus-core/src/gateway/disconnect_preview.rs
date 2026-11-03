@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -21,9 +21,6 @@ use crate::tools::claude::ClaudeContext;
 
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DIFF_FIELDS: usize = 500;
-const MAX_HISTORY_ENTRIES: usize = 4096;
-const MAX_HISTORY_FILES: usize = 256;
-const MAX_HISTORY_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,23 +41,6 @@ pub struct DisconnectFile {
     pub kind: DisconnectFileKind,
     pub diff: String,
     pub redacted: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentConfigDiff {
-    pub agent: String,
-    pub baseline: ConfigDiffBaseline,
-    pub baseline_path: Option<String>,
-    pub files: Vec<DisconnectFile>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ConfigDiffBaseline {
-    BeforeGateway,
-    HistoricalBackup,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -239,219 +219,6 @@ pub fn preview(
     }
     result.fingerprint = sources.fingerprint(ctx, agent, settings, settings_bytes.as_deref())?;
     Ok(result)
-}
-
-/// 优先比较接入前存档；旧接入缺失存档时，只读比较历史备份，不将其写成恢复存档。
-pub fn connection_diff(ctx: &ApplyContext, agent: &ToolId) -> anyhow::Result<AgentConfigDiff> {
-    let mut sources = Sources::default();
-    let mut result = AgentConfigDiff {
-        agent: agent.as_str().to_string(),
-        baseline: ConfigDiffBaseline::BeforeGateway,
-        baseline_path: None,
-        files: Vec::new(),
-        warnings: vec![
-            "左侧为接入前存档，右侧为当前文件；接入后的手动修改也会显示。".into(),
-            "差异只显示安全字段名；配置值、注释和认证内容均已隐藏。".into(),
-        ],
-    };
-
-    if matches!(agent, ToolId::Claude | ToolId::Grok | ToolId::Codex) {
-        let stash_path = ctx
-            .backup_root
-            .join(format!("{}-before-gateway.json", agent.as_str()));
-        if sources.read(&stash_path)?.is_none() {
-            historical_connection_diff(ctx, agent, &mut sources, &mut result)?;
-            anyhow::ensure!(sources.unchanged()?, "预览期间配置发生变化，请重新读取差异");
-            return Ok(result);
-        }
-    }
-
-    match agent {
-        ToolId::Claude => {
-            let path = ctx.claude.claude_home.join("settings.json");
-            let saved: restore::FileStash = read_stash(
-                &mut sources,
-                &ctx.backup_root.join("claude-before-gateway.json"),
-                "Claude Code",
-            )?;
-            let current = sources.read(&path)?;
-            add_connection_file(
-                &mut result,
-                &path,
-                saved.before.as_deref(),
-                current.as_deref(),
-            );
-        }
-        ToolId::Grok => {
-            let path = ctx.grok_home.join("config.toml");
-            let saved: restore::FileStash = read_stash(
-                &mut sources,
-                &ctx.backup_root.join("grok-before-gateway.json"),
-                "Grok",
-            )?;
-            let current = sources.read(&path)?;
-            add_connection_file(
-                &mut result,
-                &path,
-                saved.before.as_deref(),
-                current.as_deref(),
-            );
-        }
-        ToolId::Codex => {
-            let saved: Value = read_stash(
-                &mut sources,
-                &ctx.backup_root.join("codex-before-gateway.json"),
-                "Codex",
-            )?;
-            let object = saved
-                .as_object()
-                .context("Codex 的接入前配置存档格式无效，无法生成差异")?;
-            anyhow::ensure!(
-                object.contains_key("configToml") || object.contains_key("authJson"),
-                "Codex 的接入前配置存档格式无效，无法生成差异"
-            );
-            for key in ["configToml", "authJson"] {
-                anyhow::ensure!(
-                    matches!(object.get(key), None | Some(Value::String(_) | Value::Null)),
-                    "Codex 的接入前配置存档格式无效，无法生成差异"
-                );
-            }
-            for (key, name) in [("configToml", "config.toml"), ("authJson", "auth.json")] {
-                let Some(before) = object.get(key) else {
-                    continue;
-                };
-                let path = ctx.codex_home.join(name);
-                let current = sources.read(&path)?;
-                add_connection_file(&mut result, &path, before.as_str(), current.as_deref());
-            }
-        }
-        ToolId::Unknown(id) => {
-            let spec = agents::spec(id).context("该 Agent 没有可读取的接入配置存档")?;
-            let saved: AgentStash = read_stash(
-                &mut sources,
-                &agents::connect::stash_path(ctx, spec.id),
-                spec.name,
-            )?;
-            anyhow::ensure!(
-                saved.files.len() <= 100,
-                "配置文件数量过多，无法安全生成差异"
-            );
-            for (path, record) in saved.files {
-                let current = sources.read(&path)?;
-                add_connection_file(
-                    &mut result,
-                    &path,
-                    record.stash.before.as_deref(),
-                    current.as_deref(),
-                );
-            }
-        }
-    }
-
-    anyhow::ensure!(sources.unchanged()?, "预览期间配置发生变化，请重新读取差异");
-    Ok(result)
-}
-
-fn read_stash<T: DeserializeOwned>(
-    sources: &mut Sources,
-    path: &Path,
-    agent_name: &str,
-) -> anyhow::Result<T> {
-    let text = sources
-        .read(path)?
-        .with_context(|| format!("没有 {agent_name} 的接入前配置存档，无法生成差异"))?;
-    serde_json::from_str(&text)
-        .map_err(|_| anyhow::anyhow!("{agent_name} 的接入前配置存档不可读取，无法生成差异"))
-}
-
-fn historical_connection_diff(
-    ctx: &ApplyContext,
-    agent: &ToolId,
-    sources: &mut Sources,
-    result: &mut AgentConfigDiff,
-) -> anyhow::Result<()> {
-    let (root, prefix, live_home, config_name) = match agent {
-        ToolId::Claude => (
-            ctx.backup_root.join("claude"),
-            "",
-            &ctx.claude.claude_home,
-            "settings.json",
-        ),
-        ToolId::Grok => (
-            ctx.backup_root.join("grok"),
-            "",
-            &ctx.grok_home,
-            "config.toml",
-        ),
-        ToolId::Codex => (
-            ctx.codex_home.join("backups"),
-            "codex-plus-live-",
-            &ctx.codex_home,
-            "config.toml",
-        ),
-        _ => anyhow::bail!("该 Agent 没有可读取的历史配置备份"),
-    };
-    let live_path = live_home.join(config_name);
-    let current = sources.read(&live_path)?;
-    let current_config = parsed_config(&live_path, current.as_deref());
-    let entries = fs::read_dir(root)
-        .map_err(|_| anyhow::anyhow!("接入前存档缺失，也没有可读取的历史配置备份"))?;
-    let mut candidates = Vec::new();
-    for (index, entry) in entries.enumerate() {
-        anyhow::ensure!(
-            index < MAX_HISTORY_ENTRIES,
-            "历史备份数量过多，无法安全读取差异"
-        );
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let name = entry.file_name();
-        let Some(timestamp) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(prefix))
-            .and_then(|name| name.parse::<u128>().ok())
-        else {
-            continue;
-        };
-        candidates.push((timestamp, entry.path()));
-    }
-    candidates.sort_unstable_by_key(|(timestamp, _)| std::cmp::Reverse(*timestamp));
-    let mut bytes_read = 0;
-    for (_, directory) in candidates.into_iter().take(MAX_HISTORY_FILES) {
-        let path = directory.join(config_name);
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
-            continue;
-        }
-        bytes_read += metadata.len();
-        if bytes_read > MAX_HISTORY_BYTES {
-            break;
-        }
-        let Ok(Some(before)) = sources.read(&path) else {
-            continue;
-        };
-        let before_config = parsed_config(&live_path, Some(&before));
-        if !before_config
-            .as_ref()
-            .is_some_and(|value| value.is_object())
-            || before_config == current_config
-        {
-            continue;
-        }
-        result.baseline = ConfigDiffBaseline::HistoricalBackup;
-        result.baseline_path = Some(path.to_string_lossy().to_string());
-        result.warnings = vec![
-            "接入前存档缺失；改为比较最近一份内容不同的有效历史备份，不能保证它是本次接入前的配置。".into(),
-            "此历史备份仅用于查看，不会补建或替换恢复存档。".into(),
-            "差异只显示安全字段名；配置值、注释和认证内容均已隐藏。".into(),
-        ];
-        add_connection_file(result, &live_path, Some(&before), current.as_deref());
-        return Ok(());
-    }
-    anyhow::bail!("接入前存档缺失，且未找到可比较的不同内容历史备份；当前配置未被修改")
 }
 
 fn collect_agent_sources(
@@ -706,38 +473,6 @@ fn add_file(
     });
 }
 
-fn add_connection_file(
-    result: &mut AgentConfigDiff,
-    path: &Path,
-    before: Option<&str>,
-    current: Option<&str>,
-) {
-    if before == current {
-        return;
-    }
-    result.files.push(DisconnectFile {
-        path: path.to_string_lossy().to_string(),
-        kind: match (before, current) {
-            (None, Some(_)) => DisconnectFileKind::Create,
-            (Some(_), None) => DisconnectFileKind::Remove,
-            _ => DisconnectFileKind::Modify,
-        },
-        diff: match result.baseline {
-            ConfigDiffBaseline::BeforeGateway => connection_field_diff(path, before, current),
-            ConfigDiffBaseline::HistoricalBackup => field_diff_named(
-                path,
-                before,
-                current,
-                "historical-backup",
-                "current",
-                "历史备份",
-                "当前",
-            ),
-        },
-        redacted: true,
-    });
-}
-
 fn parsed_config(path: &Path, text: Option<&str>) -> Option<Value> {
     let Some(text) = text else {
         return Some(Value::Object(Default::default()));
@@ -756,62 +491,30 @@ fn parsed_config(path: &Path, text: Option<&str>) -> Option<Value> {
 }
 
 fn field_diff(path: &Path, before: Option<&str>, after: Option<&str>) -> String {
-    field_diff_named(path, before, after, "current", "restored", "当前", "恢复")
-}
-
-fn connection_field_diff(path: &Path, before: Option<&str>, current: Option<&str>) -> String {
-    field_diff_named(
-        path,
-        before,
-        current,
-        "before-gateway",
-        "current",
-        "接入前",
-        "当前",
-    )
-}
-
-fn field_diff_named(
-    path: &Path,
-    before: Option<&str>,
-    after: Option<&str>,
-    before_name: &str,
-    after_name: &str,
-    before_label: &str,
-    after_label: &str,
-) -> String {
     let mut removed = Vec::new();
     let mut added = Vec::new();
     match (parsed_config(path, before), parsed_config(path, after)) {
         (Some(old), Some(new)) if old != new => {
-            changed_fields(
-                "$",
-                Some(&old),
-                Some(&new),
-                before_label,
-                after_label,
-                &mut removed,
-                &mut added,
-            );
+            changed_fields("$", Some(&old), Some(&new), &mut removed, &mut added);
         }
         _ => {
             if before.is_some() {
-                removed.push(format!("[{before_label}文件内容与格式已隐藏]"));
+                removed.push("[当前文件内容与格式已隐藏]".into());
             }
             if after.is_some() {
-                added.push(format!("[{after_label}文件内容与格式已隐藏]"));
+                added.push("[还原文件内容与格式已隐藏]".into());
             }
         }
     }
     let mut diff = format!(
         "--- {}\n+++ {}\n@@ -1,{} +1,{} @@\n",
         if before.is_some() {
-            before_name
+            "current"
         } else {
             "/dev/null"
         },
         if after.is_some() {
-            after_name
+            "restored"
         } else {
             "/dev/null"
         },
@@ -835,8 +538,6 @@ fn changed_fields(
     path: &str,
     before: Option<&Value>,
     after: Option<&Value>,
-    before_label: &str,
-    after_label: &str,
     removed: &mut Vec<String>,
     added: &mut Vec<String>,
 ) {
@@ -853,8 +554,6 @@ fn changed_fields(
                 &format!("{path}.{name}"),
                 old.get(key),
                 new.get(key),
-                before_label,
-                after_label,
                 removed,
                 added,
             );
@@ -862,10 +561,10 @@ fn changed_fields(
         return;
     }
     if before.is_some() {
-        removed.push(format!("{path} = [{before_label}值已隐藏]"));
+        removed.push(format!("{path} = [当前值已隐藏]"));
     }
     if after.is_some() {
-        added.push(format!("{path} = [{after_label}值已隐藏]"));
+        added.push(format!("{path} = [恢复值已隐藏]"));
     }
 }
 
@@ -1195,233 +894,6 @@ mod tests {
             result.files[0].diff,
             field_diff(&path, Some(&current), Some(&actual))
         );
-    }
-
-    #[test]
-    fn connection_diff_compares_the_stash_with_current_file_and_hides_values() {
-        let fixture = fixture();
-        let before = "{\"model\":\"mine\",\"apiKey\":\"fake-original-secret\"}";
-        let path = generic(&fixture, Some(before));
-        fs::write(
-            &path,
-            "{\"model\":\"manually-changed\",\"apiKey\":\"fake-current-secret\",\"baseURL\":\"https://manual.example.test/v1\"}",
-        )
-        .unwrap();
-        let snapshot_before = snapshot(fixture.temp.path());
-
-        let result = connection_diff(&fixture.ctx, &ToolId::Unknown("opencode".into())).unwrap();
-
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files[0].kind, DisconnectFileKind::Modify);
-        assert!(result.files[0].diff.contains("--- before-gateway"));
-        assert!(result.files[0].diff.contains("+++ current"));
-        assert!(result.files[0].diff.contains("$.model"));
-        assert!(result.files[0].diff.contains("$.baseURL"));
-        assert!(result.files[0].redacted);
-        assert!(
-            result
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("手动修改"))
-        );
-        assert_eq!(snapshot(fixture.temp.path()), snapshot_before);
-        let encoded = serde_json::to_string(&result).unwrap();
-        for secret in [
-            "fake-original-secret",
-            "fake-current-secret",
-            "fake-client-secret",
-            "fake-provider-secret",
-        ] {
-            assert!(!encoded.contains(secret));
-        }
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn connection_diff_native_stashes_take_precedence_without_writing() {
-        for agent in [ToolId::Claude, ToolId::Grok, ToolId::Codex] {
-            let fixture = fixture();
-            let (path, before, current) = match agent {
-                ToolId::Claude => (
-                    fixture.ctx.claude.claude_home.join("settings.json"),
-                    "{\"model\":\"old\",\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"fake-original-secret\"}}",
-                    "{\"model\":\"new\",\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"fake-current-secret\"}}",
-                ),
-                ToolId::Grok => (
-                    fixture.ctx.grok_home.join("config.toml"),
-                    "model = \"old\"\napi_key = \"fake-original-secret\"\n",
-                    "model = \"new\"\napi_key = \"fake-current-secret\"\n",
-                ),
-                ToolId::Codex => (
-                    fixture.ctx.codex_home.join("config.toml"),
-                    "model = \"old\"\n",
-                    "model = \"new\"\n",
-                ),
-                _ => unreachable!(),
-            };
-            let stash_path = fixture
-                .ctx
-                .backup_root
-                .join(format!("{}-before-gateway.json", agent.as_str()));
-            if agent == ToolId::Codex {
-                restore::save_stash(
-                    &stash_path,
-                    &json!({
-                        "configToml": before,
-                        "authJson": "{\"OPENAI_API_KEY\":\"fake-original-secret\"}",
-                    }),
-                )
-                .unwrap();
-                fs::write(
-                    fixture.ctx.codex_home.join("auth.json"),
-                    "{\"OPENAI_API_KEY\":\"fake-current-secret\"}",
-                )
-                .unwrap();
-            } else {
-                restore::save_stash(&stash_path, &restore::FileStash::new(Some(before.into())))
-                    .unwrap();
-            }
-            fs::write(&path, current).unwrap();
-            let before_snapshot = snapshot(fixture.temp.path());
-            let result = connection_diff(&fixture.ctx, &agent).unwrap();
-            assert_eq!(result.baseline, ConfigDiffBaseline::BeforeGateway);
-            assert!(result.baseline_path.is_none());
-            assert_eq!(
-                result.files.len(),
-                if agent == ToolId::Codex { 2 } else { 1 }
-            );
-            assert!(result.files[0].diff.contains("--- before-gateway"));
-            let encoded = serde_json::to_string(&result).unwrap();
-            for secret in ["fake-original-secret", "fake-current-secret"] {
-                assert!(!encoded.contains(secret));
-            }
-            assert_eq!(snapshot(fixture.temp.path()), before_snapshot);
-        }
-    }
-
-    #[test]
-    fn connection_diff_legacy_native_configs_use_labeled_history_without_writing() {
-        for agent in [ToolId::Claude, ToolId::Grok, ToolId::Codex] {
-            let fixture = fixture();
-            let (root, prefix, path, name, old, current) = match agent {
-                ToolId::Claude => (
-                    fixture.ctx.backup_root.join("claude"),
-                    "",
-                    fixture.ctx.claude.claude_home.join("settings.json"),
-                    "settings.json",
-                    "{\"model\":\"old\",\"apiKey\":\"fake-history-secret\"}",
-                    "{\"model\":\"new\",\"apiKey\":\"fake-current-secret\"}",
-                ),
-                ToolId::Grok => (
-                    fixture.ctx.backup_root.join("grok"),
-                    "",
-                    fixture.ctx.grok_home.join("config.toml"),
-                    "config.toml",
-                    "model = \"old\"\napi_key = \"fake-history-secret\"\n",
-                    "model = \"new\"\napi_key = \"fake-current-secret\"\n",
-                ),
-                ToolId::Codex => (
-                    fixture.ctx.codex_home.join("backups"),
-                    "codex-plus-live-",
-                    fixture.ctx.codex_home.join("config.toml"),
-                    "config.toml",
-                    "model = \"old\"\n",
-                    "model = \"new\"\n",
-                ),
-                _ => unreachable!(),
-            };
-            // 名称按整数时间倒序，跳过当前内容和损坏备份；无关目录不参与。
-            for (timestamp, text) in [
-                ("9", "model = \"older\"\n"),
-                ("10", old),
-                ("11", "invalid["),
-                ("12", current),
-            ] {
-                let directory = root.join(format!("{prefix}{timestamp}"));
-                fs::create_dir_all(&directory).unwrap();
-                fs::write(directory.join(name), text).unwrap();
-            }
-            let formatting_only = root.join(format!("{prefix}13"));
-            fs::create_dir_all(&formatting_only).unwrap();
-            fs::write(formatting_only.join(name), format!("\n{current}\n")).unwrap();
-            fs::create_dir_all(root.join("unrelated")).unwrap();
-            fs::write(root.join("unrelated").join(name), old).unwrap();
-            fs::write(&path, current).unwrap();
-            let before_snapshot = snapshot(fixture.temp.path());
-            let result = connection_diff(&fixture.ctx, &agent).unwrap();
-            assert_eq!(result.baseline, ConfigDiffBaseline::HistoricalBackup);
-            assert_eq!(
-                result.baseline_path,
-                Some(
-                    root.join(format!("{prefix}10"))
-                        .join(name)
-                        .to_string_lossy()
-                        .to_string()
-                )
-            );
-            assert_eq!(result.files.len(), 1);
-            assert!(result.files[0].diff.contains("--- historical-backup"));
-            assert!(result.files[0].diff.contains("+++ current"));
-            assert!(result.files[0].diff.contains("$.model"));
-            assert!(!result.files[0].diff.contains("before-gateway"));
-            assert!(
-                result
-                    .warnings
-                    .iter()
-                    .any(|warning| warning.contains("不能保证"))
-            );
-            let encoded = serde_json::to_string(&result).unwrap();
-            for secret in ["fake-history-secret", "fake-current-secret"] {
-                assert!(!encoded.contains(secret));
-            }
-            assert_eq!(snapshot(fixture.temp.path()), before_snapshot);
-        }
-    }
-
-    #[test]
-    fn connection_diff_rejects_invalid_codex_snapshot_shapes() {
-        for contents in [
-            "[]",
-            "{}",
-            "{\"configToml\":123}",
-            "{\"configToml\":\"model = 'old'\",\"authJson\":false}",
-        ] {
-            let fixture = fixture();
-            fs::create_dir_all(&fixture.ctx.backup_root).unwrap();
-            fs::write(
-                fixture.ctx.backup_root.join("codex-before-gateway.json"),
-                contents,
-            )
-            .unwrap();
-            let before_snapshot = snapshot(fixture.temp.path());
-            assert!(connection_diff(&fixture.ctx, &ToolId::Codex).is_err());
-            assert_eq!(snapshot(fixture.temp.path()), before_snapshot);
-        }
-    }
-
-    #[test]
-    fn connection_diff_corrupt_stash_errors_do_not_include_configuration_values() {
-        let fixture = fixture();
-        fs::create_dir_all(&fixture.ctx.backup_root).unwrap();
-        fs::write(
-            fixture.ctx.backup_root.join("grok-before-gateway.json"),
-            "{\"before\":null,\"changed\":\"fake-stash-secret\"}",
-        )
-        .unwrap();
-        let before = snapshot(fixture.temp.path());
-        let error = connection_diff(&fixture.ctx, &ToolId::Grok).unwrap_err();
-        assert!(!format!("{error:#}").contains("fake-stash-secret"));
-        assert_eq!(snapshot(fixture.temp.path()), before);
-    }
-
-    #[test]
-    fn connection_diff_missing_stash_and_history_do_not_invent_a_baseline() {
-        let fixture = fixture();
-        let path = fixture.ctx.grok_home.join("config.toml");
-        fs::write(&path, "model = \"new\"\n").unwrap();
-        let before = snapshot(fixture.temp.path());
-        assert!(connection_diff(&fixture.ctx, &ToolId::Grok).is_err());
-        assert_eq!(snapshot(fixture.temp.path()), before);
     }
 
     #[test]

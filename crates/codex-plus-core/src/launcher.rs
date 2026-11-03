@@ -2168,17 +2168,12 @@ pub(crate) async fn handle_helper_connection_on(
         return Ok(());
     }
     // 拓展挂的 HTTP 路由（webhook）：/ext/<拓展 id>/…，交给声明了 backend.http 的拓展后台处理。
-    // 网页（带 Origin）发来的一律拒绝，免得随便一个页面就能触发本机拓展。
     if path.starts_with("/ext/") {
         // WebSocket 升级（dsh 的 webServer.registerUpgrade）：交给拓展后台给出的本机 socket，之后字节对拷到连接结束。
         if crate::extension_backend::is_websocket_upgrade(&request_headers) {
             return crate::extension_backend::route_upgrade(&mut stream, raw_path, &request_headers, &request.headers).await;
         }
-        let (status, content_type, body) = if header_value_from_headers(&request_headers, "origin").is_some_and(|origin| !origin.trim().is_empty()) {
-            (403, "application/json; charset=utf-8".to_string(), br#"{"error":"extension routes do not accept browser requests"}"#.to_vec())
-        } else {
-            crate::extension_backend::route_http(method, raw_path, &request_headers, &request.body).await
-        };
+        let (status, content_type, body) = crate::extension_backend::route_http(method, raw_path, &request_headers, &request.body).await;
         let status_line = format!("{status} {}", if (200..300).contains(&status) { "OK" } else { "Error" });
         write_http_response(&mut stream, &status_line, &content_type, &body).await?;
         stream.shutdown().await?;

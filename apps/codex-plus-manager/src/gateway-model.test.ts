@@ -305,7 +305,6 @@ test("网关页接入导航，命令已注册", () => {
   for (const command of [
     "load_gateway",
     "save_gateway_binding",
-    "preview_gateway_agent_config_diff",
     "disable_gateway_binding",
     "rotate_gateway_token",
     "save_gateway_options",

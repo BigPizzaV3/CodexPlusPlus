@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { agentDiagnosticPresentation, canReconnectAgent, connectionFileLabel, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady } from "./gateway-agent-safety.ts";
-import type { GatewayAgentConfigDiff, GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
+import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady } from "./gateway-agent-safety.ts";
+import type { GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
 
 const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
   agent: "opencode", name: "OpenCode", enabled: true, baseUrl: "http://127.0.0.1:57321/gw/opencode",
@@ -17,13 +17,6 @@ const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
 const preview = (token = "snapshot-1"): GatewayDisconnectPreview => ({
   agent: "opencode", previewToken: token, canDisconnect: true, warnings: ["保留接入后修改的字段"],
   files: [{ path: "/test/opencode.jsonc", kind: "modify", diff: "-  \"key\": \"[hidden]\"\n+  // 用户注释", redacted: true }],
-});
-const configDiff = (baseline: GatewayAgentConfigDiff["baseline"] = "beforeGateway"): GatewayAgentConfigDiff => ({
-  agent: "opencode",
-  baseline,
-  baselinePath: baseline === "historicalBackup" ? "/test/backups/config.<backup>.json" : null,
-  files: preview().files,
-  warnings: baseline === "historicalBackup" ? ["历史备份不保证是本次接入前的配置。"] : ["接入后的手动修改也会显示。"],
 });
 
 test("无请求只表示待验证；配置、helper、上游失败分别显示且保留旧drift兼容", () => {
@@ -62,7 +55,6 @@ test("预览授权绑定Agent与非空token；文件状态和未知诊断证据�
   assert.equal(disconnectPreviewReady({ ...preview(), canDisconnect: false }, "opencode"), false);
   assert.equal(disconnectPreviewReady(null, "opencode"), false);
   assert.deepEqual(["modify", "remove", "create"].map((kind) => disconnectFileLabel(kind as "modify")), ["将修改", "将移除", "将创建"]);
-  assert.deepEqual(["modify", "remove", "create"].map((kind) => connectionFileLabel(kind as "modify")), ["文件内容已变更", "当前文件已删除", "当前文件为新增"]);
   assert.equal(diagnosticEvidenceLabel("endpointMatched"), "与网关配置一致");
   assert.equal(diagnosticEvidenceLabel("endpointPortMismatch"), "端口与网关配置不符");
   assert.equal(diagnosticEvidenceLabel("unrecognized_evidence"), "诊断信息待确认");
@@ -90,12 +82,11 @@ function deferred<T>() {
 }
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function harness(own = false, readOnly = false) {
+function harness(own = false) {
   const hooks: any[] = [];
   const cleanups = new Map<number, () => void>();
   const pendingEffects: Array<() => void> = [];
   const loads: Array<ReturnType<typeof deferred<unknown>>> = [];
-  const reads: string[] = [];
   const applies: Array<{ token: string; result: ReturnType<typeof deferred<boolean>> }> = [];
   let cursor = 0;
   let closed = 0;
@@ -128,8 +119,7 @@ function harness(own = false, readOnly = false) {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-dom": { createPortal: (child: unknown) => child },
     "@tauri-apps/api/core": { invoke: (command: string, args: unknown) => {
-      reads.push(command);
-      assert.equal(command, readOnly ? "preview_gateway_agent_config_diff" : "preview_gateway_disconnect");
+      assert.equal(command, "preview_gateway_disconnect");
       assert.equal((args as { agent: string }).agent, "opencode");
       const load = deferred<unknown>();
       loads.push(load);
@@ -141,7 +131,7 @@ function harness(own = false, readOnly = false) {
       t: (text: string) => text,
       tf: (text: string, args: string[]) => text.replace(/\{(\d+)\}/g, (_, index) => args[Number(index)]),
     },
-    "./gateway-agent-safety": { connectionFileLabel, disconnectFileLabel, disconnectPreviewReady },
+    "./gateway-agent-safety": { disconnectFileLabel, disconnectPreviewReady },
     "./use-escape-layer": { useEscapeLayer: (_active: boolean, close: () => void) => { escape = close; } },
     "./use-modal-focus": { useModalFocus: () => {} },
   };
@@ -150,13 +140,12 @@ function harness(own = false, readOnly = false) {
     require: (name: string) => { assert.ok(name in modules, `unexpected module ${name}`); return modules[name]; },
   });
   return {
-    loads, reads, applies,
+    loads, applies,
     render: (busy = false) => {
       cursor = 0;
       const result = exports.AgentDisconnectDialog({
         agent: agent(), busy,
         ownModel: own ? { model: "gpt-own", label: "Own GPT", direct: "OpenAI" } : null,
-        readOnly,
         onClose: () => { closed += 1; },
         onApply: (token: string) => {
           const result = deferred<boolean>();
@@ -188,10 +177,8 @@ function button(tree: Element, label: string) {
   assert.ok(result, `missing button ${label}`);
   return result;
 }
-async function ready(dialog: ReturnType<typeof harness>, value: GatewayDisconnectPreview | GatewayAgentConfigDiff = preview(), readOnly = false) {
-  dialog.loads.at(-1)!.resolve(readOnly
-    ? { status: "ok", message: "", diff: value }
-    : { status: "ok", message: "", preview: value });
+async function ready(dialog: ReturnType<typeof harness>, value = preview()) {
+  dialog.loads.at(-1)!.resolve({ status: "ok", message: "", preview: value });
   await flush();
   return dialog.render();
 }
@@ -292,94 +279,6 @@ test("断开并直连明确预览范围，携带相同确认token", async () => 
   dialog.applies[0].result.resolve(true);
   await flush();
   assert.equal(dialog.closeCount(), 0, "卸载后的结果不再次触发关闭");
-});
-
-test("配置差异入口显示接入前到当前文件的只读diff，不暴露断开操作", async () => {
-  const dialog = harness(false, true);
-  let tree = dialog.render();
-  assert.match(text(tree), /正在读取配置差异/);
-  assert.doesNotMatch(text(tree), /断开并还原|断开并直连|接入前存档/);
-  tree = await ready(dialog, configDiff(), true);
-
-  assert.deepEqual(dialog.reads, ["preview_gateway_agent_config_diff"]);
-  assert.match(text(tree), /查看 OpenCode 配置差异/);
-  assert.match(text(tree), /接入前存档 → 当前文件/);
-  assert.match(text(tree), /\/test\/opencode.jsonc/);
-  assert.doesNotMatch(text(tree), /断开并还原|正在还原/);
-  assert.equal(elements(tree).some((element) => element.props.className === "gw-disconnect-confirm"), false);
-  assert.ok(elements(tree).some((element) => element.type === "button" && text(element) === "关闭"));
-  assert.equal(dialog.applies.length, 0);
-});
-
-test("历史差异显示实际备份基线与安全文本路径，不声称是接入前存档", async () => {
-  const dialog = harness(true, true);
-  dialog.render();
-  const diff = configDiff("historicalBackup");
-  const tree = await ready(dialog, {
-    ...diff,
-    files: [{ ...diff.files[0], kind: "create" }],
-  }, true);
-
-  assert.match(text(tree), /比较方向：历史备份 → 当前文件/);
-  assert.match(text(tree), /历史备份不保证是本次接入前的配置/);
-  assert.match(text(tree), /当前文件为新增/);
-  assert.ok(elements(tree).some((element) => element.type === "code" && text(element) === diff.baselinePath));
-  assert.equal(elements(tree).some((element) => "dangerouslySetInnerHTML" in element.props), false);
-  assert.doesNotMatch(text(tree), /接入前存档|接入后新增|还原后将选择|断开并直连|断开并还原/);
-  assert.equal(dialog.applies.length, 0);
-});
-
-test("只读差异失败与返回其他Agent时保持只读，刷新可恢复", async () => {
-  const dialog = harness(false, true);
-  dialog.render();
-  dialog.loads[0].resolve({ status: "error", message: "差异无法读取", diff: null });
-  await flush();
-  let tree = dialog.render();
-  assert.match(text(tree), /差异无法读取/);
-  assert.doesNotMatch(text(tree), /断开并还原|当前无法安全还原|接入前存档/);
-
-  button(tree, "刷新差异").props.onClick();
-  tree = await ready(dialog, { ...configDiff(), agent: "codex" }, true);
-  assert.match(text(tree), /无法获取配置差异/);
-  assert.doesNotMatch(text(tree), /无法获取断开预览|断开并还原/);
-
-  button(tree, "刷新差异").props.onClick();
-  dialog.loads.at(-1)!.reject(new Error("差异读取失败"));
-  await flush();
-  tree = dialog.render();
-  assert.match(text(tree), /差异读取失败/);
-  assert.equal(elements(tree).some((element) => element.props.className === "gw-disconnect-confirm"), false);
-
-  button(tree, "刷新差异").props.onClick();
-  tree = await ready(dialog, configDiff("historicalBackup"), true);
-  assert.match(text(tree), /历史备份 → 当前文件/);
-  assert.ok(dialog.reads.every((command) => command === "preview_gateway_agent_config_diff"));
-  assert.equal(dialog.applies.length, 0);
-});
-
-test("只读差异刷新只接受最新基线，空列表按基线显示", async () => {
-  const dialog = harness(false, true);
-  dialog.render();
-  let tree = await ready(dialog, { ...configDiff(), files: [] }, true);
-  assert.match(text(tree), /当前文件与接入前存档没有可显示的差异/);
-  assert.doesNotMatch(text(tree), /当前文件与历史备份没有可显示的差异|没有需要改写|当前无法安全还原/);
-
-  const refresh = button(tree, "刷新差异");
-  refresh.props.onClick();
-  refresh.props.onClick();
-  tree = dialog.render();
-  assert.match(text(tree), /正在读取配置差异/);
-  assert.doesNotMatch(text(tree), /接入前存档|历史备份 →/);
-  tree = await ready(dialog, { ...configDiff("historicalBackup"), files: [] }, true);
-  dialog.loads[1].resolve({ status: "ok", message: "", diff: configDiff() });
-  await flush();
-  tree = dialog.render();
-  assert.match(text(tree), /历史备份 → 当前文件/);
-  assert.match(text(tree), /当前文件与历史备份没有可显示的差异/);
-  assert.doesNotMatch(text(tree), /接入前存档|断开并还原|没有需要改写|当前无法安全还原/);
-  assert.equal(dialog.applies.length, 0);
-  button(tree, "关闭").props.onClick();
-  assert.equal(dialog.closeCount(), 1);
 });
 
 function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) {
@@ -509,12 +408,4 @@ test("展开详情才展示配置证据；无证据不声称配置已验证，�
   assert.match(text(tree), /opencode.jsoncprovider与网关配置一致/);
   assert.match(text(tree), /认证已失效 · HTTP 401/);
   assert.doesNotMatch(text(tree), /endpoint_match|auth_invalid/);
-});
-
-test("Agent详情的配置查看入口打开只读差异，不再打开文件管理器", () => {
-  const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
-  assert.match(agents, /onViewConfigDiff=\{\(\) => setConfigDiffOpen\(true\)\}/);
-  assert.match(agents, /onClick=\{onViewConfigDiff\}/);
-  assert.match(agents, /readOnly/);
-  assert.doesNotMatch(agents, /reveal_gateway_agent_config/);
 });

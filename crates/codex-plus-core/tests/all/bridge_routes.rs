@@ -1036,7 +1036,7 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
             &std::fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()
         )
         .unwrap(),
-        json!({"enabled": false, "scripts": {}})
+        json!({"enabled": false, "scripts": {}, "claude_scripts": {}})
     );
 }
 

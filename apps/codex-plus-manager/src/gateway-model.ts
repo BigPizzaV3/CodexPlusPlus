@@ -180,14 +180,6 @@ export type GatewayDisconnectPreview = {
   canDisconnect: boolean;
 };
 
-export type GatewayAgentConfigDiff = {
-  agent: string;
-  baseline: "beforeGateway" | "historicalBackup";
-  baselinePath: string | null;
-  files: GatewayDisconnectFile[];
-  warnings: string[];
-};
-
 export type GatewayAgentView = {
   agent: GatewayAgentId;
   name: string;
@@ -1409,7 +1401,8 @@ export function shortDate(date: string, english = false): string {
 /* —————————————— 会话 —————————————— */
 
 export type SessionAgent = "codex" | "claude" | "grok";
-export type AgentSessionView = { agent: SessionAgent; id: string; title: string; cwd: string; updatedAtMs: number };
+/** `surface: "desktop"` 是 Claude Desktop 里的会话；`resumeId` 是在终端恢复时用的 id（Desktop 会话与列表 id 不同）。 */
+export type AgentSessionView = { agent: SessionAgent; id: string; title: string; cwd: string; updatedAtMs: number; surface?: "desktop"; archived?: boolean; resumeId?: string };
 
 /** 合并各 Agent 的会话：按更新时间倒序，按 Agent 和关键词（标题、目录、id）过滤。 */
 export function filterSessions(sessions: AgentSessionView[], agent: SessionAgent | "all", query: string): AgentSessionView[] {

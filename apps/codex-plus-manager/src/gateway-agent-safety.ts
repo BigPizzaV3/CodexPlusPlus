@@ -39,14 +39,6 @@ export function disconnectFileLabel(kind: GatewayDisconnectPreview["files"][numb
   }
 }
 
-export function connectionFileLabel(kind: GatewayDisconnectPreview["files"][number]["kind"]): string {
-  switch (kind) {
-    case "create": return "当前文件为新增";
-    case "remove": return "当前文件已删除";
-    case "modify": return "文件内容已变更";
-  }
-}
-
 export function diagnosticEvidenceLabel(code: string): string {
   const labels: Record<string, string> = {
     matches: "与网关配置一致",
