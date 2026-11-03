@@ -314,3 +314,190 @@
   background: transparent;
   padding-inline: 2px;
 }
+
+/* ── 皮肤管理（DreamSkinScreen） ───────────────────────────── */
+
+:root .shell .dream-skin-page.cx-page {
+  display: flex;
+}
+
+:root .shell .dream-skin-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-enable-switch.switch-row {
+  display: inline-flex;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .dream-skin-page .dream-skin-enable-switch.switch-row:hover {
+  background: transparent;
+}
+
+:root .shell .dream-skin-page .dream-skin-selected-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 0;
+  object-fit: cover;
+}
+
+:root .shell .dream-skin-page .dream-skin-selected-row .cx-row-icon {
+  overflow: hidden;
+}
+
+/* 主题视图胶囊：与页签同一种胶囊，不再套一个分段框。 */
+:root .shell .dream-skin-page .dream-skin-browser-toolbar {
+  margin: 0;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs {
+  display: flex;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs button {
+  display: inline-flex;
+  min-height: 0;
+  font-weight: 450;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs button.is-active {
+  box-shadow: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs button > span {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 11.5px;
+}
+
+:root .shell .dream-skin-page .dream-skin-toolbar-button {
+  height: 34px;
+  border-radius: 999px;
+}
+
+/* 主题卡片：无边框的卡片底色，选中用描边，当前运行用绿点标签。 */
+:root .shell .dream-skin-page .dream-skin-theme-list {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  padding: 0;
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-card {
+  border: 1px solid transparent;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-card.is-selected {
+  border-color: hsl(var(--foreground) / 0.45);
+  box-shadow: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-card.is-current::after {
+  border-radius: var(--cx-radius);
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-select {
+  padding: 8px;
+  border-radius: var(--cx-radius);
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-image {
+  border-radius: 8px;
+}
+
+:root .shell .dream-skin-page .dream-skin-market-meta {
+  margin: 0 0 10px;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+/* 自定义主题、诊断与验证：两个同样的折叠卡，默认收起。 */
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold,
+:root .shell .dream-skin-page .dream-skin-customizer {
+  margin: 0;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  box-shadow: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer > summary {
+  min-height: 56px;
+}
+
+/* 诊断折叠与自定义主题共用同一种摘要行（标题 + 说明 + 右侧箭头）。 */
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  gap: 10px;
+  align-items: center;
+  min-height: 56px;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  list-style: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold > summary::after {
+  content: "›";
+  color: hsl(var(--muted-foreground));
+  font-size: 20px;
+  line-height: 1;
+  text-align: center;
+  transform: rotate(90deg);
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold[open] > summary::after {
+  transform: rotate(270deg);
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold[open] > .dream-skin-customizer-content {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0 16px;
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer-title > svg {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer-title strong {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer-title small {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+:root .shell .dream-skin-page .dream-skin-fold-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+:root .shell .dream-skin-page .dream-skin-about {
+  margin: 0;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}

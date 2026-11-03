@@ -9363,220 +9363,192 @@ function DreamSkinScreen({
   const runtimeChecks = status?.checks ?? [];
   const verificationChecks = verification?.checks ?? [];
 
+  const { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxStatusIcon, CxToolbar } = AgentCx;
+  const stateDot = stateTone === "pass" ? "ok" : stateTone === "fail" ? "danger" : stateTone === "warning" ? "warn" : "off";
+  const draftStateLabel = dirty ? t("有未保存修改") : savedThemeSelected ? t("已保存主题") : draft?.builtin ? t("内置主题") : t("当前未保存主题");
+  const viewTab = (view: "local" | "community" | "market", icon: ReactNode, label: string, count: ReactNode) => (
+    <button
+      aria-selected={themeView === view}
+      className={themeView === view ? "is-active" : ""}
+      data-active={themeView === view}
+      onClick={() => setThemeView(view)}
+      role="tab"
+      type="button"
+    >
+      {icon}
+      {label}
+      {count}
+    </button>
+  );
+
   return (
-    <div className="dream-skin-page">
-      <Panel className="dream-skin-panel dream-skin-overview">
-        <CardContent className="dream-skin-overview-content">
-          <div className="dream-skin-overview-heading">
-            <div className="dream-skin-current-copy">
-              <small>{currentThemeLabel}</small>
-              <strong title={currentThemeName}>{currentThemeName}</strong>
-              <span className={`dream-skin-status-pill is-${stateTone}`} role="status">{stateLabel}</span>
-            </div>
-            <div className="dream-skin-overview-controls">
-            <label className="switch-row compact dream-skin-enable-switch">
-              <input
-                checked={form.codexAppDreamSkinEnabled}
-                disabled={!masterEnabled}
-                onChange={(event) => onFormChange({
-                  ...form,
-                  codexAppDreamSkinEnabled: event.currentTarget.checked,
-                  codexAppDreamSkinPaused: false,
-                })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("启用 Codex 皮肤")}</strong>
-              </span>
-              <ToggleVisual />
-            </label>
-              <Button aria-label={t("刷新状态")} onClick={() => void actions.refreshDreamSkinStatus()} size="icon" title={t("刷新状态")} type="button" variant="ghost">
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="dream-skin-selected-summary">
-            <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
-            <div className="dream-skin-selected-copy">
-              <small>{t("正在编辑")}</small>
-              <strong title={theme.name}>{theme.name || t("未命名主题")}</strong>
-              <span className={dirty ? "is-dirty" : ""}>{dirty ? t("有未保存修改") : savedThemeSelected ? t("已保存主题") : draft?.builtin ? t("内置主题") : t("当前未保存主题")}</span>
-            </div>
-            <div className="dream-skin-selection-actions">
-              <Button disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()} type="button" variant="secondary">
-                <Save className="h-4 w-4" />
-                {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
-              </Button>
-              <Button disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
-                <Play className="h-4 w-4" />
-                {pendingRestart ? t("更新待应用") : t("应用所选主题")}
-              </Button>
-              <Button onClick={() => void actions.restoreDreamSkin()} type="button" variant="outline">
-                <RotateCcw className="h-4 w-4" />
-                {t("恢复 Codex 外观")}
-              </Button>
-            </div>
-          </div>
-          {!masterEnabled ? (
-            <div className="hint-line"><Info className="h-4 w-4" /><span>{t("请先在 Codex增强 页面开启总开关。")}</span></div>
-          ) : null}
-          {pendingRestart ? (
-            <div className="dream-skin-pending-state" role="status">
-              <Rocket className="h-5 w-5" aria-hidden="true" />
-              <div>
-                <strong>{t("待应用主题")}：{pendingRestart.pendingThemeName}</strong>
-                <small>
-                  {currentThemeLabel}：{pendingRestart.currentThemeName}。{t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}
-                </small>
-              </div>
-              <Button disabled={launchPending} onClick={() => void actions.restart()}>
-                <Rocket className="h-4 w-4" />
-                {t("重启并应用")}
-              </Button>
-            </div>
-          ) : null}
-        </CardContent>
-      </Panel>
-      <Panel className="dream-skin-panel dream-skin-browser">
-        <CardContent>
-          <div className="dream-skin-browser-toolbar">
-            <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
-              <button
-                aria-selected={themeView === "local"}
-                className={themeView === "local" ? "is-active" : ""}
-                onClick={() => setThemeView("local")}
-                role="tab"
-                type="button"
-              >
-                <Palette className="h-4 w-4" />
-                {t("我的主题")}
-                <span className={libraryPending ? "is-loading" : ""} title={libraryPending ? t("加载中…") : undefined}>
-                  {libraryPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : libraryCount}
-                </span>
-              </button>
-              <button
-                aria-selected={themeView === "community"}
-                className={themeView === "community" ? "is-active" : ""}
-                onClick={() => setThemeView("community")}
-                role="tab"
-                type="button"
-              >
-                <Github className="h-4 w-4" />
-                {t("DreamSkin 社区")}
-                <span className={communityPending ? "is-loading" : ""} title={communityPending ? t("加载中…") : undefined}>
-                  {communityPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : communityCount}
-                </span>
-              </button>
-              <button
-                aria-selected={themeView === "market"}
-                className={themeView === "market" ? "is-active" : ""}
-                onClick={() => setThemeView("market")}
-                role="tab"
-                type="button"
-              >
-                <Store className="h-4 w-4" />
-                {t("主题市场")}
-                <span className={marketPending ? "is-loading" : ""} title={marketPending ? t("加载中…") : undefined}>
-                  {marketPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : marketCount}
-                </span>
-              </button>
-            </div>
-            {themeView === "local" ? (
-              <Toolbar>
-                <Button disabled={Boolean(installOperation)} variant="outline" onClick={() => void actions.importDreamSkinThemePackage()}>
-                  {installOperation?.source === "import"
-                    ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-                    : <PackageOpen className="h-4 w-4" />}
-                  {installOperation?.source === "import" ? t("导入中…") : t("导入主题包")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.createDreamSkinTheme()}>
-                  <ImagePlus className="h-4 w-4" />
-                  {t("从图片创建")}
-                </Button>
-              </Toolbar>
-            ) : null}
-          </div>
+    <div className="cx-page dream-skin-page">
+      {/* 顶部最多一条提示：总开关关闭 > 有待重启应用的主题。 */}
+      {!masterEnabled ? (
+        <CxBanner icon={<Info />} title={t("请先在 Codex增强 页面开启总开关。")} tone="warn" />
+      ) : pendingRestart ? (
+        <CxBanner
+          detail={`${currentThemeLabel}：${pendingRestart.currentThemeName}。${t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}`}
+          icon={<Rocket />}
+          title={`${t("待应用主题")}：${pendingRestart.pendingThemeName}`}
+          tone="warn"
+        >
+          <button className="cx-primary" disabled={launchPending} onClick={() => void actions.restart()} type="button">
+            <Rocket />
+            {t("重启并应用")}
+          </button>
+        </CxBanner>
+      ) : null}
 
-          {installOperation ? (
-            <DreamSkinInstallProgress label={dreamSkinInstallOperationLabel(installOperation)} />
-          ) : null}
-
-          {themeView === "community" ? (
-            <DreamSkinCommunitySection
-              community={community}
-              communityLoading={communityLoading}
-              installOperation={installOperation}
-              actions={actions}
-              onInstalled={() => setThemeView("local")}
+      {/* 启用开关 + 当前主题一张卡：第一行是皮肤开关与运行状态，第二行是正在编辑的主题和唯一的「应用」。 */}
+      <CxCard className="dream-skin-overview">
+        <CxRow
+          detail={<span role="status">{currentThemeLabel}：{currentThemeName} · {stateLabel}</span>}
+          icon={<CxStatusIcon tone={stateDot}><Palette /></CxStatusIcon>}
+          title={t("启用 Codex 皮肤")}
+        >
+          <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshDreamSkinStatus()} title={t("刷新状态")} type="button">
+            <RefreshCw />
+          </button>
+          <label className="switch-row compact dream-skin-enable-switch">
+            <input
+              aria-label={t("启用 Codex 皮肤")}
+              checked={form.codexAppDreamSkinEnabled}
+              disabled={!masterEnabled}
+              onChange={(event) => onFormChange({
+                ...form,
+                codexAppDreamSkinEnabled: event.currentTarget.checked,
+                codexAppDreamSkinPaused: false,
+              })}
+              type="checkbox"
             />
-          ) : themeView === "market" ? (
-            <section className="dream-skin-market">
-              <div className="dream-skin-library-head">
-                <div>
-                  <strong>{t("社区主题")}</strong>
-                  <small>
-                    {market?.updatedAt
-                      ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
-                      : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
-                  </small>
-                </div>
-                <Toolbar>
-                  <Button onClick={() => void actions.refreshDreamSkinMarket()} variant="secondary">
-                    <RefreshCw className="h-4 w-4" />
-                    {t("刷新市场")}
-                  </Button>
-                  <Button onClick={() => void actions.openExternalUrl(market?.repositoryUrl || "https://github.com/BigPizzaV3/CodexPlusPlus-Themes")} variant="outline">
-                    <Github className="h-4 w-4" />
-                    {t("投稿主题")}
-                  </Button>
-                </Toolbar>
-              </div>
-              {market?.cached || market?.warning ? (
-                <div className="dream-skin-market-warning">
-                  <Info className="h-4 w-4" />
-                  <span>{market.warning || t("远程仓库暂不可用，当前显示本地缓存。")}</span>
-                </div>
-              ) : null}
-              {market?.themes.length ? (
-                <div className="dream-skin-market-grid">
-                  {market.themes.map((item) => (
-                    <DreamSkinMarketCard
-                      actions={actions}
-                      installOperation={installOperation}
-                      key={item.id}
-                      onInstalled={() => setThemeView("local")}
-                      theme={item}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="empty">
-                  {market?.status === "failed" ? market.message : (
-                    <span className="dream-skin-loading" role="status">
-                      {marketPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
-                      {t("正在加载主题市场…")}
-                    </span>
-                  )}
-                </div>
-              )}
-            </section>
-          ) : (
-            <>
-          <section className="dream-skin-theme-library">
-            <div className="dream-skin-library-head">
-              <div>
-                <strong>{t("我的主题")}</strong>
-                <small>
-                  {pendingRestart
-                    ? t("选择其他卡片可继续调整待应用主题；当前界面不会自动重启。")
-                    : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
-                </small>
-              </div>
-              <div className="dream-skin-local-search">
-                <Search aria-hidden="true" className="h-4 w-4" />
-                <Input aria-label={t("搜索我的主题")} onChange={(event) => setLocalQuery(event.currentTarget.value)} placeholder={t("搜索主题名称")} type="search" value={localQuery} />
-              </div>
+            <ToggleVisual />
+          </label>
+        </CxRow>
+        <CxRow
+          badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
+          className="dream-skin-selected-row"
+          detail={t("正在编辑")}
+          icon={<img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} />}
+          title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
+        >
+          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
+            <Play />
+            {pendingRestart ? t("更新待应用") : t("应用所选主题")}
+          </button>
+          <Menu>
+            <MenuItem disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
+              {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
+            </MenuItem>
+            <MenuItem onClick={() => void actions.restoreDreamSkin()}>{t("恢复 Codex 外观")}</MenuItem>
+          </Menu>
+        </CxRow>
+      </CxCard>
+
+      {/* 主题库：三个胶囊切换「我的 / 社区 / 市场」，右侧是当前视图的操作。 */}
+      <div className="cx-filters dream-skin-browser-toolbar">
+        <nav aria-label={t("主题视图")} className="tp-tabs cx-pills dream-skin-view-tabs" role="tablist">
+          {viewTab("local", <Palette className="h-4 w-4" />, t("我的主题"), (
+            <span className={libraryPending ? "is-loading" : "cx-pill-count"} title={libraryPending ? t("加载中…") : undefined}>
+              {libraryPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : libraryCount}
+            </span>
+          ))}
+          {viewTab("community", <Github className="h-4 w-4" />, t("DreamSkin 社区"), (
+            <span className={communityPending ? "is-loading" : "cx-pill-count"} title={communityPending ? t("加载中…") : undefined}>
+              {communityPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : communityCount}
+            </span>
+          ))}
+          {viewTab("market", <Store className="h-4 w-4" />, t("主题市场"), (
+            <span className={marketPending ? "is-loading" : "cx-pill-count"} title={marketPending ? t("加载中…") : undefined}>
+              {marketPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : marketCount}
+            </span>
+          ))}
+        </nav>
+        {themeView === "market" ? (
+          <div className="cx-filters-trailing">
+            <button className="cx-secondary" onClick={() => void actions.refreshDreamSkinMarket()} type="button">
+              <RefreshCw />
+              {t("刷新市场")}
+            </button>
+            <button className="cx-secondary" onClick={() => void actions.openExternalUrl(market?.repositoryUrl || "https://github.com/BigPizzaV3/CodexPlusPlus-Themes")} type="button">
+              <Github />
+              {t("投稿主题")}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {themeView === "local" ? (
+        <CxToolbar onQuery={setLocalQuery} placeholder={t("搜索主题名称")} query={localQuery}>
+          <button className="cx-secondary dream-skin-toolbar-button" disabled={Boolean(installOperation)} onClick={() => void actions.importDreamSkinThemePackage()} type="button">
+            {installOperation?.source === "import"
+              ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+              : <PackageOpen className="h-4 w-4" />}
+            {installOperation?.source === "import" ? t("导入中…") : t("导入主题包")}
+          </button>
+          <button className="cx-primary" onClick={() => void actions.createDreamSkinTheme()} type="button">
+            <ImagePlus className="h-4 w-4" />
+            {t("从图片创建")}
+          </button>
+        </CxToolbar>
+      ) : null}
+
+      {installOperation ? (
+        <DreamSkinInstallProgress label={dreamSkinInstallOperationLabel(installOperation)} />
+      ) : null}
+
+      {themeView === "community" ? (
+        <DreamSkinCommunitySection
+          community={community}
+          communityLoading={communityLoading}
+          installOperation={installOperation}
+          actions={actions}
+          onInstalled={() => setThemeView("local")}
+        />
+      ) : themeView === "market" ? (
+        <section className="dream-skin-market">
+          <p className="dream-skin-market-meta">
+            {market?.updatedAt
+              ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
+              : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
+          </p>
+          {market?.cached || market?.warning ? (
+            <div className="dream-skin-market-warning">
+              <Info className="h-4 w-4" />
+              <span>{market.warning || t("远程仓库暂不可用，当前显示本地缓存。")}</span>
             </div>
+          ) : null}
+          {market?.themes.length ? (
+            <div className="dream-skin-market-grid">
+              {market.themes.map((item) => (
+                <DreamSkinMarketCard
+                  actions={actions}
+                  installOperation={installOperation}
+                  key={item.id}
+                  onInstalled={() => setThemeView("local")}
+                  theme={item}
+                />
+              ))}
+            </div>
+          ) : (
+            <CxCard>
+              <CxEmpty title={market?.status === "failed" ? market.message : (
+                <span className="dream-skin-loading" role="status">
+                  {marketPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
+                  {t("正在加载主题市场…")}
+                </span>
+              )} />
+            </CxCard>
+          )}
+        </section>
+      ) : (
+        <>
+          <section
+            className="dream-skin-theme-library"
+            title={pendingRestart
+              ? t("选择其他卡片可继续调整待应用主题；当前界面不会自动重启。")
+              : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
+          >
             <div className="dream-skin-theme-list">
               {localThemes.map((item) => {
                 const cardPreview = item.previewPath
@@ -9641,19 +9613,21 @@ function DreamSkinScreen({
               })}
             </div>
             {!library ? (
-              <p className="empty">
-                <span className="dream-skin-loading" role="status">
-                  <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-                  {t("正在加载主题库…")}
-                </span>
-              </p>
+              <CxCard>
+                <CxEmpty title={(
+                  <span className="dream-skin-loading" role="status">
+                    <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                    {t("正在加载主题库…")}
+                  </span>
+                )} />
+              </CxCard>
             ) : null}
             {library && !localThemes.length ? (
-              <div className="dream-skin-local-empty">
-                <Search aria-hidden="true" className="h-5 w-5" />
-                <strong>{t("没有匹配的主题")}</strong>
-                <Button onClick={() => setLocalQuery("")} type="button" variant="outline">{t("清除搜索")}</Button>
-              </div>
+              <CxCard>
+                <CxEmpty title={t("没有匹配的主题")}>
+                  <button className="cx-secondary" onClick={() => setLocalQuery("")} type="button">{t("清除搜索")}</button>
+                </CxEmpty>
+              </CxCard>
             ) : null}
           </section>
 
@@ -9666,16 +9640,9 @@ function DreamSkinScreen({
                   <small>{t("图片、文字和配色等高级编辑项")}</small>
                 </span>
               </span>
-              <em className={dirty ? "is-dirty" : ""}>{dirty ? t("有未保存修改") : t("按需展开")}</em>
-            </summary>
+              {dirty ? <em className="is-dirty">{t("有未保存修改")}</em> : null}
+                </summary>
             <div className="dream-skin-customizer-content">
-              <div className="dream-skin-customizer-actions">
-                <Button variant="secondary" onClick={() => void actions.createDreamSkinTheme()}>
-                  <ImagePlus className="h-4 w-4" />
-                  {t("从图片创建")}
-                </Button>
-              </div>
-
               <div className="dream-skin-platform-note">
                 <Info className="h-4 w-4" />
                 <span>
@@ -9906,12 +9873,19 @@ function DreamSkinScreen({
               </div>
             </div>
           </details>
-            </>
-          )}
-        </CardContent>
-      </Panel>
-      <RelayFold className="dream-skin-panel dream-skin-diagnostics-fold" title={t("诊断与验证")}>
-        <p className="relay-fold-description">{t("配置保存在 Codex++，实时操作通过本机回环 CDP 执行")}。{t("检查官方应用身份、CDP renderer、目标样式和页面布局")}</p>
+        </>
+      )}
+      <details className="dream-skin-diagnostics-fold">
+        <summary>
+          <span className="dream-skin-customizer-title">
+            <ShieldCheck className="h-4 w-4" />
+            <span>
+              <strong>{t("诊断与验证")}</strong>
+              <small>{t("检查官方应用身份、CDP renderer、目标样式和页面布局")}</small>
+            </span>
+          </span>
+        </summary>
+        <div className="dream-skin-customizer-content">
           <div className="dream-skin-diagnostics-grid">
             <DreamSkinCheckList title={t("运行诊断")} checks={runtimeChecks} emptyText={t("刷新状态后显示运行诊断。")}/>
             <DreamSkinCheckList title={t("最近实机验证")} checks={verificationChecks} emptyText={t("运行实机验证后显示页面检查结果。")}/>
@@ -9922,28 +9896,25 @@ function DreamSkinScreen({
               <span><small>{t("截图路径")}</small><code>{verification.screenshotPath || t("未保存截图")}</code></span>
             </div>
           ) : null}
-          <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.refreshDreamSkinStatus()}>
-              <RefreshCw className="h-4 w-4" />
+          <div className="dream-skin-fold-actions">
+            <button className="cx-secondary" onClick={() => void actions.refreshDreamSkinStatus()} type="button">
+              <RefreshCw />
               {t("刷新诊断")}
-            </Button>
-            <Button onClick={() => void actions.verifyDreamSkin()}>
-              <ShieldCheck className="h-4 w-4" />
-              {t("实机验证")}
-            </Button>
-            <Button variant="outline" onClick={() => void actions.saveDreamSkinScreenshot()}>
-              <Camera className="h-4 w-4" />
+            </button>
+            <button className="cx-secondary" onClick={() => void actions.saveDreamSkinScreenshot()} type="button">
+              <Camera />
               {t("保存截图")}
-            </Button>
-          </Toolbar>
-      </RelayFold>
-      <details className="dream-skin-about">
-        <summary><ChevronDown aria-hidden="true" className="dream-skin-about-chevron h-4 w-4" /><strong>{t("来源与授权说明")}</strong></summary>
-        <div>
-          <p>{t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}</p>
-          <p>{t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}</p>
+            </button>
+            <button className="cx-primary" onClick={() => void actions.verifyDreamSkin()} type="button">
+              <ShieldCheck />
+              {t("实机验证")}
+            </button>
+          </div>
         </div>
       </details>
+      <p className="dream-skin-about" title={t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}>
+        {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
+      </p>
     </div>
   );
 }
@@ -10070,56 +10041,42 @@ function DreamSkinCommunitySection({
     });
   }, [community?.items, query, sort]);
 
+  const { CxCard, CxEmpty, CxToolbar } = AgentCx;
   return (
-    <section className="dream-skin-community">
-      <div className="dream-skin-library-head">
-        <div>
-          <strong>{t("DreamSkin 社区主题")}</strong>
-          <small>
-            {community?.total
-              ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
-              : t("从 DreamSkin.cc 加载已审核主题包。")}
-          </small>
-        </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshDreamSkinCommunity()} variant="secondary">
-            <RefreshCw className="h-4 w-4" />
-            {t("刷新社区")}
-          </Button>
-          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")} variant="outline">
-            <ExternalLink className="h-4 w-4" />
-            {t("在线主题库")}
-          </Button>
-          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")} variant="outline">
-            <Palette className="h-4 w-4" />
-            {t("在线 Studio")}
-          </Button>
-        </Toolbar>
-      </div>
-      {community?.warning ? (
-        <div className="dream-skin-market-warning">
-          <Info className="h-4 w-4" />
-          <span>{community.warning}</span>
-        </div>
-      ) : null}
-      <div className="dream-skin-community-controls">
-        <Input
-          aria-label={t("搜索社区主题")}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-          placeholder={t("搜索主题名称、作者或许可证")}
-          value={query}
-        />
+    <section
+      className="dream-skin-community"
+      title={community?.total
+        ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
+        : t("从 DreamSkin.cc 加载已审核主题包。")}
+    >
+      {/* 一条工具条：搜索 + 排序 + 刷新；两个外部链接收进三点菜单。 */}
+      <CxToolbar onQuery={setQuery} placeholder={t("搜索主题名称、作者或许可证")} query={query}>
         <AppSelect
+          ariaLabel={t("社区主题排序")}
           onChange={(value) => setSort(value as typeof sort)}
           options={[
             { value: "latest", label: t("最新审核") },
             { value: "popular", label: t("下载最多") },
             { value: "name", label: t("名称排序") },
           ]}
+          size="sm"
           title={t("社区主题排序")}
           value={sort}
         />
-      </div>
+        <button aria-label={t("刷新社区")} className="cx-icon-button" onClick={() => void actions.refreshDreamSkinCommunity()} title={t("刷新社区")} type="button">
+          <RefreshCw />
+        </button>
+        <Menu>
+          <MenuItem onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")}>{t("在线主题库")}</MenuItem>
+          <MenuItem onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")}>{t("在线 Studio")}</MenuItem>
+        </Menu>
+      </CxToolbar>
+      {community?.warning ? (
+        <div className="dream-skin-market-warning">
+          <Info className="h-4 w-4" />
+          <span>{community.warning}</span>
+        </div>
+      ) : null}
       {items.length ? (
         <div className="dream-skin-community-grid">
           {items.map((item) => (
@@ -10133,8 +10090,8 @@ function DreamSkinCommunitySection({
           ))}
         </div>
       ) : (
-        <div className="empty">
-          {!community || communityLoading ? (
+        <CxCard>
+          <CxEmpty title={!community || communityLoading ? (
             <span className="dream-skin-loading" role="status">
               <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
               {t("正在加载 DreamSkin 社区…")}
@@ -10144,7 +10101,10 @@ function DreamSkinCommunitySection({
             : query.trim()
               ? t("没有匹配的社区主题。")
               : t("DreamSkin 社区暂时没有可用主题。")}
-        </div>
+          >
+            {query.trim() ? <button className="cx-secondary" onClick={() => setQuery("")} type="button">{t("清除搜索")}</button> : null}
+          </CxEmpty>
+        </CxCard>
       )}
     </section>
   );
