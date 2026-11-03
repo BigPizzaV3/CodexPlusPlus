@@ -5121,7 +5121,6 @@ export function App() {
                   form={settingsForm}
                   relayEnvironment={relayEnvironment}
                   onFormChange={setSettingsForm}
-                  onOpenGatewaySettings={() => void navigate("gatewaySettings")}
                   actions={actions}
                 />
               )}
@@ -6628,14 +6627,12 @@ function ProxySettingsScreen({
   form,
   relayEnvironment,
   onFormChange,
-  onOpenGatewaySettings,
   actions,
 }: {
   dirty: boolean;
   form: BackendSettings;
   relayEnvironment: RelayEnvironmentResult | null;
   onFormChange: (value: BackendSettings) => void;
-  onOpenGatewaySettings: () => void;
   actions: Actions;
 }) {
   // Codex 被新版网关接管时，旧版专用的设置不起作用，隐藏。
@@ -6711,17 +6708,6 @@ function ProxySettingsScreen({
   return (
     <div className="settings-page proxy-settings-page cx-codex-advanced-body">
       <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
-      <CxRow
-        detail={t("新旧两套共用，统一在「设置 → 网关」里改。")}
-        title={t("本地服务与请求避震")}
-        tooltip={t("本地服务状态、请求体上限和请求避震对新旧两套同时生效，统一在「网关 → 网关设置」里改。")}
-      >
-        <button className="cx-secondary" onClick={onOpenGatewaySettings} type="button">
-          {t("打开网关设置")}
-          <ArrowRight aria-hidden="true" />
-        </button>
-      </CxRow>
-
       {takenOverByGateway ? (
         <CxRow
           detail={t("Codex 正由 Codex++ 网关接管，旧版代理设置不起作用，已隐藏。断开并还原后恢复。")}
@@ -7369,40 +7355,32 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
         : t("等待检测。"),
     },
   ];
-  const allPassed = Boolean(result) && checks.every((check) => check.passed);
+  const failed = result ? checks.filter((check) => !check.passed) : [];
 
+  // 一行：全部正常时只显示结论；有问题时下面逐条列出要处理的项。
   return (
-    <Panel>
-      {/* 「重新检测」放在标题栏右侧，与其它卡片的页面级操作同位，不再单独占一行。 */}
-      <CardHeader className="panel-head relay-environment-head">
-        <CardTitle>{t("中转站环境配置检测")}</CardTitle>
-        <div className="relay-environment-head-side">
-          <CardDescription>
-            {result ? (allPassed ? t("三项检测全部通过") : t("检测到需要处理的环境问题")) : t("正在读取本机环境")}
-          </CardDescription>
-          <Button onClick={() => void actions.refreshRelayEnvironment()} size="sm" variant="outline">
-            <RefreshCw className="h-4 w-4" />
-            {t("重新检测")}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="relay-environment-checks">
-          {checks.map((check) => (
-            <div className={`relay-environment-check ${result ? (check.passed ? "ok" : "failed") : "pending"}`} key={check.id}>
-              <div className="relay-environment-check-icon">
-                {result ? (check.passed ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />) : <RefreshCw className="h-5 w-5" />}
-              </div>
-              <div className="relay-environment-check-copy">
-                <strong>{check.title}</strong>
-                <span>{check.detail}</span>
-              </div>
-              <Badge status={result ? (check.passed ? "ok" : "failed") : "not_checked"} />
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Panel>
+    <>
+      <CxRow
+        detail={!result ? t("正在读取本机环境") : failed.length ? tf("{0} 项需要处理，处理后重启 Codex", [failed.length]) : t("Clash TUN、代理环境变量、.env 文件都正常")}
+        icon={<CxStatusIcon tone={!result ? undefined : failed.length ? "warn" : "ok"}><ShieldCheck aria-hidden="true" /></CxStatusIcon>}
+        title={t("中转站环境检测")}
+        tooltip={t("直连第三方中转站时，Clash Verge Rev 的 TUN 模式、系统代理环境变量和 ~/.codex/.env 都可能让请求走错地方。")}
+      >
+        <button className="cx-secondary" onClick={() => void actions.refreshRelayEnvironment()} type="button">
+          <RefreshCw aria-hidden="true" />
+          {t("重新检测")}
+        </button>
+      </CxRow>
+      {failed.map((check) => (
+        <CxRow
+          className="cx-env-issue"
+          detail={check.detail}
+          icon={<CxStatusIcon tone="warn"><ShieldAlert aria-hidden="true" /></CxStatusIcon>}
+          key={check.id}
+          title={check.title}
+        />
+      ))}
+    </>
   );
 }
 
@@ -8095,41 +8073,40 @@ function RelayScreen({
           />
         </CxSection>
       ) : null}
-      {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。 */}
+      {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。
+          都是直连专用：被网关接管时整块不显示；配置切换被关掉时仍显示，好把它重新打开。 */}
+      {takenOverByGateway && normalized.relayProfilesEnabled ? null : (
       <CxSection>
         <CxCard>
           <details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced" id="codex-connection-advanced" open={advancedOpen || undefined}>
             <summary>
-              {t("高级：配置切换、模型映射、独立代理与环境检测")}
+              {t("高级")}
               <span className="cx-set-summary-hint">{normalized.relayProfilesEnabled ? t("配置切换已开启") : t("配置切换已关闭")}</span>
             </summary>
             <CxRow
               detail={t("关闭后 Codex++ 不再写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
               title={t("供应商配置切换")}
+              tooltip={takenOverByGateway ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前网关。") : undefined}
             >
-              {!takenOverByGateway || !normalized.relayProfilesEnabled ? <label
-              className="switch-row compact relay-master-switch relay-master-switch-compact"
-              title={takenOverByGateway
-                ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前网关。")
-                : t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
-            >
-              <input
-                aria-label={t("启用供应商配置切换")}
-                checked={normalized.relayProfilesEnabled}
-                onChange={(event) => {
-                  const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
-                  void saveRelaySettings(next);
-                }}
-                type="checkbox"
-              />
-              <span>{t("配置切换")}</span>
-              <ToggleVisual />
-            </label> : null}
+              <label className="switch-row compact relay-master-switch relay-master-switch-compact">
+                <input
+                  aria-label={t("启用供应商配置切换")}
+                  checked={normalized.relayProfilesEnabled}
+                  onChange={(event) => {
+                    const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
+                    void saveRelaySettings(next);
+                  }}
+                  type="checkbox"
+                />
+                <span>{t("配置切换")}</span>
+                <ToggleVisual />
+              </label>
             </CxRow>
             {advanced}
           </details>
         </CxCard>
       </CxSection>
+      )}
     </div>
   );
 }

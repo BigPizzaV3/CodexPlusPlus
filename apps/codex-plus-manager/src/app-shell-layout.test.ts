@@ -337,6 +337,13 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   assert.doesNotMatch(legacy, /helperMaxRequestBodyMib|protocolProxyAutoRetryMaxAttempts/);
   assert.match(legacy, /const takenOverByGateway = form\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(legacy, /t\("目录外模型映射（旧版）"\)/);
+  // 跳去网关设置的那一行没用，删掉；环境检测全部正常时只占一行。
+  assert.doesNotMatch(legacy, /本地服务与请求避震|onOpenGatewaySettings/);
+  const env = functionSource("RelayEnvironmentScreen");
+  assert.match(env, /const failed = result \? checks\.filter\(\(check\) => !check\.passed\) : \[\];/);
+  assert.match(env, /\{failed\.map\(\(check\) => \(/);
+  // 「高级」全是直连专用：被网关接管时整块不显示（配置切换被关掉时仍显示，好重新打开）。
+  assert.match(functionSource("RelayScreen"), /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\n\s*<CxSection>\n\s*<CxCard>\n\s*<details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced"/);
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
@@ -396,7 +403,8 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   const screen = functionSource("RelayScreen");
   assert.doesNotMatch(screen, /actions=\{takenOverByGateway \? null : \(/);
   // 总开关收进页面底部「高级」；关闭时页面顶部一条提示带「打开配置切换」。
-  assert.match(screen, /\{!takenOverByGateway \|\| !normalized\.relayProfilesEnabled \? <label\r?\n\s+className="switch-row compact relay-master-switch/);
+  // 被网关接管时整个「高级」不显示；只有总开关被关掉时才显示，好把它重新打开。
+  assert.match(screen, /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\r?\n\s*<CxSection>[\s\S]*?className="switch-row compact relay-master-switch/);
   assert.match(screen, /onClick=\{\(\) => void saveRelaySettings\(\{ \.\.\.normalized, relayProfilesEnabled: true \}\)\}/);
   assert.match(screen, /\{takenOverByGateway \? null : \(\r?\n\s+<button className="cx-primary" onClick=\{\(\) => \{ setNewProfileDraft\(null\); setDetailProfileId\(null\); setProviderCatalogOpen\(true\); \}\}/);
   assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关/);

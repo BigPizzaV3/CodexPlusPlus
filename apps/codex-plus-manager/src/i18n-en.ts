@@ -119,6 +119,9 @@ export const EN_PLAIN: Record<string, string> = {
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
   "Codex 正由 Codex++ 网关接管": "Codex is managed by the Codex++ gateway",
+  "Clash TUN、代理环境变量、.env 文件都正常": "Clash TUN, proxy environment variables and .env are all fine",
+  "中转站环境检测": "Relay environment check",
+  "直连第三方中转站时，Clash Verge Rev 的 TUN 模式、系统代理环境变量和 ~/.codex/.env 都可能让请求走错地方。": "When connecting directly to a third-party relay, Clash Verge Rev TUN mode, system proxy variables and ~/.codex/.env can all send requests the wrong way.",
   "推荐用网关的供应商池：本身就按模型分发，所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "The gateway's provider pool is recommended: it already routes by model for every agent. To use it only with Codex direct, create it here.",
   "推荐用网关「路由」里的模型组：所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "Model groups under the gateway's Routing are recommended: every agent can use them. To use it only with Codex direct, create it here.",
   "故障转移是 Codex 专用的小网关。网关「路由」里的模型组做的是同一件事，所有 Agent 都能用；在下面点「加入供应商池」，会建好同名模型组。": "Failover is a small gateway just for Codex. Model groups under the gateway's Routing do the same for every agent; click Add to provider pool below to create a model group with the same name.",
@@ -3380,6 +3383,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "第 {0} 行 · 进程 {1}": "Line {0} · process {1}",
   "再显示 {0} 条": "Show {0} more",
   "Codex 直接请求「{0}」，不经网关": "Codex calls \"{0}\" directly, without the gateway",
+  "{0} 项需要处理，处理后重启 Codex": "{0} items need attention; restart Codex after fixing",
   "{0} 个直连供应商还不在供应商池里": "{0} direct providers aren't in the provider pool yet",
   "用供应商池里的 {0} 个模型：多 Key 轮换、按模型路由、出错自动换下一家": "Uses {0} models from the provider pool: multi-key rotation, routing by model, automatic failover",
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面

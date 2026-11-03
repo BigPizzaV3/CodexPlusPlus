@@ -45,7 +45,7 @@ test("供应商配置总开关关闭时只阻止 Codex 重新接入，旧 payloa
   assert.match(agents, /reconnectAllowed \? \([\s\S]*?重新接入[\s\S]*?: \([\s\S]*?供应商配置切换已关闭[\s\S]*?onOpenCodexProviderSettings/);
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   assert.match(app, /onOpenCodexProviderSettings=\{\(\) => \{ void switchTool\("codex", "relay"\); \}\}/);
-  assert.match(app, /!takenOverByGateway \|\| !normalized\.relayProfilesEnabled/);
+  assert.match(app, /takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(/);
 });
 
 test("预览授权绑定Agent与非空token；文件状态和未知诊断证据不被误标成功", () => {

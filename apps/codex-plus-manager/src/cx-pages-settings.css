@@ -662,6 +662,22 @@
   background: transparent;
 }
 
+/* 自动保存只在出错时露面；平时的「改动会自动保存」不占一行。 */
+:root .shell .cx-codex-advanced-body > .settings-autosave {
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+}
+
+:root .shell .cx-codex-advanced-body > .settings-autosave > [role="status"] {
+  display: none;
+}
+
+:root .shell .cx-codex-advanced-body > .cx-env-issue {
+  border-top: 0;
+  padding-top: 0;
+}
+
 /* 连接方式里两行的状态点在图标右下角。 */
 :root .shell .cx-codex-connection .cx-row-icon svg {
   width: 16px;
