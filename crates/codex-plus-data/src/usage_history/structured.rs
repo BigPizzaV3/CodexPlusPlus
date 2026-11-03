@@ -126,6 +126,10 @@ impl RequestSessionAliases {
     }
 
     fn new(aliases: &BTreeMap<String, String>) -> Self {
+        Self::from_pairs(aliases.iter())
+    }
+
+    fn from_pairs<'a>(aliases: impl Iterator<Item = (&'a String, &'a String)>) -> Self {
         let mut edges: HashMap<String, String> = HashMap::new();
         let mut neighbors: HashMap<String, Vec<String>> = HashMap::new();
         let mut conflicts = HashSet::new();
@@ -1573,7 +1577,15 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
         }
     }
     let snapshot = state.snapshot.clone();
+    let storage = provider_cache::storage_dir(home, &state.settings_path);
     let processing = state.active;
+    // clear 取得 homes 锁后才能完成关闭；同步读缓存也必须留在这条边界内。
+    let live_attributions = live_receipts::match_captured_receipts(
+        &storage,
+        &snapshot.live_requests,
+        &snapshot.aliases,
+        &request["liveReceipts"],
+    );
     drop(state);
     // clear 必须等本次启动登记完成，才能移除缓存并收齐后台任务。
     drop(homes);
@@ -1591,11 +1603,7 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             request["startAt"].as_i64().zip(request["endAt"].as_i64()),
         );
     }
-    response["liveAttributions"] = live_receipts::match_receipts(
-        &snapshot.live_requests,
-        &snapshot.aliases,
-        &request["liveReceipts"],
-    );
+    response["liveAttributions"] = live_attributions;
     if request["includeActivity"] != true {
         if let Some(response) = response.as_object_mut() {
             for key in [

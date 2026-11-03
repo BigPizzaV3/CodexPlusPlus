@@ -1,6 +1,7 @@
 /**
- * 会话：Codex、Claude Code、Grok 的本地会话放在一起，可以复制恢复命令或删除。
+ * 会话：Codex、Claude Code（含 Claude Desktop 里的）、Grok 的本地会话放在一起，可以复制恢复命令或删除。
  * 删除前确认；Codex 会话走它自己的删除（带备份），Claude Code / Grok 的会话移进废纸篓，可以找回。
+ * Claude Desktop 的会话由后端按 Desktop 的会话记录合并（标题、归档状态以 Desktop 为准），删除要求 Desktop 已退出。
  */
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -89,7 +90,9 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     const confirmed = await appConfirm(
       session.agent === "codex"
         ? tf("删除 Codex 会话「{0}」？删除前会自动备份。", [title])
-        : tf("删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。", [agentName(session.agent), title]),
+        : session.surface === "desktop"
+          ? tf("从 Claude Desktop 删除会话「{0}」？会话记录和对话文件会移到废纸篓。需要先退出 Claude Desktop。", [title])
+          : tf("删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。", [agentName(session.agent), title]),
       { title: t("删除会话"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed) return;
@@ -114,7 +117,8 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     }
   };
   const copyCommand = async (session: AgentSessionView) => {
-    const command = session.agent === "codex" ? `codex resume ${session.id}` : `${session.agent} --resume ${session.id}`;
+    const id = session.resumeId ?? session.id;
+    const command = session.agent === "codex" ? `codex resume ${id}` : `${session.agent} --resume ${id}`;
     const text = session.cwd ? `cd ${JSON.stringify(session.cwd)} && ${command}` : command;
     try {
       await navigator.clipboard.writeText(text);
@@ -160,7 +164,11 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
             <div className="gw-session-row" key={`${session.agent}:${session.id}`}>
               <span className="gw-session-agent-wrap" title={agentName(session.agent)}><AgentIcon agent={session.agent} className="gw-session-agent" /></span>
               <div className="gw-session-main">
-                <strong title={session.title}>{session.title || t("（没有标题）")}</strong>
+                <strong title={session.title}>
+                  {session.surface === "desktop" ? <span className="gw-pill" title={t("Claude Desktop 里的会话")}>Desktop</span> : null}
+                  {session.archived ? <span className="gw-pill">{t("已归档")}</span> : null}
+                  {session.title || t("（没有标题）")}
+                </strong>
                 <small title={session.cwd}>{session.cwd ? shortPath(session.cwd) : t("（没有目录）")}</small>
               </div>
               <span className="gw-session-time">{when.args.length ? tf(when.text, when.args) : t(when.text)}</span>

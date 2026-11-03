@@ -1121,6 +1121,9 @@ pub struct BackendSettings {
     // 与「准备副本」这件事互不影响——副本只是所有增强共同的前置条件。
     #[serde(rename = "claudeAppLocalization", default = "default_true")]
     pub claude_app_localization: bool,
+    /// 默认关闭：只在受管 Claude 副本启动时加载声明适配 Claude Code 的拓展。
+    #[serde(rename = "claudeAppExtensions", default)]
+    pub claude_app_extensions: bool,
     // 默认关闭：Computer Use 需要改写副本的 app.asar 并关掉 Electron 的 asar 完整性校验，
     // 功能本身还受订阅与组织策略约束；误开没有收益，显式勾选才做。
     #[serde(rename = "claudeAppComputerUse", default)]
@@ -1464,6 +1467,7 @@ impl Default for BackendSettings {
             codex_app_proxy_request_status: true,
             claude_app_voice_input: true,
             claude_app_localization: true,
+            claude_app_extensions: false,
             claude_app_computer_use: false,
             claude_app_bash_timeout: ClaudeBashTimeoutSettings::default(),
             computer_use_approval: default_computer_use_approval(),
@@ -2741,6 +2745,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         }
         target.insert("dictation".to_string(), Value::Object(dictation));
     }
+    merge_bool_setting(target, source, "claudeAppExtensions");
     merge_bool_setting(target, source, "relayPreserveNonproviderSettings");
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
@@ -3950,6 +3955,38 @@ mod tests {
         let parsed: BackendSettings = serde_json::from_value(off).unwrap();
         assert!(!parsed.claude_app_voice_input, "显式关闭必须被尊重");
         assert!(!parsed.claude_app_localization, "显式关闭必须被尊重");
+    }
+
+    #[test]
+    fn claude_extensions_default_off_and_respect_explicit_choice() {
+        assert!(!BackendSettings::default().claude_app_extensions);
+        let mut value = serde_json::to_value(BackendSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("claudeAppExtensions");
+        let legacy: BackendSettings = serde_json::from_value(value.clone()).unwrap();
+        assert!(!legacy.claude_app_extensions, "旧配置不能自动加载 Claude 拓展");
+
+        for enabled in [true, false] {
+            value["claudeAppExtensions"] = json!(enabled);
+            let parsed: BackendSettings = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(parsed.claude_app_extensions, enabled);
+            assert_eq!(serde_json::to_value(parsed).unwrap()["claudeAppExtensions"], enabled);
+        }
+    }
+
+    #[test]
+    fn claude_extensions_partial_updates_persist_explicit_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(!store.load().unwrap().claude_app_extensions);
+
+        for enabled in [true, false] {
+            let updated = store.update(json!({"claudeAppExtensions": enabled})).unwrap();
+            assert_eq!(updated.claude_app_extensions, enabled);
+            assert_eq!(store.load().unwrap().claude_app_extensions, enabled);
+            let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(raw["claudeAppExtensions"], json!(enabled));
+        }
     }
 
     #[test]

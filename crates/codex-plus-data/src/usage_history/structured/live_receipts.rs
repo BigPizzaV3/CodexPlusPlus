@@ -5,6 +5,9 @@ const MAX_RECEIPTS: usize = 128;
 const MAX_MERGED: usize = 8;
 const COMPLETION_LAG_MS: i64 = 1_000;
 
+#[cfg(test)]
+mod captured_tests;
+
 fn within_receipt_window(record: &RequestEvidence, receipt_at: i64, lookback_ms: i64) -> bool {
     // 用量通知可能先于网关完成日志到达；只接受通知前已开始的请求。
     record.started_at_ms <= receipt_at
@@ -72,6 +75,142 @@ fn receipt_model_matches(model: &str, actual: &str, provider: &str) -> bool {
             .strip_prefix(provider)
             .and_then(|suffix| suffix.strip_prefix('/'))
             == Some(actual)
+}
+
+pub(super) fn match_captured_receipts(
+    storage: &Path,
+    records: &[RequestEvidence],
+    aliases: &BTreeMap<String, String>,
+    input: &Value,
+) -> Value {
+    let Some(rows) = input
+        .as_array()
+        .filter(|rows| !rows.is_empty() && rows.len() <= MAX_RECEIPTS)
+    else {
+        return json!([]);
+    };
+    let receipts: Vec<_> = rows
+        .iter()
+        .filter_map(|row| serde_json::from_value::<Receipt>(row.clone()).ok())
+        .filter(|receipt| receipt.delta().is_some())
+        .collect();
+    if receipts.is_empty() {
+        return json!([]);
+    }
+    let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+    let Ok(cache) = provider_cache::ProviderCache::read_snapshot(storage, cutoff) else {
+        return json!([]);
+    };
+    // 保留矛盾边的两个目标，整组别名一起失效，不能隐藏旧目标里的竞争请求。
+    let resolved = RequestSessionAliases::from_pairs(cache.aliases.iter().chain(aliases.iter()));
+    let mut combined_aliases = cache.aliases.clone();
+    combined_aliases.extend(aliases.clone());
+    for (session, target) in &resolved.canonical {
+        if target.is_none() {
+            combined_aliases.insert(session.clone(), String::new());
+        }
+    }
+    let mut targets: BTreeMap<String, Vec<&Receipt>> = BTreeMap::new();
+    for receipt in &receipts {
+        if let Some(session) = resolved.resolve(&receipt.session_id) {
+            targets.entry(session).or_default().push(receipt);
+        }
+    }
+    let mut combined = records.to_vec();
+    let mut observed: HashMap<_, _> = records
+        .iter()
+        .map(|row| (row.id.clone(), row.clone()))
+        .collect();
+    let mut incomplete_sessions = HashSet::new();
+    for (session, receipts) in targets {
+        let since = receipts
+            .iter()
+            .map(|row| row.timestamp)
+            .min()
+            .unwrap()
+            .saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS);
+        let until = receipts
+            .iter()
+            .map(|row| row.timestamp)
+            .max()
+            .unwrap()
+            .saturating_add(COMPLETION_LAG_MS);
+        let mut sources = vec![session.clone()];
+        sources.extend(
+            resolved
+                .canonical
+                .keys()
+                .filter(|alias| {
+                    **alias != session && resolved.resolve(alias).as_ref() == Some(&session)
+                })
+                .cloned(),
+        );
+        if sources.len() > 16 {
+            return json!([]);
+        }
+        let mut floor = 0;
+        let mut captured = Vec::new();
+        for source in sources {
+            let Ok(batch) = cache.captured_proxy(&source, since, until) else {
+                return json!([]);
+            };
+            if !batch.complete {
+                return json!([]);
+            }
+            floor = floor.max(batch.floor);
+            if captured.len().saturating_add(batch.rows.len()) > MAX_ROWS_CAPTURED_PROXY {
+                return json!([]);
+            }
+            captured.extend(batch.rows);
+        }
+        for receipt in receipts {
+            if receipt
+                .timestamp
+                .saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                < floor
+            {
+                incomplete_sessions.insert(session.clone());
+            }
+        }
+        for row in captured.into_iter().filter(|row| row.timestamp_ms >= floor) {
+            if observed.get(&row.id) == Some(&row) {
+                continue;
+            }
+            if combined.len() >= MAX_ROWS_CAPTURED_PROXY {
+                return json!([]);
+            }
+            observed.insert(row.id.clone(), row.clone());
+            combined.push(row);
+        }
+    }
+    let Ok(rejected) = cache.rejected_proxy_ids_read_only(&combined) else {
+        return json!([]);
+    };
+    for row in &mut combined {
+        if rejected.contains(&row.id) {
+            row.success = false;
+        }
+    }
+    // 仍由同一匹配器检查签名、计数、完整竞争和双向唯一性。
+    let mut result = match_receipts(&combined, &combined_aliases, input);
+    let output = result.as_array_mut().unwrap();
+    let incomplete: HashSet<_> = receipts
+        .iter()
+        .filter(|row| {
+            resolved
+                .resolve(&row.session_id)
+                .is_some_and(|session| incomplete_sessions.contains(&session))
+        })
+        .map(|row| row.id.clone())
+        .collect();
+    output.retain(|row| row["id"].as_str().is_none_or(|id| !incomplete.contains(id)));
+    for receipt in receipts.iter().filter(|row| incomplete.contains(&row.id)) {
+        let delta = receipt.delta().unwrap();
+        output.push(json!({"id":receipt.id,"sessionId":receipt.session_id,
+            "timestamp":receipt.timestamp,"input":delta.input,"output":delta.output,
+            "cached":delta.cached,"rejected":true}));
+    }
+    result
 }
 
 pub(super) fn match_receipts(
@@ -363,7 +502,7 @@ pub(super) fn match_receipts(
 mod completion_lag_tests {
     use super::*;
 
-    fn request(
+    pub(super) fn request(
         id: &str,
         receipt_at: i64,
         lag: i64,
@@ -382,13 +521,13 @@ mod completion_lag_tests {
         .unwrap()
     }
 
-    fn receipt(id: &str, at: i64, input: u64, output: u64, cached: u64) -> Value {
+    pub(super) fn receipt(id: &str, at: i64, input: u64, output: u64, cached: u64) -> Value {
         json!({"id": id, "sessionId": "session", "timestamp": at,
             "before": {"input": 0, "output": 0, "cached": 0},
             "after": {"input": input, "output": output, "cached": cached}})
     }
 
-    fn positive(rows: &Value) -> bool {
+    pub(super) fn positive(rows: &Value) -> bool {
         rows.as_array()
             .unwrap()
             .iter()

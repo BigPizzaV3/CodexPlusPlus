@@ -5,6 +5,7 @@ $app = $env:CODEX_PLUS_CLAUDE_COPY
 $hook = Join-Path (Split-Path $MyInvocation.MyCommand.Path -Parent) 'hook.js'
 if (-not (Test-Path $app)) { throw "找不到 Claude：$app" }
 $port = 19000 + (Get-Random -Minimum 0 -Maximum 1000)
+# Start-Process 继承此脚本的进程环境（包括 CLAUDE_CODE_PLUGIN_DIRS），不写用户或系统环境。
 $proc = Start-Process -FilePath $app -ArgumentList "--inspect=127.0.0.1:$port" -PassThru
 $deadline = (Get-Date).AddSeconds(45)
 $target = $null

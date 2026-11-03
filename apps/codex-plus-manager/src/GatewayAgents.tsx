@@ -2,9 +2,10 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { appConfirm } from "./app-dialog";
 import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
+import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
+import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
 import {
   agentModels,
   agentPoolProviders,
@@ -44,12 +45,14 @@ export function AgentsView({
   run,
   notify,
   onManage,
+  onOpenCodexProviderSettings,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
   run: Run;
   notify: Notify;
   onManage: () => void;
+  onOpenCodexProviderSettings?: () => void;
 }) {
   // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
   const focus = useAgentFocus();
@@ -66,6 +69,7 @@ export function AgentsView({
       key={agent.agent}
       notify={notify}
       onManage={onManage}
+      onOpenCodexProviderSettings={onOpenCodexProviderSettings}
       onToggleExpand={() => setExpanded(expanded === agent.agent ? null : agent.agent)}
       payload={payload}
       run={run}
@@ -93,6 +97,7 @@ export function AgentConnectDialog({
   run,
   notify,
   onManage,
+  onOpenCodexProviderSettings,
   onClose,
 }: {
   payload: GatewayPayload | null;
@@ -100,6 +105,7 @@ export function AgentConnectDialog({
   run: Run;
   notify: Notify;
   onManage: () => void;
+  onOpenCodexProviderSettings?: () => void;
   onClose: () => void;
 }) {
   // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。
@@ -112,7 +118,7 @@ export function AgentConnectDialog({
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body gw-agent-modal-body">
-          <AgentsView busy={busy} notify={notify} onManage={onManage} payload={payload} run={run} />
+          <AgentsView busy={busy} notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
         </div>
       </div>
     </div>
@@ -126,6 +132,7 @@ function AgentRow({
   expanded,
   onToggleExpand,
   onManage,
+  onOpenCodexProviderSettings,
   run,
   notify,
 }: {
@@ -135,12 +142,14 @@ function AgentRow({
   expanded: boolean;
   onToggleExpand: () => void;
   onManage: () => void;
+  onOpenCodexProviderSettings?: () => void;
   run: Run;
   notify: Notify;
 }) {
   const binding = payload?.gateway.bindings[agent.agent as GatewayAgentId];
   const [draft, setDraft] = useState<BindingDraft>(() => draftFromBinding(binding));
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState<PickerItem | "disconnect" | null>(null);
   // 后端保存后（或别处改动后）用最新绑定重置表单。
   const bindingKey = JSON.stringify(binding ?? null);
   useEffect(() => {
@@ -159,24 +168,18 @@ function AgentRow({
     }
     return run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding) }, t("保存网关绑定"), connected);
   };
-  const disconnect = async () => {
-    const ok = await appConfirm(tf("断开 {0} 与 Codex++ 的连接？会还原它接入前的设置。", [agent.name]), { title: t("断开并还原"), confirmText: t("断开并还原"), danger: true });
-    if (ok) await run(`disable:${agent.agent}`, "disable_gateway_binding", { agent: agent.agent }, t("断开并还原"));
-  };
+  const disconnect = () => setDisconnectTarget("disconnect");
   // 在选择器里选模型：已接入时直接改默认模型，未接入时选完即接入。
   const pick = (item: PickerItem) => {
     setPickerOpen(false);
     void save({ ...draft, model: item.model });
   };
-  // 选 Agent 自带的模型：直连厂商、不经 Codex++。接入着时要先断开并还原，先问一句。
+  // 已接入时先预览还原差异，确认后才断开并选择直连模型。
   const pickOwn = async (item: PickerItem) => {
     setPickerOpen(false);
-    if (connected) {
-      const ok = await appConfirm(
-        tf("改用 {0} 自带的 {1}？{0} 会断开 Codex++、还原接入前的设置，用自己的登录或 Key 直连 {2}。", [agent.name, item.label, item.direct ?? ""]),
-        { title: t("直连，不经 Codex++"), confirmText: t("断开并直连") },
-      );
-      if (!ok) return;
+    if (connected || agent.requiresDisconnectPreview) {
+      setDisconnectTarget(item);
+      return;
     }
     await run(`own:${agent.agent}`, "use_gateway_own_model", { agent: agent.agent, model: item.model }, t("切换模型"));
   };
@@ -195,16 +198,14 @@ function AgentRow({
   };
 
   const running = Boolean(payload?.helperRunning);
-  // 配置被别的工具改掉了：请求不再经过 Codex++，「已接入」名不副实。
   const drift = connected ? agent.drift ?? null : null;
-  const tone = connected ? (running && !drift ? "on" : "error") : "off";
+  const diagnostic = agentDiagnosticPresentation(agent, running);
   const modelCount = agentModels(payload, draft.poolExclude).length;
+  const reconnectAllowed = canReconnectAgent(agent, payload?.relayProfilesEnabled);
   const reconnect = () =>
     run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(draft, binding) }, t("重新接入"));
-  // 状态标签：短词；出问题时才写一句说明。
-  const badge = drift ? t("被改动") : connected ? (running ? t("已接入") : t("网关未运行")) : t("未接入");
-  const note = drift
-    ? tf("配置被 {0} 改了，{1} 现在不经过 Codex++", [drift.by || t("其它工具"), agent.name])
+  const note = diagnostic.reconnect
+    ? drift?.by ? tf("配置被 {0} 改了", [drift.by]) : t("当前文件与接入配置不一致")
     : connected && isClaude
     ? "opus · sonnet · haiku"
     : "";
@@ -227,18 +228,29 @@ function AgentRow({
             {agent.version ? <span className="gw-version">{agent.version}</span> : null}
           </div>
           <small className="gw-agent-meta" title={drift?.endpoint ? tf("现在连的是 {0}", [drift.endpoint]) : undefined}>
-            <span className="gw-agent-badge" data-tone={tone}>{badge}</span>
-            {connected && !drift ? (
+            <span className="gw-agent-badge" data-tone={diagnostic.tone}>{t(diagnostic.badge)}</span>
+            {connected && !diagnostic.reconnect ? (
               <span className="gw-agent-count" title={tf("{0} 个模型", [modelCount])}>
                 <Layers aria-hidden="true" />
                 {modelCount}
               </span>
             ) : null}
             {note ? <span>{note}</span> : null}
-            {drift ? (
-              <button className="gw-link gw-drift-reconnect" disabled={busy !== null} onClick={() => void reconnect()} type="button">
-                {t("重新接入")}
-              </button>
+            {diagnostic.reconnect ? (
+              reconnectAllowed ? (
+                <button className="gw-link gw-drift-reconnect" disabled={busy !== null} onClick={() => void reconnect()} type="button">
+                  {t("重新接入")}
+                </button>
+              ) : (
+                <>
+                  <span>{t("供应商配置切换已关闭，在供应商配置页打开后才能切换")}</span>
+                  {onOpenCodexProviderSettings ? (
+                    <button className="gw-link gw-drift-reconnect" onClick={onOpenCodexProviderSettings} type="button">
+                      {t("打开供应商页")}
+                    </button>
+                  ) : null}
+                </>
+              )
             ) : null}
           </small>
         </div>
@@ -248,7 +260,7 @@ function AgentRow({
           draft={draft}
           onDisconnect={() => {
             setPickerOpen(false);
-            if (connected) void disconnect();
+            if (connected || agent.requiresDisconnectPreview) void disconnect();
           }}
           onOpenChange={setPickerOpen}
           onPick={pick}
@@ -283,6 +295,17 @@ function AgentRow({
             </button>
           </div>
         </>
+      ) : null}
+      {disconnectTarget ? (
+        <AgentDisconnectDialog
+          agent={agent}
+          busy={busy !== null}
+          onApply={(previewToken) => disconnectTarget === "disconnect"
+            ? run(`disable:${agent.agent}`, "disable_gateway_binding", { agent: agent.agent, previewToken }, t("断开并还原"))
+            : run(`own:${agent.agent}`, "use_gateway_own_model", { agent: agent.agent, model: disconnectTarget.model, previewToken }, t("断开并直连"))}
+          onClose={() => setDisconnectTarget(null)}
+          ownModel={disconnectTarget === "disconnect" ? null : disconnectTarget}
+        />
       ) : null}
     </div>
   );
@@ -332,6 +355,7 @@ function AgentDetail({
 
   return (
     <div className="gw-agent-detail">
+      <AgentDiagnostics agent={agent} helperRunning={Boolean(payload?.helperRunning)} />
       {/* 只有 Claude Code 的档位切换需要说明；其它 Agent 在自己的模型列表里直接选，不用再讲一遍。 */}
       {isClaude ? (
         <div className="gw-detail-row">
@@ -514,6 +538,54 @@ function AgentDetail({
           </button>
           <button className="gw-danger-link" disabled={busy !== null} onClick={onDisconnect} type="button">{t("断开并还原")}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentDiagnostics({ agent, helperRunning }: { agent: GatewayAgentView; helperRunning: boolean }) {
+  const diagnostics = agent.diagnostics;
+  const presentation = agentDiagnosticPresentation(agent, helperRunning);
+  const lastSeen = diagnostics?.lastSeenMs
+    ? new Date(diagnostics.lastSeenMs).toLocaleString()
+    : "";
+  return (
+    <div className="gw-detail-row">
+      <span className="gw-detail-label">{t("接入诊断")}</span>
+      <div className="gw-detail-value gw-agent-diagnostics">
+        <div className="gw-agent-diagnostic-summary">
+          <span className="gw-agent-badge" data-tone={presentation.tone}>{t(presentation.badge)}</span>
+          {diagnostics ? <span>{tf("请求 {0} · 失败 {1} · 进行中 {2}", [diagnostics.requests, diagnostics.errors, diagnostics.inFlight])}</span> : null}
+          {lastSeen ? <span>{tf("最近请求：{0}", [lastSeen])}</span> : null}
+        </div>
+        {presentation.tone === "pending" ? <p>{diagnostics?.state === "awaitingTraffic"
+          ? t("配置已指向网关；尚未观察到请求，请在 Agent 里发送一条消息。")
+          : t("尚无足够信息确认请求路径。")}</p> : null}
+        {diagnostics?.state === "configUnreadable" ? <p>{t("未能读取配置，暂时无法判断请求会经过哪里。")}</p> : null}
+        {diagnostics ? (
+          <div className="gw-agent-diagnostic-endpoints">
+            <p><span>{t("当前地址")}</span><code>{diagnostics.endpoint || t("未读取到地址")}</code></p>
+            <p><span>{t("预期地址")}</span><code>{diagnostics.expectedEndpoint}</code></p>
+          </div>
+        ) : null}
+        {diagnostics?.recentError ? (
+          <p className="gw-agent-diagnostic-error">
+            {tf("最近一次网关错误：{0}", [`${t(diagnosticErrorLabel(diagnostics.recentError.kind))}${diagnostics.recentError.status ? ` · HTTP ${diagnostics.recentError.status}` : ""}`])}
+          </p>
+        ) : null}
+        {diagnostics?.configEvidence.length ? (
+          <dl className="gw-agent-diagnostic-evidence">
+            {diagnostics.configEvidence.map((evidence, index) => (
+              <div key={`${evidence.path}:${evidence.field}:${index}`}>
+                <dt><code>{evidence.path}</code><span>{evidence.field}</span></dt>
+                <dd>
+                  <span>{t(diagnosticEvidenceLabel(evidence.code))}</span>
+                  {evidence.endpoint ? <code>{evidence.endpoint}</code> : null}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
       </div>
     </div>
   );

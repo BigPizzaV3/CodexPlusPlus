@@ -519,14 +519,17 @@ test("Agent 自带的模型：单独一组、标出直连对象，按名字或�
   assert.equal(ownPickerSection(null, "", (name) => name), null);
 });
 
-test("模型下拉：自带模型走「直连」命令，接入着时先确认；托盘面板同样列出", () => {
+test("模型下拉：接入着选自带模型先预览还原，主窗口和托盘确认后才带token切换", () => {
   const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   assert.match(agents, /"use_gateway_own_model"/);
-  assert.match(agents, /t\("直连，不经 Codex\+\+"\)/);
-  assert.match(agents, /if \(connected\) \{\s*const ok = await appConfirm/);
+  assert.match(agents, /if \(connected \|\| agent\.requiresDisconnectPreview\) \{\s*setDisconnectTarget\(item\)/);
+  assert.match(agents, /<AgentDisconnectDialog/);
+  assert.match(agents, /model: disconnectTarget\.model, previewToken/);
   const tray = readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8");
   assert.match(tray, /onPickOwn=\{/);
   assert.match(tray, /"use_gateway_own_model"/);
+  assert.match(tray, /if \(agent\.enabled \|\| agent\.requiresDisconnectPreview\) setDisconnectTarget\(item\)/);
+  assert.match(tray, /model: disconnectTarget\.model, previewToken/);
 });
 
 test("自带模型开关：关掉后只留 Agent 现在用着的那一个，没用着就整组不列", () => {
