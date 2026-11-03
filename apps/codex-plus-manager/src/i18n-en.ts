@@ -18,6 +18,7 @@ export const EN_PLAIN: Record<string, string> = {
   "搜索增强功能": "Search enhancements",
   "没有匹配的增强功能": "No matching enhancements",
   "稍后": "Later",
+  "清除筛选": "Clear filters",
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
   // ----
