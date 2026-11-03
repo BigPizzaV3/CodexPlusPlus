@@ -5011,6 +5011,46 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
         })
 }
 
+/// 智谱 Response API 独立在 `/api/v1` 下；其 `input_image` 不接受
+/// OpenAI Responses 的 `detail` 字段（#2870）。
+fn upstream_is_zhipu_responses_api(relay: &crate::settings::RelayProfile) -> bool {
+    let Ok(url) = reqwest::Url::parse(relay.base_url.trim()) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+
+    (host == "open.bigmodel.cn" || host.ends_with(".open.bigmodel.cn"))
+        && url
+            .path()
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case("/api/v1")
+}
+
+/// 只处理 Responses `input[].content[]` 里的 `input_image`；工具输出和其他
+/// 协议中的图片块保持原样。
+fn strip_input_image_details(body: &mut Value) -> bool {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for item in items {
+        let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) != Some("input_image") {
+                continue;
+            }
+            let Some(part) = part.as_object_mut() else {
+                continue;
+            };
+            changed |= part.remove("detail").is_some();
+        }
+    }
+
+    changed
+}
+
 /// 目录外模型名 → 当前供应商默认模型的映射（#1183 / #1446 / #1457）。
 ///
 /// Codex 客户端的自动审查（`codex-auto-review`）、标题/摘要、子代理等后台任务
@@ -5825,6 +5865,17 @@ async fn upstream_request_parts(
         request_json.get("model").and_then(Value::as_str).unwrap_or(""),
     ) {
         request_json["model"] = json!(auto_review_model);
+    }
+    // 智谱 Response API 不认 Codex 的 input_image.detail（#2870），收到会返回
+    // 泛化的 invalid_request。只在原生 Responses 直连时按供应商剥离。
+    if relay.protocol == RelayProtocol::Responses
+        && upstream_is_zhipu_responses_api(relay)
+        && strip_input_image_details(&mut request_json)
+    {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.zhipu_image_detail_compat",
+            json!({ "relayId": relay.id }),
+        );
     }
     let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
     let compatibility_enabled = relay.request_compatibility_enabled();
@@ -13666,6 +13717,78 @@ mod parallel_tool_call_pairing_tests {
         assert_eq!(body["tool_choice"]["tools"], json!([{"type": "function", "name": "exec"}]));
         let mut untouched = json!({"tools": [{"type": "function", "name": "exec"}], "tool_choice": "auto"});
         assert!(!strip_image_generation_tool(&mut untouched));
+    }
+
+    /// #2870：智谱原生 Responses 不认 `input_image.detail`；只在智谱 `/api/v1`
+    /// Responses 路径剥离，其他供应商保持 OpenAI 语义。
+    #[tokio::test]
+    async fn zhipu_responses_strips_input_image_detail_only_for_zhipu() {
+        let body = || json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "look"},
+                    {"type": "input_image", "image_url": "[image omitted]", "detail": "original"}
+                ]}
+            ]
+        });
+
+        let zhipu = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let (_, out, _, _) = upstream_request_parts(
+            &zhipu,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        let image = &out["input"][0]["content"][1];
+        assert_eq!(image["type"], "input_image");
+        assert!(image.get("detail").is_none(), "{image}");
+
+        let other = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://relay.example.test/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let (_, out, _, _) = upstream_request_parts(
+            &other,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        assert_eq!(out["input"][0]["content"][1]["detail"], "original");
+    }
+
+    /// Chat 形态的 `image_url.detail` 不在 Responses `input[].content[]` 路径内，
+    /// 兼容剥离不得碰它。
+    #[test]
+    fn image_detail_stripping_ignores_chat_image_blocks() {
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "[image omitted]", "detail": "high"}}
+                ]}
+            ]
+        });
+        assert!(!strip_input_image_details(&mut body));
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["detail"],
+            "high"
+        );
     }
 
     fn assert_pairing(body: &Value, expected: usize) {
