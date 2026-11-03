@@ -110,18 +110,19 @@ test("拓展管理只向 Codex 和 Claude 开放，保留原本 Codex 主归属"
 });
 
 test("实际侧栏在 Claude 下可打开同一拓展管理页，Grok 保持隐藏", () => {
-  // 「自定义」入口在 Codex / Claude 下落到拓展页；其他 Agent 没有拓展页，落到 MCP。
-  const customize = (sidebar: Element) => elements(sidebar).find((node) => node.props["data-nav"] === "customize");
+  // 「万物皆拓展」是侧栏第一个入口，只在 Codex / Claude 下出现。
+  const extensions = (sidebar: Element) => elements(sidebar).find((node) => node.props["data-nav"] === "extensions");
   for (const activeTool of ["codex", "claude", "grok", "opencode"]) {
     const h = harness();
-    const entry = customize(h.sidebar(activeTool));
-    assert.ok(entry, activeTool);
-    entry.props.onClick();
-    assert.deepEqual(h.navigations, [activeTool === "codex" || activeTool === "claude" ? "userScripts" : "context"], activeTool);
+    const entry = extensions(h.sidebar(activeTool));
+    assert.equal(Boolean(entry), activeTool === "codex" || activeTool === "claude", activeTool);
+    if (entry) {
+      entry.props.onClick();
+      assert.deepEqual(h.navigations, ["userScripts"]);
+    }
   }
   const h = harness();
-  customize(h.sidebar("claude", "enhance"))!.props.onClick();
-  assert.deepEqual(h.navigations, ["userScripts"]);
+  assert.ok(extensions(h.sidebar("claude", "enhance")), "只用增强功能时也保留万物皆拓展");
   assert.equal(agentVisible("codex", "claude"), false, "原来的只管理 Codex 模式仍不显示 Claude");
 });
 
@@ -131,7 +132,7 @@ test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保�
   // 旧入口即使保留主归属，也不因此改变全局管理的可见行为。
   mcp.tool = "codex";
   const entries = elements(h.sidebar("claude"));
-  // MCP、Skills 在「自定义」的胶囊里，会话单独一个入口；都不随宿主隐藏。
+  // MCP、Skills 在同一页的胶囊里，会话单独一个入口；都不随宿主隐藏。
   for (const key of ["customize", "sessions"]) {
     assert.ok(entries.some((node) => node.props["data-nav"] === key), key);
   }

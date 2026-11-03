@@ -713,14 +713,52 @@
   justify-content: center;
 }
 
-/* 拓展页头部只剩宿主切换。 */
+/* 万物皆拓展页头：一句理念 + 一排能力标签，宿主切换在右侧。 */
 :root .shell .extensions-hero {
   display: flex;
-  justify-content: flex-start;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
   padding: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
+}
+
+:root .shell .extensions-hero-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+:root .shell .extensions-hero-lead {
+  max-width: 720px;
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+:root .shell .extensions-hero-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:root .shell .extensions-hero-capabilities li {
+  padding: 2px 9px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.72);
+  font-size: 11.5px;
 }
 
 /* 分段控件：与胶囊同一套灰阶。 */
@@ -789,4 +827,9 @@
 :root .shell .mg-inline-action {
   border-color: hsl(var(--input));
   background: transparent;
+}
+
+:root .shell .extensions-hero > .extension-host-switch {
+  flex: none;
+  margin: 0;
 }

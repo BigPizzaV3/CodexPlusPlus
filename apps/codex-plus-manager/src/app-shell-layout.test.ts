@@ -177,12 +177,19 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  // 侧栏主入口：用量（两个页签都算选中）、自定义（拓展 / MCP / Skills 三个胶囊）、会话，都按使用模式过滤。
+  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话；第二组「聚合网关」：总览、供应商池、Agent 接入、路由、用量。
   const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /match: \["gatewayUsage", "requestLog"\]/);
+  assert.match(sidebar, /\{ key: "extensions", route: "userScripts" as Route, label: t\("万物皆拓展"\)/);
+  assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
   assert.match(sidebar, /match: customizeRoutes/);
-  assert.match(sidebar, /primary\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
-  assert.match(text, /const customizeRoutes: Route\[\] = \["userScripts", "context", "skills"\];/);
+  assert.match(sidebar, /<span>\{t\("聚合网关"\)\}<\/span>/);
+  for (const key of ["hub", "providers", "gateway", "routing", "usage"]) assert.match(sidebar, new RegExp(`key: "${key}"`));
+  assert.match(sidebar, /match: \["gatewayUsage", "requestLog"\]/);
+  assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  assert.match(sidebar, /const shownGateway = gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
+  // 路由是聚合网关的一部分，不进设置模式。
+  assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"gatewayRouting"/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");

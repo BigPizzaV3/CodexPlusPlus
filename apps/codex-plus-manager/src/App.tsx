@@ -4845,7 +4845,9 @@ export function App() {
     : settingsEntryKey
       ? settingsEntries.find((entry) => entry.key === settingsEntryKey)?.label ?? routeTitle(route)
       : customizeRoutes.includes(route)
-        ? t("自定义")
+        ? t("MCP 与 Skills")
+        : route === "hub"
+          ? t("聚合网关")
         : onAgentPage
           ? activeToolName
           : soloAgent && route === "gateway"
@@ -16520,7 +16522,6 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
     { key: "gateway", label: t("网关"), icon: SlidersHorizontal, route: "gatewaySettings", group: "agent", keywords: "gateway port key 网关 端口 监听" },
-    { key: "routing", label: t("路由"), icon: Split, route: "gatewayRouting", group: "agent", keywords: "routing 路由 分组" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
     { key: "recommendations", label: t("推荐内容"), icon: ExternalLink, route: "recommendations", group: "tools", keywords: "ads 推荐" },
     { key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta", keywords: "computer use mcp" },
@@ -16530,9 +16531,9 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
 }
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "gatewaySettings", "gatewayRouting", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
-/** 「自定义」一页（参照 Cursor 的 Customize）：拓展、MCP、Skills 用胶囊切换。 */
-const customizeRoutes: Route[] = ["userScripts", "context", "skills"];
+const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "gatewaySettings", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
+/** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
+const customizeRoutes: Route[] = ["context", "skills"];
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
 function activeSettingsEntry(entries: SettingsNavEntry[], route: Route, settingsSections: string[]) {
   const target: Route = route === "maintenance" ? "agentSettings" : route === "about" ? "settings" : route;
@@ -16545,15 +16546,15 @@ function settingsSectionsFor(sectionId: string): string[] {
   return entry?.sections ?? ["app-settings-general"];
 }
 
-/** 「自定义」页顶部的胶囊：拓展 / MCP / Skills。 */
+/** 「MCP 与 Skills」页顶部的胶囊。 */
 function CustomizeTabs({ route, activeTool, onNavigate }: { route: Route; activeTool: ToolId; onNavigate: (route: Route) => void }) {
   if (!customizeRoutes.includes(route)) return null;
   const items = customizeRoutes
     .map((routeId) => routes.find((candidate) => candidate.id === routeId))
     .filter((item): item is (typeof routes)[number] => Boolean(item) && (!item!.tools || pageVisibleForTool(item!, activeTool)));
-  const label = (routeId: Route) => (routeId === "userScripts" ? t("拓展") : routeId === "context" ? "MCP" : "Skills");
+  const label = (routeId: Route) => (routeId === "context" ? "MCP" : "Skills");
   return (
-    <nav aria-label={t("自定义")} className="tp-tabs cx-pills" role="tablist">
+    <nav aria-label={t("MCP 与 Skills")} className="tp-tabs cx-pills" role="tablist">
       {items.map((item) => (
         <button aria-selected={route === item.id} data-active={route === item.id} key={item.id} onClick={() => onNavigate(item.id)} role="tab" type="button">
           {label(item.id)}
@@ -16711,21 +16712,65 @@ function AppSidebar({
     );
   }
 
-  // 主模式的常用入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、自定义的三个胶囊）。
-  const customizeEntry = customizeRoutes.find((routeId) => {
-    const item = routes.find((candidate) => candidate.id === routeId);
-    return item && (!item.tools || pageVisibleForTool(item, activeTool));
-  }) ?? "context";
-  const primary: Array<{ key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string }> = [
-    { key: "hub", route: "hub", label: t("总览"), icon: LayoutDashboard, match: ["hub"] },
-    { key: "providers", route: "gatewayProviders", label: t("供应商"), icon: Server, match: ["gatewayProviders"], tour: "nav-gatewayProviders" },
-    { key: "gateway", route: "gateway", label: soloAgent ? tf("{0} 接入", [agentName(soloAgent)]) : t("Agent 接入"), icon: Plug, match: ["gateway"], tour: "nav-gateway" },
-    { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
-    { key: "customize", route: customizeEntry, label: t("自定义"), icon: Blocks, match: customizeRoutes, tour: "management" },
+  // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
+  // 第一组是万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话；第二组是聚合网关：一个 Agent 经网关同时用多家供应商。
+  type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
+  const extensionsItem = routes.find((candidate) => candidate.id === "userScripts");
+  const extensionsShown = Boolean(extensionsItem && (!extensionsItem.tools || pageVisibleForTool(extensionsItem, activeTool)));
+  const general: SideEntry[] = [
+    ...(extensionsShown ? [{ key: "extensions", route: "userScripts" as Route, label: t("万物皆拓展"), icon: Blocks, match: ["userScripts" as Route], tour: "management" }] : []),
+    { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: extensionsShown ? undefined : "management" },
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
   ];
-  const shownPrimary = primary.filter((item) => routeVisible(focus, item.route));
-  const extensionItems = (["gateway", "management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group));
+  const gatewayEntries: SideEntry[] = [
+    { key: "hub", route: "hub", label: t("总览"), icon: Waypoints, match: ["hub"] },
+    { key: "providers", route: "gatewayProviders", label: t("供应商池"), icon: Server, match: ["gatewayProviders"], tour: "nav-gatewayProviders" },
+    { key: "gateway", route: "gateway", label: soloAgent ? tf("{0} 接入", [agentName(soloAgent)]) : t("Agent 接入"), icon: Plug, match: ["gateway"], tour: "nav-gateway" },
+    { key: "routing", route: "gatewayRouting", label: t("路由"), icon: Split, match: ["gatewayRouting"] },
+    { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
+  ];
+  const shownGeneral = general.filter((item) => routeVisible(focus, item.route));
+  const shownGateway = gatewayEntries.filter((item) => routeVisible(focus, item.route));
+  // 声明在网关分组的拓展页面跟在聚合网关后面，其余的单独一节。
+  const gatewayExtensionItems = managerNavPages(extensionPages, "gateway");
+  const extensionItems = (["management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group));
+  const renderEntry = (item: SideEntry) => {
+    const Icon = item.icon;
+    const selected = item.match.includes(route);
+    return (
+      <button
+        aria-current={selected ? "page" : undefined}
+        className={`cx-side-item ${selected ? "active" : ""}`}
+        data-nav={item.key}
+        data-tour={item.tour}
+        key={item.key}
+        onClick={() => onNavigate(item.route)}
+        title={item.label}
+        type="button"
+      >
+        <Icon aria-hidden="true" className="cx-side-icon" />
+        <span className="cx-side-label">{item.label}</span>
+      </button>
+    );
+  };
+  const renderExtensionPage = (page: ManagerExtensionPage) => {
+    const Icon = managerPageIcon(page.icon);
+    const selected = activeExtensionKey === page.key;
+    return (
+      <button
+        aria-current={selected ? "page" : undefined}
+        className={`cx-side-item ${selected ? "active" : ""}`}
+        data-extension-page={page.key}
+        key={page.key}
+        onClick={() => onOpenExtensionPage?.(page.key)}
+        title={page.title}
+        type="button"
+      >
+        <Icon aria-hidden="true" className="cx-side-icon" />
+        <span className="cx-side-label">{page.title}</span>
+      </button>
+    );
+  };
 
   return (
     <aside className="side cx-side" data-mode="main">
@@ -16736,27 +16781,17 @@ function AppSidebar({
       </button>
 
       <nav aria-label={t("主导航")} className="cx-side-nav">
-        <div className="cx-side-group">
-          {shownPrimary.map((item) => {
-            const Icon = item.icon;
-            const selected = item.match.includes(route);
-            return (
-              <button
-                aria-current={selected ? "page" : undefined}
-                className={`cx-side-item ${selected ? "active" : ""}`}
-                data-nav={item.key}
-                data-tour={item.tour}
-                key={item.key}
-                onClick={() => onNavigate(item.route)}
-                title={item.label}
-                type="button"
-              >
-                <Icon aria-hidden="true" className="cx-side-icon" />
-                <span className="cx-side-label">{item.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        <div className="cx-side-group">{shownGeneral.map(renderEntry)}</div>
+
+        {shownGateway.length ? (
+          <div className="cx-side-group" data-group="gateway">
+            <div className="cx-side-heading" title={t("任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家")}>
+              <span>{t("聚合网关")}</span>
+            </div>
+            {shownGateway.map(renderEntry)}
+            {gatewayExtensionItems.map(renderExtensionPage)}
+          </div>
+        ) : null}
 
         <div className="cx-side-group" data-tour="agents">
           <div className="cx-side-heading">
@@ -16816,24 +16851,7 @@ function AppSidebar({
         {extensionItems.length ? (
           <div className="cx-side-group">
             <div className="cx-side-heading"><span>{t("拓展页面")}</span></div>
-            {extensionItems.map((page) => {
-              const Icon = managerPageIcon(page.icon);
-              const selected = activeExtensionKey === page.key;
-              return (
-                <button
-                  aria-current={selected ? "page" : undefined}
-                  className={`cx-side-item ${selected ? "active" : ""}`}
-                  data-extension-page={page.key}
-                  key={page.key}
-                  onClick={() => onOpenExtensionPage?.(page.key)}
-                  title={page.title}
-                  type="button"
-                >
-                  <Icon aria-hidden="true" className="cx-side-icon" />
-                  <span className="cx-side-label">{page.title}</span>
-                </button>
-              );
-            })}
+            {extensionItems.map(renderExtensionPage)}
           </div>
         ) : null}
       </nav>
@@ -16950,19 +16968,32 @@ const extensionCapabilities = [
 ] as const;
 
 function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void }) {
-  // 页面标题已是「自定义 · 拓展」：这里只留宿主切换，理念介绍收进悬停说明，能力标签不再平铺。
+  // 页面标题就是「万物皆拓展」：这里是一句理念 + 能改到的地方，宿主切换放在右侧；只有一个宿主时不显示切换。
   const hosts = (["codex", "claude"] as const).filter((target) => agentVisible(focus, target));
-  if (hosts.length < 2) return null;
   return (
-    <section className="extensions-hero" aria-label={t("万物皆拓展")} title={host === "codex" ? t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。") : undefined}>
-      <div className="mg-segmented extension-host-switch" role="group" aria-label={t("拓展宿主")}>
-        {hosts.map((target) => (
-          <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
-            <AgentGlyph agent={target} />
-            {target === "codex" ? "Codex" : "Claude"}
-          </button>
-        ))}
+    <section className="extensions-hero" aria-label={t("万物皆拓展")}>
+      <div className="extensions-hero-text">
+        <p className="extensions-hero-lead">
+          {host === "codex"
+            ? t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")
+            : t("给 Claude 增强版装拓展：只显示声明了适配 Claude 的拓展。")}
+        </p>
+        {host === "codex" ? (
+          <ul className="extensions-hero-capabilities">
+            {extensionCapabilities.map((label) => <li key={label}>{t(label)}</li>)}
+          </ul>
+        ) : null}
       </div>
+      {hosts.length > 1 ? (
+        <div className="mg-segmented extension-host-switch" role="group" aria-label={t("拓展宿主")}>
+          {hosts.map((target) => (
+            <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
+              <AgentGlyph agent={target} />
+              {target === "codex" ? "Codex" : "Claude"}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

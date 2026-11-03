@@ -6,6 +6,10 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   // 侧栏与设置模式（Cursor 风格布局）
+  "聚合网关": "Aggregate Gateway",
+  "MCP 与 Skills": "MCP & Skills",
+  "任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家": "Any agent reaches any provider through Codex++: one agent can use several providers at once, routed by model, failing over to the next one on errors",
+  "给 Claude 增强版装拓展：只显示声明了适配 Claude 的拓展。": "Extensions for the enhanced Claude app: only extensions that declare Claude support are shown.",
   "通用": "General",
   "日志与诊断": "Logs & Diagnostics",
   "缓存清理": "Cache Cleanup",
@@ -1652,9 +1656,8 @@ export const EN_PLAIN: Record<string, string> = {
   "进入 Codex 或 Claude 的增强设置，启用所需功能；Codex 行的播放键可以启动或停止 Codex。": "Open Enhancement settings for Codex or Claude to enable the features you want. The play button on the Codex row starts or stops Codex.",
   "全局管理": "Global management",
   "请求日志、会话、MCP 和 Skills 在这里统一管理，一次覆盖所有 Agent。": "Request logs, sessions, MCP and Skills are managed here for all agents at once.",
-  "拓展、MCP 和 Skills 都在「自定义」里，用顶部胶囊切换；会话和用量在侧栏上方单独的入口。": "Extensions, MCP and Skills live under Custom, switched with the pills at the top; sessions and usage have their own entries in the sidebar.",
-  "拓展、MCP 和 Skills 都在「自定义」里，用顶部胶囊切换；会话在侧栏上方单独的入口。": "Extensions, MCP and Skills live under Custom, switched with the pills at the top; sessions have their own entry in the sidebar.",
-  "随时按 ⌘K 搜索页面和常用操作，不用一层层点。": "Press ⌘K anytime to search pages and common actions.",
+  "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。": "Codex++ opens its enhancements as extensions: enable built-in ones, install community ones, or build your own from a chat. MCP, Skills and sessions sit right below.",
+    "随时按 ⌘K 搜索页面和常用操作，不用一层层点。": "Press ⌘K anytime to search pages and common actions.",
   "结束导览后，按 ⌘K 搜索页面和常用操作。": "After the tour, press ⌘K to search pages and common actions.",
   "设置与更新": "Settings & updates",
   "主题、配置备份、版本更新和日志都在这里。想再看一遍这个引导，也在设置里重新打开。": "Theme, config backup, updates and logs live here. You can replay this tour from settings too.",

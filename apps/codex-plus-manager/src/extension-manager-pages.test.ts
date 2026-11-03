@@ -104,8 +104,9 @@ test("面板桥接的 data / navigate：没给能力或页面不认得时回错�
 });
 
 test("App 把拓展页面接进侧栏、命令面板与页面渲染", () => {
-  // 侧栏把三个分组的拓展页面合成一节「拓展页面」。
-  assert.match(app, /\(\["gateway", "management", "tools"\] as ManagerNavGroup\[\]\)\.flatMap\(\(group\) => managerNavPages\(extensionPages, group\)\)/);
+  // 侧栏：网关分组的拓展页面跟在聚合网关后面，其余两组合成一节「拓展页面」。
+  assert.match(app, /const gatewayExtensionItems = managerNavPages\(extensionPages, "gateway"\);/);
+  assert.match(app, /\(\["management", "tools"\] as ManagerNavGroup\[\]\)\.flatMap\(\(group\) => managerNavPages\(extensionPages, group\)\)/);
   assert.match(app, /\{extensionPageView \?\? \(<>/);
   assert.match(app, /查看内置页面/);
 });

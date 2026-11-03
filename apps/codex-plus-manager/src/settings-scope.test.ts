@@ -79,7 +79,9 @@ test("只用增强功能：隐藏供应商页面，配置保存成功后才提�
   assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"\]\);/);
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
-  assert.match(functionSource("AppSidebar"), /const shownPrimary = primary\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  // 聚合网关整组按模式过滤，一项都不剩时连标题一起隐藏。
+  assert.match(functionSource("AppSidebar"), /const shownGateway = gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  assert.match(functionSource("AppSidebar"), /\{shownGateway\.length \? \(/);
   assert.match(functionSource("AgentPageTabs"), /visibleRoutes\(focus, entry\.routes\)/);
   assert.match(text, /if \(!item \|\| !routeVisible\(agentFocus, routeId\)\) return null;/);
   // 启动默认停在网关总览：模式不让看就回落脚页。

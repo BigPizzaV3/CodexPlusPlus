@@ -49,8 +49,8 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: "management",
     target: "management",
-    title: "自定义",
-    body: "拓展、MCP 和 Skills 都在「自定义」里，用顶部胶囊切换；会话和用量在侧栏上方单独的入口。",
+    title: "万物皆拓展",
+    body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。",
   },
   {
     id: "palette",
@@ -95,7 +95,7 @@ export function tourSteps(soloName: string | null, enhanceOnly = false): TourSte
 const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
   welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下各个入口。" },
   agents: { body: "进入 Codex 或 Claude 的增强设置，启用所需功能；Codex 行的播放键可以启动或停止 Codex。" },
-  management: { body: "拓展、MCP 和 Skills 都在「自定义」里，用顶部胶囊切换；会话在侧栏上方单独的入口。" },
+  management: { body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。" },
 };
 const ENHANCE_HIDDEN_STEPS = new Set(["hub", "providers", "agents-connect"]);
 const ENHANCE_TOUR_STEPS: TourStep[] = TOUR_STEPS
