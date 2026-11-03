@@ -325,7 +325,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
-import { CxBanner, CxCard, CxFilters, CxEmpty } from "./cx-layout";
+import { CxBanner, CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -6981,295 +6981,285 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
     });
   }, [entries, filter, query, sessionFilter, agentScope]);
 
+  // 工具条：搜索 + 自动刷新开关（关掉时旁边出现手动刷新）+ 三点菜单（清空日志，确认框保留）；
+  // 下面一行：状态胶囊在左，Agent / 时间 / 会话三个下拉在右；表格一张卡，占满剩下的高度。
+  const statusItems: Array<{ id: typeof filter; label: string }> = [
+    { id: "all", label: t("全部") },
+    { id: "running", label: t("进行中") },
+    { id: "success", label: t("成功") },
+    { id: "failed", label: t("失败") },
+    { id: "retried", label: t("含重试") },
+  ];
   return (
-    <Panel className="request-log-panel">
-      <CardContent className="request-log-content">
-        <div className="request-log-toolbar">
-          <div className="request-log-search">
-            <Search className="h-4 w-4" aria-hidden="true" />
-            <Input
-              aria-label={t("搜索模型 / 供应商 / 路径 / 错误")}
-              placeholder={t("搜索模型 / 供应商 / 路径 / 错误")}
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
+    <div className="request-log-panel request-log-page cx-page">
+      <CxToolbar onQuery={setQuery} placeholder={t("搜索模型 / 供应商 / 路径 / 错误")} query={query}>
+        <span className="request-log-auto" title={t("每秒读取一次新请求")}>
+          <Switch label={t("自动刷新")} on={autoRefresh} onToggle={() => setAutoRefresh(!autoRefresh)} />
+          <span>{t("自动刷新")}</span>
+        </span>
+        {autoRefresh ? null : (
+          <button aria-label={t("刷新")} className="cx-secondary request-log-refresh" onClick={() => void load()} title={t("刷新")} type="button">
+            <RefreshCw className={loading ? "animate-spin" : undefined} />
+          </button>
+        )}
+        <Menu>
+          <MenuItem danger disabled={clearing || entries.length === 0} onClick={() => void clearLogs()}>{t("清空日志")}</MenuItem>
+        </Menu>
+      </CxToolbar>
+
+      <CxFilters
+        items={statusItems}
+        label={t("状态筛选")}
+        onChange={setFilter}
+        trailing={
+          <>
+            {codexOnly ? null : <AppSelect
+              ariaLabel={t("按 Agent 筛选")}
+              className="request-log-select"
+              menuWidth={160}
+              onChange={(next) => setAgentFilter(next)}
+              options={[
+                { value: "all", label: t("全部 Agent") },
+                { value: "codex", label: "Codex" },
+                { value: "claude", label: "Claude Code" },
+                { value: "grok", label: "Grok" },
+              ] as AppSelectOption<typeof agentFilter>[]}
+              size="sm"
+              value={agentFilter}
+            />}
+            <AppSelect
+              ariaLabel={t("时间段")}
+              className="request-log-select"
+              menuWidth={140}
+              onChange={(next) => setRange(next)}
+              options={[
+                { value: "all", label: t("全部时间") },
+                { value: "today", label: t("今天") },
+                { value: "7d", label: t("近 7 天") },
+                { value: "30d", label: t("近 30 天") },
+              ] as AppSelectOption<UsageRange>[]}
+              size="sm"
+              value={range}
             />
-          </div>
-          {codexOnly ? null : <AppSelect
-            ariaLabel={t("按 Agent 筛选")}
-            className="request-log-select"
-            menuWidth={160}
-            onChange={(next) => setAgentFilter(next)}
-            options={[
-              { value: "all", label: t("全部 Agent") },
-              { value: "codex", label: "Codex" },
-              { value: "claude", label: "Claude Code" },
-              { value: "grok", label: "Grok" },
-            ] as AppSelectOption<typeof agentFilter>[]}
-            size="sm"
-            value={agentFilter}
-          />}
-          <AppSelect
-            ariaLabel={t("时间段")}
-            className="request-log-select"
-            menuWidth={140}
-            onChange={(next) => setRange(next)}
-            options={[
-              { value: "all", label: t("全部时间") },
-              { value: "today", label: t("今天") },
-              { value: "7d", label: t("近 7 天") },
-              { value: "30d", label: t("近 30 天") },
-            ] as AppSelectOption<UsageRange>[]}
-            size="sm"
-            value={range}
-          />
-          <AppSelect
-            ariaLabel={t("状态筛选")}
-            className="request-log-select"
-            menuWidth={140}
-            onChange={(next) => setFilter(next)}
-            options={[
-              { value: "all", label: t("全部状态") },
-              { value: "running", label: t("进行中") },
-              { value: "success", label: t("仅成功") },
-              { value: "failed", label: t("仅失败") },
-              { value: "retried", label: t("含重试") },
-            ] as AppSelectOption<typeof filter>[]}
-            size="sm"
-            value={filter}
-          />
-          <AppSelect
-            ariaLabel={t("按会话筛选")}
-            className="request-log-select request-log-session-select"
-            menuWidth={280}
-            onChange={(next) => setSessionFilter(next)}
-            options={[
-              { value: "all", label: t("全部会话") },
-              ...sessions.map((session) => ({
-                value: session.id,
-                label: tf("{0}（{1} 条）", [
-                  session.title || tf("会话 {0}", [formatRequestLogSession(session.id)]),
-                  String(session.count),
-                ]),
-              })),
-            ]}
-            size="sm"
-            title={t("按会话筛选")}
-            value={sessionFilter}
-          />
-          <label className="check-row request-log-auto">
-            <input
-              checked={autoRefresh}
-              onChange={(event) => setAutoRefresh(event.currentTarget.checked)}
-              type="checkbox"
+            <AppSelect
+              ariaLabel={t("按会话筛选")}
+              className="request-log-select request-log-session-select"
+              menuWidth={280}
+              onChange={(next) => setSessionFilter(next)}
+              options={[
+                { value: "all", label: t("全部会话") },
+                ...sessions.map((session) => ({
+                  value: session.id,
+                  label: tf("{0}（{1} 条）", [
+                    session.title || tf("会话 {0}", [formatRequestLogSession(session.id)]),
+                    String(session.count),
+                  ]),
+                })),
+              ]}
+              size="sm"
+              title={t("按会话筛选")}
+              value={sessionFilter}
             />
-            <span>{t("自动刷新")}</span>
-          </label>
-          <Button variant="secondary" onClick={() => void load()}>
-            <RefreshCw className="h-4 w-4" />
-            {t("刷新")}
-          </Button>
-          <Button disabled={clearing || entries.length === 0} variant="secondary" onClick={() => void clearLogs()}>
-            <Trash2 className="h-4 w-4" />
-            {t("清空日志")}
-          </Button>
+          </>
+        }
+        value={filter}
+      />
+
+      {relayFilter || modelFilter ? (
+        <div className="request-log-chips">
+          {relayFilter ? (
+            <button className="request-log-chip" onClick={() => setRelayFilter(null)} title={t("去掉这个筛选")} type="button">
+              {tf("供应商：{0}", [relayFilter.label])}
+              <X aria-hidden="true" className="h-3 w-3" />
+            </button>
+          ) : null}
+          {modelFilter ? (
+            <button className="request-log-chip" onClick={() => setModelFilter("")} title={t("去掉这个筛选")} type="button">
+              {tf("模型：{0}", [modelFilter])}
+              <X aria-hidden="true" className="h-3 w-3" />
+            </button>
+          ) : null}
         </div>
+      ) : null}
 
-        {relayFilter || modelFilter ? (
-          <div className="request-log-chips">
-            {relayFilter ? (
-              <button className="request-log-chip" onClick={() => setRelayFilter(null)} title={t("去掉这个筛选")} type="button">
-                {tf("供应商：{0}", [relayFilter.label])}
-                <X aria-hidden="true" className="h-3 w-3" />
-              </button>
-            ) : null}
-            {modelFilter ? (
-              <button className="request-log-chip" onClick={() => setModelFilter("")} title={t("去掉这个筛选")} type="button">
-                {tf("模型：{0}", [modelFilter])}
-                <X aria-hidden="true" className="h-3 w-3" />
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+      {error ? (
+        <p className="field-hint request-log-error" role="alert">{error}</p>
+      ) : null}
 
-        {error ? (
-          <p className="field-hint request-log-error" role="alert">{error}</p>
-        ) : null}
-
+      <CxCard className="request-log-card">
         {loading && entries.length === 0 ? (
-          <div className="empty">{t("正在读取请求日志…")}</div>
+          <CxEmpty title={t("正在读取请求日志…")} />
         ) : filtered.length ? (
-          <div className="request-log-table" role="table" aria-label={t("请求日志")}>
-            <div className="request-log-row request-log-head" role="row">
-              <span>{t("时间")}</span>
-              <span>{t("状态")}</span>
-              <span>{t("来源")}</span>
-              <span>{t("模型")}</span>
-              <span>{t("重试")}</span>
-              <span>{t("输入")}</span>
-              <span>{t("输出")}</span>
-              <span>{t("缓存")}</span>
-              <span>{t("费用")}</span>
-              <span>{t("耗时")}</span>
-            </div>
-            {filtered.map((entry) => (
-              <Fragment key={entry.id}>
-                <button
-                  aria-expanded={expanded === entry.id}
-                  className={`request-log-row request-log-entry ${entry.state === "running" ? "running" : entry.success ? "ok" : "bad"}`}
-                  onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
-                  role="row"
-                  type="button"
-                >
-                  <span>{formatRequestLogTime(entry.startedAtMs || entry.timestampMs)}</span>
-                  {entry.state === "running" ? (
-                    <span className="request-log-status running">
-                      {t("运行中")}
+            <div className="request-log-table" role="table" aria-label={t("请求日志")}>
+              <div className="request-log-row request-log-head" role="row">
+                <span>{t("时间")}</span>
+                <span>{t("状态")}</span>
+                <span>{t("来源")}</span>
+                <span>{t("模型")}</span>
+                <span>{t("重试")}</span>
+                <span>{t("输入")}</span>
+                <span>{t("输出")}</span>
+                <span>{t("缓存")}</span>
+                <span>{t("费用")}</span>
+                <span>{t("耗时")}</span>
+              </div>
+              {filtered.map((entry) => (
+                <Fragment key={entry.id}>
+                  <button
+                    aria-expanded={expanded === entry.id}
+                    className={`request-log-row request-log-entry ${entry.state === "running" ? "running" : entry.success ? "ok" : "bad"}`}
+                    onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
+                    role="row"
+                    type="button"
+                  >
+                    <span>{formatRequestLogTime(entry.startedAtMs || entry.timestampMs)}</span>
+                    {entry.state === "running" ? (
+                      <span className="request-log-status running">
+                        {t("运行中")}
+                      </span>
+                    ) : (
+                      <span
+                        className={`request-log-status ${entry.success ? "ok" : "bad"}`}
+                        title={entry.error ?? ""}
+                      >
+                        {entry.statusCode || (entry.success ? "OK" : "ERR")}
+                        {!entry.success ? (
+                          <small className="request-log-stream-failed">
+                            {entry.stream ? t("流失败") : t("失败")}
+                          </small>
+                        ) : null}
+                      </span>
+                    )}
+                    <span className="request-log-ellipsis request-log-source" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
+                      <AgentGlyph agent={requestLogAgent(entry)} />
+                      {maskAccountName(entry.relayName) || "-"}
                     </span>
-                  ) : (
-                    <span
-                      className={`request-log-status ${entry.success ? "ok" : "bad"}`}
-                      title={entry.error ?? ""}
-                    >
-                      {entry.statusCode || (entry.success ? "OK" : "ERR")}
-                      {!entry.success ? (
-                        <small className="request-log-stream-failed">
-                          {entry.stream ? t("流失败") : t("失败")}
-                        </small>
+                    <span className="request-log-ellipsis" title={entry.upstreamModel ? `${entry.model} → ${entry.upstreamModel}` : entry.model}>
+                      {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
+                      {entry.model || "-"}
+                      {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
+                        <small> → {entry.upstreamModel}</small>
                       ) : null}
                     </span>
-                  )}
-                  <span className="request-log-ellipsis request-log-source" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
-                    <AgentGlyph agent={requestLogAgent(entry)} />
-                    {maskAccountName(entry.relayName) || "-"}
-                  </span>
-                  <span className="request-log-ellipsis" title={entry.upstreamModel ? `${entry.model} → ${entry.upstreamModel}` : entry.model}>
-                    {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
-                    {entry.model || "-"}
-                    {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
-                      <small> → {entry.upstreamModel}</small>
-                    ) : null}
-                  </span>
-                  <span
-                    className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) ? "request-log-retry" : "request-log-muted"}
-                    title={requestLogRetryReasons(entry)}
-                  >
-                    {requestLogRetryLabel(entry)}
-                  </span>
-                  {entry.state !== "running" && !entry.success && entry.error ? (
-                    // 失败的请求没有 token 和费用：这几列直接显示错误原因。
-                    <span className="request-log-error-cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
-                  ) : (
-                    <>
-                      <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
-                        {entry.state === "running" ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
-                      </span>
-                      <span
-                        className="request-log-muted"
-                        title={entry.state === "running"
-                          ? t("按流式增量估算，完成后会更新为准确值")
-                          : ""}
-                      >
-                        {entry.state === "running"
-                          ? entry.estimatedOutputTokens
-                            ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
-                            : (isImageRequest(entry) ? t("生成中") : t("流式中"))
-                          : formatRequestLogTokens(entry.usage?.outputTokens)}
-                      </span>
-                      <span>
-                        {entry.state === "running" ? (
-                          <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
-                        ) : entry.usage?.cachedTokens ? (
-                          <>
-                            {formatRequestLogTokens(entry.usage.cachedTokens)}
-                            <small>
-                              {" · "}
-                              {formatRequestLogCacheHitRatio(
-                                entry.usage.inputTokens,
-                                entry.usage.cachedTokens,
-                                entry.cacheHitRatio,
-                              )}
-                            </small>
-                          </>
-                        ) : "-"}
-                      </span>
-                      <span className="request-log-muted">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
-                    </>
-                  )}
-                  <span className="request-log-duration">
-                    {formatRequestLogDuration(
-                      entry.state === "running"
-                        ? Math.max(0, nowMs - entry.startedAtMs)
-                        : entry.durationMs,
+                    <span
+                      className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) ? "request-log-retry" : "request-log-muted"}
+                      title={requestLogRetryReasons(entry)}
+                    >
+                      {requestLogRetryLabel(entry)}
+                    </span>
+                    {entry.state !== "running" && !entry.success && entry.error ? (
+                      // 失败的请求没有 token 和费用：这几列直接显示错误原因。
+                      <span className="request-log-error-cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
+                    ) : (
+                      <>
+                        <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
+                          {entry.state === "running" ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
+                        </span>
+                        <span
+                          className="request-log-muted"
+                          title={entry.state === "running"
+                            ? t("按流式增量估算，完成后会更新为准确值")
+                            : ""}
+                        >
+                          {entry.state === "running"
+                            ? entry.estimatedOutputTokens
+                              ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
+                              : (isImageRequest(entry) ? t("生成中") : t("流式中"))
+                            : formatRequestLogTokens(entry.usage?.outputTokens)}
+                        </span>
+                        <span>
+                          {entry.state === "running" ? (
+                            <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
+                          ) : entry.usage?.cachedTokens ? (
+                            <>
+                              {formatRequestLogTokens(entry.usage.cachedTokens)}
+                              <small>
+                                {" · "}
+                                {formatRequestLogCacheHitRatio(
+                                  entry.usage.inputTokens,
+                                  entry.usage.cachedTokens,
+                                  entry.cacheHitRatio,
+                                )}
+                              </small>
+                            </>
+                          ) : "-"}
+                        </span>
+                        <span className="request-log-muted">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
+                      </>
                     )}
-                    {entry.state === "running" ? (
-                      <small>{t("进行中")}</small>
-                    ) : entry.firstTokenMs != null ? (
-                      <small>{tf("首字 {0}", [formatRequestLogDuration(entry.firstTokenMs)])}</small>
-                    ) : null}
-                  </span>
-                </button>
-                {expanded === entry.id ? (
-                  <div className="request-log-detail">
-                    <dl>
-                      <div><dt>{t("请求 ID")}</dt><dd><code>{entry.id}</code></dd></div>
-                      <div>
-                        <dt>{t("会话 ID")}</dt>
-                        <dd>
-                          {entry.threadTitle ? <strong className="request-log-session-title">{entry.threadTitle}</strong> : null}
-                          <code>{entry.threadId || "-"}</code>
-                        </dd>
-                      </div>
-                      <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
-                      <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
-                      <div><dt>{t("上游模型")}</dt><dd>{entry.upstreamModel || "-"}</dd></div>
-                      <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (entry.state === "running" ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
-                      <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
-                      <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
-                      <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
-                      {entry.attemptDetails?.length ? (
-                        <div className="request-log-attempts">
-                          <dt>{t("尝试明细")}</dt>
+                    <span className="request-log-duration">
+                      {formatRequestLogDuration(
+                        entry.state === "running"
+                          ? Math.max(0, nowMs - entry.startedAtMs)
+                          : entry.durationMs,
+                      )}
+                      {entry.state === "running" ? (
+                        <small>{t("进行中")}</small>
+                      ) : entry.firstTokenMs != null ? (
+                        <small>{tf("首字 {0}", [formatRequestLogDuration(entry.firstTokenMs)])}</small>
+                      ) : null}
+                    </span>
+                  </button>
+                  {expanded === entry.id ? (
+                    <div className="request-log-detail">
+                      <dl>
+                        <div><dt>{t("请求 ID")}</dt><dd><code>{entry.id}</code></dd></div>
+                        <div>
+                          <dt>{t("会话 ID")}</dt>
                           <dd>
-                            <ul>
-                              {entry.attemptDetails.map((detail) => (
-                                <li key={`${detail.attempt}-${detail.code ?? ""}`}>
-                                  <strong>{tf("第 {0} 次", [detail.attempt])}</strong>
-                                  <code>{detail.code || "-"}</code>
-                                  {detail.delayMs != null ? (
-                                    <small>{tf("退避 {0}", [formatRequestLogDuration(detail.delayMs)])}</small>
-                                  ) : null}
-                                  {detail.message ? <small title={detail.message}>{detail.message}</small> : null}
-                                </li>
-                              ))}
-                            </ul>
+                            {entry.threadTitle ? <strong className="request-log-session-title">{entry.threadTitle}</strong> : null}
+                            <code>{entry.threadId || "-"}</code>
                           </dd>
                         </div>
-                      ) : null}
-                      <div><dt>{t("流式")}</dt><dd>{entry.stream ? "SSE" : "JSON"}</dd></div>
-                      <div><dt>{t("流结果")}</dt><dd>{entry.streamOutcome || "-"}</dd></div>
-                      <div><dt>{t("推理 tokens")}</dt><dd>{formatRequestLogTokens(entry.usage?.reasoningTokens)}</dd></div>
-                      <div><dt>{t("错误")}</dt><dd>{entry.error || "-"}</dd></div>
-                    </dl>
-                  </div>
-                ) : null}
-              </Fragment>
-            ))}
-          </div>
+                        <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
+                        <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
+                        <div><dt>{t("上游模型")}</dt><dd>{entry.upstreamModel || "-"}</dd></div>
+                        <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (entry.state === "running" ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
+                        <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
+                        <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
+                        <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
+                        {entry.attemptDetails?.length ? (
+                          <div className="request-log-attempts">
+                            <dt>{t("尝试明细")}</dt>
+                            <dd>
+                              <ul>
+                                {entry.attemptDetails.map((detail) => (
+                                  <li key={`${detail.attempt}-${detail.code ?? ""}`}>
+                                    <strong>{tf("第 {0} 次", [detail.attempt])}</strong>
+                                    <code>{detail.code || "-"}</code>
+                                    {detail.delayMs != null ? (
+                                      <small>{tf("退避 {0}", [formatRequestLogDuration(detail.delayMs)])}</small>
+                                    ) : null}
+                                    {detail.message ? <small title={detail.message}>{detail.message}</small> : null}
+                                  </li>
+                                ))}
+                              </ul>
+                            </dd>
+                          </div>
+                        ) : null}
+                        <div><dt>{t("流式")}</dt><dd>{entry.stream ? "SSE" : "JSON"}</dd></div>
+                        <div><dt>{t("流结果")}</dt><dd>{entry.streamOutcome || "-"}</dd></div>
+                        <div><dt>{t("推理 tokens")}</dt><dd>{formatRequestLogTokens(entry.usage?.reasoningTokens)}</dd></div>
+                        <div><dt>{t("错误")}</dt><dd>{entry.error || "-"}</dd></div>
+                      </dl>
+                    </div>
+                  ) : null}
+                </Fragment>
+              ))}
+            </div>
+        ) : entries.length ? (
+          <CxEmpty title={t("没有匹配当前筛选条件的请求。")} />
         ) : (
-          <div className="empty">
-            {entries.length
-              ? t("没有匹配当前筛选条件的请求。")
-              : t("还没有请求日志。在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。")}
-          </div>
+          <CxEmpty title={t("还没有请求日志")} detail={t("在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。")} />
         )}
-        {more || partial ? (
-          <p className="field-hint request-log-note">
-            {more ? tf("只显示最近 {0} 条。", [REQUEST_LOG_LIMIT]) : ""}
-            {partial && oldestMs ? tf("请求日志按大小滚动，最早只到 {0}；更早的请求只计入统计。", [new Date(oldestMs).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })]) : ""}
-          </p>
-        ) : null}
-      </CardContent>
-    </Panel>
+      </CxCard>
+      {more || partial ? (
+        <p className="field-hint request-log-note">
+          {more ? tf("只显示最近 {0} 条。", [REQUEST_LOG_LIMIT]) : ""}
+          {partial && oldestMs ? tf("请求日志按大小滚动，最早只到 {0}；更早的请求只计入统计。", [new Date(oldestMs).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })]) : ""}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

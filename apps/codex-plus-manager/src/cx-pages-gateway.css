@@ -355,3 +355,165 @@
   color: hsl(var(--muted-foreground));
   font-size: 12.5px;
 }
+
+/* ── 用量 · 请求（requestLog） ───────────────────────────────── */
+
+/* 标题、页签、工具条和表格同宽；页签只占自己的高度，表格卡占满剩下的高度并在卡内滚动。 */
+:root .shell .screen.request-log-screen {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+:root .shell .screen.request-log-screen > .request-log-page {
+  display: flex;
+  width: min(100%, 1180px);
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+:root .shell .request-log-page > :not(.request-log-card) {
+  flex-shrink: 0;
+}
+
+:root .shell .request-log-page .request-log-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12.5px;
+}
+
+:root .shell .request-log-page .request-log-refresh {
+  width: 30px;
+  justify-content: center;
+  padding: 0;
+}
+
+:root .shell .request-log-page .cx-filters-trailing .app-select.request-log-select {
+  width: 128px;
+}
+
+:root .shell .request-log-page .cx-filters-trailing .app-select.request-log-session-select {
+  width: 200px;
+}
+
+:root .shell .request-log-page .request-log-card {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+/* 表格：去掉外框和多余的颜色，只有行间细线；状态码中性灰，失败标红，进行中带绿点。 */
+:root .shell .request-log-page .request-log-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+
+:root .shell .request-log-page .request-log-row {
+  grid-template-columns: 64px 48px 112px minmax(150px, 1.6fr) 72px 54px 54px 92px 60px 104px;
+  min-height: 40px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+:root .shell .request-log-page .request-log-head {
+  min-height: 34px;
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+  background: hsl(var(--card));
+  font-size: 11.5px;
+  letter-spacing: 0;
+}
+
+:root .shell .request-log-page .request-log-entry {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .request-log-page .request-log-head + .request-log-entry {
+  border-top: 0;
+}
+
+:root .shell .request-log-page .request-log-entry:hover,
+:root .shell .request-log-page .request-log-entry[aria-expanded="true"] {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .request-log-page .request-log-status {
+  font-weight: 500;
+}
+
+:root .shell .request-log-page .request-log-status.ok {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .request-log-page .request-log-status.bad {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .request-log-page .request-log-status.running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: hsl(var(--foreground));
+}
+
+:root .shell .request-log-page .request-log-status.running::before {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: hsl(var(--status-success));
+  content: "";
+}
+
+:root .shell .request-log-page .request-log-retry {
+  color: hsl(var(--status-warning));
+  font-weight: 450;
+}
+
+:root .shell .request-log-page .request-log-error-cell {
+  color: hsl(var(--status-error));
+}
+
+/* 耗时一行：「18.4s 首字 820ms」。 */
+:root .shell .request-log-page .request-log-duration {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+:root .shell .request-log-page .request-log-duration small {
+  display: inline;
+  font-size: 11px;
+}
+
+:root .shell .request-log-page .request-log-detail {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  background: hsl(var(--accent) / 0.2);
+}
+
+:root .shell .request-log-page .request-log-chip {
+  background: transparent;
+}
+
+:root .shell .request-log-page .request-log-chip:hover {
+  border-color: hsl(var(--input));
+}
+
+/* 全局的 .bad / .ok 会把整行染色（浅色主题下尤其明显）：行本身保持正文色，只有状态和错误摘要上色。 */
+:root .shell .request-log-page .request-log-entry {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .request-log-page .request-log-row {
+  grid-template-columns: 64px 58px 112px minmax(150px, 1.6fr) 72px 54px 54px 92px 60px 104px;
+}
+
+:root .shell .request-log-page .request-log-status.running {
+  white-space: nowrap;
+}

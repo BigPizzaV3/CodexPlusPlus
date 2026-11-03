@@ -6,6 +6,9 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
+  "每秒读取一次新请求": "Reads new requests every second",
+  "还没有请求日志": "No request logs yet",
+  "在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。": "Start a conversation in Codex or a connected agent to see it here.",
   "按供应商价格估算": "From provider prices",
   "管理供应商池": "Manage provider pool",
   "高级": "Advanced",
