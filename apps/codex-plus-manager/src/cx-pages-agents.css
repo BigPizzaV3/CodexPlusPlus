@@ -1,1 +1,171 @@
 /* 页面重排 · agents 组（cx-layout 骨架之外的页面专属样式）。前缀统一 `:root .shell`。 */
+
+/* ── 通用小件 ─────────────────────────────────────────────── */
+
+:root .shell .cx-row-chevron {
+  width: 15px;
+  height: 15px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 卡片外小标题右侧的「全部 ↗」链接。 */
+:root .shell .cx-dash-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:root .shell .cx-dash-link:hover {
+  color: hsl(var(--foreground));
+}
+
+/* ── 概览（AgentDashboard） ────────────────────────────────── */
+
+/* 页面是限高的 flex 列：带 overflow:hidden 的卡片会被压成 0 高，块一律不收缩。 */
+:root .shell .cx-dash > * {
+  flex: none;
+}
+
+:root .shell .cx-dash-status .cx-row-icon .hub-agent-glyph {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .cx-dash-status .cx-row-icon i.hub-agent-glyph {
+  background: currentColor;
+}
+
+:root .shell .cx-dash-status .cx-row {
+  min-height: 60px;
+}
+
+:root .shell .cx-dash-status .agent-dash-select {
+  min-width: 160px;
+}
+
+:root .shell .cx-dash-primary {
+  height: 30px;
+}
+
+:root .shell .cx-dash-stat-value {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-dash-stat-value[data-mono="false"] {
+  font-family: inherit;
+}
+
+:root .shell .cx-dash-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+:root .shell .cx-dash-lists[data-single="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:root .shell .cx-dash-lists > .cx-section + .cx-section {
+  margin-top: 0;
+}
+
+:root .shell .cx-dash-list .cx-row {
+  min-height: 48px;
+}
+
+:root .shell .cx-dash-list .cx-row-main {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+:root .shell .cx-dash-list .cx-empty {
+  padding: 22px 16px;
+}
+
+:root .shell .cx-dash-time {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+:root .shell .cx-dash-state {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-dash-state[data-tone="ok"] { color: hsl(var(--status-success)); }
+:root .shell .cx-dash-state[data-tone="err"] { color: hsl(var(--status-error)); }
+
+:root .shell .cx-dash-spin {
+  animation: cx-agents-spin 1s linear infinite;
+}
+
+@keyframes cx-agents-spin {
+  to { transform: rotate(360deg); }
+}
+
+:root .shell .cx-dash-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-dash-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+:root .shell .cx-dash-foot button:hover {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-dash-foot b {
+  color: hsl(var(--foreground));
+  font-weight: 500;
+}
+
+:root .shell .cx-dash-foot code {
+  font-size: 11.5px;
+}
+
+:root .shell .overview-health-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .overview-health-list .cx-row-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 860px) {
+  :root .shell .cx-dash-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -10,6 +10,11 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:resources —— resources 组新增词条写在这一行下面
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
+  "全部正常": "All good",
+  "最近没有经过本地代理的请求": "No recent requests through the local proxy",
+  "直连且未开启协议转换时，请求不经过本地代理，这里不会有记录。": "Direct providers without protocol conversion bypass the local proxy, so nothing is recorded here.",
+  "还没有经过网关的请求": "No requests through the gateway yet",
+  "在它里面发一条消息试试。": "Send a message in it to try.",
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
   // ----
@@ -3194,6 +3199,9 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:resources —— resources 组新增词条写在这一行下面
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
+  "{0} 项需处理": "{0} need attention",
+  "其余 {0} 项正常": "{0} other checks OK",
+  "{0} 项检查全部正常": "All {0} checks OK",
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
   // ----

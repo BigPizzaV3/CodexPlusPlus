@@ -325,6 +325,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
+import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -6288,7 +6289,7 @@ function OverviewScreen({
       : { tone: "missing", text: t("还没有配置供应商。") };
   const codexActions = gatewayManaged ? (
     <>
-      <Button onClick={() => onNavigate("gateway")} size="sm">{t("管理接入")}</Button>
+      <button className="cx-secondary" onClick={() => onNavigate("gateway")} type="button">{t("管理接入")}</button>
     </>
   ) : activeProfile ? (
     <>
@@ -6302,10 +6303,10 @@ function OverviewScreen({
         title={!normalized.relayProfilesEnabled ? t("供应商配置切换已关闭，在供应商配置页打开后才能切换") : t("切换供应商")}
         value={normalized.activeRelayId}
       />
-      <Button onClick={() => onNavigate("relay")} size="sm" variant="secondary">{t("管理供应商")}</Button>
+      <button className="cx-secondary" onClick={() => onNavigate("relay")} type="button">{t("管理供应商")}</button>
     </>
   ) : (
-    <Button onClick={() => onNavigate("relay")} size="sm">{t("添加供应商")}</Button>
+    <button className="cx-primary" onClick={() => onNavigate("relay")} type="button"><Plus aria-hidden="true" />{t("添加供应商")}</button>
   );
   const codexStats: DashboardStat[] = [
     { label: t("24 小时请求"), value: recent ? recent.total : "—" },
@@ -6313,6 +6314,32 @@ function OverviewScreen({
     { label: t("平均耗时"), value: recent?.avgDurationMs == null ? "—" : `${(recent.avgDurationMs / 1000).toFixed(1)}s` },
     { label: t("常用模型"), value: recent?.topModel ?? "—", mono: false },
   ];
+  const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
+  // 健康检查：一张卡一行一项。有问题的项排前面、带橙色 / 红色标签；正常的收成一行「其余 N 项正常」，点开再看。
+  const healthRows = [
+    {
+      title: t("Codex 版本"),
+      status: overview?.codex_version ? "ok" : "not_checked",
+      ok: Boolean(overview?.codex_version),
+      detail: overview?.codex_version ?? t("未检测到 Codex 应用版本。"),
+      icon: Tag,
+    },
+    ...health,
+  ];
+  const healthProblems = healthRows.filter((item) => !item.ok);
+  const healthFine = healthRows.filter((item) => item.ok);
+  const [healthExpanded, setHealthExpanded] = useState(false);
+  const healthRow = (item: (typeof healthRows)[number]) => (
+    <CxRow
+      detail={<span title={item.detail}>{item.detail}</span>}
+      icon={<CxStatusIcon tone={item.ok ? (statusClass(item.status) === "idle" ? "off" : "ok") : statusClass(item.status) === "bad" ? "danger" : "warn"}><item.icon /></CxStatusIcon>}
+      key={item.title}
+      muted={item.ok && healthProblems.length > 0}
+      title={item.title}
+    >
+      <CxBadge tone={item.ok ? (statusClass(item.status) === "good" ? "ok" : "neutral") : statusClass(item.status) === "bad" ? "danger" : "warn"}>{statusLabel(item.status)}</CxBadge>
+    </CxRow>
+  );
   return (
     <>
       {activeTool === "codex" ? (
@@ -6328,46 +6355,33 @@ function OverviewScreen({
           status={codexStatus}
           version={overview?.codex_version}
         >
-        <Panel>
-          <CardHeader className="panel-head overview-health-header">
-            <CardTitle>{t("健康检查")}</CardTitle>
-            <div className="overview-health-header-actions">
-              <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
-              <Button
-                aria-label={t("刷新状态")}
-                title={t("刷新状态")}
-                size="icon"
-                variant="outline"
-                className="shrink-0"
-                onClick={() => void actions.refreshCurrent()}
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="health-grid overview-health-grid">
-              <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
-                <span className={`health-icon ${overview?.codex_version ? "good" : "warn"}`}><Tag className="h-4 w-4" /></span>
-                <div>
-                  <strong>{t("Codex 版本")}</strong>
-                  <span title={overview?.codex_version ?? undefined}>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
-                </div>
-                <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
-              </div>
-              {health.map((item) => (
-                <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
-                  <span className={`health-icon ${statusClass(item.status)}`}><item.icon className="h-4 w-4" /></span>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span title={item.detail}>{item.detail}</span>
-                  </div>
-                  <Badge status={item.status} />
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Panel>
+          <CxSection
+            aside={
+              <span className="overview-health-header-actions">
+                <span title={t("概览只展示关键问题，具体配置在对应页面处理")}>{healthProblems.length ? tf("{0} 项需处理", [healthProblems.length]) : t("全部正常")}</span>
+                <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshCurrent()} title={t("刷新状态")} type="button">
+                  <RefreshCw aria-hidden="true" />
+                </button>
+              </span>
+            }
+            className="overview-health"
+            title={t("健康检查")}
+          >
+            <CxCard className="overview-health-list">
+              {healthProblems.map(healthRow)}
+              {healthExpanded ? healthFine.map(healthRow) : (
+                <CxRow
+                  className="overview-health-more"
+                  detail={healthFine.map((item) => item.title).join(" · ")}
+                  icon={<CxStatusIcon tone="ok"><CheckCircle2 /></CxStatusIcon>}
+                  onClick={() => setHealthExpanded(true)}
+                  title={healthProblems.length ? tf("其余 {0} 项正常", [healthFine.length]) : tf("{0} 项检查全部正常", [healthFine.length])}
+                >
+                  <ChevronDown aria-hidden="true" className="cx-row-chevron" />
+                </CxRow>
+              )}
+            </CxCard>
+          </CxSection>
         </AgentDashboard>
       ) : activeTool === "claude" || activeTool === "grok" ? (
         <AgentDashboard agent={activeTool} name={tool?.name ?? activeTool} notify={actions.showMessage} onNavigate={onNavigate} onOpenList={onOpenList} />
