@@ -790,16 +790,28 @@
   white-space: nowrap;
 }
 
-/* 每个子 Agent 一张卡，卡与卡之间留缝。 */
+/* 子 Agent 一张卡、一行一个，行间细线；展开的配置缩进接在行下面。 */
 :root .shell .cx-collab-agent + .cx-collab-agent {
-  margin-top: 8px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
 }
 
-:root .shell .cx-collab-page .cx-collab-agent {
-  padding: 0;
-  border: 0;
-  border-radius: var(--cx-radius);
-  background: hsl(var(--card));
+:root .shell .cx-collab-agent-body {
+  margin: 0 0 6px 14px;
+  border-left: 2px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-collab-agent-body .cx-row + .cx-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-collab-summary {
+  color: hsl(var(--muted-foreground));
+}
+
+/* 没启用的行没有箭头，占同样宽度让开关对齐。 */
+:root .shell .cx-collab-chevron-space {
+  display: inline-block;
+  width: 14px;
 }
 
 :root .shell .cx-collab-input {
@@ -839,9 +851,6 @@
   font-weight: 450;
 }
 
-:root .shell .cx-collab-page .cx-collab-agent {
-  display: block;
-}
 
 /* 调试区里的两块不再套边框，只用细线分隔。 */
 :root .shell .cx-collab-debug .agent-collaboration-debug-body .agent-collaboration-section {

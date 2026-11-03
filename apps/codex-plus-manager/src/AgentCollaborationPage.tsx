@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, ArrowRightLeft, Check, CheckCircle2, Copy, Loader2, Play, RefreshCw, Square } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2, Play, RefreshCw, Square } from "lucide-react";
 import { PageHeader } from "./ManagementPages";
 import { AppSelect } from "./AppSelect";
 import { Switch } from "./gateway-ui";
@@ -83,6 +83,8 @@ const formatTime = (value: number) => Number.isFinite(value) && value > 0
   : "—";
 
 export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: string } = {}) {
+  /** 子 Agent 列表里展开的那一个（空 = 全部收起）。 */
+  const [openAgentId, setOpenAgentId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [runtime, setRuntime] = useState<CodexRuntime | null>(null);
   const [draft, setDraft] = useState<CollaborationConfig>(defaultConfig);
@@ -420,7 +422,9 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
         </CxCard>
       </CxSection>
 
-      <CxSection title={<span title="选择可调用的 CLI 与默认模型。CLI 路径留空时自动查找已安装的程序。路径检测只确认 CLI 文件存在，登录状态在执行任务时验证。">子 Agent</span>}>
+      {/* 所有子 Agent 在一张卡里，一行一个：开关就地启用；点行展开它的路径、模型和并发（只有启用的能展开，一次展开一个）。 */}
+      <CxSection count={draft.agents.filter((agent) => agent.enabled).length} title={<span title="选择可调用的 CLI 与默认模型。CLI 路径留空时自动查找已安装的程序。路径检测只确认 CLI 文件存在，登录状态在执行任务时验证。">子 Agent</span>}>
+        <CxCard className="cx-collab-agents">
         {draft.agents.map((agent) => {
           const savedAgent = snapshot?.config.agents.find((item) => item.id === agent.id);
           const savedPath = savedAgent?.executable === agent.executable.trim();
@@ -428,16 +432,21 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
           const available = availability?.available;
           const stateText = !savedPath ? "路径尚未保存" : availability?.recovered ? "已保存的路径已失效（桌面版更新后版本目录会变化），本次自动使用当前 CLI；清空路径保存可一直自动查找" : available === true ? "已找到 CLI 文件" : availability?.configuredMissing ? "已保存的路径不存在；清空路径保存可自动查找，或重新填写" : available === false ? "未找到 CLI 文件" : agent.executable.trim() ? "已配置，执行任务时验证" : "留空自动查找已安装的 CLI";
           const stateTone = available === false || availability?.configuredMissing ? "warn" : available === true && !availability?.recovered ? "ok" : availability?.recovered ? "warn" : "neutral";
-          return <CxCard className="agent-collaboration-agent cx-collab-agent" key={agent.id}>
+          const expanded = agent.enabled && openAgentId === agent.id;
+          const summary = [agent.model.trim() || (agent.id === "deepseek" ? "" : t("默认模型")), agent.maxConcurrentTasks > 1 ? tf("同时 {0} 个", [agent.maxConcurrentTasks]) : ""].filter(Boolean).join(" · ");
+          return <div className="cx-collab-agent" data-open={expanded || undefined} key={agent.id}>
             <CxRow
               badges={agent.enabled || available === false ? <CxBadge tone={stateTone} title={stateText}>{available === true && !availability?.recovered ? "已找到 CLI" : available === false ? "未找到 CLI" : availability?.recovered ? "已自动改用当前 CLI" : !savedPath ? "未保存" : "待验证"}</CxBadge> : null}
-              detail={availability?.path ? <code className="cx-set-path" title={stateText}>{availability.path}</code> : stateText}
+              detail={<>{availability?.path ? <code className="cx-set-path" title={stateText}>{availability.path}</code> : stateText}{agent.enabled && summary && !expanded ? <span className="cx-collab-summary"> · {summary}</span> : null}</>}
+              muted={!agent.enabled}
+              onClick={agent.enabled ? () => setOpenAgentId(expanded ? "" : agent.id) : undefined}
               title={agent.name}
             >
-              <Switch disabled={!snapshot || busy === "save_config"} label={tf("启用 {0}", [agent.name])} on={agent.enabled} onToggle={() => editAgent(agent.id, { enabled: !agent.enabled }, true)} />
+              <Switch disabled={!snapshot || busy === "save_config"} label={tf("启用 {0}", [agent.name])} on={agent.enabled} onToggle={() => { if (!agent.enabled) setOpenAgentId(agent.id); editAgent(agent.id, { enabled: !agent.enabled }, true); }} />
+              {agent.enabled ? (expanded ? <ChevronDown aria-hidden="true" className="cx-set-chevron" /> : <ChevronRight aria-hidden="true" className="cx-set-chevron" />) : <span className="cx-collab-chevron-space" />}
             </CxRow>
-            {/* 关着的子 Agent 只留标题行；打开后再显示它的路径、模型和并发。 */}
-            {agent.enabled ? <>
+            {/* 关着的子 Agent 只留标题行；打开并展开后再显示它的路径、模型和并发。 */}
+            {expanded ? <div className="cx-collab-agent-body">
               <CxRow detail="留空自动查找已安装的 CLI" title="可执行文件路径">
                 <input className="cx-collab-input" id={`agent-collaboration-path-${agent.id}`} aria-label={tf("{0} 可执行文件路径", [agent.name])} value={agent.executable} disabled={!snapshot || busy === "save_config"} placeholder={availability?.path || "自动查找"} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => editAgent(agent.id, { executable: event.target.value })} onBlur={saveOnBlur} />
               </CxRow>
@@ -462,9 +471,10 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
               >
                 <Switch disabled={!snapshot || busy === "save_config"} label="复用 DSH 已保存的登录与密钥" on={agent.reuseSavedAuth} onToggle={() => editAgent(agent.id, { reuseSavedAuth: !agent.reuseSavedAuth }, true)} />
               </CxRow>}
-            </> : null}
-          </CxCard>;
+            </div> : null}
+          </div>;
         })}
+        </CxCard>
       </CxSection>
 
       <CxSection title={<span title="接入会登记子 Agent 工具，并尝试在本机 Codex 中刷新。已登记配置可单独刷新工具。">在 Codex 对话中使用</span>}>
