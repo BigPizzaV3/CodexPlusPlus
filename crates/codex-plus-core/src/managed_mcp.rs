@@ -214,6 +214,16 @@ pub fn upsert_managed_context(
     {
         set_value_preserving_decor(server, "enabled", Value::from(true));
     }
+    // 启动超时显式写长一点。
+    //
+    // 这些托管服务不是轻量握手：extension / dsh 宿主启动时要把整张注册表里的插件都加载
+    // 一遍（实测 dsh 宿主冷启动能到十几秒），Codex 默认的 MCP 启动超时等不到 ready 就会
+    // 判定失败，然后重连——而重连时旧连接的管道不一定被关掉，子进程只靠 stdin 收尾，
+    // 于是每十几秒多一个挂着不动的孤儿（实测一天累积 45 个进程 / 2.2 GB）。
+    // 写长超时让慢启动也能等到 ready，不再触发那条重连路径。用户自己改过就尊重原值。
+    if server.get("startup_timeout_sec").is_none() {
+        set_value_preserving_decor(server, "startup_timeout_sec", Value::from(120.0_f64));
+    }
     Ok(document.to_string())
 }
 

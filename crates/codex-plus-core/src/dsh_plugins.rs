@@ -765,6 +765,19 @@ impl DshPlugins {
         Ok(directory.join("host.mjs"))
     }
 
+    /// 有没有「接上之后真的能提供工具」的插件：登记过、开着、包目录还在。
+    ///
+    /// 没有的话这条 MCP 就只剩空转：Codex 每开一个会话/重连一次就 spawn 一个宿主
+    /// （一个 Node 进程 68 MB），宿主却没有任何工具可以响应。实测一天能攒到 45 个常驻
+    /// 孤儿、2.2 GB。调用方据此决定要不要真的把宿主拉起来。
+    pub fn has_enabled_plugins(&self) -> anyhow::Result<bool> {
+        Ok(self
+            .load()?
+            .plugins
+            .iter()
+            .any(|record| record.enabled && Path::new(&record.root).exists()))
+    }
+
     pub fn load(&self) -> anyhow::Result<Registry> {
         match std::fs::read_to_string(self.registry_path()) {
             Ok(text) => {
@@ -2091,6 +2104,12 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
         bail!("状态目录必须是绝对路径");
     }
     let plugins = DshPlugins::new(&state_dir);
+    // 一个能用的插件都没有时不要再拉 Node 宿主：Codex 每开一个会话就 spawn 一次这条 MCP，
+    // 空宿主每个 68 MB（加上这层包装进程 12 MB），一天下来能堆几十个常驻孤儿。
+    // 直接以「没有工具」收场，Codex 侧看到的就是一份空工具表。用户装了插件再接入即可。
+    if !plugins.has_enabled_plugins()? {
+        return Ok(0);
+    }
     let host = plugins.ensure_host()?;
     let node = locate_node().context("没有找到 Node 运行时，dsh 插件 MCP 无法启动")?;
     let mut command = Command::new(node);
@@ -2126,5 +2145,65 @@ mod tests {
         // 非盘符的 verbatim 路径与普通路径原样保留。
         assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\Volume{x}\p")), PathBuf::from(r"\\?\Volume{x}\p"));
         assert_eq!(strip_verbatim_prefix(Path::new("/tmp/plugin")), PathBuf::from("/tmp/plugin"));
+    }
+
+    #[test]
+    fn has_enabled_plugins_follows_registry_and_package_dir() {
+        // 这个判断决定 MCP 要不要真的拉起 Node 宿主：判错就会白养一堆 68 MB 的孤儿进程。
+        let temp = tempfile::tempdir().unwrap();
+        let plugins = DshPlugins::new(temp.path());
+        assert!(
+            !plugins.has_enabled_plugins().unwrap(),
+            "注册表不存在时视为没有插件"
+        );
+
+        let present = temp.path().join("pkg-present");
+        std::fs::create_dir_all(&present).unwrap();
+        let missing = temp.path().join("pkg-missing");
+        let record = |id: &str, enabled: bool, root: &Path| PluginRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            version: String::new(),
+            source: PluginSource::Local {
+                path: root.display().to_string(),
+            },
+            root: root.display().to_string(),
+            managed: false,
+            enabled,
+            disabled_rows: Vec::new(),
+            configs: BTreeMap::new(),
+            imported_at: 0,
+            report: Value::Null,
+            imported_skills: Vec::new(),
+            owner: None,
+            owner_fingerprint: None,
+        };
+        let save = |records: Vec<PluginRecord>| {
+            std::fs::create_dir_all(plugins.root()).unwrap();
+            std::fs::write(
+                plugins.registry_path(),
+                serde_json::to_string(&Registry {
+                    version: REGISTRY_VERSION,
+                    plugins: records,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        save(vec![record("off", false, &present)]);
+        assert!(!plugins.has_enabled_plugins().unwrap(), "停用的插件不算");
+
+        save(vec![record("gone", true, &missing)]);
+        assert!(
+            !plugins.has_enabled_plugins().unwrap(),
+            "包目录被删掉的插件不算"
+        );
+
+        save(vec![
+            record("gone", true, &missing),
+            record("live", true, &present),
+        ]);
+        assert!(plugins.has_enabled_plugins().unwrap(), "有一个能用的就算");
     }
 }

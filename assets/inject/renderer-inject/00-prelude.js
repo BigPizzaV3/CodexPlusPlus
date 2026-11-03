@@ -5,6 +5,11 @@
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
   const codexPlusIsMacPlatform = /\bMacintosh\b/i.test(navigator.userAgent || "");
+  // 每个注入实例的代际。重新注入会带一整套新的闭包，但旧实例留在页面上的定时器、
+  // 订阅循环还活着，且它们只认自己闭包里的标志位——每注入一次就多叠一套轮询
+  // （实测三份叠起来把 /extensions/history 顶到 544 次/分钟）。所有常驻循环都拿它自检。
+  const codexPlusRuntimeGeneration = (window.__codexPlusRuntimeGeneration || 0) + 1;
+  window.__codexPlusRuntimeGeneration = codexPlusRuntimeGeneration;
 
   function codexPlusStatsigClients() {
     const root = window.__STATSIG__ || globalThis.__STATSIG__;

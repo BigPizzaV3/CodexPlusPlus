@@ -13404,6 +13404,9 @@ button.side-item:hover {
 }
 
 /* 插件页：状态条（两个整体开关 + 摘要）、市场 / 本地切换，卡片更紧凑 */
+.shell .user-scripts-page {
+  grid-template-columns: minmax(0, 1fr);
+}
 .shell .user-scripts-strip {
   display: flex;
   flex-wrap: wrap;
@@ -13424,17 +13427,51 @@ button.side-item:hover {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
 }
-/* 拓展页理念横幅：大标题 + 一句说明 + 能力标签，与下方卡片同宽同圆角 */
+/* 共用拓展入口：宿主切换与标题同一行，窄窗口自然换行。 */
 .shell .extensions-hero {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 16px 18px;
-  border: 1px solid hsl(var(--primary) / 0.25);
-  border-radius: 10px;
-  background:
-    radial-gradient(120% 140% at 0% 0%, hsl(var(--primary) / 0.14), transparent 60%),
-    hsl(var(--card));
+  padding: 4px 0 16px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.shell .extensions-hero-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.shell .extension-host-switch {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
+  padding: 3px;
+}
+.shell .extension-host-switch button {
+  display: inline-flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 98px;
+  min-height: 32px;
+  border-radius: 5px;
+}
+.shell .extension-host-switch button > :first-child {
+  width: 16px;
+  height: 16px;
+}
+.shell .user-scripts-local-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.shell .user-scripts-local-title span {
+  font-weight: 400;
+  color: hsl(var(--muted-foreground));
 }
 .shell .extensions-hero-text {
   display: flex;
@@ -13446,7 +13483,7 @@ button.side-item:hover {
   margin: 0;
   font-size: 20px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   color: hsl(var(--foreground));
 }
 .shell .extensions-hero-lead {

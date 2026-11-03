@@ -21,6 +21,7 @@ function refreshHarness(options: { external: boolean; loaded: boolean; enabled: 
   };
   const context = vm.createContext({
     window,
+    document: { documentElement: {} },
     codexPlusBackendSettingsLoaded: options.loaded,
     codexPlusSettings: () => ({ dreamSkinEnabled: options.enabled, dreamSkinPaused: !!options.paused, dreamSkinThemeConfig: {} }),
     ensureDreamSkinMainSurface: () => calls.push("main-surface"),

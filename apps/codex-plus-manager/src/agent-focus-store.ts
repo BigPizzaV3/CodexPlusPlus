@@ -1,4 +1,4 @@
-/** 使用模式（只管理 Codex / 全部功能）的读写与订阅。规则在 agent-focus-model.ts，这里只管 localStorage 和广播。 */
+/** 使用模式的读写与订阅。规则在 agent-focus-model.ts，这里只管 localStorage 和广播。 */
 import { useEffect, useState } from "react";
 import {
   AGENT_FOCUS_EVENT,
@@ -10,7 +10,10 @@ import {
   type FocusMode,
 } from "./agent-focus-model";
 
+let sessionFallback: string | undefined;
+
 function readStored(): string | null {
+  if (sessionFallback !== undefined) return sessionFallback;
   try {
     return window.localStorage.getItem(AGENT_FOCUS_STORAGE_KEY);
   } catch {
@@ -30,10 +33,13 @@ export function needAgentFocusPrompt(): boolean {
 }
 
 export function saveAgentFocus(mode: FocusMode) {
+  const value = serializeAgentFocus(mode);
   try {
-    window.localStorage.setItem(AGENT_FOCUS_STORAGE_KEY, serializeAgentFocus(mode));
+    window.localStorage.setItem(AGENT_FOCUS_STORAGE_KEY, value);
+    sessionFallback = undefined;
   } catch {
     // 存不了就只在本次会话里生效。
+    sessionFallback = value;
   }
   window.dispatchEvent(new CustomEvent(AGENT_FOCUS_EVENT));
 }
@@ -44,7 +50,10 @@ export function useAgentFocus(): AgentFocus {
   useEffect(() => {
     const reload = () => setFocus(loadAgentFocus());
     const onStorage = (event: StorageEvent) => {
-      if (event.key === AGENT_FOCUS_STORAGE_KEY) reload();
+      if (event.key === AGENT_FOCUS_STORAGE_KEY || event.key === null) {
+        sessionFallback = undefined;
+        reload();
+      }
     };
     window.addEventListener(AGENT_FOCUS_EVENT, reload);
     window.addEventListener("storage", onStorage);

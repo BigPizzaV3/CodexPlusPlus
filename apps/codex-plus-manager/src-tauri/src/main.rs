@@ -17,6 +17,13 @@ fn main() {
         }
         return;
     }
+    if args.get(1).is_some_and(|arg| arg == codex_plus_core::extension_claude::MCP_FLAG) {
+        if let Err(error) = run_claude_extension_mcp(&args[2..]) {
+            eprintln!("Claude 拓展 MCP 退出：{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Claude Code 的 Stop / SubagentStop 钩子调用：只往 spool 里记一行，不启动 GUI。
     // 第二个参数是安装时固化的 state 目录（钩子不继承 CODEX_PLUS_STATE_DIR）。
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-browser-turn-end") {
@@ -173,9 +180,69 @@ fn should_skip_autostart(args: impl IntoIterator<Item = String>, disabled: bool)
     disabled && args.into_iter().any(|arg| arg == "--autostart")
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ClaudeExtensionOptions {
+    state_dir: Option<std::path::PathBuf>,
+    settings_path: Option<std::path::PathBuf>,
+}
+
+fn claude_extension_options(args: &[std::ffi::OsString]) -> anyhow::Result<ClaudeExtensionOptions> {
+    let mut options = ClaudeExtensionOptions::default();
+    let mut args = args.chunks_exact(2);
+    for pair in &mut args {
+        let target = match pair[0].to_str() {
+            Some("--state-dir") => &mut options.state_dir,
+            Some("--settings-path") => &mut options.settings_path,
+            _ => anyhow::bail!("Claude 拓展 MCP 仅接受 --state-dir 与 --settings-path"),
+        };
+        anyhow::ensure!(target.is_none(), "Claude 拓展 MCP 参数不能重复");
+        let path = std::path::PathBuf::from(&pair[1]);
+        anyhow::ensure!(path.is_absolute(), "Claude 拓展 MCP 路径必须是绝对路径");
+        *target = Some(path);
+    }
+    anyhow::ensure!(args.remainder().is_empty(), "Claude 拓展 MCP 参数缺少路径");
+    Ok(options)
+}
+
+fn run_claude_extension_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
+    let options = claude_extension_options(args)?;
+    if let Some(directory) = options.state_dir {
+        // 独立 stdio 入口尚未启动线程；插件必须使用所属管理器的状态目录。
+        unsafe { std::env::set_var(codex_plus_core::paths::STATE_DIR_ENV, directory) };
+    }
+    codex_plus_core::extension_claude::run_mcp_cli(options.settings_path)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::should_skip_autostart;
+    use super::{ClaudeExtensionOptions, claude_extension_options, should_skip_autostart};
+
+    #[test]
+    fn claude_extension_mcp_rejects_unrecognized_or_relative_arguments() {
+        use std::ffi::OsString;
+        assert_eq!(claude_extension_options(&[]).unwrap(), ClaudeExtensionOptions::default());
+        for args in [
+            vec!["--state-dir"],
+            vec!["--state-dir", "relative"],
+            vec!["--settings-path", "relative"],
+            vec!["--other", "/tmp"],
+            vec!["--state-dir", "/tmp", "--state-dir", "/tmp"],
+            vec!["--settings-path", "/tmp", "--settings-path", "/tmp"],
+        ] {
+            assert!(claude_extension_options(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).is_err());
+        }
+        let directory = std::env::temp_dir();
+        let settings = directory.join("custom-settings.json");
+        for args in [
+            vec![OsString::from("--state-dir"), directory.as_os_str().to_owned(), OsString::from("--settings-path"), settings.as_os_str().to_owned()],
+            vec![OsString::from("--settings-path"), settings.as_os_str().to_owned(), OsString::from("--state-dir"), directory.as_os_str().to_owned()],
+        ] {
+            assert_eq!(claude_extension_options(&args).unwrap(), ClaudeExtensionOptions {
+                state_dir: Some(directory.clone()),
+                settings_path: Some(settings.clone()),
+            });
+        }
+    }
 
     #[test]
     fn disabling_login_startup_still_allows_opening_the_gui() {
