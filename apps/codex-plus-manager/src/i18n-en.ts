@@ -12,6 +12,15 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "不支持审批卡": "No approval cards",
+  "会退回自动放行": "Falls back to auto-allow",
+  "客户端能力与始终允许的应用": "Client capabilities and always-allowed apps",
+  "屏幕右上角实时显示目标窗口，需要屏幕录制权限": "Shows the target window live in the top-right corner; needs Screen Recording permission",
+  "支持审批卡": "Supports approval cards",
+  "最近连接的客户端": "Last connected client",
+  "浏览器回合钩子": "Browser turn hooks",
+  "装好后无需额外配置，刷新页面即生效。": "No extra setup needed; reload the page once installed.",
+  "重新自检": "Run again",
   "仅统计": "Stats only",
   "全部选择（含日志）": "Select all (including logs)",
   "单独选择": "Opt-in",
@@ -3220,6 +3229,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "{0} 个应用": "{0} apps",
   "选择 {0}": "Select {0}",
   "最多 {0} 次": "Up to {0} tries",
   "间隔 {0} 秒": "{0}s interval",

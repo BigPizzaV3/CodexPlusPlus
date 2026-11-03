@@ -392,3 +392,68 @@
   font-family: var(--font-mono);
   font-size: 11.5px;
 }
+
+/* ── 通用小件：节下面的一行注脚、操作完成的一行提示 ─────────────── */
+
+:root .shell .cx-set-note {
+  margin: 0;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:root .shell .cx-set-note code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+:root .shell .cx-set-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .cx-set-notice svg {
+  flex: none;
+  color: hsl(var(--status-success));
+}
+
+/* ── Computer Use ─────────────────────────────────────────── */
+
+:root .shell .cx-cu-page .cu-content {
+  gap: 16px;
+}
+
+:root .shell .cx-cu-page .cu-content > .cx-section + .cx-section {
+  margin-top: 6px;
+}
+
+/* 拓扑图卡片：去掉描边，和其它卡片同一种底色。 */
+:root .shell .cx-cu-page .cu-flow-card {
+  border: 0;
+  border-radius: var(--cx-radius);
+}
+
+:root .shell .cx-cu-page .cu-custom-add {
+  margin: 0;
+  padding: 12px 14px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-cu-page .cu-custom-add-row > input {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+:root .shell .cx-cu-page .cu-rename-input {
+  height: 26px;
+}
+
+:root .shell .cx-set-note.cx-set-note-inset {
+  padding: 12px 14px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
