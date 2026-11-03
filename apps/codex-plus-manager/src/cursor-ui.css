@@ -1688,3 +1688,14 @@
   float: right;
   color: hsl(var(--status-success));
 }
+
+/* 禁用的开关：整体半透明在深色卡片上几乎看不见（只剩一个圈），改成灰色轨道 + 灰色圆点。 */
+:root .shell .gw-switch:disabled {
+  opacity: 1;
+  background: hsl(var(--muted-foreground) / 0.2);
+}
+
+:root .shell .gw-switch:disabled span {
+  background: hsl(var(--muted-foreground) / 0.45);
+  box-shadow: none;
+}

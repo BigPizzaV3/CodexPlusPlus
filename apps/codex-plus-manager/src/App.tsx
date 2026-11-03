@@ -123,7 +123,7 @@ import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
 import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
 import { MyPublishedPanel } from "./MyPublishedPanel";
-import { SectionLabel, Switch } from "./gateway-ui";
+import { AgentIcon, SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
@@ -4991,6 +4991,7 @@ export function App() {
     <div className={`shell ${theme}`}>
       <AppSidebar
         setupCard={setupCard}
+        sponsor={route === "hub" ? null : <SidebarSponsor ads={ads} onOpen={(url) => void actions.openExternalUrl(url)} />}
         tools={shownTools}
         soloAgent={soloAgent}
         focus={agentFocus}
@@ -5963,14 +5964,14 @@ function WeixinConnectScreen({
   const runtimeState = status?.state ?? "stopped";
   const running = ["starting", "running", "retrying"].includes(runtimeState);
   const stopping = runtimeState === "stopping";
-  const statusLabel = {
+  const runtimeLabel = {
     starting: t("正在启动"),
     running: t("运行中"),
     retrying: t("正在重试"),
     stopping: t("正在停止"),
     error: t("异常"),
     stopped: t("已停止"),
-  }[runtimeState] ?? runtimeState;
+  }[runtimeState] ?? statusLabel(runtimeState);
 
   const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
   const statusTone = runtimeState === "running" ? "ok" : runtimeState === "error" ? "danger" : running ? "warn" : "off";
@@ -6000,7 +6001,7 @@ function WeixinConnectScreen({
       <CxCard className={`weixin-status-panel is-${runtimeState}`}>
         <div id="weixin-section-status">
           <CxRow
-            badges={<CxBadge tone={statusTone === "ok" ? "ok" : statusTone === "danger" ? "danger" : "neutral"}>{statusLabel}</CxBadge>}
+            badges={<CxBadge tone={statusTone === "ok" ? "ok" : statusTone === "danger" ? "danger" : "neutral"}>{runtimeLabel}</CxBadge>}
             detail={(
               <span className="weixin-status-detail">
                 <span title={status?.message ?? t("微信连接未启动。")}>{status?.message ?? t("微信连接未启动。")}</span>
@@ -6083,7 +6084,10 @@ function WeixinConnectScreen({
               value={form.weixinConnectAllowFrom}
             />
           </SettingRow>
-          <SettingRow description={t("允许向指定微信用户回传工作区文件")} title={t("工作区附件回传")}>
+          <SettingRow
+            description={outboundBlocked ? t("先填允许的微信用户 ID（不能是 *）并选好工作目录，才能打开") : t("允许向指定微信用户回传工作区文件")}
+            title={t("工作区附件回传")}
+          >
             <Switch
               label={t("允许向指定微信用户回传工作区文件")}
               on={form.weixinConnectAllowOutboundAttachments}
@@ -6282,9 +6286,65 @@ function WeixinConnectScreen({
 ///
 /// 这里只读取广告源的 `top_ad/topAds`，不会读取普通 `ads` 推荐池。
 /// `top_ad` 可以是单个对象，也可以是数组；最多显示前两个有效广告。
-function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+/** 置顶赞助位（只读广告源的 top_ad / topAds，不读普通推荐池），过期的不显示。 */
+function featuredAds(ads: AdsResult | null): AdItem[] {
   const sourceAds = ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : [];
-  const featured = sourceAds.filter((ad) => !isExpiredAd(ad)).slice(0, 2);
+  return sourceAds.filter((ad) => !isExpiredAd(ad));
+}
+
+/**
+ * 侧栏里的赞助卡：每个页面都看得见（网关总览页顶部已有大横幅，那里不再重复）。
+ * 有多个赞助位时每 8 秒轮换一个，鼠标停在卡片上时不换；整张卡可点，在浏览器里打开。
+ * 标「推广」：用户一眼知道这是广告，不冒充功能入口。
+ */
+function SidebarSponsor({ ads, onOpen }: { ads: AdsResult | null; onOpen: (url: string) => void }) {
+  const items = featuredAds(ads);
+  const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (items.length < 2 || paused) return;
+    const timer = window.setInterval(() => setIndex((current) => (current + 1) % items.length), 8000);
+    return () => window.clearInterval(timer);
+  }, [items.length, paused]);
+  if (!items.length) return null;
+  const ad = items[index % items.length];
+  const highlights = (ad.highlights ?? []).filter(Boolean).slice(0, 2);
+  return (
+    <div className="cx-side-sponsor" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
+      <button className="cx-side-sponsor-main" onClick={() => onOpen(ad.url)} title={ad.description} type="button">
+        <span className="cx-side-sponsor-head">
+          {ad.image ? <img alt="" className="cx-side-sponsor-logo" src={ad.image} /> : <span className="cx-side-sponsor-logo"><Sparkles aria-hidden="true" /></span>}
+          <strong>{formatAdTitle(ad.title)}</strong>
+          <span className="cx-side-sponsor-tag">{t("推广")}</span>
+        </span>
+        <span className="cx-side-sponsor-text">{ad.description}</span>
+        {highlights.length ? (
+          <span className="cx-side-sponsor-chips">
+            {highlights.map((item) => <span key={item}>{item}</span>)}
+          </span>
+        ) : null}
+        <span className="cx-side-sponsor-cta">{t("了解更多")}<ArrowRight aria-hidden="true" /></span>
+      </button>
+      {items.length > 1 ? (
+        <span className="cx-side-sponsor-dots" role="tablist" aria-label={t("切换推广")}>
+          {items.map((item, itemIndex) => (
+            <button
+              aria-label={formatAdTitle(item.title)}
+              aria-selected={itemIndex === index % items.length}
+              key={adIdentity(item)}
+              onClick={() => setIndex(itemIndex)}
+              role="tab"
+              type="button"
+            />
+          ))}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+  const featured = featuredAds(ads).slice(0, 2);
 
   if (featured.length === 0) return null;
 
@@ -6294,13 +6354,22 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
       {featured.map((ad) => (
         <div className="hub-sponsor-item" key={ad.id || ad.title} title={ad.highlights?.length ? ad.highlights.join(" · ") : undefined}>
           <CxBanner
-            detail={ad.description}
+            detail={(
+              <>
+                {ad.description}
+                {ad.highlights?.length ? (
+                  <span className="hub-sponsor-chips">
+                    {ad.highlights.filter(Boolean).slice(0, 4).map((item) => <span key={item}>{item}</span>)}
+                  </span>
+                ) : null}
+              </>
+            )}
             icon={ad.image ? <img alt="" src={ad.image} /> : <Network />}
-            title={formatAdTitle(ad.title)}
+            title={<>{formatAdTitle(ad.title)}<span className="cx-side-sponsor-tag">{t("推广")}</span></>}
           >
-            <button className="cx-secondary" onClick={() => void actions.openExternalUrl(ad.url)} type="button">
-              {t("查看")}
-              <ExternalLink />
+            <button className="cx-primary" onClick={() => void actions.openExternalUrl(ad.url)} type="button">
+              {t("了解更多")}
+              <ArrowRight />
             </button>
           </CxBanner>
         </div>
@@ -8213,7 +8282,7 @@ function CodexMultiLaunchScreen({
                 <CxRow
                   badges={<CxBadge tone={tone === "good" ? "ok" : tone === "bad" ? "danger" : tone === "warn" ? "warn" : "neutral"}>{statusLabel(status)}</CxBadge>}
                   detail={<span data-failed={failure ? "true" : undefined} title={detail}>{detail || t("未提供进程详情")}</span>}
-                  icon={<CxStatusIcon tone={running ? "ok" : failure ? "danger" : "off"}><span className="multi-launch-initial">{providerInitial(label)}</span></CxStatusIcon>}
+                  icon={<CxStatusIcon tone={running ? "ok" : failure ? "danger" : "off"}>{instance.isMain ? <AgentIcon agent="codex" className="multi-launch-main-icon" /> : <span className="multi-launch-initial">{providerInitial(label)}</span>}</CxStatusIcon>}
                   title={label}
                 >
                   <button
@@ -8302,7 +8371,7 @@ function CodexMultiLaunchScreen({
         </CxCard>
         {/* #2754：新版的 API 多加在「供应商池」，多开却只读旧版供应商配置；添加入口直接说明这一点。 */}
         <CxAddRow
-          detail={t("多开只用「旧版供应商配置」里的供应商与 Key，「供应商池」（网关）的不会出现在这里")}
+          detail={t("多开用「连接与供应商」里的直连供应商；供应商池（网关）里的不在这里")}
           onClick={onOpenRelay}
           title={t("导入或添加供应商")}
         />
@@ -16637,9 +16706,12 @@ function AppSidebar({
   onOpenSettings,
   onExitSettings,
   setupCard = null,
+  sponsor = null,
 }: {
   /** 入门清单（没完成、没关掉时）：放在侧栏底部，替代网关状态卡。 */
   setupCard?: ReactNode;
+  /** 赞助卡：每个页面都在侧栏底部显示（网关总览页由页面顶部的大横幅代替）。 */
+  sponsor?: ReactNode;
   /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
   extensionPages?: ManagerExtensionPage[];
   activeExtensionKey?: string | null;
@@ -16745,6 +16817,7 @@ function AppSidebar({
           })}
           {!shown.length ? <p className="cx-side-empty">{t("没有匹配的设置")}</p> : null}
         </nav>
+        {sponsor}
         <footer className="cx-side-foot">
           <span className="cx-side-version">{version ? `Codex++ ${version}` : "Codex++"}</span>
           <button aria-label={languageLabel} className="cx-icon-button" onClick={() => toggleLanguage()} title={languageLabel} type="button">
@@ -16931,6 +17004,7 @@ function AppSidebar({
         ) : null}
       </nav>
 
+      {sponsor}
       {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则是网关状态；有新版本时换成更新提示。 */}
       {setupCard}
       {pendingUpdateVersion ? (

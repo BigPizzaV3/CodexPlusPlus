@@ -680,6 +680,11 @@
   margin-left: auto;
 }
 
+/* 开关也是 button：上面的 width: auto 会把它压成只剩圆点（18px），这里还原开关自己的宽度。 */
+:root .shell .weixin-settings-card .setting-row-control > .gw-switch {
+  width: 32px;
+}
+
 /* ── 多开（CodexMultiLaunchScreen） ────────────────────────── */
 
 :root .shell .multi-launch-page.cx-page > * {
@@ -841,3 +846,11 @@
   background: transparent;
 }
 
+
+/* 主 Codex 用 Codex 应用图标，不再写「主C」两个字。 */
+:root .shell .multi-launch-page .multi-launch-main-icon {
+  width: 22px;
+  height: 22px;
+  margin: 4px;
+  border-radius: 6px;
+}
