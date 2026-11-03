@@ -5063,6 +5063,8 @@ export function App() {
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
           key={route}
+          // 滚动后给吸顶的标题行加一条分隔线（macOS 无标题栏时标题行吸顶）；直接改 DOM 属性，不触发重渲染。
+          onScroll={(event) => event.currentTarget.toggleAttribute("data-scrolled", event.currentTarget.scrollTop > 4)}
         >
           {/* macOS 没有系统标题栏时，这一行就是标题栏：空白处可拖动窗口、双击缩放（按钮不受影响）。 */}
           <header className="cx-page-head" data-tauri-drag-region="deep">
@@ -6081,25 +6083,103 @@ function WeixinConnectScreen({
         </CxSection>
       ) : null}
 
-      {/* 设置按主题分节，一行一项；改动即自动保存。不常改的连接参数收进最后的「高级」。 */}
-      <CxSection id="weixin-section-account" title={t("账号")}>
+      {/* 设置只留每天会碰的两节：对话（谁能用、在哪个目录、用哪个模型）和权限；改动即自动保存。
+          扫码后自动填好的凭据、偶尔才用的项目归属与重置会话、连接参数都收进「高级」。 */}
+      <CxSection id="weixin-section-session" title={t("对话")}>
         <CxCard className="weixin-settings-card">
-          <SettingRow description={t("扫码后自动保存，也可粘贴已有 Bearer token")} title={t("登录凭据")}>
-            <Input
-              aria-label={t("登录凭据")}
-              autoComplete="off"
-              onChange={(event) => onFormChange({ ...form, weixinConnectToken: event.target.value })}
-              placeholder={t("扫码后自动保存，也可粘贴已有 Bearer token")}
-              type="password"
-              value={form.weixinConnectToken}
-            />
-          </SettingRow>
           <SettingRow description={t("每个微信联系人会映射到独立的 Codex 会话。")} title={t("允许的微信用户 ID")}>
             <Input
               aria-label={t("允许的微信用户 ID")}
               onChange={(event) => onFormChange({ ...form, weixinConnectAllowFrom: event.target.value })}
               placeholder="user@im.wechat"
               value={form.weixinConnectAllowFrom}
+            />
+          </SettingRow>
+          <SettingRow description={t("新会话在这个目录里工作；也可以从已有会话带入它的目录。")} title={t("工作目录")}>
+            <div className="weixin-path-row">
+              <SearchablePathPicker
+                onChange={(value) => {
+                  setSelectedSessionId("");
+                  onFormChange({ ...form, weixinConnectWorkDir: value });
+                }}
+                options={workDirOptions}
+                placeholder={t("搜索或输入工作目录")}
+                value={form.weixinConnectWorkDir}
+              />
+              <button aria-label={t("选择工作目录")} className="cx-icon-button" onClick={onChooseWorkDir} title={t("选择工作目录")} type="button">
+                <FolderOpen />
+              </button>
+            </div>
+          </SettingRow>
+          <SettingRow title={t("从已有会话带入")}>
+            <SearchableSessionPicker
+              onSelect={(session) => {
+                setSelectedSessionId(session?.id ?? "");
+                if (session?.cwd) onFormChange({ ...form, weixinConnectWorkDir: session.cwd });
+              }}
+              selectedId={selectedSessionId}
+              sessions={sessions}
+            />
+          </SettingRow>
+          {/* 模型和推理强度并成一行：两个下拉并排，推理强度跟着模型走。 */}
+          <SettingRow
+            description={catalogError
+              || (modelUnavailable ? t("当前模型已不在可用模型目录中，请重新选择。") : undefined)
+              || (reasoningUnavailable ? t("当前模型不支持已选推理强度，请重新选择或继承。") : undefined)
+              || (catalog && !models.length ? t("当前没有可用模型，请检查供应商配置。") : undefined)}
+            title={t("模型")}
+          >
+            <div className="weixin-path-row weixin-model-row">
+              <div aria-invalid={modelUnavailable || Boolean(catalogError)} className="weixin-select">
+                <AppSelect
+                  ariaLabel={t("模型")}
+                  onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
+                  options={[
+                    { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
+                    ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
+                      value: form.weixinConnectModel,
+                      label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
+                    }] : []),
+                    ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
+                  ]}
+                  value={form.weixinConnectModel}
+                />
+              </div>
+              <div aria-invalid={reasoningUnavailable} className="weixin-select weixin-effort-select">
+                <AppSelect
+                  ariaLabel={t("推理强度")}
+                  onChange={(next) => onFormChange({ ...form, weixinConnectReasoningEffort: next })}
+                  options={[
+                    { value: "", label: t("继承推理强度") },
+                    ...(form.weixinConnectReasoningEffort && !reasoningEfforts.includes(form.weixinConnectReasoningEffort) ? [{
+                      value: form.weixinConnectReasoningEffort,
+                      label: `${form.weixinConnectReasoningEffort} (${reasoningUnavailable ? t("不可用") : t("当前值")})`,
+                    }] : []),
+                    ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                  ]}
+                  value={form.weixinConnectReasoningEffort}
+                />
+              </div>
+              <button aria-label={t("刷新模型目录")} className="cx-icon-button" disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)} title={t("刷新模型目录")} type="button">
+                <RefreshCw className={catalogLoading ? "animate-spin" : ""} />
+              </button>
+            </div>
+          </SettingRow>
+        </CxCard>
+      </CxSection>
+
+      <CxSection id="weixin-section-account" title={t("权限")}>
+        <CxCard className="weixin-settings-card">
+          <SettingRow description={t("Codex 在工作目录里能做什么")} title={t("沙箱权限")}>
+            <AppSelect
+              ariaLabel={t("沙箱权限")}
+              onChange={(next) => onFormChange({ ...form, weixinConnectSandbox: next })}
+              options={[
+                { value: "read-only", label: t("只读") },
+                { value: "workspace-write", label: t("允许修改工作目录") },
+                { value: "danger-full-access", label: t("完全访问") },
+              ]}
+              value={form.weixinConnectSandbox}
             />
           </SettingRow>
           <SettingRow
@@ -6116,36 +6196,14 @@ function WeixinConnectScreen({
         </CxCard>
       </CxSection>
 
-      <CxSection id="weixin-section-session" title={t("会话管理")}>
+      <details className="weixin-advanced" id="weixin-section-cli">
+        <summary>
+          <span>{t("高级")}</span>
+          <small>{t("新会话项目")} · {t("重置联系人会话")} · {t("登录凭据")} · {t("连接参数")}</small>
+        </summary>
         <CxCard className="weixin-settings-card">
-          <SettingRow description={t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")} title={t("工作目录")}>
-            <div className="weixin-path-row">
-              <SearchablePathPicker
-                onChange={(value) => {
-                  setSelectedSessionId("");
-                  onFormChange({ ...form, weixinConnectWorkDir: value });
-                }}
-                options={workDirOptions}
-                placeholder={t("搜索或输入工作目录")}
-                value={form.weixinConnectWorkDir}
-              />
-              <button aria-label={t("选择工作目录")} className="cx-icon-button" onClick={onChooseWorkDir} title={t("选择工作目录")} type="button">
-                <FolderOpen />
-              </button>
-            </div>
-          </SettingRow>
-          <SettingRow title={t("已有会话")}>
-            <SearchableSessionPicker
-              onSelect={(session) => {
-                setSelectedSessionId(session?.id ?? "");
-                if (session?.cwd) onFormChange({ ...form, weixinConnectWorkDir: session.cwd });
-              }}
-              selectedId={selectedSessionId}
-              sessions={sessions}
-            />
-          </SettingRow>
           <SettingRow
-            description={projectsError || (projectUnavailable ? t("当前项目已不在项目列表中，请重新选择。") : undefined)}
+            description={projectsError || (projectUnavailable ? t("当前项目已不在项目列表中，请重新选择。") : t("新会话归到 Codex 里的哪个项目"))}
             title={t("新会话项目")}
           >
             <div aria-invalid={projectUnavailable || Boolean(projectsError)} className="weixin-path-row">
@@ -6174,18 +6232,6 @@ function WeixinConnectScreen({
               </button>
             </div>
           </SettingRow>
-          <SettingRow title={t("沙箱权限")}>
-            <AppSelect
-              ariaLabel={t("沙箱权限")}
-              onChange={(next) => onFormChange({ ...form, weixinConnectSandbox: next })}
-              options={[
-                { value: "read-only", label: t("只读") },
-                { value: "workspace-write", label: t("允许修改工作目录") },
-                { value: "danger-full-access", label: t("完全访问") },
-              ]}
-              value={form.weixinConnectSandbox}
-            />
-          </SettingRow>
           <SettingRow description={resetMessage || t("重置该联系人会话，下一条消息生效并保留原历史")} title={t("重置联系人会话")}>
             <div className="weixin-path-row">
               <Input aria-label={t("需要重置的联系人 ID")} placeholder={status?.lastPeerId || t("联系人 ID")} value={resetPeerId} onChange={(event) => setResetPeerId(event.target.value)} />
@@ -6195,66 +6241,16 @@ function WeixinConnectScreen({
               </button>
             </div>
           </SettingRow>
-        </CxCard>
-      </CxSection>
-
-      <CxSection
-        aside={(
-          <button aria-label={t("刷新模型目录")} className="cx-icon-button" disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)} title={t("刷新模型目录")} type="button">
-            <RefreshCw className={catalogLoading ? "animate-spin" : ""} />
-          </button>
-        )}
-        title={t("模型")}
-      >
-        <CxCard className="weixin-settings-card">
-          <SettingRow
-            description={catalogError
-              || (modelUnavailable ? t("当前模型已不在可用模型目录中，请重新选择。") : undefined)
-              || (catalog && !models.length ? t("当前没有可用模型，请检查供应商配置。") : undefined)}
-            title={t("模型")}
-          >
-            <div aria-invalid={modelUnavailable || Boolean(catalogError)} className="weixin-select">
-              <AppSelect
-                ariaLabel={t("模型")}
-                onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
-                options={[
-                  { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
-                  ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
-                    value: form.weixinConnectModel,
-                    label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
-                  }] : []),
-                  ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
-                ]}
-                value={form.weixinConnectModel}
-              />
-            </div>
+          <SettingRow description={t("扫码后自动保存，也可粘贴已有 Bearer token")} title={t("登录凭据")}>
+            <Input
+              aria-label={t("登录凭据")}
+              autoComplete="off"
+              onChange={(event) => onFormChange({ ...form, weixinConnectToken: event.target.value })}
+              placeholder={t("扫码后自动保存，也可粘贴已有 Bearer token")}
+              type="password"
+              value={form.weixinConnectToken}
+            />
           </SettingRow>
-          <SettingRow description={reasoningUnavailable ? t("当前模型不支持已选推理强度，请重新选择或继承。") : undefined} title={t("推理强度")}>
-            <div aria-invalid={reasoningUnavailable} className="weixin-select">
-              <AppSelect
-                ariaLabel={t("推理强度")}
-                onChange={(next) => onFormChange({ ...form, weixinConnectReasoningEffort: next })}
-                options={[
-                  { value: "", label: t("继承 Codex 推理强度") },
-                  ...(form.weixinConnectReasoningEffort && !reasoningEfforts.includes(form.weixinConnectReasoningEffort) ? [{
-                    value: form.weixinConnectReasoningEffort,
-                    label: `${form.weixinConnectReasoningEffort} (${reasoningUnavailable ? t("不可用") : t("当前值")})`,
-                  }] : []),
-                  ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
-                ]}
-                value={form.weixinConnectReasoningEffort}
-              />
-            </div>
-          </SettingRow>
-        </CxCard>
-      </CxSection>
-
-      <details className="weixin-advanced" id="weixin-section-cli">
-        <summary>
-          <span>{t("高级")}</span>
-          <small>{t("iLink API 地址")} · {t("账号标识")} · SKRouteTag · Codex CLI</small>
-        </summary>
-        <CxCard className="weixin-settings-card">
           <SettingRow title={t("iLink API 地址")}>
             <Input
               aria-label={t("iLink API 地址")}
@@ -8223,15 +8219,17 @@ function CodexMultiLaunchScreen({
                     <RotateCcw />
                     {pending ? t("处理中") : t("重启")}
                   </button>
+                  {/* 停止带文字，和「重启」并排；只有图标时看不出是什么。 */}
                   <button
                     aria-label={t("结束此 Codex 实例")}
-                    className="cx-icon-button"
+                    className="cx-secondary"
                     disabled={!running || pending}
                     onClick={() => void actions.stopMultiLaunchInstance(instance)}
                     title={running ? t("结束此 Codex 实例") : t("实例当前未运行")}
                     type="button"
                   >
                     <PowerOff />
+                    {t("停止")}
                   </button>
                 </CxRow>
               </div>
@@ -9533,7 +9531,7 @@ function DreamSkinScreen({
           icon={<img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} />}
           title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
         >
-          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
+          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={!masterEnabled ? t("先打开上面的「启用 Codex 皮肤」") : t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
             <Play />
             {pendingRestart ? t("更新待应用") : t("应用所选主题")}
           </button>
@@ -16901,6 +16899,8 @@ function AppSidebar({
                     >
                       {entry.key === "codex" ? <AgentGlyph agent="codex" className="cx-side-icon" /> : <Icon aria-hidden="true" className="cx-side-icon" />}
                       <span className="cx-side-label">{entry.label}</span>
+                      {/* 有新版本：「版本与更新」后面一个点，进设置也看得到。 */}
+                      {entry.key === "update" && pendingUpdateVersion ? <i aria-label={tf("新版本 {0}", [pendingUpdateVersion])} className="side-dot" data-tone="ok" title={tf("新版本 {0}", [pendingUpdateVersion])} /> : null}
                     </button>
                   );
                 })}

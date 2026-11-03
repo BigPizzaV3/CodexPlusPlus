@@ -601,6 +601,17 @@
   height: 28px;
 }
 
+/* 模型一行：模型下拉占满，推理强度固定宽度跟在后面，最后是刷新。 */
+:root .shell .weixin-connect-page .weixin-model-row > .weixin-select {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+:root .shell .weixin-connect-page .weixin-model-row > .weixin-effort-select {
+  width: 128px;
+  flex: none;
+}
+
 :root .shell .weixin-connect-page [aria-invalid="true"] .app-select-trigger {
   border-color: hsl(var(--status-error) / 0.6);
 }
@@ -853,4 +864,9 @@
   height: 22px;
   margin: 4px;
   border-radius: 6px;
+}
+
+/* 微信页顶部的「已自动保存 / 改动会自动保存」平时不显示，只有保存出错（role=alert）时露面，和其它页一致。 */
+:root .shell .weixin-autosave [role="status"] {
+  display: none;
 }
