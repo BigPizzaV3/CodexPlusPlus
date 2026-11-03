@@ -3419,6 +3419,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "客户端能力与始终允许的应用 · {0} 个": "Client capabilities and always-allowed apps · {0}",
   "已设 {0} 个": "{0} set",
   "查看全部 {0} 条": "Show all {0}",
   "运行中 · 端口 {0}": "Running · port {0}",

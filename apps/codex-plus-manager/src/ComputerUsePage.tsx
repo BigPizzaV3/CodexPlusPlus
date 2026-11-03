@@ -666,7 +666,11 @@ function ComputerUseMacPage() {
     const jsHint = t("推荐 JS：与 Codex 当前的用法一致，桌面和 Chrome 都在同一个 js 工具里；首次使用自带完整说明和确认规则；一次调用能连续做多步操作，更快、更省 token；能用 paste 输入中文和多行文字。");
     const approvalHint = t("弹卡确认同 Codex：由当前连接的客户端（Claude Code、Codex 等）弹卡，拒绝即不放行，勾「始终允许」后这个应用以后不再问；客户端不支持弹卡时退回自动放行。自动放行：不询问，只记审计日志。");
     const noElicitation = approvalMode === "claude" && approval?.lastClient?.elicitation === false;
-    return <CxSection aside={<span>{t("对新开的客户端会话生效")}</span>} title={t("codex-plus-cu 设置")}>
+    const restartNote = cuMode === "js"
+      ? t("接入后重启对应客户端。JS 方式下桌面与浏览器都用 mcp__codex-plus-cu__js，codex-plus-browser 不提供工具。")
+      : t("接入后重启对应客户端，工具名以 mcp__codex-plus-cu__ 与 mcp__codex-plus-browser__ 开头。");
+    // 「接入后重启客户端、工具名」这段注脚收进右侧小字的悬停，卡片下面不再多一段话。
+    return <CxSection aside={<span title={restartNote}>{t("对新开的客户端会话生效")}</span>} title={t("codex-plus-cu 设置")}>
       <CxCard>
         <CxRow
           detail={cuMode === "js" ? t("模型可执行任意 JavaScript（能读写文件、联网）。") : t("离散工具每个动作一次调用，返回都带截图；中文需用 set_value。")}
@@ -701,9 +705,6 @@ function ComputerUseMacPage() {
           <Switch disabled={locked} label={t("操作后台应用时显示悬浮预览")} on={approval?.pip ?? true} onToggle={() => void changePip(!(approval?.pip ?? true))} />
         </CxRow>
       </CxCard>
-      <p className="cx-set-note">{cuMode === "js"
-        ? t("接入后重启对应客户端。JS 方式下桌面与浏览器都用 mcp__codex-plus-cu__js，codex-plus-browser 不提供工具。")
-        : t("接入后重启对应客户端，工具名以 mcp__codex-plus-cu__ 与 mcp__codex-plus-browser__ 开头。")}</p>
     </CxSection>;
   };
 
@@ -804,7 +805,8 @@ function ComputerUseMacPage() {
         ) : null}
         {renderSettings()}
 
-        <CxSection title={<span title={t("登记两个 MCP 服务：桌面操控（直通 Codex 原生 CU）与 Chrome 浏览器控制。写入前会自动备份原配置，只改自己写入的条目。")}>{t("接入目标")}</span>}>
+        {/* 两个不常用的折叠项（配置路径、审批记录）合进一张「高级」卡；原来各占一节、每节只有一个折叠行。 */}
+        <CxSection title={<span title={t("登记两个 MCP 服务：桌面操控（直通 Codex 原生 CU）与 Chrome 浏览器控制。写入前会自动备份原配置，只改自己写入的条目。")}>{t("高级")}</span>}>
           <CxCard>
             <details className="cx-set-disclosure cx-set-disclosure-first cu-more" ref={targetsDetails} open={showTargets} onToggle={(event) => setShowTargets(event.currentTarget.open)}>
               <summary>{t("配置路径与自定义目录")}<span className="cx-set-summary-hint">{t("每个客户端写入的配置文件与备份位置；客户端换了配置目录时在这里添加。")}</span></summary>
@@ -857,13 +859,8 @@ function ComputerUseMacPage() {
                 </div>
               </div>
             </details>
-          </CxCard>
-        </CxSection>
-
-        <CxSection title={t("审批记录")}>
-          <CxCard>
-            <details className="cx-set-disclosure cx-set-disclosure-first cu-more">
-              <summary>{t("客户端能力与始终允许的应用")}<span className="cx-set-summary-hint">{tf("{0} 个应用", [approval?.approvals?.length ?? 0])}</span></summary>
+            <details className="cx-set-disclosure cu-more">
+              <summary>{t("审批记录")}<span className="cx-set-summary-hint">{tf("客户端能力与始终允许的应用 · {0} 个", [approval?.approvals?.length ?? 0])}</span></summary>
               {approval?.lastClient ? <CxRow
                 badges={<CxBadge tone={approval.lastClient.elicitation ? "ok" : lastClientWarn ? "warn" : "neutral"}>{approval.lastClient.elicitation ? t("支持审批卡") : t("不支持审批卡")}</CxBadge>}
                 detail={<code className="cx-set-path">{[approval.lastClient.name, approval.lastClient.version].filter(Boolean).join(" ") || t("未知")}</code>}
