@@ -1733,8 +1733,8 @@
   min-height: 32px;
   margin-inline: -44px;
   margin-bottom: 4px;
-  /* 标题行 32px、上留 0：中心在 16px，和红黄绿按钮（约 14px）同一行。 */
-  padding: 0 calc(44px + (100% - min(100%, var(--cx-content))) / 2) 8px;
+  /* 标题行 32px、上留 14px：不贴窗口顶边；吸顶后滚动的内容也从这条底色下面过。 */
+  padding: 14px calc(44px + (100% - min(100%, var(--cx-content))) / 2) 10px;
   background: hsl(var(--background));
 }
 
