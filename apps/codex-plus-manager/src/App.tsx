@@ -6318,7 +6318,7 @@ function OverviewScreen({
           <CxSection
             aside={
               <span className="overview-health-header-actions">
-                <span title={t("概览只展示关键问题，具体配置在对应页面处理")}>{healthProblems.length ? tf("{0} 项需处理", [healthProblems.length]) : t("全部正常")}</span>
+                {healthProblems.length ? <span title={t("概览只展示关键问题，具体配置在对应页面处理")}>{tf("{0} 项需处理", [healthProblems.length])}</span> : null}
                 <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshCurrent()} title={t("刷新状态")} type="button">
                   <RefreshCw aria-hidden="true" />
                 </button>
