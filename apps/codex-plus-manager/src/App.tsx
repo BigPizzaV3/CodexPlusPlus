@@ -8823,7 +8823,7 @@ function EnhanceScreen({
   activeTab,
   onTabChange,
   form,
-  onFormChange,
+  onFormChange: applyForm,
   builtins,
   onNavigate,
   actions,
@@ -8838,10 +8838,42 @@ function EnhanceScreen({
   onNavigate: (route: Route) => void;
   actions: Actions;
 }) {
+  const { CxBanner, CxCard, CxEmpty, CxToolbar } = AgentCx;
+  // 说明里写了要重启 Codex 的开关：改动时记下改之前的值，页面顶部汇总成一条「重启 Codex 生效」，不再逐项提醒。
+  const restartItems = useMemo(() => [...managerBuiltinGroups(), managerStandaloneGroup()]
+    .flatMap((group) => managerBuiltinCards(group.id, enhancementPlatform))
+    .flatMap((card) => [
+      ...(card.item ? [{ key: card.item.key, title: card.item.title, description: card.item.description }]
+        : card.entry?.setting ? [{ key: card.entry.setting, title: card.entry.title, description: card.entry.description }] : []),
+      ...card.params.map((param) => ({ key: param.key, title: param.title, description: param.description })),
+    ])
+    .filter((item) => RESTART_HINT.test(t(item.description))), []);
+  const restartOriginal = useRef(new Map<string, unknown>());
+  const [restartBusy, setRestartBusy] = useState(false);
+  const onFormChange = (next: BackendSettings) => {
+    for (const item of restartItems) {
+      const before = builtinSettingValue(form, item.key);
+      if (before !== builtinSettingValue(next, item.key) && !restartOriginal.current.has(item.key)) restartOriginal.current.set(item.key, before);
+    }
+    applyForm(next);
+  };
+  const restartPending = restartItems.filter((item) => restartOriginal.current.has(item.key)
+    && restartOriginal.current.get(item.key) !== builtinSettingValue(form, item.key));
+  const [, setRestartDismissed] = useState(0);
+  const clearRestartPending = () => { restartOriginal.current.clear(); setRestartDismissed((value) => value + 1); };
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
   const autoSave = useEnhanceAutoSave(dirty, form, actions.autoSaveSettings);
   const masterEnabled = form.enhancementsEnabled;
   const masterItem = enhancementItem("enhancementsEnabled");
+  // 搜索只过滤「内置拓展」页签里的开关：按标题、说明（含子选项）匹配，中英文都认。
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const cardMatches = (card: BuiltinExtensionCard) => !needle || [
+    card.item?.title, card.item?.description, card.entry?.title, card.entry?.description,
+    ...card.params.flatMap((param) => [param.title, param.description]),
+  ].filter((text): text is string => Boolean(text)).some((text) => text.toLowerCase().includes(needle) || t(text).toLowerCase().includes(needle));
+  const groupHidden = (groupId: string) => Boolean(needle) && !managerBuiltinCards(groupId, enhancementPlatform).some(cardMatches);
+  const noMatches = Boolean(needle) && [...managerBuiltinGroups(), managerStandaloneGroup()].every((group) => groupHidden(group.id));
   // 开关的标题、说明、分组都来自设置项清单；这里只保留一处定制：
   // Windows 原生浏览器兼容开启前要确认，并在开关后面跟一块补丁状态。
   const renderSetting = (item: EnhancementSettingItem) => {
@@ -8865,12 +8897,12 @@ function EnhanceScreen({
     return <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />;
   };
   const builtinStates = new Map(builtins.map((builtin) => [builtin.id, builtin]));
-  // 有单独配置页的内置拓展：卡片上给「设置」入口。
+  // 有单独配置页的内置拓展：行上给「设置」入口。
   const openBuiltinSettings = (target: BuiltinSettingsTarget) => {
     if (target.tab) onTabChange(target.tab);
     else if (target.route) onNavigate(target.route);
   };
-  const renderBuiltin = (card: BuiltinExtensionCard) => (
+  const renderBuiltin = (card: BuiltinExtensionCard) => (cardMatches(card) ? (
     <BuiltinExtensionCardView
       key={card.id}
       card={card}
@@ -8882,7 +8914,7 @@ function EnhanceScreen({
       onOpenSettings={openBuiltinSettings}
       actions={actions}
     />
-  );
+  ) : null);
   const tabs: Array<{ value: EnhancementTab; label: string }> = [
     { value: "general", label: t("内置拓展") },
     { value: "dictation", label: t("语音输入") },
@@ -8892,8 +8924,7 @@ function EnhanceScreen({
     onTabChange(tab);
     document.getElementById("enhance-page-controls")?.scrollIntoView({ block: "start" });
   };
-  // 「常用增强」页里的分组，显示在左侧目录的页签下面，点了滚到对应分组。
-  // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定。
+  // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定（深链滚到这里）。
   const generalSections = [...managerBuiltinGroups(), managerStandaloneGroup()]
     .map((group) => ({ id: enhancementGroupAnchorId(group), label: t(group.title) }));
   return (
@@ -8929,44 +8960,68 @@ function EnhanceScreen({
           ))}
         </div>
       </PageSectionNav>
-      <div className="sectioned-body">
-      {/* 总开关一条细横幅，开关紧挨着说明；保存状态在横幅右侧。 */}
-      <div className="enhance-master-bar" id="enhance-page-controls">
-        <label className="enhance-master-switch">
+      <div className="sectioned-body cx-enhance-body">
+      {restartPending.length ? (
+        <CxBanner
+          detail={restartPending.map((item) => t(item.title).replace(EXPERIMENTAL_TITLE, "")).join("、")}
+          icon={<RotateCcw />}
+          title={tf("{0} 项改动重启 Codex 后生效", [restartPending.length])}
+          tone="warn"
+        >
+          <button className="cx-secondary" onClick={clearRestartPending} type="button">{t("稍后")}</button>
+          <button
+            className="cx-primary"
+            disabled={restartBusy}
+            onClick={() => void (async () => {
+              setRestartBusy(true);
+              try {
+                if (await actions.restart()) clearRestartPending();
+              } finally {
+                setRestartBusy(false);
+              }
+            })()}
+            type="button"
+          >
+            {restartBusy ? <Loader2 className="cx-dash-spin" /> : <RotateCcw />}
+            {t("重启 Codex")}
+          </button>
+        </CxBanner>
+      ) : null}
+      {/* 总开关一行：开关在右，保存状态跟在说明后面。 */}
+      <CxCard className="cx-enhance-master">
+        <label className="feature-toggle enhance-master-switch" id="enhance-page-controls">
           <input
             checked={form.enhancementsEnabled}
             onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
             type="checkbox"
           />
-          <ToggleVisual />
           <span>
             <strong>{t(masterItem.title)}</strong>
-            <small>{t(masterItem.description)}</small>
+            <small title={t(masterItem.description)}>{t(masterItem.description)}</small>
           </span>
+          <span className="enhance-save-actions cx-enhance-save">
+            <AutoSaveStatus state={autoSave} />
+          </span>
+          <ToggleVisual />
         </label>
-        <div className="enhance-save-actions">
-          <AutoSaveStatus state={autoSave} />
-        </div>
-      </div>
-      <div className="enhance-tab-panel" id="enhance-pane-general" role="tabpanel" aria-labelledby="enhance-tab-general" hidden={activeTab !== "general"}>
-        <Panel className="enhance-panel">
-          <CardContent className="enhance-content">
-            <div className="enhance-feature-groups">
-              {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
-              {masterEnabled ? null : <StandaloneModeGroup renderBuiltin={renderBuiltin} />}
-              {managerBuiltinGroups().map((group) => (
-                <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
-                  {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
-                </FeatureGroup>
-              ))}
-              {masterEnabled ? <StandaloneModeGroup renderBuiltin={renderBuiltin} /> : null}
-            </div>
-            <div className="hint-line enhance-footer-hint">
-              <Info className="h-4 w-4" />
-              <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。")}</span>
-            </div>
-          </CardContent>
-        </Panel>
+      </CxCard>
+      <div className="enhance-tab-panel cx-enhance-pane" id="enhance-pane-general" role="tabpanel" aria-labelledby="enhance-tab-general" hidden={activeTab !== "general"}>
+        <CxToolbar onQuery={setQuery} placeholder={t("搜索增强功能")} query={query} />
+        {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
+        {masterEnabled ? null : <StandaloneModeGroup hidden={groupHidden(managerStandaloneGroup().id)} renderBuiltin={renderBuiltin} />}
+        {managerBuiltinGroups().map((group) => (
+          <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")} hidden={groupHidden(group.id)}>
+            {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
+          </FeatureGroup>
+        ))}
+        {masterEnabled ? <StandaloneModeGroup hidden={groupHidden(managerStandaloneGroup().id)} renderBuiltin={renderBuiltin} /> : null}
+        {noMatches ? (
+          <CxCard>
+            <CxEmpty title={t("没有匹配的增强功能")}>
+              <button className="cx-secondary" onClick={() => setQuery("")} type="button">{t("清除搜索")}</button>
+            </CxEmpty>
+          </CxCard>
+        ) : null}
       </div>
       <div className="enhance-tab-panel" id="enhance-pane-dictation" role="tabpanel" aria-labelledby="enhance-tab-dictation" hidden={activeTab !== "dictation"}>
         <DictationSettingsPanel form={form} onFormChange={onFormChange} />
@@ -8981,10 +9036,10 @@ function EnhanceScreen({
 
 // 总开关关闭后仍生效的独立补丁。卡片照常经 EnhancementSettingControl 渲染，清单里 masterGated: false，
 // 不随总开关禁用；位置在「内置拓展」标签内，关闭总开关时提到最前面。
-function StandaloneModeGroup({ renderBuiltin }: { renderBuiltin: (card: BuiltinExtensionCard) => ReactNode }) {
+function StandaloneModeGroup({ renderBuiltin, hidden = false }: { renderBuiltin: (card: BuiltinExtensionCard) => ReactNode; hidden?: boolean }) {
   const group = managerStandaloneGroup();
   return (
-    <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
+    <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")} hidden={hidden}>
       {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
     </FeatureGroup>
   );
@@ -15277,15 +15332,14 @@ function PageSectionNav({ label, sections, children }: { label: string; sections
   );
 }
 
-function FeatureGroup({ title, detail, children, id }: { title: string; detail: string; children: ReactNode; id?: string }) {
+// 增强页的一组开关：卡片外的小标题（分组说明收进悬停）+ 一张卡，卡里一行一项。
+function FeatureGroup({ title, detail, children, id, hidden = false }: { title: string; detail: string; children: ReactNode; id?: string; hidden?: boolean }) {
+  const { CxCard, CxSection } = AgentCx;
+  if (hidden) return null;
   return (
-    <section className="feature-group" id={id}>
-      <div className="feature-group-head">
-        <strong>{title}</strong>
-        <small>{detail}</small>
-      </div>
-      <div className="feature-switch-grid">{children}</div>
-    </section>
+    <CxSection className="cx-feature-group" id={id} title={<span title={detail || undefined}>{title}</span>}>
+      <CxCard className="cx-feature-card">{children}</CxCard>
+    </CxSection>
   );
 }
 
@@ -15302,6 +15356,7 @@ function FeatureToggle({
   disabled?: boolean;
   onChange: (value: boolean) => void;
 }) {
+  const { CxBadge } = AgentCx;
   // 「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
   const experimental = EXPERIMENTAL_TITLE.test(title);
   const needsRestart = RESTART_HINT.test(detail);
@@ -15316,10 +15371,10 @@ function FeatureToggle({
       <span>
         <strong>
           {experimental ? title.replace(EXPERIMENTAL_TITLE, "") : title}
-          {experimental ? <em className="feature-tag" data-tone="experimental">{t("实验")}</em> : null}
-          {needsRestart ? <em className="feature-tag">{t("需重启")}</em> : null}
+          {experimental ? <CxBadge tone="warn">{t("实验")}</CxBadge> : null}
+          {needsRestart ? <CxBadge>{t("需重启")}</CxBadge> : null}
         </strong>
-        <small>{detail}</small>
+        <small title={detail}>{detail}</small>
       </span>
       <ToggleVisual />
     </label>

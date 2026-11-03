@@ -169,3 +169,148 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── 内置增强（EnhanceScreen） ─────────────────────────────── */
+
+:root .shell .cx-enhance-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+:root .shell .cx-enhance-body > * {
+  flex: none;
+}
+
+:root .shell .cx-enhance-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+:root .shell .cx-enhance-pane[hidden] {
+  display: none;
+}
+
+/* 卡片里一行一项：标题 + 小标签、两行内的说明，右侧开关。 */
+:root .shell .cx-feature-card .feature-toggle,
+:root .shell .cx-enhance-master .feature-toggle {
+  gap: 24px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:root .shell .cx-feature-card .feature-toggle:hover,
+:root .shell .cx-enhance-master .feature-toggle:hover {
+  background: hsl(var(--accent) / 0.3);
+}
+
+:root .shell .cx-feature-card .feature-toggle strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+:root .shell .cx-feature-card .feature-toggle small {
+  max-width: 720px;
+  margin-top: 2px;
+  font-size: 12.5px;
+}
+
+:root .shell .cx-feature-card .feature-toggle .cx-badge {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+:root .shell .cx-feature-card > .builtin-card {
+  gap: 0;
+}
+
+:root .shell .cx-feature-card > .builtin-card + .builtin-card {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+/* 打开后的子选项：同一张卡里缩进一级，细线隔开，不再套边框。 */
+:root .shell .cx-feature-card .builtin-card-params {
+  gap: 0;
+  margin: 0 0 6px 14px;
+  padding-left: 12px;
+  border-left: 2px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-feature-card .builtin-card-params > .feature-toggle {
+  padding-block: 9px;
+}
+
+:root .shell .cx-feature-card .builtin-card-params > .app-select,
+:root .shell .cx-feature-card .builtin-card-params > div:first-child:not(.feature-toggle) {
+  margin: 6px 14px 6px 0;
+}
+
+:root .shell .cx-feature-card .builtin-card-note {
+  padding: 0 14px 10px;
+}
+
+:root .shell .cx-feature-card .builtin-card-head.has-settings > .feature-toggle {
+  column-gap: 60px;
+}
+
+:root .shell .cx-feature-card .builtin-card-settings {
+  right: 64px;
+}
+
+/* 总开关：一行，保存状态放在开关左边。 */
+:root .shell .cx-enhance-master .feature-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding-block: 14px;
+}
+
+:root .shell .cx-enhance-master .feature-toggle > .toggle-switch-visual {
+  grid-column: 3;
+}
+
+:root .shell .cx-enhance-save {
+  display: inline-flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-enhance-save > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 语音输入 / 下一步建议两个页签：面板标题与内容之间不再空一大段，开关行与内置拓展同一种行。 */
+:root .shell .enhance-page .enhance-tab-panel > .panel > .panel-head {
+  padding-bottom: 0;
+}
+
+:root .shell .enhance-page .enhance-tab-panel > .panel > .settings-content {
+  padding-top: 0;
+}
+
+:root .shell .enhance-page .enhance-tab-panel .enhance-service-block {
+  margin-top: 4px;
+  padding-top: 0;
+}
+
+:root .shell .enhance-page .enhance-tab-panel .enhance-service-block > .feature-toggle,
+:root .shell .enhance-page .enhance-tab-panel .enhance-service-block > .switch-row {
+  border: 0;
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+  border-radius: 0;
+  background: transparent;
+  padding-inline: 2px;
+}
