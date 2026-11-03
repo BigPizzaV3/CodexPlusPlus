@@ -2,7 +2,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, FileDiff, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -150,7 +150,6 @@ function AgentRow({
   const [draft, setDraft] = useState<BindingDraft>(() => draftFromBinding(binding));
   const [pickerOpen, setPickerOpen] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<PickerItem | "disconnect" | null>(null);
-  const [configDiffOpen, setConfigDiffOpen] = useState(false);
   // 后端保存后（或别处改动后）用最新绑定重置表单。
   const bindingKey = JSON.stringify(binding ?? null);
   useEffect(() => {
@@ -284,7 +283,7 @@ function AgentRow({
       </div>
       {expanded && connected ? (
         <>
-          <AgentDetail agent={agent} busy={busy} draft={draft} onDisconnect={() => void disconnect()} onSave={(next) => void save(next)} onViewConfigDiff={() => setConfigDiffOpen(true)} payload={payload} run={run} />
+          <AgentDetail agent={agent} busy={busy} draft={draft} onDisconnect={() => void disconnect()} onSave={(next) => void save(next)} payload={payload} run={run} />
           <div className="gw-collapse-bar">
             <button className="gw-text-button" onClick={onToggleExpand} type="button">
               {t("收起")}
@@ -308,14 +307,6 @@ function AgentRow({
           ownModel={disconnectTarget === "disconnect" ? null : disconnectTarget}
         />
       ) : null}
-      {configDiffOpen ? (
-        <AgentDisconnectDialog
-          agent={agent}
-          busy={busy !== null}
-          onClose={() => setConfigDiffOpen(false)}
-          readOnly
-        />
-      ) : null}
     </div>
   );
 }
@@ -329,7 +320,6 @@ function AgentDetail({
   run,
   onSave,
   onDisconnect,
-  onViewConfigDiff,
 }: {
   agent: GatewayAgentView;
   payload: GatewayPayload | null;
@@ -338,7 +328,6 @@ function AgentDetail({
   run: Run;
   onSave: (next: BindingDraft) => void;
   onDisconnect: () => void;
-  onViewConfigDiff: () => void;
 }) {
   const isClaude = agent.agent === "claude";
   const [selecting, setSelecting] = useState(false);
@@ -543,9 +532,8 @@ function AgentDetail({
           {t("改动了")} <code>{agent.configPath ?? ""}</code>
         </span>
         <div className="gw-detail-value">
-          <button className="gw-text-button" disabled={busy !== null} onClick={onViewConfigDiff} type="button">
-            <FileDiff className="h-3.5 w-3.5" />
-            {t("查看差异")}
+          <button className="gw-text-button" onClick={() => void run(`reveal:${agent.agent}`, "reveal_gateway_agent_config", { agent: agent.agent }, t("查看"), true)} type="button">
+            {t("查看")}
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
           <button className="gw-danger-link" disabled={busy !== null} onClick={onDisconnect} type="button">{t("断开并还原")}</button>

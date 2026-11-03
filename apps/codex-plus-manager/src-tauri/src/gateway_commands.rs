@@ -502,11 +502,6 @@ pub struct GatewayDisconnectPreviewPayload {
     pub preview: Option<codex_plus_core::gateway::disconnect_preview::DisconnectPreview>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct GatewayAgentConfigDiffPayload {
-    pub diff: Option<codex_plus_core::gateway::disconnect_preview::AgentConfigDiff>,
-}
-
 fn disconnect_previews() -> &'static Mutex<HashMap<String, DisconnectPreviewGrant>> {
     DISCONNECT_PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -576,32 +571,6 @@ fn preview_gateway_disconnect_blocking(
         Err(error) => failed(
             &format!("生成断开预览失败：{error:#}"),
             GatewayDisconnectPreviewPayload { preview: None },
-        ),
-    }
-}
-
-/// 读取接入前快照与当前 Agent 配置之间的脱敏差异。
-#[tauri::command]
-pub async fn preview_gateway_agent_config_diff(
-    agent: String,
-) -> CommandResult<GatewayAgentConfigDiffPayload> {
-    match tauri::async_runtime::spawn_blocking(move || {
-        let agent = parse_agent(&agent)?;
-        codex_plus_core::gateway::disconnect_preview::connection_diff(&context(), &agent)
-    })
-    .await
-    {
-        Ok(Ok(diff)) => ok(
-            "Agent 配置差异已读取。",
-            GatewayAgentConfigDiffPayload { diff: Some(diff) },
-        ),
-        Ok(Err(error)) => failed(
-            &format!("读取 Agent 配置差异失败：{error:#}"),
-            GatewayAgentConfigDiffPayload { diff: None },
-        ),
-        Err(_) => failed(
-            "读取 Agent 配置差异失败，请重试。",
-            GatewayAgentConfigDiffPayload { diff: None },
         ),
     }
 }

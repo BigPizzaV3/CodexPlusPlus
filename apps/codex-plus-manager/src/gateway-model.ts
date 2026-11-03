@@ -180,14 +180,6 @@ export type GatewayDisconnectPreview = {
   canDisconnect: boolean;
 };
 
-export type GatewayAgentConfigDiff = {
-  agent: string;
-  baseline: "beforeGateway" | "historicalBackup";
-  baselinePath: string | null;
-  files: GatewayDisconnectFile[];
-  warnings: string[];
-};
-
 export type GatewayAgentView = {
   agent: GatewayAgentId;
   name: string;
