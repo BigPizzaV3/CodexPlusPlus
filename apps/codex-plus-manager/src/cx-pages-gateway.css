@@ -858,3 +858,28 @@
 :root .shell .gw-pool-detail .gw-pool-more > .gw-detail-row {
   border-top: 1px solid hsl(var(--cx-row-divider));
 }
+
+/* 用量页标题行右侧的时间段分段控件：和标题行按钮同高。 */
+:root .shell .gw-usage-range {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+:root .shell .gw-usage-range button {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:root .shell .gw-usage-range button:hover {
+  color: hsl(var(--foreground));
+}

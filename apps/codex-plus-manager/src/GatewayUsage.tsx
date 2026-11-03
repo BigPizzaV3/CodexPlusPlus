@@ -31,7 +31,7 @@ import { TopbarActions } from "./TopbarActions";
 import { cachedProviderBalances, loadProviderBalances, subscribeProviderBalances } from "./provider-balances";
 import { singleAgent } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
-import { CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStats } from "./cx-layout";
+import { CxCard, CxEmpty, CxRow, CxSection, CxStats } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 
 const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d", summary: null };
@@ -105,12 +105,18 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
   const tokenTotal = Math.max(1, groups.reduce((sum, group) => sum + group.inputTokens + group.outputTokens, 0));
   const anyCost = groups.some((group) => costText(group.costs));
 
-  // 参照 Cursor 的设置页：时间段胶囊一行、数字一排、图表一张卡、明细一张表；余额放最后。
+  // 参照 Cursor 的设置页：时间段在标题行、数字一排、图表一张卡、明细一张表；余额放最后。
   return (
     <div className="gw-usage cx-page">
-      <CxFilters items={ranges} label={t("时间段")} onChange={setRange} value={range} />
-      {/* 刷新放进外壳顶栏（网关页在用量页签不再放它自己的刷新），页面里不再重复一个。 */}
+      {/* 时间段和刷新都放进标题行右侧：页内只剩「统计 / 请求」一排胶囊，不再上下两排。 */}
       <TopbarActions>
+        <div aria-label={t("时间段")} className="mg-segmented gw-usage-range" role="radiogroup">
+          {ranges.map((item) => (
+            <button aria-checked={item.id === range} data-active={item.id === range} key={item.id} onClick={() => setRange(item.id)} role="radio" type="button">
+              {item.label}
+            </button>
+          ))}
+        </div>
         <button aria-label={t("刷新")} className="gw-icon-button gw-usage-refresh" onClick={() => { void load(range); void loadBalances(true); }} title={t("刷新")} type="button">
           <RefreshCw className={`h-4 w-4 ${loadingBalances ? "animate-spin" : ""}`} />
         </button>
