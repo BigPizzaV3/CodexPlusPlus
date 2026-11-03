@@ -667,3 +667,144 @@
   width: 16px;
   height: 16px;
 }
+
+/* ── 日志与诊断 ──────────────────────────────────────────────────
+   日志：一行一条（状态点 · 时间 · 事件名 · 摘要），点开是格式化的明细；不再把原始 JSON 折行铺满。 */
+:root .shell .cx-log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+:root .shell .cx-log-toolbar .cx-filters {
+  flex: none;
+}
+
+:root .shell .cx-log-search {
+  height: 32px;
+}
+
+:root .shell .cx-log-card {
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+}
+
+:root .shell .cx-log-row + .cx-log-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-log-row > summary {
+  display: grid;
+  grid-template-columns: 8px auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+:root .shell .cx-log-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .cx-log-row > summary:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .cx-log-row[open] > summary {
+  background: hsl(var(--accent) / 0.5);
+}
+
+:root .shell .cx-log-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground) / 0.45);
+}
+
+:root .shell .cx-log-row[data-tone="warn"] .cx-log-dot { background: hsl(var(--status-warning)); }
+:root .shell .cx-log-row[data-tone="error"] .cx-log-dot { background: hsl(var(--status-error)); }
+:root .shell .cx-log-row[data-tone="error"] .cx-log-event { color: hsl(var(--status-error)); }
+
+:root .shell .cx-log-time {
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+:root .shell .cx-log-event {
+  color: hsl(var(--foreground) / 0.9);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+:root .shell .cx-log-summary {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-log-body {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 14px 12px 36px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  background: hsl(var(--background) / 0.5);
+  color: hsl(var(--foreground) / 0.85);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+:root .shell .cx-log-more {
+  display: block;
+  width: 100%;
+  height: 36px;
+  border: 0;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .cx-log-more:hover {
+  color: hsl(var(--foreground));
+}
+
+/* 诊断报告：关键信息一行一项，完整报告收在折叠区。 */
+:root .shell .cx-diagnostic-card .cx-row {
+  min-height: 44px;
+}
+
+:root .shell .cx-diagnostic-value {
+  overflow: hidden;
+  max-width: 460px;
+  color: hsl(var(--foreground) / 0.85);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-diagnostic-value[data-tone="ok"] { color: hsl(var(--status-success)); }
+:root .shell .cx-diagnostic-value[data-tone="warn"] { color: hsl(var(--status-warning)); }
+:root .shell .cx-diagnostic-value[data-tone="danger"] { color: hsl(var(--status-error)); }
+
+:root .shell .cx-diagnostic-card .cx-set-disclosure .log-view {
+  min-height: 260px;
+  margin: 0 14px 14px;
+  width: calc(100% - 28px);
+}

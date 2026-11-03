@@ -517,3 +517,104 @@
 :root .shell .request-log-page .request-log-status.running {
   white-space: nowrap;
 }
+
+/* ── 供应商池：展开后的明细 ───────────────────────────────────────
+   三列：标签 | 值 | 操作（编辑、从上游同步…一律靠右对齐），行高统一，不再跟着值的长短参差。
+   模型一块：标签带数量，模型名标签不再重复「供应商/」前缀（完整名在悬停提示里）。 */
+:root .shell .gw-pool-detail {
+  padding: 4px 16px 8px 72px;
+}
+
+:root .shell .gw-pool-detail .gw-detail-row {
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 6px 0;
+}
+
+:root .shell .gw-pool-detail .gw-detail-row + .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-pool-detail .gw-detail-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .gw-pool-detail .gw-detail-count {
+  color: hsl(var(--muted-foreground) / 0.8);
+  font-size: 11.5px;
+}
+
+:root .shell .gw-pool-detail .gw-detail-value {
+  gap: 6px;
+  font-size: 13px;
+}
+
+:root .shell .gw-pool-detail .gw-detail-actions {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+:root .shell .gw-pool-detail .gw-detail-actions:empty {
+  display: none;
+}
+
+:root .shell .gw-pool-detail .gw-detail-hint {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 模型：标签和操作贴在顶部，模型名换行排开。 */
+:root .shell .gw-pool-detail .gw-detail-models {
+  align-items: start;
+  padding: 10px 0;
+}
+
+:root .shell .gw-pool-detail .gw-detail-models > .gw-detail-label,
+:root .shell .gw-pool-detail .gw-detail-models > .gw-detail-actions {
+  min-height: 26px;
+}
+
+:root .shell .gw-pool-detail .gw-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12px;
+  line-height: 24px;
+}
+
+:root .shell .gw-pool-detail .gw-sync-button,
+:root .shell .gw-pool-detail .gw-text-button {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .gw-pool-detail .gw-sync-button:hover:not(:disabled),
+:root .shell .gw-pool-detail .gw-text-button:hover:not(:disabled) {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .gw-pool-detail .gw-detail-foot {
+  grid-template-columns: minmax(0, 1fr);
+  padding-top: 8px;
+}
+
+:root .shell .gw-pool-detail .gw-detail-foot > .gw-detail-label {
+  display: none;
+}

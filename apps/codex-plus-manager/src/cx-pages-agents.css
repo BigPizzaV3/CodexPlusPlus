@@ -841,6 +841,3 @@
   background: transparent;
 }
 
-:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row:hover small {
-  -webkit-line-clamp: unset;
-}

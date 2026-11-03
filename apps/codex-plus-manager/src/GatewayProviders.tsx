@@ -56,7 +56,6 @@ import type { MetaSyncKind } from "./provider-meta-sync-model";
 import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
 import { gatewayJump } from "./gateway-store";
-import { ModelMatrix } from "./GatewayModelMatrix";
 import { useEscapeLayer } from "./use-escape-layer";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
@@ -99,7 +98,6 @@ const MODEL_CHIP_PREVIEW = 12;
 const MODEL_CHIP_COLLAPSE = 16;
 
 /** 供应商池上次用的视图（切页再回来保持）。 */
-const providersViewMemo: { view: "list" | "models" } = { view: "list" };
 
 export function ProvidersView({
   payload,
@@ -128,12 +126,6 @@ export function ProvidersView({
   }, []);
   const [adding, setAdding] = useState<false | "catalog" | "import">(false);
   const pendingImports = pendingImportCount(payload);
-  // 「按供应商」是原来的列表；「按模型」是供应商 × 模型矩阵，看每个模型由哪几家提供。
-  const [view, setViewState] = useState<"list" | "models">(providersViewMemo.view);
-  const setView = (next: "list" | "models") => {
-    providersViewMemo.view = next;
-    setViewState(next);
-  };
   const [dragging, setDragging] = useState<string | null>(null);
   // 编辑已有供应商的表单；新添加走 ProviderAdder。
   const [form, setForm] = useState<FormState | null>(null);
@@ -216,18 +208,11 @@ export function ProvidersView({
   return (
     <>
       <div className="gw-provider-search-row">
-        {pool.length ? (
-          <div className="gw-models-tabs" role="tablist" aria-label={t("视图")}>
-            <button aria-selected={view === "list"} data-active={view === "list"} onClick={() => setView("list")} role="tab" type="button">{t("按供应商")}</button>
-            <button aria-selected={view === "models"} data-active={view === "models"} onClick={() => setView("models")} role="tab" type="button">{t("按模型")}</button>
-          </div>
-        ) : null}
-        {view === "list" ? (
-          <label className="gw-sheet-search">
-            <Search className="h-4 w-4" />
-            <input onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商")} value={query} />
-          </label>
-        ) : <span className="gw-provider-search-gap" />}
+        {/* 只有按供应商的列表：每个模型由哪几家提供，在「路由」的自动组里看。 */}
+        <label className="gw-sheet-search">
+          <Search className="h-4 w-4" />
+          <input onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商")} value={query} />
+        </label>
         {pool.length ? (
           <button className="gw-primary-button" onClick={openCatalog} type="button">
             <Plus className="h-4 w-4" />
@@ -238,18 +223,7 @@ export function ProvidersView({
       {localLogins.length && localDismissed !== localKey ? (
         <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
       ) : null}
-      {pool.length && view === "models" ? (
-        <ModelMatrix
-          onOpenProvider={(id) => {
-            // 点列头：回到按供应商的列表，展开并滚到那一家。
-            setView("list");
-            setExpanded(id);
-            window.requestAnimationFrame(() => document.querySelector(`[data-pool-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center" }));
-          }}
-          payload={payload}
-        />
-      ) : null}
-      {pool.length && view === "list" ? (
+      {pool.length ? (
         <div className="gw-card gw-pool-card" ref={listRef}>
           {visible.map((entry) => (
             <PoolRow
@@ -730,16 +704,19 @@ function PoolRow({
       </div>
       {expanded ? (
         <div className="gw-agent-detail gw-pool-detail">
-          <div className="gw-detail-row">
-            <span className="gw-detail-label">{t("模型")}</span>
+          {/* 模型单独一块：标题行带数量和操作，下面是模型名标签（Agent 里的完整名「供应商/模型」在悬停提示里）。 */}
+          <div className="gw-detail-row gw-detail-models">
+            <span className="gw-detail-label">{t("模型")}<span className="gw-detail-count">{chatModels.length}</span></span>
             <div className="gw-detail-value gw-chip-row">
-              {shownModels.map((model) => <code className="gw-chip" key={model}>{`${entry.id}/${model}`}</code>)}
+              {shownModels.map((model) => <code className="gw-chip" key={model} title={`${entry.id}/${model}`}>{model}</code>)}
               {chatModels.length === 0 ? <span className="gw-muted">{t("未配置模型")}</span> : null}
               {modelsCollapsible ? (
                 <button className="gw-text-button" onClick={() => setAllModels(!allModels)} type="button">
                   {allModels ? t("收起") : tf("显示全部 {0} 个模型", [chatModels.length])}
                 </button>
               ) : null}
+            </div>
+            <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null} label={t("编辑模型列表")} onClick={() => setModelsOpen(true)} />
               {/* 从上游同步（#2785）：先拉上游列出差异，勾选要删、要加的再写入；拉取失败不改列表。 */}
               <button
@@ -752,15 +729,17 @@ function PoolRow({
                 <RefreshCw className={busy === `sync-models:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                 {t("从上游同步")}
               </button>
-            </div>
+            </span>
           </div>
           {imageModels.length ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("生图模型")}</span>
               <div className="gw-detail-value gw-chip-row">
                 {imageModels.map((model) => <code className="gw-chip" key={model}>{model}</code>)}
-                <span className="gw-muted">{entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}</span>
               </div>
+              <span className="gw-detail-actions gw-detail-hint" title={entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}>
+                {t("在「Agent 接入」里选用")}
+              </span>
             </div>
           ) : null}
           <div className="gw-detail-row">
@@ -772,12 +751,14 @@ function PoolRow({
                   {`${keyLabel(entry.keys, key.keyId)}${t("：")}${[t(failureLabel(key.lastFailure)) || t(key.state === "disabled" ? "已停用" : "冷却中"), formatRemaining(key.remainingMs)].filter(Boolean).join(" · ")}`}
                 </span>
               ))}
+            </div>
+            <span className="gw-detail-actions">
               {failures.length || breaker ? (
                 <button className="gw-text-button" disabled={busy !== null} onClick={() => void run(`reset:${entry.id}`, "reset_gateway_key_health", { relayId: entry.id }, t("重置 Key 状态"), true)} type="button">
                   {t("重置")}
                 </button>
               ) : null}
-            </div>
+            </span>
           </div>
           {showAccess ? (
             <div className="gw-detail-row">
@@ -789,8 +770,10 @@ function PoolRow({
                   <span className="gw-muted">{t("未填写：Key 不限额度时查不到账户余额")}</span>
                 )}
                 {entry.newapiAccess?.userId ? <span className="gw-muted">{tf("用户 ID {0}", [entry.newapiAccess.userId])}</span> : null}
-                <EditIcon disabled={busy !== null} label={t("编辑访问令牌")} onClick={() => setAccessOpen(true)} />
               </div>
+              <span className="gw-detail-actions">
+                <EditIcon disabled={busy !== null} label={t("编辑访问令牌")} onClick={() => setAccessOpen(true)} />
+              </span>
             </div>
           ) : null}
           {quotaSupported ? (
@@ -798,6 +781,8 @@ function PoolRow({
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
                 {entry.quota ? <QuotaWindows quota={entry.quota} /> : <span className="gw-muted">{t("还没查到，每 10 分钟查一次，用过一次也会更新")}</span>}
+              </div>
+              <span className="gw-detail-actions">
                 <button
                   className="gw-text-button gw-sync-button"
                   disabled={busy !== null}
@@ -807,13 +792,15 @@ function PoolRow({
                   <RefreshCw className={busy === `quota:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                   {t("刷新")}
                 </button>
-              </div>
+              </span>
             </div>
           ) : null}
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("价格")}</span>
             <div className="gw-detail-value gw-chip-row">
               <span className={price ? undefined : "gw-muted"}>{price || t("未填写，不估算费用")}</span>
+            </div>
+            <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null} label={t("编辑价格")} onClick={() => setExtrasOpen("price")} />
               {/* 一键按公开价格表更新所有模型的价格，不用打开弹窗。 */}
               <button
@@ -826,12 +813,14 @@ function PoolRow({
                 <RefreshCw className={busy === `prices:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                 {t("同步")}
               </button>
-            </div>
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("上下文窗口")}</span>
             <div className="gw-detail-value gw-chip-row">
               <span className={windows ? undefined : "gw-muted"}>{windows || t("未填写，用模型自带资料")}</span>
+            </div>
+            <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen(true)} />
               {metaSyncable ? (
                 <MetaSyncButton
@@ -841,12 +830,14 @@ function PoolRow({
                   title={t("读取上游 /models 返回的上下文窗口，先列出差异，勾选后再写入")}
                 />
               ) : null}
-            </div>
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("思考等级")}</span>
             <div className="gw-detail-value gw-chip-row">
               <span className={reasoning ? undefined : "gw-muted"}>{reasoning || t("按内置资料")}</span>
+            </div>
+            <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen(true)} />
               {metaSyncable ? (
                 <MetaSyncButton
@@ -856,14 +847,16 @@ function PoolRow({
                   title={t("读取上游 /models 返回的思考等级，先列出差异，勾选后再写入")}
                 />
               ) : null}
-            </div>
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("代理")}</span>
             <div className="gw-detail-value gw-chip-row">
               {isDirectProxy(entry.proxy) ? <span>{t("不使用代理（直连）")}</span> : entry.proxy ? <code className="gw-chip">{entry.proxy}</code> : <span className="gw-muted">{t("沿用系统代理")}</span>}
-              <EditIcon disabled={busy !== null} label={t("编辑代理")} onClick={() => setExtrasOpen("proxy")} />
             </div>
+            <span className="gw-detail-actions">
+              <EditIcon disabled={busy !== null} label={t("编辑代理")} onClick={() => setExtrasOpen("proxy")} />
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("限速")}</span>
@@ -871,8 +864,10 @@ function PoolRow({
               <span className={keyLimits ? undefined : "gw-muted"} title={t("按每个 Key 计；达到上限时先换别的 Key 或下一家，都满了就排队等待（最多 2 分钟）。")}>
                 {keyLimits || t("不限")}
               </span>
-              <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
             </div>
+            <span className="gw-detail-actions">
+              <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
+            </span>
           </div>
           <div className="gw-detail-row gw-detail-foot">
             <span className="gw-detail-label" />

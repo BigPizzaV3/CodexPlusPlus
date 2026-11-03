@@ -690,6 +690,22 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { agent: "grok", id: "g1", title: L("解释这段正则", "Explain this regex"), cwd: "/Users/demo/Projects/data-tools", updatedAtMs: Date.now() - 5 * 3_600_000 },
     ] : [] }) as T;
     case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
+    // 「日志与诊断」演示：几条诊断日志（含出错和重试）和一份诊断报告。
+    case "read_latest_logs": {
+      const now = Date.now();
+      const line = (offset: number, event: string, detail: unknown) => JSON.stringify({ timestamp_ms: now - offset, pid: 17040, event, detail });
+      const text = [
+        'ount":0,"models":[]}',
+        line(3_600_000, "manager.start", { version: "2.2.0", platform: "macos" }),
+        line(1_800_000, "gateway.helper_started", { port: 63130, agents: 2 }),
+        line(900_000, "manager.save_settings", { activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "default", modelCount: 2 }, { id: "sub2api-demo", modelCount: 3 }] }),
+        line(600_000, "gateway.retry", { provider: "zhipu", status: 429, attempt: 2 }),
+        line(300_000, "manager.navigation_failed", { error: "route not found: legacy", route: "legacy" }),
+        line(60_000, "codex.launch", { status: "ok", pid: 31877, cdp: 9229 }),
+      ].join("\n");
+      return ok({ path: "~/Library/Application Support/Codex++/codex-plus.log", text, lines: 7, truncated: true, fileSize: 2_400_000 }) as T;
+    }
+    case "copy_diagnostics": return ok({ report: JSON.stringify({ generatedAtMs: Date.now(), version: "2.2.0", overview: { codex_app: { status: "found", path: "/Applications/ChatGPT.app" }, codex_version: "26.1027.61615", silent_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, management_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, latest_launch: { status: "stopped", phase: "user_stopped" } } }, null, 2) }) as T;
     case "load_request_flow": return ok({ entries: demoRequestFlow(Number(args.limit) || 30) }) as T;
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;

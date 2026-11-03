@@ -37,14 +37,11 @@ test("路由页：「我的组」和「自动组」两段卡片，卡片上直�
   assert.match(page, /hideMembers: previous\?\.hideMembers \?\? false, pick: previous\?\.pick \?\? ""/);
 });
 
-test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池里「按模型」是供应商 × 模型矩阵，点列头回到列表展开那一家", () => {
+test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池只有按供应商的列表（「按模型」矩阵已去掉）", () => {
   const app = read("App.tsx");
   assert.match(app, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"\];/);
   const providers = read("GatewayProviders.tsx");
-  assert.match(providers, /<ModelMatrix\s/);
-  assert.match(providers, /setView\("list"\);\s*setExpanded\(id\);/);
-  const matrix = read("GatewayModelMatrix.tsx");
-  assert.match(matrix, /onClick=\{\(\) => onOpenProvider\(entry\.id\)\}/);
-  assert.match(matrix, /title=\{tf\("在供应商池里打开「\{0\}」", \[maskAccountName\(entry\.name\)\]\)\}/);
+  assert.doesNotMatch(providers, /<ModelMatrix\s|t\("按模型"\)/);
+  assert.match(providers, /placeholder=\{t\("查找供应商"\)\}/);
   assert.match(read("GatewayAgents.tsx"), /section\.key === "group" && nav\.openModelGroups \?/);
 });

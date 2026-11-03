@@ -118,6 +118,16 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "最近一次启动": "Last launch",
+  "管理入口": "Manager entry",
+  "包含版本、路径、设置和平台信息；反馈问题时点「复制报告」附上即可": "Includes version, paths, settings and platform info; click Copy report and attach it when reporting an issue",
+  "完整报告": "Full report",
+  "没有匹配的日志": "No matching logs",
+  "搜索事件名或内容": "Search events or content",
+  "搜索日志": "Search logs",
+  "日志筛选": "Log filter",
+  "在「Agent 接入」里选用": "Pick it under Agent access",
+  "Agent 增强": "Agent enhancements",
   "Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。": "Providers using Chat Completions or model routing show up here; other providers are on the other tabs.",
   "Codex 的自动审查（codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，不经选模；第三方上游没有这些名字，原样转发只会报「模型不存在」并可能反复消耗额度。开启后，不在当前供应商模型列表里的请求模型会改写为该供应商的默认模型再转发（#1183 / #1446 / #1457）；官方登录与聚合供应商不受影响，已配置「自动审批模型」时 codex-auto-review 仍按该配置改写。默认关闭：开启后手填但未写进模型列表的模型也会被改写，请先把要用的模型都加进列表。": "Codex background tasks such as auto-review (codex-auto-review) and title/summary generation always use internal model names like gpt-* without model selection. Third-party upstreams don't have these names, so forwarding them as-is only returns \"model not found\" and may keep consuming quota. When on, requested models not in the current provider's model list are rewritten to that provider's default model before forwarding (#1183 / #1446 / #1457). Official login and aggregate providers are unaffected; if an auto-approval model is configured, codex-auto-review still follows it. Off by default: when on, models you typed by hand but didn't add to the model list are rewritten too, so add every model you use to the list first.",
   "Codex 直接请求下面选中的供应商，不经网关": "Codex calls the provider selected below directly, without the gateway",
@@ -3307,6 +3317,9 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "第 {0} 行": "Line {0}",
+  "第 {0} 行 · 进程 {1}": "Line {0} · process {1}",
+  "再显示 {0} 条": "Show {0} more",
   "Codex 直接请求「{0}」，不经网关": "Codex calls \"{0}\" directly, without the gateway",
   "{0} 个直连供应商还不在供应商池里": "{0} direct providers aren't in the provider pool yet",
   "用供应商池里的 {0} 个模型：多 Key 轮换、按模型路由、出错自动换下一家": "Uses {0} models from the provider pool: multi-key rotation, routing by model, automatic failover",

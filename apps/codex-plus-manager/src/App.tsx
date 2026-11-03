@@ -132,6 +132,7 @@ import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
 import { publishGatewayPayload } from "./gateway-store";
+import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "./log-view-model";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
@@ -9172,7 +9173,7 @@ function EnhancementSettingControl({
       <div className={`feature-toggle ${disabled ? "disabled" : ""}`}>
         <span>
           <strong>{t(item.title)}</strong>
-          <small>{detail}</small>
+          <small title={detail}>{detail}</small>
         </span>
         <AppSelect<string>
           ariaLabel={t(item.title)}
@@ -11422,13 +11423,19 @@ function GlobalSettingsScreen({
 }
 
 function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
-  const lines = splitLogLines(logs?.text ?? "");
+  // 每行一条结构化日志：时间、事件名、一行摘要；点开看完整明细。最新的在前，可搜索、可只看出错。
+  const entries = useMemo(() => parseLogText(logs?.text ?? ""), [logs?.text]);
+  const [query, setQuery] = useState("");
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [limit, setLimit] = useState(200);
+  const shown = useMemo(() => filterLogEntries(entries, query, errorsOnly), [entries, query, errorsOnly]);
+  const errorCount = useMemo(() => entries.filter((entry) => entry.tone === "error").length, [entries]);
   const logDetail = logs
     ? logs.truncated
       ? tf("日志大小 {0}，仅显示末尾 {1} 行", [formatBytes(logs.fileSize), logs.lines])
       : tf("日志大小 {0}", [formatBytes(logs.fileSize)])
     : "";
-  // 等宽文本卡片：一个主操作（复制），刷新与清理收进三点菜单。
+  const now = Date.now();
   return (
     <CxSection
       aside={
@@ -11443,19 +11450,39 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
       }
       title={t("最近日志")}
     >
-      <CxCard className="cx-set-mono-card">
-        <div className="log-lines">
-          {lines.length ? (
-            lines.map((line, index) => (
-              <div className="log-line" key={`${index}-${line.slice(0, 12)}`}>
-                <span>{index + 1}</span>
-                <code>{line || " "}</code>
-              </div>
-            ))
-          ) : (
-            <div className="empty">{t("暂无日志。")}</div>
-          )}
-        </div>
+      <div className="cx-log-toolbar">
+        <CxFilters
+          items={[
+            { id: "all", label: t("全部"), count: entries.length },
+            { id: "errors", label: t("出错"), count: errorCount },
+          ]}
+          label={t("日志筛选")}
+          onChange={(value) => setErrorsOnly(value === "errors")}
+          value={errorsOnly ? "errors" : "all"}
+        />
+        <label className="cx-search cx-log-search">
+          <Search aria-hidden="true" />
+          <input aria-label={t("搜索日志")} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索事件名或内容")} value={query} />
+        </label>
+      </div>
+      <CxCard className="cx-log-card">
+        {shown.slice(0, limit).map((entry) => (
+          <details className="cx-log-row" data-tone={entry.tone} key={entry.index}>
+            <summary title={entry.pid ? tf("第 {0} 行 · 进程 {1}", [entry.index, entry.pid]) : tf("第 {0} 行", [entry.index])}>
+              <i aria-hidden="true" className="cx-log-dot" />
+              <span className="cx-log-time">{formatLogTime(entry.timestampMs, now)}</span>
+              {entry.event ? <span className="cx-log-event">{entry.event}</span> : null}
+              <span className="cx-log-summary">{entry.summary}</span>
+            </summary>
+            <pre className="cx-log-body">{entry.body}</pre>
+          </details>
+        ))}
+        {shown.length > limit ? (
+          <button className="cx-log-more" onClick={() => setLimit((current) => current + 300)} type="button">
+            {tf("再显示 {0} 条", [Math.min(300, shown.length - limit)])}
+          </button>
+        ) : null}
+        {!shown.length ? <CxEmpty title={entries.length ? t("没有匹配的日志") : t("暂无日志。")} /> : null}
       </CxCard>
       {logs?.path ? <code className="cx-set-caption">{logs.path}</code> : null}
     </CxSection>
@@ -11463,6 +11490,9 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
 }
 
 function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
+  // 先列关键信息，完整报告（反馈问题时复制给开发者）收在下面。
+  const report = diagnostics?.report ?? "";
+  const facts = useMemo(() => diagnosticFacts(report), [report]);
   return (
     <CxSection
       aside={
@@ -11473,10 +11503,18 @@ function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsRe
           </Menu>
         </>
       }
-      title={t("诊断报告")}
+      title={<span title={t("包含版本、路径、设置和平台信息；反馈问题时点「复制报告」附上即可")}>{t("诊断报告")}</span>}
     >
-      <CxCard className="cx-set-mono-card">
-        <Textarea aria-label={t("诊断报告")} className="log-view" readOnly title={t("包含版本、路径、设置和平台信息")} value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
+      <CxCard className="cx-set-mono-card cx-diagnostic-card">
+        {facts.map((fact) => (
+          <CxRow key={fact.label} title={t(fact.label)}>
+            <span className="cx-diagnostic-value" data-tone={fact.tone} title={fact.value}>{fact.value}</span>
+          </CxRow>
+        ))}
+        <details className="cx-set-disclosure" open={facts.length ? undefined : true}>
+          <summary>{t("完整报告")}</summary>
+          <Textarea aria-label={t("诊断报告")} className="log-view" readOnly title={t("包含版本、路径、设置和平台信息")} value={report || t("尚未生成诊断报告。")} />
+        </details>
       </CxCard>
     </CxSection>
   );
@@ -16305,7 +16343,7 @@ function SettingRow({ title, description, detail, stacked = false, children }: {
     <div className={`setting-row${stacked ? " setting-row-stacked" : ""}`} title={detail}>
       <div className="setting-row-copy">
         <strong>{title}</strong>
-        {description ? <span>{description}</span> : null}
+        {description ? <span title={detail ?? (typeof description === "string" ? description : undefined)}>{description}</span> : null}
       </div>
       {children ? <div className="setting-row-control">{children}</div> : null}
     </div>
@@ -16680,7 +16718,7 @@ function AppSidebar({
 
         <div className="cx-side-group" data-tour="agents">
           <div className="cx-side-heading">
-            <span>Agent</span>
+            <span>{t("Agent 增强")}</span>
             {soloAgent || enhanceOnly ? null : (
               <button aria-label={t("接入 Agent")} className="cx-icon-button" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
                 <Plus aria-hidden="true" />
@@ -19663,10 +19701,6 @@ function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
 function numberOrDefault(value: string, fallback: number) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function splitLogLines(text: string) {
-  return text.trimEnd().split(/\r?\n/).filter((line, index, lines) => line.length > 0 || index < lines.length - 1);
 }
 
 function formatTime(value: number) {

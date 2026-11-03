@@ -620,11 +620,7 @@
   line-height: 1.5;
 }
 
-/* 说明默认一行（参照 Cursor 设置页）；悬停整行时展开全文。 */
-:root .shell .setting-row:hover .setting-row-copy > span,
-:root .shell .feature-toggle:hover small {
-  -webkit-line-clamp: unset;
-}
+/* 说明固定一行（参照 Cursor 设置页）：悬停不展开，行高不跳；全文在悬停提示里。 */
 
 /* ── 开关：绿色，不发光 ──────────────────────────────────────── */
 
@@ -1472,4 +1468,19 @@
 :root .shell .cx-enhance-bar .cx-enhance-search {
   min-width: 160px;
   flex: 1 1 auto;
+}
+
+/* 增强页的三个页签：胶囊选中态只换底色，不再画旧版的下划线（会把胶囊撑高）。 */
+:root .shell .enhance-tabs button[aria-selected="true"]::after {
+  display: none;
+}
+
+:root .shell .enhance-tabs button {
+  padding: 0 13px;
+  font-weight: 450;
+}
+
+:root .shell .enhance-tabs button:hover,
+:root .shell .enhance-tabs button[aria-selected="true"] {
+  color: hsl(var(--foreground));
 }
