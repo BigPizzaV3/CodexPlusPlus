@@ -327,6 +327,7 @@ import {
 } from "./multi-launch-model";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { Puzzle } from "lucide-react";
+import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -5845,348 +5846,308 @@ function WeixinConnectScreen({
     stopped: t("已停止"),
   }[runtimeState] ?? runtimeState;
 
+  const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
+  const statusTone = runtimeState === "running" ? "ok" : runtimeState === "error" ? "danger" : running ? "warn" : "off";
+  const accountLabel = status?.accountId || form.weixinConnectAccountId || t("未登录");
+  const loggedIn = Boolean(form.weixinConnectToken);
+  const outboundBlocked = !form.weixinConnectAllowOutboundAttachments && (
+    !form.weixinConnectAllowFrom.split(",").some((peer) => peer.trim())
+    || form.weixinConnectAllowFrom.split(",").some((peer) => peer.trim() === "*")
+    || !form.weixinConnectWorkDir.trim()
+  );
+  const resetSession = async () => {
+    setResetPending(true);
+    setResetMessage("");
+    try {
+      await invoke("weixin_connect_reset_session", { peerId: resetPeerId.trim(), accountId: form.weixinConnectAccountId.trim() });
+      setResetMessage(t("已保存重置请求，下一条消息开启新会话，原历史保留。"));
+    } catch (error) {
+      setResetMessage(String(error));
+    } finally {
+      setResetPending(false);
+    }
+  };
+
   return (
-    <div className="weixin-connect-page sectioned-page">
-      <PageSectionNav label={t("微信连接分类")} sections={[
-        { id: "weixin-section-status", label: t("连接状态") },
-        { id: "weixin-section-account", label: t("账号") },
-        { id: "weixin-section-session", label: t("会话管理") },
-        { id: "weixin-section-cli", label: "Codex CLI" },
-      ]} />
-      <div className="sectioned-body">
-      <Panel className={`weixin-status-panel is-${runtimeState}`} id="weixin-section-status">
-        <CardContent className="weixin-status-content">
-          <div className="weixin-connect-head">
-            <div className="weixin-status-primary">
-              <div className="weixin-status-icon" aria-hidden="true">
-                <MessageCircle className="h-5 w-5" />
-              </div>
-              <div>
-                <div className="section-heading-row">
-                  <h2>{t("个人微信连接")}</h2>
-                  <UiBadge variant={runtimeState === "running" ? "default" : runtimeState === "error" ? "outline" : "secondary"}>
-                    {statusLabel}
-                  </UiBadge>
-                </div>
-                <p className="muted">{status?.message ?? t("微信连接未启动。")}</p>
-              </div>
-            </div>
-            <div className="toolbar weixin-connect-actions">
-              {autoSave}
-              <Button onClick={onQrLogin} variant="outline">
-                <ScanLine className="h-4 w-4" />
-                {form.weixinConnectToken ? t("重新登录") : t("扫码登录")}
-              </Button>
-              {running || stopping ? (
-                <Button disabled={stopping} onClick={onStop} variant="outline">
-                  <PowerOff className="h-4 w-4" />
-                  {stopping ? t("正在停止") : t("停止")}
-                </Button>
-              ) : (
-                <Button disabled={!form.weixinConnectToken} onClick={onStart}>
-                  <Play className="h-4 w-4" />
-                  {t("启动")}
-                </Button>
-              )}
-            </div>
-          </div>
-          <div className="weixin-runtime-meta">
-            <div>
-              <span>{t("账号")}</span>
-              <code title={status?.accountId || form.weixinConnectAccountId || t("未登录")}>
-                {status?.accountId || form.weixinConnectAccountId || t("未登录")}
-              </code>
-            </div>
-            <div>
-              <span>{t("已处理消息")}</span>
-              <strong>{status?.processedMessages ?? 0}</strong>
-            </div>
-            <div>
-              <span>{t("最近联系人")}</span>
-              <code title={status?.lastPeerId || t("暂无")}>{status?.lastPeerId || t("暂无")}</code>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
+    <div className="weixin-connect-page sectioned-page cx-page">
+      {/* 状态一行：没登录时唯一的主操作是扫码登录；登录后是启动 / 停止，重新登录收进三点菜单。 */}
+      <CxCard className={`weixin-status-panel is-${runtimeState}`}>
+        <div id="weixin-section-status">
+          <CxRow
+            badges={<CxBadge tone={statusTone === "ok" ? "ok" : statusTone === "danger" ? "danger" : "neutral"}>{statusLabel}</CxBadge>}
+            detail={(
+              <span className="weixin-status-detail">
+                <span title={status?.message ?? t("微信连接未启动。")}>{status?.message ?? t("微信连接未启动。")}</span>
+                <span title={accountLabel}>{t("账号")} <code>{accountLabel}</code></span>
+                <span>{t("已处理消息")} <b>{status?.processedMessages ?? 0}</b></span>
+                <span title={status?.lastPeerId || t("暂无")}>{t("最近联系人")} <code>{status?.lastPeerId || t("暂无")}</code></span>
+              </span>
+            )}
+            icon={<CxStatusIcon tone={statusTone}><MessageCircle /></CxStatusIcon>}
+            title={t("个人微信连接")}
+          >
+            <span className="weixin-autosave">{autoSave}</span>
+            {!loggedIn ? (
+              <button className="cx-primary" onClick={onQrLogin} type="button">
+                <ScanLine />
+                {t("扫码登录")}
+              </button>
+            ) : running || stopping ? (
+              <button className="cx-secondary" disabled={stopping} onClick={onStop} type="button">
+                <PowerOff />
+                {stopping ? t("正在停止") : t("停止")}
+              </button>
+            ) : (
+              <button className="cx-primary" onClick={onStart} type="button">
+                <Play />
+                {t("启动")}
+              </button>
+            )}
+            {loggedIn ? (
+              <Menu>
+                <MenuItem onClick={onQrLogin}>{t("重新登录")}</MenuItem>
+              </Menu>
+            ) : null}
+          </CxRow>
+        </div>
+      </CxCard>
 
       {qr?.qrContent ? (
-        <Panel>
-          <CardHeader>
-            <CardTitle>{qr.qrStatus === "scaned" ? t("已扫码，请在手机上确认") : t("微信扫码登录")}</CardTitle>
-            <CardDescription>{t("在手机微信中打开登录链接，或复制到可生成二维码的设备完成确认。")}</CardDescription>
-          </CardHeader>
-          <CardContent>
+        <CxSection title={qr.qrStatus === "scaned" ? t("已扫码，请在手机上确认") : t("微信扫码登录")}>
+          <CxCard className="weixin-qr-card">
             {qr.qrSvg ? (
               <div className="weixin-qr-image" dangerouslySetInnerHTML={{ __html: qr.qrSvg }} />
             ) : null}
-            <div className="weixin-qr-content">{qr.qrContent}</div>
-            <div className="toolbar">
-              <Button onClick={() => onOpenQr(qr.qrContent)}>
-                <ExternalLink className="h-4 w-4" />
-                {t("打开登录链接")}
-              </Button>
-              <Button onClick={() => onCopyQr(qr.qrContent)} variant="outline">
-                <Copy className="h-4 w-4" />
-                {t("复制链接")}
-              </Button>
+            <div className="weixin-qr-side">
+              <p>{t("在手机微信中打开登录链接，或复制到可生成二维码的设备完成确认。")}</p>
+              <div className="weixin-qr-content">{qr.qrContent}</div>
+              <div className="weixin-qr-actions">
+                <button className="cx-primary" onClick={() => onOpenQr(qr.qrContent)} type="button">
+                  <ExternalLink />
+                  {t("打开登录链接")}
+                </button>
+                <button className="cx-secondary" onClick={() => onCopyQr(qr.qrContent)} type="button">
+                  <Copy />
+                  {t("复制链接")}
+                </button>
+              </div>
             </div>
-          </CardContent>
-        </Panel>
+          </CxCard>
+        </CxSection>
       ) : null}
 
-      <Panel className="weixin-settings-panel">
-        <CardHeader className="weixin-settings-head">
-          <div>
-            <CardTitle>{t("连接设置")}</CardTitle>
-            <CardDescription>{t("每个微信联系人会映射到独立的 Codex 会话。")}</CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent className="weixin-connect-form">
-          <section className="weixin-form-section" id="weixin-section-account">
-            <div className="weixin-form-section-title">
-              <KeyRound className="h-4 w-4" />
-              <strong>{t("账号")}</strong>
-            </div>
-            <div className="weixin-form-fields">
-              <label className="field">
-                <span>{t("iLink API 地址")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectBaseUrl: event.target.value })}
-                  value={form.weixinConnectBaseUrl}
-                />
-              </label>
-              <label className="field">
-                <span>{t("登录凭据")}</span>
-                <Input
-                  autoComplete="off"
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectToken: event.target.value })}
-                  placeholder={t("扫码后自动保存，也可粘贴已有 Bearer token")}
-                  type="password"
-                  value={form.weixinConnectToken}
-                />
-              </label>
-              <label className="field">
-                <span>{t("允许的微信用户 ID")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectAllowFrom: event.target.value })}
-                  placeholder="user@im.wechat"
-                  value={form.weixinConnectAllowFrom}
-                />
-              </label>
-              <div className="field">
-                <span>{t("工作区附件回传")}</span>
-                <Switch
-                  label={t("允许向指定微信用户回传工作区文件")}
-                  on={form.weixinConnectAllowOutboundAttachments}
-                  disabled={!form.weixinConnectAllowOutboundAttachments && (
-                    !form.weixinConnectAllowFrom.split(",").some((peer) => peer.trim())
-                    || form.weixinConnectAllowFrom.split(",").some((peer) => peer.trim() === "*")
-                    || !form.weixinConnectWorkDir.trim()
-                  )}
-                  onToggle={() => onFormChange({ ...form, weixinConnectAllowOutboundAttachments: !form.weixinConnectAllowOutboundAttachments })}
-                />
-              </div>
-              <label className="field">
-                <span>{t("账号标识")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectAccountId: event.target.value })}
-                  placeholder={t("扫码后自动填写")}
-                  value={form.weixinConnectAccountId}
-                />
-              </label>
-              <label className="field">
-                <span>{t("SKRouteTag")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectRouteTag: event.target.value })}
-                  placeholder={t("仅在网关要求时填写")}
-                  value={form.weixinConnectRouteTag}
-                />
-              </label>
-            </div>
-          </section>
+      {/* 设置按主题分节，一行一项；改动即自动保存。不常改的连接参数收进最后的「高级」。 */}
+      <CxSection id="weixin-section-account" title={t("账号")}>
+        <CxCard className="weixin-settings-card">
+          <SettingRow description={t("扫码后自动保存，也可粘贴已有 Bearer token")} title={t("登录凭据")}>
+            <Input
+              aria-label={t("登录凭据")}
+              autoComplete="off"
+              onChange={(event) => onFormChange({ ...form, weixinConnectToken: event.target.value })}
+              placeholder={t("扫码后自动保存，也可粘贴已有 Bearer token")}
+              type="password"
+              value={form.weixinConnectToken}
+            />
+          </SettingRow>
+          <SettingRow description={t("每个微信联系人会映射到独立的 Codex 会话。")} title={t("允许的微信用户 ID")}>
+            <Input
+              aria-label={t("允许的微信用户 ID")}
+              onChange={(event) => onFormChange({ ...form, weixinConnectAllowFrom: event.target.value })}
+              placeholder="user@im.wechat"
+              value={form.weixinConnectAllowFrom}
+            />
+          </SettingRow>
+          <SettingRow description={t("允许向指定微信用户回传工作区文件")} title={t("工作区附件回传")}>
+            <Switch
+              label={t("允许向指定微信用户回传工作区文件")}
+              on={form.weixinConnectAllowOutboundAttachments}
+              disabled={outboundBlocked}
+              onToggle={() => onFormChange({ ...form, weixinConnectAllowOutboundAttachments: !form.weixinConnectAllowOutboundAttachments })}
+            />
+          </SettingRow>
+        </CxCard>
+      </CxSection>
 
-          <section className="weixin-form-section" id="weixin-section-session">
-            <div className="weixin-form-section-title">
-              <MessageCircle className="h-4 w-4" />
-              <strong>{t("会话管理")}</strong>
+      <CxSection id="weixin-section-session" title={t("会话管理")}>
+        <CxCard className="weixin-settings-card">
+          <SettingRow description={t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")} title={t("工作目录")}>
+            <div className="weixin-path-row">
+              <SearchablePathPicker
+                onChange={(value) => {
+                  setSelectedSessionId("");
+                  onFormChange({ ...form, weixinConnectWorkDir: value });
+                }}
+                options={workDirOptions}
+                placeholder={t("搜索或输入工作目录")}
+                value={form.weixinConnectWorkDir}
+              />
+              <button aria-label={t("选择工作目录")} className="cx-icon-button" onClick={onChooseWorkDir} title={t("选择工作目录")} type="button">
+                <FolderOpen />
+              </button>
             </div>
-            <div className="weixin-form-fields">
-              <label className="field">
-                <span>{t("工作目录")}</span>
-                <div className="weixin-path-row">
-                  <SearchablePathPicker
-                    onChange={(value) => {
-                      setSelectedSessionId("");
-                      onFormChange({ ...form, weixinConnectWorkDir: value });
-                    }}
-                    options={workDirOptions}
-                    placeholder={t("搜索或输入工作目录")}
-                    value={form.weixinConnectWorkDir}
-                  />
-                  <Button onClick={onChooseWorkDir} size="icon" title={t("选择工作目录")} type="button" variant="outline">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </div>
-              </label>
-              <label className="field">
-                <span>{t("已有会话")}</span>
-                <SearchableSessionPicker
-                  onSelect={(session) => {
-                    setSelectedSessionId(session?.id ?? "");
-                    if (session?.cwd) onFormChange({ ...form, weixinConnectWorkDir: session.cwd });
-                  }}
-                  selectedId={selectedSessionId}
-                  sessions={sessions}
-                />
-                <small className="weixin-field-hint">{t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")}</small>
-              </label>
-              <label aria-invalid={modelUnavailable || Boolean(catalogError)} className="field">
-                <span>{t("模型")}</span>
-                <div className="weixin-path-row">
-                  <AppSelect
-                    ariaLabel={t("模型")}
-                    onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
-                    options={[
-                      { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
-                      ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
-                        value: form.weixinConnectModel,
-                        label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
-                      }] : []),
-                      ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
-                    ]}
-                    value={form.weixinConnectModel}
-                  />
-                  <Button aria-label={t("刷新模型目录")} disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)} size="icon" title={t("刷新模型目录")} type="button" variant="outline">
-                    <RefreshCw className={`h-4 w-4${catalogLoading ? " animate-spin" : ""}`} />
-                  </Button>
-                </div>
-                {catalogError ? <small className="weixin-field-hint request-log-error" role="alert">{catalogError}</small> : null}
-                {modelUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前模型已不在可用模型目录中，请重新选择。")}</small> : null}
-                {catalog && !catalogError && !models.length ? <small className="weixin-field-hint" role="status">{t("当前没有可用模型，请检查供应商配置。")}</small> : null}
-              </label>
-              <label aria-invalid={reasoningUnavailable} className="field">
-                <span>{t("推理强度")}</span>
-                <AppSelect
-                  ariaLabel={t("推理强度")}
-                  onChange={(next) => onFormChange({ ...form, weixinConnectReasoningEffort: next })}
-                  options={[
-                    { value: "", label: t("继承 Codex 推理强度") },
-                    ...(form.weixinConnectReasoningEffort && !reasoningEfforts.includes(form.weixinConnectReasoningEffort) ? [{
-                      value: form.weixinConnectReasoningEffort,
-                      label: `${form.weixinConnectReasoningEffort} (${reasoningUnavailable ? t("不可用") : t("当前值")})`,
-                    }] : []),
-                    ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
-                  ]}
-                  value={form.weixinConnectReasoningEffort}
-                />
-                {reasoningUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前模型不支持已选推理强度，请重新选择或继承。")}</small> : null}
-              </label>
-              <label aria-invalid={projectUnavailable || Boolean(projectsError)} className="field">
-                <span>{t("新会话项目")}</span>
-                <div className="weixin-path-row">
-                  <AppSelect
-                    ariaLabel={t("新会话项目")}
-                    onChange={(id) => {
-                      const selected = projectOptions.find((project) => project.id === id);
-                      onFormChange({
-                        ...form,
-                        weixinConnectProjectId: id,
-                        weixinConnectWorkDir: selected?.roots?.[0]?.path || form.weixinConnectWorkDir,
-                      });
-                    }}
-                    options={[
-                      { value: "", label: t("不归属项目") },
-                      ...(form.weixinConnectProjectId && !projectOptions.some((project) => project.id === form.weixinConnectProjectId) ? [{
-                        value: form.weixinConnectProjectId,
-                        label: `${form.weixinConnectProjectId} (${projectUnavailable ? t("不可用") : t("当前值")})`,
-                      }] : []),
-                      ...projectOptions.map((project) => ({ value: project.id, label: project.name || project.id })),
-                    ]}
-                    value={form.weixinConnectProjectId}
-                  />
-                  <Button aria-label={t("刷新项目")} disabled={projectsLoading} onClick={() => setProjectsRevision((value) => value + 1)} size="icon" title={t("刷新项目")} type="button" variant="outline">
-                    <RefreshCw className={`h-4 w-4${projectsLoading ? " animate-spin" : ""}`} />
-                  </Button>
-                </div>
-                {projectsError ? <small className="weixin-field-hint request-log-error" role="alert">{projectsError}</small> : null}
-                {projectUnavailable ? <small className="weixin-field-hint request-log-error" role="alert">{t("当前项目已不在项目列表中，请重新选择。")}</small> : null}
-              </label>
-              <label className="field">
-                <span>{t("重置联系人会话")}</span>
-                <div className="weixin-path-row">
-                  <Input aria-label={t("需要重置的联系人 ID")} placeholder={status?.lastPeerId || t("联系人 ID")} value={resetPeerId} onChange={(event) => setResetPeerId(event.target.value)} />
-                  <Button aria-label={t("重置该联系人会话")} title={t("重置该联系人会话，下一条消息生效并保留原历史")} size="icon" variant="outline" type="button" disabled={resetPending || !resetPeerId.trim()} onClick={async () => {
-                    setResetPending(true);
-                    setResetMessage("");
-                    try {
-                      await invoke("weixin_connect_reset_session", { peerId: resetPeerId.trim(), accountId: form.weixinConnectAccountId.trim() });
-                      setResetMessage(t("已保存重置请求，下一条消息开启新会话，原历史保留。"));
-                    } catch (error) {
-                      setResetMessage(String(error));
-                    } finally {
-                      setResetPending(false);
-                    }
-                  }}><RefreshCw className={`h-4 w-4${resetPending ? " animate-spin" : ""}`} /></Button>
-                </div>
-                {resetMessage ? <small className="weixin-field-hint" role="status">{resetMessage}</small> : null}
-              </label>
-              <label className="field">
-                <span>{t("沙箱权限")}</span>
-                <AppSelect
-                  ariaLabel={t("沙箱权限")}
-                  onChange={(next) => onFormChange({ ...form, weixinConnectSandbox: next })}
-                  options={[
-                    { value: "read-only", label: t("只读") },
-                    { value: "workspace-write", label: t("允许修改工作目录") },
-                    { value: "danger-full-access", label: t("完全访问") },
-                  ]}
-                  value={form.weixinConnectSandbox}
-                />
-              </label>
+          </SettingRow>
+          <SettingRow title={t("已有会话")}>
+            <SearchableSessionPicker
+              onSelect={(session) => {
+                setSelectedSessionId(session?.id ?? "");
+                if (session?.cwd) onFormChange({ ...form, weixinConnectWorkDir: session.cwd });
+              }}
+              selectedId={selectedSessionId}
+              sessions={sessions}
+            />
+          </SettingRow>
+          <SettingRow
+            description={projectsError || (projectUnavailable ? t("当前项目已不在项目列表中，请重新选择。") : undefined)}
+            title={t("新会话项目")}
+          >
+            <div aria-invalid={projectUnavailable || Boolean(projectsError)} className="weixin-path-row">
+              <AppSelect
+                ariaLabel={t("新会话项目")}
+                onChange={(id) => {
+                  const selected = projectOptions.find((project) => project.id === id);
+                  onFormChange({
+                    ...form,
+                    weixinConnectProjectId: id,
+                    weixinConnectWorkDir: selected?.roots?.[0]?.path || form.weixinConnectWorkDir,
+                  });
+                }}
+                options={[
+                  { value: "", label: t("不归属项目") },
+                  ...(form.weixinConnectProjectId && !projectOptions.some((project) => project.id === form.weixinConnectProjectId) ? [{
+                    value: form.weixinConnectProjectId,
+                    label: `${form.weixinConnectProjectId} (${projectUnavailable ? t("不可用") : t("当前值")})`,
+                  }] : []),
+                  ...projectOptions.map((project) => ({ value: project.id, label: project.name || project.id })),
+                ]}
+                value={form.weixinConnectProjectId}
+              />
+              <button aria-label={t("刷新项目")} className="cx-icon-button" disabled={projectsLoading} onClick={() => setProjectsRevision((value) => value + 1)} title={t("刷新项目")} type="button">
+                <RefreshCw className={projectsLoading ? "animate-spin" : ""} />
+              </button>
             </div>
-          </section>
+          </SettingRow>
+          <SettingRow title={t("沙箱权限")}>
+            <AppSelect
+              ariaLabel={t("沙箱权限")}
+              onChange={(next) => onFormChange({ ...form, weixinConnectSandbox: next })}
+              options={[
+                { value: "read-only", label: t("只读") },
+                { value: "workspace-write", label: t("允许修改工作目录") },
+                { value: "danger-full-access", label: t("完全访问") },
+              ]}
+              value={form.weixinConnectSandbox}
+            />
+          </SettingRow>
+          <SettingRow description={resetMessage || t("重置该联系人会话，下一条消息生效并保留原历史")} title={t("重置联系人会话")}>
+            <div className="weixin-path-row">
+              <Input aria-label={t("需要重置的联系人 ID")} placeholder={status?.lastPeerId || t("联系人 ID")} value={resetPeerId} onChange={(event) => setResetPeerId(event.target.value)} />
+              <button aria-label={t("重置该联系人会话")} className="cx-secondary" disabled={resetPending || !resetPeerId.trim()} onClick={() => void resetSession()} title={t("重置该联系人会话，下一条消息生效并保留原历史")} type="button">
+                <RefreshCw className={resetPending ? "animate-spin" : ""} />
+                {t("重置")}
+              </button>
+            </div>
+          </SettingRow>
+        </CxCard>
+      </CxSection>
 
-          <section className="weixin-form-section" id="weixin-section-cli">
-            <div className="weixin-form-section-title">
-              <Settings className="h-4 w-4" />
-              <strong>Codex CLI</strong>
+      <CxSection
+        aside={(
+          <button aria-label={t("刷新模型目录")} className="cx-icon-button" disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)} title={t("刷新模型目录")} type="button">
+            <RefreshCw className={catalogLoading ? "animate-spin" : ""} />
+          </button>
+        )}
+        title={t("模型")}
+      >
+        <CxCard className="weixin-settings-card">
+          <SettingRow
+            description={catalogError
+              || (modelUnavailable ? t("当前模型已不在可用模型目录中，请重新选择。") : undefined)
+              || (catalog && !models.length ? t("当前没有可用模型，请检查供应商配置。") : undefined)}
+            title={t("模型")}
+          >
+            <div aria-invalid={modelUnavailable || Boolean(catalogError)} className="weixin-select">
+              <AppSelect
+                ariaLabel={t("模型")}
+                onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
+                options={[
+                  { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
+                  ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
+                    value: form.weixinConnectModel,
+                    label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
+                  }] : []),
+                  ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
+                ]}
+                value={form.weixinConnectModel}
+              />
             </div>
-            <div className="weixin-form-fields">
-              <label className="field">
-                <span>{t("Codex CLI 路径")}</span>
-                <div className="weixin-path-row weixin-cli-path-row">
-                  <Input
-                    className="h-10"
-                    onChange={(event) => onFormChange({ ...form, weixinConnectCodexPath: event.target.value })}
-                    placeholder={t("留空时从 PATH 查找 codex")}
-                    value={form.weixinConnectCodexPath}
-                  />
-                  <Button
-                    className="weixin-bundled-cli-button"
-                    onClick={onUseDesktopCodexCli}
-                    size="sm"
-                    title={t("使用桌面版内置 CLI")}
-                    type="button"
-                    variant="secondary"
-                  >
-                    <PackageOpen className="h-4 w-4" />
-                    {t("使用桌面版内置 CLI")}
-                  </Button>
-                  <Button onClick={onChooseCodexPath} size="icon" title={t("选择 Codex CLI")} type="button" variant="outline">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </div>
-              </label>
+          </SettingRow>
+          <SettingRow description={reasoningUnavailable ? t("当前模型不支持已选推理强度，请重新选择或继承。") : undefined} title={t("推理强度")}>
+            <div aria-invalid={reasoningUnavailable} className="weixin-select">
+              <AppSelect
+                ariaLabel={t("推理强度")}
+                onChange={(next) => onFormChange({ ...form, weixinConnectReasoningEffort: next })}
+                options={[
+                  { value: "", label: t("继承 Codex 推理强度") },
+                  ...(form.weixinConnectReasoningEffort && !reasoningEfforts.includes(form.weixinConnectReasoningEffort) ? [{
+                    value: form.weixinConnectReasoningEffort,
+                    label: `${form.weixinConnectReasoningEffort} (${reasoningUnavailable ? t("不可用") : t("当前值")})`,
+                  }] : []),
+                  ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                ]}
+                value={form.weixinConnectReasoningEffort}
+              />
             </div>
-          </section>
-        </CardContent>
-      </Panel>
-      </div>
+          </SettingRow>
+        </CxCard>
+      </CxSection>
+
+      <details className="weixin-advanced" id="weixin-section-cli">
+        <summary>
+          <span>{t("高级")}</span>
+          <small>{t("iLink API 地址")} · {t("账号标识")} · SKRouteTag · Codex CLI</small>
+        </summary>
+        <CxCard className="weixin-settings-card">
+          <SettingRow title={t("iLink API 地址")}>
+            <Input
+              aria-label={t("iLink API 地址")}
+              onChange={(event) => onFormChange({ ...form, weixinConnectBaseUrl: event.target.value })}
+              value={form.weixinConnectBaseUrl}
+            />
+          </SettingRow>
+          <SettingRow description={t("扫码后自动填写")} title={t("账号标识")}>
+            <Input
+              aria-label={t("账号标识")}
+              onChange={(event) => onFormChange({ ...form, weixinConnectAccountId: event.target.value })}
+              placeholder={t("扫码后自动填写")}
+              value={form.weixinConnectAccountId}
+            />
+          </SettingRow>
+          <SettingRow description={t("仅在网关要求时填写")} title={t("SKRouteTag")}>
+            <Input
+              aria-label={t("SKRouteTag")}
+              onChange={(event) => onFormChange({ ...form, weixinConnectRouteTag: event.target.value })}
+              placeholder={t("仅在网关要求时填写")}
+              value={form.weixinConnectRouteTag}
+            />
+          </SettingRow>
+          <SettingRow description={t("留空时从 PATH 查找 codex")} title={t("Codex CLI 路径")}>
+            <div className="weixin-path-row weixin-cli-path-row">
+              <Input
+                aria-label={t("Codex CLI 路径")}
+                onChange={(event) => onFormChange({ ...form, weixinConnectCodexPath: event.target.value })}
+                placeholder={t("留空时从 PATH 查找 codex")}
+                value={form.weixinConnectCodexPath}
+              />
+              <button aria-label={t("选择 Codex CLI")} className="cx-icon-button" onClick={onChooseCodexPath} title={t("选择 Codex CLI")} type="button">
+                <FolderOpen />
+              </button>
+              <Menu>
+                <MenuItem onClick={onUseDesktopCodexCli}>{t("使用桌面版内置 CLI")}</MenuItem>
+              </Menu>
+            </div>
+          </SettingRow>
+        </CxCard>
+      </details>
     </div>
   );
 }
@@ -6270,7 +6231,7 @@ function OverviewScreen({
       : { tone: "missing", text: t("还没有配置供应商。") };
   const codexActions = gatewayManaged ? (
     <>
-      <Button onClick={() => onNavigate("gateway")} size="sm">{t("管理接入")}</Button>
+      <button className="cx-secondary" onClick={() => onNavigate("gateway")} type="button">{t("管理接入")}</button>
     </>
   ) : activeProfile ? (
     <>
@@ -6284,10 +6245,10 @@ function OverviewScreen({
         title={!normalized.relayProfilesEnabled ? t("供应商配置切换已关闭，在供应商配置页打开后才能切换") : t("切换供应商")}
         value={normalized.activeRelayId}
       />
-      <Button onClick={() => onNavigate("relay")} size="sm" variant="secondary">{t("管理供应商")}</Button>
+      <button className="cx-secondary" onClick={() => onNavigate("relay")} type="button">{t("管理供应商")}</button>
     </>
   ) : (
-    <Button onClick={() => onNavigate("relay")} size="sm">{t("添加供应商")}</Button>
+    <button className="cx-primary" onClick={() => onNavigate("relay")} type="button"><Plus aria-hidden="true" />{t("添加供应商")}</button>
   );
   const codexStats: DashboardStat[] = [
     { label: t("24 小时请求"), value: recent ? recent.total : "—" },
@@ -6295,6 +6256,32 @@ function OverviewScreen({
     { label: t("平均耗时"), value: recent?.avgDurationMs == null ? "—" : `${(recent.avgDurationMs / 1000).toFixed(1)}s` },
     { label: t("常用模型"), value: recent?.topModel ?? "—", mono: false },
   ];
+  const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
+  // 健康检查：一张卡一行一项。有问题的项排前面、带橙色 / 红色标签；正常的收成一行「其余 N 项正常」，点开再看。
+  const healthRows = [
+    {
+      title: t("Codex 版本"),
+      status: overview?.codex_version ? "ok" : "not_checked",
+      ok: Boolean(overview?.codex_version),
+      detail: overview?.codex_version ?? t("未检测到 Codex 应用版本。"),
+      icon: Tag,
+    },
+    ...health,
+  ];
+  const healthProblems = healthRows.filter((item) => !item.ok);
+  const healthFine = healthRows.filter((item) => item.ok);
+  const [healthExpanded, setHealthExpanded] = useState(false);
+  const healthRow = (item: (typeof healthRows)[number]) => (
+    <CxRow
+      detail={<span title={item.detail}>{item.detail}</span>}
+      icon={<CxStatusIcon tone={item.ok ? (statusClass(item.status) === "idle" ? "off" : "ok") : statusClass(item.status) === "bad" ? "danger" : "warn"}><item.icon /></CxStatusIcon>}
+      key={item.title}
+      muted={item.ok && healthProblems.length > 0}
+      title={item.title}
+    >
+      <CxBadge tone={item.ok ? (statusClass(item.status) === "good" ? "ok" : "neutral") : statusClass(item.status) === "bad" ? "danger" : "warn"}>{statusLabel(item.status)}</CxBadge>
+    </CxRow>
+  );
   return (
     <>
       {activeTool === "codex" ? (
@@ -6310,46 +6297,33 @@ function OverviewScreen({
           status={codexStatus}
           version={overview?.codex_version}
         >
-        <Panel>
-          <CardHeader className="panel-head overview-health-header">
-            <CardTitle>{t("健康检查")}</CardTitle>
-            <div className="overview-health-header-actions">
-              <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
-              <Button
-                aria-label={t("刷新状态")}
-                title={t("刷新状态")}
-                size="icon"
-                variant="outline"
-                className="shrink-0"
-                onClick={() => void actions.refreshCurrent()}
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="health-grid overview-health-grid">
-              <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
-                <span className={`health-icon ${overview?.codex_version ? "good" : "warn"}`}><Tag className="h-4 w-4" /></span>
-                <div>
-                  <strong>{t("Codex 版本")}</strong>
-                  <span title={overview?.codex_version ?? undefined}>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
-                </div>
-                <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
-              </div>
-              {health.map((item) => (
-                <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
-                  <span className={`health-icon ${statusClass(item.status)}`}><item.icon className="h-4 w-4" /></span>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span title={item.detail}>{item.detail}</span>
-                  </div>
-                  <Badge status={item.status} />
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Panel>
+          <CxSection
+            aside={
+              <span className="overview-health-header-actions">
+                {healthProblems.length ? <span title={t("概览只展示关键问题，具体配置在对应页面处理")}>{tf("{0} 项需处理", [healthProblems.length])}</span> : null}
+                <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshCurrent()} title={t("刷新状态")} type="button">
+                  <RefreshCw aria-hidden="true" />
+                </button>
+              </span>
+            }
+            className="overview-health"
+            title={t("健康检查")}
+          >
+            <CxCard className="overview-health-list">
+              {healthProblems.map(healthRow)}
+              {healthExpanded ? healthFine.map(healthRow) : (
+                <CxRow
+                  className="overview-health-more"
+                  detail={healthFine.map((item) => item.title).join(" · ")}
+                  icon={<CxStatusIcon tone="ok"><CheckCircle2 /></CxStatusIcon>}
+                  onClick={() => setHealthExpanded(true)}
+                  title={healthProblems.length ? tf("其余 {0} 项正常", [healthFine.length]) : tf("{0} 项检查全部正常", [healthFine.length])}
+                >
+                  <ChevronDown aria-hidden="true" className="cx-row-chevron" />
+                </CxRow>
+              )}
+            </CxCard>
+          </CxSection>
         </AgentDashboard>
       ) : activeTool === "claude" || activeTool === "grok" ? (
         <AgentDashboard agent={activeTool} name={tool?.name ?? activeTool} notify={actions.showMessage} onNavigate={onNavigate} onOpenList={onOpenList} />
@@ -7981,174 +7955,145 @@ function CodexMultiLaunchScreen({
       />
     );
   }
+  const { CxAddRow, CxBadge, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon } = AgentCx;
+  const instances = actions.multiLaunchInstances;
   return (
-    <div className="mg-page relay-management-page">
+    <div className="mg-page relay-management-page cx-page multi-launch-page">
       <PageHeader
         icon={<Layers3 className="h-5 w-5" />}
         title={t("Codex多开")}
         actions={(
-          <>
-            {/* cc-switch 导入和添加供应商都在旧版供应商页；网关接管时那里只留「从第三方导入」。 */}
-            <Button onClick={onOpenRelay} title={t("到「旧版供应商配置」添加供应商，或用「从第三方导入」导入 cc-switch 的供应商")} variant="secondary">
-              <Download className="h-4 w-4" />
-              {t("导入或添加供应商")}
-            </Button>
-            <Button onClick={() => void actions.refreshSettings(true)} variant="secondary">
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新供应商")}
-            </Button>
-          </>
+          // 一个刷新同时读供应商和运行实例。
+          <button
+            className="cx-secondary"
+            disabled={actions.multiLaunchInstancesLoading}
+            onClick={() => {
+              void actions.refreshSettings(true);
+              void actions.refreshMultiLaunchInstances(false);
+            }}
+            type="button"
+          >
+            <RefreshCw className={actions.multiLaunchInstancesLoading ? "animate-spin" : ""} />
+            {t("刷新")}
+          </button>
         )}
       />
-      <div className="mg-content">
-        <Panel className="relay-management-panel multi-launch-running-panel">
-          <CardHeader>
-            <div className="multi-launch-running-header">
-              <div>
-                <CardTitle>{t("当前运行实例")}</CardTitle>
-                <CardDescription>{t("这里列出主 Codex 和已经启动的多开实例，可单独重启或结束。")}</CardDescription>
+      <CxSection count={instances.length} title={t("运行中的实例")}>
+        <CxCard className="multi-launch-running-panel">
+          {instances.length ? instances.map((instance) => {
+            const status = multiLaunchInstanceStatus(instance);
+            const running = multiLaunchInstanceRunning(instance);
+            const pending = actions.multiLaunchActionPending === instance.instanceId;
+            const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
+            // 启动失败的原因必须让用户看得见：Windows 上多开曾经完全不吭声。
+            const failure = multiLaunchInstanceFailure(instance);
+            const detail = [
+              instance.isMain ? t("主进程") : instance.instanceId,
+              typeof instance.pid === "number" ? `PID ${instance.pid}` : "",
+              typeof instance.debugPort === "number" ? `CDP ${instance.debugPort}` : "",
+              typeof instance.helperPort === "number" ? `API ${instance.helperPort}` : "",
+              failure ? `${t("启动失败")}：${failure}` : "",
+            ].filter(Boolean).join(" · ");
+            const tone = statusClass(status);
+            return (
+              <div className="multi-launch-instance" data-instance-id={instance.instanceId} key={instance.instanceId}>
+                <CxRow
+                  badges={<CxBadge tone={tone === "good" ? "ok" : tone === "bad" ? "danger" : tone === "warn" ? "warn" : "neutral"}>{statusLabel(status)}</CxBadge>}
+                  detail={<span data-failed={failure ? "true" : undefined} title={detail}>{detail || t("未提供进程详情")}</span>}
+                  icon={<CxStatusIcon tone={running ? "ok" : failure ? "danger" : "off"}><span className="multi-launch-initial">{providerInitial(label)}</span></CxStatusIcon>}
+                  title={label}
+                >
+                  <button
+                    className="cx-secondary"
+                    disabled={pending}
+                    onClick={() => void actions.restartMultiLaunchInstance(instance)}
+                    title={t("重启此 Codex 实例；修改供应商或 Key 后重启才会生效")}
+                    type="button"
+                  >
+                    <RotateCcw />
+                    {pending ? t("处理中") : t("重启")}
+                  </button>
+                  <button
+                    aria-label={t("结束此 Codex 实例")}
+                    className="cx-icon-button"
+                    disabled={!running || pending}
+                    onClick={() => void actions.stopMultiLaunchInstance(instance)}
+                    title={running ? t("结束此 Codex 实例") : t("实例当前未运行")}
+                    type="button"
+                  >
+                    <PowerOff />
+                  </button>
+                </CxRow>
               </div>
-              <Button
-                disabled={actions.multiLaunchInstancesLoading}
-                onClick={() => void actions.refreshMultiLaunchInstances(false)}
-                variant="secondary"
-                size="sm"
-              >
-                <RefreshCw className={`h-4 w-4 ${actions.multiLaunchInstancesLoading ? "animate-spin" : ""}`} />
-                {t("刷新")}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {actions.multiLaunchInstances.length ? (
-              <div className="multi-launch-instance-list">
-                {actions.multiLaunchInstances.map((instance) => {
-                  const status = multiLaunchInstanceStatus(instance);
-                  const running = multiLaunchInstanceRunning(instance);
-                  const pending = actions.multiLaunchActionPending === instance.instanceId;
-                  const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
-                  // 启动失败的原因必须让用户看得见：Windows 上多开曾经完全不吭声。
-                  const failure = multiLaunchInstanceFailure(instance);
-                  const detail = [
-                    instance.isMain ? t("主进程") : instance.instanceId,
-                    typeof instance.pid === "number" ? `PID ${instance.pid}` : "",
-                    typeof instance.debugPort === "number" ? `CDP ${instance.debugPort}` : "",
-                    typeof instance.helperPort === "number" ? `API ${instance.helperPort}` : "",
-                    failure ? `${t("启动失败")}：${failure}` : "",
-                  ].filter(Boolean).join(" · ");
-                  return (
-                    <div className="multi-launch-instance-card" data-instance-id={instance.instanceId} key={instance.instanceId}>
-                      <span className="relay-index" title={label}>{providerInitial(label)}</span>
-                      <span className="relay-summary">
-                        <strong>{label}</strong>
-                        <small data-failed={failure ? "true" : undefined}>{detail || t("未提供进程详情")}</small>
-                      </span>
-                      <UiBadge className={`multi-launch-instance-status ${statusClass(status)}`} variant="secondary">{statusLabel(status)}</UiBadge>
-                      <span className="relay-card-actions">
-                        <Button
-                          disabled={pending}
-                          onClick={() => void actions.restartMultiLaunchInstance(instance)}
-                          size="sm"
-                          title={t("重启此 Codex 实例")}
-                        >
-                          <RotateCcw className="h-4 w-4" />
-                          {pending ? t("处理中") : t("重启")}
-                        </Button>
-                        <Button
-                          disabled={!running || pending}
-                          onClick={() => void actions.stopMultiLaunchInstance(instance)}
-                          size="sm"
-                          title={running ? t("结束此 Codex 实例") : t("实例当前未运行")}
-                          variant="secondary"
-                        >
-                          <PowerOff className="h-4 w-4" />
-                          {t("结束")}
-                        </Button>
-                      </span>
-                    </div>
-                  );
-                })}
+            );
+          }) : (
+            <CxEmpty title={actions.multiLaunchInstancesLoading ? t("正在读取运行实例…") : t("当前没有已发现的 Codex 实例。")} />
+          )}
+        </CxCard>
+      </CxSection>
+      <CxSection
+        aside={<span title={t("每个身份使用独立的配置、会话和用户数据目录，可与其他单一 Responses 或 Chat Completions 供应商同时运行。")}><Info className="multi-launch-hint-icon" /></span>}
+        count={normalized.relayProfiles.length}
+        title={t("按供应商启动")}
+      >
+        <CxCard className="relay-profile-list">
+          {normalized.relayProfiles.map((profile) => {
+            const aggregate = isAggregateRelayProfile(profile);
+            const unsupported = !multiLaunchSupported(profile);
+            const pending = actions.multiLaunchPending === profile.id;
+            // 网关托管的那一项由「Agent 接入」管理，和旧版列表一样不给编辑、删除。
+            const gatewayManaged = profile.id === CODEX_GATEWAY_RELAY_ID;
+            const active = profile.id === normalized.activeRelayId;
+            const runningCount = runningInstancesForProfile(actions.multiLaunchInstances, profile.id).length;
+            const name = profile.name || t("未命名供应商");
+            return (
+              <div className="multi-launch-card" data-relay-profile-id={profile.id} key={profile.id}>
+                <CxRow
+                  badges={(
+                    <>
+                      {active ? <CxBadge>{t("使用中")}</CxBadge> : null}
+                      {runningCount ? <CxBadge tone="ok">{tf("{0} 个实例运行中", [runningCount])}</CxBadge> : null}
+                    </>
+                  )}
+                  detail={`${relayProfileModeLabel(profile)} · ${relayProtocolLabel(profile.protocol)} · ${relayProfileConfigBrief(profile)}`}
+                  icon={<span className="multi-launch-initial">{providerInitial(profile.name)}</span>}
+                  muted={unsupported}
+                  onClick={gatewayManaged ? undefined : () => setDetailProfileId(profile.id)}
+                  title={name}
+                >
+                  <button
+                    className="cx-secondary"
+                    disabled={unsupported || pending}
+                    onClick={() => void actions.launchMultiInstance(profile)}
+                    title={aggregate
+                      ? t("聚合供应商暂不支持独立多开")
+                      : unsupported
+                        ? t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")
+                        : t("启动此供应商的独立 Codex 实例")}
+                    type="button"
+                  >
+                    <Rocket />
+                    {pending ? t("启动中") : t("启动")}
+                  </button>
+                  {gatewayManaged ? null : (
+                    <Menu label={tf("供应商「{0}」的操作", [name])}>
+                      <MenuItem onClick={() => setDetailProfileId(profile.id)}>{t("编辑")}</MenuItem>
+                      <MenuItem danger disabled={normalized.relayProfiles.length <= 1} onClick={() => void deleteProfile(profile)}>{t("删除供应商")}</MenuItem>
+                    </Menu>
+                  )}
+                </CxRow>
               </div>
-            ) : (
-              <div className="empty">{actions.multiLaunchInstancesLoading ? t("正在读取运行实例…") : t("当前没有已发现的 Codex 实例。")}</div>
-            )}
-          </CardContent>
-        </Panel>
-        <Panel className="relay-management-panel">
-          <CardHeader>
-            <CardTitle>{t("选择供应商身份启动 Codex")}</CardTitle>
-            <CardDescription>{t("每个身份使用独立的配置、会话和用户数据目录，可与其他单一 Responses 或 Chat Completions 供应商同时运行。")}</CardDescription>
-            {/* #2754：新版的 API 多加在「供应商池」，多开却只读旧版供应商配置，用户以为 Key 没生效。 */}
-            <CardDescription>{t("多开只使用「旧版供应商配置」里的供应商和 API Key，「供应商池」（网关）里添加的供应商与 Key 不会出现在这里。修改供应商或 Key 后，需在上方对运行中的实例点「重启」才会生效。")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="relay-profile-list">
-              {normalized.relayProfiles.map((profile) => {
-                const aggregate = isAggregateRelayProfile(profile);
-                const unsupported = !multiLaunchSupported(profile);
-                const pending = actions.multiLaunchPending === profile.id;
-                // 网关托管的那一项由「Agent 接入」管理，和旧版列表一样不给编辑、删除。
-                const gatewayManaged = profile.id === CODEX_GATEWAY_RELAY_ID;
-                const active = profile.id === normalized.activeRelayId;
-                const runningCount = runningInstancesForProfile(actions.multiLaunchInstances, profile.id).length;
-                return (
-                  <div className="relay-profile-card multi-launch-card" data-relay-profile-id={profile.id} key={profile.id}>
-                    <span className="relay-index" title={profile.name || t("未命名供应商")}>{providerInitial(profile.name)}</span>
-                    <span className="relay-summary">
-                      <strong>
-                        <span className="relay-summary-name">{profile.name || t("未命名供应商")}</span>
-                        {active ? <span className="relay-active-badge">{t("使用中")}</span> : null}
-                        {runningCount ? <span className="relay-tag" data-tone="official">{tf("{0} 个实例运行中", [runningCount])}</span> : null}
-                      </strong>
-                      <small>{relayProfileModeLabel(profile)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
-                    </span>
-                    {/* 操作区是 row-reverse：「启动」写在最前面贴右，编辑 / 删除悬停时出现在它左边，与旧版列表一致。 */}
-                    <span className="relay-card-actions">
-                      <Button
-                        disabled={unsupported || pending}
-                        onClick={() => void actions.launchMultiInstance(profile)}
-                        title={aggregate
-                          ? t("聚合供应商暂不支持独立多开")
-                          : unsupported
-                            ? t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")
-                            : t("启动此供应商的独立 Codex 实例")}
-                        size="sm"
-                      >
-                        <Rocket className="h-4 w-4" />
-                        {pending ? t("启动中") : t("启动")}
-                      </Button>
-                      {gatewayManaged ? null : (
-                        <span className="relay-card-extra">
-                          <Button
-                            aria-label={tf("编辑供应商「{0}」", [profile.name || t("未命名供应商")])}
-                            onClick={() => setDetailProfileId(profile.id)}
-                            size="icon"
-                            title={t("编辑")}
-                            variant="ghost"
-                          >
-                            <Edit3 className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            aria-label={tf("删除供应商「{0}」", [profile.name || t("未命名供应商")])}
-                            disabled={normalized.relayProfiles.length <= 1}
-                            onClick={() => void deleteProfile(profile)}
-                            size="icon"
-                            title={t("删除供应商")}
-                            variant="ghost"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            {!normalized.relayProfiles.length ? <div className="empty">{t("暂无供应商，请先添加供应商配置。")}</div> : null}
-          </CardContent>
-        </Panel>
-      </div>
+            );
+          })}
+          {!normalized.relayProfiles.length ? <CxEmpty title={t("暂无供应商，请先添加供应商配置。")} /> : null}
+        </CxCard>
+        {/* #2754：新版的 API 多加在「供应商池」，多开却只读旧版供应商配置；添加入口直接说明这一点。 */}
+        <CxAddRow
+          detail={t("多开只用「旧版供应商配置」里的供应商与 Key，「供应商池」（网关）的不会出现在这里")}
+          onClick={onOpenRelay}
+          title={t("导入或添加供应商")}
+        />
+      </CxSection>
     </div>
   );
 }
@@ -8763,7 +8708,7 @@ function EnhanceScreen({
   activeTab,
   onTabChange,
   form,
-  onFormChange,
+  onFormChange: applyForm,
   builtins,
   onNavigate,
   actions,
@@ -8778,10 +8723,42 @@ function EnhanceScreen({
   onNavigate: (route: Route) => void;
   actions: Actions;
 }) {
+  const { CxBanner, CxCard, CxEmpty, CxToolbar } = AgentCx;
+  // 说明里写了要重启 Codex 的开关：改动时记下改之前的值，页面顶部汇总成一条「重启 Codex 生效」，不再逐项提醒。
+  const restartItems = useMemo(() => [...managerBuiltinGroups(), managerStandaloneGroup()]
+    .flatMap((group) => managerBuiltinCards(group.id, enhancementPlatform))
+    .flatMap((card) => [
+      ...(card.item ? [{ key: card.item.key, title: card.item.title, description: card.item.description }]
+        : card.entry?.setting ? [{ key: card.entry.setting, title: card.entry.title, description: card.entry.description }] : []),
+      ...card.params.map((param) => ({ key: param.key, title: param.title, description: param.description })),
+    ])
+    .filter((item) => RESTART_HINT.test(t(item.description))), []);
+  const restartOriginal = useRef(new Map<string, unknown>());
+  const [restartBusy, setRestartBusy] = useState(false);
+  const onFormChange = (next: BackendSettings) => {
+    for (const item of restartItems) {
+      const before = builtinSettingValue(form, item.key);
+      if (before !== builtinSettingValue(next, item.key) && !restartOriginal.current.has(item.key)) restartOriginal.current.set(item.key, before);
+    }
+    applyForm(next);
+  };
+  const restartPending = restartItems.filter((item) => restartOriginal.current.has(item.key)
+    && restartOriginal.current.get(item.key) !== builtinSettingValue(form, item.key));
+  const [, setRestartDismissed] = useState(0);
+  const clearRestartPending = () => { restartOriginal.current.clear(); setRestartDismissed((value) => value + 1); };
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
   const autoSave = useEnhanceAutoSave(dirty, form, actions.autoSaveSettings);
   const masterEnabled = form.enhancementsEnabled;
   const masterItem = enhancementItem("enhancementsEnabled");
+  // 搜索只过滤「内置拓展」页签里的开关：按标题、说明（含子选项）匹配，中英文都认。
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const cardMatches = (card: BuiltinExtensionCard) => !needle || [
+    card.item?.title, card.item?.description, card.entry?.title, card.entry?.description,
+    ...card.params.flatMap((param) => [param.title, param.description]),
+  ].filter((text): text is string => Boolean(text)).some((text) => text.toLowerCase().includes(needle) || t(text).toLowerCase().includes(needle));
+  const groupHidden = (groupId: string) => Boolean(needle) && !managerBuiltinCards(groupId, enhancementPlatform).some(cardMatches);
+  const noMatches = Boolean(needle) && [...managerBuiltinGroups(), managerStandaloneGroup()].every((group) => groupHidden(group.id));
   // 开关的标题、说明、分组都来自设置项清单；这里只保留一处定制：
   // Windows 原生浏览器兼容开启前要确认，并在开关后面跟一块补丁状态。
   const renderSetting = (item: EnhancementSettingItem) => {
@@ -8805,12 +8782,12 @@ function EnhanceScreen({
     return <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />;
   };
   const builtinStates = new Map(builtins.map((builtin) => [builtin.id, builtin]));
-  // 有单独配置页的内置拓展：卡片上给「设置」入口。
+  // 有单独配置页的内置拓展：行上给「设置」入口。
   const openBuiltinSettings = (target: BuiltinSettingsTarget) => {
     if (target.tab) onTabChange(target.tab);
     else if (target.route) onNavigate(target.route);
   };
-  const renderBuiltin = (card: BuiltinExtensionCard) => (
+  const renderBuiltin = (card: BuiltinExtensionCard) => (cardMatches(card) ? (
     <BuiltinExtensionCardView
       key={card.id}
       card={card}
@@ -8822,7 +8799,7 @@ function EnhanceScreen({
       onOpenSettings={openBuiltinSettings}
       actions={actions}
     />
-  );
+  ) : null);
   const tabs: Array<{ value: EnhancementTab; label: string }> = [
     { value: "general", label: t("内置拓展") },
     { value: "dictation", label: t("语音输入") },
@@ -8832,8 +8809,7 @@ function EnhanceScreen({
     onTabChange(tab);
     document.getElementById("enhance-page-controls")?.scrollIntoView({ block: "start" });
   };
-  // 「常用增强」页里的分组，显示在左侧目录的页签下面，点了滚到对应分组。
-  // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定。
+  // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定（深链滚到这里）。
   const generalSections = [...managerBuiltinGroups(), managerStandaloneGroup()]
     .map((group) => ({ id: enhancementGroupAnchorId(group), label: t(group.title) }));
   return (
@@ -8869,44 +8845,68 @@ function EnhanceScreen({
           ))}
         </div>
       </PageSectionNav>
-      <div className="sectioned-body">
-      {/* 总开关一条细横幅，开关紧挨着说明；保存状态在横幅右侧。 */}
-      <div className="enhance-master-bar" id="enhance-page-controls">
-        <label className="enhance-master-switch">
+      <div className="sectioned-body cx-enhance-body">
+      {restartPending.length ? (
+        <CxBanner
+          detail={restartPending.map((item) => t(item.title).replace(EXPERIMENTAL_TITLE, "")).join("、")}
+          icon={<RotateCcw />}
+          title={tf("{0} 项改动重启 Codex 后生效", [restartPending.length])}
+          tone="warn"
+        >
+          <button className="cx-secondary" onClick={clearRestartPending} type="button">{t("稍后")}</button>
+          <button
+            className="cx-primary"
+            disabled={restartBusy}
+            onClick={() => void (async () => {
+              setRestartBusy(true);
+              try {
+                if (await actions.restart()) clearRestartPending();
+              } finally {
+                setRestartBusy(false);
+              }
+            })()}
+            type="button"
+          >
+            {restartBusy ? <Loader2 className="cx-dash-spin" /> : <RotateCcw />}
+            {t("重启 Codex")}
+          </button>
+        </CxBanner>
+      ) : null}
+      {/* 总开关一行：开关在右，保存状态跟在说明后面。 */}
+      <CxCard className="cx-enhance-master">
+        <label className="feature-toggle enhance-master-switch" id="enhance-page-controls">
           <input
             checked={form.enhancementsEnabled}
             onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
             type="checkbox"
           />
-          <ToggleVisual />
           <span>
             <strong>{t(masterItem.title)}</strong>
-            <small>{t(masterItem.description)}</small>
+            <small title={t(masterItem.description)}>{t(masterItem.description)}</small>
           </span>
+          <span className="enhance-save-actions cx-enhance-save">
+            <AutoSaveStatus state={autoSave} />
+          </span>
+          <ToggleVisual />
         </label>
-        <div className="enhance-save-actions">
-          <AutoSaveStatus state={autoSave} />
-        </div>
-      </div>
-      <div className="enhance-tab-panel" id="enhance-pane-general" role="tabpanel" aria-labelledby="enhance-tab-general" hidden={activeTab !== "general"}>
-        <Panel className="enhance-panel">
-          <CardContent className="enhance-content">
-            <div className="enhance-feature-groups">
-              {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
-              {masterEnabled ? null : <StandaloneModeGroup renderBuiltin={renderBuiltin} />}
-              {managerBuiltinGroups().map((group) => (
-                <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
-                  {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
-                </FeatureGroup>
-              ))}
-              {masterEnabled ? <StandaloneModeGroup renderBuiltin={renderBuiltin} /> : null}
-            </div>
-            <div className="hint-line enhance-footer-hint">
-              <Info className="h-4 w-4" />
-              <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。")}</span>
-            </div>
-          </CardContent>
-        </Panel>
+      </CxCard>
+      <div className="enhance-tab-panel cx-enhance-pane" id="enhance-pane-general" role="tabpanel" aria-labelledby="enhance-tab-general" hidden={activeTab !== "general"}>
+        <CxToolbar onQuery={setQuery} placeholder={t("搜索增强功能")} query={query} />
+        {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
+        {masterEnabled ? null : <StandaloneModeGroup hidden={groupHidden(managerStandaloneGroup().id)} renderBuiltin={renderBuiltin} />}
+        {managerBuiltinGroups().map((group) => (
+          <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")} hidden={groupHidden(group.id)}>
+            {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
+          </FeatureGroup>
+        ))}
+        {masterEnabled ? <StandaloneModeGroup hidden={groupHidden(managerStandaloneGroup().id)} renderBuiltin={renderBuiltin} /> : null}
+        {noMatches ? (
+          <CxCard>
+            <CxEmpty title={t("没有匹配的增强功能")}>
+              <button className="cx-secondary" onClick={() => setQuery("")} type="button">{t("清除搜索")}</button>
+            </CxEmpty>
+          </CxCard>
+        ) : null}
       </div>
       <div className="enhance-tab-panel" id="enhance-pane-dictation" role="tabpanel" aria-labelledby="enhance-tab-dictation" hidden={activeTab !== "dictation"}>
         <DictationSettingsPanel form={form} onFormChange={onFormChange} />
@@ -8921,10 +8921,10 @@ function EnhanceScreen({
 
 // 总开关关闭后仍生效的独立补丁。卡片照常经 EnhancementSettingControl 渲染，清单里 masterGated: false，
 // 不随总开关禁用；位置在「内置拓展」标签内，关闭总开关时提到最前面。
-function StandaloneModeGroup({ renderBuiltin }: { renderBuiltin: (card: BuiltinExtensionCard) => ReactNode }) {
+function StandaloneModeGroup({ renderBuiltin, hidden = false }: { renderBuiltin: (card: BuiltinExtensionCard) => ReactNode; hidden?: boolean }) {
   const group = managerStandaloneGroup();
   return (
-    <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
+    <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")} hidden={hidden}>
       {managerBuiltinCards(group.id, enhancementPlatform).map(renderBuiltin)}
     </FeatureGroup>
   );
@@ -9248,220 +9248,192 @@ function DreamSkinScreen({
   const runtimeChecks = status?.checks ?? [];
   const verificationChecks = verification?.checks ?? [];
 
+  const { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxStatusIcon, CxToolbar } = AgentCx;
+  const stateDot = stateTone === "pass" ? "ok" : stateTone === "fail" ? "danger" : stateTone === "warning" ? "warn" : "off";
+  const draftStateLabel = dirty ? t("有未保存修改") : savedThemeSelected ? t("已保存主题") : draft?.builtin ? t("内置主题") : t("当前未保存主题");
+  const viewTab = (view: "local" | "community" | "market", icon: ReactNode, label: string, count: ReactNode) => (
+    <button
+      aria-selected={themeView === view}
+      className={themeView === view ? "is-active" : ""}
+      data-active={themeView === view}
+      onClick={() => setThemeView(view)}
+      role="tab"
+      type="button"
+    >
+      {icon}
+      {label}
+      {count}
+    </button>
+  );
+
   return (
-    <div className="dream-skin-page">
-      <Panel className="dream-skin-panel dream-skin-overview">
-        <CardContent className="dream-skin-overview-content">
-          <div className="dream-skin-overview-heading">
-            <div className="dream-skin-current-copy">
-              <small>{currentThemeLabel}</small>
-              <strong title={currentThemeName}>{currentThemeName}</strong>
-              <span className={`dream-skin-status-pill is-${stateTone}`} role="status">{stateLabel}</span>
-            </div>
-            <div className="dream-skin-overview-controls">
-            <label className="switch-row compact dream-skin-enable-switch">
-              <input
-                checked={form.codexAppDreamSkinEnabled}
-                disabled={!masterEnabled}
-                onChange={(event) => onFormChange({
-                  ...form,
-                  codexAppDreamSkinEnabled: event.currentTarget.checked,
-                  codexAppDreamSkinPaused: false,
-                })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("启用 Codex 皮肤")}</strong>
-              </span>
-              <ToggleVisual />
-            </label>
-              <Button aria-label={t("刷新状态")} onClick={() => void actions.refreshDreamSkinStatus()} size="icon" title={t("刷新状态")} type="button" variant="ghost">
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="dream-skin-selected-summary">
-            <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
-            <div className="dream-skin-selected-copy">
-              <small>{t("正在编辑")}</small>
-              <strong title={theme.name}>{theme.name || t("未命名主题")}</strong>
-              <span className={dirty ? "is-dirty" : ""}>{dirty ? t("有未保存修改") : savedThemeSelected ? t("已保存主题") : draft?.builtin ? t("内置主题") : t("当前未保存主题")}</span>
-            </div>
-            <div className="dream-skin-selection-actions">
-              <Button disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()} type="button" variant="secondary">
-                <Save className="h-4 w-4" />
-                {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
-              </Button>
-              <Button disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
-                <Play className="h-4 w-4" />
-                {pendingRestart ? t("更新待应用") : t("应用所选主题")}
-              </Button>
-              <Button onClick={() => void actions.restoreDreamSkin()} type="button" variant="outline">
-                <RotateCcw className="h-4 w-4" />
-                {t("恢复 Codex 外观")}
-              </Button>
-            </div>
-          </div>
-          {!masterEnabled ? (
-            <div className="hint-line"><Info className="h-4 w-4" /><span>{t("请先在 Codex增强 页面开启总开关。")}</span></div>
-          ) : null}
-          {pendingRestart ? (
-            <div className="dream-skin-pending-state" role="status">
-              <Rocket className="h-5 w-5" aria-hidden="true" />
-              <div>
-                <strong>{t("待应用主题")}：{pendingRestart.pendingThemeName}</strong>
-                <small>
-                  {currentThemeLabel}：{pendingRestart.currentThemeName}。{t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}
-                </small>
-              </div>
-              <Button disabled={launchPending} onClick={() => void actions.restart()}>
-                <Rocket className="h-4 w-4" />
-                {t("重启并应用")}
-              </Button>
-            </div>
-          ) : null}
-        </CardContent>
-      </Panel>
-      <Panel className="dream-skin-panel dream-skin-browser">
-        <CardContent>
-          <div className="dream-skin-browser-toolbar">
-            <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
-              <button
-                aria-selected={themeView === "local"}
-                className={themeView === "local" ? "is-active" : ""}
-                onClick={() => setThemeView("local")}
-                role="tab"
-                type="button"
-              >
-                <Palette className="h-4 w-4" />
-                {t("我的主题")}
-                <span className={libraryPending ? "is-loading" : ""} title={libraryPending ? t("加载中…") : undefined}>
-                  {libraryPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : libraryCount}
-                </span>
-              </button>
-              <button
-                aria-selected={themeView === "community"}
-                className={themeView === "community" ? "is-active" : ""}
-                onClick={() => setThemeView("community")}
-                role="tab"
-                type="button"
-              >
-                <Github className="h-4 w-4" />
-                {t("DreamSkin 社区")}
-                <span className={communityPending ? "is-loading" : ""} title={communityPending ? t("加载中…") : undefined}>
-                  {communityPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : communityCount}
-                </span>
-              </button>
-              <button
-                aria-selected={themeView === "market"}
-                className={themeView === "market" ? "is-active" : ""}
-                onClick={() => setThemeView("market")}
-                role="tab"
-                type="button"
-              >
-                <Store className="h-4 w-4" />
-                {t("主题市场")}
-                <span className={marketPending ? "is-loading" : ""} title={marketPending ? t("加载中…") : undefined}>
-                  {marketPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : marketCount}
-                </span>
-              </button>
-            </div>
-            {themeView === "local" ? (
-              <Toolbar>
-                <Button disabled={Boolean(installOperation)} variant="outline" onClick={() => void actions.importDreamSkinThemePackage()}>
-                  {installOperation?.source === "import"
-                    ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-                    : <PackageOpen className="h-4 w-4" />}
-                  {installOperation?.source === "import" ? t("导入中…") : t("导入主题包")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.createDreamSkinTheme()}>
-                  <ImagePlus className="h-4 w-4" />
-                  {t("从图片创建")}
-                </Button>
-              </Toolbar>
-            ) : null}
-          </div>
+    <div className="cx-page dream-skin-page">
+      {/* 顶部最多一条提示：总开关关闭 > 有待重启应用的主题。 */}
+      {!masterEnabled ? (
+        <CxBanner icon={<Info />} title={t("请先在 Codex增强 页面开启总开关。")} tone="warn" />
+      ) : pendingRestart ? (
+        <CxBanner
+          detail={`${currentThemeLabel}：${pendingRestart.currentThemeName}。${t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}`}
+          icon={<Rocket />}
+          title={`${t("待应用主题")}：${pendingRestart.pendingThemeName}`}
+          tone="warn"
+        >
+          <button className="cx-primary" disabled={launchPending} onClick={() => void actions.restart()} type="button">
+            <Rocket />
+            {t("重启并应用")}
+          </button>
+        </CxBanner>
+      ) : null}
 
-          {installOperation ? (
-            <DreamSkinInstallProgress label={dreamSkinInstallOperationLabel(installOperation)} />
-          ) : null}
-
-          {themeView === "community" ? (
-            <DreamSkinCommunitySection
-              community={community}
-              communityLoading={communityLoading}
-              installOperation={installOperation}
-              actions={actions}
-              onInstalled={() => setThemeView("local")}
+      {/* 启用开关 + 当前主题一张卡：第一行是皮肤开关与运行状态，第二行是正在编辑的主题和唯一的「应用」。 */}
+      <CxCard className="dream-skin-overview">
+        <CxRow
+          detail={<span role="status">{currentThemeLabel}：{currentThemeName} · {stateLabel}</span>}
+          icon={<CxStatusIcon tone={stateDot}><Palette /></CxStatusIcon>}
+          title={t("启用 Codex 皮肤")}
+        >
+          <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshDreamSkinStatus()} title={t("刷新状态")} type="button">
+            <RefreshCw />
+          </button>
+          <label className="switch-row compact dream-skin-enable-switch">
+            <input
+              aria-label={t("启用 Codex 皮肤")}
+              checked={form.codexAppDreamSkinEnabled}
+              disabled={!masterEnabled}
+              onChange={(event) => onFormChange({
+                ...form,
+                codexAppDreamSkinEnabled: event.currentTarget.checked,
+                codexAppDreamSkinPaused: false,
+              })}
+              type="checkbox"
             />
-          ) : themeView === "market" ? (
-            <section className="dream-skin-market">
-              <div className="dream-skin-library-head">
-                <div>
-                  <strong>{t("社区主题")}</strong>
-                  <small>
-                    {market?.updatedAt
-                      ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
-                      : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
-                  </small>
-                </div>
-                <Toolbar>
-                  <Button onClick={() => void actions.refreshDreamSkinMarket()} variant="secondary">
-                    <RefreshCw className="h-4 w-4" />
-                    {t("刷新市场")}
-                  </Button>
-                  <Button onClick={() => void actions.openExternalUrl(market?.repositoryUrl || "https://github.com/BigPizzaV3/CodexPlusPlus-Themes")} variant="outline">
-                    <Github className="h-4 w-4" />
-                    {t("投稿主题")}
-                  </Button>
-                </Toolbar>
-              </div>
-              {market?.cached || market?.warning ? (
-                <div className="dream-skin-market-warning">
-                  <Info className="h-4 w-4" />
-                  <span>{market.warning || t("远程仓库暂不可用，当前显示本地缓存。")}</span>
-                </div>
-              ) : null}
-              {market?.themes.length ? (
-                <div className="dream-skin-market-grid">
-                  {market.themes.map((item) => (
-                    <DreamSkinMarketCard
-                      actions={actions}
-                      installOperation={installOperation}
-                      key={item.id}
-                      onInstalled={() => setThemeView("local")}
-                      theme={item}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="empty">
-                  {market?.status === "failed" ? market.message : (
-                    <span className="dream-skin-loading" role="status">
-                      {marketPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
-                      {t("正在加载主题市场…")}
-                    </span>
-                  )}
-                </div>
-              )}
-            </section>
-          ) : (
-            <>
-          <section className="dream-skin-theme-library">
-            <div className="dream-skin-library-head">
-              <div>
-                <strong>{t("我的主题")}</strong>
-                <small>
-                  {pendingRestart
-                    ? t("选择其他卡片可继续调整待应用主题；当前界面不会自动重启。")
-                    : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
-                </small>
-              </div>
-              <div className="dream-skin-local-search">
-                <Search aria-hidden="true" className="h-4 w-4" />
-                <Input aria-label={t("搜索我的主题")} onChange={(event) => setLocalQuery(event.currentTarget.value)} placeholder={t("搜索主题名称")} type="search" value={localQuery} />
-              </div>
+            <ToggleVisual />
+          </label>
+        </CxRow>
+        <CxRow
+          badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
+          className="dream-skin-selected-row"
+          detail={t("正在编辑")}
+          icon={<img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} />}
+          title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
+        >
+          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
+            <Play />
+            {pendingRestart ? t("更新待应用") : t("应用所选主题")}
+          </button>
+          <Menu>
+            <MenuItem disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
+              {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
+            </MenuItem>
+            <MenuItem onClick={() => void actions.restoreDreamSkin()}>{t("恢复 Codex 外观")}</MenuItem>
+          </Menu>
+        </CxRow>
+      </CxCard>
+
+      {/* 主题库：三个胶囊切换「我的 / 社区 / 市场」，右侧是当前视图的操作。 */}
+      <div className="cx-filters dream-skin-browser-toolbar">
+        <nav aria-label={t("主题视图")} className="tp-tabs cx-pills dream-skin-view-tabs" role="tablist">
+          {viewTab("local", <Palette className="h-4 w-4" />, t("我的主题"), (
+            <span className={libraryPending ? "is-loading" : "cx-pill-count"} title={libraryPending ? t("加载中…") : undefined}>
+              {libraryPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : libraryCount}
+            </span>
+          ))}
+          {viewTab("community", <Github className="h-4 w-4" />, t("DreamSkin 社区"), (
+            <span className={communityPending ? "is-loading" : "cx-pill-count"} title={communityPending ? t("加载中…") : undefined}>
+              {communityPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : communityCount}
+            </span>
+          ))}
+          {viewTab("market", <Store className="h-4 w-4" />, t("主题市场"), (
+            <span className={marketPending ? "is-loading" : "cx-pill-count"} title={marketPending ? t("加载中…") : undefined}>
+              {marketPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : marketCount}
+            </span>
+          ))}
+        </nav>
+        {themeView === "market" ? (
+          <div className="cx-filters-trailing">
+            <button className="cx-secondary" onClick={() => void actions.refreshDreamSkinMarket()} type="button">
+              <RefreshCw />
+              {t("刷新市场")}
+            </button>
+            <button className="cx-secondary" onClick={() => void actions.openExternalUrl(market?.repositoryUrl || "https://github.com/BigPizzaV3/CodexPlusPlus-Themes")} type="button">
+              <Github />
+              {t("投稿主题")}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {themeView === "local" ? (
+        <CxToolbar onQuery={setLocalQuery} placeholder={t("搜索主题名称")} query={localQuery}>
+          <button className="cx-secondary dream-skin-toolbar-button" disabled={Boolean(installOperation)} onClick={() => void actions.importDreamSkinThemePackage()} type="button">
+            {installOperation?.source === "import"
+              ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+              : <PackageOpen className="h-4 w-4" />}
+            {installOperation?.source === "import" ? t("导入中…") : t("导入主题包")}
+          </button>
+          <button className="cx-primary" onClick={() => void actions.createDreamSkinTheme()} type="button">
+            <ImagePlus className="h-4 w-4" />
+            {t("从图片创建")}
+          </button>
+        </CxToolbar>
+      ) : null}
+
+      {installOperation ? (
+        <DreamSkinInstallProgress label={dreamSkinInstallOperationLabel(installOperation)} />
+      ) : null}
+
+      {themeView === "community" ? (
+        <DreamSkinCommunitySection
+          community={community}
+          communityLoading={communityLoading}
+          installOperation={installOperation}
+          actions={actions}
+          onInstalled={() => setThemeView("local")}
+        />
+      ) : themeView === "market" ? (
+        <section className="dream-skin-market">
+          <p className="dream-skin-market-meta">
+            {market?.updatedAt
+              ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
+              : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
+          </p>
+          {market?.cached || market?.warning ? (
+            <div className="dream-skin-market-warning">
+              <Info className="h-4 w-4" />
+              <span>{market.warning || t("远程仓库暂不可用，当前显示本地缓存。")}</span>
             </div>
+          ) : null}
+          {market?.themes.length ? (
+            <div className="dream-skin-market-grid">
+              {market.themes.map((item) => (
+                <DreamSkinMarketCard
+                  actions={actions}
+                  installOperation={installOperation}
+                  key={item.id}
+                  onInstalled={() => setThemeView("local")}
+                  theme={item}
+                />
+              ))}
+            </div>
+          ) : (
+            <CxCard>
+              <CxEmpty title={market?.status === "failed" ? market.message : (
+                <span className="dream-skin-loading" role="status">
+                  {marketPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
+                  {t("正在加载主题市场…")}
+                </span>
+              )} />
+            </CxCard>
+          )}
+        </section>
+      ) : (
+        <>
+          <section
+            className="dream-skin-theme-library"
+            title={pendingRestart
+              ? t("选择其他卡片可继续调整待应用主题；当前界面不会自动重启。")
+              : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
+          >
             <div className="dream-skin-theme-list">
               {localThemes.map((item) => {
                 const cardPreview = item.previewPath
@@ -9526,19 +9498,21 @@ function DreamSkinScreen({
               })}
             </div>
             {!library ? (
-              <p className="empty">
-                <span className="dream-skin-loading" role="status">
-                  <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-                  {t("正在加载主题库…")}
-                </span>
-              </p>
+              <CxCard>
+                <CxEmpty title={(
+                  <span className="dream-skin-loading" role="status">
+                    <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                    {t("正在加载主题库…")}
+                  </span>
+                )} />
+              </CxCard>
             ) : null}
             {library && !localThemes.length ? (
-              <div className="dream-skin-local-empty">
-                <Search aria-hidden="true" className="h-5 w-5" />
-                <strong>{t("没有匹配的主题")}</strong>
-                <Button onClick={() => setLocalQuery("")} type="button" variant="outline">{t("清除搜索")}</Button>
-              </div>
+              <CxCard>
+                <CxEmpty title={t("没有匹配的主题")}>
+                  <button className="cx-secondary" onClick={() => setLocalQuery("")} type="button">{t("清除搜索")}</button>
+                </CxEmpty>
+              </CxCard>
             ) : null}
           </section>
 
@@ -9551,16 +9525,9 @@ function DreamSkinScreen({
                   <small>{t("图片、文字和配色等高级编辑项")}</small>
                 </span>
               </span>
-              <em className={dirty ? "is-dirty" : ""}>{dirty ? t("有未保存修改") : t("按需展开")}</em>
-            </summary>
+              {dirty ? <em className="is-dirty">{t("有未保存修改")}</em> : null}
+                </summary>
             <div className="dream-skin-customizer-content">
-              <div className="dream-skin-customizer-actions">
-                <Button variant="secondary" onClick={() => void actions.createDreamSkinTheme()}>
-                  <ImagePlus className="h-4 w-4" />
-                  {t("从图片创建")}
-                </Button>
-              </div>
-
               <div className="dream-skin-platform-note">
                 <Info className="h-4 w-4" />
                 <span>
@@ -9791,12 +9758,19 @@ function DreamSkinScreen({
               </div>
             </div>
           </details>
-            </>
-          )}
-        </CardContent>
-      </Panel>
-      <RelayFold className="dream-skin-panel dream-skin-diagnostics-fold" title={t("诊断与验证")}>
-        <p className="relay-fold-description">{t("配置保存在 Codex++，实时操作通过本机回环 CDP 执行")}。{t("检查官方应用身份、CDP renderer、目标样式和页面布局")}</p>
+        </>
+      )}
+      <details className="dream-skin-diagnostics-fold">
+        <summary>
+          <span className="dream-skin-customizer-title">
+            <ShieldCheck className="h-4 w-4" />
+            <span>
+              <strong>{t("诊断与验证")}</strong>
+              <small>{t("检查官方应用身份、CDP renderer、目标样式和页面布局")}</small>
+            </span>
+          </span>
+        </summary>
+        <div className="dream-skin-customizer-content">
           <div className="dream-skin-diagnostics-grid">
             <DreamSkinCheckList title={t("运行诊断")} checks={runtimeChecks} emptyText={t("刷新状态后显示运行诊断。")}/>
             <DreamSkinCheckList title={t("最近实机验证")} checks={verificationChecks} emptyText={t("运行实机验证后显示页面检查结果。")}/>
@@ -9807,28 +9781,25 @@ function DreamSkinScreen({
               <span><small>{t("截图路径")}</small><code>{verification.screenshotPath || t("未保存截图")}</code></span>
             </div>
           ) : null}
-          <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.refreshDreamSkinStatus()}>
-              <RefreshCw className="h-4 w-4" />
+          <div className="dream-skin-fold-actions">
+            <button className="cx-secondary" onClick={() => void actions.refreshDreamSkinStatus()} type="button">
+              <RefreshCw />
               {t("刷新诊断")}
-            </Button>
-            <Button onClick={() => void actions.verifyDreamSkin()}>
-              <ShieldCheck className="h-4 w-4" />
-              {t("实机验证")}
-            </Button>
-            <Button variant="outline" onClick={() => void actions.saveDreamSkinScreenshot()}>
-              <Camera className="h-4 w-4" />
+            </button>
+            <button className="cx-secondary" onClick={() => void actions.saveDreamSkinScreenshot()} type="button">
+              <Camera />
               {t("保存截图")}
-            </Button>
-          </Toolbar>
-      </RelayFold>
-      <details className="dream-skin-about">
-        <summary><ChevronDown aria-hidden="true" className="dream-skin-about-chevron h-4 w-4" /><strong>{t("来源与授权说明")}</strong></summary>
-        <div>
-          <p>{t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}</p>
-          <p>{t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}</p>
+            </button>
+            <button className="cx-primary" onClick={() => void actions.verifyDreamSkin()} type="button">
+              <ShieldCheck />
+              {t("实机验证")}
+            </button>
+          </div>
         </div>
       </details>
+      <p className="dream-skin-about" title={t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}>
+        {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
+      </p>
     </div>
   );
 }
@@ -9955,56 +9926,42 @@ function DreamSkinCommunitySection({
     });
   }, [community?.items, query, sort]);
 
+  const { CxCard, CxEmpty, CxToolbar } = AgentCx;
   return (
-    <section className="dream-skin-community">
-      <div className="dream-skin-library-head">
-        <div>
-          <strong>{t("DreamSkin 社区主题")}</strong>
-          <small>
-            {community?.total
-              ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
-              : t("从 DreamSkin.cc 加载已审核主题包。")}
-          </small>
-        </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshDreamSkinCommunity()} variant="secondary">
-            <RefreshCw className="h-4 w-4" />
-            {t("刷新社区")}
-          </Button>
-          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")} variant="outline">
-            <ExternalLink className="h-4 w-4" />
-            {t("在线主题库")}
-          </Button>
-          <Button onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")} variant="outline">
-            <Palette className="h-4 w-4" />
-            {t("在线 Studio")}
-          </Button>
-        </Toolbar>
-      </div>
-      {community?.warning ? (
-        <div className="dream-skin-market-warning">
-          <Info className="h-4 w-4" />
-          <span>{community.warning}</span>
-        </div>
-      ) : null}
-      <div className="dream-skin-community-controls">
-        <Input
-          aria-label={t("搜索社区主题")}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-          placeholder={t("搜索主题名称、作者或许可证")}
-          value={query}
-        />
+    <section
+      className="dream-skin-community"
+      title={community?.total
+        ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
+        : t("从 DreamSkin.cc 加载已审核主题包。")}
+    >
+      {/* 一条工具条：搜索 + 排序 + 刷新；两个外部链接收进三点菜单。 */}
+      <CxToolbar onQuery={setQuery} placeholder={t("搜索主题名称、作者或许可证")} query={query}>
         <AppSelect
+          ariaLabel={t("社区主题排序")}
           onChange={(value) => setSort(value as typeof sort)}
           options={[
             { value: "latest", label: t("最新审核") },
             { value: "popular", label: t("下载最多") },
             { value: "name", label: t("名称排序") },
           ]}
+          size="sm"
           title={t("社区主题排序")}
           value={sort}
         />
-      </div>
+        <button aria-label={t("刷新社区")} className="cx-icon-button" onClick={() => void actions.refreshDreamSkinCommunity()} title={t("刷新社区")} type="button">
+          <RefreshCw />
+        </button>
+        <Menu>
+          <MenuItem onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")}>{t("在线主题库")}</MenuItem>
+          <MenuItem onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")}>{t("在线 Studio")}</MenuItem>
+        </Menu>
+      </CxToolbar>
+      {community?.warning ? (
+        <div className="dream-skin-market-warning">
+          <Info className="h-4 w-4" />
+          <span>{community.warning}</span>
+        </div>
+      ) : null}
       {items.length ? (
         <div className="dream-skin-community-grid">
           {items.map((item) => (
@@ -10018,8 +9975,8 @@ function DreamSkinCommunitySection({
           ))}
         </div>
       ) : (
-        <div className="empty">
-          {!community || communityLoading ? (
+        <CxCard>
+          <CxEmpty title={!community || communityLoading ? (
             <span className="dream-skin-loading" role="status">
               <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
               {t("正在加载 DreamSkin 社区…")}
@@ -10029,7 +9986,10 @@ function DreamSkinCommunitySection({
             : query.trim()
               ? t("没有匹配的社区主题。")
               : t("DreamSkin 社区暂时没有可用主题。")}
-        </div>
+          >
+            {query.trim() ? <button className="cx-secondary" onClick={() => setQuery("")} type="button">{t("清除搜索")}</button> : null}
+          </CxEmpty>
+        </CxCard>
       )}
     </section>
   );
@@ -15124,15 +15084,14 @@ function PageSectionNav({ label, sections, children }: { label: string; sections
   );
 }
 
-function FeatureGroup({ title, detail, children, id }: { title: string; detail: string; children: ReactNode; id?: string }) {
+// 增强页的一组开关：卡片外的小标题（分组说明收进悬停）+ 一张卡，卡里一行一项。
+function FeatureGroup({ title, detail, children, id, hidden = false }: { title: string; detail: string; children: ReactNode; id?: string; hidden?: boolean }) {
+  const { CxCard, CxSection } = AgentCx;
+  if (hidden) return null;
   return (
-    <section className="feature-group" id={id}>
-      <div className="feature-group-head">
-        <strong>{title}</strong>
-        <small>{detail}</small>
-      </div>
-      <div className="feature-switch-grid">{children}</div>
-    </section>
+    <CxSection className="cx-feature-group" id={id} title={<span title={detail || undefined}>{title}</span>}>
+      <CxCard className="cx-feature-card">{children}</CxCard>
+    </CxSection>
   );
 }
 
@@ -15149,6 +15108,7 @@ function FeatureToggle({
   disabled?: boolean;
   onChange: (value: boolean) => void;
 }) {
+  const { CxBadge } = AgentCx;
   // 「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
   const experimental = EXPERIMENTAL_TITLE.test(title);
   const needsRestart = RESTART_HINT.test(detail);
@@ -15163,10 +15123,10 @@ function FeatureToggle({
       <span>
         <strong>
           {experimental ? title.replace(EXPERIMENTAL_TITLE, "") : title}
-          {experimental ? <em className="feature-tag" data-tone="experimental">{t("实验")}</em> : null}
-          {needsRestart ? <em className="feature-tag">{t("需重启")}</em> : null}
+          {experimental ? <CxBadge tone="warn">{t("实验")}</CxBadge> : null}
+          {needsRestart ? <CxBadge>{t("需重启")}</CxBadge> : null}
         </strong>
-        <small>{detail}</small>
+        <small title={detail}>{detail}</small>
       </span>
       <ToggleVisual />
     </label>
@@ -15790,7 +15750,7 @@ function ClaudeLocalizationScreen() {
       .catch(() => undefined);
   }, []);
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
-    if (pending.current) return;
+    if (pending.current) return false;
     pending.current = true;
     statusGeneration.current++;
     setBusy(action); setError(null);
@@ -15809,18 +15769,21 @@ function ClaudeLocalizationScreen() {
       } : current);
     }
     if (action === "prepare") setProgress({ percent: 0, message: t("准备开始…") });
+    let succeeded = false;
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
       if (launching && result.status !== "ok") clearLaunchNotice();
       accept(result);
+      succeeded = result.status === "ok";
     } catch (cause) { if (mounted.current) { if (launching) clearLaunchNotice(); setError(stringifyError(cause)); } }
     finally {
       pending.current = false;
       if (mounted.current) setBusy(null);
       if (action === "prepare") setTimeout(() => { if (mounted.current) setProgress(null); }, 1500);
     }
+    return succeeded;
   };
   const toggleVoiceInput = async (enabled: boolean) => {
     if (pending.current) return;
@@ -15945,294 +15908,283 @@ function ClaudeLocalizationScreen() {
     timer = setTimeout(() => void poll(), 1000);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [s?.bashTimeoutPending, s?.running, busy]);
-  const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
+  // 原来是「制作 → 启动 → 开增强」三步：现在右上角一个「启动增强版」，没制作或需要更新时先自动制作再启动。
+  const needsPrepare = Boolean(s && (!s.prepared || s.needsRebuild));
+  const canLaunch = Boolean(s?.supported && s.nodeAvailable && (s.prepared || needsPrepare));
+  const launchEnhanced = async () => {
+    if (needsPrepare && !(await act("prepare"))) return;
+    await act("launch");
+  };
+  const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
+  const meta = [
+    `${t("官方版本")} ${!s ? t("未检测") : s.sourceVersion || t("未检测到")}`,
+    `${t("副本版本")} ${s?.copyVersion || t("未准备")}`,
+    `${t("外壳语言")} ${s?.shellLocale || t("未设置")}`,
+    `${t("官方词条")} ${s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}`,
+  ].join(" · ");
+  const prepareLabel = busy === "prepare"
+    ? t("制作中…")
+    : s?.needsRebuild
+      ? t("更新副本")
+      : s?.prepared
+        ? t("重新制作增强版")
+        : t("制作增强版");
+  const prepareHint = t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。");
   return (
-    <div className="claude-localization-page">
+    <div className="claude-localization-page cx-page">
       {topbarSlot
         ? createPortal(
-            <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")} title={t("启动增强版")}>
+            <Button
+              disabled={busy !== null || !canLaunch}
+              onClick={() => void launchEnhanced()}
+              title={needsPrepare ? t("先制作增强版副本，完成后自动启动") : t("启动增强版")}
+            >
               <Rocket className="h-4 w-4" />
-              {busy === "launch" ? t("启动中…") : t("启动增强版")}
+              {busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动增强版")}
             </Button>,
             topbarSlot,
           )
         : null}
-      {/* 顶部通栏：所有增强共同的前置条件。状态和操作放在第一屏，不用滚动就能点到。 */}
-      <Panel className="claude-l10n-hero">
-        <CardContent className="claude-l10n-hero-body">
-          <div className="claude-l10n-hero-head">
-            <div className="claude-l10n-hero-title">
-              <span className="claude-l10n-hero-icon"><PackageOpen className="h-5 w-5" /></span>
-              <div>
-                <strong>{t("受管增强版")}</strong>
-                <span className="claude-l10n-hero-subtitle">{t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}</span>
-              </div>
-            </div>
-            <span className={`claude-l10n-status claude-l10n-status-${statusTone}`}>
-              <i aria-hidden="true" />
-              {statusText}
-            </span>
+      {/* 顶部最多几条一次性的提示：检测中 / 未安装、错误、Bash 时限确认、制作进度。 */}
+      {!s ? (
+        <p className="claude-l10n-hint">
+          {busy === "detect"
+            ? t("正在读取 Claude 安装状态，只读检测，不会修改应用。")
+            : t("没有读到安装状态，点击“检测 Claude”重试；检测不会修改应用。")}
+        </p>
+      ) : null}
+      {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
+      {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
+        <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
+      ) : null}
+      {progress ? (
+        <div
+          aria-valuemax={100}
+          aria-valuemin={0}
+          aria-valuenow={progress.percent}
+          className="claude-l10n-progress"
+          role="progressbar"
+        >
+          <div className="claude-l10n-progress-head">
+            <span>{progress.message || t("处理中…")}</span>
+            <span className="claude-l10n-progress-pct">{progress.percent}%</span>
           </div>
-          {/* 三步进度：原来右栏的「上手步骤」收成一排，完成的步骤打勾。 */}
-          <ol className="claude-l10n-progress-steps">
-            <li data-done={s?.prepared ? "true" : "false"}>
-              <span aria-hidden="true">{s?.prepared ? "✓" : "1"}</span>
-              <div><strong>{t("制作增强版")}</strong><small>{t("官方 Claude.app 与 app.asar 保持原样")}</small></div>
-            </li>
-            <li data-done={s?.running ? "true" : "false"}>
-              <span aria-hidden="true">{s?.running ? "✓" : "2"}</span>
-              <div><strong>{t("启动增强版")}</strong><small>{t("右上角启动，增强在启动时注入")}</small></div>
-            </li>
-            <li data-done="false">
-              <span aria-hidden="true">3</span>
-              <div><strong>{t("开启需要的增强")}</strong><small>{t("下方各项独立开关，重启副本后应用")}</small></div>
-            </li>
-          </ol>
-          {/* 版本与词表信息只作参考，收成一行小字。 */}
-          <dl className="claude-l10n-meta">
-            <div><dt>{t("官方版本")}</dt><dd title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</dd></div>
-            <div><dt>{t("副本版本")}</dt><dd title={s?.copyVersion || undefined}>{s?.copyVersion || t("未准备")}</dd></div>
-            <div><dt>{t("外壳语言")}</dt><dd>{s?.shellLocale || t("未设置")}</dd></div>
-            <div><dt>{t("官方词条")}</dt><dd>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}</dd></div>
-          </dl>
-          {s?.supported && !s.prepared ? (
-            <p className="claude-l10n-hint">
-              <Info className="h-4 w-4" />
-              {t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}
-            </p>
-          ) : null}
-          {!s ? (
-            <p className="claude-l10n-hint">
-              {busy === "detect"
-                ? t("正在读取 Claude 安装状态，只读检测，不会修改应用。")
-                : t("没有读到安装状态，点击“检测 Claude”重试；检测不会修改应用。")}
-            </p>
-          ) : !s.supported ? (
-            <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
-          ) : null}
-          {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
-          {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
-            <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
-          ) : null}
-          {progress ? (
+          <div className="claude-l10n-progress-track">
             <div
-              aria-valuemax={100}
-              aria-valuemin={0}
-              aria-valuenow={progress.percent}
-              className="claude-l10n-progress"
-              role="progressbar"
-            >
-              <div className="claude-l10n-progress-head">
-                <span>{progress.message || t("处理中…")}</span>
-                <span className="claude-l10n-progress-pct">{progress.percent}%</span>
-              </div>
-              <div className="claude-l10n-progress-track">
-                <div
-                  className="claude-l10n-progress-fill"
-                  style={{ width: `${Math.min(100, Math.max(2, progress.percent))}%` }}
+              className="claude-l10n-progress-fill"
+              style={{ width: `${Math.min(100, Math.max(2, progress.percent))}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {/* 增强版状态一行：版本与词表收成一行小字；制作 / 检测 / 检查在右侧，启动在页头右上角。 */}
+      <CxCard className="claude-l10n-hero">
+        <CxRow
+          badges={<CxBadge tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "neutral"}>{statusText}</CxBadge>}
+          detail={<span title={t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}>{s && !s.supported
+            ? t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")
+            : s?.supported && !s.prepared ? t("首次启动会先制作独立副本，官方应用不改动") : meta}</span>}
+          icon={<CxStatusIcon tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "off"}><PackageOpen /></CxStatusIcon>}
+          title={t("受管增强版")}
+        >
+          <div className="claude-l10n-actions">
+            {needsPrepare || !s ? (
+              <button className="cx-secondary" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={prepareHint} type="button">
+                <PackageOpen />
+                {prepareLabel}
+              </button>
+            ) : (
+              <button aria-label={prepareLabel} className="cx-icon-button" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={`${prepareLabel}：${prepareHint}`} type="button">
+                <PackageOpen />
+                <span className="sr-only">{prepareLabel}</span>
+              </button>
+            )}
+            <button className="cx-icon-button" disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} title={t("检查增强版")} type="button">
+              <ShieldCheck />
+              <span className="sr-only">{t("检查增强版")}</span>
+            </button>
+            <button className="cx-icon-button" disabled={busy !== null} onClick={() => void refresh()} title={t("检测 Claude")} type="button">
+              <RefreshCw className={busy === "detect" ? "animate-spin" : ""} />
+              <span className="sr-only">{busy === "detect" ? t("检测中…") : t("检测 Claude")}</span>
+            </button>
+          </div>
+        </CxRow>
+      </CxCard>
+
+      {/* 增强开关一节：每项一行，各自独立、即点即存，重启增强版后应用。 */}
+      <CxSection
+        aside={s?.supported && !s.prepared ? (
+          <span className="claude-l10n-section-note">{t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}</span>
+        ) : (
+          <span className="claude-l10n-section-note" title={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}>{t("重启增强版后应用")}</span>
+        )}
+        className="claude-l10n-features"
+        title={t("增强功能")}
+      >
+        <CxCard className="claude-l10n-feature-grid">
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.localization)}
+              disabled={busy !== null || !s?.supported}
+              onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("界面汉化")}</strong>
+              <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.voiceInput)}
+              disabled={busy !== null || !s?.supported}
+              onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("语音输入")}</strong>
+              <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          <label className="switch-row compact">
+            <input
+              checked={Boolean(s?.computerUse)}
+              disabled={busy !== null || !s?.supported || s?.computerUseSupported === false}
+              onChange={(event) => void toggleComputerUse(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("Computer Use")}</strong>
+              <small title={s?.computerUseSupported === false
+                ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}
+              >{s?.computerUseSupported === false
+                ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          {s?.computerUseSupported !== false ? (
+            s?.computerUse && claudeDesktopCuConnected ? (
+              <p className="claude-l10n-hint is-warning" role="alert">
+                {t("Claude Desktop 同时接入了「Computer Use」页的 codex-plus-cu：同一个对话里会有两套电脑控制，Claude 可能混着调用、互相抢前台，同一个应用也要确认两次。建议二选一：保留这里的开关，就到「Computer Use」页撤销 Claude Desktop 的接入；或者关掉这里的开关。")}
+              </p>
+            ) : (
+              <p className="claude-l10n-hint">
+                {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
+              </p>
+            )
+          ) : null}
+          <label className="switch-row compact claude-bash-timeout-master">
+            <input
+              aria-label={t("解锁 Bash 时间限制")}
+              checked={Boolean(bashTimeout?.enabled)}
+              disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
+              onChange={(event) => {
+                if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
+              }}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("解锁 Bash 时间限制")}</strong>
+              <small title={t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
+          {bashTimeout?.enabled ? (
+            <div className="claude-bash-timeout-editor">
+              <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
+              <label className="switch-row compact claude-bash-timeout-toggle">
+                <input
+                  aria-label={t("修改默认等待时间")}
+                  checked={bashTimeout.defaultEnabled}
+                  disabled={busy !== null && busy !== "bashTimeout"}
+                  onChange={(event) => void saveBashTimeout({
+                    ...bashTimeout,
+                    defaultEnabled: event.currentTarget.checked,
+                  })}
+                  type="checkbox"
                 />
+                <span>
+                  <strong>{t("修改默认等待时间")}</strong>
+                  <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <div className="claude-bash-timeout-value">
+                <span>{t("默认等待时间")}</span>
+                <Input
+                  aria-label={t("默认等待时间（秒）")}
+                  disabled={busy !== null || !bashTimeout.defaultEnabled}
+                  max={2147423}
+                  min={1}
+                  onChange={(event) => {
+                    setBashTimeoutDefaultText(event.currentTarget.value);
+                    const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                    setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
+                  }}
+                  onBlur={() => {
+                    setBashTimeoutDefaultText(null);
+                    void saveBashTimeout(bashTimeout);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                  type="number"
+                  value={bashTimeoutDefaultText ?? bashTimeout.defaultSeconds}
+                />
+                <span>{t("秒")}</span>
+              </div>
+              <label className="switch-row compact claude-bash-timeout-toggle">
+                <input
+                  aria-label={t("修改最大等待时间")}
+                  checked={bashTimeout.maxEnabled}
+                  disabled={busy !== null && busy !== "bashTimeout"}
+                  onChange={(event) => void saveBashTimeout({
+                    ...bashTimeout,
+                    maxEnabled: event.currentTarget.checked,
+                  })}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("修改最大等待时间")}</strong>
+                  <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <div className="claude-bash-timeout-value">
+                <span>{t("最大等待时间")}</span>
+                <Input
+                  aria-label={t("最大等待时间（秒）")}
+                  disabled={busy !== null || !bashTimeout.maxEnabled}
+                  max={2147423}
+                  min={1}
+                  onChange={(event) => {
+                    setBashTimeoutMaxText(event.currentTarget.value);
+                    const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                    setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
+                  }}
+                  onBlur={() => {
+                    setBashTimeoutMaxText(null);
+                    void saveBashTimeout(bashTimeout);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                  type="number"
+                  value={bashTimeoutMaxText ?? bashTimeout.maxSeconds}
+                />
+                <span>{t("秒")}</span>
               </div>
             </div>
           ) : null}
-          {/* 制作在左，检测类的次要操作收在右边，窄时整组换行而不是剩一个按钮掉下去。启动在页头右上角。 */}
-          <div className="claude-l10n-actions">
-            <div className="claude-l10n-actions-primary">
-            <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
-              <PackageOpen className="h-4 w-4" />
-              {busy === "prepare"
-                ? t("制作中…")
-                : s?.needsRebuild
-                  ? t("更新副本")
-                  : s?.prepared
-                    ? t("重新制作增强版")
-                    : t("制作增强版")}
-            </Button>
-            </div>
-            <div className="claude-l10n-actions-secondary">
-              <Button disabled={busy !== null} onClick={() => void refresh()} variant="secondary">
-                <RefreshCw className={`h-4 w-4 ${busy === "detect" ? "animate-spin" : ""}`} />
-                {busy === "detect" ? t("检测中…") : t("检测 Claude")}
-              </Button>
-              <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
-                <ShieldCheck className="h-4 w-4" />{t("检查增强版")}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      {/* 增强项铺满整行、三列并排：每一项都跑在上方的受管副本上，汉化只是其中之一。 */}
-      <div className="claude-l10n-column claude-l10n-features">
-        <Panel>
-          <CardHead
-            title={t("增强功能")}
-            detail={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}
-          />
-          <CardContent className="claude-l10n-feature-grid">
-            <label className="switch-row compact">
-              <input
-                checked={Boolean(s?.localization)}
-                disabled={busy !== null || !s?.supported}
-                onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("界面汉化")}</strong>
-                <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            <label className="switch-row compact">
-              <input
-                checked={Boolean(s?.voiceInput)}
-                disabled={busy !== null || !s?.supported}
-                onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("语音输入")}</strong>
-                <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            <label className="switch-row compact">
-              <input
-                checked={Boolean(s?.computerUse)}
-                disabled={busy !== null || !s?.supported || s?.computerUseSupported === false}
-                onChange={(event) => void toggleComputerUse(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("Computer Use")}</strong>
-                <small>{s?.computerUseSupported === false
-                  ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
-                  : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            {s?.computerUseSupported !== false ? (
-              s?.computerUse && claudeDesktopCuConnected ? (
-                <p className="claude-l10n-hint is-warning" role="alert">
-                  {t("Claude Desktop 同时接入了「Computer Use」页的 codex-plus-cu：同一个对话里会有两套电脑控制，Claude 可能混着调用、互相抢前台，同一个应用也要确认两次。建议二选一：保留这里的开关，就到「Computer Use」页撤销 Claude Desktop 的接入；或者关掉这里的开关。")}
-                </p>
-              ) : (
-                <p className="claude-l10n-hint">
-                  {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
-                </p>
-              )
-            ) : null}
-            <label className="switch-row compact claude-bash-timeout-master">
-              <input
-                aria-label={t("解锁 Bash 时间限制")}
-                checked={Boolean(bashTimeout?.enabled)}
-                disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
-                onChange={(event) => {
-                  if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
-                }}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("解锁 Bash 时间限制")}</strong>
-                <small>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            {bashTimeout?.enabled ? (
-              <div className="claude-bash-timeout-editor">
-                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
-                <label className="switch-row compact claude-bash-timeout-toggle">
-                  <input
-                    aria-label={t("修改默认等待时间")}
-                    checked={bashTimeout.defaultEnabled}
-                    disabled={busy !== null && busy !== "bashTimeout"}
-                    onChange={(event) => void saveBashTimeout({
-                      ...bashTimeout,
-                      defaultEnabled: event.currentTarget.checked,
-                    })}
-                    type="checkbox"
-                  />
-                  <span>
-                    <strong>{t("修改默认等待时间")}</strong>
-                    <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
-                  </span>
-                  <ToggleVisual />
-                </label>
-                <div className="claude-bash-timeout-value">
-                  <span>{t("默认等待时间")}</span>
-                  <Input
-                    aria-label={t("默认等待时间（秒）")}
-                    disabled={busy !== null || !bashTimeout.defaultEnabled}
-                    max={2147423}
-                    min={1}
-                    onChange={(event) => {
-                      setBashTimeoutDefaultText(event.currentTarget.value);
-                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
-                      setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
-                    }}
-                    onBlur={() => {
-                      setBashTimeoutDefaultText(null);
-                      void saveBashTimeout(bashTimeout);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                    }}
-                    type="number"
-                    value={bashTimeoutDefaultText ?? bashTimeout.defaultSeconds}
-                  />
-                  <span>{t("秒")}</span>
-                </div>
-                <label className="switch-row compact claude-bash-timeout-toggle">
-                  <input
-                    aria-label={t("修改最大等待时间")}
-                    checked={bashTimeout.maxEnabled}
-                    disabled={busy !== null && busy !== "bashTimeout"}
-                    onChange={(event) => void saveBashTimeout({
-                      ...bashTimeout,
-                      maxEnabled: event.currentTarget.checked,
-                    })}
-                    type="checkbox"
-                  />
-                  <span>
-                    <strong>{t("修改最大等待时间")}</strong>
-                    <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
-                  </span>
-                  <ToggleVisual />
-                </label>
-                <div className="claude-bash-timeout-value">
-                  <span>{t("最大等待时间")}</span>
-                  <Input
-                    aria-label={t("最大等待时间（秒）")}
-                    disabled={busy !== null || !bashTimeout.maxEnabled}
-                    max={2147423}
-                    min={1}
-                    onChange={(event) => {
-                      setBashTimeoutMaxText(event.currentTarget.value);
-                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
-                      setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
-                    }}
-                    onBlur={() => {
-                      setBashTimeoutMaxText(null);
-                      void saveBashTimeout(bashTimeout);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                    }}
-                    type="number"
-                    value={bashTimeoutMaxText ?? bashTimeout.maxSeconds}
-                  />
-                  <span>{t("秒")}</span>
-                </div>
-              </div>
-            ) : null}
-            {s?.supported && !s.prepared ? (
-              <p className="claude-l10n-hint">
-                {t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}
-              </p>
-            ) : null}
-          </CardContent>
-        </Panel>
-      </div>
+        </CxCard>
+      </CxSection>
     </div>
   );
 }

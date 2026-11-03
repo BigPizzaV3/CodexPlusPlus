@@ -275,7 +275,7 @@ test("推荐内容只显示赞助商推荐", () => {
 });
 
 test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {
-  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page"]) {
+  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page cx-page"]) {
     assert.ok(text.includes(`className="${page}"`), page);
   }
   const layer = readSource("./cursor-ui.css");
@@ -356,10 +356,12 @@ test("多开页可以直接编辑、删除供应商：删除先查占用再二�
   assert.match(remove, /runningInstancesForProfile\(actions\.multiLaunchInstances, profile\.id\)/);
   assert.match(remove, /danger: true/);
   assert.match(screen, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
-  assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<span className="relay-card-extra">/);
+  // 编辑 / 删除收进行尾三点菜单；网关托管项没有菜单，整行也不可点。
+  assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<Menu label=/);
+  assert.match(screen, /onClick=\{gatewayManaged \? undefined : \(\) => setDetailProfileId\(profile\.id\)\}/);
   assert.match(screen, /disabled=\{normalized\.relayProfiles\.length <= 1\}/);
   // 使用中的供应商给出标记；导入入口指到旧版供应商页。
-  assert.match(screen, /\{active \? <span className="relay-active-badge">\{t\("使用中"\)\}<\/span> : null\}/);
+  assert.match(screen, /\{active \? <CxBadge>\{t\("使用中"\)\}<\/CxBadge> : null\}/);
   assert.match(screen, /onClick=\{onOpenRelay\}/);
   assert.match(functionSource("App"), /<CodexMultiLaunchScreen\r?\n\s+form=\{settingsForm\}\r?\n\s+relayFiles=\{relayFiles\}\r?\n\s+onOpenRelay=\{\(\) => void navigate\("relay"\)\}/);
   // 网关接管期间从多开进详情页，不能「设为当前」绕过断开并还原。
