@@ -19,6 +19,10 @@ export const EN_PLAIN: Record<string, string> = {
   "没有匹配的增强功能": "No matching enhancements",
   "稍后": "Later",
   "清除筛选": "Clear filters",
+  "运行中的实例": "Running instances",
+  "按供应商启动": "Launch by provider",
+  "重启此 Codex 实例；修改供应商或 Key 后重启才会生效": "Restart this Codex instance; provider or key changes take effect after a restart",
+  "多开只用「旧版供应商配置」里的供应商与 Key，「供应商池」（网关）的不会出现在这里": "Multi-launch only uses providers and keys from Legacy provider config; gateway Provider pool entries do not appear here",
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
   // ----
@@ -3207,6 +3211,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "其余 {0} 项正常": "{0} other checks OK",
   "{0} 项检查全部正常": "All {0} checks OK",
   "{0} 项改动重启 Codex 后生效": "{0} changes take effect after restarting Codex",
+  "供应商「{0}」的操作": "Actions for provider \"{0}\"",
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
   // ----

@@ -679,3 +679,45 @@
   width: auto;
   margin-left: auto;
 }
+
+/* ── 多开（CodexMultiLaunchScreen） ────────────────────────── */
+
+:root .shell .multi-launch-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .multi-launch-page .multi-launch-instance + .multi-launch-instance,
+:root .shell .multi-launch-page .multi-launch-card + .multi-launch-card {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .multi-launch-page .multi-launch-initial {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+:root .shell .multi-launch-page .cx-row-icon {
+  background: transparent;
+}
+
+:root .shell .multi-launch-page [data-failed="true"] {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .multi-launch-page .multi-launch-hint-icon {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .multi-launch-page .relay-profile-list {
+  display: block;
+  gap: 0;
+}

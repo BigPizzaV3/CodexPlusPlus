@@ -352,10 +352,12 @@ test("多开页可以直接编辑、删除供应商：删除先查占用再二�
   assert.match(remove, /runningInstancesForProfile\(actions\.multiLaunchInstances, profile\.id\)/);
   assert.match(remove, /danger: true/);
   assert.match(screen, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
-  assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<span className="relay-card-extra">/);
+  // 编辑 / 删除收进行尾三点菜单；网关托管项没有菜单，整行也不可点。
+  assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<Menu label=/);
+  assert.match(screen, /onClick=\{gatewayManaged \? undefined : \(\) => setDetailProfileId\(profile\.id\)\}/);
   assert.match(screen, /disabled=\{normalized\.relayProfiles\.length <= 1\}/);
   // 使用中的供应商给出标记；导入入口指到旧版供应商页。
-  assert.match(screen, /\{active \? <span className="relay-active-badge">\{t\("使用中"\)\}<\/span> : null\}/);
+  assert.match(screen, /\{active \? <CxBadge>\{t\("使用中"\)\}<\/CxBadge> : null\}/);
   assert.match(screen, /onClick=\{onOpenRelay\}/);
   assert.match(functionSource("App"), /<CodexMultiLaunchScreen\r?\n\s+form=\{settingsForm\}\r?\n\s+relayFiles=\{relayFiles\}\r?\n\s+onOpenRelay=\{\(\) => void navigate\("relay"\)\}/);
   // 网关接管期间从多开进详情页，不能「设为当前」绕过断开并还原。
