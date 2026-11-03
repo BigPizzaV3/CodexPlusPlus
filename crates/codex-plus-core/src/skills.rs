@@ -252,7 +252,12 @@ impl SkillsCoordination {
             .max()
             .unwrap_or_default();
         self.nested_skills.iter()
-            .filter(|((other_scope, _), _)| coordination_scopes_nested(scope, other_scope))
+            .filter(|((other_scope, other), _)| {
+                coordination_scopes_nested(scope, other_scope)
+                    || (!coordination_scopes_same_paths(scope, other_scope)
+                        && skill_names_may_alias(other, id)
+                        && coordination_scopes_overlap(scope, other_scope))
+            })
             .map(|(_, generation)| *generation)
             .max()
             .unwrap_or_default()
@@ -3743,6 +3748,27 @@ mod tests {
 
         assert!(manager.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
         assert_eq!(std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap(), "alpha");
+    }
+
+    #[test]
+    fn shared_agent_enable_invalidates_a_same_skill_import() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let first = manager(&first_temp);
+        let second = manager(&second_temp).with_agent_dirs(vec![("shared".into(), first.source_dir.clone())]);
+        let first_external = first_temp.path().join("external/alpha");
+        let second_external = second_temp.path().join("external/alpha");
+        write_skill(&first_external, "first");
+        write_skill(&second_external, "second");
+        second.import_from_directory("alpha", &second_external).unwrap();
+
+        let scope = first.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, "alpha"));
+        let (staging, imported) = first.stage_directory_import("alpha", &first_external, LOCAL_IMPORT_REPO_KEY).unwrap();
+        second.set_enabled_for("shared", "alpha", true).unwrap();
+
+        assert!(first.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert_eq!(std::fs::read_to_string(first.source_dir.join("alpha/SKILL.md")).unwrap(), "second");
     }
 
     #[test]
