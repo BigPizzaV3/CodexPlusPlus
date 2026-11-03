@@ -1872,6 +1872,11 @@ span.gw-popover-check {
   font-weight: 500;
 }
 
+.gw-session-main strong .gw-pill {
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
 .gw-session-main small {
   color: var(--gw-mute);
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -4021,4 +4026,230 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   color: inherit;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   resize: vertical;
+}
+
+/* Agent 接入证据与断开前的文件差异。 */
+.shell .gw-agent-badge[data-tone="pending"] {
+  color: var(--gw-warn);
+}
+
+.shell .gw-agent-badge[data-tone="pending"]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.shell .gw-agent-diagnostics {
+  display: grid;
+  gap: 8px;
+}
+
+.shell .gw-agent-diagnostic-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  font-size: 12px;
+}
+
+.shell .gw-agent-diagnostics p {
+  margin: 0;
+  color: var(--gw-mute);
+  line-height: 1.6;
+}
+
+.shell .gw-agent-diagnostics .gw-agent-diagnostic-error {
+  color: var(--gw-err);
+}
+
+.shell .gw-agent-diagnostic-evidence {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+}
+
+.shell .gw-agent-diagnostic-evidence > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding-top: 7px;
+  border-top: 1px solid var(--gw-line);
+}
+
+.shell .gw-agent-diagnostic-evidence dt {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.shell .gw-agent-diagnostic-evidence dt span,
+.shell .gw-agent-diagnostic-evidence dd {
+  margin: 0;
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-portal .gw-disconnect-modal {
+  width: min(820px, 100%);
+  border-radius: 8px;
+}
+
+.gw-portal .gw-disconnect-modal header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gw-portal .gw-disconnect-body {
+  gap: 16px;
+  min-height: 100px;
+}
+
+.gw-portal .gw-disconnect-note,
+.gw-portal .gw-disconnect-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--gw-mute);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.gw-portal .gw-disconnect-note > svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+.gw-portal .gw-disconnect-error {
+  color: var(--gw-err);
+}
+
+.gw-portal .gw-disconnect-warnings {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--gw-warn);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.gw-portal .gw-disconnect-file {
+  min-width: 0;
+}
+
+.gw-portal .gw-disconnect-file-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gw-portal .gw-disconnect-file-head > svg {
+  flex: none;
+}
+
+.gw-portal .gw-disconnect-file-head code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gw-portal .gw-disconnect-file-head > span {
+  flex: none;
+  color: var(--gw-mute);
+}
+
+.gw-portal .gw-disconnect-redacted {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 8px;
+  color: var(--gw-mute);
+  font-size: 11px;
+}
+
+.gw-portal .gw-disconnect-diff {
+  max-height: 340px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--gw-line);
+  border-radius: 4px;
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+  font-size: 11px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+
+.gw-portal .gw-disconnect-diff [data-kind="add"] {
+  color: var(--gw-ok);
+}
+
+.gw-portal .gw-disconnect-diff [data-kind="remove"] {
+  color: var(--gw-err);
+}
+
+.gw-portal .gw-disconnect-foot-space {
+  flex: 1;
+}
+
+@media (max-width: 560px) {
+  .gw-portal:has(.gw-disconnect-modal) {
+    padding: 12px;
+  }
+  .gw-portal .gw-disconnect-modal footer {
+    flex-wrap: wrap;
+  }
+  .gw-portal .gw-disconnect-foot-space {
+    display: none;
+  }
+}
+
+.shell .gw-agent-diagnostic-endpoints {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.shell .gw-agent-diagnostic-endpoints p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+.shell .gw-agent-diagnostic-endpoints code,
+.shell .gw-agent-diagnostic-evidence dd code {
+  min-width: 0;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.shell .gw-agent-diagnostic-evidence dd {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gw-portal .gw-disconnect-confirm {
+  background: var(--gw-err);
+  color: white;
+}
+
+.gw-portal .gw-disconnect-confirm:hover {
+  background: color-mix(in srgb, var(--gw-err) 88%, black);
 }

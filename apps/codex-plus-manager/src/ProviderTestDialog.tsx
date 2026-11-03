@@ -24,17 +24,26 @@ const CURRENT_KEY = "";
 export function ProviderTestDialog({
   entry,
   keyId,
+  initialModel,
+  lockModel = false,
+  onStart,
+  onResult,
   onClose,
 }: {
   entry: GatewayPoolEntry;
   /** 从 Key 列表点进来时只用这个 Key；为空时用当前选中的 Key。 */
   keyId: string | null;
+  initialModel?: string;
+  lockModel?: boolean;
+  onStart?: () => void;
+  onResult?: (result: ProviderProbeResult) => void;
   onClose: () => void;
 }) {
   const imageModels = (entry.imageModels ?? []).map((model) => model.toLowerCase());
   const models = entry.models.filter((model) => !imageModels.includes(model.toLowerCase()));
+  if (initialModel && !models.includes(initialModel)) models.unshift(initialModel);
   const keys = entry.keys ?? [];
-  const [model, setModel] = useState(models[0] ?? "");
+  const [model, setModel] = useState(initialModel ?? models[0] ?? "");
   const [key, setKey] = useState(keyId ?? CURRENT_KEY);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ProviderProbeResult | null>(null);
@@ -64,13 +73,18 @@ export function ProviderTestDialog({
     if (!model || runningRef.current) return;
     const current = ++seq.current;
     runningRef.current = true;
+    onStart?.();
     setRunning(true);
     setResult(null);
     setError("");
     try {
       const response = await invoke<ProbeResponse>("test_gateway_provider", { id: entry.id, model, keyId: key || null });
       if (current !== seq.current) return;
-      if (response.status === "ok") setResult(response as ProviderProbeResult);
+      if (response.status === "ok") {
+        const probe = response as ProviderProbeResult;
+        setResult(probe);
+        onResult?.(probe);
+      }
       else if (response.status !== "cancelled") setError(t(response.message));
     } catch (failure) {
       if (current === seq.current) setError(String(failure));
@@ -114,7 +128,7 @@ export function ProviderTestDialog({
               {models.length ? (
                 <AppSelect
                   ariaLabel={t("测试用的模型")}
-                  disabled={running}
+                  disabled={running || lockModel}
                   onChange={setModel}
                   options={models.map((item) => ({ value: item, label: item }))}
                   value={model}

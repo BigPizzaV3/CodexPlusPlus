@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
 
@@ -131,7 +132,7 @@ impl FileSet {
     pub fn changes(&self) -> anyhow::Result<Vec<FileChange>> {
         let mut out = Vec::new();
         for (path, entry) in &self.entries {
-            let after = render(&entry.doc)?;
+            let after = render(&entry.doc, entry.before.as_deref())?;
             let same = match (&entry.before, &after) {
                 (None, None) => true,
                 (Some(before), Some(after)) => {
@@ -171,13 +172,9 @@ fn parse(format: FileFormat, text: Option<&str>) -> anyhow::Result<Doc> {
     })
 }
 
-fn render(doc: &Doc) -> anyhow::Result<Option<String>> {
+fn render(doc: &Doc, before: Option<&str>) -> anyhow::Result<Option<String>> {
     Ok(match doc {
-        Doc::Json(value) => {
-            let mut text = serde_json::to_string_pretty(value)?;
-            text.push('\n');
-            Some(text)
-        }
+        Doc::Json(value) => Some(super::jsonc_edit::render(before, value)?),
         Doc::Toml(doc) => Some(doc.to_string()),
         Doc::Yaml(doc) => Some(doc.render()),
         Doc::Env(doc) => Some(doc.render()),
@@ -614,6 +611,12 @@ pub struct StashedFile {
     pub format: FileFormat,
     #[serde(flatten)]
     pub stash: FileStash,
+    /// 最后一次网关写入的字节指纹；只有原文未被用户改动时才可整份还原旧格式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_hash: Option<String>,
+    /// 接入期间观察到外部编辑后，后续网关刷新也不能让整份旧格式覆盖它。
+    #[serde(default)]
+    pub preserve_current_format: bool,
 }
 
 /// 一个通用 Agent 接入前的存档：每个改过的文件一份。
@@ -629,13 +632,26 @@ impl AgentStash {
     pub fn record(&mut self, change: &FileChange) -> anyhow::Result<()> {
         let before = content_value(change.format, change.before.as_deref())?;
         let after = content_value(change.format, change.after.as_deref())?;
+        let existed = self.files.contains_key(&change.path);
         let file = self
             .files
             .entry(change.path.clone())
             .or_insert_with(|| StashedFile {
                 format: change.format,
                 stash: FileStash::new(change.before.clone()),
+                written_hash: None,
+                preserve_current_format: false,
             });
+        if change.format == FileFormat::Json {
+            if existed
+                && !file.written_hash.as_ref().is_some_and(|written| {
+                    change.before.as_deref().is_some_and(|text| text_hash(text) == *written)
+                })
+            {
+                file.preserve_current_format = true;
+            }
+            file.written_hash = change.after.as_deref().map(text_hash);
+        }
         if change.format == FileFormat::Raw {
             // 整份文件：记一个空路径，还原时整份写回。
             if file.stash.changed.is_empty() {
@@ -674,19 +690,25 @@ pub fn restored_text(
     match file.format {
         FileFormat::Raw => Ok(before.map(str::to_string)),
         FileFormat::Json => {
-            let current = current.map(strip_jsonc);
+            let current_clean = current.map(strip_jsonc);
             let before_clean = before.map(strip_jsonc);
             let restored = stash::restore_json(
                 before_clean.as_deref(),
-                current.as_deref(),
+                current_clean.as_deref(),
                 &file.stash.changed,
                 |_, _, _| false,
             )?;
-            // 与接入前内容一样：写回带注释的原文。
-            if restored.as_deref() == before_clean.as_deref() {
+            // 语义相同不足以证明用户没改注释或格式，只有字节指纹匹配才整份写回。
+            if restored.as_deref() == before_clean.as_deref()
+                && !file.preserve_current_format
+                && file.written_hash.as_ref().is_some_and(|written| {
+                    current.is_some_and(|text| text_hash(text) == *written)
+                })
+            {
                 return Ok(before.map(str::to_string));
             }
-            Ok(restored)
+            let desired = parse_jsonc(restored.as_deref().unwrap_or("{}"))?;
+            super::jsonc_edit::render(current, &desired).map(Some)
         }
         FileFormat::Toml => stash::restore_toml(before, current, &file.stash.paths()),
         FileFormat::Yaml => {
@@ -720,6 +742,10 @@ pub fn restored_text(
             Ok(Some(doc.render()))
         }
     }
+}
+
+fn text_hash(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
 /// 写入（必要时建目录）；`None` 删掉文件。

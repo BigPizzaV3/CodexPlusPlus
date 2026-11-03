@@ -1,0 +1,38 @@
+{
+  "id": "rice-maid-pet",
+  "name": "米饭桌宠",
+  "version": "1.0.2",
+  "description": "参考角色的可拖动悬浮桌宠。每次模型请求夹起一口白米饭，支持位置记忆、显示开关和手动喂饭；不读取聊天内容。",
+  "engines": {
+    "codexpp": 1
+  },
+  "renderer": [
+    "renderer.js"
+  ],
+  "permissions": {
+    "routes": []
+  },
+  "hooks": {
+    "PreModelRequest": [
+      {
+        "script": "hooks/request.mjs",
+        "timeout": 3
+      }
+    ]
+  },
+  "config": {
+    "size": {
+      "type": "number",
+      "title": "桌宠大小（像素）",
+      "default": 192,
+      "min": 112,
+      "max": 280
+    }
+  },
+  "backend": {
+    "script": "backend/main.mjs",
+    "provides": [
+      "codexpp.riceMaidPet"
+    ]
+  }
+}

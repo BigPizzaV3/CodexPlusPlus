@@ -19,9 +19,21 @@ fn creator(temp: &tempfile::TempDir) -> ExtensionCreator {
 }
 
 async fn call(creator: &ExtensionCreator, name: &str, arguments: Value) -> (bool, Value) {
+    call_in_thread(creator, "test-thread", name, arguments).await
+}
+
+async fn call_in_thread(creator: &ExtensionCreator, thread: &str, name: &str, arguments: Value) -> (bool, Value) {
+    call_with_meta(creator, Some(json!({"threadId": thread})), name, arguments).await
+}
+
+async fn call_with_meta(creator: &ExtensionCreator, meta: Option<Value>, name: &str, arguments: Value) -> (bool, Value) {
+    let mut params = json!({"name": name, "arguments": arguments});
+    if let Some(meta) = meta {
+        params["_meta"] = meta;
+    }
     let response = handle_request(
         creator,
-        json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": name, "arguments": arguments}}),
+        json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": params}),
     )
     .await
     .unwrap();
@@ -175,6 +187,316 @@ async fn write_read_and_disable_round_trip_without_codex() {
     let (_, listed) = call(&creator, "codexpp_extension_list", json!({})).await;
     assert_eq!(listed["codexConnected"], false);
     assert_eq!(listed["items"][0]["key"], "user:pomodoro");
+}
+
+#[tokio::test]
+async fn conversation_keeps_its_extension_across_interleaved_calls_and_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    for (thread, id, name) in [("thread-a", "alpha", "甲"), ("thread-b", "beta", "乙")] {
+        let (error, written) = call_in_thread(
+            &service,
+            thread,
+            "codexpp_extension_write",
+            json!({"id": id, "name": name, "files": {"renderer.js": "// initial"}}),
+        ).await;
+        assert!(!error, "{written}");
+        assert_eq!(written["conversation"], json!({"threadId": thread, "extensionId": id}));
+    }
+
+    for (thread, id) in [("thread-b", "beta"), ("thread-a", "alpha")] {
+        let content = format!("// {id} updated");
+        let (error, written) = call_in_thread(
+            &service, thread, "codexpp_extension_write",
+            json!({"files": {"renderer.js": content}}),
+        ).await;
+        assert!(!error, "{written}");
+        assert_eq!(written["extension"]["key"], format!("user:{id}"));
+        assert_eq!(fs::read_to_string(temp.path().join("user").join(id).join("renderer.js")).unwrap(), content);
+        for tool in ["codexpp_extension_guide", "codexpp_extension_list", "codexpp_extension_read"] {
+            let (error, result) = call_in_thread(&service, thread, tool, json!({})).await;
+            assert!(!error, "{tool}: {result}");
+            assert_eq!(result["conversation"], json!({"threadId": thread, "extensionId": id}));
+            if tool == "codexpp_extension_read" {
+                assert_eq!(result["manifest"]["id"], id);
+            }
+        }
+    }
+
+    // 用新的服务对象读取落盘绑定，不能依赖当前 MCP 进程里的最近一次调用。
+    drop(service);
+    let restarted = creator(&temp);
+    for (thread, id) in [("thread-a", "alpha"), ("thread-b", "beta")] {
+        let (error, read) = call_in_thread(&restarted, thread, "codexpp_extension_read", json!({})).await;
+        assert!(!error, "{read}");
+        assert_eq!(read["manifest"]["id"], id);
+        assert_eq!(read["conversation"], json!({"threadId": thread, "extensionId": id}));
+    }
+    let (error, _) = call_in_thread(&restarted, "thread-c", "codexpp_extension_read", json!({})).await;
+    assert!(error, "新对话不能继承其他对话的当前拓展");
+}
+
+#[tokio::test]
+async fn conversation_requires_explicit_new_extension_or_existing_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    service.manager.write_extension_package(&write("reference", &[("renderer.js", "// reference")])).unwrap();
+    let (error, created) = call(&service, "codexpp_extension_write", json!({
+        "id": "original", "name": "原拓展", "files": {"renderer.js": "// original"},
+    })).await;
+    assert!(!error, "{created}");
+
+    let (error, reference) = call(&service, "codexpp_extension_read", json!({"id": "reference"})).await;
+    assert!(!error, "{reference}");
+    assert_eq!(reference["manifest"]["id"], "reference");
+    assert_eq!(reference["conversation"]["extensionId"], "original", "参考阅读不能切换编辑目标");
+    for id in ["reference", "accidental-new"] {
+        let (error, message) = call(&service, "codexpp_extension_write", json!({
+            "id": id, "name": "误换目标", "files": {"renderer.js": "// should not write"},
+        })).await;
+        assert!(error, "{message}");
+    }
+    assert!(!temp.path().join("user/accidental-new").exists());
+    assert_eq!(fs::read_to_string(temp.path().join("user/reference/renderer.js")).unwrap(), "// reference");
+
+    let (error, created) = call(&service, "codexpp_extension_write", json!({
+        "id": "separate", "name": "另一个拓展", "newExtension": true, "files": {"renderer.js": "// separate"},
+    })).await;
+    assert!(!error, "{created}");
+    assert_eq!(created["conversation"]["extensionId"], "separate");
+    for id in ["reference", "separate"] {
+        let (error, message) = call(&service, "codexpp_extension_write", json!({
+            "id": id, "name": "重名", "newExtension": true, "files": {"renderer.js": "// should not write"},
+        })).await;
+        assert!(error, "新建不能覆盖已经占用的 id：{message}");
+    }
+    let (error, _) = call(&service, "codexpp_extension_read", json!({"id": "missing", "select": true})).await;
+    assert!(error);
+    let (error, current) = call(&service, "codexpp_extension_read", json!({})).await;
+    assert!(!error, "{current}");
+    assert_eq!(current["manifest"]["id"], "separate", "新建或选择失败保留当前目标");
+    assert_eq!(fs::read_to_string(temp.path().join("user/separate/renderer.js")).unwrap(), "// separate");
+
+    let (error, selected) = call(&service, "codexpp_extension_read", json!({"id": "original", "select": true})).await;
+    assert!(!error, "{selected}");
+    assert_eq!(selected["conversation"]["extensionId"], "original");
+    let (error, updated) = call(&service, "codexpp_extension_write", json!({"files": {"renderer.js": "// selected"}})).await;
+    assert!(!error, "{updated}");
+    assert_eq!(fs::read_to_string(temp.path().join("user/original/renderer.js")).unwrap(), "// selected");
+
+    let (error, reference) = call_in_thread(&service, "fresh-thread", "codexpp_extension_read", json!({"id": "original"})).await;
+    assert!(!error, "{reference}");
+    assert!(reference["conversation"]["extensionId"].is_null());
+    let (error, message) = call_in_thread(&service, "fresh-thread", "codexpp_extension_write", json!({
+        "id": "original", "name": "不能直接接管", "files": {"renderer.js": "// should not write"},
+    })).await;
+    assert!(error, "{message}");
+    let (error, selected) = call_in_thread(&service, "fresh-thread", "codexpp_extension_read", json!({"id": "original", "select": true})).await;
+    assert!(!error, "{selected}");
+    assert_eq!(selected["conversation"], json!({"threadId": "fresh-thread", "extensionId": "original"}));
+}
+
+#[tokio::test]
+async fn conversation_write_and_selection_require_trusted_call_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    service.manager.write_extension_package(&write("existing", &[("renderer.js", "// existing")])).unwrap();
+    for meta in [None, Some(json!({})), Some(json!({"sessionId": "not-a-thread"}))] {
+        let (error, message) = call_with_meta(&service, meta.clone(), "codexpp_extension_write", json!({
+            "id": "missing-context", "name": "无上下文", "files": {"renderer.js": "// should not write"},
+        })).await;
+        assert!(error, "{message}");
+        let (error, message) = call_with_meta(
+            &service, meta.clone(), "codexpp_extension_read", json!({"id": "existing", "select": true}),
+        ).await;
+        assert!(error, "{message}");
+        for tool in ["codexpp_extension_guide", "codexpp_extension_list", "codexpp_extension_read"] {
+            let arguments = if tool == "codexpp_extension_read" { json!({"id": "existing"}) } else { json!({}) };
+            let (error, result) = call_with_meta(&service, meta.clone(), tool, arguments).await;
+            assert!(!error, "{tool}: {result}");
+            assert!(result["conversation"]["threadId"].is_null());
+            assert!(result["conversation"]["extensionId"].is_null());
+        }
+    }
+    assert!(!temp.path().join("user/missing-context").exists());
+    assert!(!temp.path().join("extension-creator-contexts.json").exists(), "缺少身份时不能创建全局当前目标");
+    assert_eq!(fs::read_to_string(temp.path().join("user/existing/renderer.js")).unwrap(), "// existing");
+}
+
+#[tokio::test]
+async fn conversation_write_errors_keep_target_but_invalid_manifests_remain_repairable() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    let (error, message) = call(&service, "codexpp_extension_write", json!({
+        "id": "invalid", "name": "无效", "files": {"../outside.js": "// should not write"},
+    })).await;
+    assert!(error, "{message}");
+    let (error, listed) = call(&service, "codexpp_extension_list", json!({})).await;
+    assert!(!error, "{listed}");
+    assert!(listed["conversation"]["extensionId"].is_null());
+    assert!(!temp.path().join("user/invalid").exists());
+
+    let (error, written) = call(&service, "codexpp_extension_write", json!({
+        "id": "valid", "name": "有效", "files": {"renderer.js": "// valid"},
+    })).await;
+    assert!(!error, "{written}");
+    let (error, result) = call(&service, "codexpp_extension_write", json!({
+        "id": "invalid", "name": "无效", "newExtension": true, "files": {"../outside.js": ""},
+    })).await;
+    assert!(error, "{result}");
+    let (error, current) = call(&service, "codexpp_extension_read", json!({})).await;
+    assert!(!error, "{current}");
+    assert_eq!(current["manifest"]["id"], "valid", "真正写入失败不能切换绑定");
+
+    let (error, written) = call(&service, "codexpp_extension_write", json!({
+        "id": "invalid-entry", "name": "缺少入口", "newExtension": true,
+        "renderer": "missing.js", "files": {"other.js": ""},
+    })).await;
+    assert!(!error, "{written}");
+    assert!(written["written"]["manifestError"].is_string(), "{written}");
+    assert_eq!(written["conversation"]["extensionId"], "invalid-entry", "包已落盘时绑定它供下一轮修复");
+    let (error, repaired) = call(&service, "codexpp_extension_write", json!({
+        "files": {"missing.js": "codexPlus.extension(() => {});"},
+    })).await;
+    assert!(!error, "{repaired}");
+    assert!(repaired["written"]["manifestError"].is_null(), "{repaired}");
+    assert_eq!(repaired["conversation"]["extensionId"], "invalid-entry");
+    assert_eq!(repaired["extension"]["key"], "user:invalid-entry");
+    assert_eq!(
+        fs::read_to_string(temp.path().join("user/invalid-entry/missing.js")).unwrap(),
+        "codexPlus.extension(() => {});",
+    );
+    assert_eq!(fs::read_to_string(temp.path().join("user/valid/renderer.js")).unwrap(), "// valid");
+}
+
+#[tokio::test]
+async fn conversation_does_not_recreate_a_missing_bound_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    let (error, written) = call(&service, "codexpp_extension_write", json!({
+        "id": "moved", "name": "已移走", "files": {"renderer.js": "// original"},
+    })).await;
+    assert!(!error, "{written}");
+    fs::rename(temp.path().join("user/moved"), temp.path().join("moved-package")).unwrap();
+    for arguments in [
+        json!({"files": {"renderer.js": "// should not write"}}),
+        json!({"id": "moved", "name": "已移走", "files": {"renderer.js": "// should not write"}}),
+    ] {
+        let (error, message) = call(&service, "codexpp_extension_write", arguments).await;
+        assert!(error, "{message}");
+    }
+    assert!(!temp.path().join("user/moved").exists(), "绑定失效时不能偷偷重建空壳拓展");
+    assert_eq!(fs::read_to_string(temp.path().join("moved-package/renderer.js")).unwrap(), "// original");
+}
+
+#[tokio::test]
+async fn conversation_corrupt_state_blocks_writes_without_replacing_the_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    let state_path = temp.path().join("extension-creator-contexts.json");
+    for contents in [
+        "{not valid json".to_string(),
+        json!({"version": 1, "threads": {"test-thread": "../outside"}}).to_string(),
+    ] {
+        fs::write(&state_path, &contents).unwrap();
+        let (error, message) = call(&service, "codexpp_extension_write", json!({
+            "id": "accidental", "name": "不能覆盖损坏状态", "files": {"renderer.js": "// should not write"},
+        })).await;
+        assert!(error, "{message}");
+        assert_eq!(fs::read_to_string(&state_path).unwrap(), contents);
+        assert!(!temp.path().join("user/accidental").exists());
+    }
+}
+
+#[tokio::test]
+async fn conversation_updates_preserve_omitted_manifest_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    let (error, written) = call(&service, "codexpp_extension_write", json!({
+        "id": "combined", "name": "组合拓展", "description": "已有功能", "version": "0.4.0",
+        "renderer": ["main.js"], "routes": ["/diagnostics/log"],
+        "config": {"minutes": {"type": "number", "default": 25}},
+        "hooks": {"Stop": [{"script": "hook.mjs"}]},
+        "gateway": {"request": [{"script": "request.mjs"}]},
+        "backend": {"script": "backend.mjs"},
+        "tools": [{"name": "count", "description": "计数", "script": "count.mjs"}],
+        "manager": {"page": "manager.html", "title": "管理"},
+        "instances": [{"id": "work", "config": {"minutes": 50}}],
+        "replaces": ["usage-statusline"],
+        "files": {
+            "main.js": "codexPlus.extension(() => {});",
+            "hook.mjs": "export default () => null;",
+            "request.mjs": "export default () => null;",
+            "backend.mjs": "export default () => ({});",
+            "count.mjs": "export default () => 1;",
+            "manager.html": "<p>管理</p>"
+        },
+    })).await;
+    assert!(!error, "{written}");
+    assert!(written["written"]["manifestError"].is_null(), "{written}");
+    let manifest_path = temp.path().join("user/combined/codexpp.json");
+    let before: Value = serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+
+    let (error, updated) = call(&service, "codexpp_extension_write", json!({
+        "files": {"main.js": "codexPlus.extension(() => { /* added feature */ });"},
+    })).await;
+    assert!(!error, "{updated}");
+    assert!(updated["written"]["manifestError"].is_null(), "{updated}");
+    let after: Value = serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(after, before, "只改代码时不能清掉已有入口、配置、钩子和其他能力声明");
+    assert_eq!(fs::read_to_string(temp.path().join("user/combined/count.mjs")).unwrap(), "export default () => 1;");
+
+    let (error, updated) = call(&service, "codexpp_extension_write", json!({
+        "description": "", "version": "0.5.0", "routes": [], "hooks": {}, "replaces": [],
+        "files": {"main.js": "codexPlus.extension(() => {});"},
+    })).await;
+    assert!(!error, "{updated}");
+    let explicit: Value = serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(explicit["description"], "");
+    assert_eq!(explicit["version"], "0.5.0");
+    assert_eq!(explicit["permissions"]["routes"], json!([]));
+    assert_eq!(explicit["hooks"], json!({}));
+    assert_eq!(explicit["replaces"], json!([]));
+    assert_eq!(explicit["config"], before["config"]);
+    assert_eq!(explicit["tools"], before["tools"]);
+}
+
+#[tokio::test]
+async fn conversation_configuration_uses_current_target_and_preserves_other_threads() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = creator(&temp);
+    for (thread, id) in [("thread-a", "alpha"), ("thread-b", "beta")] {
+        let (error, written) = call_in_thread(&service, thread, "codexpp_extension_write", json!({
+            "id": id, "name": id, "config": {"minutes": {"type": "number", "default": 25}},
+            "files": {"renderer.js": "codexPlus.extension(() => {});"},
+        })).await;
+        assert!(!error, "{written}");
+    }
+    let (error, configured) = call_in_thread(
+        &service, "thread-a", "codexpp_extension_configure", json!({"values": {"minutes": 50}}),
+    ).await;
+    assert!(!error, "{configured}");
+    assert_eq!(configured["config"]["minutes"], 50);
+    assert_eq!(configured["conversation"], json!({"threadId": "thread-a", "extensionId": "alpha"}));
+    let (error, message) = call_in_thread(
+        &service, "thread-a", "codexpp_extension_configure", json!({"id": "beta", "values": {"minutes": 90}}),
+    ).await;
+    assert!(error, "{message}");
+    let (error, configured) = call_in_thread(
+        &service, "thread-b", "codexpp_extension_configure", json!({"values": {"minutes": 30}}),
+    ).await;
+    assert!(!error, "{configured}");
+    assert_eq!(configured["config"]["minutes"], 30);
+    assert_eq!(configured["conversation"]["extensionId"], "beta");
+    let stored: Value = serde_json::from_str(&fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()).unwrap();
+    assert_eq!(stored["configs"]["user:alpha"]["minutes"], 50);
+    assert_eq!(stored["configs"]["user:beta"]["minutes"], 30);
+
+    let (error, configured) = call_in_thread(
+        &service, "fresh-thread", "codexpp_extension_configure", json!({"id": "alpha", "values": {"minutes": 45}}),
+    ).await;
+    assert!(!error, "{configured}");
+    assert_eq!(configured["conversation"], json!({"threadId": "fresh-thread", "extensionId": "alpha"}));
 }
 
 #[tokio::test]
@@ -432,7 +754,8 @@ async fn write_accepts_lenient_shapes_and_copies_binary_assets() {
 
     // files 写成 { 路径: 内容 } 也认。
     let (error, written) = call(&creator, "codexpp_extension_write", json!({
-        "id": "map-files", "name": "映射写法", "files": {"renderer.js": "codexPlus.extension(() => {});"},
+        "id": "map-files", "name": "映射写法", "newExtension": true,
+        "files": {"renderer.js": "codexPlus.extension(() => {});"},
     })).await;
     assert!(!error, "{written}");
     assert!(temp.path().join("user/map-files/renderer.js").is_file());
@@ -448,7 +771,7 @@ async fn write_accepts_lenient_shapes_and_copies_binary_assets() {
         (json!([{"path": "assets/pet.png", "content": "x", "sourcePath": source.to_string_lossy()}]), "其中之一"),
         (json!([{"path": "assets/big.png", "sourcePath": big.to_string_lossy()}]), "超过单个资源上限"),
     ] {
-        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad-asset", "name": "坏资源", "files": files})).await;
+        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad-asset", "name": "坏资源", "newExtension": true, "files": files})).await;
         assert!(error && message.as_str().unwrap().contains(expected), "{expected}: {message}");
     }
     assert!(!temp.path().join("user/bad-asset").exists(), "校验失败时什么都不写");
@@ -690,7 +1013,7 @@ async fn write_copies_large_text_files_and_passes_instances_and_dsh() {
     assert_eq!(manifest["dsh"], "dsh-plugin");
 
     // 逐字写的 content 仍守 256 KiB，报错里提示改用 sourcePath。
-    let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "inline", "name": "逐字", "files": [{"path": "renderer.js", "content": "x".repeat(300 * 1024)}]})).await;
+    let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "inline", "name": "逐字", "newExtension": true, "files": [{"path": "renderer.js", "content": "x".repeat(300 * 1024)}]})).await;
     assert!(error && message.as_str().unwrap().contains("sourcePath"), "{message}");
     // 复制来的文本超过 4 MiB、不是 UTF-8、不是绝对路径都拒绝。
     for (path, source, expected) in [
@@ -698,7 +1021,7 @@ async fn write_copies_large_text_files_and_passes_instances_and_dsh() {
         ("data.bin", source.join("blob.bin").to_string_lossy().into_owned(), "不是 UTF-8"),
         ("renderer.js", "dist/renderer.js".to_string(), "必须是绝对路径"),
     ] {
-        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad", "name": "坏", "files": [{"path": path, "sourcePath": source}]})).await;
+        let (error, message) = call(&creator, "codexpp_extension_write", json!({"id": "bad", "name": "坏", "newExtension": true, "files": [{"path": path, "sourcePath": source}]})).await;
         assert!(error && message.as_str().unwrap().contains(expected), "{path}: {message}");
     }
 }
@@ -721,10 +1044,11 @@ fn disconnect_disables_only_owned_entry_and_reconnect_restores_it() {
     assert_eq!(fs::read_to_string(&config_path).unwrap(), "[mcp_servers.other]\ncommand = 'x'\n");
 
     managed_mcp::install(&SPEC, home.path(), &executable, &state).unwrap();
-    // 用户在条目上自加的字段要跨取消/重新接入保留。
+    // 用户在条目上自加的字段要跨取消/重新接入保留。接入时已经写好启动超时，
+    // 这里改它的值来模拟用户改动（再插一条同名键会让整份配置解析失败）。
     let with_user_field = fs::read_to_string(&config_path)
         .unwrap()
-        .replace("enabled = true", "enabled = true\nstartup_timeout_sec = 30");
+        .replace("startup_timeout_sec = 120.0", "startup_timeout_sec = 30");
     fs::write(&config_path, with_user_field).unwrap();
 
     let receipt = managed_mcp::disable(&SPEC, home.path(), &executable, &state).unwrap();

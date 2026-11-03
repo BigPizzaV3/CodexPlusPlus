@@ -186,6 +186,8 @@ pub struct ClaudeLocalizationStatus {
     pub voice_input: bool,
     /// 是否注入中文界面；关掉后副本按原语言启动，与「准备副本」互不影响。
     pub localization: bool,
+    /// 是否在受管副本里加载明确适配 Claude Code 的拓展。
+    pub extensions: bool,
     /// 是否在副本里解锁 Computer Use（改写 asar + 关闭 asar 完整性校验）。
     pub computer_use: bool,
     /// 当前平台是否真的能应用 Computer Use；Windows 的构建脚本不改写 asar，
@@ -767,6 +769,7 @@ fn initial_status(source: &Path, copy: &Path) -> ClaudeLocalizationStatus {
         catalog_entries: catalog_entries(),
         voice_input: settings.as_ref().is_none_or(|settings| settings.claude_app_voice_input),
         localization: settings.as_ref().is_none_or(|settings| settings.claude_app_localization),
+        extensions: settings.as_ref().is_some_and(|settings| settings.claude_app_extensions),
         computer_use: computer_use_enabled(),
         computer_use_supported: cfg!(target_os = "macos"),
         bash_timeout: bash_timeout_settings(),
@@ -890,11 +893,27 @@ fn localization_enabled() -> bool {
         .unwrap_or(true)
 }
 
+fn extensions_enabled() -> bool {
+    crate::settings::SettingsStore::default()
+        .load()
+        .map(|settings| settings.claude_app_extensions)
+        .unwrap_or(false)
+}
+
 /// 写入语音入口开关。只改 Codex++ 自己的设置，不触碰副本与官方应用。
 pub fn set_voice_input(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     let store = crate::settings::SettingsStore::default();
     let mut settings = store.load()?;
     settings.claude_app_voice_input = enabled;
+    store.save(&settings)?;
+    status()
+}
+
+/// 仅保存受管副本的拓展开关，插件在下一次启动增强版时生成和加载。
+pub fn set_extensions_enabled(enabled: bool) -> Result<ClaudeLocalizationStatus> {
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_app_extensions = enabled;
     store.save(&settings)?;
     status()
 }
@@ -1029,6 +1048,20 @@ fn hidden_script_command(program: &Path) -> Command {
     command
 }
 
+fn merged_plugin_dirs(existing: Option<&std::ffi::OsStr>, plugin: &Path) -> Result<std::ffi::OsString> {
+    ensure!(plugin.is_absolute(), "Claude 拓展插件路径必须是绝对路径");
+    let mut paths: Vec<PathBuf> = existing
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+    if !paths.iter().any(|path| path == plugin) {
+        paths.push(plugin.to_path_buf());
+    }
+    std::env::join_paths(paths).context("无法合并 Claude 拓展插件路径")
+}
+
 fn run_script(
     program: &Path,
     script: &str,
@@ -1058,6 +1091,13 @@ fn run_script(
         );
         for (key, value) in timeout.environment() {
             command.env(key, value);
+        }
+        if extensions_enabled() {
+            let plugin = crate::extension_claude::prepare_managed_plugin()?;
+            command.env(
+                "CLAUDE_CODE_PLUGIN_DIRS",
+                merged_plugin_dirs(std::env::var_os("CLAUDE_CODE_PLUGIN_DIRS").as_deref(), &plugin)?,
+            );
         }
     }
     let mut child = command
@@ -1321,6 +1361,22 @@ pub fn perform_with_progress(
 mod tests {
     use super::*;
 
+    #[test]
+    fn claude_plugin_dirs_preserve_existing_paths_and_do_not_duplicate_managed_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("another plugin");
+        let plugin = dir.path().join("codexpp");
+        let existing = std::env::join_paths([&first]).unwrap();
+        let merged = merged_plugin_dirs(Some(&existing), &plugin).unwrap();
+        assert_eq!(std::env::split_paths(&merged).collect::<Vec<_>>(), vec![first, plugin.clone()]);
+        assert_eq!(merged_plugin_dirs(Some(&merged), &plugin).unwrap(), merged);
+        assert_eq!(
+            std::env::split_paths(&merged_plugin_dirs(Some(std::ffi::OsStr::new("")), &plugin).unwrap()).collect::<Vec<_>>(),
+            vec![plugin],
+        );
+        assert!(merged_plugin_dirs(None, Path::new("relative-plugin")).is_err());
+    }
+
     /// Windows 上 Claude 的 config.json 带 UTF-8 BOM 时也能读、能汉化（#2728）。
     #[test]
     fn config_with_utf8_bom_is_read() {
@@ -1547,7 +1603,7 @@ mod tests {
             source_version: String::new(), copy_version: String::new(),
             prepared: false, needs_rebuild: false, running: false,
             node_available: false, python_available: false, shell_locale: None,
-            catalog_entries: 0, voice_input: true, localization: true, computer_use: false,
+            catalog_entries: 0, voice_input: true, localization: true, extensions: false, computer_use: false,
             computer_use_supported: cfg!(target_os = "macos"),
             bash_timeout: Default::default(),
             bash_timeout_warning: None,

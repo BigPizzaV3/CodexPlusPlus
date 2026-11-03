@@ -89,7 +89,7 @@ test("local script state merges the user switch with the runtime load status", (
 test("local script rows no longer render the switch label and raw status as two columns", () => {
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   const row = app.slice(app.indexOf("function ScriptRow("), app.indexOf("function AdGrid("));
-  assert.ok(row.includes("localScriptState("), "ScriptRow should derive one merged state");
+  assert.ok(row.includes("extensionStateForHost("), "ScriptRow should derive one merged state for the selected host");
   assert.ok(!row.includes("{script.status}"), "raw loaded/disabled column should be gone");
   assert.ok(!row.includes('t("启用") : t("关闭")'), "separate enabled/disabled text column should be gone");
 });

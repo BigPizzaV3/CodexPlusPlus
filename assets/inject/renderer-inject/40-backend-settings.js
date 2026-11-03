@@ -200,6 +200,8 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
+  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
   // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
@@ -285,7 +287,17 @@
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           syncOfficialUsagePolicy();
         }
-        void syncBackendSettingsFromHeartbeat();
+        // 设置没变就不拉 /settings/get：那份 JSON 有 166 KB，五秒一次的编解码本身就够把
+        // 渲染进程主线程切碎。后端在 status 里带上快照版本，这里只比对字符串。
+        // 老后端不带版本（空串）时退回原来的每次全量拉取，行为不变。
+        const revision = typeof nextStatus.settingsRevision === "string" ? nextStatus.settingsRevision : "";
+        const settingsStale = !revision
+          || !codexPlusBackendSettingsLoaded
+          || revision !== codexPlusBackendSettingsRevision;
+        if (settingsStale) {
+          codexPlusBackendSettingsRevision = revision;
+          void syncBackendSettingsFromHeartbeat();
+        }
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {

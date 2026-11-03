@@ -1,0 +1,31 @@
+{
+  "id": "claude-extension-demo",
+  "name": "Claude 拓展连通测试",
+  "version": "0.1.0",
+  "description": "验证 Claude Desktop 的按钮、后台工具与会话事件。",
+  "engines": { "codexpp": 1 },
+  "backend": { "script": "backend.mjs" },
+  "claudeDesktop": {
+    "buttons": [
+      { "id": "status", "label": "拓展状态", "method": "status" }
+    ],
+    "events": {
+      "session.start": "recordEvent",
+      "turn.start": "recordEvent",
+      "turn.complete": "recordEvent",
+      "session.end": "recordEvent"
+    },
+    "tools": [
+      {
+        "name": "status",
+        "description": "读取 Claude 拓展连通测试收到的会话事件与按钮点击次数。",
+        "method": "status",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

@@ -79,6 +79,39 @@
   const codexPlusExtensionCallTimeoutMs = 26000;
 
   /**
+   * 只读轮询路由的合并窗口（毫秒）。
+   *
+   * 拓展面板普遍用 setInterval 轮询这几个只读接口，每个面板各轮一次就是一次独立的桥
+   * 往返，而后端每条请求都要走一遍 JSON 编解码。实测 /request-log/recent 58 次/分钟、
+   * /thread-usage-live 37 次/分钟，几乎全是同一 payload 的重复请求。
+   * 窗口内同参调用复用同一个 Promise：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
+   * 后端与桥的往返次数按窗口长度下降一个量级。
+   */
+  const codexPlusExtensionCoalesceWindowMs = new Map([
+    // 实测这些面板的轮询间隔在 1~1.5 秒，窗口必须比它长才有合并效果；
+    // 对「最近请求 / 实时用量」这类只读展示，两秒的滞后看不出来。
+    ["/request-log/recent", 2000],
+    ["/thread-usage-live", 2000],
+    ["/proxy-status", 2000],
+    ["/backend/status", 2200],
+    ["/thread-usage-history", 3000],
+    ["/settings/public", 5000],
+    ["/model-catalog/public", 30000],
+    ["/cdp/targets", 5000],
+  ]);
+
+  /** route + payload 指纹 → { at, promise }。只在窗口内复用，过期即重发。 */
+  const codexPlusExtensionCallCache = new Map();
+
+  function codexPlusExtensionCallCacheKey(route, payload) {
+    try {
+      return `${route}\u0000${JSON.stringify(payload ?? {})}`;
+    } catch {
+      return "";
+    }
+  }
+
+  /**
    * 调用后端。
    *
    * 直接暴露 __codexSessionDeleteBridge 有三个问题：名字语义错位（它早就不只用于
@@ -93,6 +126,24 @@
     if (typeof bridge !== "function") {
       return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
     }
+    const windowMs = codexPlusExtensionCoalesceWindowMs.get(route);
+    const cacheKey = windowMs ? codexPlusExtensionCallCacheKey(route, payload) : "";
+    if (!windowMs || !cacheKey) return codexPlusExtensionCallOnce(route, payload, options, bridge);
+    const now = Date.now();
+    const cached = codexPlusExtensionCallCache.get(cacheKey);
+    if (cached && now - cached.at < windowMs) return cached.promise;
+    const promise = codexPlusExtensionCallOnce(route, payload, options, bridge);
+    const entry = { at: now, promise };
+    codexPlusExtensionCallCache.set(cacheKey, entry);
+    // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
+    promise.catch(() => {
+      if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+    });
+    return promise;
+  }
+
+  /** 真正发起一次桥调用（不做合并）。 */
+  function codexPlusExtensionCallOnce(route, payload, options, bridge) {
     const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
     // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
     const request = bridge(route, payload);

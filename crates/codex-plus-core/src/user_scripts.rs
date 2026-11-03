@@ -127,6 +127,8 @@ fn parse_live_runtime_status_response(response: &Value) -> anyhow::Result<Value>
 pub struct UserScriptConfig {
     pub enabled: bool,
     pub scripts: BTreeMap<String, bool>,
+    /// Claude 的单项开关独立保存；空表也要写入，区分尚未迁移的旧配置。
+    pub claude_scripts: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub skip_next_start: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -141,6 +143,7 @@ impl Default for UserScriptConfig {
         Self {
             enabled: true,
             scripts: BTreeMap::new(),
+            claude_scripts: BTreeMap::new(),
             skip_next_start: false,
             market: BTreeMap::new(),
             configs: BTreeMap::new(),
@@ -239,6 +242,10 @@ impl UserScriptManager {
         self
     }
 
+    pub(crate) fn settings_path(&self) -> Option<&std::path::Path> {
+        self.settings_path.as_deref()
+    }
+
     /// 当前设置的 JSON 形态（读不到时用默认设置）。
     fn settings_value(&self) -> Value {
         let settings = match &self.settings_path {
@@ -260,7 +267,21 @@ impl UserScriptManager {
         let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&text) else {
             return UserScriptConfig::default();
         };
-        config_from_object(&raw)
+        let mut config = config_from_object(&raw);
+        if !raw.contains_key("claude_scripts") {
+            config.claude_scripts = config.scripts.clone();
+            // 旧版的整体开关也约束 Claude；迁移后保留当时各项的关闭状态。
+            if !config.enabled {
+                if let Ok(scripts) = self.scan_script_files(&config) {
+                    for script in scripts {
+                        if script.package.as_ref().is_some_and(|package| package.claude_desktop.is_some()) {
+                            config.claude_scripts.insert(script.key, false);
+                        }
+                    }
+                }
+            }
+        }
+        config
     }
 
     pub fn save_config(&self, config: &UserScriptConfig) -> anyhow::Result<()> {
@@ -337,6 +358,28 @@ impl UserScriptManager {
         Ok(config)
     }
 
+    /// Claude 只接受显式适配的拓展包；不改 Codex 的单项开关或设置字段。
+    pub fn set_claude_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
+        let _guard = self.config_lock.lock().unwrap();
+        let mut config = self.load_config_unlocked();
+        let script = self.scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展 {key}"))?;
+        let package = script.package.context("Claude Desktop 只支持显式适配的拓展包")?;
+        if package.claude_desktop.is_none() {
+            anyhow::bail!("拓展没有声明 claudeDesktop");
+        }
+        if enabled {
+            if let Some(error) = package.error {
+                anyhow::bail!("拓展包清单有误：{error}");
+            }
+        }
+        config.claude_scripts.insert(key.to_string(), enabled);
+        self.save_config_unlocked(&config)?;
+        Ok(config)
+    }
+
     pub fn delete_user_script(&self, key: &str) -> anyhow::Result<UserScriptConfig> {
         let Some(file_name) = key.strip_prefix("user:").filter(|value| !value.is_empty()) else {
             anyhow::bail!("only user scripts can be deleted");
@@ -377,6 +420,7 @@ impl UserScriptManager {
         let _guard = self.config_lock.lock().unwrap();
         let mut config = self.load_config_unlocked();
         config.scripts.remove(key);
+        config.claude_scripts.remove(key);
         config.market.remove(key);
         self.save_config_unlocked(&config)?;
         Ok(config)
@@ -652,6 +696,70 @@ impl UserScriptManager {
         }
         let backend = package.backend.with_context(|| format!("拓展 {key} 没有声明 backend"))?;
         Ok((package.id, backend, package.config))
+    }
+
+    /// Claude 宿主总开关独立于 Codex，旧配置默认不接入。
+    pub fn claude_extensions_enabled(&self) -> bool {
+        self.settings_value().get("claudeAppExtensions").and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    pub fn set_claude_extensions_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let path = self.settings_path.clone().context("没有设置文件，不能切换 Claude Desktop 拓展")?;
+        crate::settings::SettingsStore::new(path).update(json!({ "claudeAppExtensions": enabled }))?;
+        Ok(())
+    }
+
+    /// 只下发 Claude Mods 的声明；不包含配置值、后台脚本或其它本机路径。
+    pub fn enabled_claude_extensions(&self) -> anyhow::Result<Vec<crate::extension_claude::EnabledClaudeExtension>> {
+        let config = self.load_config();
+        if !self.claude_extensions_enabled() {
+            return Ok(Vec::new());
+        }
+        Ok(self.scan_script_files(&config)?
+            .into_iter()
+            .filter(|script| config.claude_scripts.get(&script.key).copied().unwrap_or(true))
+            .filter_map(|script| {
+                let package = script.package.filter(|package| package.error.is_none())?;
+                Some(crate::extension_claude::EnabledClaudeExtension {
+                    key: script.key,
+                    name: package.name.unwrap_or_else(|| package.id.clone()),
+                    id: package.id,
+                    declaration: package.claude_desktop?,
+                })
+            })
+            .collect())
+    }
+
+    /// 每次 Claude 调用都重新确认宿主开关、拓展身份与清单方法白名单，不沿用 Codex 的扫描缓存。
+    pub(crate) fn enabled_claude_extension_backend(
+        &self,
+        key: &str,
+        method: &str,
+    ) -> anyhow::Result<(String, PathBuf, Value)> {
+        if !self.claude_extensions_enabled() {
+            anyhow::bail!("Claude Desktop 拓展已关闭");
+        }
+        let config = self.load_config();
+        let script = self.scan_script_files(&config)?
+            .into_iter()
+            .find(|script| script.key == key)
+            .with_context(|| format!("没有找到拓展 {key}"))?;
+        if !config.claude_scripts.get(key).copied().unwrap_or(true) {
+            anyhow::bail!("拓展 {key} 已停用");
+        }
+        let package = script.package.with_context(|| format!("{key} 不是拓展包"))?;
+        if let Some(error) = package.error {
+            anyhow::bail!("拓展包清单有误：{error}");
+        }
+        let declaration = package.claude_desktop.context("拓展没有声明 claudeDesktop")?;
+        if !declaration.permits(method) {
+            anyhow::bail!("Claude Desktop 无权调用拓展 {key} 的方法 {method}");
+        }
+        Ok((
+            package.id,
+            package.backend.context("Claude Desktop 拓展没有声明 backend")?,
+            package.config,
+        ))
     }
 
     /// 启用中、清单无误的拓展包声明的模型工具，附带拓展 id。
@@ -1051,7 +1159,7 @@ impl UserScriptManager {
             manifest["providers"] = providers.clone();
         }
         for (key, item) in &write.extra {
-            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources" | "manager" | "preload" | "launch" | "replaces" | "instances" | "dsh") {
+            if matches!(key.as_str(), "skills" | "agents" | "mcpServers" | "instructions" | "schedules" | "prompts" | "resources" | "manager" | "preload" | "launch" | "replaces" | "instances" | "dsh" | "claudeDesktop") {
                 manifest[key.as_str()] = item.clone();
             }
         }
@@ -1114,6 +1222,7 @@ impl UserScriptManager {
         Ok(json!({
             "builtins": self.builtin_extensions()?,
             "enabled": config.enabled,
+            "claude_enabled": self.claude_extensions_enabled(),
             "skip_next_start": config.skip_next_start,
             "builtin_dir": self.builtin_dir.to_string_lossy(),
             "user_dir": self.user_dir.to_string_lossy(),
@@ -1380,6 +1489,9 @@ impl UserScriptManager {
                     "kind": if script.package.is_some() { "package" } else { "script" },
                     "package": script.package.as_ref().map(|package| package.summary()),
                     "enabled": script.enabled,
+                    "claude_enabled": script.package.as_ref()
+                        .filter(|package| package.claude_desktop.is_some())
+                        .map(|_| config.claude_scripts.get(&script.key).copied().unwrap_or(true)),
                     "replacedBy": script.replaced_by,
                     "status": status,
                     "error": error,
@@ -1518,6 +1630,8 @@ struct ExtensionPackage {
     engine: u64,
     routes: Vec<String>,
     renderer: Vec<PathBuf>,
+    /// Claude Desktop Mods 的显式接入声明，不作为 Codex renderer 或后台服务登记。
+    claude_desktop: Option<crate::extension_claude::ClaudeDesktopExtension>,
     hooks: Vec<ExtensionHook>,
     gateway_request: Vec<ExtensionGatewayMiddleware>,
     /// 关掉的内置网关环节（codexpp.json 的 `gateway.replaces`）。
@@ -1788,6 +1902,10 @@ pub fn default_user_scripts_config_dir() -> PathBuf {
 
 /// 默认用户脚本位置：内置目录在程序旁，用户目录在配置目录下。
 pub fn default_user_script_manager() -> UserScriptManager {
+    default_user_script_manager_for_settings(crate::paths::default_settings_path())
+}
+
+pub(crate) fn default_user_script_manager_for_settings(settings_path: PathBuf) -> UserScriptManager {
     let config_dir = default_user_scripts_config_dir();
     let builtin_dir = std::env::current_exe()
         .ok()
@@ -1796,7 +1914,7 @@ pub fn default_user_script_manager() -> UserScriptManager {
         .unwrap_or_else(|| PathBuf::from("user_scripts"));
     let bundled_dir = config_dir.join("bundled_extensions");
     let manager = UserScriptManager::new(builtin_dir, config_dir.join("user_scripts"), config_dir.join("user_scripts.json"))
-        .with_settings_path(crate::paths::default_settings_path())
+        .with_settings_path(settings_path.clone())
         .with_bundled_dir(bundled_dir.clone());
     // 每个进程第一次用到时写出官方拓展包、迁移旧的内置桌宠 / 打字特效 / 背景图 / 用量状态栏 / 请求状态条设置；失败只记日志，不影响别的拓展。
     static BUNDLED_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
@@ -1807,7 +1925,7 @@ pub fn default_user_script_manager() -> UserScriptManager {
                 json!({ "error": format!("{error:#}") }),
             );
         }
-        let settings = crate::settings::SettingsStore::default().load().unwrap_or_default();
+        let settings = crate::settings::SettingsStore::new(settings_path).load().unwrap_or_default();
         if let Err(error) = manager.migrate_bundled_agent_pet(&settings) {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bundled_extensions.agent_pet_migration_failed",
@@ -2014,6 +2132,7 @@ impl ExtensionPackage {
             "engine": self.engine,
             "routes": self.routes,
             "renderer": self.renderer.len(),
+            "claudeDesktop": self.claude_desktop,
             "hookEvents": self.hooks.iter().map(|hook| hook.event.as_str()).collect::<std::collections::BTreeSet<_>>(),
             "gatewayRequest": self.gateway_request.len(),
             "gatewayReplaces": self.gateway_replaces,
@@ -2291,6 +2410,7 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
         engine: EXTENSION_API_VERSION,
         routes: Vec::new(),
         renderer: Vec::new(),
+        claude_desktop: None,
         hooks: Vec::new(),
         gateway_request: Vec::new(),
         gateway_replaces: Vec::new(),
@@ -2577,6 +2697,12 @@ fn parse_extension_manifest(
         }
         Some(_) => anyhow::bail!("backend 必须是对象：{{ \"script\": \"backend/main.mjs\" }}"),
     };
+    package.claude_desktop = raw.get("claudeDesktop")
+        .map(crate::extension_claude::ClaudeDesktopExtension::parse)
+        .transpose()?;
+    if package.claude_desktop.is_some() && package.backend.is_none() {
+        anyhow::bail!("claudeDesktop 调用后台方法，需要同时声明 backend.script");
+    }
     package.replaces = parse_extension_replaces(raw.get("replaces"))?;
     package.dsh = match raw.get("dsh") {
         None => None,
@@ -3254,6 +3380,15 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
     UserScriptConfig {
         enabled,
         scripts,
+        claude_scripts: raw
+            .get("claude_scripts")
+            .and_then(Value::as_object)
+            .map(|items| {
+                items.iter()
+                    .filter_map(|(key, value)| Some((key.clone(), value.as_bool()?)))
+                    .collect()
+            })
+            .unwrap_or_default(),
         skip_next_start,
         market,
         configs,

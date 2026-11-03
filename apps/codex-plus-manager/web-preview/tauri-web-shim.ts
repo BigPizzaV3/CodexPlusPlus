@@ -17,6 +17,7 @@ const previewEnglish = (() => {
 const L = (zh: string, en: string) => (previewEnglish ? en : zh);
 
 const demoSettings = {
+  claudeAppExtensions: false,
   revision: "web-preview",
   codexAppPath: "/Applications/Codex.app",
   codexAppAutoTakeover: false,
@@ -604,6 +605,7 @@ const demoClaudeEnhance = {
   catalogEntries: 2864,
   voiceInput: false,
   localization: true,
+  extensions: false,
   computerUse: true,
   computerUseSupported: true,
   bashTimeout: { enabled: false, defaultEnabled: false, defaultSeconds: 120, maxEnabled: false, maxSeconds: 600 },
@@ -619,7 +621,7 @@ const demoBuiltins = [
   ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
   ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],
 ].map(([id, name, enabled, replacedBy]) => ({ id, key: `builtin:${id}`, name, description: "", enabled, replacedBy }));
-const demoUserScripts = { enabled: true, skip_next_start: false, builtins: demoBuiltins, scripts: [
+const demoUserScripts = { enabled: true, claude_enabled: false, skip_next_start: false, builtins: demoBuiltins, scripts: [
   { key: "user:copy-title.js", name: "copy-title.js", source: "user", kind: "script", package: null, enabled: true, status: "loaded", error: "" },
   { key: "user:pomodoro_timer", name: "番茄钟", source: "user", kind: "package", enabled: true, status: "loaded", error: "",
     package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [],
@@ -640,6 +642,10 @@ const demoUserScripts = { enabled: true, skip_next_start: false, builtins: demoB
       config: { minutes: 25, sound: true, theme: "red", note: "休息一下\n喝口水", tags: ["工作"], webhook: { url: "", retry: 1 } } } },
   { key: "user:future-ext", name: "未来拓展", source: "user", kind: "package", enabled: true, status: "failed",
     error: "需要拓展 API v2，当前 Codex++ 提供 v1，请升级 Codex++", package: { id: "future-ext", version: "1.0.0", description: "", engine: 2, routes: [] } },
+  { key: "user:claude-extension-demo", name: "Claude 连通测试", source: "user", kind: "package",
+    enabled: false, claude_enabled: true, status: "disabled", error: "",
+    package: { id: "claude-extension-demo", version: "0.1.0", description: "按钮、后台工具与会话事件", engine: 1, routes: [], backend: true,
+      claudeDesktop: { buttons: [{ id: "status", label: "Status", method: "status" }] } } },
 ] };
 const settingsResult = () => ok({ revision: "web-preview", settings: demoSettings, settings_path: "演示模式", user_scripts: demoUserScripts });
 
@@ -647,6 +653,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
   switch (command) {
     case "list_tools": return tools as T;
     case "load_gateway": return gateway as T;
+    case "start_gateway_subscription_login": return ok({ start: { message: "", state: {} } }) as T;
     case "scan_agent_cache": return ok({ report: agentCacheReport }) as T;
     case "fetch_provider_models": return ok({ models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"], endpoint: "https://api.anthropic.com/v1/models" }) as T;
     case "agent_pet_catalog": return [
@@ -691,8 +698,28 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "set_settings_path":
     case "reset_settings_path":
     case "refresh_user_script_inventory":
-      if (command === "save_settings" && args.settings) return ok({ revision: "web-preview", settings: args.settings, settings_path: "演示模式", user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
+      if (command === "save_settings" && args.settings) {
+        Object.assign(demoSettings, args.settings);
+        tools.activeTool = demoSettings.activeTool;
+      }
       return settingsResult() as T;
+    case "set_user_scripts_enabled":
+      if (args.host === "claude") {
+        demoUserScripts.claude_enabled = Boolean(args.enabled);
+        demoSettings.claudeAppExtensions = Boolean(args.enabled);
+        demoClaudeEnhance.extensions = Boolean(args.enabled);
+      } else {
+        demoUserScripts.enabled = Boolean(args.enabled);
+      }
+      return settingsResult() as T;
+    case "set_user_script_enabled": {
+      const script = demoUserScripts.scripts.find((item) => item.key === args.key);
+      if (script) {
+        if (args.host === "claude") script.claude_enabled = Boolean(args.enabled);
+        else script.enabled = Boolean(args.enabled);
+      }
+      return settingsResult() as T;
+    }
     case "relay_status": return ok({ authenticated: true, authSource: "演示", accountLabel: "Web preview", configPath: "演示模式", configured: true, requiresOpenaiAuth: false, hasBearerToken: true, backupPath: null }) as T;
     case "read_relay_files": return ok({ configPath: "演示模式", authPath: "演示模式", configContents: "[model_providers.custom]", authContents: "{}" }) as T;
     case "check_env_conflicts": return ok({ conflicts: [] }) as T;
@@ -717,7 +744,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     ], packages: [
       { kind: "package", id: "session-search", name: L("会话搜索", "Session search"), description: L("在侧边栏搜索全部历史会话，回车跳到命中的那一轮。", "Search all past sessions from the sidebar and jump to the matching turn."), version: "1.0.0", author: "Codex++", tags: ["history"], homepage: "", icon: "", updatedAt: "2026-10-30", repo: "BigPizzaV3/codexpp-session-search", tag: "v1.0.0", sha: "9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a", official: true, channel: "official", installed: false, installedVersion: "", installedSha: "", updateAvailable: false },
       { kind: "package", id: "word-guard", name: L("命令守卫", "Command guard"), description: L("拦截危险的 shell 命令，并给出更安全的替代写法。", "Block dangerous shell commands and suggest safer alternatives."), version: "1.2.0", author: "alice", tags: ["hooks"], homepage: "", icon: "", updatedAt: "2026-10-28", repo: "alice/codexpp-word-guard", tag: "v1.2.0", sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", official: false, channel: "curated", installed: true, installedVersion: "1.1.0", installedSha: "0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a9c1e", updateAvailable: true },
-    ], blockedInstalled: [] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
+    ], blockedInstalled: [] }, user_scripts: demoUserScripts }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
     case "load_local_sessions":
@@ -734,6 +761,12 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.3.1", at: Date.now() - 120_000 } }) as T;
     // Claude 增强演示数据：增强版已制作，开了界面汉化与 Computer Use。
     case "claude_localization_status": return ok(demoClaudeEnhance) as T;
+    case "claude_localization_set_extensions": {
+      demoClaudeEnhance.extensions = Boolean(args.enabled);
+      demoSettings.claudeAppExtensions = Boolean(args.enabled);
+      demoUserScripts.claude_enabled = Boolean(args.enabled);
+      return ok(demoClaudeEnhance) as T;
+    }
     case "load_relay_environment":
     case "check_relay_environment": return ok({ clashVergeTun: { enabled: false, configPath: null }, proxyEnvironment: { variables: [] }, codexEnvFile: { exists: false, path: "" } }) as T;
     // 中转站识别：演示供应商按地址返回 sub2api（倍率 + 钱包余额）或 new-api（分组倍率 + Key 额度），其余识别不出。

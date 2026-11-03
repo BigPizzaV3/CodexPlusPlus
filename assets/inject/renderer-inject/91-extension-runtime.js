@@ -1,3 +1,12 @@
+  // 注入代际（00-prelude 在每个实例启动时写入）。重新注入后旧实例留下的常驻循环
+  // 靠它自检并退出，否则每注入一次就多叠一套轮询。测试片段可能只抽这个文件，
+  // 所以对「变量不存在」做一次兜底。
+  const codexPlusInjectionGeneration = typeof codexPlusRuntimeGeneration === "undefined"
+    ? (window.__codexPlusRuntimeGeneration || 0)
+    : codexPlusRuntimeGeneration;
+  const codexPlusInjectionStillCurrent = () =>
+    (window.__codexPlusRuntimeGeneration || 0) === codexPlusInjectionGeneration;
+
   /**
    * 拓展运行时内核：codexPlus.extension(apply)
    *
@@ -149,6 +158,12 @@
         let timer = null;
         const interval = Math.max(500, Number(options.intervalMs) || 2000);
         const tick = async () => {
+          // 重新注入后旧实例的订阅循环必须停：它只认自己闭包里的 stopped，
+          // 没人会替它置位，不停就是每次注入多一条永久轮询。
+          if (!stopped && !codexPlusInjectionStillCurrent()) {
+            stopped = true;
+            clearTimeout(timer);
+          }
           if (stopped) return;
           try {
             if (next === null) {
@@ -522,19 +537,37 @@
 
   function codexPlusEnsureSessionWatcher() {
     if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
+    // 重新注入会带来一整套新的闭包，而旧的 tick 循环还活着、只认自己闭包里的变量，
+    // 于是每注入一次就多叠一套轮询。用注入代际让旧循环发现「已经被接管」后自己收摊。
+    const stillCurrent = codexPlusInjectionStillCurrent;
     const query = codexPlusSessionQueryService();
     const cursors = new Map();
     // callId → { name, arguments }：tools/result 要带上调用时的工具名与参数。
     const calls = new Map();
     let primed = false;
+    // 会话列表的变化比会话内容慢一个量级：每轮都拉一次 listSessions 等于两秒一次全量，
+    // 实测把 /extensions/history 顶到 137 次/分钟。这里缓存列表，每 4 轮刷新一次。
+    let cachedSessions = null;
+    let round = 0;
     const tick = async () => {
+      if (!stillCurrent()) {
+        clearTimeout(codexPlusSessionWatcher);
+        codexPlusSessionWatcher = null;
+        return;
+      }
       if (!codexPlusWantsSessionWatch()) {
         codexPlusSessionWatcher = null;
         return;
       }
       try {
-        const sessions = await query.listSessions({ limit: 20 });
-        for (const [index, session] of (sessions || []).entries()) {
+        if (!cachedSessions || round % 4 === 0) {
+          cachedSessions = await query.listSessions({ limit: 20 });
+        }
+        round += 1;
+        // 只有正在看的会话需要每轮实时读；其余会话按更新时间变化再读（精度到秒）。
+        // 原来对前 3 个会话无条件读，等于每轮固定 3 次桥往返，是空转的大头。
+        const activeId = codexPlusCurrentSessionId();
+        for (const session of cachedSessions || []) {
           let cursor = cursors.get(session.id);
           if (!cursor) {
             if (primed) codexPlusEmitExtensionEvent("agent/created", [{ agent: codexPlusAgentDescriptor(session.id), source: "startup" }]);
@@ -547,8 +580,8 @@
             cursors.set(session.id, cursor);
             if (!primed) continue;
           }
-          // 最近的几个会话每轮都看（更新时间精度只到秒），其余按更新时间变化再读。
-          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          const isActive = Boolean(activeId) && session.id === activeId;
+          if (!isActive && cursor.updatedAt === session.updatedAt) continue;
           cursor.updatedAt = session.updatedAt;
           const events = await query.readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => []);
           for (const event of events || []) {
@@ -561,7 +594,8 @@
         }
         primed = true;
       } catch {}
-      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
+      // 后台标签页里没人看，降到一个量级更低的节拍，别在用户切走之后继续占桥。
+      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 30000 : 1500);
     };
     codexPlusSessionWatcher = setTimeout(tick, 0);
   }
