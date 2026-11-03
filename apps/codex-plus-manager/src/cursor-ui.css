@@ -241,15 +241,19 @@
   align-items: center;
 }
 
-/* 每个 Agent 行右边都给启动 / 停止按钮留同样的位置（没有按钮的行也留），状态点才对成一列，不被按钮挤跑。 */
-:root .shell .cx-side-agent .cx-side-item,
-:root .shell .cx-side-agent.has-run .cx-side-item {
-  padding-right: 36px;
+/* 状态点一律贴在每行最右边、对成一列；Codex 行的启动 / 停止按钮放在状态点左边（.cx-side-run 的 right），
+   名字给按钮让出位置，长名字不会压到按钮下面。 */
+:root .shell .cx-side-agent .cx-side-item {
+  padding-right: 10px;
+}
+
+:root .shell .cx-side-agent.has-run .cx-side-label {
+  margin-right: 28px;
 }
 
 :root .shell .cx-side-run {
   position: absolute;
-  right: 6px;
+  right: 22px;
   display: inline-flex;
   width: 22px;
   height: 22px;
