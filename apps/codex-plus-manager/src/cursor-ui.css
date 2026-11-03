@@ -614,13 +614,13 @@
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   color: hsl(var(--muted-foreground));
   font-size: 12.5px;
   line-height: 1.5;
 }
 
-/* 说明默认两行；悬停整行时展开全文。 */
+/* 说明默认一行（参照 Cursor 设置页）；悬停整行时展开全文。 */
 :root .shell .setting-row:hover .setting-row-copy > span,
 :root .shell .feature-toggle:hover small {
   -webkit-line-clamp: unset;

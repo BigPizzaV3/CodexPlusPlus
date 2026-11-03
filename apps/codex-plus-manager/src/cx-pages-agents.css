@@ -810,7 +810,7 @@
   max-width: 720px;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   margin-top: 2px;
   color: hsl(var(--muted-foreground));
   font-size: 12.5px;
@@ -839,4 +839,8 @@
   padding: 6px 0;
   border: 0;
   background: transparent;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row:hover small {
+  -webkit-line-clamp: unset;
 }
