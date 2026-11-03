@@ -273,7 +273,7 @@ test("推荐内容只显示赞助商推荐", () => {
 });
 
 test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {
-  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page"]) {
+  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page cx-page"]) {
     assert.ok(text.includes(`className="${page}"`), page);
   }
   const layer = readSource("./cursor-ui.css");

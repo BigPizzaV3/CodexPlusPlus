@@ -501,3 +501,181 @@
   color: hsl(var(--muted-foreground));
   font-size: 11.5px;
 }
+
+/* ── 微信连接（WeixinConnectScreen） ───────────────────────── */
+
+:root .shell .weixin-connect-page.cx-page {
+  display: flex;
+  width: min(100%, var(--cx-content));
+  align-items: stretch;
+  margin-inline: auto;
+}
+
+:root .shell .weixin-connect-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .weixin-connect-page .weixin-status-panel {
+  position: static;
+  padding: 0;
+  border: 0;
+}
+
+:root .shell .weixin-connect-page .weixin-status-panel::before {
+  display: none;
+}
+
+:root .shell .weixin-connect-page .weixin-status-panel .cx-row {
+  min-height: 64px;
+}
+
+:root .shell .weixin-status-detail {
+  display: flex;
+  min-width: 0;
+  gap: 4px 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:root .shell .weixin-status-detail > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .weixin-status-detail > span:first-child {
+  flex: 0 1 auto;
+}
+
+:root .shell .weixin-status-detail code {
+  font-size: 11.5px;
+}
+
+:root .shell .weixin-status-detail b {
+  color: hsl(var(--foreground));
+  font-weight: 500;
+}
+
+:root .shell .weixin-autosave .settings-autosave {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+/* 设置卡：SettingRow 行，左标题 + 说明，右控件。 */
+:root .shell .weixin-settings-card {
+  padding: 0 14px;
+}
+
+:root .shell .weixin-settings-card .setting-row {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 380px);
+}
+
+:root .shell .weixin-settings-card .setting-row-control > * {
+  width: 100%;
+}
+
+:root .shell .weixin-settings-card .setting-row-control input {
+  height: 32px;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row > :first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row > button {
+  width: auto;
+  height: auto;
+  flex: none;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row > .cx-icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+:root .shell .weixin-connect-page [aria-invalid="true"] .app-select-trigger {
+  border-color: hsl(var(--status-error) / 0.6);
+}
+
+/* 扫码：二维码在左，链接与两个按钮在右。 */
+:root .shell .weixin-qr-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 16px;
+}
+
+:root .shell .weixin-qr-card .weixin-qr-image {
+  width: 180px;
+  flex: none;
+  margin: 0;
+}
+
+:root .shell .weixin-qr-side {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+:root .shell .weixin-qr-side > p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .weixin-qr-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 高级：默认收起的一节。 */
+:root .shell .weixin-advanced > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 4px 8px;
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+:root .shell .weixin-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .weixin-advanced > summary::before {
+  content: "›";
+  display: inline-block;
+  color: hsl(var(--muted-foreground));
+  transition: transform 140ms ease;
+}
+
+:root .shell .weixin-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+:root .shell .weixin-advanced > summary small {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .weixin-settings-card .setting-row-control > button {
+  width: auto;
+  margin-left: auto;
+}
