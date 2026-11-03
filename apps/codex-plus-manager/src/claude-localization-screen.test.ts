@@ -38,7 +38,7 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
   };
   const context = vm.createContext({
     React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck"].map((name) => [name, name])),
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck", "Menu", "MenuItem"].map((name) => [name, name])),
     // 页面骨架组件（cx-layout）按名字渲染成占位元素。
     AgentCx: new Proxy({}, { get: (_target, name) => String(name) }),
     t: (text: string) => text,
@@ -94,7 +94,8 @@ function buttons(element: any): Element[] {
   if (element == null || typeof element !== "object") return [];
   if (Array.isArray(element)) return element.flatMap(buttons);
   // 页头的「启动增强版」是 Button 组件，页内操作是骨架的原生 button（图标按钮的文字在 sr-only 里）。
-  return [...(element.type === "Button" || element.type === "button" ? [element] : []), ...buttons(element.props.children)];
+  // 检查、重新检测收进了三点菜单（MenuItem）。
+  return [...(element.type === "Button" || element.type === "button" || element.type === "MenuItem" ? [element] : []), ...buttons(element.props.children)];
 }
 function inputs(element: any): Element[] {
   if (element == null || typeof element !== "object") return [];
@@ -205,7 +206,9 @@ test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开�
   await tick();
   const page = quiet.render();
   assert.equal(warning(page), false, "未接入时不应显示冲突提醒");
-  assert.ok(text(page).includes("二选一"), "仍保留一句二选一的说明");
+  // 二选一的说明收进 Computer Use 那一行的悬停提示，不再常驻占一行。
+  assert.ok(JSON.stringify(page).includes("二选一"), "仍保留一句二选一的说明");
+  assert.equal(text(page).includes("两套独立实现"), false);
 });
 
 test("Claude 增强页不再重复提供万物皆拓展开关，保留其他增强项", () => {

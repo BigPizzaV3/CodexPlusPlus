@@ -930,7 +930,7 @@ fn build_main_window<R: tauri::Runtime>(
         main_window_builder = main_window_builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(18.0, 22.0));
+            .traffic_light_position(tauri::LogicalPosition::new(18.0, 17.0));
     }
     if let Some(icon) = app.default_window_icon().cloned() {
         main_window_builder = main_window_builder.icon(icon)?;

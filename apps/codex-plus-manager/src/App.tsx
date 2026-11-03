@@ -16270,26 +16270,21 @@ function ClaudeLocalizationScreen() {
           icon={<CxStatusIcon tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "off"}><PackageOpen /></CxStatusIcon>}
           title={t("受管增强版")}
         >
+          {/* 首次要制作时「制作增强版」是唯一的按钮；检查、重新检测、重新制作都收进三点菜单。 */}
           <div className="claude-l10n-actions">
             {needsPrepare || !s ? (
               <button className="cx-secondary" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={prepareHint} type="button">
                 <PackageOpen />
                 {prepareLabel}
               </button>
-            ) : (
-              <button aria-label={prepareLabel} className="cx-icon-button" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={`${prepareLabel}：${prepareHint}`} type="button">
-                <PackageOpen />
-                <span className="sr-only">{prepareLabel}</span>
-              </button>
-            )}
-            <button className="cx-icon-button" disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} title={t("检查增强版")} type="button">
-              <ShieldCheck />
-              <span className="sr-only">{t("检查增强版")}</span>
-            </button>
-            <button className="cx-icon-button" disabled={busy !== null} onClick={() => void refresh()} title={t("检测 Claude")} type="button">
-              <RefreshCw className={busy === "detect" ? "animate-spin" : ""} />
-              <span className="sr-only">{busy === "detect" ? t("检测中…") : t("检测 Claude")}</span>
-            </button>
+            ) : null}
+            <Menu>
+              {needsPrepare || !s ? null : (
+                <MenuItem disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>{prepareLabel}</MenuItem>
+              )}
+              <MenuItem disabled={busy !== null || !s?.prepared} onClick={() => void act("check")}>{t("检查增强版")}</MenuItem>
+              <MenuItem disabled={busy !== null} onClick={() => void refresh()}>{busy === "detect" ? t("检测中…") : t("检测 Claude")}</MenuItem>
+            </Menu>
           </div>
         </CxRow>
       </CxCard>
@@ -16342,7 +16337,7 @@ function ClaudeLocalizationScreen() {
               <strong>{t("Computer Use")}</strong>
               <small title={s?.computerUseSupported === false
                 ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
-                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}
+                : `${t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}\n${t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}`}
               >{s?.computerUseSupported === false
                 ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
                 : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
@@ -16354,11 +16349,7 @@ function ClaudeLocalizationScreen() {
               <p className="claude-l10n-hint is-warning" role="alert">
                 {t("Claude Desktop 同时接入了「Computer Use」页的 codex-plus-cu：同一个对话里会有两套电脑控制，Claude 可能混着调用、互相抢前台，同一个应用也要确认两次。建议二选一：保留这里的开关，就到「Computer Use」页撤销 Claude Desktop 的接入；或者关掉这里的开关。")}
               </p>
-            ) : (
-              <p className="claude-l10n-hint">
-                {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
-              </p>
-            )
+            ) : null
           ) : null}
           <label className="switch-row compact claude-bash-timeout-master">
             <input
