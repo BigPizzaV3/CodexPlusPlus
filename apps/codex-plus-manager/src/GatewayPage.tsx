@@ -260,6 +260,9 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const autos = (payload?.autoGroups ?? []).filter(hit);
   const visibleAutos = autos.filter((group) => !group.hidden);
   const hiddenAutos = autos.filter((group) => group.hidden);
+  // 自动组默认折叠（多家都有的模型一多就是一长串）；自己还没建组、或正在搜索时直接展开。
+  const [autosOpen, setAutosOpen] = useState<boolean | null>(null);
+  const autosShown = autosOpen ?? ((payload?.groups ?? []).length === 0 || Boolean(needle));
 
   const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {
     const next = { ...group, ...patch };
@@ -329,9 +332,14 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
 
       {payload ? (
         <SectionLabel>
-          <span title={t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它")}>{t("自动组")}</span><em>{visibleAutos.length}</em>
+          <button aria-expanded={autosShown} className="cx-section-toggle" onClick={() => setAutosOpen(!autosShown)} title={t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它")} type="button">
+            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+            {t("自动组")}
+          </button>
+          <em>{visibleAutos.length}</em>
         </SectionLabel>
       ) : null}
+      {!autosShown ? null : <>
       {payload && !autoOn ? (
         <div className="gw-card gw-empty">
           <strong>{t("自动建组已关闭")}</strong>
@@ -374,6 +382,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
             : null}
         </div>
       ) : null}
+      </>}
 
       {editing ? (
         <GroupEditor
