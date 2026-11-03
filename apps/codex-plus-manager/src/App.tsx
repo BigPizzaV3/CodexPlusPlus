@@ -11145,7 +11145,6 @@ function HomeScreen({
                 <div className="home-hero-body">
                   <div className="home-hero-head">
                     <strong>{formatAdTitle(ad.title)}</strong>
-                    <span className="home-ad-tag">{t("推广")}</span>
                   </div>
                   <p className="home-hero-text">{ad.description}</p>
                   {ad.highlights?.length ? (

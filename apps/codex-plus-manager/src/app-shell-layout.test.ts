@@ -368,7 +368,7 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   // 只管增强时不显示网关一行，入口也按使用模式过滤。
   assert.match(home, /\{enhanceOnly \? null : \(/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
-  // 推荐：置顶位不管几个都上横幅、一行均分宽度，不挪去别处；推荐池的赞助商不能上横幅；其他赞助商全部列出不折叠；同一家去重；明确标「推广」。
+  // 推荐：置顶位不管几个都上横幅、一行均分宽度，不挪去别处；推荐池的赞助商不能上横幅；其他赞助商全部列出不折叠；同一家去重。卡片上不再单独标「推广」，赞助性质由这一节标题旁的说明交代。
   assert.match(home, /const heroes = topAds;/);
   assert.match(home, /const rest = pool\.filter\(\(ad\) => ad\.type === "sponsor"\);/);
   assert.match(home, /gridTemplateColumns: `repeat\(\$\{heroes\.length\}, minmax\(0, 1fr\)\)`/);
@@ -376,7 +376,8 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.doesNotMatch(home, /showAllAds|rest\.slice\(0, 3\)/);
   assert.match(home, /!topIdentities\.has\(adIdentity\(ad\)\)/);
   assert.match(home, /\.filter\(\(ad\) => ad\.type === "sponsor"\)/);
-  assert.match(home, /t\("推广"\)/);
+  assert.doesNotMatch(home, /t\("推广"\)/);
+  assert.match(home, /aside=\{<span>\{t\("赞助商推荐：支持 Codex\+\+ 的服务"\)\}<\/span>\}/);
   // 精选卡片不用 button：旧版 WebKit 里 button 做网格项会被大图撑宽、整页错位。
   assert.match(home, /<div\n\s*className="home-hero"/);
   assert.doesNotMatch(home, /<button[^>]*className="home-hero"/);
