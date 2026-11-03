@@ -12,6 +12,9 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "分钟": "min",
+  "未保存的修改会在失焦后保存": "Unsaved edits are saved when you leave the field",
+  "超出时排队，按提交顺序启动": "Extra tasks queue and start in order",
   "不支持审批卡": "No approval cards",
   "会退回自动放行": "Falls back to auto-allow",
   "客户端能力与始终允许的应用": "Client capabilities and always-allowed apps",
@@ -3229,6 +3232,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "{0} 可执行文件路径": "{0} executable path",
+  "{0} 模型": "{0} model",
   "{0} 个应用": "{0} apps",
   "选择 {0}": "Select {0}",
   "最多 {0} 次": "Up to {0} tries",

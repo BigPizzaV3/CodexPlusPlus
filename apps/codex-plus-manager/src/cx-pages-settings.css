@@ -457,3 +457,90 @@
   padding: 12px 14px;
   border-top: 1px solid hsl(var(--cx-row-divider));
 }
+
+/* ── Agent 协作 ───────────────────────────────────────────── */
+
+:root .shell .cx-collab-page .agent-collaboration-content {
+  gap: 16px;
+}
+
+:root .shell .cx-collab-page .agent-collaboration-content > .cx-section + .cx-section {
+  margin-top: 6px;
+}
+
+/* 示例提示：一行胶囊。 */
+:root .shell .cx-collab-examples {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+:root .shell .cx-collab-examples > span {
+  flex: none;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.8);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* 每个子 Agent 一张卡，卡与卡之间留缝。 */
+:root .shell .cx-collab-agent + .cx-collab-agent {
+  margin-top: 8px;
+}
+
+:root .shell .cx-collab-page .cx-collab-agent {
+  padding: 0;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-collab-input {
+  width: 300px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+:root .shell .cx-collab-page .agent-collaboration-integration {
+  padding: 0;
+  border: 0;
+}
+
+:root .shell .cx-collab-page .agent-collaboration-manual-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+:root .shell .cx-collab-page .agent-collaboration-mcp-configs {
+  align-self: stretch;
+}
+
+:root .shell .cx-collab-debug {
+  border: 0;
+  border-radius: var(--cx-radius);
+}
+
+:root .shell .cx-collab-debug > summary {
+  color: hsl(var(--foreground) / 0.85);
+  font-weight: 450;
+}
+
+:root .shell .cx-collab-page .cx-collab-agent {
+  display: block;
+}
+
+/* 调试区里的两块不再套边框，只用细线分隔。 */
+:root .shell .cx-collab-debug .agent-collaboration-debug-body .agent-collaboration-section {
+  border: 0;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  border-radius: 0;
+  background: transparent;
+}

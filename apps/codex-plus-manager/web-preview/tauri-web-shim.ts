@@ -862,6 +862,26 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       toolchain: { node: "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node", npm: "/usr/local/bin/npm", git: "/usr/bin/git" },
       pluginDir: "",
     } as T;
+    // Agent 协作演示数据（settings 组追加）：协作页没有快照时整页只剩报错。
+    case "agent_collaboration_request": return (args.action === "mcp_config"
+      ? { codexToml: "[mcp_servers.codex-plus-agents]\ncommand = \"codex-plus\"", claudeJson: "{\n  \"mcpServers\": {}\n}", command: "codex-plus", args: ["agents-mcp"] }
+      : {
+        config: { enabled: true, defaultAgentId: "deepseek", maxRuntimeMinutes: 10, agents: [
+          { id: "codex", name: "Codex", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
+          { id: "deepseek", name: "DeepSeek Harness", executable: "", enabled: true, model: "deepseek-account/deepseek-flash", reuseSavedAuth: true, maxConcurrentTasks: 1 },
+          { id: "claude", name: "Claude Code", executable: "/usr/local/bin/claude", enabled: true, model: "", reuseSavedAuth: false, maxConcurrentTasks: 2 },
+        ] },
+        tasks: [
+          { id: "task-1", agentId: "claude", prompt: "审核这次改动，重点看并发与错误处理", cwd: "/Users/demo/project", status: "completed", answer: "未发现阻塞问题；建议给重试加上上限。", error: "", sessionId: "s-1", createdAtMs: Date.now() - 3_600_000, updatedAtMs: Date.now() - 3_300_000, cancelRequested: false, progress: "" },
+        ],
+        availability: [
+          { id: "codex", available: true, path: "/Applications/Codex.app/Contents/Resources/codex" },
+          { id: "deepseek", available: true, path: "/Users/demo/.dsh/bin/dsh" },
+          { id: "claude", available: true, path: "/usr/local/bin/claude" },
+        ],
+        integration: { status: "connected", message: "已登记到 ~/.codex/config.toml", home: "~/.codex" },
+        capabilities: { maxQueuedPerAgent: 8, maxConcurrentTasksLimit: 4 },
+      }) as T;
     default: return ok() as T;
   }
 }
