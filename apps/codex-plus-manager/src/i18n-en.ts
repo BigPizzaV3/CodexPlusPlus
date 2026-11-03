@@ -3267,6 +3267,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 次 · {1} 次出错": "{0} calls · {1} errors",
   "删除 Codex 会话「{0}」？删除前会自动备份。": "Delete Codex session \"{0}\"? It is backed up first.",
   "删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。": "Delete {0} session \"{1}\"? Its files move to the Trash so you can restore them.",
+  "从 Claude Desktop 删除会话「{0}」？会话记录和对话文件会移到废纸篓。需要先退出 Claude Desktop。": "Delete \"{0}\" from Claude Desktop? Its session record and transcript move to the Trash. Quit Claude Desktop first.",
+  "Claude Desktop 里的会话": "Session from Claude Desktop",
   "经 Codex++ 网关 · {0}": "Via the Codex++ gateway · {0}",
   "配置被 {0} 改掉了，没有经过网关": "Config was changed by {0}; not going through the gateway",
   "启动 {0}": "Launch {0}",

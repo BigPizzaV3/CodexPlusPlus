@@ -469,6 +469,17 @@ test("会话页可以删除会话，不再有「在终端继续」；Claude Code
   assert.match(lib, /gateway_commands::delete_agent_session,/);
 });
 
+test("会话页列出 Claude Desktop 的会话：标出 Desktop / 已归档，恢复命令用 cliSessionId，删除前提示先退出 Desktop", () => {
+  const sessions = readSource("./GatewaySessions.tsx");
+  assert.match(sessions, /session\.surface === "desktop" \? <span className="gw-pill"/);
+  assert.match(sessions, /session\.archived \? <span className="gw-pill">\{t\("已归档"\)\}/);
+  assert.match(sessions, /const id = session\.resumeId \?\? session\.id;/);
+  assert.match(sessions, /需要先退出 Claude Desktop/);
+  const commands = readSource("../src-tauri/src/gateway_commands.rs");
+  assert.match(commands, /sessions::list_claude_sessions_with_desktop\(/);
+  assert.match(commands, /"claude" if desktop => \{\n\s*if codex_plus_core::computer_use::claude_desktop_running\(\)/);
+});
+
 test("添加供应商是弹出框，不再铺在供应商池页面里；池为空时显示引导", () => {
   const providers = readSource("./GatewayProviders.tsx");
   assert.match(providers, /className="gw-modal gw-catalog-modal"/);

@@ -1872,6 +1872,11 @@ span.gw-popover-check {
   font-weight: 500;
 }
 
+.gw-session-main strong .gw-pill {
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
 .gw-session-main small {
   color: var(--gw-mute);
   font-family: var(--font-mono, ui-monospace, monospace);

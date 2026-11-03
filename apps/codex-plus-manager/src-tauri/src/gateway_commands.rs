@@ -1968,15 +1968,17 @@ pub struct AgentSessions {
     pub sessions: Vec<codex_plus_core::gateway::sessions::AgentSession>,
 }
 
-/// Claude Code / Grok 的本地会话（Codex 的会话走 `list_local_sessions`）。
+/// Claude Code（含 Claude Desktop 里的）/ Grok 的本地会话（Codex 的会话走 `list_local_sessions`）。
 #[tauri::command]
 pub async fn list_agent_sessions(agent: String) -> CommandResult<AgentSessions> {
     let sessions = tauri::async_runtime::spawn_blocking(move || {
         use codex_plus_core::gateway::sessions;
         match agent.as_str() {
-            "claude" => {
-                sessions::list_claude_sessions(&ClaudeContext::default_paths().claude_home, 300)
-            }
+            "claude" => sessions::list_claude_sessions_with_desktop(
+                &ClaudeContext::default_paths().claude_home,
+                &sessions::claude_desktop_data_dirs(),
+                300,
+            ),
             "grok" => sessions::list_grok_sessions(
                 &codex_plus_core::grok_config::default_grok_home_dir(),
                 300,
@@ -1996,12 +1998,28 @@ pub struct DeletedSession {
     pub trash_path: Option<String>,
 }
 
-/// 删除 Claude Code / Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
+/// 删除 Claude Code（含 Claude Desktop 里的）/ Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
 #[tauri::command]
 pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
     use codex_plus_core::gateway::sessions;
     let trash = sessions::default_trash_dir();
+    let desktop = agent == "claude" && id.starts_with("local_");
     let result = match agent.as_str() {
+        // Desktop 运行时内存里还有这个会话，删了记录也可能被它写回来，所以要求先退出。
+        "claude" if desktop => {
+            if codex_plus_core::computer_use::claude_desktop_running() {
+                Err(anyhow::anyhow!(
+                    "Claude Desktop 正在运行。请在 Desktop 里删除这个会话，或退出 Desktop 后再删"
+                ))
+            } else {
+                sessions::delete_claude_desktop_session(
+                    &ClaudeContext::default_paths().claude_home,
+                    &sessions::claude_desktop_data_dirs(),
+                    &id,
+                    &trash,
+                )
+            }
+        }
         "claude" => sessions::delete_claude_session(
             &ClaudeContext::default_paths().claude_home,
             &id,
@@ -2016,7 +2034,11 @@ pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedS
     };
     match result {
         Ok(path) => ok(
-            "会话已移到废纸篓，需要时可以从废纸篓找回。",
+            if desktop {
+                "已从 Claude Desktop 删除，会话记录和对话文件移到了废纸篓。"
+            } else {
+                "会话已移到废纸篓，需要时可以从废纸篓找回。"
+            },
             DeletedSession {
                 trash_path: Some(path.display().to_string()),
             },
