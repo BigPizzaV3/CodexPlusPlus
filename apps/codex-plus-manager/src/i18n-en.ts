@@ -126,6 +126,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 正由 Codex++ 网关接管": "Codex is managed by the Codex++ gateway",
   "Clash TUN、代理环境变量、.env 文件都正常": "Clash TUN, proxy environment variables and .env are all fine",
   "中转站环境检测": "Relay environment check",
+  "手动停止": "Stopped by user",
+  "就绪": "Ready",
   "先填允许的微信用户 ID（不能是 *）并选好工作目录，才能打开": "Fill in allowed WeChat user IDs (not *) and pick a working directory first",
   "直连第三方中转站时，Clash Verge Rev 的 TUN 模式、系统代理环境变量和 ~/.codex/.env 都可能让请求走错地方。": "When connecting directly to a third-party relay, Clash Verge Rev TUN mode, system proxy variables and ~/.codex/.env can all send requests the wrong way.",
   "推荐用网关的供应商池：本身就按模型分发，所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "The gateway's provider pool is recommended: it already routes by model for every agent. To use it only with Codex direct, create it here.",

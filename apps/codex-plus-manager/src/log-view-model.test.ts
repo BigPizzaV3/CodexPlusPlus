@@ -29,6 +29,12 @@ test("出错、重试的事件分别标红、标黄", () => {
   assert.equal(logTone("manager.save_settings", { status: "ok" }), "info");
 });
 
+test("只读了文件末尾时，第一行被截断的半行丢掉；没截断时原样保留", () => {
+  const text = ['ount":0,"models":[]}', JSON.stringify({ timestamp_ms: 1, event: "a.start", detail: {} })].join("\n");
+  assert.deepEqual(parseLogText(text, true).map((entry) => entry.event), ["a.start"]);
+  assert.equal(parseLogText(text, false).length, 2);
+});
+
 test("列表最新的在前，跳过空行；可按文字和「只看出错」筛选", () => {
   const text = [
     JSON.stringify({ timestamp_ms: 1, event: "a.start", detail: {} }),
@@ -70,9 +76,15 @@ test("诊断报告挑出版本、Codex 应用、快捷方式和最近启动；�
   });
   const facts = diagnosticFacts(report);
   assert.deepEqual(facts.map((fact) => fact.label), ["Codex++ 版本", "Codex 应用", "Codex 版本", "静默启动入口", "管理入口", "最近一次启动"]);
-  assert.equal(facts[1].value, "found · /Applications/ChatGPT.app");
+  // 状态词翻成中文，路径原样。
+  assert.equal(facts[1].status, "已找到");
+  assert.equal(facts[1].value, "/Applications/ChatGPT.app");
   assert.equal(facts[1].tone, "ok");
+  assert.equal(facts[3].status, "未找到");
   assert.equal(facts[3].tone, "warn");
-  assert.equal(facts[5].value, "stopped · user_stopped");
+  assert.equal(facts[5].status, "已停止");
+  assert.equal(facts[5].value, "手动停止");
+  assert.equal(facts[0].status, undefined);
+  assert.equal(facts[0].value, "2.2.0");
   assert.deepEqual(diagnosticFacts("尚未生成诊断报告。"), []);
 });

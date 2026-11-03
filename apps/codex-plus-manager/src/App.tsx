@@ -11664,7 +11664,7 @@ function GlobalSettingsScreen({
 
 function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
   // 每行一条结构化日志：时间、事件名、一行摘要；点开看完整明细。最新的在前，可搜索、可只看出错。
-  const entries = useMemo(() => parseLogText(logs?.text ?? ""), [logs?.text]);
+  const entries = useMemo(() => parseLogText(logs?.text ?? "", logs?.truncated === true), [logs?.text, logs?.truncated]);
   const [query, setQuery] = useState("");
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [limit, setLimit] = useState(200);
@@ -11748,7 +11748,9 @@ function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsRe
       <CxCard className="cx-set-mono-card cx-diagnostic-card">
         {facts.map((fact) => (
           <CxRow key={fact.label} title={t(fact.label)}>
-            <span className="cx-diagnostic-value" data-tone={fact.tone} title={fact.value}>{fact.value}</span>
+            <span className="cx-diagnostic-value" data-tone={fact.tone} title={fact.value}>
+              {[fact.status ? t(fact.status) : "", fact.value ?? ""].filter(Boolean).join(" · ")}
+            </span>
           </CxRow>
         ))}
         <details className="cx-set-disclosure" open={facts.length ? undefined : true}>

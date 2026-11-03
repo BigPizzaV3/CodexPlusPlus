@@ -88,12 +88,16 @@ export function parseLogLine(raw: string, index: number): LogEntry {
   return { index, timestampMs: null, pid: null, event: "", tone: ERROR_PATTERN.test(line) ? "error" : "info", summary: line, body: line, raw };
 }
 
-/** 整个日志文本 → 列表，最新的在前。空行跳过。 */
-export function parseLogText(text: string): LogEntry[] {
+/**
+ * 整个日志文本 → 列表，最新的在前。空行跳过。
+ * `truncated`：后端只读了文件末尾，第一行多半是被截断的半行（`ount":0,…`）；解析不了就丢掉，不当成一条日志显示。
+ */
+export function parseLogText(text: string, truncated = false): LogEntry[] {
   const entries: LogEntry[] = [];
   text.split(/\r?\n/).forEach((line, index) => {
     if (line.trim()) entries.push(parseLogLine(line, index + 1));
   });
+  if (truncated && entries.length > 1 && !entries[0].event) entries.shift();
   return entries.reverse();
 }
 
@@ -116,7 +120,34 @@ export function formatLogTime(timestampMs: number | null, now = Date.now()): str
   return sameDay ? time : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
 }
 
-export type DiagnosticFact = { label: string; value: string; tone?: "ok" | "warn" | "danger" };
+/**
+ * 一项诊断信息：`status` 是中文状态（页面用 t() 翻译），`value` 是路径等原样显示的内容。
+ * label 同样是中文原文。
+ */
+export type DiagnosticFact = { label: string; status?: string; value?: string; tone?: "ok" | "warn" | "danger" };
+
+/** 报告里的英文状态词 → 中文。认不出的原样返回。 */
+const STATUS_TEXT: Record<string, string> = {
+  ok: "正常",
+  found: "已找到",
+  installed: "已安装",
+  running: "运行中",
+  enabled: "已启用",
+  ready: "就绪",
+  missing: "未找到",
+  not_found: "未找到",
+  notfound: "未找到",
+  stopped: "已停止",
+  disabled: "已禁用",
+  unknown: "未知",
+  failed: "失败",
+  error: "出错",
+  user_stopped: "手动停止",
+};
+
+export function diagnosticStatusText(status: string): string {
+  return STATUS_TEXT[status.toLowerCase()] ?? status;
+}
 
 function pick(source: unknown, path: string[]): unknown {
   let current = source;
@@ -138,7 +169,6 @@ function statusTone(status: unknown): DiagnosticFact["tone"] {
 /**
  * 诊断报告里挑几项一眼要看的：版本、Codex 应用与版本、两个快捷方式、最近一次启动。
  * 报告不是 JSON 或字段不在时返回空数组，页面只显示完整报告。
- * label 是中文原文，由页面用 t() 翻译。
  */
 export function diagnosticFacts(report: string): DiagnosticFact[] {
   let parsed: unknown;
@@ -149,19 +179,24 @@ export function diagnosticFacts(report: string): DiagnosticFact[] {
   }
   if (!isRecord(parsed)) return [];
   const facts: DiagnosticFact[] = [];
-  const push = (label: string, value: unknown, status?: unknown) => {
-    if (value === undefined || value === null || value === "") return;
-    facts.push({ label, value: String(value), tone: statusTone(status ?? value) });
+  const text = (value: unknown) => (typeof value === "string" || typeof value === "number") && String(value) ? String(value) : undefined;
+  const pushValue = (label: string, value: unknown) => {
+    const shown = text(value);
+    if (shown) facts.push({ label, value: shown });
   };
-  push("Codex++ 版本", parsed.version);
-  const app = pick(parsed, ["overview", "codex_app"]);
-  if (isRecord(app)) push("Codex 应用", [app.status, app.path].filter(Boolean).join(" · "), app.status);
-  push("Codex 版本", pick(parsed, ["overview", "codex_version"]));
-  const silent = pick(parsed, ["overview", "silent_shortcut"]);
-  if (isRecord(silent)) push("静默启动入口", [silent.status, silent.path].filter(Boolean).join(" · "), silent.status);
-  const management = pick(parsed, ["overview", "management_shortcut"]);
-  if (isRecord(management)) push("管理入口", [management.status, management.path].filter(Boolean).join(" · "), management.status);
-  const launch = pick(parsed, ["overview", "latest_launch"]);
-  if (isRecord(launch)) push("最近一次启动", [launch.status, launch.phase, launch.message].filter((value) => typeof value === "string" && value).join(" · "), launch.status);
+  // 带状态的一项：状态翻成中文，路径、阶段、消息原样跟在后面。
+  const pushStatus = (label: string, record: unknown, details: string[]) => {
+    if (!isRecord(record)) return;
+    const status = text(record.status);
+    const rest = details.map((key) => text(record[key])).filter((item): item is string => Boolean(item)).map(diagnosticStatusText);
+    if (!status && !rest.length) return;
+    facts.push({ label, status: status ? diagnosticStatusText(status) : undefined, value: rest.join(" · ") || undefined, tone: statusTone(status) });
+  };
+  pushValue("Codex++ 版本", parsed.version);
+  pushStatus("Codex 应用", pick(parsed, ["overview", "codex_app"]), ["path"]);
+  pushValue("Codex 版本", pick(parsed, ["overview", "codex_version"]));
+  pushStatus("静默启动入口", pick(parsed, ["overview", "silent_shortcut"]), ["path"]);
+  pushStatus("管理入口", pick(parsed, ["overview", "management_shortcut"]), ["path"]);
+  pushStatus("最近一次启动", pick(parsed, ["overview", "latest_launch"]), ["phase", "message"]);
   return facts;
 }
