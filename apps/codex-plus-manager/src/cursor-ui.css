@@ -1699,3 +1699,43 @@
   background: hsl(var(--muted-foreground) / 0.45);
   box-shadow: none;
 }
+
+/* ── macOS 无系统标题栏（mac-titlebar.ts） ─────────────────────────
+   红黄绿按钮浮在侧栏左上角（lib.rs 定位在 18,22），侧栏顶部留出这一行并可拖动窗口；
+   页面标题行吸顶，和按钮同一行，就是原来的标题栏。 */
+:root .shell .cx-titlebar-drag {
+  display: none;
+}
+
+:root.mac-titlebar .shell .cx-side {
+  padding-top: 0;
+}
+
+:root.mac-titlebar .shell .cx-titlebar-drag {
+  display: block;
+  flex: none;
+  height: 48px;
+  margin: 0 -8px;
+}
+
+:root.mac-titlebar .shell .screen {
+  padding-top: 0;
+}
+
+:root.mac-titlebar .shell .screen > header.cx-page-head,
+:root.mac-titlebar .shell .screen.management-screen > header.cx-page-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  box-sizing: content-box;
+  width: auto;
+  min-height: 32px;
+  margin-inline: -44px;
+  margin-bottom: 4px;
+  padding: 14px calc(44px + (100% - min(100%, var(--cx-content))) / 2) 10px;
+  background: hsl(var(--background));
+}
+
+:root.mac-titlebar .shell .screen[data-settings-mode="true"] > header.cx-page-head {
+  padding-inline: calc(44px + (100% - min(100%, var(--cx-content-narrow))) / 2);
+}

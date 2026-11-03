@@ -5060,7 +5060,8 @@ export function App() {
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
           key={route}
         >
-          <header className="cx-page-head">
+          {/* macOS 没有系统标题栏时，这一行就是标题栏：空白处可拖动窗口、双击缩放（按钮不受影响）。 */}
+          <header className="cx-page-head" data-tauri-drag-region="deep">
             <div className="cx-page-title">
               <h1 title={route === "extension" ? undefined : routeSubtitle(navAliasRoute[route] ?? route, soloAgent)}>{pageTitle}</h1>
             </div>
@@ -16714,6 +16715,7 @@ function AppSidebar({
     const groups: Array<{ id: SettingsNavEntry["group"]; label?: string }> = [{ id: "app" }, { id: "agent" }, { id: "tools" }, { id: "beta", label: "Beta" }];
     return (
       <aside className="side cx-side" data-mode="settings">
+        <div aria-hidden="true" className="cx-titlebar-drag" data-tauri-drag-region />
         <button className="cx-side-back" onClick={onExitSettings} type="button">
           <ArrowLeft aria-hidden="true" />
           <span>{t("返回")}</span>
@@ -16836,6 +16838,7 @@ function AppSidebar({
 
   return (
     <aside className="side cx-side" data-mode="main">
+      <div aria-hidden="true" className="cx-titlebar-drag" data-tauri-drag-region />
       <button className="cx-side-search cx-side-search-button" data-tour="palette" onClick={onOpenPalette} type="button">
         <Search aria-hidden="true" />
         <span>{t("搜索页面和操作")}</span>

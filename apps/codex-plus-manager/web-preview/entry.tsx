@@ -31,6 +31,9 @@ async function start() {
   // 和正式版一样，Cursor 风格层在组件样式之后加载。
   await import("../src/cursor-ui.css");
   await Promise.all([import("../src/cx-pages-gateway.css"), import("../src/cx-pages-resources.css"), import("../src/cx-pages-agents.css"), import("../src/cx-pages-settings.css")]);
+  // 和正式版 main.tsx 一样判断是否去掉系统标题栏；预览里用 ?macTitlebar=1 模拟。
+  const { applyMacTitlebarClass } = await import("../src/mac-titlebar");
+  applyMacTitlebarClass();
   createRoot(app).render(<App />);
 }
 
