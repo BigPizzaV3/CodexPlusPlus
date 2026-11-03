@@ -308,3 +308,50 @@
 :root .shell .gw-agent .gw-detail-value .app-select.gw-image-select {
   width: 320px;
 }
+
+/* ── 用量 · 统计（gatewayUsage） ─────────────────────────────── */
+
+:root .shell .gw-usage.cx-page > *,
+:root .shell .gw-agents.cx-page > * {
+  flex-shrink: 0;
+}
+
+:root .shell .gw-usage .cx-stat-hint [data-tone="err"] {
+  color: hsl(var(--status-warning));
+}
+
+/* 图表卡：去掉旧卡片的描边，留白与其它卡片一致。 */
+:root .shell .gw-usage .gw-chart-card {
+  padding: 16px 18px 14px;
+  border: 0;
+}
+
+/* 明细的「按供应商 / 按模型 / 按 Agent」：小号胶囊，放在小标题右侧。 */
+:root .shell .gw-usage .gw-split-pills {
+  gap: 4px;
+}
+
+:root .shell .gw-usage .gw-split-pills > button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+:root .shell .gw-usage .gw-usage-table {
+  border: 0;
+}
+
+:root .shell .gw-usage .gw-usage-row + .gw-usage-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-usage .gw-usage-balance {
+  font-size: 13.5px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .gw-usage .gw-usage-balance-missing {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
