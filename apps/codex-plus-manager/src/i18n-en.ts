@@ -118,6 +118,16 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "正在等后台下载完成…": "Waiting for the background download to finish…",
+  "立即安装": "Install now",
+  "点击安装": "Click to install",
+  "正在安装…": "Installing…",
+  "后台下载没成功，点「下载并安装」重试": "Background download failed; click Download and install to retry",
+  "正在后台下载，下完不会自动安装": "Downloading in the background; it won't install automatically",
+  "新版本已下载，点「安装」更新；安装时 Codex++ 会关闭并自动重启": "The new version is downloaded; click Install to update. Codex++ closes and restarts during install",
+  "检查到新版本后，在后台下载安装包并校验，下好后这里和侧栏会提示「安装」。不会自动安装，也不会重启 Codex++。": "When a new version is found, the installer is downloaded and verified in the background; once ready, this page and the sidebar show Install. Nothing is installed and Codex++ isn't restarted until you click it.",
+  "在后台把安装包下好，但不安装；点「安装」才更新": "Downloads the installer in the background but doesn't install; click Install to update",
+  "有可用更新时自动下载": "Download updates automatically",
   "继续只用直连；以后想换，每个供应商右侧的「加入供应商池」还在": "Keep using direct only; to switch later, each provider still has Add to provider pool on the right",
   "不再提示": "Don't show again",
   "连接与供应商": "Connection & providers",
@@ -3320,6 +3330,9 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "新版本 {0} 已下载": "Version {0} downloaded",
+  "{0} 已下载": "{0} downloaded",
+  "正在后台下载 {0}%，下完不会自动安装": "Downloading in the background {0}%; it won't install automatically",
   "第 {0} 行": "Line {0}",
   "第 {0} 行 · 进程 {1}": "Line {0} · process {1}",
   "再显示 {0} 条": "Show {0} more",

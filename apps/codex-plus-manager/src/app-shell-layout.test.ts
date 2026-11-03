@@ -483,7 +483,10 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
 
 test("设置页「版本与更新」：已是最新时不显示旧版本的安装包和说明；有新版本时说明收进可展开区", () => {
   const about = functionSource("AboutScreen");
-  assert.match(about, /update\?\.updateAvailable && update\.assetName \?/);
+  // 只有有新版本时才显示安装包名；已在后台下好时主按钮是「安装」。
+  assert.match(about, /latest && update\?\.assetName \?/);
+  assert.match(about, /ready \? t\("安装"\) : t\("下载并安装"\)/);
+  assert.match(about, /title=\{t\("有可用更新时自动下载"\)\}/);
   assert.match(about, /\{update\?\.updateAvailable && update\.releaseSummary \? \(\n\s*<details className="app-update-notes[^"]*">/);
   assert.doesNotMatch(about, /<Metric label=\{t\("状态"\)\}/);
 });

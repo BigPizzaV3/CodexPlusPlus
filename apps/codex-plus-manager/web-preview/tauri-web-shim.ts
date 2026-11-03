@@ -690,6 +690,10 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { agent: "grok", id: "g1", title: L("解释这段正则", "Explain this regex"), cwd: "/Users/demo/Projects/data-tools", updatedAtMs: Date.now() - 5 * 3_600_000 },
     ] : [] }) as T;
     case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
+    // 「版本与更新」演示：有新版本，后台下载 1 秒后完成（只下载不安装）。
+    case "check_update": if (!new URLSearchParams(window.location.search).has("showUpdate")) return ok({ currentVersion: "2.2.0", latestVersion: "2.2.0", releaseSummary: "", assetName: null, assetUrl: null, updateAvailable: false, progress: 0 }) as T;
+      return ok({ currentVersion: "2.2.0", latestVersion: "2.3.0", releaseSummary: "### 新增\n- 界面整体重做", assetName: "Codex++-2.3.0.dmg", assetUrl: "https://example.test/Codex++-2.3.0.dmg", updateAvailable: true, downloaded: false, progress: 0 }) as T;
+    case "download_update": await new Promise((resolve) => setTimeout(resolve, 1000)); return ok({ downloaded: true, latestVersion: "2.3.0" }) as T;
     // 「日志与诊断」演示：几条诊断日志（含出错和重试）和一份诊断报告。
     case "read_latest_logs": {
       const now = Date.now();

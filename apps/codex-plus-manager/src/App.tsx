@@ -447,6 +447,8 @@ type BackendSettings = WhaleBalanceSettings & {
   threadModelFollowSwitchEnabled?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
+  /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
+  updateAutoDownload?: boolean;
   /** 更新提示里「跳过此版本」记下的版本（#1272）。 */
   updateSkippedVersion?: string;
   ccsDbPath: string;
@@ -1251,9 +1253,14 @@ type UpdateResult = CommandResult<{
   assetName?: string | null;
   assetUrl?: string | null;
   updateAvailable?: boolean;
+  /** 安装包已经在后台下好（「有可用更新时自动下载」），点「安装」直接安装。 */
+  downloaded?: boolean;
   installedPath?: string;
   progress?: number;
 }>;
+
+/** 后台下载更新的状态：只下载、不安装。 */
+type UpdateDownloadState = { version: string; state: "downloading" | "ready" | "failed"; percent: number | null; message?: string };
 
 type AdItem = {
   id?: string;
@@ -1529,6 +1536,7 @@ const defaultSettings: BackendSettings = {
   providerSyncEnabled: false,
   threadModelFollowSwitchEnabled: false,
   updateAutoCheck: true,
+  updateAutoDownload: true,
   updateSkippedVersion: "",
   ccsDbPath: "",
   providerSyncSavedProviders: [],
@@ -1771,6 +1779,10 @@ export function App() {
   useEffect(() => {
     if (settings) updateNotifications.current.setPreferences(updatePreferencesFrom(settings.settings));
   }, [settings]);
+  const [updateDownload, setUpdateDownload] = useState<UpdateDownloadState | null>(null);
+  const updateDownloadPending = useRef<string | null>(null);
+  /** 正在进行的后台下载：点「安装」时先等它下完，不再并行下第二份（两份同时写同一个文件会坏）。 */
+  const updateDownloadPromise = useRef<Promise<void> | null>(null);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
     active: false,
     percent: 0,
@@ -3199,6 +3211,7 @@ export function App() {
       const result = await call<UpdateResult>("check_update");
       // 后台检查失败时保留上次可用的安装包，手动检查仍显示错误。
       if (request.manual || result.status !== "failed") setUpdate(result);
+      if (result.status !== "failed") void downloadUpdateInBackground(result);
       if (updateNotifications.current.shouldPrompt(result, request.manual)) {
         setUpdatePrompt(result);
       } else if (request.manual) {
@@ -3235,18 +3248,60 @@ export function App() {
     }
   };
 
+  const releaseOf = (selected: UpdateResult | null | undefined) =>
+    selected?.latestVersion && selected.assetName && selected.assetUrl
+      ? {
+          version: selected.latestVersion,
+          url: "",
+          body: selected.releaseSummary ?? "",
+          asset_name: selected.assetName,
+          asset_url: selected.assetUrl,
+        }
+      : null;
+
+  /**
+   * 「有可用更新时自动下载」：检查到新版本就在后台把安装包下好，只下载、不安装；
+   * 用户点「安装」时 perform_update 直接用下好的安装包。失败不打扰用户，点「安装」时会重新下载。
+   */
+  const downloadUpdateInBackground = async (result: UpdateResult) => {
+    const release = releaseOf(result);
+    if (!result.updateAvailable || !release) return;
+    if (result.downloaded) {
+      setUpdateDownload({ version: release.version, state: "ready", percent: 100 });
+      return;
+    }
+    if (settingsRef.current?.settings.updateAutoDownload === false) return;
+    if (updateDownloadPending.current === release.version || updateInstallPending.current) return;
+    updateDownloadPending.current = release.version;
+    setUpdateDownload({ version: release.version, state: "downloading", percent: null });
+    let finish = () => {};
+    updateDownloadPromise.current = new Promise<void>((resolve) => { finish = resolve; });
+    let unlisten: (() => void) | null = null;
+    try {
+      unlisten = await listen<UpdateProgressEvent>("update-download-progress", (event) => {
+        const progress = event.payload;
+        setUpdateDownload({ version: release.version, state: "downloading", percent: progress.stage === "downloading" ? progress.percent ?? null : 100 });
+      });
+      const downloaded = await call<UpdateResult>("download_update", { release });
+      if (isSuccessStatus(downloaded.status)) {
+        setUpdateDownload({ version: release.version, state: "ready", percent: 100 });
+        setUpdate((current) => (current?.latestVersion === release.version ? { ...current, downloaded: true } : current));
+      } else {
+        setUpdateDownload({ version: release.version, state: "failed", percent: null, message: downloaded.message });
+      }
+    } catch (error) {
+      setUpdateDownload({ version: release.version, state: "failed", percent: null, message: stringifyError(error) });
+    } finally {
+      updateDownloadPending.current = null;
+      updateDownloadPromise.current = null;
+      finish();
+      unlisten?.();
+    }
+  };
+
   const performUpdate = async (selectedUpdate = update) => {
     if (updateInstallPending.current) return;
-    const release =
-      selectedUpdate?.latestVersion && selectedUpdate.assetName && selectedUpdate.assetUrl
-        ? {
-            version: selectedUpdate.latestVersion,
-            url: "",
-            body: selectedUpdate.releaseSummary ?? "",
-            asset_name: selectedUpdate.assetName,
-            asset_url: selectedUpdate.assetUrl,
-          }
-        : null;
+    const release = releaseOf(selectedUpdate);
     if (!release) {
       showNotice(t("更新安装"), t("请先检查更新并选择可下载的 Release asset。"), "failed");
       return;
@@ -3256,8 +3311,10 @@ export function App() {
       active: true,
       percent: 0,
       indeterminate: true,
-      message: t("正在准备下载安装包…"),
+      message: updateDownloadPromise.current ? t("正在等后台下载完成…") : t("正在准备下载安装包…"),
     });
+    // 后台还在下这个版本：等它下完，perform_update 会直接用下好的安装包。
+    if (updateDownloadPromise.current) await updateDownloadPromise.current;
     const fallbackTimer = window.setTimeout(() => {
       setUpdateInstallProgress((current) =>
         current.active && current.indeterminate
@@ -4889,6 +4946,7 @@ export function App() {
         onToggleTheme={actions.toggleTheme}
         onOpenPalette={() => setPaletteOpen(true)}
         pendingUpdateVersion={update?.updateAvailable && update.latestVersion ? update.latestVersion : null}
+        pendingUpdateReady={Boolean(update?.updateAvailable && update.latestVersion && (update.downloaded || (updateDownload?.version === update.latestVersion && updateDownload.state === "ready")))}
         onOpenUpdate={() => { if (update) setUpdatePrompt(update); }}
         settingsSections={settingsSections}
         onOpenSettings={(next, sections) => {
@@ -5220,6 +5278,7 @@ export function App() {
                   onFormChange={setSettingsForm}
                   overview={overview}
                   update={update}
+                  updateDownload={updateDownload}
                   updateInstallProgress={updateInstallProgress}
                   logs={logs}
                   diagnostics={diagnostics}
@@ -5234,6 +5293,7 @@ export function App() {
       {updatePrompt && !agentFocusOpen && !tourOpen ? (
         <UpdateDialog
           update={updatePrompt}
+          downloaded={Boolean(updatePrompt.downloaded || (updateDownload?.version === updatePrompt.latestVersion && updateDownload?.state === "ready"))}
           progress={updateInstallProgress}
           onClose={closeUpdatePrompt}
           onSkipVersion={() => {
@@ -11128,6 +11188,7 @@ function StatusBadge({ status = "unknown", label }: { status?: string; label?: s
 function AboutScreen({
   overview,
   update,
+  updateDownload = null,
   updateInstallProgress,
   logs,
   diagnostics,
@@ -11139,6 +11200,8 @@ function AboutScreen({
   onFormChange: (value: BackendSettings) => void;
   overview: OverviewResult | null;
   update: UpdateResult | null;
+  /** 后台下载更新的状态（「有可用更新时自动下载」）。 */
+  updateDownload?: UpdateDownloadState | null;
   updateInstallProgress: TaskProgress;
   logs: LogsResult | null;
   diagnostics: DiagnosticsResult | null;
@@ -11151,30 +11214,43 @@ function AboutScreen({
       <div className="cx-set-group" id="app-settings-update">
         <CxSection>
           <CxCard>
-            {/* 一行摘要 + 一个操作：有新版本时主按钮是「下载并运行安装包」，检查更新退到旁边。 */}
-            <CxRow
-              badges={update?.updateAvailable && update.latestVersion ? <CxBadge tone="ok">{tf("有新版本 {0}", [update.latestVersion])}</CxBadge> : null}
-              detail={
-                <>
-                  {update?.updateAvailable && update.latestVersion
-                    ? t("从 GitHub Release 下载安装包更新")
-                    : update?.latestVersion
-                      ? t("已是最新版本")
-                      : t("尚未检查更新")}
-                  {update?.updateAvailable && update.assetName ? ` · ${update.assetName}` : ""}
-                </>
-              }
-              icon={<img alt="" src={APP_LOGO_URL} />}
-              title={`Codex++ ${version}`}
-            >
-              <button className="cx-secondary" onClick={() => void actions.checkUpdate()} type="button"><RefreshCw />{t("检查更新")}</button>
-              {update?.updateAvailable ? (
-                <button className="cx-primary" disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()} type="button">
-                  <Download />
-                  {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
-                </button>
-              ) : null}
-            </CxRow>
+            {/* 一行摘要 + 一个操作：有新版本时主按钮是「安装」（已在后台下好）或「下载并安装」，检查更新退到旁边。 */}
+            {(() => {
+              const latest = update?.updateAvailable ? update.latestVersion ?? "" : "";
+              const download = latest && updateDownload?.version === latest ? updateDownload : null;
+              const ready = Boolean(latest) && (update?.downloaded === true || download?.state === "ready");
+              const downloading = !ready && download?.state === "downloading";
+              const detail = latest
+                ? ready
+                  ? t("新版本已下载，点「安装」更新；安装时 Codex++ 会关闭并自动重启")
+                  : downloading
+                    ? download?.percent != null
+                      ? tf("正在后台下载 {0}%，下完不会自动安装", [Math.round(download.percent)])
+                      : t("正在后台下载，下完不会自动安装")
+                    : download?.state === "failed"
+                      ? t("后台下载没成功，点「下载并安装」重试")
+                      : t("从 GitHub Release 下载安装包更新")
+                : update?.latestVersion
+                  ? t("已是最新版本")
+                  : t("尚未检查更新");
+              return (
+                <CxRow
+                  badges={latest ? <CxBadge tone="ok">{ready ? tf("{0} 已下载", [latest]) : tf("有新版本 {0}", [latest])}</CxBadge> : null}
+                  detail={<>{detail}{latest && update?.assetName ? ` · ${update.assetName}` : ""}</>}
+                  icon={<img alt="" src={APP_LOGO_URL} />}
+                  title={`Codex++ ${version}`}
+                  tooltip={download?.state === "failed" ? download.message : undefined}
+                >
+                  <button className="cx-secondary" onClick={() => void actions.checkUpdate()} type="button"><RefreshCw />{t("检查更新")}</button>
+                  {latest ? (
+                    <button className="cx-primary" disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()} type="button">
+                      <Download />
+                      {updateInstallProgress.active ? t("正在安装…") : ready ? t("安装") : t("下载并安装")}
+                    </button>
+                  ) : null}
+                </CxRow>
+              );
+            })()}
             {/* 改的是设置草稿，由同页 GlobalSettingsScreen 的自动保存落盘（#1272）。 */}
             <CxRow
               detail={t("打开时及运行期间每隔几小时检查一次")}
@@ -11182,6 +11258,13 @@ function AboutScreen({
               tooltip={t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}
             >
               <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
+            </CxRow>
+            <CxRow
+              detail={t("在后台把安装包下好，但不安装；点「安装」才更新")}
+              title={t("有可用更新时自动下载")}
+              tooltip={t("检查到新版本后，在后台下载安装包并校验，下好后这里和侧栏会提示「安装」。不会自动安装，也不会重启 Codex++。")}
+            >
+              <Switch label={t("有可用更新时自动下载")} on={form.updateAutoDownload !== false} onToggle={() => onFormChange({ ...form, updateAutoDownload: form.updateAutoDownload === false })} />
             </CxRow>
             {update?.updateAvailable && update.releaseSummary ? (
               <details className="app-update-notes cx-set-disclosure">
@@ -15400,9 +15483,11 @@ function DreamSkinUnsavedDialog({
   );
 }
 
-function UpdateDialog({ update, progress, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
+function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
   update: UpdateResult;
   progress: TaskProgress;
+  /** 安装包已在后台下好：主按钮写「立即安装」。 */
+  downloaded?: boolean;
   onClose: () => void;
   onSkipVersion: () => void;
   onMuteToday: () => void;
@@ -15434,7 +15519,7 @@ function UpdateDialog({ update, progress, onClose, onSkipVersion, onMuteToday, o
       <Toolbar className="update-dialog-actions">
         <Button autoFocus disabled={progress.active || !update.assetName || !update.assetUrl} onClick={onUpdate}>
           <Download className="h-4 w-4" />
-          {progress.active ? t("正在下载安装包…") : t("立即更新")}
+          {progress.active ? t("正在安装…") : downloaded ? t("立即安装") : t("立即更新")}
         </Button>
         <Button variant="secondary" onClick={onClose}>{t("关闭提示")}</Button>
         <Button variant="ghost" onClick={onMuteToday}>{t("今日不再提示")}</Button>
@@ -16523,6 +16608,7 @@ function AppSidebar({
   onToggleTheme,
   onOpenPalette,
   pendingUpdateVersion,
+  pendingUpdateReady = false,
   onOpenUpdate,
   codexRun,
   soloAgent,
@@ -16557,6 +16643,8 @@ function AppSidebar({
   onOpenPalette: () => void;
   /** 后台检查到的新版本号；没有新版本时为 null。 */
   pendingUpdateVersion: string | null;
+  /** 新版本的安装包已经在后台下好：卡片直接写「点击安装」。 */
+  pendingUpdateReady?: boolean;
   onOpenUpdate: () => void;
   /** 整体设置页当前显示的卡片。 */
   settingsSections?: string[];
@@ -16826,8 +16914,8 @@ function AppSidebar({
       {/* 底部状态卡（对应 Cursor 的 Getting Started）：网关状态；有新版本时换成更新提示。 */}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
-          <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{tf("新版本 {0}", [pendingUpdateVersion])}</span>
-          <span className="cx-side-card-action">{t("查看更新")}</span>
+          <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{pendingUpdateReady ? tf("新版本 {0} 已下载", [pendingUpdateVersion]) : tf("新版本 {0}", [pendingUpdateVersion])}</span>
+          <span className="cx-side-card-action">{pendingUpdateReady ? t("点击安装") : t("查看更新")}</span>
         </button>
       ) : enhanceOnly ? null : (
         <button className={`cx-side-card ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">

@@ -47,3 +47,20 @@ fn update_reminder_round_trips_and_partial_updates() {
     assert_eq!(raw["updateAutoCheck"], json!(true));
     assert_eq!(raw["updateSkippedVersion"], json!("v1.12.0"));
 }
+
+// 「有可用更新时自动下载」默认开（只下载不安装）；旧 settings.json 没有这个键时也是开；能部分更新。
+#[test]
+fn update_auto_download_defaults_on_and_partial_updates() {
+    assert!(BackendSettings::default().update_auto_download);
+    let settings: BackendSettings = serde_json::from_value(json!({ "updateAutoCheck": true })).unwrap();
+    assert!(settings.update_auto_download);
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    store.save(&BackendSettings::default()).unwrap();
+    store.update(json!({"updateAutoDownload": false})).unwrap();
+    assert!(!store.load().unwrap().update_auto_download);
+    let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(raw["updateAutoDownload"], json!(false));
+}
