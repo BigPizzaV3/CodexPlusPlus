@@ -118,6 +118,9 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。Agent 里以 group/<id> 出现。": "A group lets an agent pick several models as one: which to try first, whether to pin a session, who to fall back to on errors — all set on the card. It appears in agents as group/<id>.",
+  "隐藏这个组": "Hide this group",
+  "组操作": "Group actions",
   "正在等后台下载完成…": "Waiting for the background download to finish…",
   "立即安装": "Install now",
   "点击安装": "Click to install",

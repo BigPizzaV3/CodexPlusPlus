@@ -32,7 +32,9 @@ test("路由页：「我的组」和「自动组」两段卡片，卡片上直�
   assert.match(page, /\{t\("自动组"\)\}/);
   assert.match(page, /"save_gateway_auto_group", \{\s*model: group\.name,/);
   assert.match(page, /onPick=\{\(\) => onChange\(\{ pick: member\.model \}\)\}/);
-  assert.match(page, /onToggle=\{\(\) => onChange\(\{ hideMembers: !group\.hideMembers \}\)\}/);
+  // 隐藏成员在组卡片标题行的三点菜单里（打勾项），卡片不再有底栏。
+  assert.match(page, /<MenuItem checked=\{group\.hideMembers === true\} disabled=\{disabled\} onClick=\{\(\) => onChange\(\{ hideMembers: !group\.hideMembers \}\)\}>/);
+  assert.doesNotMatch(page, /gw-route-group-foot/);
   // 编辑器不管隐藏成员与手动选中：保存时沿用卡片上的。
   assert.match(page, /hideMembers: previous\?\.hideMembers \?\? false, pick: previous\?\.pick \?\? ""/);
 });

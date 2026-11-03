@@ -618,3 +618,70 @@
 :root .shell .gw-pool-detail .gw-detail-foot > .gw-detail-label {
   display: none;
 }
+
+/* ── 路由 ─────────────────────────────────────────────────────────
+   一行工具条（搜索 · 自动建组 · 新建组），组卡片不再有底栏：隐藏成员、编辑、删除在标题行的三点菜单里。 */
+:root .shell .cx-routing-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+:root .shell .cx-routing-toolbar .cx-search {
+  flex: 1 1 auto;
+  max-width: none;
+}
+
+:root .shell .cx-routing-toolbar .gw-models-auto {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12.5px;
+}
+
+:root .shell .gw-route-group {
+  overflow: visible;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  box-shadow: none;
+}
+
+:root .shell .gw-route-group[data-auto="true"] {
+  border: 0;
+}
+
+:root .shell .gw-route-group-head {
+  min-height: 52px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-route-group-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .gw-route-group-icon {
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.8);
+}
+
+:root .shell .gw-route-group-title strong {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .gw-route-group-title .gw-chip {
+  border: 0;
+  background: hsl(var(--accent));
+  font-size: 11.5px;
+}
+
+:root .shell .gw-route-members {
+  padding: 4px 0;
+}

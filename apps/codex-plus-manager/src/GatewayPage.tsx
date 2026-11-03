@@ -281,9 +281,10 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
 
   return (
     <>
-      <div className="gw-models-toolbar">
-        <label className="gw-sheet-search gw-models-search">
-          <Search className="h-4 w-4" />
+      {/* 一行工具条：搜索 + 自动建组 + 新建组。组是什么放在「我的组」标题的悬停说明里，不再单独占一行。 */}
+      <div className="gw-models-toolbar cx-routing-toolbar">
+        <label className="cx-search gw-models-search">
+          <Search aria-hidden="true" />
           <input aria-label={t("搜索组或模型")} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索组或模型")} value={query} />
         </label>
         <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按供应商池的顺序依次尝试。")}>
@@ -295,18 +296,17 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
             onToggle={() => void run("auto-models", "save_gateway_auto_models", { enabled: !autoOn }, t("自动建组"), true)}
           />
         </div>
-        <button className="gw-primary-button" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
-          <Plus className="h-4 w-4" />
+        <button className="cx-primary" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
+          <Plus />
           {t("新建组")}
         </button>
       </div>
-      <p className="gw-models-hint">{t("组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。")}</p>
 
       {!payload ? <div className="gw-card gw-empty">{t("正在读取…")}</div> : null}
 
       {payload ? (
-        <SectionLabel aside={<em>{t("Agent 里以 group/<id> 出现")}</em>}>
-          {t("我的组")}<em>{mine.length}</em>
+        <SectionLabel>
+          <span title={t("组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。Agent 里以 group/<id> 出现。")}>{t("我的组")}</span><em>{mine.length}</em>
         </SectionLabel>
       ) : null}
       {payload && mine.length === 0 ? (
@@ -328,8 +328,8 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
       ))}
 
       {payload ? (
-        <SectionLabel aside={<em>{autoOn ? t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它") : t("自动建组已关闭")}</em>}>
-          {t("自动组")}<em>{visibleAutos.length}</em>
+        <SectionLabel>
+          <span title={t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它")}>{t("自动组")}</span><em>{visibleAutos.length}</em>
         </SectionLabel>
       ) : null}
       {payload && !autoOn ? (
@@ -445,6 +445,16 @@ function GroupCard({
             title={manual ? t("手动模式只用选中的那个成员，不需要会话固定") : undefined}
             value={group.sticky ?? "cache"}
           />
+          {/* 次要操作收进三点菜单：隐藏成员（打勾）、编辑、恢复默认、隐藏这个自动组、删除。路由方式的含义在下拉选项的说明里。 */}
+          <Menu label={t("组操作")}>
+            <MenuItem checked={group.hideMembers === true} disabled={disabled} onClick={() => onChange({ hideMembers: !group.hideMembers })}>
+              <span title={t("打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。")}>{t("隐藏成员")}</span>
+            </MenuItem>
+            {onEdit ? <MenuItem disabled={disabled} onClick={onEdit}>{t("编辑")}</MenuItem> : null}
+            {onReset ? <MenuItem disabled={disabled} onClick={onReset}><span title={t("回到依次、缓存期内固定、不隐藏成员")}>{t("恢复默认")}</span></MenuItem> : null}
+            {onHide ? <MenuItem disabled={disabled} onClick={onHide}><span title={t("这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试")}>{t("隐藏这个组")}</span></MenuItem> : null}
+            {onDelete ? <MenuItem danger disabled={disabled} onClick={onDelete}>{t("删除")}</MenuItem> : null}
+          </Menu>
         </div>
       </header>
       <ol className="gw-route-members" data-manual={manual}>
@@ -463,19 +473,6 @@ function GroupCard({
         ))}
         {group.members.length === 0 ? <li className="gw-route-member-empty">{t("没有成员")}</li> : null}
       </ol>
-      <footer className="gw-route-group-foot">
-        <label className="gw-route-hide" title={t("打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。")}>
-          <Switch disabled={disabled} label={t("隐藏成员")} on={group.hideMembers === true} onToggle={() => onChange({ hideMembers: !group.hideMembers })} />
-          <span>{t("隐藏成员")}</span>
-        </label>
-        <span className="gw-route-group-mode">{t(groupModeDescription(group.mode))}</span>
-        <span className="gw-row-buttons">
-          {onEdit ? <button className="gw-text-button" disabled={disabled} onClick={onEdit} type="button">{t("编辑")}</button> : null}
-          {onReset ? <button className="gw-text-button" disabled={disabled} onClick={onReset} title={t("回到依次、缓存期内固定、不隐藏成员")} type="button">{t("恢复默认")}</button> : null}
-          {onHide ? <button className="gw-text-button" disabled={disabled} onClick={onHide} title={t("这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试")} type="button">{t("隐藏")}</button> : null}
-          {onDelete ? <button className="gw-text-button" disabled={disabled} onClick={onDelete} type="button">{t("删除")}</button> : null}
-        </span>
-      </footer>
     </section>
   );
 }
