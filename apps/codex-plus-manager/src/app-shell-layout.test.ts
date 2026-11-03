@@ -275,7 +275,7 @@ test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会�
 
 test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
-  assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target === "relayEnvironment" \? "relay" : target;/);
+  assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target === "relayEnvironment" \? "relay" : target === "recommendations" \? "home" : target;/);
   assert.match(app, /\{route === "agentSettings" \|\| route === "maintenance" \? \(/);
   assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
   // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。
@@ -285,12 +285,6 @@ test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里�
   // 每个分组是一节（CxSection），id 挂在节的最外层。
   for (const id of ids) assert.match(text, new RegExp(`<CxSection(?:(?!<CxSection)[\\s\\S])*?\\bid="${id}"`));
   assert.ok(app.indexOf("<AgentSettingsScreen") < app.indexOf("<MaintenanceScreen"), "设置在上、安装维护在下");
-});
-
-test("推荐内容只显示赞助商推荐", () => {
-  const screen = functionSource("RecommendationsScreen");
-  assert.doesNotMatch(screen, /t\("普通推荐"\)|ad\.type === "normal"/);
-  assert.match(screen, /t\("赞助商推荐"\)/);
 });
 
 test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {
@@ -347,20 +341,24 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
-test("置顶推荐位：网关总览顶部一条大横幅，其他每个页面右下角悬浮窗，同一页不重复出现", () => {
-  assert.match(functionSource("App"), /\{route === "hub" \? <SponsorBoard ads=\{ads\} actions=\{actions\} \/> : null\}/);
-  assert.match(functionSource("App"), /\{route === "hub" \? null : <FloatingSponsor ads=\{ads\} /);
-  assert.doesNotMatch(functionSource("OverviewScreen"), /SponsorBoard/);
-  assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
-  assert.equal((text.match(/<FloatingSponsor /g) ?? []).length, 1);
-  // 两边共用一个取数函数：只读置顶位，过期的不显示；悬浮窗明确标「推广」，悬停或收起时不轮换。
-  const floating = functionSource("FloatingSponsor");
-  assert.match(floating, /featuredAds\(ads\)/);
-  assert.match(floating, /t\("推广"\)/);
-  assert.match(floating, /if \(items\.length < 2 \|\| paused \|\| collapsed\) return;/);
-  // 能收起成小胶囊；记住的是这一批赞助位，换了新的会重新展开。
-  assert.match(floating, /const collapsed = Boolean\(signature\) && collapsedFor === signature;/);
-  assert.match(floating, /window\.localStorage\.setItem\(SPONSOR_FLOAT_KEY, value\)/);
+test("赞助商推荐集中在首页：首页是侧栏第一项和启动落脚页，其他页面不再放广告位", () => {
+  const app = functionSource("App");
+  assert.match(app, /\{route === "home" \? <HomeScreen ads=\{ads\} actions=\{actions\} \/> : null\}/);
+  assert.equal((text.match(/<HomeScreen /g) ?? []).length, 1);
+  assert.doesNotMatch(text, /SponsorBoard|FloatingSponsor/);
+  assert.doesNotMatch(functionSource("OverviewScreen"), /featuredAds|AdGrid/);
+  // 侧栏主模式第一项；旧「推荐内容」路由跳到首页，设置模式里不再有这一项。
+  assert.match(functionSource("AppSidebar"), /const general: SideEntry\[\] = \[\n\s*\{ key: "home", route: "home", label: t\("首页"\), icon: House, match: \["home", "recommendations"\] \},/);
+  assert.match(app, /target === "recommendations" \? "home" : target/);
+  assert.match(app, /if \(next === "home"\) await refreshAds\(true\);/);
+  assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"recommendations"/);
+  // 首页：置顶位做大卡片，其余一行一条；同一家去重；只放赞助商；明确标「推广」。
+  const home = functionSource("HomeScreen");
+  assert.match(home, /featuredAds\(ads\)/);
+  assert.match(home, /!topIdentities\.has\(adIdentity\(ad\)\)/);
+  assert.match(home, /\.filter\(\(ad\) => ad\.type === "sponsor"\)/);
+  assert.match(home, /t\("推广"\)/);
+  assert.match(home, /<AdGrid actions=\{actions\} ads=\{rest\}/);
   assert.match(functionSource("featuredAds"), /filter\(\(ad\) => !isExpiredAd\(ad\)\)/);
 });
 

@@ -366,7 +366,182 @@
   margin: 4px 0 0;
 }
 
-/* ── 推荐内容 ───────────────────────────────────────────────── */
+/* ── 首页（赞助商推荐） ─────────────────────────────────────────── */
+
+/* 精选：大卡片两列；只有一张时占满一行、图在左。 */
+:root .shell .home-heroes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+:root .shell .home-hero {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  color: hsl(var(--foreground) / 0.9);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+:root .shell .home-hero:hover {
+  border-color: hsl(var(--input));
+  box-shadow: 0 10px 28px hsl(0 0% 0% / 0.18);
+  transform: translateY(-2px);
+}
+
+:root .shell .home-hero-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 5;
+  object-fit: cover;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+:root .shell .home-hero-placeholder {
+  display: grid;
+  place-items: center;
+  background: hsl(var(--accent));
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .home-hero-placeholder svg {
+  width: 28px;
+  height: 28px;
+}
+
+:root .shell .home-hero-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 14px;
+}
+
+:root .shell .home-hero-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+:root .shell .home-hero-head strong {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-ad-tag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+:root .shell .home-hero-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+:root .shell .home-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+:root .shell .home-hero-chips span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.8);
+  font-size: 11.5px;
+}
+
+/* 底部一行：左边落地页域名，右边「了解更多」，推到卡片底部对齐。 */
+:root .shell .home-hero-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+:root .shell .home-hero-host {
+  overflow: hidden;
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-hero-cta {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: hsl(var(--foreground));
+  color: hsl(var(--background));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:root .shell .home-hero-cta svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 120ms ease;
+}
+
+:root .shell .home-hero:hover .home-hero-cta svg {
+  transform: translateX(2px);
+}
+
+:root .shell .home-heroes[data-count="1"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:root .shell .home-heroes[data-count="1"] .home-hero {
+  flex-direction: row;
+}
+
+:root .shell .home-heroes[data-count="1"] .home-hero-image {
+  width: 42%;
+  flex: none;
+  aspect-ratio: auto;
+  border-right: 1px solid hsl(var(--border));
+  border-bottom: 0;
+}
+
+@media (max-width: 860px) {
+  :root .shell .home-heroes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── 推荐列表（首页「更多推荐」） ─────────────────────────────── */
 
 /* 缩略图：原来的大色块横幅缩成 56×32 的小图。 */
 :root .shell .rec-list .cx-row-icon {

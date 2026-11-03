@@ -47,6 +47,7 @@ import {
   Layers3,
   Languages,
   LayoutGrid,
+  House,
   LayoutDashboard,
   List,
   Loader2,
@@ -1388,7 +1389,7 @@ type ToolId = string;
 /** Codex++ 自己的 logo：与应用图标（src-tauri/icons/icon.png）同一张图。 */
 const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
 
-type Route = "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
+type Route = "home" | "overview" | "relay" | "multiLaunch" | "claude" | "relayEnvironment" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "recommendations" | "agentCache" | "agentCollaboration" | "computerUse" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "maintenance" | "about" | "settings" | "agentSettings" | "extension";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1404,6 +1405,8 @@ const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
  * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
  */
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string; tools?: readonly string[] }> = [
+  // 首页：整个程序的落脚页，专门放赞助商推荐（原「推荐内容」页并进来）。
+  { id: "home", get label() { return t("首页"); }, icon: House },
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
@@ -1420,6 +1423,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // Codex / Claude 共用拓展管理入口；tool 保留 codex，让 Codex 下的顶栏继续提供重启。
   { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex", tools: ["codex", "claude"] },
   { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
+  // 旧入口：并进了首页（拓展深链仍可能用到这条路由）。
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", get label() { return t("AI Agent 缓存清理"); }, icon: Trash2 },
@@ -1468,7 +1472,7 @@ const lastAgentRoute = new Map<string, Route>();
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
-const globalNavigationRoutes: Route[] = ["extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["home", "extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentCollaboration", "agentCache", "recommendations", "about", "settings"];
 /** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
@@ -1477,7 +1481,7 @@ const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "ses
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
-const toolNavigationRoutes: Route[] = ["recommendations", "computerUse", "agentCollaboration", "agentCache"];
+const toolNavigationRoutes: Route[] = ["computerUse", "agentCollaboration", "agentCache"];
 /**
  * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
  * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
@@ -2839,7 +2843,7 @@ export function App() {
     if (target === "about") setSettingsFocus("app-settings-update");
     // 旧版代理设置并进了「连接与供应商」页底部的「高级」：旧入口打开那一页并展开「高级」。
     setRelayAdvancedOpen(target === "relayEnvironment");
-    const next: Route = target === "maintenance" ? "agentSettings" : target === "about" ? "settings" : target === "relayEnvironment" ? "relay" : target;
+    const next: Route = target === "maintenance" ? "agentSettings" : target === "about" ? "settings" : target === "relayEnvironment" ? "relay" : target === "recommendations" ? "home" : target;
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
       return;
@@ -2888,7 +2892,7 @@ export function App() {
       await refreshScriptMarket(true);
       await refreshUserScriptInventory();
     }
-    if (next === "recommendations") await refreshAds(true);
+    if (next === "home") await refreshAds(true);
     if (next === "settings") {
       await refreshOverview(true);
       await refreshLogs(true);
@@ -4196,8 +4200,7 @@ export function App() {
         void checkUpdate(true);
       }
       await refreshOverview(true);
-      // 概览页的赞助商区块要显示真实广告源内容，所以启动就拉一次，
-      // 不要等到用户点进「推荐内容」才加载。
+      // 启动落在首页，首页就是赞助商推荐，所以启动就拉一次。
       await refreshAds(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
@@ -4911,6 +4914,7 @@ export function App() {
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
   const pushCommand = (command: PaletteCommand | null) => { if (command) paletteCommands.push(command); };
+  pushCommand(routeCommand("home", t("全局管理"), () => void navigate("home"), "home ads 推荐 赞助"));
   gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("网关"), () => void navigate(routeId), "gateway")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
   pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
@@ -5246,12 +5250,10 @@ export function App() {
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
-          {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
+          {route === "home" ? <HomeScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "computerUse" ? <ComputerUsePage /> : null}
-          {/* 置顶推荐位只放在网关总览一处，内容与「推荐内容」页同源；各 Agent 的概览不再重复。 */}
-          {route === "hub" ? <SponsorBoard ads={ads} actions={actions} /> : null}
           {route === "hub" ? (
             <HubOverview
               codex={{ running: codexAppRunning, providerName: toolEntries.find((entry) => entry.id === "codex")?.activeRelayName ?? null }}
@@ -5437,7 +5439,6 @@ export function App() {
           onDismiss={() => void dismissPendingDreamSkinCommunity()}
         />
       ) : null}
-      {route === "hub" ? null : <FloatingSponsor ads={ads} onOpen={(url) => void actions.openExternalUrl(url)} />}
     </div>
   );
 }
@@ -6282,126 +6283,10 @@ function WeixinConnectScreen({
   );
 }
 
-/// 网关总览顶部的两个独立广告位。
-///
-/// 这里只读取广告源的 `top_ad/topAds`，不会读取普通 `ads` 推荐池。
-/// `top_ad` 可以是单个对象，也可以是数组；最多显示前两个有效广告。
-/** 置顶赞助位（只读广告源的 top_ad / topAds，不读普通推荐池），过期的不显示。 */
+/// 置顶赞助位：只读广告源的 `top_ad/topAds`（`top_ad` 可以是单个对象或数组），过期的不显示。
 function featuredAds(ads: AdsResult | null): AdItem[] {
   const sourceAds = ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : [];
   return sourceAds.filter((ad) => !isExpiredAd(ad));
-}
-
-const SPONSOR_FLOAT_KEY = "codex-plus.sponsor-float-collapsed";
-
-/**
- * 右下角的赞助悬浮窗：每个页面都看得见（网关总览页顶部已有大横幅，那里不再重复）。
- * 有多个赞助位时每 8 秒轮换一个，鼠标停在卡片上时不换；整张卡可点，在浏览器里打开。
- * 可以收起成一个小胶囊（记住收起状态）；赞助位换了新的一批会重新展开一次。
- * 标「推广」：用户一眼知道这是广告，不冒充功能入口。
- */
-function FloatingSponsor({ ads, onOpen }: { ads: AdsResult | null; onOpen: (url: string) => void }) {
-  const items = featuredAds(ads);
-  const signature = items.map(adIdentity).join("|");
-  const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
-  const [collapsedFor, setCollapsedFor] = useState(() => {
-    try { return window.localStorage.getItem(SPONSOR_FLOAT_KEY) ?? ""; } catch { return ""; }
-  });
-  const collapsed = Boolean(signature) && collapsedFor === signature;
-  useEffect(() => {
-    if (items.length < 2 || paused || collapsed) return;
-    const timer = window.setInterval(() => setIndex((current) => (current + 1) % items.length), 8000);
-    return () => window.clearInterval(timer);
-  }, [items.length, paused, collapsed]);
-  if (!items.length) return null;
-  const ad = items[index % items.length];
-  const highlights = (ad.highlights ?? []).filter(Boolean).slice(0, 3);
-  const setCollapsed = (next: boolean) => {
-    const value = next ? signature : "";
-    setCollapsedFor(value);
-    try { window.localStorage.setItem(SPONSOR_FLOAT_KEY, value); } catch { /* 存不了就只在本次收起 */ }
-  };
-  if (collapsed) {
-    return (
-      <button className="cx-float-sponsor-pill" onClick={() => setCollapsed(false)} title={t("展开推广")} type="button">
-        {ad.image ? <img alt="" src={ad.image} /> : <Sparkles aria-hidden="true" />}
-        <span>{formatAdTitle(ad.title)}</span>
-        <span className="cx-side-sponsor-tag">{t("推广")}</span>
-      </button>
-    );
-  }
-  return (
-    <aside aria-label={t("推广")} className="cx-float-sponsor" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
-      <button aria-label={t("收起推广")} className="cx-float-sponsor-close" onClick={() => setCollapsed(true)} title={t("收起推广")} type="button">
-        <X aria-hidden="true" />
-      </button>
-      <button className="cx-float-sponsor-main" key={adIdentity(ad)} onClick={() => onOpen(ad.url)} title={ad.description} type="button">
-        {ad.image ? <img alt="" className="cx-float-sponsor-image" src={ad.image} /> : null}
-        <span className="cx-float-sponsor-head">
-          {ad.image ? null : <Sparkles aria-hidden="true" />}
-          <strong>{formatAdTitle(ad.title)}</strong>
-          <span className="cx-side-sponsor-tag">{t("推广")}</span>
-        </span>
-        <span className="cx-float-sponsor-text">{ad.description}</span>
-        {highlights.length ? (
-          <span className="cx-float-sponsor-chips">
-            {highlights.map((item) => <span key={item}>{item}</span>)}
-          </span>
-        ) : null}
-        <span className="cx-float-sponsor-cta">{t("了解更多")}<ArrowRight aria-hidden="true" /></span>
-      </button>
-      {items.length > 1 ? (
-        <span className="cx-float-sponsor-dots" role="tablist" aria-label={t("切换推广")}>
-          {items.map((item, itemIndex) => (
-            <button
-              aria-label={formatAdTitle(item.title)}
-              aria-selected={itemIndex === index % items.length}
-              key={adIdentity(item)}
-              onClick={() => setIndex(itemIndex)}
-              role="tab"
-              type="button"
-            />
-          ))}
-        </span>
-      ) : null}
-    </aside>
-  );
-}
-
-function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const featured = featuredAds(ads).slice(0, 2);
-
-  if (featured.length === 0) return null;
-
-  // 参照 Cursor 顶部那条横幅：图标、标题、一行说明、右侧一个按钮；两个广告位合在同一个框里，上下各一行。
-  return (
-    <div className="hub-sponsor">
-      {featured.map((ad) => (
-        <div className="hub-sponsor-item" key={ad.id || ad.title} title={ad.highlights?.length ? ad.highlights.join(" · ") : undefined}>
-          <CxBanner
-            detail={(
-              <>
-                {ad.description}
-                {ad.highlights?.length ? (
-                  <span className="hub-sponsor-chips">
-                    {ad.highlights.filter(Boolean).slice(0, 4).map((item) => <span key={item}>{item}</span>)}
-                  </span>
-                ) : null}
-              </>
-            )}
-            icon={ad.image ? <img alt="" src={ad.image} /> : <Network />}
-            title={<>{formatAdTitle(ad.title)}<span className="cx-side-sponsor-tag">{t("推广")}</span></>}
-          >
-            <button className="cx-primary" onClick={() => void actions.openExternalUrl(ad.url)} type="button">
-              {t("了解更多")}
-              <ArrowRight />
-            </button>
-          </CxBanner>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function OverviewScreen({
@@ -11084,21 +10969,21 @@ function SessionsScreen({
   );
 }
 
-/// 推荐内容页：列出广告源里的全部推荐（含 sponsor 与 normal）。
+/// 首页：整个程序的落脚页，专门放赞助商推荐（原「推荐内容」页）。
 ///
-/// 概览页置顶位独立配置；展示多条时也从推荐池去重，避免重复出现。
-function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
-  // 置顶位排在最前，并把推荐池里指向同一家的那条去掉 —— 广告源里同一条赞助商
-  // 常常同时出现在 top_ad 和 ads 里（两个 id、同一个落地页），只比 id 去不掉。
-  const topAds = (ads?.topAds?.length ? ads.topAds : ads?.topAd ? [ads.topAd] : []).filter((ad) => !isExpiredAd(ad));
+/// 上面是大卡片（置顶位；没有置顶位时取前两条），下面一行一条列出其余赞助商。
+/// 置顶位和推荐池里同一家常有两个 id、同一个落地页，按 adIdentity 去重。只展示赞助商，普通推荐不显示。
+function HomeScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+  const topAds = featuredAds(ads);
   const topIdentities = new Set(topAds.map(adIdentity));
-  const pool = items.filter((ad) => !topIdentities.has(adIdentity(ad)));
-  const ordered = [...topAds, ...pool];
-  // 只展示赞助商推荐；普通推荐不再显示。
-  const sponsors = ordered.filter((ad) => ad.type === "sponsor");
+  const pool = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad) && !topIdentities.has(adIdentity(ad)));
+  const sponsors = [...topAds, ...pool].filter((ad) => ad.type === "sponsor");
+  const heroCount = Math.max(Math.min(topAds.filter((ad) => ad.type === "sponsor").length, 4), Math.min(sponsors.length, 2));
+  const heroes = sponsors.slice(0, heroCount);
+  const rest = sponsors.slice(heroCount);
+  const open = (ad: AdItem) => void actions.openExternalUrl(ad.url);
   return (
-    <div className="tp-page rec-page">
+    <div className="tp-page home-page">
       <TopbarActions>
         <button className="cx-secondary" onClick={() => void actions.refreshAds()} type="button">
           <RefreshCw />
@@ -11106,9 +10991,43 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
         </button>
       </TopbarActions>
       {!ads ? <CxCard><CxEmpty title={t("尚未加载推荐内容")} /></CxCard> : null}
-      {ads ? (
-        <CxSection aside={<span>{t("与 Codex 内插件菜单使用同一个远端广告源")}</span>} count={sponsors.length} title={t("赞助商推荐")}>
-          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
+      {ads && !sponsors.length ? (
+        <CxCard>
+          <CxEmpty detail={t("推荐来自远端广告源，稍后再来看看。")} title={t("暂无赞助商推荐。")}>
+            <button className="cx-secondary" onClick={() => void actions.refreshAds()} type="button"><RefreshCw />{t("刷新推荐")}</button>
+          </CxEmpty>
+        </CxCard>
+      ) : null}
+      {heroes.length ? (
+        <CxSection count={heroes.length} title={t("精选推荐")}>
+          <div className="home-heroes" data-count={heroes.length}>
+            {heroes.map((ad) => (
+              <button className="home-hero" key={adIdentity(ad)} onClick={() => open(ad)} title={`${ad.description}\n${ad.url}`} type="button">
+                {ad.image ? <img alt="" className="home-hero-image" src={ad.image} /> : <span className="home-hero-image home-hero-placeholder"><Sparkles aria-hidden="true" /></span>}
+                <span className="home-hero-body">
+                  <span className="home-hero-head">
+                    <strong>{formatAdTitle(ad.title)}</strong>
+                    <span className="home-ad-tag">{t("推广")}</span>
+                  </span>
+                  <span className="home-hero-text">{ad.description}</span>
+                  {ad.highlights?.length ? (
+                    <span className="home-hero-chips">
+                      {ad.highlights.filter(Boolean).slice(0, 4).map((item) => <span key={item}>{item}</span>)}
+                    </span>
+                  ) : null}
+                  <span className="home-hero-foot">
+                    <span className="home-hero-host">{adHost(ad.url)}</span>
+                    <span className="home-hero-cta">{t("了解更多")}<ArrowRight aria-hidden="true" /></span>
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </CxSection>
+      ) : null}
+      {rest.length ? (
+        <CxSection aside={<span>{t("与 Codex 内插件菜单使用同一个远端广告源")}</span>} count={rest.length} title={t("更多推荐")}>
+          <AdGrid actions={actions} ads={rest} empty={t("暂无赞助商推荐。")} />
         </CxSection>
       ) : null}
     </div>
@@ -16660,7 +16579,6 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
     { key: "gateway", label: t("网关"), icon: SlidersHorizontal, route: "gatewaySettings", group: "agent", keywords: "gateway port key 网关 端口 监听" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
-    { key: "recommendations", label: t("推荐内容"), icon: ExternalLink, route: "recommendations", group: "tools", keywords: "ads 推荐" },
     { key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta", keywords: "computer use mcp" },
     { key: "agentCollaboration", label: t("Agent 协作"), icon: GitBranch, route: "agentCollaboration", group: "beta", keywords: "collaboration 协作" },
   ];
@@ -16668,7 +16586,7 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
 }
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "gatewaySettings", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
+const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "gatewaySettings", "agentCache", "computerUse", "agentCollaboration"]);
 /** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
 const customizeRoutes: Route[] = ["context", "skills"];
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
@@ -16856,11 +16774,12 @@ function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话；第二组是聚合网关：一个 Agent 经网关同时用多家供应商。
+  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话；第二组是聚合网关：一个 Agent 经网关同时用多家供应商。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
   const extensionsShown = true;
   const general: SideEntry[] = [
+    { key: "home", route: "home", label: t("首页"), icon: House, match: ["home", "recommendations"] },
     ...(extensionsShown ? [{ key: "extensions", route: "userScripts" as Route, label: t("万物皆拓展"), icon: Blocks, match: ["userScripts" as Route], tour: "management" }] : []),
     { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: extensionsShown ? undefined : "management" },
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
@@ -17485,6 +17404,7 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
   if (soloAgent && route === "hub") return tf("{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全", [agentName(soloAgent)]);
   if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 网关接入供应商池，并选它默认用的模型", [agentName(soloAgent)]);
   const subtitles: Record<Route, string> = {
+    home: t("赞助商推荐：支持 Codex++ 的服务"),
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
@@ -19948,7 +19868,7 @@ function stringifyError(error: unknown) {
 
 /** 启动落在网关「总览」：Agent 概览跟着上次点的 Agent 走，落在那里像是停在了某个 Agent 里。 */
 function loadInitialRoute(): Route {
-  if (typeof window === "undefined") return "hub";
+  if (typeof window === "undefined") return "home";
   const params = new URLSearchParams(window.location.search);
   const previewRoute = params.get("previewRoute");
   if (previewRoute && routes.some((item) => item.id === previewRoute)) {
@@ -19957,7 +19877,7 @@ function loadInitialRoute(): Route {
   if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
     return "settings";
   }
-  return "hub";
+  return "home";
 }
 
 /** 新用户自动显示入门清单；看过旧导览的用户可从设置主动重开。 */

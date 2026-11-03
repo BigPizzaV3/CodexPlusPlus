@@ -45,62 +45,6 @@
   background: hsl(var(--accent) / 0.35);
 }
 
-/* 推荐位：Cursor 顶部那种一条横幅；两个广告位合在一个框里，上下各一行。 */
-:root .shell .hub-sponsor {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--cx-radius);
-  background: hsl(var(--card));
-}
-
-:root .shell .hub-sponsor-item + .hub-sponsor-item {
-  border-top: 1px solid hsl(var(--cx-row-divider));
-}
-
-:root .shell .hub-sponsor .cx-banner {
-  padding: 10px 14px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-:root .shell .hub-sponsor .cx-banner .cx-row-detail {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 10px;
-}
-
-:root .shell .hub-sponsor .cx-banner .cx-row-title .cx-side-sponsor-tag {
-  margin-left: 8px;
-}
-
-:root .shell .hub-sponsor-chips {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-:root .shell .hub-sponsor-chips span {
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: hsl(var(--accent));
-  color: hsl(var(--foreground) / 0.78);
-  font-size: 11px;
-}
-
-:root .shell .hub-sponsor .cx-banner-icon {
-  overflow: hidden;
-}
-
-:root .shell .hub-sponsor .cx-banner-icon img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 /* ── Agent 接入（gateway） ───────────────────────────────────── */
 
 :root .shell .gw-agents.cx-page {
