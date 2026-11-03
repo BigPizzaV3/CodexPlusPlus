@@ -118,6 +118,8 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "内置拓展已全部暂停": "All built-in extensions are paused",
+  "独立模式里的补丁仍然生效；服务配置会保留。": "Standalone patches still apply; service settings are kept.",
   "聚合网关": "Aggregate Gateway",
   "MCP 与 Skills": "MCP & Skills",
   "任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家": "Any agent reaches any provider through Codex++: one agent can use several providers at once, routed by model, failing over to the next one on errors",

@@ -66,10 +66,11 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
   assert.match(globalNavigation, /const multiAgentRoutes = new Set<Route>\(\["agentCollaboration", "computerUse"\]\);/);
 });
 
-test("标题：设置模式用分类名，Agent 自己的页面用 Agent 名字，其余用页面名", () => {
+test("标题：设置模式用分类名，Agent 自己的页面和其余页面都用页面名", () => {
   const entry = functionSource("App");
   assert.match(entry, /settingsEntryKey\n\s*\? settingsEntries\.find\(\(entry\) => entry\.key === settingsEntryKey\)\?\.label/);
-  assert.match(entry, /onAgentPage\n\s*\? activeToolName/);
+  // Agent 自己的页面：Agent 名字在侧栏，标题直接是页面名（概览、内置拓展…）。
+  assert.match(entry, /onAgentPage\n\s*\? routeTitle\(route\)/);
   assert.match(entry, /<h1 title=\{[^\n]*\}>\{pageTitle\}<\/h1>/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
 });
@@ -82,7 +83,7 @@ test("只用增强功能：隐藏供应商页面，配置保存成功后才提�
   // 聚合网关整组按模式过滤，一项都不剩时连标题一起隐藏。
   assert.match(functionSource("AppSidebar"), /const shownGateway = gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
   assert.match(functionSource("AppSidebar"), /\{shownGateway\.length \? \(/);
-  assert.match(functionSource("AgentPageTabs"), /visibleRoutes\(focus, entry\.routes\)/);
+  assert.match(functionSource("AppSidebar"), /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\)/);
   assert.match(text, /if \(!item \|\| !routeVisible\(agentFocus, routeId\)\) return null;/);
   // 启动默认停在网关总览：模式不让看就回落脚页。
   assert.match(text, /if \(!routeVisible\(agentFocus, route\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\);/);

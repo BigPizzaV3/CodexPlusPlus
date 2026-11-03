@@ -1442,8 +1442,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
  */
 const navigationSections: Array<{ id: string; routes: Route[] }> = [
   { id: "overview", routes: ["overview"] },
-  { id: "providers", routes: ["relay", "relayEnvironment", "multiLaunch"] },
-  { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "pluginMarket", "weixin"] },
+  { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "pluginMarket", "weixin", "multiLaunch"] },
+  // 旧版直连（旧版供应商配置 / 旧版代理设置）不常用，挪进齿轮的设置模式「Codex」分类下，不占 Agent 的入口。
   // Codex 设置（含安装维护）在齿轮的设置模式里，不再占 Agent 的页签。
 ];
 const routeTool = (routeId: Route) => routes.find((candidate) => candidate.id === routeId)?.tool;
@@ -4852,7 +4852,7 @@ export function App() {
         : route === "hub"
           ? t("聚合网关")
         : onAgentPage
-          ? activeToolName
+          ? routeTitle(route)
           : soloAgent && route === "gateway"
             ? tf("{0} 接入", [agentName(soloAgent)])
             : routeTitle(navAliasRoute[route] ?? route);
@@ -4949,7 +4949,7 @@ export function App() {
               {onCodexPage ? <CodexLaunchButton className="topbar-codex-launch" size="sm" state={codexLaunch} /> : null}
             </div>
           </header>
-          <AgentPageTabs activeTool={activeTool} focus={agentFocus} onNavigate={(next) => void navigate(next)} route={route} />
+          {/* Agent 的页面在侧栏里它那一行下面。 */}
           <CustomizeTabs activeTool={activeTool} onNavigate={(next) => void navigate(next)} route={route} />
           {restorableOverride ? (
             <div className="extension-page-banner">
@@ -8812,9 +8812,10 @@ function EnhanceScreen({
   // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定（深链滚到这里）。
   const generalSections = [...managerBuiltinGroups(), managerStandaloneGroup()]
     .map((group) => ({ id: enhancementGroupAnchorId(group), label: t(group.title) }));
+  // 精简版式：一行工具条 = 三个页签（胶囊）+ 搜索（只在内置拓展页签）+ 总开关；不再单独占两行卡片。
   return (
-    <div className="settings-page enhance-page sectioned-page">
-      <PageSectionNav label={t("增强分类")} sections={activeTab === "general" ? generalSections : []}>
+    <div className="settings-page enhance-page sectioned-page cx-enhance-page">
+      <div className="cx-enhance-bar" id="enhance-page-controls">
         <div className="enhance-tabs tp-tabs cx-pills" role="tablist" aria-label={t("Codex增强")} aria-orientation="horizontal">
           {tabs.map((tab, index) => (
             <button
@@ -8844,7 +8845,26 @@ function EnhanceScreen({
             </button>
           ))}
         </div>
-      </PageSectionNav>
+        {activeTab === "general" ? (
+          <label className="cx-search cx-enhance-search">
+            <Search aria-hidden="true" />
+            <input aria-label={t("搜索增强功能")} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索增强功能")} value={query} />
+          </label>
+        ) : <span className="cx-toolbar-spacer" />}
+        <span className="enhance-save-actions cx-enhance-save">
+          <AutoSaveStatus state={autoSave} />
+        </span>
+        {/* 总开关：一个紧凑开关，说明放悬停。 */}
+        <label className="feature-toggle enhance-master-switch cx-enhance-master-switch" title={t(masterItem.description)}>
+          <input
+            checked={form.enhancementsEnabled}
+            onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
+            type="checkbox"
+          />
+          <span><strong>{t(masterItem.title)}</strong></span>
+          <ToggleVisual />
+        </label>
+      </div>
       <div className="sectioned-body cx-enhance-body">
       {restartPending.length ? (
         <CxBanner
@@ -8872,26 +8892,12 @@ function EnhanceScreen({
           </button>
         </CxBanner>
       ) : null}
-      {/* 总开关一行：开关在右，保存状态跟在说明后面。 */}
-      <CxCard className="cx-enhance-master">
-        <label className="feature-toggle enhance-master-switch" id="enhance-page-controls">
-          <input
-            checked={form.enhancementsEnabled}
-            onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-            type="checkbox"
-          />
-          <span>
-            <strong>{t(masterItem.title)}</strong>
-            <small title={t(masterItem.description)}>{t(masterItem.description)}</small>
-          </span>
-          <span className="enhance-save-actions cx-enhance-save">
-            <AutoSaveStatus state={autoSave} />
-          </span>
-          <ToggleVisual />
-        </label>
-      </CxCard>
+      {form.enhancementsEnabled ? null : (
+        <CxBanner icon={<PowerOff />} title={t("内置拓展已全部暂停")} detail={t("独立模式里的补丁仍然生效；服务配置会保留。")} tone="warn">
+          <button className="cx-primary" onClick={() => onFormChange({ ...form, enhancementsEnabled: true })} type="button">{t("全部启用")}</button>
+        </CxBanner>
+      )}
       <div className="enhance-tab-panel cx-enhance-pane" id="enhance-pane-general" role="tabpanel" aria-labelledby="enhance-tab-general" hidden={activeTab !== "general"}>
-        <CxToolbar onQuery={setQuery} placeholder={t("搜索增强功能")} query={query} />
         {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
         {masterEnabled ? null : <StandaloneModeGroup hidden={groupHidden(managerStandaloneGroup().id)} renderBuiltin={renderBuiltin} />}
         {managerBuiltinGroups().map((group) => (
@@ -16278,38 +16284,6 @@ function loadCollapsedGroups(): string[] {
   }
 }
 
-/**
- * 当前 Agent 的全部页面：内容区顶部一排页签，分组（概览 / 供应商 / 增强 / 设置）之间用细线隔开。
- * 网关、全局管理、工具这些通用页面不显示；只有一个页面的 Agent 也不显示。
- */
-function AgentPageTabs({ route, activeTool, focus, onNavigate }: { route: Route; activeTool: ToolId; focus: AgentFocus; onNavigate: (route: Route) => void }) {
-  if (globalNavigationRoutes.includes(route) || settingsModeRoutes.has(route)) return null;
-  // 当前使用模式下隐藏的页面（如只用增强功能时的供应商、多开）不出现在页签里；整组都隐藏就去掉这一组。
-  const groups = agentTabGroups(navigationSections, routeTool, activeTool)
-    .map((entry) => ({ ...entry, routes: visibleRoutes(focus, entry.routes) }))
-    .filter((entry) => entry.routes.length > 0);
-  if (groups.reduce((count, entry) => count + entry.routes.length, 0) < 2) return null;
-  return (
-    <nav aria-label={t("Agent 页面")} className="tp-tabs cx-pills agent-page-tabs" role="tablist">
-      {groups.map(({ group, routes: groupRoutes }, index) => (
-        <Fragment key={group.id}>
-          {index > 0 ? <span aria-hidden="true" className="agent-page-tabs-sep" /> : null}
-          {groupRoutes.map((routeId) => {
-            const item = routes.find((candidate) => candidate.id === routeId);
-            if (!item) return null;
-            const Icon = item.icon;
-            return (
-              <button aria-selected={route === routeId} data-active={route === routeId} key={routeId} onClick={() => onNavigate(routeId)} role="tab" type="button">
-                <Icon aria-hidden="true" size={14} />
-                {item.label}
-              </button>
-            );
-          })}
-        </Fragment>
-      ))}
-    </nav>
-  );
-}
 
 /**
  * 设置模式（参照 Cursor）：侧栏换成「返回 + 搜索设置 + 平铺分类」，每个分类单独成页。
@@ -16334,6 +16308,8 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
+    { key: "legacyRelay", label: t("旧版供应商配置"), icon: KeyRound, route: "relay", group: "agent", keywords: "relay legacy provider 旧版 直连 供应商 cc-switch" },
+    { key: "legacyProxy", label: t("旧版代理设置"), icon: ShieldCheck, route: "relayEnvironment", group: "agent", keywords: "proxy legacy 旧版 代理 映射 环境" },
     { key: "gateway", label: t("网关"), icon: SlidersHorizontal, route: "gatewaySettings", group: "agent", keywords: "gateway port key 网关 端口 监听" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
     { key: "recommendations", label: t("推荐内容"), icon: ExternalLink, route: "recommendations", group: "tools", keywords: "ads 推荐" },
@@ -16344,7 +16320,7 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
 }
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "gatewaySettings", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
+const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "relay", "relayEnvironment", "gatewaySettings", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
 /** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
 const customizeRoutes: Route[] = ["context", "skills"];
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
@@ -16628,11 +16604,12 @@ function AppSidebar({
                 ? { tone: "direct", label: t("Codex 的供应商配置由 Codex++ 直接管理") }
                 : { tone: "off", label: t("未接入网关") };
             return (
-              <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()} key={tool.id}>
+              <Fragment key={tool.id}>
+              <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()}>
                 <button
                   aria-current={current ? "true" : undefined}
                   aria-label={tool.switchable ? `${tool.name} · ${access.label}` : `${tool.name} · ${t("待接入")}`}
-                  className={`cx-side-item ${current ? "active" : ""}`}
+                  className={`cx-side-item ${current ? "active" : ""} ${current && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
                   disabled={!tool.switchable}
                   onClick={() => onOpenAgent(tool.id)}
                   title={`${title}｜${access.label}`}
@@ -16657,6 +16634,34 @@ function AppSidebar({
                   </button>
                 ) : null}
               </div>
+              {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
+{current ? (() => {
+            const pages = agentTabGroups(navigationSections, routeTool, activeTool)
+              .flatMap((entry) => visibleRoutes(focus, entry.routes));
+            if (pages.length < 2) return null;
+            return (
+              <div className="cx-side-subnav" role="group" aria-label={t("Agent 页面")}>
+                {pages.map((routeId) => {
+                  const item = routes.find((candidate) => candidate.id === routeId);
+                  if (!item) return null;
+                  const selected = route === routeId;
+                  return (
+                    <button
+                      aria-current={selected ? "page" : undefined}
+                      className={`cx-side-subitem ${selected ? "active" : ""}`}
+                      data-agent-page={routeId}
+                      key={routeId}
+                      onClick={() => onNavigate(routeId)}
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+})() : null}
+              </Fragment>
             );
           })}
         </div>

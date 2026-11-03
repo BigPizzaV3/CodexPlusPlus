@@ -42,7 +42,10 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   const sidebar = functionSource("AppSidebar");
   // 在网关、全局管理、工具这些通用页面时 Agent 行不显示选中，侧栏同一时间只有一个选中项。
   assert.match(sidebar, /const current = tool\.id === activeTool && !onGlobalPage;/);
-  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\}`\}/);
+  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\} \$\{current && agentTabGroups/);
+  // 当前 Agent 的页面缩进列在侧栏里它那一行下面，不再是内容区顶部的胶囊。
+  assert.match(sidebar, /className="cx-side-subnav" role="group" aria-label=\{t\("Agent 页面"\)\}/);
+  assert.match(sidebar, /\{current \? \(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, activeTool\)/);
   // 状态点表示接入方式而不是运行状态（运行状态在顶栏和 Codex 行的播放 / 停止键上）。
   assert.match(sidebar, /tone: "direct"/);
   const access = sidebar.slice(sidebar.indexOf("const access ="), sidebar.indexOf("return (", sidebar.indexOf("const access =")));
@@ -54,18 +57,16 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(text, /const stoppedByUser = result\.latest_launch\?\.phase === "user_stopped";/);
   const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /commands::stop_codex_plus,/);
-  // 侧栏不再列当前 Agent 的页面。
-  assert.doesNotMatch(sidebar, /agent-pages|navigationSections/);
-  // 胶囊：概览 / 供应商 / 增强 分组用细线隔开，仍按页面的 tool 归属过滤；通用页面和设置模式不显示。
-  // Codex 设置（含安装维护）进了齿轮的设置模式，不再占 Agent 的页签。
+  // 侧栏里当前 Agent 下面缩进列出它的页面（概览 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），仍按页面的 tool 归属和使用模式过滤。
+  assert.match(sidebar, /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\);\n\s*if \(pages\.length < 2\) return null;/);
+  // 旧版直连两页（旧版供应商配置 / 旧版代理设置）不常用，进了设置模式；Codex 设置也在设置模式里。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
-  for (const id of ["overview", "providers", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
-  assert.doesNotMatch(sections, /"agentSettings"/);
-  const tabs = functionSource("AgentPageTabs");
-  assert.match(tabs, /if \(globalNavigationRoutes\.includes\(route\) \|\| settingsModeRoutes\.has\(route\)\) return null;/);
-  assert.match(tabs, /agentTabGroups\(navigationSections, routeTool, activeTool\)/);
-  assert.match(tabs, /className="agent-page-tabs-sep"/);
-  assert.match(functionSource("App"), /<AgentPageTabs activeTool=\{activeTool\}/);
+  for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
+  assert.doesNotMatch(sections, /"agentSettings"|"relay"|"relayEnvironment"/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance", "relay", "relayEnvironment",/);
+  assert.match(text, /\{ key: "legacyRelay", label: t\("旧版供应商配置"\)[^\n]*route: "relay", group: "agent"/);
+  // 内容区顶部不再画 Agent 页签。
+  assert.doesNotMatch(functionSource("App"), /<AgentPageTabs\b/);
 });
 
 test("⌘K 打开命令面板，总览页渲染在 hub 路由", () => {
@@ -275,7 +276,7 @@ test("推荐内容只显示赞助商推荐", () => {
 });
 
 test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {
-  for (const page of ["settings-page enhance-page sectioned-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page cx-page"]) {
+  for (const page of ["settings-page enhance-page sectioned-page cx-enhance-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page cx-page"]) {
     assert.ok(text.includes(`className="${page}"`), page);
   }
   const layer = readSource("./cursor-ui.css");

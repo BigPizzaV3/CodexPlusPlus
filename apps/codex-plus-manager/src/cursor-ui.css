@@ -1369,3 +1369,107 @@
 :root .shell .screen.management-screen > :is(.cx-page-head, .tp-tabs, .cx-page) {
   width: min(100%, var(--cx-content));
 }
+
+/* 侧栏里当前 Agent 下面的页面：缩进、细字、左侧一条竖线（参照 Cursor 侧栏仓库下的会话列表）。 */
+:root .shell .cx-side-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px 18px;
+  padding-left: 10px;
+  border-left: 1px solid hsl(var(--sidebar-border));
+}
+
+:root .shell .cx-side-subitem {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-side-subitem:hover {
+  background: hsl(var(--accent) / 0.5);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-side-subitem.active {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+/* Agent 行在显示子页面时不再整行高亮，只由子项表示当前页。 */
+:root .shell .cx-side-agent + .cx-side-subnav {
+  margin-top: 2px;
+}
+
+/* 内置增强：一行工具条 = 页签 + 搜索 + 保存状态 + 总开关。 */
+:root .shell .cx-enhance-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+:root .shell .cx-enhance-bar .enhance-tabs {
+  flex: none;
+}
+
+:root .shell .cx-enhance-search {
+  height: 32px;
+}
+
+:root .shell .cx-enhance-bar .cx-enhance-save {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-enhance-bar .cx-enhance-save [role="status"]:not(.is-dirty) {
+  display: none;
+}
+
+:root .shell .cx-enhance-master-switch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  cursor: pointer;
+}
+
+:root .shell .cx-enhance-master-switch > span strong {
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12.5px;
+  font-weight: 450;
+  white-space: nowrap;
+}
+
+:root .shell .cx-enhance-master-switch > input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 展开了子页面的 Agent 行只加粗不铺底，当前页由子项表示，避免两处高亮。 */
+:root .shell .cx-side-item.active.has-subnav {
+  background: transparent;
+  font-weight: 500;
+}
+
+:root .shell .cx-side-item.active.has-subnav:hover {
+  background: hsl(var(--accent) / 0.55);
+}
+
+:root .shell .cx-enhance-bar .cx-enhance-search {
+  min-width: 160px;
+  flex: 1 1 auto;
+}

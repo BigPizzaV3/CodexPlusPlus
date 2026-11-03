@@ -80,7 +80,7 @@ function harness() {
     APP_LOGO_URL: "logo.png",
     managerNavPages: () => [],
   });
-  vm.runInContext(transpile(`${navigationSource}\n${functionSource("AppSidebar")}
+  vm.runInContext(transpile(`const Fragment = "Fragment";\nconst navigationSections = [];\nconst agentTabGroups = () => [];\n${navigationSource}\n${functionSource("AppSidebar")}
     globalThis.sidebar = AppSidebar;
     globalThis.routes = routes;
     globalThis.codexLaunchVisible = (route, activeTool) => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
