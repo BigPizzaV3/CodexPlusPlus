@@ -59,7 +59,16 @@ fn nested_additions_and_removals_keep_unrelated_members() {
         after.contains("// 用户项\n    \"mine\": {\"baseURL\":\"http://mine\", \"keep\": true,},")
     );
     assert!(after.contains("  \"untouched\": 42, // 保留\n"));
-    assert!(after.contains("    \"codexplus\": {\n      \"apiKey\": \"local-test\",\n      \"baseURL\": \"http://gateway\"\n    },\n"));
+    // 新对象里字段的先后取决于 serde_json 是否开了 preserve_order（整个工作区一起编译时会被别的 crate 打开），
+    // 这里只断言缩进和内容，不断言 apiKey / baseURL 的先后。
+    let block = after
+        .split("    \"codexplus\": {\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    },\n").next())
+        .expect("codexplus 块按四格缩进写出");
+    let mut fields: Vec<&str> = block.lines().map(|line| line.trim_end_matches(',')).collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["      \"apiKey\": \"local-test\"", "      \"baseURL\": \"http://gateway\""]);
     assert!(!after.contains("\"remove\""));
     assert_eq!(
         parse_jsonc(after).unwrap()["provider"]["mine"]["keep"],
