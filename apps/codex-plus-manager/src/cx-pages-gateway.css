@@ -883,3 +883,47 @@
 :root .shell .gw-usage-range button:hover {
   color: hsl(var(--foreground));
 }
+
+/* 折叠的分组标题：「未接入 9 ›」「已关闭 2 ›」，点一下展开。 */
+:root .shell .cx-section-toggle,
+:root .shell .gw-pool-off-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+:root .shell .cx-section-toggle svg,
+:root .shell .gw-pool-off-toggle svg {
+  color: hsl(var(--muted-foreground));
+  transition: transform 0.15s ease;
+}
+
+:root .shell .cx-section-toggle[aria-expanded="true"] svg,
+:root .shell .gw-pool-off-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+:root .shell .cx-section-toggle:hover,
+:root .shell .gw-pool-off-toggle:hover {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .gw-pool-lists {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+:root .shell .gw-pool-off-toggle {
+  align-self: flex-start;
+  margin: 6px 4px 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  font-weight: 500;
+}

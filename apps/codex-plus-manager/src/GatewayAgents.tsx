@@ -62,6 +62,8 @@ export function AgentsView({
   const [expanded, setExpanded] = useState<string | null>(solo);
   const connected = agents.filter((agent) => agent.enabled);
   const others = agents.filter((agent) => !agent.enabled);
+  const [othersOpen, setOthersOpen] = useState<boolean | null>(null);
+  const othersShown = othersOpen ?? connected.length === 0;
   const row = (agent: GatewayAgentView) => (
     <AgentRow
       agent={agent}
@@ -84,7 +86,21 @@ export function AgentsView({
       {!payload ? <CxCard><CxEmpty title={t("正在读取…")} /></CxCard> : null}
       {solo && agents.length ? list(agents) : null}
       {!solo && connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
-      {!solo && others.length ? <CxSection count={others.length} title={t("未接入")}>{list(others)}</CxSection> : null}
+      {/* 未接入的默认折叠，点标题展开；一个都没接入时直接展开，新用户不用再点一下。 */}
+      {!solo && others.length ? (
+        <CxSection
+          className="gw-agents-others"
+          title={(
+            <button aria-expanded={othersShown} className="cx-section-toggle" onClick={() => setOthersOpen(!othersShown)} type="button">
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("未接入")}
+              <span className="cx-section-count">{others.length}</span>
+            </button>
+          )}
+        >
+          {othersShown ? list(others) : null}
+        </CxSection>
+      ) : null}
     </div>
   );
 }
@@ -364,7 +380,11 @@ function AgentDetail({
   // 每行一样的排法（参照设置页）：左边名字 + 一行说明，右边一个控件；开关一律用开关，下拉一律同宽。
   return (
     <div className="gw-agent-detail">
-      <AgentDiagnostics agent={agent} helperRunning={Boolean(payload?.helperRunning)} />
+      {/* 接入诊断只在出问题时出现（配置被改、读不到、网关没运行、上游报错），并自动展开详情；
+          正常时 Agent 名字下面那行状态就够了，不单独占一行。 */}
+      {agentDiagnosticPresentation(agent, Boolean(payload?.helperRunning)).tone === "error" ? (
+        <AgentDiagnostics agent={agent} helperRunning={Boolean(payload?.helperRunning)} />
+      ) : null}
       {agent.hint ? (
         <SetLine hint={t(agent.hint)} title={tf("在 {0} 里", [agent.name])}>
           {agent.enabled ? (

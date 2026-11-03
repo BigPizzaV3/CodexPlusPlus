@@ -136,6 +136,27 @@ export function ProvidersView({
   const needle = query.trim().toLowerCase();
   const ordered = order ? order.map((id) => pool.find((entry) => entry.id === id)).filter((entry): entry is GatewayPoolEntry => Boolean(entry)) : pool;
   const visible = ordered.filter((entry) => !needle || entry.name.toLowerCase().includes(needle) || entry.models.some((model) => model.toLowerCase().includes(needle)));
+  // 关掉的供应商默认折叠在「已关闭」里；搜索时、或者一家都没开时照常全列出来。
+  const [offOpen, setOffOpen] = useState(false);
+  const onList = visible.filter(providerEnabled);
+  const offList = visible.filter((entry) => !providerEnabled(entry));
+  const collapseOff = onList.length > 0 && offList.length > 0 && !needle;
+  const renderRow = (entry: GatewayPoolEntry) => (
+    <PoolRow
+      busy={busy}
+      dragging={dragging === entry.id}
+      entry={entry}
+      expanded={expanded === entry.id}
+      key={entry.id}
+      onGripDown={(event) => startDrag(entry.id, event)}
+      onEdit={() => setForm({ mode: "edit", entry })}
+      loggingIn={Boolean(entry.account) && loginPending === entry.account}
+      onRelogin={() => void login(entry.account as AccountKind)}
+      onToggleExpand={() => setExpanded(expanded === entry.id ? null : entry.id)}
+      payload={payload}
+      run={run}
+    />
+  );
 
   /** 按住把手上下拖动排序。用指针事件实现：桌面端 webview 会拦截 HTML5 拖放，原生 draggable 拖不动。 */
   const startDrag = (id: string, event: ReactPointerEvent) => {
@@ -224,24 +245,26 @@ export function ProvidersView({
         <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
       ) : null}
       {pool.length ? (
-        <div className="gw-card gw-pool-card" ref={listRef}>
-          {visible.map((entry) => (
-            <PoolRow
-              busy={busy}
-              dragging={dragging === entry.id}
-              entry={entry}
-              expanded={expanded === entry.id}
-              key={entry.id}
-              onGripDown={(event) => startDrag(entry.id, event)}
-              onEdit={() => setForm({ mode: "edit", entry })}
-              loggingIn={Boolean(entry.account) && loginPending === entry.account}
-              onRelogin={() => void login(entry.account as AccountKind)}
-              onToggleExpand={() => setExpanded(expanded === entry.id ? null : entry.id)}
-              payload={payload}
-              run={run}
-            />
-          ))}
-          {visible.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null}
+        // 拖动排序按 listRef 里所有行的位置算，「已关闭」那一组也在里面，拖动时相对顺序不乱。
+        <div className="gw-pool-lists" ref={listRef}>
+          <div className="gw-card gw-pool-card">
+            {(collapseOff ? onList : visible).map(renderRow)}
+            {visible.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null}
+          </div>
+          {collapseOff ? (
+            <>
+              <button aria-expanded={offOpen} className="gw-pool-off-toggle" onClick={() => setOffOpen(!offOpen)} type="button">
+                <ChevronRight className="h-3.5 w-3.5" />
+                {t("已关闭")}
+                <span className="cx-section-count">{offList.length}</span>
+              </button>
+              {offOpen ? (
+                <div className="gw-card gw-pool-card gw-pool-off-card">
+                  {offList.map(renderRow)}
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </div>
       ) : null}
       {payload !== null && pool.length === 0 ? (
