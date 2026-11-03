@@ -833,3 +833,539 @@
   flex: none;
   margin: 0;
 }
+
+/* ── 页面骨架（cx-layout.tsx） ───────────────────────────────── */
+
+:root .shell .cx-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+:root .shell .cx-search {
+  display: flex;
+  height: 34px;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-search:focus-within {
+  border-color: hsl(var(--input));
+}
+
+:root .shell .cx-search svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+:root .shell .cx-search input {
+  min-width: 0;
+  height: auto;
+  flex: 1 1 auto;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 13px;
+}
+
+:root .shell .cx-search-clear {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+:root .shell .cx-toolbar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 主按钮：Cursor 的白底黑字胶囊（浅色主题下反过来）。 */
+:root .shell .cx-primary,
+:root .shell .cx-toolbar-actions > .mg-primary {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+:root .shell .cx-primary:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.88);
+}
+
+:root .shell .cx-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-primary svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 次要按钮：描边胶囊。 */
+:root .shell .cx-secondary {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.88);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .cx-secondary:hover:not(:disabled) {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent) / 0.5);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-secondary svg {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .cx-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+:root .shell .cx-pill-count {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+:root .shell .cx-filters-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .cx-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+:root .shell .cx-section + .cx-section {
+  margin-top: 10px;
+}
+
+:root .shell .cx-section-head {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+}
+
+:root .shell .cx-section-head h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .cx-section-count {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+:root .shell .cx-section-aside {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-card {
+  overflow: hidden;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-row {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px 0 0;
+}
+
+:root .shell .cx-row + .cx-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 10px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+:root .shell .cx-row-clickable .cx-row-main {
+  cursor: pointer;
+}
+
+:root .shell .cx-row-clickable:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .cx-row[data-selected] {
+  background: hsl(var(--accent) / 0.55);
+}
+
+:root .shell .cx-row[data-muted] .cx-row-copy {
+  opacity: 0.55;
+}
+
+:root .shell .cx-row-icon,
+:root .shell .cx-add-row-icon,
+:root .shell .cx-banner-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.85);
+}
+
+:root .shell .cx-row-icon svg,
+:root .shell .cx-add-row-icon svg,
+:root .shell .cx-banner-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+
+:root .shell .cx-row-icon img {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .cx-status-icon {
+  position: relative;
+  display: inline-flex;
+}
+
+:root .shell .cx-status-icon > i {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-status-icon > i[data-tone="ok"] { background: hsl(var(--status-success)); }
+:root .shell .cx-status-icon > i[data-tone="warn"] { background: hsl(var(--status-warning)); }
+:root .shell .cx-status-icon > i[data-tone="danger"] { background: hsl(var(--status-error)); }
+
+:root .shell .cx-row-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root .shell .cx-row-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-row-title strong {
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-row-detail {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-row-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-badge {
+  display: inline-flex;
+  height: 20px;
+  flex: none;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.72);
+  font-size: 11.5px;
+  font-weight: 450;
+  white-space: nowrap;
+}
+
+:root .shell .cx-badge[data-tone="ok"] { background: hsl(var(--status-success) / 0.14); color: hsl(var(--status-success)); }
+:root .shell .cx-badge[data-tone="warn"] { background: hsl(var(--status-warning) / 0.14); color: hsl(var(--status-warning)); }
+:root .shell .cx-badge[data-tone="danger"] { background: hsl(var(--status-error) / 0.14); color: hsl(var(--status-error)); }
+
+:root .shell .cx-add-row {
+  display: flex;
+  width: 100%;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-add-row:hover:not(:disabled) {
+  background: hsl(var(--accent) / 0.55);
+}
+
+:root .shell .cx-add-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-add-row-icon {
+  background: hsl(var(--accent) / 0.7);
+}
+
+:root .shell .cx-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-banner[data-tone="ok"] .cx-banner-icon {
+  background: hsl(var(--status-success) / 0.14);
+  color: hsl(var(--status-success));
+}
+
+:root .shell .cx-banner[data-tone="warn"] .cx-banner-icon {
+  background: hsl(var(--status-warning) / 0.14);
+  color: hsl(var(--status-warning));
+}
+
+:root .shell .cx-banner .cx-row-detail {
+  white-space: normal;
+}
+
+:root .shell .cx-banner-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-stats {
+  display: grid;
+  overflow: hidden;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-stat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+}
+
+:root .shell .cx-stat + .cx-stat {
+  border-left: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-stat-label,
+:root .shell .cx-stat-hint {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-stat-value {
+  color: hsl(var(--foreground));
+  font-size: 20px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .cx-stat-value[data-tone="ok"] { color: hsl(var(--status-success)); }
+:root .shell .cx-stat-value[data-tone="warn"] { color: hsl(var(--status-warning)); }
+:root .shell .cx-stat-value[data-tone="danger"] { color: hsl(var(--status-error)); }
+
+:root .shell .cx-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 16px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  text-align: center;
+}
+
+:root .shell .cx-empty strong {
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .cx-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* 行内的 Agent 开关：一个 Agent 一枚小胶囊，开了就是实心。替代原来的多列勾选矩阵。 */
+:root .shell .cx-agent-toggles {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+:root .shell .cx-agent-toggle {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:root .shell .cx-agent-toggle:hover:not(:disabled) {
+  border-color: hsl(var(--input));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-agent-toggle[aria-pressed="true"] {
+  border-color: hsl(var(--status-success) / 0.45);
+  background: hsl(var(--status-success) / 0.12);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-agent-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-agent-toggle svg,
+:root .shell .cx-agent-toggle img {
+  width: 13px;
+  height: 13px;
+}
+
+/* 用骨架重排过的页面：一列，块与块之间统一 16px。 */
+:root .shell .cx-page {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0;
+  background: transparent;
+}
+
+:root .shell .screen > .cx-page,
+:root .shell .screen.management-screen > .cx-page {
+  width: min(100%, var(--cx-content));
+}
+
+:root .shell .cx-agent-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 标题、胶囊与正文同宽：管理类页面（会话 / MCP / Skills）也收到内容列宽度。 */
+:root .shell .screen.management-screen > :is(.cx-page-head, .tp-tabs, .cx-page) {
+  width: min(100%, var(--cx-content));
+}
