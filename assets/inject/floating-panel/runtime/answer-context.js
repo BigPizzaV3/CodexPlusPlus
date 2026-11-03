@@ -724,13 +724,21 @@
 
   function compareConversationTurnKeys(left, right) {
     if (left === right) return 0;
+    const leftIndex = /^turn-index-(\d+)$/.exec(left);
+    const rightIndex = /^turn-index-(\d+)$/.exec(right);
+    if (leftIndex && rightIndex) return Number(leftIndex[1]) - Number(rightIndex[1]);
+    // 历史索引与实时轮次 ID 不共享排序空间，不能按字符串比较。
+    if (Boolean(leftIndex) !== Boolean(rightIndex)) return null;
     return left < right ? -1 : 1;
   }
 
   function latestConversationTurnByKey(turns) {
     return turns.reduce((latest, turn) => {
       if (!turn?.turnKey) return latest;
-      if (!latest || compareConversationTurnKeys(latest.turnKey, turn.turnKey) < 0) return turn;
+      if (!latest) return turn;
+      const order = compareConversationTurnKeys(latest.turnKey, turn.turnKey);
+      // 混合 ID 以本次挂载的时间线顺序为准。
+      if (order === null || order < 0) return turn;
       return latest;
     }, null);
   }
@@ -740,6 +748,9 @@
     if (!mounted) return previous;
     const sameSession = Boolean(sessionId) && previous?.sessionId === sessionId;
     if (sameSession && compareConversationTurnKeys(mounted.turnKey, previous.turnKey) < 0) return previous;
+    // 只有旧历史重新挂载时，缺少共同锚点就不能推断跨 ID 类型的新旧。
+    if (sameSession && compareConversationTurnKeys(mounted.turnKey, previous.turnKey) === null
+      && !turns.some((turn) => turn?.turnKey === previous.turnKey)) return previous;
 
     const sameTurn = sameSession && previous?.turnKey === mounted.turnKey;
     const assistant = mounted.assistantMessage;
