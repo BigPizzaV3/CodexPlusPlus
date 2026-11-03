@@ -359,8 +359,9 @@ test("首页：状态、精选推荐、常用入口、更多推荐；广告只�
   // 只管增强时不显示网关一行，入口也按使用模式过滤。
   assert.match(home, /\{enhanceOnly \? null : \(/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
-  // 推荐：精选最多两张；其余默认露 3 条；同一家去重；只放赞助商；明确标「推广」。
-  assert.match(home, /const heroes = sponsors\.slice\(0, 2\);/);
+  // 推荐：大横幅只用置顶位（最多两张），推荐池的赞助商不能上横幅；其余默认露 3 条；同一家去重；明确标「推广」。
+  assert.match(home, /const heroes = topAds\.slice\(0, 2\);/);
+  assert.match(home, /const rest = \[\.\.\.topAds\.slice\(heroes\.length\), \.\.\.pool\.filter\(\(ad\) => ad\.type === "sponsor"\)\];/);
   assert.match(home, /const shownRest = showAllAds \? rest : rest\.slice\(0, 3\);/);
   assert.match(home, /!topIdentities\.has\(adIdentity\(ad\)\)/);
   assert.match(home, /\.filter\(\(ad\) => ad\.type === "sponsor"\)/);

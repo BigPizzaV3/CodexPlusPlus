@@ -10988,7 +10988,7 @@ function SessionsScreen({
 
 /// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐，下面是常用入口和更多推荐。
 ///
-/// 推荐：置顶位做大卡片（没有置顶位时取前两条），其余一行一条，默认只露 3 条。
+/// 推荐：大卡片只放置顶位（最多两个），推荐池里的赞助商一行一条，默认只露 3 条。
 /// 置顶位和推荐池里同一家常有两个 id、同一个落地页，按 adIdentity 去重。只展示赞助商，普通推荐不显示。
 function HomeScreen({
   ads,
@@ -11020,9 +11020,9 @@ function HomeScreen({
   const topAds = featuredAds(ads);
   const topIdentities = new Set(topAds.map(adIdentity));
   const pool = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad) && !topIdentities.has(adIdentity(ad)));
-  const sponsors = [...topAds, ...pool].filter((ad) => ad.type === "sponsor");
-  const heroes = sponsors.slice(0, 2);
-  const rest = sponsors.slice(heroes.length);
+  // 大横幅只放置顶位（top_ad / topAds），没有置顶位就不显示；推荐池里的赞助商只进下面的列表。
+  const heroes = topAds.slice(0, 2);
+  const rest = [...topAds.slice(heroes.length), ...pool.filter((ad) => ad.type === "sponsor")];
   const shownRest = showAllAds ? rest : rest.slice(0, 3);
   const open = (ad: AdItem) => void actions.openExternalUrl(ad.url);
 
