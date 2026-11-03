@@ -10,7 +10,7 @@
 }
 
 :root .shell .screen[data-settings-mode="true"] .cx-section + .cx-section {
-  margin-top: 14px;
+  margin-top: 20px;
 }
 
 /* 一个分类里的若干节；分类之间（日志 + 诊断同页）靠父级 gap 隔开，隐藏的分类不占位。 */
@@ -19,8 +19,7 @@
   flex-direction: column;
 }
 
-:root .shell .app-settings-page .sectioned-body,
-:root .shell .codex-settings-page .sectioned-body {
+:root .shell .app-settings-page .sectioned-body {
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -143,4 +142,96 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Codex 分类 ─────────────────────────────────────────────── */
+
+/* 卡片里的开关行（label.switch-row）：去掉原来的描边小卡，和 CxRow 一样一行一项、行间细线。 */
+:root .shell .cx-set-switches .switch-row {
+  min-height: 56px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root .shell .cx-set-switches .switch-row + .switch-row,
+:root .shell .cx-set-switches .switch-row + .cx-row,
+:root .shell .cx-set-switches .cx-row + .switch-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-set-switches .switch-row:hover {
+  background: hsl(var(--accent) / 0.25);
+}
+
+:root .shell .cx-set-switches .switch-row strong {
+  color: hsl(var(--foreground));
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .cx-set-switches .switch-row small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 从属开关缩进一级。 */
+:root .shell .cx-set-switches .switch-row.cx-set-sub {
+  padding-left: 34px;
+}
+
+:root .shell .cx-set-disclosure.cx-set-disclosure-first {
+  border-top: 0;
+}
+
+:root .shell .cx-set-summary-hint {
+  overflow: hidden;
+  min-width: 0;
+  margin-left: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-set-disclosure > .cx-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-set-input-wide {
+  width: 380px;
+  max-width: 100%;
+  height: 30px;
+  font-size: 12.5px;
+}
+
+:root .shell .cx-set-input-port {
+  width: 110px;
+  height: 30px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .cx-set-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-set-block .launch-args-input {
+  width: 100%;
+  min-height: 96px;
+  font-size: 12px;
+}
+
+:root .shell .cx-set-footer .cx-primary {
+  height: 30px;
 }

@@ -10958,31 +10958,44 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  const takeoverOn = Boolean(settings?.settings.codexAppAutoTakeover);
+  const takeoverStatus = autoTakeover?.state === "degraded" ? "failed" : autoTakeover?.running ? "ok" : "disabled";
+  // 接管状态压成一行：官方 App、调试端口、上次接管；需要注意的情况（出错、本次跳过、平台不支持）优先显示。
+  const takeoverDetail = autoTakeover?.lastError
+    || (autoTakeover?.pausedInstance ? t("本次已跳过自动接管，重启官方 App 后恢复。") : "")
+    || (autoTakeover && !autoTakeover.platformSupported ? t("自动接管目前只支持 macOS 和 Linux。") : "")
+    || [
+      `${t("官方 App")} ${autoTakeover?.appRunning ? t("运行中") : t("未运行")}`,
+      autoTakeover?.actualDebugPort ? `${t("调试端口")} ${autoTakeover.actualDebugPort}` : "",
+      autoTakeover?.lastTakeoverAtMs ? tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()]) : "",
+    ].filter(Boolean).join(" · ");
   return (
     <>
-      <Panel id="codex-settings-check">
-        <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title={t("Codex++ 应用入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title={t("开机打开 Codex++")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
-            <StatusRow
-              title={t("自动接管官方 App")}
-              status={settings?.settings.codexAppAutoTakeover && autoTakeover?.running ? "ok" : "disabled"}
-              path={autoTakeover?.lastError ?? autoTakeover?.lastReason ?? null}
-            />
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-startup">
-        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，可选择自动启动 Codex")} />
-        <CardContent>
-          <label className="switch-row">
+      <CxSection
+        aside={
+          <>
+            <button className="cx-secondary" onClick={() => void actions.checkHealth()} type="button"><RefreshCw />{t("检查")}</button>
+            <Menu>
+              <MenuItem onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</MenuItem>
+            </Menu>
+          </>
+        }
+        id="codex-settings-check"
+        title={t("检查与修复")}
+      >
+        <CxCard>
+          <CxRow detail={<code className="cx-set-path">{overview?.codex_app.path || t("未记录路径")}</code>} title={t("Codex 应用")}>
+            <StatusBadge status={overview?.codex_app.status} />
+          </CxRow>
+          <CxRow detail={<code className="cx-set-path">{overview?.management_shortcut.path || t("未记录路径")}</code>} title={t("Codex++ 应用入口")}>
+            <StatusBadge status={overview?.management_shortcut.status} />
+          </CxRow>
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-startup" title={t("开机启动")}>
+        {/* 「登录时」的两个子选项只在开启登录打开后出现；「打开时启动 Codex」对手动打开也生效，单独一行。 */}
+        <CxCard className="cx-set-switches">
+          <label className="switch-row" title={t("开启后注册系统登录项，关闭时移除；是否自动启动 Codex 由下面的独立开关决定。")}>
             <input
               checked={Boolean(watcher?.enabled)}
               disabled={!watcher}
@@ -10991,11 +11004,41 @@ function MaintenanceScreen({
             />
             <span>
               <strong>{t("登录时自动打开")}</strong>
-              <small>{t("开启后注册系统登录项，关闭时移除；是否自动启动 Codex 由下面的独立开关决定。")}</small>
+              <small>{t("登录系统后打开 Codex++")}</small>
             </span>
             <ToggleVisual />
           </label>
-          <label className="switch-row">
+          {watcher?.enabled ? (
+            <>
+              <label className="switch-row cx-set-sub" title={t("仅登录启动 Codex++ 时自动启动 Codex；手动打开 Codex++ 仍不会自动启动。")}>
+                <input
+                  checked={Boolean(watcher?.start_codex)}
+                  disabled={!watcher}
+                  onChange={(event) => void actions.setWatcherStartCodex(event.currentTarget.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("登录时自动启动 Codex")}</strong>
+                  <small>{t("只在开机登录打开时生效")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <label className="switch-row cx-set-sub" title={t("仅登录启动时隐藏到托盘；手动打开 Codex++ 仍显示主窗口。")}>
+                <input
+                  checked={Boolean(watcher?.start_minimized)}
+                  disabled={!watcher}
+                  onChange={(event) => void actions.setWatcherStartMinimized(event.currentTarget.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("启动时自动最小化")}</strong>
+                  <small>{t("开机登录时只留在托盘")}</small>
+                </span>
+                <ToggleVisual />
+              </label>
+            </>
+          ) : null}
+          <label className="switch-row" title={t("仅手动打开 Codex++ 时生效；已有 Codex 会先恢复，不会重复启动。")}>
             <input
               checked={Boolean(watcher?.start_codex_on_open)}
               disabled={!watcher}
@@ -11004,141 +11047,106 @@ function MaintenanceScreen({
             />
             <span>
               <strong>{t("打开 Codex++ 时自动启动 Codex")}</strong>
-              <small>{t("仅手动打开 Codex++ 时生效；已有 Codex 会先恢复，不会重复启动。")}</small>
+              <small>{t("已有 Codex 会先恢复，不会重复启动")}</small>
             </span>
             <ToggleVisual />
           </label>
-          <label className="switch-row">
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-takeover" title={t("自动接管官方 App")}>
+        <CxCard className="cx-set-switches">
+          <label
+            className="switch-row"
+            title={`${t("开启后，你自己启动官方 App 时 Codex++ 会自动接管。官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}\n${t("仅在 Codex++ 正在运行时生效；建议同时开启上面的「开机打开 Codex++」。")}`}
+          >
             <input
-              checked={Boolean(watcher?.start_codex)}
-              disabled={!watcher}
-              onChange={(event) => void actions.setWatcherStartCodex(event.currentTarget.checked)}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("登录时自动启动 Codex")}</strong>
-              <small>{t("仅登录启动 Codex++ 时自动启动 Codex；手动打开 Codex++ 仍不会自动启动。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-          <label className="switch-row">
-            <input
-              checked={Boolean(watcher?.start_minimized)}
-              disabled={!watcher}
-              onChange={(event) => void actions.setWatcherStartMinimized(event.currentTarget.checked)}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启动时自动最小化")}</strong>
-              <small>{t("仅登录启动时隐藏到托盘；手动打开 Codex++ 仍显示主窗口。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-takeover">
-        <CardHead title={t("自动接管官方 App")} detail={t("你自己双击启动官方 App 时，Codex++ 自动接管并注入增强")} />
-        <CardContent>
-          <label className="switch-row">
-            <input
-              checked={Boolean(settings?.settings.codexAppAutoTakeover)}
+              checked={takeoverOn}
               onChange={(event) => void actions.setAutoTakeover(event.currentTarget.checked)}
               type="checkbox"
             />
             <span>
               <strong>{t("开启自动接管")}</strong>
-              <small>{t("开启后，你自己启动官方 App 时 Codex++ 会自动接管。官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}</small>
+              <small>{t("你自己双击启动官方 App 时，Codex++ 自动接管并注入增强")}</small>
             </span>
             <ToggleVisual />
           </label>
-          {settings?.settings.codexAppAutoTakeover ? (
-            <>
-              <div className="status-table">
-                <StatusRow
-                  title={t("接管状态")}
-                  status={autoTakeover?.state === "degraded" ? "failed" : autoTakeover?.running ? "ok" : "disabled"}
-                  path={autoTakeover?.state === "degraded" ? t("已降级") : autoTakeover?.running ? t("监听中") : t("未运行")}
-                />
-                <StatusRow title={t("官方 App")} status={autoTakeover?.appRunning ? "ok" : "disabled"} path={autoTakeover?.appRunning ? t("运行中") : t("未运行")} />
-                <StatusRow
-                  title={t("调试端口")}
-                  status={autoTakeover?.actualDebugPort ? "ok" : "not_checked"}
-                  path={autoTakeover?.actualDebugPort ? String(autoTakeover.actualDebugPort) : null}
-                />
-              </div>
-              {autoTakeover?.pausedInstance ? <p className="hint">{t("本次已跳过自动接管，重启官方 App 后恢复。")}</p> : null}
-              {autoTakeover?.lastError ? <p className="hint">{autoTakeover.lastError}</p> : null}
-              {autoTakeover?.lastTakeoverAtMs ? (
-                <p className="hint">{tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()])}</p>
-              ) : null}
-              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS 和 Linux。")}</p>}
-              <p className="hint">{t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}</p>
-              <Toolbar>
-                <Button variant="secondary" onClick={() => void actions.takeOverNow()}>{t("立即接管")}</Button>
-                <Button variant="secondary" onClick={() => void actions.pauseAutoTakeover()}>{t("本次不接管")}</Button>
-                <Button variant="secondary" onClick={() => void actions.refreshAutoTakeover()}>{t("刷新状态")}</Button>
-              </Toolbar>
-            </>
-          ) : (
-            <p className="hint">{t("仅在 Codex++ 正在运行时生效；建议同时开启上面的「开机打开 Codex++」。")}</p>
-          )}
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-app-path">
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
-            <StatusRow title={t("当前识别")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-          </div>
-          <Field label={t("保存的应用路径")}>
-            <Input
-              value={settings?.settings.codexAppPath ?? ""}
-              placeholder={t("选择 Codex.exe、Codex.app、app 目录或解包目录")}
-              readOnly
-            />
-          </Field>
-          <Toolbar>
-            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</Button>
-            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</Button>
-            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel id="codex-settings-manual-launch">
-        <CardHead title={t("手动启动")} detail={t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")} />
-        <CardContent>
-          <Field label={t("应用路径覆盖")}>
-            <Input
-              value={launchForm.appPath}
-              onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
-              placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
-            />
-          </Field>
-          <div className="form-row">
-            <Field label={t("Debug 端口")}>
+          {takeoverOn ? (
+            <CxRow
+              badges={<StatusBadge status={takeoverStatus} label={autoTakeover?.state === "degraded" ? t("已降级") : autoTakeover?.running ? t("监听中") : t("未运行")} />}
+              detail={takeoverDetail}
+              title={t("接管状态")}
+              tooltip={t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}
+            >
+              <button className="cx-secondary" onClick={() => void actions.takeOverNow()} type="button">{t("立即接管")}</button>
+              <Menu>
+                <MenuItem onClick={() => void actions.pauseAutoTakeover()}>{t("本次不接管")}</MenuItem>
+                <MenuItem onClick={() => void actions.refreshAutoTakeover()}>{t("刷新状态")}</MenuItem>
+              </Menu>
+            </CxRow>
+          ) : null}
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-app-path" title={t("Codex 应用路径")}>
+        <CxCard>
+          <CxRow
+            detail={<code className="cx-set-path">{savedCodexAppPath || t("未保存，使用自动探测")}</code>}
+            title={t("保存的应用路径")}
+            tooltip={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")}
+          >
+            <button className="cx-secondary" onClick={() => void actions.chooseCodexAppPath("folder")} type="button"><FolderOpen />{t("选择应用目录")}</button>
+            <Menu>
+              <MenuItem onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</MenuItem>
+              <MenuItem danger disabled={!savedCodexAppPath} onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</MenuItem>
+            </Menu>
+          </CxRow>
+          <CxRow detail={<code className="cx-set-path">{overview?.codex_app.path || t("未记录路径")}</code>} title={t("当前识别")}>
+            <StatusBadge status={overview?.codex_app.status} />
+          </CxRow>
+        </CxCard>
+      </CxSection>
+      <CxSection id="codex-settings-manual-launch" title={t("高级")}>
+        <CxCard>
+          {/* 给少数人用：用别的路径或端口启动一次。默认收起。 */}
+          <details className="cx-set-disclosure cx-set-disclosure-first">
+            <summary>{t("手动启动")}<span className="cx-set-summary-hint">{t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")}</span></summary>
+            <CxRow title={t("应用路径覆盖")}>
               <Input
+                className="cx-set-input-wide"
+                value={launchForm.appPath}
+                onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
+                placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
+              />
+            </CxRow>
+            <CxRow title={t("Debug 端口")}>
+              <Input
+                className="cx-set-input-port"
                 value={launchForm.debugPort}
                 onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
               />
-            </Field>
-            <Field label={t("Helper 端口")}>
+            </CxRow>
+            <CxRow title={t("Helper 端口")}>
               <Input
+                className="cx-set-input-port"
                 value={launchForm.helperPort}
                 onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
               />
-            </Field>
-          </div>
-          <Toolbar>
-            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex")}</Button>
-            <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
-              {t("保存为默认路径")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
+            </CxRow>
+            <div className="cx-set-footer">
+              <button className="cx-secondary" onClick={() => void actions.saveManualCodexAppPath()} type="button">{t("保存为默认路径")}</button>
+              <button className="cx-primary" disabled={launchPending} onClick={() => void actions.launch()} type="button"><Play />{t("启动 Codex")}</button>
+            </div>
+          </details>
+        </CxCard>
+      </CxSection>
     </>
   );
+}
+
+/// 状态小标签：沿用 statusLabel / statusClass 的文案与分级，换成 CxBadge 的四种色调。
+function StatusBadge({ status = "unknown", label }: { status?: string; label?: string }) {
+  const level = statusClass(status);
+  const tone = level === "good" ? "ok" : level === "bad" ? "danger" : level === "idle" ? "neutral" : "warn";
+  return <CxBadge tone={tone}>{label ?? statusLabel(status)}</CxBadge>;
 }
 
 function AboutScreen({
@@ -11261,34 +11269,29 @@ function AgentSettingsScreen({
   actions: Actions;
 }) {
   return (
-    <div className="settings-page">
-      <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
-      <>
-        <Panel id="codex-settings-launch-args">
-          <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
-          <CardContent className="settings-content setting-rows">
-            <SettingRow
-              stacked
-              title={t("额外参数")}
-              description={t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")}
-            >
-              <Textarea
-                className="launch-args-input"
-                placeholder="--force_high_performance_gpu"
-                spellCheck={false}
-                value={codexExtraArgsToInput(form.codexExtraArgs)}
-                onChange={(event) =>
-                  onFormChange({
-                    ...form,
-                    codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
-                  })
-                }
-              />
-            </SettingRow>
-          </CardContent>
-        </Panel>
-      </>
-    </div>
+    <>
+      <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
+      <CxSection id="codex-settings-launch-args" title={t("启动参数")}>
+        <CxCard>
+          <CxRow detail={t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")} title={t("额外参数")} tooltip={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
+          <div className="cx-set-block">
+            <Textarea
+              aria-label={t("Codex 启动参数")}
+              className="launch-args-input"
+              placeholder="--force_high_performance_gpu"
+              spellCheck={false}
+              value={codexExtraArgsToInput(form.codexExtraArgs)}
+              onChange={(event) =>
+                onFormChange({
+                  ...form,
+                  codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
+                })
+              }
+            />
+          </div>
+        </CxCard>
+      </CxSection>
+    </>
   );
 }
 

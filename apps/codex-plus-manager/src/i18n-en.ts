@@ -12,6 +12,12 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "只在开机登录打开时生效": "Only when opened at login",
+  "已有 Codex 会先恢复，不会重复启动": "A running Codex is restored instead of launched again",
+  "开机登录时只留在托盘": "Stay in the tray when opened at login",
+  "未保存，使用自动探测": "Not saved; auto-detected",
+  "登录系统后打开 Codex++": "Open Codex++ after you log in",
+  "高级": "Advanced",
   "入门": "Getting started",
   "包含供应商 API Key 等敏感信息，请妥善保管": "Contains sensitive data such as provider API keys; keep it safe",
   "单击托盘图标查看状态、启动 Codex、切换供应商": "Click the tray icon to see status, launch Codex and switch providers",

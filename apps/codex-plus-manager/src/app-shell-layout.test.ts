@@ -262,7 +262,8 @@ test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里�
   assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
   const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
   assert.ok(ids.length >= 6);
-  for (const id of ids) assert.match(text, new RegExp(`<Panel id="${id}">`));
+  // 每个分组是一节（CxSection），id 挂在节的最外层。
+  for (const id of ids) assert.match(text, new RegExp(`<CxSection(?:(?!<CxSection)[\\s\\S])*?\\bid="${id}"`));
   assert.ok(app.indexOf("<AgentSettingsScreen") < app.indexOf("<MaintenanceScreen"), "设置在上、安装维护在下");
 });
 
