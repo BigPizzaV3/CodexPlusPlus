@@ -6,6 +6,9 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
+  "管理供应商池": "Manage provider pool",
+  "高级": "Advanced",
+  "诊断详情": "Diagnostic details",
   "今日": "Today",
   "用量明细": "Usage details",
   "还没有请求经过网关": "No requests through the gateway yet",

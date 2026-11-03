@@ -79,3 +79,232 @@
   height: 100%;
   object-fit: cover;
 }
+
+/* ── Agent 接入（gateway） ───────────────────────────────────── */
+
+:root .shell .gw-agents.cx-page {
+  gap: 16px;
+}
+
+/* 一个 Agent 一行（cx-row），行间细线；展开的详情接在行下面，同一张卡里。 */
+:root .shell .gw-agent + .gw-agent {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent > .gw-agent-row.cx-row {
+  display: flex;
+  min-height: 60px;
+  padding: 0 12px 0 0;
+  border-bottom: 0;
+}
+
+:root .shell .gw-agent > .gw-agent-row[data-clickable="true"] {
+  cursor: pointer;
+}
+
+:root .shell .gw-agent > .gw-agent-row[data-clickable="true"]:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .gw-agent-row .cx-row-icon.gw-agent-icon-box {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+}
+
+:root .shell .gw-agent-row .gw-agent-glyph {
+  display: inline-flex;
+}
+
+:root .shell .gw-agent-row .gw-agent-glyph .gw-agent-icon {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .gw-agent-row .cx-row-detail.gw-agent-meta {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+
+/* 说明一行用「 · 」隔开：状态 · 9 个模型 · opus · sonnet · haiku。 */
+:root .shell .gw-agent-row .gw-agent-meta > * + *::before {
+  margin: 0 6px;
+  color: hsl(var(--muted-foreground) / 0.6);
+  content: "·";
+}
+
+:root .shell .gw-agent-row .gw-agent-meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态不再画成描边小胶囊：就是一段文字，出错标红，已到达标绿。 */
+:root .shell .gw-agent-row .gw-agent-badge {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .gw-agent-row .gw-agent-badge::before {
+  display: none;
+}
+
+:root .shell .gw-agent-row .gw-agent-badge[data-tone="on"] {
+  color: hsl(var(--status-success));
+}
+
+:root .shell .gw-agent-row .gw-agent-badge[data-tone="error"] {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .gw-agent-row .gw-drift-reconnect {
+  flex: none;
+  font-size: 12.5px;
+}
+
+:root .shell .gw-agent-row .cx-row-controls {
+  gap: 10px;
+}
+
+/* 右侧默认模型下拉：不铺底，像 Cursor 行尾的下拉一样只显示文字和箭头。 */
+:root .shell .gw-agent-row .gw-picker {
+  width: auto;
+  max-width: 280px;
+}
+
+:root .shell .gw-agent-row .gw-picker-button {
+  width: auto;
+  max-width: 280px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+}
+
+:root .shell .gw-agent-row .gw-picker-button:hover,
+:root .shell .gw-agent-row .gw-picker-button[aria-expanded="true"] {
+  border-color: hsl(var(--border));
+  background: hsl(var(--accent) / 0.5);
+}
+
+:root .shell .gw-agent-row .gw-chevron:disabled {
+  visibility: hidden;
+}
+
+/* 展开的详情：左列标签与 Agent 名对齐，行间细线。 */
+:root .shell .gw-agent[data-expanded="true"] > .gw-agent-row {
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-agent-detail {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 16px 6px 56px;
+}
+
+:root .shell .gw-agent .gw-detail-row {
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 44px;
+  padding: 6px 0;
+}
+
+:root .shell .gw-agent .gw-detail-row + .gw-detail-row,
+:root .shell .gw-agent .gw-detail-advanced,
+:root .shell .gw-agent .gw-detail-advanced + .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-detail-label,
+:root .shell .gw-agent .gw-detail-window > span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .gw-agent .gw-detail-value {
+  font-size: 13px;
+}
+
+:root .shell .gw-agent .gw-model-chip {
+  height: 26px;
+  font-size: 12.5px;
+}
+
+/* 「高级」折叠区：一行小标题，点开是同样的标签 / 控件行。 */
+:root .shell .gw-detail-advanced > summary {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+:root .shell .gw-detail-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .gw-detail-advanced > summary:hover {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .gw-detail-advanced > summary svg {
+  transition: transform 0.15s ease;
+}
+
+:root .shell .gw-detail-advanced[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+:root .shell .gw-detail-advanced > summary + .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-detail-foot .gw-detail-value {
+  justify-content: flex-end;
+}
+
+:root .shell .gw-agent .gw-detail-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 诊断详情：默认收起，有错误时展开。 */
+:root .shell .gw-agent-diagnostic-more > summary {
+  width: max-content;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:root .shell .gw-agent-diagnostic-more[open] > summary {
+  margin-bottom: 6px;
+}
+
+:root .shell .gw-select-list .gw-select-manage {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: 4px;
+  padding: 6px 8px;
+}
+
+:root .shell .gw-agent .gw-detail-value .app-select {
+  flex: none;
+  width: 240px;
+}
+
+:root .shell .gw-agent .gw-detail-value .app-select.gw-image-select {
+  width: 320px;
+}
