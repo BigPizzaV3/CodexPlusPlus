@@ -118,7 +118,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1090
+      "lines": 1113
     },
     {
       "name": "91-extension-api.js",
@@ -163,7 +163,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 682
+      "lines": 684
     },
     {
       "name": "96-builtin-extensions.js",

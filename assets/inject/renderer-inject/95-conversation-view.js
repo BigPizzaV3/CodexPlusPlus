@@ -1,5 +1,7 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
+    document.addEventListener("compositionstart", onConversationViewCompositionStart, true);
+    document.addEventListener("compositionend", onConversationViewCompositionEnd, true);
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
     conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
     if (document.body && !conversationViewState.moObserved) {
