@@ -118,6 +118,14 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "推荐用网关的供应商池：本身就按模型分发，所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "The gateway's provider pool is recommended: it already routes by model for every agent. To use it only with Codex direct, create it here.",
+  "推荐用网关「路由」里的模型组：所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "Model groups under the gateway's Routing are recommended: every agent can use them. To use it only with Codex direct, create it here.",
+  "故障转移是 Codex 专用的小网关。网关「路由」里的模型组做的是同一件事，所有 Agent 都能用；在下面点「加入供应商池」，会建好同名模型组。": "Failover is a small gateway just for Codex. Model groups under the gateway's Routing do the same for every agent; click Add to provider pool below to create a model group with the same name.",
+  "模型聚合是 Codex 专用的小网关。网关的供应商池本身就按模型分发，所有 Agent 都能用；在下面点「加入供应商池」，成员就进了池子。": "Model aggregation is a small gateway just for Codex. The gateway's provider pool already routes by model for every agent; click Add to provider pool below to move the members in.",
+  "Codex 专用的小网关：几家组成一个池，出错换下一家、按会话或请求轮换、按权重分。网关的「路由」里用模型组做同样的事，而且所有 Agent 都能用。": "A small gateway just for Codex: several providers in one pool, failing over, rotating per session or request, or by weight. Model groups under the gateway's Routing do the same, for every agent.",
+  "Codex 专用的小网关：把几家的模型合并到 Codex 的模型列表，选哪个模型就发到哪家。网关的供应商池默认就是这样分发，而且所有 Agent 都能用。": "A small gateway just for Codex: merges several providers' models into Codex's model list and sends each model to its provider. The gateway's provider pool already routes this way, for every agent.",
+  "用这个供应商多开": "Launch a separate instance with it",
+  "供应商操作": "Provider actions",
   "无法解析这个 MCP 配置": "Couldn't parse this MCP config",
   "完成增强配置": "Finish enhancement setup",
   "添加供应商并接入": "Add a provider and connect",

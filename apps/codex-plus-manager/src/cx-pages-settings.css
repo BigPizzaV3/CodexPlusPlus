@@ -905,3 +905,44 @@
 :root .shell .cx-codex-connection .cx-row {
   min-height: 60px;
 }
+
+/* 直连供应商卡片：整行可点开编辑，次要操作只剩一个三点菜单，常显（不再悬停才出现）。 */
+:root .shell .cx-codex-connection-page .relay-profile-card {
+  cursor: pointer;
+}
+
+:root .shell .cx-codex-connection-page .relay-profile-card .relay-card-extra {
+  display: inline-flex;
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 聚合两个分页下的一行说明：它是 Codex 专用的小网关，可以迁到网关。 */
+:root .shell .cx-aggregate-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+:root .shell .cx-aggregate-note > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+:root .shell .cx-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.85);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}

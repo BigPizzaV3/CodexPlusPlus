@@ -239,7 +239,10 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   const card = functionSource("SortableRelayProfileCard");
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(card, /data-tone="gateway">\{t\("新版网关"\)\}/);
-  assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra">/);
+  assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra" onClick=\{\(event\) => event\.stopPropagation\(\)\}>/);
+  // 次要操作在三点菜单里；删除仍先查占用。
+  assert.match(card, /<Menu label=\{t\("供应商操作"\)\}>/);
+  assert.match(card, /const deleteIssue = relayProfileDeleteIssue\(form, profile\.id\);/);
   // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进供应商池。
   const relay = functionSource("RelayScreen");
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);

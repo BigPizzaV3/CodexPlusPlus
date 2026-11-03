@@ -7868,15 +7868,16 @@ function RelayScreen({
   const viewCount = (view: ProviderViewKind) => normalized.relayProfiles.filter((profile) => relayProviderView(profile) === view).length;
   const viewTip: Record<ProviderViewKind, string> = {
     direct: t("直接访问 Responses API 供应商：只写入 Base URL 与 Key，不做协议转换。"),
-    modelAggregation: t("把成员模型合并到 Codex 模型列表，带供应商前缀的模型固定发送到对应成员。"),
+    modelAggregation: t("Codex 专用的小网关：把几家的模型合并到 Codex 的模型列表，选哪个模型就发到哪家。网关的供应商池默认就是这样分发，而且所有 Agent 都能用。"),
     routing: t("供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。"),
-    failover: t("多个供应商组成请求池，支持失败切换、会话轮转、请求轮转与权重；成员可以是 API 供应商或官方登录账号。"),
+    failover: t("Codex 专用的小网关：几家组成一个池，出错换下一家、按会话或请求轮换、按权重分。网关的「路由」里用模型组做同样的事，而且所有 Agent 都能用。"),
   };
   const emptyView: Record<ProviderViewKind, { title: string; detail: string; action: string; run: () => void }> = {
     direct: { title: t("这个分页还没有直连供应商"), detail: t("直连分页只显示 Responses 直连且未配置模型路由的供应商；其他供应商在其余分页，配置不会丢失。"), action: t("添加供应商"), run: openCatalog },
     routing: { title: t("这个分页还没有需协议转换的供应商"), detail: t("Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。"), action: t("添加供应商"), run: openCatalog },
-    failover: { title: t("还没有故障转移配置"), detail: t("在编辑页勾选成员供应商，并选择失败切换、轮转或权重策略。"), action: t("创建故障转移配置"), run: () => createNewAggregateProfile("provider") },
-    modelAggregation: { title: t("还没有模型聚合配置"), detail: t("把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。"), action: t("创建模型聚合配置"), run: () => createNewAggregateProfile("model") },
+    // 新用户优先推荐网关（所有 Agent 都能用）；只想让 Codex 用的，仍可以在这里建。
+    failover: { title: t("还没有故障转移配置"), detail: t("推荐用网关「路由」里的模型组：所有 Agent 都能用。只想给 Codex 直连用，在这里建。"), action: t("创建故障转移配置"), run: () => createNewAggregateProfile("provider") },
+    modelAggregation: { title: t("还没有模型聚合配置"), detail: t("推荐用网关的供应商池：本身就按模型分发，所有 Agent 都能用。只想给 Codex 直连用，在这里建。"), action: t("创建模型聚合配置"), run: () => createNewAggregateProfile("model") },
   };
   // 「加入供应商池」的提示：还有直连供应商没进池就提一次；网关接管期间同样可以迁移。
   // 不想换到网关的直连用户可以「不再提示」（只关提示，每行的「加入供应商池」照旧在）；已经在用网关的总是提示。
@@ -8077,6 +8078,15 @@ function RelayScreen({
             onChange={selectProviderView}
             value={providerView}
           />
+          {(providerView === "modelAggregation" || providerView === "failover") && visibleProfiles.length ? (
+            <p className="cx-aggregate-note">
+              <Waypoints aria-hidden="true" />
+              <span>{providerView === "modelAggregation"
+                ? t("模型聚合是 Codex 专用的小网关。网关的供应商池本身就按模型分发，所有 Agent 都能用；在下面点「加入供应商池」，成员就进了池子。")
+                : t("故障转移是 Codex 专用的小网关。网关「路由」里的模型组做的是同一件事，所有 Agent 都能用；在下面点「加入供应商池」，会建好同名模型组。")}</span>
+              {onOpenGateway ? <button className="cx-link" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
+            </p>
+          ) : null}
           {!visibleProfiles.length ? (
             <CxCard>
               <CxEmpty detail={emptyView[providerView].detail} title={emptyView[providerView].title}>
@@ -11794,6 +11804,11 @@ function SortableRelayProfileCard({
       onKeyDown={(event) => {
         if (event.key === "Enter" && !gatewayManaged) onEdit(profile.id);
       }}
+      // 点整行打开编辑（按钮、菜单自己拦住点击）。
+      onClick={(event) => {
+        if (gatewayManaged || (event.target as HTMLElement).closest("button, a, input, [role=menu]")) return;
+        onEdit(profile.id);
+      }}
       ref={setNodeRef}
       style={style}
       tabIndex={0}
@@ -11873,77 +11888,43 @@ function SortableRelayProfileCard({
           {active ? t("使用中") : t("使用")}
         </Button>
         {gatewayManaged || !poolLink ? null : <PoolLinkControl link={poolLink} profileId={profile.id} />}
+        {/* 次要操作收进三点菜单（原来是一排五个图标按钮）：多开、测试、编辑、复制、删除。点整行也是编辑。 */}
         {gatewayManaged ? null : (
-        <span className="relay-card-extra">
-          <Button
-            disabled={!multiLaunchSupported(profile) || actions.multiLaunchPending === profile.id}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (!multiLaunchSupported(profile)) return;
-              void actions.launchMultiInstance(profile);
-            }}
-            size="icon"
-            title={isAggregateRelayProfile(profile)
-              ? t("聚合供应商暂不支持独立多开")
-              : multiLaunchSupported(profile)
-                ? t("启动独立 Codex 实例")
-                : t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")}
-            variant="ghost"
-          >
-            <Rocket className="h-4 w-4" />
-          </Button>
-          <Button
-            disabled={isAggregateRelayProfile(profile)}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (isAggregateRelayProfile(profile)) return;
-              void actions.testRelayProfile(profile);
-            }}
-            size="icon"
-            title={isAggregateRelayProfile(profile) ? t("聚合供应商会在真实对话中轮转成员，请测试成员供应商") : t("发送 hi 测试")}
-            variant="ghost"
-          >
-            <TestTube className="h-4 w-4" />
-          </Button>
-          <Button
-            onClick={(event) => {
-              event.stopPropagation();
-              onEdit(profile.id);
-            }}
-            size="icon"
-            title={t("编辑")}
-            variant="ghost"
-          >
-            <Edit3 className="h-4 w-4" />
-          </Button>
-          <Button
-            onClick={(event) => {
-              event.stopPropagation();
-              onFormChange(duplicateRelayProfile(form, profile.id));
-            }}
-            size="icon"
-            title={t("复制")}
-            variant="ghost"
-          >
-            <Copy className="h-4 w-4" />
-          </Button>
-          <Button
-            disabled={form.relayProfiles.length <= 1}
-            onClick={(event) => {
-              event.stopPropagation();
-              const deleteIssue = relayProfileDeleteIssue(form, profile.id);
-              if (deleteIssue) {
-                void actions.showMessage(t("删除供应商"), deleteIssue, "failed");
-                return;
-              }
-              onFormChange(removeRelayProfile(form, profile.id));
-            }}
-            size="icon"
-            title={t("删除供应商")}
-            variant="ghost"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
+        <span className="relay-card-extra" onClick={(event) => event.stopPropagation()}>
+          <Menu label={t("供应商操作")}>
+            <MenuItem onClick={() => onEdit(profile.id)}>{t("编辑")}</MenuItem>
+            <MenuItem
+              disabled={isAggregateRelayProfile(profile)}
+              onClick={() => { if (!isAggregateRelayProfile(profile)) void actions.testRelayProfile(profile); }}
+            >
+              <span title={isAggregateRelayProfile(profile) ? t("聚合供应商会在真实对话中轮转成员，请测试成员供应商") : t("发送 hi 测试")}>{t("测试")}</span>
+            </MenuItem>
+            <MenuItem
+              disabled={!multiLaunchSupported(profile) || actions.multiLaunchPending === profile.id}
+              onClick={() => { if (multiLaunchSupported(profile)) void actions.launchMultiInstance(profile); }}
+            >
+              <span title={isAggregateRelayProfile(profile)
+                ? t("聚合供应商暂不支持独立多开")
+                : multiLaunchSupported(profile)
+                  ? t("启动独立 Codex 实例")
+                  : t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")}>{t("用这个供应商多开")}</span>
+            </MenuItem>
+            <MenuItem onClick={() => onFormChange(duplicateRelayProfile(form, profile.id))}>{t("复制")}</MenuItem>
+            <MenuItem
+              danger
+              disabled={form.relayProfiles.length <= 1}
+              onClick={() => {
+                const deleteIssue = relayProfileDeleteIssue(form, profile.id);
+                if (deleteIssue) {
+                  void actions.showMessage(t("删除供应商"), deleteIssue, "failed");
+                  return;
+                }
+                onFormChange(removeRelayProfile(form, profile.id));
+              }}
+            >
+              {t("删除供应商")}
+            </MenuItem>
+          </Menu>
         </span>
         )}
       </span>
