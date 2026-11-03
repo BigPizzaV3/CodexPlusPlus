@@ -1106,7 +1106,8 @@
   display: inline-flex;
 }
 
-:root .shell .cx-status-icon > i {
+/* 只认带 data-tone 的 <i> 是状态点：Codex / Claude 的单色图标本身也是 <i>，不能被当成状态点缩小挪到右下角（概览、首页的图标歪了）。 */
+:root .shell .cx-status-icon > i[data-tone] {
   position: absolute;
   right: -5px;
   bottom: -5px;
