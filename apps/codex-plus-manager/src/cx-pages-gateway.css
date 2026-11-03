@@ -795,3 +795,66 @@
 :root .shell .gw-agent .gw-detail-advanced > summary {
   min-height: 40px;
 }
+
+/* ── 供应商池：展开的详情（去杂乱） ───────────────────────────────
+   - 每行的编辑铅笔、「从上游同步」平时藏起来，鼠标移到那一行（或键盘聚焦）才出现；
+   - 模型标签小一号、非等宽，默认只露前 6 个；
+   - 价格 / 窗口 / 思考等级 / 代理 / 限速收进「更多设置」。 */
+:root .shell .gw-pool-detail .gw-detail-row > .gw-detail-actions {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+:root .shell .gw-pool-detail .gw-detail-row:hover > .gw-detail-actions,
+:root .shell .gw-pool-detail .gw-detail-row:focus-within > .gw-detail-actions {
+  opacity: 1;
+}
+
+:root .shell .gw-pool-detail .gw-chip-row > code.gw-chip {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+:root .shell .gw-pool-detail .gw-pool-more > summary {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+:root .shell .gw-pool-detail .gw-pool-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .gw-pool-detail .gw-pool-more > summary:hover {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .gw-pool-detail .gw-pool-more > summary svg {
+  transition: transform 0.15s ease;
+}
+
+:root .shell .gw-pool-detail .gw-pool-more[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+:root .shell .gw-pool-detail .gw-pool-more-hint {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground) / 0.75);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .gw-pool-detail .gw-pool-more > .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}

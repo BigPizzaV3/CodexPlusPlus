@@ -94,8 +94,8 @@ const BROWSER_LOGIN_COMMANDS: Record<string, string> = {
 type FormState = ProviderFormState;
 
 /** 详情里模型超过 MODEL_CHIP_COLLAPSE 个时先只列前 MODEL_CHIP_PREVIEW 个，其余点开再看。 */
-const MODEL_CHIP_PREVIEW = 12;
-const MODEL_CHIP_COLLAPSE = 16;
+const MODEL_CHIP_PREVIEW = 6;
+const MODEL_CHIP_COLLAPSE = 8;
 
 /** 供应商池上次用的视图（切页再回来保持）。 */
 
@@ -795,6 +795,13 @@ function PoolRow({
               </span>
             </div>
           ) : null}
+          {/* 价格、窗口、思考等级、代理、限速不常改：收进「更多设置」，展开详情先看到模型、Key、额度。 */}
+          <details className="gw-detail-advanced gw-pool-more">
+            <summary>
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("更多设置")}
+              <span className="gw-pool-more-hint">{t("价格、上下文窗口、思考等级、代理、限速")}</span>
+            </summary>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("价格")}</span>
             <div className="gw-detail-value gw-chip-row">
@@ -869,6 +876,7 @@ function PoolRow({
               <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
             </span>
           </div>
+          </details>
           <div className="gw-detail-row gw-detail-foot">
             <span className="gw-detail-label" />
             <div className="gw-detail-value">
