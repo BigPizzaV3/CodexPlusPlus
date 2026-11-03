@@ -17087,7 +17087,7 @@ function AppSidebar({
                     data-unavailable={!codexRun.running && Boolean(codexRun.unavailableReason)}
                     disabled={codexRun.busy || (!codexRun.running && Boolean(codexRun.unavailableReason))}
                     onClick={codexRun.running ? codexRun.onStop : codexRun.onStart}
-                    title={codexRun.busy ? t("处理中…") : codexRun.running ? (codexRun.unattached ? t("Codex 不是经 Codex++ 启动的，增强脚本未挂载（在概览里重启即可挂载）· 停止 Codex") : t("停止 Codex")) : codexRun.unavailableReason ?? t("启动 Codex")}
+                    title={codexRun.busy ? t("处理中…") : codexRun.running ? (codexRun.unattached ? t("Codex 不是经 Codex++ 启动的，增强脚本未挂载 · 停止后再点启动即可挂载") : t("停止 Codex")) : codexRun.unavailableReason ?? t("启动 Codex")}
                     type="button"
                   >
                     {codexRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : codexRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}
