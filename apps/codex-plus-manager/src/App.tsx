@@ -154,7 +154,7 @@ import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
-import { extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost, type ExtensionHost } from "./extension-host-model";
+import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type ExtensionHost } from "./extension-host-model";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
@@ -1791,6 +1791,8 @@ export function App() {
   // 同时开着时才不会各说各话。
   const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
   const [activeTool, setActiveTool] = useState<ToolId>("codex");
+  /** 万物皆拓展页里选的宿主（Codex / Claude）。和侧栏当前的 Agent 互不联动：切宿主不换侧栏的 Agent，点侧栏的 Agent 也不改这里。 */
+  const [extensionHost, setExtensionHost] = useState<ExtensionHost>("codex");
   useEffect(() => {
     if (!globalNavigationRoutes.includes(route)) lastAgentRoute.set(activeTool, route);
   }, [route, activeTool]);
@@ -4769,7 +4771,7 @@ export function App() {
     onRestart: () => void actions.restart(),
   };
   // Codex 专属页面与 Codex 概览提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
-  const onCodexPage = (routeTool(route) === "codex" && (route !== "userScripts" || activeTool === "codex")) || (route === "overview" && activeTool === "codex");
+  const onCodexPage = (routeTool(route) === "codex" && (route !== "userScripts" || extensionHost === "codex")) || (route === "overview" && activeTool === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
   // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
   const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
@@ -4786,10 +4788,13 @@ export function App() {
   useEffect(() => {
     if (!routeVisible(agentFocus, route)) void navigate(agentHomeRoute[activeTool] ?? "overview");
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tools && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
+    if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
     // navigate 每次渲染都是新函数，只在模式或页面变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentFocus, route, activeTool]);
+  useEffect(() => {
+    if (!agentVisible(agentFocus, extensionHost)) setExtensionHost("codex");
+  }, [agentFocus, extensionHost]);
   // 旧版曾在模式切换后才保存配置；遇到遗留的未保存状态，重新确认并允许用户重试。
   const focusRepairRequested = useRef(false);
   useEffect(() => {
@@ -4805,7 +4810,7 @@ export function App() {
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item || !routeVisible(agentFocus, routeId)) return null;
-    if (item.tools && !pageVisibleForTool(item, activeTool)) return null;
+    if (item.tools && routeId !== "userScripts" && !pageVisibleForTool(item, activeTool)) return null;
     const Icon = item.icon;
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
@@ -5120,7 +5125,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHostForTool(activeTool)} focus={agentFocus} onHostChange={(host) => void switchTool(host, "userScripts")} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
@@ -16504,8 +16509,8 @@ function AppSidebar({
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
   // 第一组是万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话；第二组是聚合网关：一个 Agent 经网关同时用多家供应商。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
-  const extensionsItem = routes.find((candidate) => candidate.id === "userScripts");
-  const extensionsShown = Boolean(extensionsItem && (!extensionsItem.tools || pageVisibleForTool(extensionsItem, activeTool)));
+  // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
+  const extensionsShown = true;
   const general: SideEntry[] = [
     ...(extensionsShown ? [{ key: "extensions", route: "userScripts" as Route, label: t("万物皆拓展"), icon: Blocks, match: ["userScripts" as Route], tour: "management" }] : []),
     { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: extensionsShown ? undefined : "management" },

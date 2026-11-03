@@ -83,7 +83,7 @@ function harness() {
   vm.runInContext(transpile(`const Fragment = "Fragment";\nconst navigationSections = [];\nconst agentTabGroups = () => [];\n${navigationSource}\n${functionSource("AppSidebar")}
     globalThis.sidebar = AppSidebar;
     globalThis.routes = routes;
-    globalThis.codexLaunchVisible = (route, activeTool) => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
+    globalThis.codexLaunchVisible = (route, activeTool, extensionHost = "codex") => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
   return {
     context,
     routes: context.routes as Array<{ id: string; tool?: string; tools?: string[] }>,
@@ -109,17 +109,15 @@ test("拓展管理只向 Codex 和 Claude 开放，保留原本 Codex 主归属"
   assert.equal(pageVisibleForTool(h.routes.find((route) => route.id === "enhance"), "claude"), false);
 });
 
-test("实际侧栏在 Claude 下可打开同一拓展管理页，Grok 保持隐藏", () => {
-  // 「万物皆拓展」是侧栏第一个入口，只在 Codex / Claude 下出现。
+test("万物皆拓展是独立入口，不随侧栏当前 Agent 显隐；宿主在页内切换，和侧栏不联动", () => {
+  // 「万物皆拓展」是侧栏第一个入口，无论侧栏选的是哪个 Agent 都在，点了都去同一页。
   const extensions = (sidebar: Element) => elements(sidebar).find((node) => node.props["data-nav"] === "extensions");
   for (const activeTool of ["codex", "claude", "grok", "opencode"]) {
     const h = harness();
     const entry = extensions(h.sidebar(activeTool));
-    assert.equal(Boolean(entry), activeTool === "codex" || activeTool === "claude", activeTool);
-    if (entry) {
-      entry.props.onClick();
-      assert.deepEqual(h.navigations, ["userScripts"]);
-    }
+    assert.ok(entry, activeTool);
+    entry.props.onClick();
+    assert.deepEqual(h.navigations, ["userScripts"]);
   }
   const h = harness();
   assert.ok(extensions(h.sidebar("claude", "enhance")), "只用增强功能时也保留万物皆拓展");
@@ -140,8 +138,10 @@ test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保�
 
 test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重启", () => {
   const { context } = harness();
-  assert.equal(context.codexLaunchVisible("userScripts", "codex"), true);
-  assert.equal(context.codexLaunchVisible("userScripts", "claude"), false);
+  // 拓展页的重启按钮看页内选的宿主，不看侧栏当前的 Agent。
+  assert.equal(context.codexLaunchVisible("userScripts", "codex", "codex"), true);
+  assert.equal(context.codexLaunchVisible("userScripts", "codex", "claude"), false);
+  assert.equal(context.codexLaunchVisible("userScripts", "claude", "codex"), true);
   assert.equal(context.codexLaunchVisible("enhance", "codex"), true);
   assert.equal(context.codexLaunchVisible("overview", "codex"), true);
   assert.equal(context.codexLaunchVisible("overview", "grok"), false);
@@ -149,12 +149,12 @@ test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重
   assert.match(text, /onRestart: \(\) => void actions\.restart\(\)/);
 });
 
-test("共享宿主范围同时用于切换 Agent、迟到导航和命令面板", () => {
+test("tools 限定的页面随侧栏 Agent 过滤，万物皆拓展除外", () => {
   const switchTool = declaration("switchTool").getText(app);
   assert.match(switchTool, /if \(!pageVisibleForTool\(currentRoute, toolId\)\)/);
   assert.match(switchTool, /if \(destination\) await navigate\(destination\);\s*else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\("overview"\)/);
-  assert.match(text, /if \(currentRoute\?\.tools && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\)/);
-  assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && !pageVisibleForTool\(item, activeTool\)\) return null/);
+  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\)/);
+  assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && routeId !== "userScripts" && !pageVisibleForTool\(item, activeTool\)\) return null/);
 });
 
 test("只有明确声明 Claude 适配的拓展才显示 Claude Code 宿主标签", () => {
@@ -251,8 +251,9 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
 }
 
 test("页内宿主切换绑定共享路由并传递当前宿主", () => {
-  assert.match(text, /<UserScriptsScreen host=\{extensionHostForTool\(activeTool\)\}/);
-  assert.match(text, /onHostChange=\{\(host\) => void switchTool\(host, "userScripts"\)\}/);
+  // 宿主是页面自己的状态：切宿主不调 switchTool，不改侧栏当前的 Agent。
+  assert.match(text, /<UserScriptsScreen host=\{extensionHost\} focus=\{agentFocus\} onHostChange=\{setExtensionHost\}/);
+  assert.doesNotMatch(text, /switchTool\(host, "userScripts"\)/);
   for (const host of ["codex", "claude"] as const) {
     const h = extensionHarness();
     const props = extensionScreenProps(h, host);
