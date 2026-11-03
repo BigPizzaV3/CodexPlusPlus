@@ -200,6 +200,7 @@ pub struct SkillDownloadGuard {
     installed_snapshot: Option<InstalledSkill>,
     repo_snapshot: SkillRepo,
     contents: SkillContentSnapshot,
+    coordination_scope: Option<PathBuf>,
     skill_generation: u64,
     repo_generation: u64,
 }
@@ -216,28 +217,49 @@ pub struct SkillRepoGuard {
     pub repo: SkillRepo,
     state_path: PathBuf,
     repo_snapshot: SkillRepo,
+    coordination_scope: Option<PathBuf>,
     generation: u64,
 }
 
 #[derive(Default)]
 struct SkillsCoordination {
     generation: u64,
-    skills: BTreeMap<String, u64>,
-    repos: BTreeMap<String, u64>,
-    repo_changes: BTreeMap<String, u64>,
+    skills: BTreeMap<(Option<PathBuf>, String), u64>,
+    repos: BTreeMap<(Option<PathBuf>, String), u64>,
+    repo_changes: BTreeMap<(Option<PathBuf>, String), u64>,
 }
 
 impl SkillsCoordination {
-    fn skill_generation(&self, id: &str) -> u64 {
+    fn skill_generation(&self, scope: &Option<PathBuf>, id: &str) -> u64 {
         self.skills.iter()
-            .filter(|(other, _)| skill_names_may_alias(other, id))
+            .filter(|((other_scope, other), _)| {
+                coordination_scopes_overlap(scope, other_scope) && skill_names_may_alias(other, id)
+            })
             .map(|(_, generation)| *generation)
             .max()
             .unwrap_or_default()
     }
 
-    fn repo_generation(&self, key: &str) -> u64 {
-        self.repos.get(key).copied().unwrap_or_default()
+    fn repo_generation(&self, scope: &Option<PathBuf>, key: &str) -> u64 {
+        Self::scoped_repo_generation(&self.repos, scope, key)
+    }
+
+    fn repo_change_generation(&self, scope: &Option<PathBuf>, key: &str) -> u64 {
+        Self::scoped_repo_generation(&self.repo_changes, scope, key)
+    }
+
+    fn scoped_repo_generation(
+        entries: &BTreeMap<(Option<PathBuf>, String), u64>,
+        scope: &Option<PathBuf>,
+        key: &str,
+    ) -> u64 {
+        entries.iter()
+            .filter(|((other_scope, other_key), _)| {
+                other_key == key && coordination_scopes_overlap(scope, other_scope)
+            })
+            .map(|(_, generation)| *generation)
+            .max()
+            .unwrap_or_default()
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -245,29 +267,82 @@ impl SkillsCoordination {
         self.generation
     }
 
-    fn changed_skill(&mut self, id: &str) {
+    fn changed_skill(&mut self, scope: Option<PathBuf>, id: &str) {
         let generation = self.next_generation();
-        self.skills.insert(id.to_string(), generation);
+        self.skills.insert((scope, id.to_string()), generation);
     }
 
-    fn changed_repo(&mut self, key: &str) {
+    fn changed_repo(&mut self, scope: Option<PathBuf>, key: &str) {
         let generation = self.next_generation();
-        self.repos.insert(key.to_string(), generation);
-        self.repo_changes.insert(key.to_string(), generation);
+        self.repos.insert((scope.clone(), key.to_string()), generation);
+        self.repo_changes.insert((scope, key.to_string()), generation);
     }
 
-    fn changed_repo_settings(&mut self, key: &str) {
+    fn changed_repo_settings(&mut self, scope: Option<PathBuf>, key: &str) {
         let generation = self.next_generation();
-        self.repo_changes.insert(key.to_string(), generation);
+        self.repo_changes.insert((scope, key.to_string()), generation);
     }
 }
 
-// 不同 state_path 也可能共享源目录或 Agent 目录，因此协调范围是整个进程。
+// 锁覆盖整个进程；代次只隔离能确认不相交的目录，未知路径仍按全局冲突处理。
 // 下载、ZIP 校验及提取不持锁；不协调其它进程或绕过 SkillsManager 的直接写入。
 fn skills_coordination() -> MutexGuard<'static, SkillsCoordination> {
     static COORDINATION: OnceLock<Mutex<SkillsCoordination>> = OnceLock::new();
     COORDINATION.get_or_init(Mutex::default).lock()
         .expect("Skill 协调锁中毒，拒绝继续修改")
+}
+
+fn coordination_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+        return None;
+    }
+    let mut ancestor = path;
+    let mut missing = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut resolved) => {
+                for part in missing.iter().rev() {
+                    resolved.push(part);
+                }
+                return Some(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(ancestor) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return None,
+                }
+                missing.push(ancestor.file_name()?.to_os_string());
+                ancestor = ancestor.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn coordination_path_starts_with(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let mut parts = path.components();
+        root.components().all(|root_part| parts.next().is_some_and(|part| {
+            windows_names_equal(
+                &part.as_os_str().to_string_lossy(),
+                &root_part.as_os_str().to_string_lossy(),
+            )
+        }))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root)
+    }
+}
+
+fn coordination_scopes_overlap(left: &Option<PathBuf>, right: &Option<PathBuf>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            coordination_path_starts_with(left, right) || coordination_path_starts_with(right, left)
+        }
+        _ => true,
+    }
 }
 
 #[cfg(windows)]
@@ -328,6 +403,27 @@ impl SkillsManager {
     pub fn with_agent_dirs(mut self, dirs: Vec<(String, PathBuf)>) -> Self {
         self.agent_dirs = dirs;
         self
+    }
+
+    /// 用全部受管理路径的共同祖先形成保守范围；相交范围不能互相隔离。
+    fn coordination_scope(&self) -> Option<PathBuf> {
+        let paths = [
+            self.source_dir.clone(),
+            self.backups_dir.clone(),
+            self.state_path.clone(),
+            self.linked_dir(),
+        ];
+        let mut paths = paths.iter().chain(self.agent_dirs.iter().map(|(_, dir)| dir));
+        let mut root = coordination_path(paths.next()?)?;
+        for path in paths {
+            let path = coordination_path(path)?;
+            while !coordination_path_starts_with(&path, &root) {
+                if !root.pop() {
+                    return None;
+                }
+            }
+        }
+        Some(root)
     }
 
     pub fn agent_dirs(&self) -> &[(String, PathBuf)] {
@@ -516,7 +612,7 @@ impl SkillsManager {
         if existing.enabled == repo.enabled { return Ok(false); }
         existing.enabled = repo.enabled;
         self.save_state_unlocked(&state)?;
-        coordination.changed_repo_settings(&key);
+        coordination.changed_repo_settings(self.coordination_scope(), &key);
         Ok(true)
     }
 
@@ -541,12 +637,12 @@ impl SkillsManager {
         }
         self.save_state_unlocked(&state)?;
         if let Some(previous_key) = previous_key.filter(|previous| *previous != key) {
-            coordination.changed_repo(previous_key);
+            coordination.changed_repo(self.coordination_scope(), previous_key);
         }
         if !existed {
-            coordination.changed_repo(&key);
+            coordination.changed_repo(self.coordination_scope(), &key);
         } else {
-            coordination.changed_repo_settings(&key);
+            coordination.changed_repo_settings(self.coordination_scope(), &key);
         }
         Ok(state.repos)
     }
@@ -558,7 +654,7 @@ impl SkillsManager {
         state.repos.retain(|repo| repo.key() != key);
         self.save_state_unlocked(&state)?;
         if existed {
-            coordination.changed_repo(key);
+            coordination.changed_repo(self.coordination_scope(), key);
         }
         Ok(state.repos)
     }
@@ -569,24 +665,28 @@ impl SkillsManager {
         let repo = self.load_state_checked_unlocked()?.repos.into_iter()
             .find(|repo| repo.key() == key)
             .context("仓库已不存在，请刷新后重试")?;
+        let scope = self.coordination_scope();
         Ok(SkillRepoGuard {
             repo: repo.clone(),
             state_path: self.state_path.clone(),
             repo_snapshot: repo,
-            generation: coordination.repo_changes.get(key).copied().unwrap_or_default(),
+            generation: coordination.repo_change_generation(&scope, key),
+            coordination_scope: scope,
         })
     }
 
     /// 只读检查刷新快照；锁只覆盖本地状态读取，不包含网络等待。
     pub fn repo_guard_is_current(&self, guard: &SkillRepoGuard) -> anyhow::Result<bool> {
         let coordination = skills_coordination();
-        if guard.repo != guard.repo_snapshot || self.state_path != guard.state_path {
+        if guard.repo != guard.repo_snapshot || self.state_path != guard.state_path
+            || self.coordination_scope() != guard.coordination_scope
+        {
             return Ok(false);
         }
         let state = self.load_state_checked_unlocked()?;
         Ok(state.repos.iter().any(|repo| repo == &guard.repo_snapshot)
-            && coordination.repo_changes.get(&guard.repo_snapshot.key())
-                .copied().unwrap_or_default() == guard.generation)
+            && coordination.repo_change_generation(&guard.coordination_scope, &guard.repo_snapshot.key())
+                == guard.generation)
     }
 
     /// 仅在仓库自抓取以来完全未变时保存 main/master 回退；返回 false 表示已过期或目标已存在。
@@ -613,7 +713,8 @@ impl SkillsManager {
         let new_key = resolved.key();
         let mut coordination = skills_coordination();
         let mut state = self.load_state_checked_unlocked()?;
-        if coordination.repo_changes.get(&old_key).copied().unwrap_or_default() != guard.generation
+        if self.coordination_scope() != guard.coordination_scope
+            || coordination.repo_change_generation(&guard.coordination_scope, &old_key) != guard.generation
             || !state.repos.iter().any(|repo| repo == original)
             || state.repos.iter().any(|repo| repo.key() == new_key)
         {
@@ -622,8 +723,8 @@ impl SkillsManager {
         let repo = state.repos.iter_mut().find(|repo| repo.key() == old_key).unwrap();
         *repo = resolved;
         self.save_state_unlocked(&state)?;
-        coordination.changed_repo(&old_key);
-        coordination.changed_repo(&new_key);
+        coordination.changed_repo(self.coordination_scope(), &old_key);
+        coordination.changed_repo(self.coordination_scope(), &new_key);
         Ok(true)
     }
 
@@ -824,7 +925,9 @@ impl SkillsManager {
         let generation = {
             let coordination = skills_coordination();
             self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
-            coordination.skill_generation(id)
+            let scope = self.coordination_scope();
+            let generation = coordination.skill_generation(&scope, id);
+            (scope, generation)
         };
         let (staging, installed) = self.stage_directory_import(id, external_dir, repo_key)?;
         let result = self.commit_staged_import_if_unchanged(&staging, installed, generation);
@@ -835,10 +938,12 @@ impl SkillsManager {
         &self,
         staging: &Path,
         installed: InstalledSkill,
-        generation: u64,
+        generation: (Option<PathBuf>, u64),
     ) -> anyhow::Result<SkillsState> {
         let mut coordination = skills_coordination();
-        if coordination.skill_generation(&installed.id) != generation {
+        if self.coordination_scope() != generation.0
+            || coordination.skill_generation(&generation.0, &installed.id) != generation.1
+        {
             anyhow::bail!("导入期间 Skill 已改变，请重新导入");
         }
         self.commit_staged_skill_unlocked(staging, installed, false, true, false, false, &mut coordination)
@@ -999,7 +1104,7 @@ impl SkillsManager {
             return Err(error);
         }
         if identity_changed {
-            coordination.changed_skill(&id);
+            coordination.changed_skill(self.coordination_scope(), &id);
         }
         Ok(state)
     }
@@ -1072,6 +1177,7 @@ impl SkillsManager {
             }
             _ => {}
         }
+        let scope = self.coordination_scope();
         let mut guard = SkillDownloadGuard {
             installed: installed.clone(),
             repo: repo.clone(),
@@ -1085,8 +1191,9 @@ impl SkillsManager {
             installed_snapshot: installed,
             repo_snapshot: repo,
             contents: SkillContentSnapshot::default(),
-            skill_generation: coordination.skill_generation(id),
-            repo_generation: coordination.repo_generation(repo_key),
+            skill_generation: coordination.skill_generation(&scope, id),
+            repo_generation: coordination.repo_generation(&scope, repo_key),
+            coordination_scope: scope,
         };
         drop(coordination);
         guard.contents = self.skill_content_snapshot(id)?;
@@ -1136,8 +1243,10 @@ impl SkillsManager {
                 && repo.branch == guard.repo_snapshot.branch
                 && repo.subdir == guard.repo_snapshot.subdir
         });
-        if !repo_exists || coordination.repo_generation(&key) != guard.repo_generation
-            || coordination.skill_generation(&guard.id) != guard.skill_generation
+        if self.coordination_scope() != guard.coordination_scope
+            || !repo_exists
+            || coordination.repo_generation(&guard.coordination_scope, &key) != guard.repo_generation
+            || coordination.skill_generation(&guard.coordination_scope, &guard.id) != guard.skill_generation
             || state.installed.get(&guard.id) != guard.installed_snapshot.as_ref()
         {
             anyhow::bail!("下载期间仓库或 Skill 安装记录已改变，请重新下载");
@@ -1366,7 +1475,7 @@ impl SkillsManager {
             }
             return Err(error);
         }
-        coordination.changed_skill(id);
+        coordination.changed_skill(self.coordination_scope(), id);
         Ok(state)
     }
 
@@ -3153,7 +3262,8 @@ mod tests {
         first.install_from_zip(&sample_skill("alpha", "alpha", "one"), &initial).unwrap();
         let external = temp.path().join("external/alpha");
         write_skill(&external, "import content");
-        let generation = skills_coordination().skill_generation("alpha");
+        let scope = first.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, "alpha"));
         let (staging, imported) = first.stage_directory_import("alpha", &external, LOCAL_IMPORT_REPO_KEY).unwrap();
 
         let updated = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
@@ -3161,6 +3271,115 @@ mod tests {
         assert!(first.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
         assert_eq!(std::fs::read_to_string(first.source_dir.join("alpha/SKILL.md")).unwrap(), "updated");
         assert_eq!(first.load_state().installed["alpha"].content_hash, "two");
+    }
+
+    #[test]
+    fn staged_import_is_not_invalidated_by_an_independent_library() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let first = manager(&first_temp);
+        let second = manager(&second_temp);
+        let id = format!("scope-{}", uuid::Uuid::new_v4());
+        let first_external = first_temp.path().join("external").join(&id);
+        let second_external = second_temp.path().join("external").join(&id);
+        write_skill(&first_external, "first");
+        write_skill(&second_external, "second");
+        let scope = first.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, &id));
+        let (staging, imported) = first.stage_directory_import(&id, &first_external, LOCAL_IMPORT_REPO_KEY).unwrap();
+
+        second.import_from_directory(&id, &second_external).unwrap();
+        first.commit_staged_import_if_unchanged(&staging, imported, generation).unwrap();
+        assert_eq!(std::fs::read_to_string(first.source_dir.join(&id).join(SKILL_MANIFEST_FILE)).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(second.source_dir.join(&id).join(SKILL_MANIFEST_FILE)).unwrap(), "second");
+    }
+
+    #[test]
+    fn independent_library_does_not_invalidate_repo_guard() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let first = manager(&first_temp);
+        let second = manager(&second_temp);
+        let repo = SkillRepo {
+            owner: "scope".into(),
+            name: uuid::Uuid::new_v4().to_string(),
+            branch: "main".into(),
+            subdir: String::new(),
+            enabled: true,
+        };
+        first.upsert_repo(repo.clone()).unwrap();
+        let guard = first.capture_repo_guard(&repo.key()).unwrap();
+
+        second.upsert_repo(repo).unwrap();
+        assert!(first.repo_guard_is_current(&guard).unwrap());
+    }
+
+    #[test]
+    fn staged_import_detects_shared_source_across_library_roots() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let first = manager(&first_temp);
+        let second = SkillsManager::new(
+            first.source_dir.clone(),
+            second_temp.path().join("backups"),
+            second_temp.path().join("state.json"),
+            second_temp.path().join("codex"),
+        );
+        let id = format!("scope-{}", uuid::Uuid::new_v4());
+        let first_external = first_temp.path().join("external").join(&id);
+        let second_external = second_temp.path().join("external").join(&id);
+        write_skill(&first_external, "first");
+        write_skill(&second_external, "second");
+        let scope = first.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, &id));
+        let (staging, imported) = first.stage_directory_import(&id, &first_external, LOCAL_IMPORT_REPO_KEY).unwrap();
+
+        second.import_from_directory(&id, &second_external).unwrap();
+        assert!(first.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert_eq!(std::fs::read_to_string(first.source_dir.join(&id).join(SKILL_MANIFEST_FILE)).unwrap(), "second");
+    }
+
+    #[test]
+    fn shared_agent_directory_keeps_library_scopes_overlapping() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let shared = first_temp.path().join("shared-agent");
+        let first = manager(&first_temp).with_agent_dirs(vec![("agent".into(), shared.clone())]);
+        let second = manager(&second_temp).with_agent_dirs(vec![("agent".into(), shared)]);
+        let first_scope = first.coordination_scope();
+        let second_scope = second.coordination_scope();
+        assert!(first_scope.is_some() && second_scope.is_some());
+        assert!(coordination_scopes_overlap(&first_scope, &second_scope));
+        let mut coordination = SkillsCoordination::default();
+        coordination.changed_skill(second_scope, "alpha");
+        assert_ne!(coordination.skill_generation(&first_scope, "alpha"), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_source_symlink_keeps_library_scopes_overlapping() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let first = manager(&first_temp);
+        std::fs::create_dir_all(&first.source_dir).unwrap();
+        let alias = second_temp.path().join("shared-source");
+        std::os::unix::fs::symlink(&first.source_dir, &alias).unwrap();
+        let second = SkillsManager::new(
+            alias,
+            second_temp.path().join("backups"),
+            second_temp.path().join("state.json"),
+            second_temp.path().join("codex"),
+        );
+        assert!(coordination_scopes_overlap(&first.coordination_scope(), &second.coordination_scope()));
+    }
+
+    #[test]
+    fn unknown_coordination_scope_remains_conservative() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(coordination_path(Path::new("relative/skills")).is_none());
+        let scope = manager(&temp).coordination_scope();
+        assert!(scope.is_some());
+        assert!(coordination_scopes_overlap(&None, &scope));
     }
 
     #[test]
