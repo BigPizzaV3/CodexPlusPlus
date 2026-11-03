@@ -25,6 +25,7 @@ import {
   type PickerItem,
   type PickerSection,
   maskAccountName,
+  relativeTime,
   type ImageOption,
   isFavoriteModel,
   toggleFavoriteModel,
@@ -251,7 +252,7 @@ function AgentRow({
             </span>
             <span className="cx-row-detail gw-agent-meta" title={drift?.endpoint ? tf("现在连的是 {0}", [drift.endpoint]) : undefined}>
               {/* 「等待请求验证」读起来像出了问题：还没见到请求只是还没用过，写「还没收到请求」。 */}
-              <span className="gw-agent-badge" data-tone={diagnostic.tone}>{diagnostic.badge === "等待请求验证" ? t("还没收到请求") : t(diagnostic.badge)}</span>
+              <span className="gw-agent-badge" data-tone={diagnostic.tone}>{agentStatusText(agent, diagnostic.badge, diagnostic.tone)}</span>
               {connected && !diagnostic.reconnect ? <span>{tf("{0} 个模型", [modelCount])}</span> : null}
               {note ? <span>{note}</span> : null}
               {diagnostic.reconnect ? (
@@ -546,6 +547,20 @@ function AgentDetail({
       </div>
     </div>
   );
+}
+
+/**
+ * Agent 名字下面那行状态：请求到过就写「最近请求 5 分钟前」，比「请求已到达」有用；
+ * 还没见到请求写「还没收到请求」（原来的「等待请求验证」读起来像出了问题）；出问题时照旧写原因。
+ */
+function agentStatusText(agent: GatewayAgentView, badge: string, tone: string): string {
+  const lastSeen = agent.diagnostics?.lastSeenMs;
+  if (tone === "on" && lastSeen) {
+    const when = relativeTime(lastSeen, Date.now());
+    return tf("最近请求 {0}", [when.args.length ? tf(when.text, when.args.map(String)) : t(when.text)]);
+  }
+  if (badge === "等待请求验证") return t("还没收到请求");
+  return t(badge);
 }
 
 /** 详情里的一行：左边名字 + 一行说明，右边控件（参照设置页的行）。长说明放 tooltip。 */

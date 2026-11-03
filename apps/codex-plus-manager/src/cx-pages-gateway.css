@@ -951,3 +951,18 @@
 :root .shell .gw-pool-row .gw-pool-edit:focus-visible {
   opacity: 1;
 }
+
+/* 供应商行右侧两列：状态（点 + 文字）| 余额 / 额度 / 刷新（固定 180 宽、右对齐），各行对成一列。 */
+:root .shell .gw-pool-status .gw-pool-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .gw-pool-status .gw-pool-metric {
+  display: inline-flex;
+  width: 180px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}

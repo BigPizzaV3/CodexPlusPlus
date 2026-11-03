@@ -3428,6 +3428,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 个还没加入供应商池": "{0} not in the provider pool yet",
   "确认后 {0} 会完整切换到直连供应商「{1}」：和在供应商列表里切换一样，先备份当前配置、收回借给 {0} 的登录，再写入。": "Once confirmed, {0} fully switches to the direct provider \"{1}\": like switching in the provider list, it backs up the current config and takes back the sign-in lent to {0} before writing.",
   "正在下载新版本 {0}": "Downloading version {0}",
+  "最近请求 {0}": "Last request {0}",
   "{0} 家 · {1} 个模型": "{0} providers · {1} models",
   "{0} 个模型组": "{0} model groups",
   "直连 {0} · {1} 个，不经 Codex++": "Direct to {0} · {1}, not through Codex++",
