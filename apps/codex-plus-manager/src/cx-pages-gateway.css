@@ -675,3 +675,123 @@
   background: transparent;
   box-shadow: none;
 }
+
+/* ── Agent 接入：展开的详情 ─────────────────────────────────────
+   每行同一种排法（参照设置页）：左边名字 + 一行说明，右边一个控件。
+   供应商一排头像 + 「几家 · 几个模型」；下拉同宽、开关靠右；「高级」里的行同样排。 */
+:root .shell .gw-agent .gw-set-line {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+:root .shell .gw-agent .gw-agent-detail > .gw-set-line + .gw-set-line,
+:root .shell .gw-agent .gw-agent-detail > .gw-set-line + .gw-detail-advanced,
+:root .shell .gw-agent .gw-detail-advanced > .gw-set-line,
+:root .shell .gw-agent .gw-detail-advanced + .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-set-line-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root .shell .gw-agent .gw-set-line-copy > strong {
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .gw-agent .gw-set-line-copy > small,
+:root .shell .gw-agent .gw-agent-diagnostic-summary {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .gw-agent .gw-agent-diagnostic-summary {
+  display: flex;
+  gap: 10px;
+}
+
+:root .shell .gw-agent .gw-set-line-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 下拉、模型选择、输入框统一 240 宽，右对齐成一列。 */
+:root .shell .gw-agent .gw-set-line-control > .app-select,
+:root .shell .gw-agent .gw-set-line-control > .gw-tier-button,
+:root .shell .gw-agent .gw-set-line-control > .gw-inline-input {
+  box-sizing: border-box;
+  width: 240px;
+  height: 32px;
+}
+
+:root .shell .gw-agent .gw-set-line-control > .gw-tier-button {
+  justify-content: flex-start;
+}
+
+:root .shell .gw-agent .gw-set-line-control > .gw-tier-button > svg:last-child {
+  margin-left: auto;
+}
+
+/* Claude 的四个档位：控件区可换行。 */
+:root .shell .gw-agent .gw-set-line-tiers .gw-set-line-control {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+}
+
+:root .shell .gw-agent .gw-set-line-tiers .gw-set-line-control > .gw-tier-button {
+  width: auto;
+}
+
+:root .shell .gw-agent .gw-set-line-avatars .gw-avatar {
+  width: 26px;
+  height: 26px;
+  border-color: hsl(var(--card));
+  background: hsl(var(--muted));
+}
+
+:root .shell .gw-agent .gw-avatar-more {
+  font-size: 10px;
+}
+
+:root .shell .gw-agent .gw-set-line-button {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .gw-agent .gw-set-line-button:hover {
+  background: hsl(var(--accent));
+}
+
+/* 诊断：摘要做说明，「诊断详情」在下面一行，展开后占满宽度。 */
+:root .shell .gw-agent .gw-set-line-diagnostics .gw-agent-diagnostic-more {
+  margin-top: 2px;
+}
+
+:root .shell .gw-agent .gw-detail-advanced > summary {
+  min-height: 40px;
+}
