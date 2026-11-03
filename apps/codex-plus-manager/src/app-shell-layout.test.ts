@@ -59,14 +59,15 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(lib, /commands::stop_codex_plus,/);
   // 侧栏里当前 Agent 下面缩进列出它的页面（概览 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），仍按页面的 tool 归属和使用模式过滤。
   assert.match(sidebar, /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\);\n\s*if \(pages\.length < 2\) return null;/);
-  // 旧版直连两页（旧版供应商配置 / 旧版代理设置）不常用，进了设置模式；Codex 设置也在设置模式里。
+  // 「连接与供应商」（原旧版供应商配置 + 旧版代理设置）紧跟概览，是 Codex 自己的页面：直连用户每天在这里切供应商，
+  // 不藏进设置；Codex 设置（启动参数、维护）在设置模式里。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
+  assert.match(sections, /\{ id: "overview", routes: \["overview", "relay"\] \}/);
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
-  assert.doesNotMatch(sections, /"agentSettings"|"relay"|"relayEnvironment"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance", "relay", "relayEnvironment",/);
-  // 原「旧版供应商配置」「旧版代理设置」合成设置模式里的「Codex 连接」一项；旧路由 relayEnvironment 打开同一页。
-  assert.match(text, /\{ key: "codexConnection", label: t\("Codex 连接"\)[^\n]*route: "relay", group: "agent"/);
-  assert.doesNotMatch(text, /key: "legacyProxy"/);
+  assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance", "gatewaySettings",/);
+  assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
+  assert.match(text, /id: "relay", get label\(\) \{ return t\("连接与供应商"\); \}/);
   // 内容区顶部不再画 Agent 页签。
   assert.doesNotMatch(functionSource("App"), /<AgentPageTabs\b/);
 });
@@ -220,7 +221,7 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(app, /\{route === "relay" \|\| route === "relayEnvironment" \? \(\n\s*<RelayScreen/);
   assert.match(app, /connection=\{\(\n\s*<LegacyRelayGatewayHint/);
   assert.match(app, /advanced=\{\(\n\s*<ProxySettingsScreen/);
-  assert.match(app, /advancedOpen=\{route === "relayEnvironment"\}/);
+  assert.match(app, /advancedOpen=\{route === "relayEnvironment" \|\| relayAdvancedOpen\}/);
   assert.match(app, /onDisconnect=\{\(\) => setLegacyDisconnectOpen\(true\)\}/);
   assert.match(app, /legacyDisconnectOpen \? \(\s*<AgentDisconnectDialog/);
   assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
@@ -244,7 +245,9 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(relay, /\{normalized\.relayProfilesEnabled && !takenOverByGateway \? \(/);
   assert.match(relay, /\{normalized\.relayProfilesEnabled && takenOverByGateway \? \(/);
-  assert.match(text, /id: "relay", get label\(\) \{ return t\("Codex 连接"\); \}/);
+  // 直连用户可以关掉「加入供应商池」的提醒；网关接管时总是提示。
+  assert.match(relay, /poolLink\.pending\.length && \(takenOverByGateway \|\| !nudgeDismissed\)/);
+  assert.match(relay, /window\.localStorage\.setItem\(DIRECT_POOL_NUDGE_KEY, "1"\)/);
 });
 
 test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
@@ -269,7 +272,7 @@ test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会�
 
 test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
-  assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target;/);
+  assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target === "relayEnvironment" \? "relay" : target;/);
   assert.match(app, /\{route === "agentSettings" \|\| route === "maintenance" \? \(/);
   assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
   // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。

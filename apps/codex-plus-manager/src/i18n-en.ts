@@ -118,6 +118,9 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "继续只用直连；以后想换，每个供应商右侧的「加入供应商池」还在": "Keep using direct only; to switch later, each provider still has Add to provider pool on the right",
+  "不再提示": "Don't show again",
+  "连接与供应商": "Connection & providers",
   "最近一次启动": "Last launch",
   "管理入口": "Manager entry",
   "包含版本、路径、设置和平台信息；反馈问题时点「复制报告」附上即可": "Includes version, paths, settings and platform info; click Copy report and attach it when reporting an issue",

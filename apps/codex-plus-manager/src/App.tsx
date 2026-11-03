@@ -1400,7 +1400,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
-  { id: "relay", get label() { return t("Codex 连接"); }, icon: Cable, tool: "codex" },
+  { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
   { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
   { id: "claude", get label() { return t("增强"); }, icon: Languages, tool: "claude" },
   // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
@@ -1445,9 +1445,9 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
  * 每个页面仍按 `routes` 里的 `tool` 归属过滤；只有一个页面的 Agent 不显示页签。
  */
 const navigationSections: Array<{ id: string; routes: Route[] }> = [
-  { id: "overview", routes: ["overview"] },
+  // 「连接与供应商」紧跟概览：直连模式的老用户每天在这里切供应商，想改用网关也从这里开始。
+  { id: "overview", routes: ["overview", "relay"] },
   { id: "enhance", routes: ["claude", "enhance", "dreamSkin", "pluginMarket", "weixin", "multiLaunch"] },
-  // 旧版直连（旧版供应商配置 / 旧版代理设置）不常用，挪进齿轮的设置模式「Codex」分类下，不占 Agent 的入口。
   // Codex 设置（含安装维护）在齿轮的设置模式里，不再占 Agent 的页签。
 ];
 const routeTool = (routeId: Route) => routes.find((candidate) => candidate.id === routeId)?.tool;
@@ -1662,6 +1662,8 @@ export function App() {
   const [settingsFocus, setSettingsFocus] = useState<string | null>(() => initialSettingsFocus());
   /** 设置模式里整体设置页当前显示的卡片（一个分类一页）；深链到某张卡片时换到它所在的分类。 */
   const [settingsSections, setSettingsSections] = useState<string[]>(() => settingsSectionsFor(initialSettingsFocus() ?? "app-settings-general"));
+  /** 从旧的「旧版代理设置」入口进来：「连接与供应商」页直接展开「高级」。 */
+  const [relayAdvancedOpen, setRelayAdvancedOpen] = useState(false);
   /** 进设置模式前停的页面：侧栏「返回」回到这里。 */
   const lastMainRoute = useRef<Route>("hub");
   const [enhancementTab, setEnhancementTab] = useState<EnhancementTab>("general");
@@ -2823,14 +2825,16 @@ export function App() {
   const navigate = async (target: Route, skipDreamSkinDraftGuard = false) => {
     // 安装维护并进了 Codex 设置页；关于并进了设置页（滚到版本与更新）。
     if (target === "about") setSettingsFocus("app-settings-update");
-    const next: Route = target === "maintenance" ? "agentSettings" : target === "about" ? "settings" : target;
+    // 旧版代理设置并进了「连接与供应商」页底部的「高级」：旧入口打开那一页并展开「高级」。
+    setRelayAdvancedOpen(target === "relayEnvironment");
+    const next: Route = target === "maintenance" ? "agentSettings" : target === "about" ? "settings" : target === "relayEnvironment" ? "relay" : target;
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
       return;
     }
     setRoute(next);
     if (next === "overview") await refreshOverview(true);
-    if (next === "relay" || next === "relayEnvironment" || next === "multiLaunch") {
+    if (next === "relay" || next === "multiLaunch") {
       await refreshSettings(true);
       await refreshWeixinStatus(true);
       await refreshRelay(true);
@@ -2839,8 +2843,8 @@ export function App() {
       await refreshCcsProviders(true);
     }
     if (next === "multiLaunch") await refreshMultiLaunchInstances(true);
-    // 「Codex 连接」页底部的「高级」里有环境检测：两个入口都要读。
-    if (next === "relay" || next === "relayEnvironment") await refreshRelayEnvironment(true);
+    // 「连接与供应商」页底部的「高级」里有环境检测。
+    if (next === "relay") await refreshRelayEnvironment(true);
     if (next === "gatewaySettings") await refreshOverview(true);
     if (next === "sessions") {
       await refreshSettings(true);
@@ -4995,7 +4999,7 @@ export function App() {
               form={settingsForm}
               actions={actions}
               onOpenGateway={() => void navigate("gatewayProviders")}
-              advancedOpen={route === "relayEnvironment"}
+              advancedOpen={route === "relayEnvironment" || relayAdvancedOpen}
               connection={(
                 <LegacyRelayGatewayHint
                   form={settingsForm}
@@ -7293,6 +7297,9 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
   );
 }
 
+/** 直连用户点过「不再提示」：不再提醒把直连供应商加入网关供应商池。 */
+const DIRECT_POOL_NUDGE_KEY = "codex-plus-plus.direct-pool-nudge-dismissed";
+
 /** Codex 接入网关时，网关在直连模式的供应商列表里放的托管供应商（core 的 `CODEX_GATEWAY_RELAY_ID`）。 */
 const CODEX_GATEWAY_RELAY_ID = "codex-plus-gateway";
 
@@ -7739,13 +7746,22 @@ function RelayScreen({
     failover: { title: t("还没有故障转移配置"), detail: t("在编辑页勾选成员供应商，并选择失败切换、轮转或权重策略。"), action: t("创建故障转移配置"), run: () => createNewAggregateProfile("provider") },
     modelAggregation: { title: t("还没有模型聚合配置"), detail: t("把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。"), action: t("创建模型聚合配置"), run: () => createNewAggregateProfile("model") },
   };
-  // 「加入供应商池」的提示：只要还有直连供应商没进池就提一次；网关接管期间同样可以迁移。
-  const poolBanner = normalized.relayProfilesEnabled && poolLink.pending.length ? (
+  // 「加入供应商池」的提示：还有直连供应商没进池就提一次；网关接管期间同样可以迁移。
+  // 不想换到网关的直连用户可以「不再提示」（只关提示，每行的「加入供应商池」照旧在）；已经在用网关的总是提示。
+  const [nudgeDismissed, setNudgeDismissed] = useState(() => {
+    try { return window.localStorage.getItem(DIRECT_POOL_NUDGE_KEY) === "1"; } catch { return false; }
+  });
+  const dismissNudge = () => {
+    setNudgeDismissed(true);
+    try { window.localStorage.setItem(DIRECT_POOL_NUDGE_KEY, "1"); } catch { /* 存不了就只在本次关掉 */ }
+  };
+  const poolBanner = normalized.relayProfilesEnabled && poolLink.pending.length && (takenOverByGateway || !nudgeDismissed) ? (
     <CxBanner
       detail={t("加入后 Codex、Claude Code 等所有接入网关的 Agent 都能用，支持多 Key 轮换和故障转移；直连配置照旧保留。")}
       icon={<Waypoints />}
       title={tf("{0} 个直连供应商还不在供应商池里", [poolLink.pending.length])}
     >
+      {takenOverByGateway ? null : <button className="cx-secondary" onClick={dismissNudge} title={t("继续只用直连；以后想换，每个供应商右侧的「加入供应商池」还在")} type="button">{t("不再提示")}</button>}
       {onOpenGateway ? <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
       <button className="cx-primary" disabled={poolLink.importing !== null} onClick={() => void poolLink.addAll()} type="button">
         {poolLink.importing === "all" ? <Loader2 className="animate-spin" /> : <Waypoints />}
@@ -7758,7 +7774,7 @@ function RelayScreen({
     <div className="mg-page relay-management-page cx-page cx-codex-connection-page">
       <PageHeader
         icon={<KeyRound className="h-5 w-5" />}
-        title={t("Codex 连接")}
+        title={t("连接与供应商")}
         actions={(
           <>
             {/* 「从第三方导入」接管期间也保留（#2801）：导入只写直连供应商列表、不动 Codex 配置，
@@ -16443,7 +16459,6 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
-    { key: "codexConnection", label: t("Codex 连接"), icon: Cable, route: "relay", group: "agent", keywords: "relay legacy provider proxy 旧版 直连 供应商 代理 映射 环境 cc-switch 网关 供应商池" },
     { key: "gateway", label: t("网关"), icon: SlidersHorizontal, route: "gatewaySettings", group: "agent", keywords: "gateway port key 网关 端口 监听" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
     { key: "recommendations", label: t("推荐内容"), icon: ExternalLink, route: "recommendations", group: "tools", keywords: "ads 推荐" },
@@ -16454,12 +16469,12 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
 }
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "relay", "relayEnvironment", "gatewaySettings", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
+const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings", "maintenance", "gatewaySettings", "agentCache", "recommendations", "computerUse", "agentCollaboration"]);
 /** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
 const customizeRoutes: Route[] = ["context", "skills"];
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
 function activeSettingsEntry(entries: SettingsNavEntry[], route: Route, settingsSections: string[]) {
-  const target: Route = route === "maintenance" ? "agentSettings" : route === "about" ? "settings" : route === "relayEnvironment" ? "relay" : route;
+  const target: Route = route === "maintenance" ? "agentSettings" : route === "about" ? "settings" : route;
   if (target === "settings") return entries.find((entry) => entry.route === "settings" && entry.sections?.[0] === settingsSections[0])?.key ?? "general";
   return entries.find((entry) => entry.route === target)?.key ?? null;
 }
