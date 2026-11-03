@@ -1484,3 +1484,147 @@
 :root .shell .enhance-tabs button[aria-selected="true"] {
   color: hsl(var(--foreground));
 }
+
+/* ── 入门清单：侧栏底部的进度卡（参照 Cursor 的 Getting Started） ──
+   收起时：标题 + 「1/3」进度环 + 下一步说明 + 一个按钮；展开时清单在卡片上方弹出，盖在内容区上。 */
+:root .shell .cx-side {
+  position: relative;
+  z-index: 5;
+  overflow: visible;
+}
+
+:root .shell .cx-side .onboarding-setup {
+  position: relative;
+  flex: none;
+  max-height: none;
+  margin: 8px 0 4px;
+  overflow: visible;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-side .setup-header {
+  align-items: flex-start;
+  gap: 6px;
+}
+
+:root .shell .cx-side .setup-header > div:first-child {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+:root .shell .cx-side .setup-header strong {
+  overflow: hidden;
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-side .setup-header > div:first-child > span:last-child {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .setup-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .setup-ring {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .setup-ring circle:first-child {
+  stroke: hsl(var(--border));
+}
+
+:root .shell .setup-ring circle:last-child {
+  stroke: hsl(var(--status-success));
+}
+
+:root .shell .cx-side .setup-tools {
+  gap: 0;
+}
+
+:root .shell .cx-side .setup-tools button {
+  width: 22px;
+  height: 22px;
+}
+
+:root .shell .setup-next {
+  display: flex;
+  width: 100%;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 7px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .setup-next:hover:not(:disabled) {
+  background: hsl(var(--accent) / 0.7);
+}
+
+/* 展开：清单在卡片上方弹出，一列三步。 */
+:root .shell .cx-side .onboarding-setup[data-expanded="true"] .setup-steps {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  width: 380px;
+  max-height: calc(100vh - 140px);
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--popover));
+  box-shadow: 0 12px 32px hsl(0 0% 0% / 0.35);
+}
+
+:root .shell .cx-side .setup-step-content > strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .cx-side .setup-step-content p,
+:root .shell .cx-side .setup-choice {
+  font-size: 12px;
+}
+
+:root .shell .cx-side .setup-number[data-done="true"] {
+  border-color: transparent;
+  background: hsl(var(--status-success) / 0.16);
+}
+
+:root .shell .cx-side .setup-text-action {
+  color: hsl(var(--foreground) / 0.85);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

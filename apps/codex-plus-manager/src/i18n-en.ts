@@ -118,6 +118,19 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "完成增强配置": "Finish enhancement setup",
+  "添加供应商并接入": "Add a provider and connect",
+  "开始使用": "Getting started",
+  "点开 Codex 或 Claude Code，在它下面的页面里启用所需增强；Codex 行的播放键可以启动或停止 Codex。": "Open Codex or Claude Code and enable the enhancements you need in the pages below it; the play button on the Codex row starts or stops Codex.",
+  "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下侧栏。": "Codex++ adds enhancements, skins and extensions to Codex and Claude Code; your own tools keep managing providers. Take half a minute to get to know the sidebar.",
+  "主题、版本更新、日志诊断和各项高级设置都在齿轮里。想再看一遍这个引导，在「设置 → 通用」里重新打开。": "Theme, updates, logs & diagnostics and advanced settings live behind the gear. To see this tour again, reopen it under Settings → General.",
+  "结束导览后，按 ⌘K 搜索页面、开关和常用操作。": "After the tour, press ⌘K to search pages, switches and common actions.",
+  "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……Codex 行的播放键可以启动或停止 Codex。": "One row per agent; open it to see its pages below: overview, connection & providers, built-in extensions, skins… The play button on the Codex row starts or stops Codex.",
+  "给 Agent 选一个默认模型、打开接入开关；供应商池里的模型就会出现在它自己的模型列表里。": "Pick a default model for an agent and turn on its switch; models from the provider pool then appear in its own model list.",
+  "把 API Key 或 ChatGPT、Copilot 等订阅加进供应商池，所有 Agent 共用这一个池子。": "Add API keys or subscriptions like ChatGPT and Copilot to the provider pool; every agent shares this one pool.",
+  "任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家。总览里一屏看全谁在用、走哪家。": "Any agent reaches any provider through Codex++: one agent can use several providers at once, routed by model, failing over to the next on errors. The overview shows who is using what at a glance.",
+  "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在 Codex 对话里说一句就造一个自己的。下面是 MCP、Skills 和会话。": "Everything Codex++ adds is an extension: enable built-in ones, install community ones, or build your own with one sentence in a Codex chat. MCP, Skills and sessions are right below.",
+  "Codex++ 给 Codex、Claude Code 等 Agent 加上拓展和增强，并让它们经同一个本地网关接入任意供应商。花半分钟认识一下侧栏。": "Codex++ adds extensions and enhancements to agents like Codex and Claude Code, and connects them to any provider through one local gateway. Take half a minute to get to know the sidebar.",
   "Codex 直接请求这个供应商，不经网关；切到「经网关」后所有 Agent 共用供应商池": "Codex calls this provider directly, without the gateway; switch to Via gateway to share one provider pool across all agents",
   "高级：配置切换、模型映射、独立代理与环境检测": "Advanced: config switching, model mapping, per-provider proxy and environment checks",
   "完整切换并断开": "Switch fully and disconnect",
@@ -3343,6 +3356,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "已完成 {0} / 3 步": "{0} of 3 steps done",
+  "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。": "Open {0} to see its pages below: overview, connection & providers, built-in extensions, skins… Other agents appear after switching to All features in settings.",
+  "{0} 的页面": "{0} pages",
+  "Codex++ 给 {0} 加上拓展和增强，并让它经本地网关接入任意供应商。花半分钟认识一下侧栏。": "Codex++ adds extensions and enhancements to {0} and connects it to any provider through the local gateway. Take half a minute to get to know the sidebar.",
   "{0} 个还没加入供应商池": "{0} not in the provider pool yet",
   "确认后 {0} 会完整切换到直连供应商「{1}」：和在供应商列表里切换一样，先备份当前配置、收回借给 {0} 的登录，再写入。": "Once confirmed, {0} fully switches to the direct provider \"{1}\": like switching in the provider list, it backs up the current config and takes back the sign-in lent to {0} before writing.",
   "新版本 {0} 已下载": "Version {0} downloaded",

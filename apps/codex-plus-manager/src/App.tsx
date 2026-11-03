@@ -4958,9 +4958,39 @@ export function App() {
             ? tf("{0} 接入", [agentName(soloAgent)])
             : routeTitle(navAliasRoute[route] ?? route);
 
+  // 入门清单放在侧栏底部（参照 Cursor 的 Getting Started 卡片）：平时收成一张进度卡，点开在上方展开清单。
+  const setupCard = setupOpen && !agentFocusOpen ? (
+          <OnboardingSetup
+            focus={agentFocus}
+            codexInstalled={overview ? overview.codex_app.status === "found" : null}
+            codexRunning={codexAppRunning}
+            launchPending={launchPending}
+            codexEnhancementsEnabled={hasCodexEnhancements(settings)}
+            notify={actions.showMessage}
+            onChangeMode={() => setAgentFocusOpen(true)}
+            onDismiss={closeSetup}
+            onTour={() => setTourOpen(true)}
+            onNavigate={(target, agent) => { if (agent) void switchTool(agent, target); else void navigate(target); }}
+            onCheckCodex={async () => {
+              const currentApp = await run(() => call<OverviewResult>("load_overview"));
+              const currentSettings = await run(() => call<SettingsResult>("load_settings"));
+              if (!currentApp || !currentSettings || !isSuccessStatus(currentApp.status) || !isSuccessStatus(currentSettings.status)) return false;
+              setOverview(currentApp);
+              const fresh = normalizeSettings(currentSettings.settings);
+              const previous = normalizeSettings(settingsRef.current?.settings ?? currentSettings.settings);
+              setSettings(currentSettings);
+              setSettingsForm((current) => rebaseSettingsEdits(normalizeSettings(current), previous, fresh));
+              return currentApp.codex_app.status === "found" && hasCodexEnhancements(currentSettings);
+            }}
+            onLaunch={() => codexAppRunning ? restart() : launch()}
+            defaultExpanded={false}
+          />
+        ) : null;
+
   return (
     <div className={`shell ${theme}`}>
       <AppSidebar
+        setupCard={setupCard}
         tools={shownTools}
         soloAgent={soloAgent}
         focus={agentFocus}
@@ -5021,32 +5051,6 @@ export function App() {
       ) : null}
       {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
       <main className="workspace">
-        {setupOpen && !agentFocusOpen ? (
-          <OnboardingSetup
-            focus={agentFocus}
-            codexInstalled={overview ? overview.codex_app.status === "found" : null}
-            codexRunning={codexAppRunning}
-            launchPending={launchPending}
-            codexEnhancementsEnabled={hasCodexEnhancements(settings)}
-            notify={actions.showMessage}
-            onChangeMode={() => setAgentFocusOpen(true)}
-            onDismiss={closeSetup}
-            onTour={() => setTourOpen(true)}
-            onNavigate={(target, agent) => { if (agent) void switchTool(agent, target); else void navigate(target); }}
-            onCheckCodex={async () => {
-              const currentApp = await run(() => call<OverviewResult>("load_overview"));
-              const currentSettings = await run(() => call<SettingsResult>("load_settings"));
-              if (!currentApp || !currentSettings || !isSuccessStatus(currentApp.status) || !isSuccessStatus(currentSettings.status)) return false;
-              setOverview(currentApp);
-              const fresh = normalizeSettings(currentSettings.settings);
-              const previous = normalizeSettings(settingsRef.current?.settings ?? currentSettings.settings);
-              setSettings(currentSettings);
-              setSettingsForm((current) => rebaseSettingsEdits(normalizeSettings(current), previous, fresh));
-              return currentApp.codex_app.status === "found" && hasCodexEnhancements(currentSettings);
-            }}
-            onLaunch={() => codexAppRunning ? restart() : launch()}
-          />
-        ) : null}
         <section
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
@@ -16686,7 +16690,10 @@ function AppSidebar({
   settingsSections = ["app-settings-general"],
   onOpenSettings,
   onExitSettings,
+  setupCard = null,
 }: {
+  /** 入门清单（没完成、没关掉时）：放在侧栏底部，替代网关状态卡。 */
+  setupCard?: ReactNode;
   /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
   extensionPages?: ManagerExtensionPage[];
   activeExtensionKey?: string | null;
@@ -16816,7 +16823,7 @@ function AppSidebar({
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
   ];
   const gatewayEntries: SideEntry[] = [
-    { key: "hub", route: "hub", label: t("总览"), icon: Waypoints, match: ["hub"] },
+    { key: "hub", route: "hub", label: t("总览"), icon: Waypoints, match: ["hub"], tour: "hub" },
     { key: "providers", route: "gatewayProviders", label: t("供应商池"), icon: Server, match: ["gatewayProviders"], tour: "nav-gatewayProviders" },
     { key: "gateway", route: "gateway", label: soloAgent ? tf("{0} 接入", [agentName(soloAgent)]) : t("Agent 接入"), icon: Plug, match: ["gateway"], tour: "nav-gateway" },
     { key: "routing", route: "gatewayRouting", label: t("路由"), icon: Split, match: ["gatewayRouting"] },
@@ -16978,13 +16985,14 @@ function AppSidebar({
         ) : null}
       </nav>
 
-      {/* 底部状态卡（对应 Cursor 的 Getting Started）：网关状态；有新版本时换成更新提示。 */}
+      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则是网关状态；有新版本时换成更新提示。 */}
+      {setupCard}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
           <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{pendingUpdateReady ? tf("新版本 {0} 已下载", [pendingUpdateVersion]) : tf("新版本 {0}", [pendingUpdateVersion])}</span>
           <span className="cx-side-card-action">{pendingUpdateReady ? t("点击安装") : t("查看更新")}</span>
         </button>
-      ) : enhanceOnly ? null : (
+      ) : enhanceOnly || setupCard ? null : (
         <button className={`cx-side-card ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
           <span className="cx-side-card-title">
             <i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />

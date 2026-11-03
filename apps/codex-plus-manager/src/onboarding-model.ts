@@ -16,53 +16,54 @@ export type TourStep = {
 export const TOUR_VERSION = 1;
 export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
+// 顺序跟着侧栏从上往下走：万物皆拓展 → 聚合网关（总览、供应商池、Agent 接入）→ Agent 增强 → 搜索 → 设置。
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "welcome",
     title: "欢迎使用 Codex++",
-    body: "Codex++ 让任意 Agent（Codex、Claude Code、Grok…）经同一个本地网关接入任意供应商。花半分钟认识一下各个入口。",
-  },
-  {
-    id: "hub",
-    target: "hub",
-    title: "网关状态",
-    body: "侧栏底部显示本地网关的运行状态和端口。结束导览后，点它打开总览查看 Agent、供应商和最近请求。",
-  },
-  {
-    id: "providers",
-    target: "nav-gatewayProviders",
-    title: "第一步：添加供应商",
-    body: "在供应商池里添加 API Key，或直接登录 ChatGPT、Copilot 等订阅。所有 Agent 共用这一个池子。",
-  },
-  {
-    id: "agents-connect",
-    target: "nav-gateway",
-    title: "第二步：接入 Agent",
-    body: "为 Agent 选择默认模型，再打开接入开关。接入后，供应商池里的模型会出现在 Agent 自己的模型列表里。",
-  },
-  {
-    id: "agents",
-    target: "agents",
-    title: "每个 Agent 的专属设置",
-    body: "每个 Agent 一行，进入后它的页面在标题下方的胶囊里。Codex 行的播放键可以启动或停止 Codex。",
+    body: "Codex++ 给 Codex、Claude Code 等 Agent 加上拓展和增强，并让它们经同一个本地网关接入任意供应商。花半分钟认识一下侧栏。",
   },
   {
     id: "management",
     target: "management",
     title: "万物皆拓展",
-    body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。",
+    body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在 Codex 对话里说一句就造一个自己的。下面是 MCP、Skills 和会话。",
+  },
+  {
+    id: "hub",
+    target: "hub",
+    title: "聚合网关",
+    body: "任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家。总览里一屏看全谁在用、走哪家。",
+  },
+  {
+    id: "providers",
+    target: "nav-gatewayProviders",
+    title: "第一步：添加供应商",
+    body: "把 API Key 或 ChatGPT、Copilot 等订阅加进供应商池，所有 Agent 共用这一个池子。",
+  },
+  {
+    id: "agents-connect",
+    target: "nav-gateway",
+    title: "第二步：接入 Agent",
+    body: "给 Agent 选一个默认模型、打开接入开关；供应商池里的模型就会出现在它自己的模型列表里。",
+  },
+  {
+    id: "agents",
+    target: "agents",
+    title: "Agent 增强",
+    body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……Codex 行的播放键可以启动或停止 Codex。",
   },
   {
     id: "palette",
     target: "palette",
-    title: "快速跳转",
-    body: "结束导览后，按 ⌘K 搜索页面和常用操作。",
+    title: "搜索页面和操作",
+    body: "结束导览后，按 ⌘K 搜索页面、开关和常用操作。",
   },
   {
     id: "settings",
     target: "settings",
-    title: "设置与更新",
-    body: "主题、配置备份、版本更新和日志都在这里。想再看一遍这个引导，也在设置里重新打开。",
+    title: "设置",
+    body: "主题、版本更新、日志诊断和各项高级设置都在齿轮里。想再看一遍这个引导，在「设置 → 通用」里重新打开。",
   },
 ];
 
@@ -75,15 +76,15 @@ export function tourSteps(soloName: string | null, enhanceOnly = false): TourSte
   if (!soloName) return TOUR_STEPS;
   const override: Record<string, Partial<Pick<TourStep, "title" | "body">>> = {
     welcome: {
-      body: "Codex++ 让 {0} 经本地网关接入任意供应商。花半分钟认识一下各个入口。",
+      body: "Codex++ 给 {0} 加上拓展和增强，并让它经本地网关接入任意供应商。花半分钟认识一下侧栏。",
     },
     "agents-connect": {
       title: "第二步：让 {0} 走网关",
       body: "打开 {0} 的网关开关并选一个默认模型；供应商池里的模型就会出现在 {0} 自己的模型列表里。",
     },
     agents: {
-      title: "{0} 的专属设置",
-      body: "在 {0} 页面管理增强和皮肤，在「万物皆拓展」启用内置拓展或安装社区拓展。其他 Agent 的入口可在设置里切到「全部功能」后显示。",
+      title: "{0} 的页面",
+      body: "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。",
     },
   };
   return TOUR_STEPS.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
@@ -93,8 +94,8 @@ export function tourSteps(soloName: string | null, enhanceOnly = false): TourSte
  * 只用增强功能时的步骤：没有网关、供应商池和 Agent 接入，这三步去掉，其余换成不提供应商的说法。
  */
 const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
-  welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下各个入口。" },
-  agents: { body: "进入 Codex 或 Claude 的增强设置，启用所需功能；Codex 行的播放键可以启动或停止 Codex。" },
+  welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下侧栏。" },
+  agents: { body: "点开 Codex 或 Claude Code，在它下面的页面里启用所需增强；Codex 行的播放键可以启动或停止 Codex。" },
   management: { body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。" },
 };
 const ENHANCE_HIDDEN_STEPS = new Set(["hub", "providers", "agents-connect"]);
