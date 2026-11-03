@@ -782,9 +782,9 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        // 使用项目原有云朵图标；系统按 18pt 显示，不加标题占据菜单栏空间。
-        // 禁用模板模式以保留品牌渐变颜色。
-        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(false);
+        // 系统按 18pt 显示，不加标题占据菜单栏空间。
+        // 模板模式：跟其他菜单栏图标统一着色，深浅色菜单栏自动适配。
+        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(true);
     }
     #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -821,7 +821,21 @@ fn tray_event_shows_main_window(event: &TrayIconEvent) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
-    tauri::include_image!("icons/icon.png")
+    // 模板图标只看透明度。品牌 logo 的白十字和灰阴影本身不透明，直接用会糊成
+    // 两块实心方块，所以按「偏橙程度」（R - B）重算 alpha：橙色块保留，
+    // 白十字/阴影抠空，过渡带线性渐变保留抗锯齿边缘。
+    let brand = tauri::include_image!("icons/icon.png");
+    let rgba = brand
+        .rgba()
+        .chunks_exact(4)
+        .flat_map(|pixel| {
+            let warmth = pixel[0].saturating_sub(pixel[2]) as u32;
+            let coverage = warmth.saturating_sub(40).min(60) * 255 / 60;
+            let alpha = (coverage * pixel[3] as u32 / 255) as u8;
+            [0, 0, 0, alpha]
+        })
+        .collect();
+    tauri::image::Image::new_owned(rgba, brand.width(), brand.height())
 }
 
 #[cfg(test)]
@@ -830,16 +844,18 @@ mod tray_tests {
     use tauri::{PhysicalPosition, Rect};
 
     #[test]
-    fn macos_tray_preserves_the_brand_icons_colour_and_transparency() {
+    fn macos_tray_template_keeps_the_blocks_and_hollows_out_the_crosses() {
         let icon = super::macos_tray_icon();
         assert_eq!(icon.width(), icon.height());
-        assert!(icon.width() > 0);
-        assert!(
-            icon.rgba()
-                .chunks_exact(4)
-                .any(|pixel| pixel[3] > 0 && pixel[2] > pixel[0])
-        );
-        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+        let size = icon.width() as usize;
+        let alpha_at = |x: usize, y: usize| icon.rgba()[(y * size + x) * 4 + 3];
+        // 坐标按 512px 品牌图取比例：前方块正面左侧为橙色，前方十字中心为白色。
+        let at = |fraction: f32| (fraction * size as f32) as usize;
+        assert_eq!(alpha_at(at(0.15), at(0.5)), 255, "橙色方块应不透明");
+        assert_eq!(alpha_at(at(0.37), at(0.64)), 0, "白十字应抠空");
+        assert_eq!(alpha_at(0, 0), 0, "背景应透明");
+        // 模板图标只用 alpha，颜色通道统一为黑。
+        assert!(icon.rgba().chunks_exact(4).all(|pixel| pixel[..3] == [0, 0, 0]));
     }
 
     fn click(button: MouseButton, button_state: MouseButtonState) -> TrayIconEvent {
