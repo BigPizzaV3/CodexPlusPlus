@@ -162,6 +162,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 的生图请求发给谁": "Where Codex image requests go",
   "上游只给图片链接时，下载下来再交给 Codex": "Download image links from upstream and hand Codex the data",
   "更多设置": "More settings",
+  "去首页看看赞助商推荐": "See sponsor picks on Home",
+  "正在找合适的供应商？": "Looking for a good provider?",
   "这次不再提示": "Hide for now",
   "还没收到请求": "No requests yet",
   "可用": "Available",

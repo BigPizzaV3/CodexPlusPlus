@@ -1779,3 +1779,90 @@
 .gw-portal .gw-mp-filters::-webkit-scrollbar {
   height: 4px;
 }
+
+/* 供应商池右下角的悬浮提示（去首页看赞助商推荐）：小卡片浮在内容区右下角，不挡侧栏。 */
+:root .shell .cx-float-hint {
+  position: fixed;
+  right: 24px;
+  bottom: 20px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--popover, var(--card)));
+  box-shadow: 0 10px 28px hsl(var(--shadow-color) / 0.28);
+}
+
+:root .shell .cx-float-hint-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: hsl(var(--foreground));
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-float-hint-main:hover {
+  background: hsl(var(--accent));
+}
+
+:root .shell .cx-float-hint-main > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-float-hint-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+:root .shell .cx-float-hint-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .cx-float-hint-copy small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-float-hint-close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  align-self: flex-start;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-float-hint-close:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-float-hint-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 它是 .screen 的直接子元素，别被「子元素占满内容列宽、居中」的规则拉成一整条。 */
+:root .shell .screen > .cx-float-hint {
+  width: auto;
+  max-width: 360px;
+  margin: 0;
+  left: auto;
+}

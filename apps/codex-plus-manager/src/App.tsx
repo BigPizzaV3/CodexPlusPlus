@@ -1793,6 +1793,8 @@ export function App() {
     message: t("尚未运行安装包更新。"),
   });
   const [ads, setAds] = useState<AdsResult | null>(null);
+  // 供应商池右下角「正在找合适的供应商？」的悬浮提示：点 × 关掉，本次运行内不再出现。
+  const [sponsorHintClosed, setSponsorHintClosed] = useState(false);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
@@ -5296,6 +5298,22 @@ export function App() {
               onTabChange={(tab) => void navigate(gatewayRouteByTab[tab])}
               tab={gatewayTabByRoute[route]}
             />
+          ) : null}
+          {/* 供应商池右下角的悬浮提示：在找供应商时顺手带去首页的赞助商推荐；首页没有赞助商时不显示。 */}
+          {route === "gatewayProviders" && !sponsorHintClosed && (ads?.ads?.length ?? 0) + (ads?.topAds?.length ?? 0) > 0 ? (
+            <div className="cx-float-hint">
+              <button className="cx-float-hint-main" onClick={() => void navigate("home")} type="button">
+                <Sparkles aria-hidden="true" />
+                <span className="cx-float-hint-copy">
+                  <strong>{t("正在找合适的供应商？")}</strong>
+                  <small>{t("去首页看看赞助商推荐")}</small>
+                </span>
+                <ArrowRight aria-hidden="true" />
+              </button>
+              <button aria-label={t("关闭")} className="cx-float-hint-close" onClick={() => setSponsorHintClosed(true)} title={t("关闭")} type="button">
+                <X aria-hidden="true" />
+              </button>
+            </div>
           ) : null}
           {route === "agentSettings" || route === "maintenance" ? (
             // 设置与安装维护合在一页：左侧分类目录，右侧限宽列表。
