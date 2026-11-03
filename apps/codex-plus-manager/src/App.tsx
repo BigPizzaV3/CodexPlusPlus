@@ -15548,7 +15548,7 @@ function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVer
         <ReleaseNotes markdown={update.releaseSummary || t("发现可用更新。")} onOpenUrl={onOpenUrl} />
       </div>
       <TaskProgressBox completedTitle={t("上次更新结果")} progress={progress} title={t("安装包更新进度")} />
-      <p className="update-dialog-hint">{t("也可随时在“关于”页面检查和安装更新。")}</p>
+      <p className="update-dialog-hint">{t("也可随时在「设置 → 版本与更新」里检查和安装。")}</p>
       {!update.assetName || !update.assetUrl ? <p className="update-dialog-hint">{t("此版本暂未提供适用于当前系统的安装包。")}</p> : null}
       <Toolbar className="update-dialog-actions">
         <Button autoFocus disabled={progress.active || !update.assetName || !update.assetUrl} onClick={onUpdate}>
