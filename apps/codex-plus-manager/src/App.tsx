@@ -7631,6 +7631,14 @@ function RelayScreen({
   const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   // 直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可以一键复制进去。
   const poolLink = useCodexPoolLink(actions, normalized.relayProfiles.map((profile) => profile.id));
+  // 直连用户点过「不再提示」就不再提醒加入供应商池。hook 必须在下面编辑页 / 目录页的提前返回之前。
+  const [nudgeDismissed, setNudgeDismissed] = useState(() => {
+    try { return window.localStorage.getItem(DIRECT_POOL_NUDGE_KEY) === "1"; } catch { return false; }
+  });
+  const dismissNudge = () => {
+    setNudgeDismissed(true);
+    try { window.localStorage.setItem(DIRECT_POOL_NUDGE_KEY, "1"); } catch { /* 存不了就只在本次关掉 */ }
+  };
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
@@ -7868,13 +7876,6 @@ function RelayScreen({
   };
   // 「加入供应商池」的提示：还有直连供应商没进池就提一次；网关接管期间同样可以迁移。
   // 不想换到网关的直连用户可以「不再提示」（只关提示，每行的「加入供应商池」照旧在）；已经在用网关的总是提示。
-  const [nudgeDismissed, setNudgeDismissed] = useState(() => {
-    try { return window.localStorage.getItem(DIRECT_POOL_NUDGE_KEY) === "1"; } catch { return false; }
-  });
-  const dismissNudge = () => {
-    setNudgeDismissed(true);
-    try { window.localStorage.setItem(DIRECT_POOL_NUDGE_KEY, "1"); } catch { /* 存不了就只在本次关掉 */ }
-  };
   // 收在「直连供应商」标题右侧的一行：几个还没进池 · 全部加入 · ×（不再提示）。
   const poolHint = normalized.relayProfilesEnabled && poolLink.pending.length && (takenOverByGateway || !nudgeDismissed) ? (
     <span className="cx-pool-hint" title={t("加入后 Codex、Claude Code 等所有接入网关的 Agent 都能用，支持多 Key 轮换和故障转移；直连配置照旧保留。")}>

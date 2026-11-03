@@ -358,6 +358,15 @@ test("Codex 在「经网关」和「直连」之间一键切换：切到网关�
   assert.match(hint, /\{orphan \? <button className="cx-primary" onClick=\{onDisconnect\} type="button">\{t\("切回直连"\)\}<\/button> : modeSwitch\}/);
 });
 
+test("「连接与供应商」页的 hook 都在编辑页 / 目录页的提前返回之前（否则点「添加供应商」整页白屏）", () => {
+  const screen = functionSource("RelayScreen");
+  const earlyReturn = screen.indexOf("if (detailProfile) {");
+  assert.ok(earlyReturn > 0);
+  const after = screen.slice(earlyReturn);
+  assert.doesNotMatch(after, /\n  (?:const|let) [^\n]*\buse[A-Z]\w*\(/, "提前返回之后不能再调用 hook");
+  assert.ok(screen.indexOf("const [nudgeDismissed") < earlyReturn);
+});
+
 test("直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
   const link = functionSource("useCodexPoolLink");
   // 复制走网关「导入供应商」同一条命令；只认直连供应商（codex）和聚合供应商（aggregate）两种来源。
