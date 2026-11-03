@@ -8,6 +8,10 @@ import { TrayPanel } from "./TrayPanel";
 import "./styles.css";
 // Cursor 风格层必须最后加载，压过前面的组件样式。
 import "./cursor-ui.css";
+import "./cx-pages-gateway.css";
+import "./cx-pages-resources.css";
+import "./cx-pages-agents.css";
+import "./cx-pages-settings.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.

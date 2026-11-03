@@ -27,6 +27,7 @@ async function start() {
   const { App } = await import("../src/App");
   // 和正式版一样，Cursor 风格层在组件样式之后加载。
   await import("../src/cursor-ui.css");
+  await Promise.all([import("../src/cx-pages-gateway.css"), import("../src/cx-pages-resources.css"), import("../src/cx-pages-agents.css"), import("../src/cx-pages-settings.css")]);
   createRoot(app).render(<App />);
 }
 

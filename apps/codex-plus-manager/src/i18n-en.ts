@@ -5,6 +5,14 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  // cx-pages:gateway —— gateway 组新增词条写在这一行下面
+  // ----
+  // cx-pages:resources —— resources 组新增词条写在这一行下面
+  // ----
+  // cx-pages:agents —— agents 组新增词条写在这一行下面
+  // ----
+  // cx-pages:settings —— settings 组新增词条写在这一行下面
+  // ----
   // 侧栏与设置模式（Cursor 风格布局）
   "聚合网关": "Aggregate Gateway",
   "MCP 与 Skills": "MCP & Skills",
@@ -3181,6 +3189,14 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  // cx-pages:gateway —— gateway 组新增词条写在这一行下面
+  // ----
+  // cx-pages:resources —— resources 组新增词条写在这一行下面
+  // ----
+  // cx-pages:agents —— agents 组新增词条写在这一行下面
+  // ----
+  // cx-pages:settings —— settings 组新增词条写在这一行下面
+  // ----
   "新版本 {0}": "Version {0} available",
   "{0} 个 Agent 已接入": "{0} agents connected",
   "{0} 将恢复接入前的设置，以下为要改回的项。": "{0} will return to its pre-connection settings. The items below will be changed back.",
