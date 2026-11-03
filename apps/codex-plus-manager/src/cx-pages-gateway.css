@@ -67,7 +67,28 @@
 }
 
 :root .shell .hub-sponsor .cx-banner .cx-row-detail {
-  white-space: nowrap;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+:root .shell .hub-sponsor .cx-banner .cx-row-title .cx-side-sponsor-tag {
+  margin-left: 8px;
+}
+
+:root .shell .hub-sponsor-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+:root .shell .hub-sponsor-chips span {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.78);
+  font-size: 11px;
 }
 
 :root .shell .hub-sponsor .cx-banner-icon {

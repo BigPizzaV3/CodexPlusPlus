@@ -714,7 +714,8 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;
     case "load_overview": return overview as T;
-    case "load_ads": return ok({ version: 1, ads: demoAds, topAds: [] }) as T;
+    // 置顶赞助位默认空（和多数用户一样）；?showAds=1 时放两条，看网关总览横幅和侧栏轮播。
+    case "load_ads": return ok({ version: 1, ads: demoAds, topAds: new URLSearchParams(location.search).has("showAds") ? demoAds.slice(0, 2) : [] }) as T;
     case "load_settings":
     case "save_settings":
     case "reset_settings":

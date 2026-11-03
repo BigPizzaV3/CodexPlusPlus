@@ -347,10 +347,19 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
-test("置顶推荐位只放在网关总览一处，各 Agent 的概览不再重复", () => {
+test("置顶推荐位：网关总览顶部一条大横幅，其他每个页面在侧栏底部轮播，同一页不重复出现", () => {
   assert.match(functionSource("App"), /\{route === "hub" \? <SponsorBoard ads=\{ads\} actions=\{actions\} \/> : null\}/);
+  assert.match(functionSource("App"), /sponsor=\{route === "hub" \? null : <SidebarSponsor ads=\{ads\} /);
   assert.doesNotMatch(functionSource("OverviewScreen"), /SponsorBoard/);
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
+  // 主模式和设置模式都放侧栏赞助卡。
+  assert.equal((functionSource("AppSidebar").match(/\{sponsor\}/g) ?? []).length, 2);
+  // 两边共用一个取数函数：只读置顶位，过期的不显示；侧栏卡明确标「推广」，悬停时不轮换。
+  const sidebarSponsor = functionSource("SidebarSponsor");
+  assert.match(sidebarSponsor, /featuredAds\(ads\)/);
+  assert.match(sidebarSponsor, /t\("推广"\)/);
+  assert.match(sidebarSponsor, /if \(items\.length < 2 \|\| paused\) return;/);
+  assert.match(functionSource("featuredAds"), /filter\(\(ad\) => !isExpiredAd\(ad\)\)/);
 });
 
 test("Codex 在「经网关」和「直连」之间一键切换：切到网关沿用上次接入设置，切回直连先预览还原", () => {

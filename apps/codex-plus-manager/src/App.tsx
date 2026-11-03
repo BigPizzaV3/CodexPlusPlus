@@ -6312,8 +6312,9 @@ function SidebarSponsor({ ads, onOpen }: { ads: AdsResult | null; onOpen: (url: 
   return (
     <div className="cx-side-sponsor" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
       <button className="cx-side-sponsor-main" onClick={() => onOpen(ad.url)} title={ad.description} type="button">
+        {ad.image ? <img alt="" className="cx-side-sponsor-image" src={ad.image} /> : null}
         <span className="cx-side-sponsor-head">
-          {ad.image ? <img alt="" className="cx-side-sponsor-logo" src={ad.image} /> : <span className="cx-side-sponsor-logo"><Sparkles aria-hidden="true" /></span>}
+          {ad.image ? null : <Sparkles aria-hidden="true" />}
           <strong>{formatAdTitle(ad.title)}</strong>
           <span className="cx-side-sponsor-tag">{t("推广")}</span>
         </span>
