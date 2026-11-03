@@ -121,6 +121,8 @@ export const EN_PLAIN: Record<string, string> = {
   "推广": "Sponsored",
   "了解更多": "Learn more",
   "首页": "Home",
+  "保存并应用主题（皮肤没开时会一起打开）；需要重启时只会标记为待应用": "Save and apply the theme (turns the skin on if needed); marked pending when a restart is required",
+  "皮肤": "Skin",
   "应用与入口": "App and entry",
   "已手动指定": "Set manually",
   "额外启动参数": "Extra launch arguments",

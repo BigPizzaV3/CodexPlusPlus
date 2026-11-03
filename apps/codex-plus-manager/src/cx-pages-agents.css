@@ -338,6 +338,19 @@
   background: transparent;
 }
 
+/* 开关前一个小字「皮肤」，和左边的菜单隔开一道细线。 */
+:root .shell .dream-skin-page .dream-skin-enable-switch {
+  gap: 8px;
+  margin-left: 6px;
+  padding-left: 12px;
+  border-left: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .dream-skin-page .dream-skin-enable-label {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
 :root .shell .dream-skin-page .dream-skin-selected-thumb {
   width: 30px;
   height: 30px;
@@ -437,6 +450,11 @@
 
 :root .shell .dream-skin-page .dream-skin-customizer > summary {
   min-height: 56px;
+}
+
+/* 没有「有未保存修改」时中间那列是空的，箭头会掉进中间列、比下面的诊断卡靠左；固定放最后一列。 */
+:root .shell .dream-skin-page .dream-skin-customizer > summary::after {
+  grid-column: 3;
 }
 
 /* 诊断折叠与自定义主题共用同一种摘要行（标题 + 说明 + 右侧箭头）。 */

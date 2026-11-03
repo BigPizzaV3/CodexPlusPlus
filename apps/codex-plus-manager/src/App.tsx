@@ -9502,17 +9502,29 @@ function DreamSkinScreen({
         </CxBanner>
       ) : null}
 
-      {/* 启用开关 + 当前主题一张卡：第一行是皮肤开关与运行状态，第二行是正在编辑的主题和唯一的「应用」。 */}
+      {/* 一行说完：左边是正在编辑的主题（缩略图带运行状态点）和当前运行的主题，右边是唯一的「应用」、菜单和皮肤开关。
+          原来「启用开关」「正在编辑」各占一行，两行说的是同一个皮肤。 */}
       <CxCard className="dream-skin-overview">
         <CxRow
+          badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
+          className="dream-skin-selected-row"
           detail={<span role="status">{currentThemeLabel}：{currentThemeName} · {stateLabel}</span>}
-          icon={<CxStatusIcon tone={stateDot}><Palette /></CxStatusIcon>}
-          title={t("启用 Codex 皮肤")}
+          icon={<CxStatusIcon tone={stateDot}><img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} /></CxStatusIcon>}
+          title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
         >
-          <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshDreamSkinStatus()} title={t("刷新状态")} type="button">
-            <RefreshCw />
+          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={!masterEnabled ? t("请先在 Codex增强 页面开启总开关。") : t("保存并应用主题（皮肤没开时会一起打开）；需要重启时只会标记为待应用")} type="button">
+            <Play />
+            {pendingRestart ? t("更新待应用") : t("应用所选主题")}
           </button>
-          <label className="switch-row compact dream-skin-enable-switch">
+          <Menu>
+            <MenuItem disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
+              {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
+            </MenuItem>
+            <MenuItem onClick={() => void actions.refreshDreamSkinStatus()}>{t("刷新状态")}</MenuItem>
+            <MenuItem onClick={() => void actions.restoreDreamSkin()}>{t("恢复 Codex 外观")}</MenuItem>
+          </Menu>
+          <label className="switch-row compact dream-skin-enable-switch" title={t("启用 Codex 皮肤")}>
+            <span className="dream-skin-enable-label">{t("皮肤")}</span>
             <input
               aria-label={t("启用 Codex 皮肤")}
               checked={form.codexAppDreamSkinEnabled}
@@ -9526,24 +9538,6 @@ function DreamSkinScreen({
             />
             <ToggleVisual />
           </label>
-        </CxRow>
-        <CxRow
-          badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
-          className="dream-skin-selected-row"
-          detail={t("正在编辑")}
-          icon={<img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} />}
-          title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
-        >
-          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={!masterEnabled ? t("先打开上面的「启用 Codex 皮肤」") : t("保存并应用主题；需要重启时只会标记为待应用")} type="button">
-            <Play />
-            {pendingRestart ? t("更新待应用") : t("应用所选主题")}
-          </button>
-          <Menu>
-            <MenuItem disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
-              {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
-            </MenuItem>
-            <MenuItem onClick={() => void actions.restoreDreamSkin()}>{t("恢复 Codex 外观")}</MenuItem>
-          </Menu>
         </CxRow>
       </CxCard>
 
