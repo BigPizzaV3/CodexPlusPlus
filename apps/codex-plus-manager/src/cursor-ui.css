@@ -920,7 +920,11 @@
 }
 
 :root .shell .cx-primary:disabled {
-  opacity: 0.5;
+  /* 禁用时不再是半透明的白块（深色下一大坨灰）：淡灰底 + 灰字。 */
+  opacity: 1;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  box-shadow: none;
   cursor: default;
 }
 
@@ -1740,4 +1744,9 @@
 
 :root.mac-titlebar .shell .screen[data-settings-mode="true"] > header.cx-page-head {
   padding-inline: calc(44px + (100% - min(100%, var(--cx-content-narrow))) / 2);
+}
+
+/* 往下滚之后，吸顶的标题行下面一条细线，和正文分开；顶部时不画。 */
+:root.mac-titlebar .shell .screen[data-scrolled] > header.cx-page-head {
+  box-shadow: 0 1px 0 hsl(var(--cx-row-divider));
 }
