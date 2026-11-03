@@ -869,3 +869,39 @@
   flex: none;
   margin-top: 2px;
 }
+
+/* 「直连供应商」标题右侧：几个还没进池 · 全部加入 · ×。 */
+:root .shell .cx-pool-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+:root .shell .cx-pool-hint > svg {
+  width: 13px;
+  height: 13px;
+}
+
+:root .shell .cx-pool-hint .cx-secondary {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+:root .shell .cx-pool-hint .cx-icon-button {
+  width: 22px;
+  height: 22px;
+}
+
+:root .shell .cx-pool-hint .cx-icon-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 连接方式：一行，切换按钮和菜单在右侧。 */
+:root .shell .cx-codex-connection .cx-row {
+  min-height: 60px;
+}

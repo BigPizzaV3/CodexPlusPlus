@@ -118,6 +118,8 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "Codex 直接请求这个供应商，不经网关；切到「经网关」后所有 Agent 共用供应商池": "Codex calls this provider directly, without the gateway; switch to Via gateway to share one provider pool across all agents",
+  "高级：配置切换、模型映射、独立代理与环境检测": "Advanced: config switching, model mapping, per-provider proxy and environment checks",
   "完整切换并断开": "Switch fully and disconnect",
   "Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。": "Codex has no other direct provider to switch back to: add one under Connection & providers first.",
   "接入前没有留下实时存档（或要切回的是聚合供应商），没法逐项预览改动；断开会把 Codex 完整切换到下面这个直连供应商，切换前会备份当前配置。": "No live snapshot was saved before connecting (or the target is an aggregate provider), so the changes can't be listed one by one. Disconnecting fully switches Codex to the direct provider below, backing up the current config first.",
@@ -3341,6 +3343,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 个还没加入供应商池": "{0} not in the provider pool yet",
   "确认后 {0} 会完整切换到直连供应商「{1}」：和在供应商列表里切换一样，先备份当前配置、收回借给 {0} 的登录，再写入。": "Once confirmed, {0} fully switches to the direct provider \"{1}\": like switching in the provider list, it backs up the current config and takes back the sign-in lent to {0} before writing.",
   "新版本 {0} 已下载": "Version {0} downloaded",
   "{0} 已下载": "{0} downloaded",

@@ -7501,66 +7501,39 @@ function LegacyRelayGatewayHint({
       </button>
     </div>
   );
+  // 一行说清：现在怎么连（图标 + 标题 + 一句说明），右侧是「经网关 | 直连」切换和三点菜单。
+  // 另一种方式是什么、有什么好处，放在切换按钮的悬停说明里，不再单独占一行。
+  const title = orphan
+    ? t("Codex 还指向网关托管的供应商")
+    : viaGateway
+      ? t("经 Codex++ 网关")
+      : direct
+        ? tf("直连 · {0}", [direct.name || t("未命名供应商")])
+        : t("直连");
+  const detail = orphan
+    ? t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")
+    : viaGateway
+      ? count
+        ? tf("用供应商池里的 {0} 个模型：多 Key 轮换、按模型路由、出错自动换下一家", [count])
+        : t("用供应商池里的模型：多 Key 轮换、按模型路由、出错自动换下一家")
+      : t("Codex 直接请求这个供应商，不经网关；切到「经网关」后所有 Agent 共用供应商池");
   return (
-    <CxSection aside={modeSwitch} className="cx-codex-connection" title={<span title={status}>{t("连接方式")}</span>}>
-      {orphan ? (
-        <CxBanner
-          detail={t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}
-          icon={<Waypoints />}
-          title={status}
-          tone="warn"
-        >
-          <button className="cx-primary" onClick={onDisconnect} type="button">{t("切回直连")}</button>
-        </CxBanner>
-      ) : null}
-      <CxCard>
-        <CxRow
-          badges={(
-            <>
-              {viaGateway ? <CxBadge tone="ok">{t("使用中")}</CxBadge> : managed ? null : <CxBadge>{t("推荐")}</CxBadge>}
-              {viaGateway && codexGatewayKeepsLogin(managed) ? <CxBadge>{t("保留 ChatGPT 登录")}</CxBadge> : null}
-            </>
-          )}
-          detail={viaGateway
-            ? count
-              ? tf("用供应商池里的 {0} 个模型：多 Key 轮换、按模型路由、出错自动换下一家", [count])
-              : t("用供应商池里的模型：多 Key 轮换、按模型路由、出错自动换下一家")
-            : t("所有 Agent 共用一个供应商池：多 Key 轮换、按模型路由、出错自动换下一家")}
-          icon={<CxStatusIcon tone={viaGateway ? "ok" : undefined}><Waypoints /></CxStatusIcon>}
-          // 整行可点：没走网关时点这一行就切到网关。
-          onClick={!onGateway && !connecting && form.relayProfilesEnabled ? connect : undefined}
-          title={t("经 Codex++ 网关")}
-          tooltip={status}
-        >
-          {viaGateway ? (
-            <>
-              <button className="cx-secondary" onClick={onManageAgents} type="button">{t("管理接入")}</button>
-              <Menu>
-                <MenuItem onClick={onOpenGateway}>{t("打开供应商池")}</MenuItem>
-                <MenuItem danger onClick={onDisconnect}>{t("断开并还原")}</MenuItem>
-              </Menu>
-            </>
-          ) : orphan ? null : (
-            <Menu>
-              <MenuItem onClick={onManageAgents}>{t("在「Agent 接入」里选默认模型")}</MenuItem>
-              <MenuItem onClick={onOpenGateway}>{t("打开供应商池")}</MenuItem>
-            </Menu>
-          )}
-        </CxRow>
-        <CxRow
-          badges={!onGateway && direct ? <CxBadge tone="ok">{t("使用中")}</CxBadge> : null}
-          detail={onGateway
-            ? t("接入网关期间不生效；断开并还原后回到接入前的直连供应商")
-            : direct
-              ? tf("Codex 直接请求「{0}」，不经网关", [direct.name || t("未命名供应商")])
-              : t("Codex 直接请求下面选中的供应商，不经网关")}
-          icon={<CxStatusIcon tone={!onGateway && direct ? "ok" : undefined}><Cable /></CxStatusIcon>}
-          // 整行可点：走网关时点这一行切回直连（先预览要还原的文件）。
-          onClick={viaGateway ? onDisconnect : undefined}
-          title={t("直连")}
-        />
-      </CxCard>
-    </CxSection>
+    <CxCard className="cx-codex-connection">
+      <CxRow
+        badges={viaGateway && codexGatewayKeepsLogin(managed) ? <CxBadge>{t("保留 ChatGPT 登录")}</CxBadge> : null}
+        detail={detail}
+        icon={<CxStatusIcon tone={orphan ? "warn" : "ok"}>{viaGateway || orphan ? <Waypoints /> : <Cable />}</CxStatusIcon>}
+        title={title}
+        tooltip={status}
+      >
+        {orphan ? <button className="cx-primary" onClick={onDisconnect} type="button">{t("切回直连")}</button> : modeSwitch}
+        <Menu>
+          {viaGateway ? <MenuItem onClick={onManageAgents}>{t("管理接入")}</MenuItem> : <MenuItem onClick={onManageAgents}>{t("在「Agent 接入」里选默认模型")}</MenuItem>}
+          <MenuItem onClick={onOpenGateway}>{t("打开供应商池")}</MenuItem>
+          {viaGateway ? <MenuItem danger onClick={onDisconnect}>{t("断开并还原")}</MenuItem> : null}
+        </Menu>
+      </CxRow>
+    </CxCard>
   );
 }
 
@@ -7902,19 +7875,21 @@ function RelayScreen({
     setNudgeDismissed(true);
     try { window.localStorage.setItem(DIRECT_POOL_NUDGE_KEY, "1"); } catch { /* 存不了就只在本次关掉 */ }
   };
-  const poolBanner = normalized.relayProfilesEnabled && poolLink.pending.length && (takenOverByGateway || !nudgeDismissed) ? (
-    <CxBanner
-      detail={t("加入后 Codex、Claude Code 等所有接入网关的 Agent 都能用，支持多 Key 轮换和故障转移；直连配置照旧保留。")}
-      icon={<Waypoints />}
-      title={tf("{0} 个直连供应商还不在供应商池里", [poolLink.pending.length])}
-    >
-      {takenOverByGateway ? null : <button className="cx-secondary" onClick={dismissNudge} title={t("继续只用直连；以后想换，每个供应商右侧的「加入供应商池」还在")} type="button">{t("不再提示")}</button>}
-      {onOpenGateway ? <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
-      <button className="cx-primary" disabled={poolLink.importing !== null} onClick={() => void poolLink.addAll()} type="button">
-        {poolLink.importing === "all" ? <Loader2 className="animate-spin" /> : <Waypoints />}
+  // 收在「直连供应商」标题右侧的一行：几个还没进池 · 全部加入 · ×（不再提示）。
+  const poolHint = normalized.relayProfilesEnabled && poolLink.pending.length && (takenOverByGateway || !nudgeDismissed) ? (
+    <span className="cx-pool-hint" title={t("加入后 Codex、Claude Code 等所有接入网关的 Agent 都能用，支持多 Key 轮换和故障转移；直连配置照旧保留。")}>
+      <Waypoints aria-hidden="true" />
+      {tf("{0} 个还没加入供应商池", [poolLink.pending.length])}
+      <button className="cx-secondary" disabled={poolLink.importing !== null} onClick={() => void poolLink.addAll()} type="button">
+        {poolLink.importing === "all" ? <Loader2 className="animate-spin" /> : null}
         {t("全部加入")}
       </button>
-    </CxBanner>
+      {takenOverByGateway ? null : (
+        <button aria-label={t("不再提示")} className="cx-icon-button" onClick={dismissNudge} title={t("继续只用直连；以后想换，每个供应商右侧的「加入供应商池」还在")} type="button">
+          <X />
+        </button>
+      )}
+    </span>
   ) : null;
 
   return (
@@ -8045,12 +8020,11 @@ function RelayScreen({
           <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
         </CxBanner>
       ) : null}
-      {poolBanner}
       {/* Codex 被新版网关接管：直连供应商只读列出，不能切换、编辑、删除（断开并还原前改它们会让还原出错）；
           仍可「加入供应商池」，把它们迁到网关。编辑、删除在「多开」页。 */}
       {normalized.relayProfilesEnabled && takenOverByGateway ? (
         <CxSection
-          aside={<span title={t("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。")}>{t("接入网关期间不生效")}</span>}
+          aside={poolHint ?? <span title={t("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。")}>{t("接入网关期间不生效")}</span>}
           count={directProfiles.length}
           title={t("直连供应商")}
         >
@@ -8074,12 +8048,17 @@ function RelayScreen({
       {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
       {normalized.relayProfilesEnabled && !takenOverByGateway ? (
         <CxSection
-          aside={(providerView === "failover" || providerView === "modelAggregation") && visibleProfiles.length ? (
-            <button className="cx-secondary" onClick={() => createNewAggregateProfile(providerView === "failover" ? "provider" : "model")} type="button">
-              <Plus />
-              {providerView === "failover" ? t("新建故障转移") : t("新建模型聚合")}
-            </button>
-          ) : null}
+          aside={(
+            <>
+              {poolHint}
+              {(providerView === "failover" || providerView === "modelAggregation") && visibleProfiles.length ? (
+                <button className="cx-secondary" onClick={() => createNewAggregateProfile(providerView === "failover" ? "provider" : "model")} type="button">
+                  <Plus />
+                  {providerView === "failover" ? t("新建故障转移") : t("新建模型聚合")}
+                </button>
+              ) : null}
+            </>
+          )}
           count={directProfiles.length}
           title={t("直连供应商")}
         >
@@ -8114,11 +8093,11 @@ function RelayScreen({
         </CxSection>
       ) : null}
       {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。 */}
-      <CxSection title={t("高级")}>
+      <CxSection>
         <CxCard>
           <details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced" id="codex-connection-advanced" open={advancedOpen || undefined}>
             <summary>
-              {t("配置切换、模型映射、独立代理与环境检测")}
+              {t("高级：配置切换、模型映射、独立代理与环境检测")}
               <span className="cx-set-summary-hint">{normalized.relayProfilesEnabled ? t("配置切换已开启") : t("配置切换已关闭")}</span>
             </summary>
             <CxRow

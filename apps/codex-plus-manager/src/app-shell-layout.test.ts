@@ -231,10 +231,10 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(hint, /form\.activeRelayId === CODEX_GATEWAY_RELAY_ID/);
   assert.match(hint, /t\("Codex 当前经 Codex\+\+ 网关（新版）"\)/);
   assert.match(hint, /t\("Codex 已从网关切回直连"\)/);
-  // 两行：经 Codex++ 网关、直连；断开并还原在网关一行的菜单里。
-  assert.match(hint, /title=\{t\("经 Codex\+\+ 网关"\)\}/);
-  assert.match(hint, /title=\{t\("直连"\)\}/);
-  assert.match(hint, /<MenuItem danger onClick=\{onDisconnect\}>\{t\("断开并还原"\)\}<\/MenuItem>/);
+  // 一行：标题写现在怎么连（经 Codex++ 网关 / 直连 · 供应商名），右侧切换 + 三点菜单；断开并还原在菜单里。
+  assert.match(hint, /\? t\("经 Codex\+\+ 网关"\)/);
+  assert.match(hint, /tf\("直连 · \{0\}", \[direct\.name \|\| t\("未命名供应商"\)\]\)/);
+  assert.match(hint, /\{viaGateway \? <MenuItem danger onClick=\{onDisconnect\}>\{t\("断开并还原"\)\}<\/MenuItem> : null\}/);
   // 列表里托管的网关供应商单独标出，只能「使用」，不能编辑、删除。
   const card = functionSource("SortableRelayProfileCard");
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
@@ -354,9 +354,8 @@ test("Codex 在「经网关」和「直连」之间一键切换：切到网关�
   assert.match(hint, /className="mg-segmented cx-connection-switch" role="radiogroup"/);
   assert.match(hint, /onClick=\{connect\}\n\s*role="radio"/);
   assert.match(hint, /onClick=\{onDisconnect\}\n\s*role="radio"/);
-  // 两行也可以整行点：没走网关时点网关一行切过去，走网关时点直连一行切回。
-  assert.match(hint, /onClick=\{!onGateway && !connecting && form\.relayProfilesEnabled \? connect : undefined\}/);
-  assert.match(hint, /onClick=\{viaGateway \? onDisconnect : undefined\}/);
+  // 网关里没有接入记录（孤立状态）时切换按钮换成「切回直连」。
+  assert.match(hint, /\{orphan \? <button className="cx-primary" onClick=\{onDisconnect\} type="button">\{t\("切回直连"\)\}<\/button> : modeSwitch\}/);
 });
 
 test("直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
@@ -371,6 +370,9 @@ test("直连供应商和网关供应商池打通：每行标出是否已在池�
   const screen = functionSource("RelayScreen");
   assert.match(screen, /const poolLink = useCodexPoolLink\(actions, normalized\.relayProfiles\.map\(\(profile\) => profile\.id\)\);/);
   assert.match(screen, /onClick=\{\(\) => void poolLink\.addAll\(\)\}/);
+  // 提示收在「直连供应商」标题右侧一行，不再单独一张卡。
+  assert.match(screen, /<span className="cx-pool-hint"/);
+  assert.doesNotMatch(screen, /\{poolBanner\}/);
   // 接管期间的只读列表也带「加入供应商池」，但没有使用 / 编辑 / 删除。
   const readonly = screen.slice(screen.indexOf("{normalized.relayProfilesEnabled && takenOverByGateway ? ("), screen.indexOf("{normalized.relayProfilesEnabled && !takenOverByGateway ? ("));
   assert.match(readonly, /<PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>/);
