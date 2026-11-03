@@ -8,6 +8,34 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
   // ----
   // cx-pages:resources —— resources 组新增词条写在这一行下面
+  "社区": "Community",
+  "更多操作": "More actions",
+  "搜索拓展：名称、作者、描述或标签": "Search extensions: name, author, description or tag",
+  "搜索适配 Claude 的拓展": "Search Claude-compatible extensions",
+  "本地拓展已整体关闭": "Local extensions are turned off",
+  "Claude 拓展已关闭": "Claude extensions are turned off",
+  "下次启动会跳过拓展": "Extensions will be skipped on next launch",
+  "取消跳过": "Don't skip",
+  "正在读取拓展市场…": "Loading the extension market…",
+  "浏览精选": "Browse featured",
+  "界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。": "UI, commands, tools, hooks and model requests can all be taken over by extensions; describe one in a Codex chat to build it.",
+  "再点一次取消接入": "Click again to disconnect",
+  "对话造拓展已接入": "Build-by-chat connected",
+  "Codex++ 自带的功能，开关与参数在「内置拓展」页管理": "Features shipped with Codex++; toggles and options live on the Built-in Extensions page",
+  "资源超限": "Assets too large",
+  "已安装的拓展被下架": "Installed extensions were delisted",
+  "GitHub 星数": "GitHub stars",
+  "安装前会列出它要的全部权限": "All requested permissions are listed before installing",
+  "需要更新 Codex++": "Needs a newer Codex++",
+  "只安装你信任的作者的拓展；安装前会列出它要的权限。": "Only install extensions from authors you trust; requested permissions are listed before installing.",
+  "还没有发布过拓展。": "You haven't published any extensions yet.",
+  "在「本地」里点拓展包的「…」→「发布到 GitHub」。": "In Local, open a package's \"…\" menu → \"Publish to GitHub\".",
+  "没有找到 Node 运行时": "No Node runtime found",
+  "dsh 插件 MCP 未接入 Codex": "dsh plugin MCP isn't connected to Codex",
+  "改动在新开 Codex 对话后生效": "Changes apply to new Codex chats",
+  "在下面填 npm 包名、git 地址或选本地目录。": "Enter an npm package, a git URL, or pick a local folder below.",
+  "导入插件": "Import plugin",
+  "从插件市场索引导入": "Import from a plugin market index",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
@@ -3192,6 +3220,10 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
   // ----
   // cx-pages:resources —— resources 组新增词条写在这一行下面
+  "已启用 {0} / 共 {1} 项": "{0} of {1} enabled",
+  "列表更新于 {0} 分钟前": "Updated {0} min ago",
+  "已接入 Codex · {0} 个工具": "Connected to Codex · {0} tools",
+  "{0} 项不兼容": "{0} incompatible",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----

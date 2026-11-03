@@ -325,6 +325,8 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { Puzzle } from "lucide-react";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -10250,15 +10252,18 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
   const scripts = extensionsForHost(inventory?.scripts ?? [], host);
   const marketScripts = market?.market.scripts ?? [];
   const marketPackages = market?.market.packages ?? [];
-  const [marketSearch, setMarketSearch] = useState("");
-  const [marketView, setMarketView] = useState<"grid" | "list">("grid");
-  const [communitySearch, setCommunitySearch] = useState("");
+  // 参照 Cursor 的 Customize：一个搜索框管所有筛选（精选 / 社区 / 本地 / 我发布的 / dsh 插件），
+  // 一排筛选胶囊切换来源，列表按「已安装」「可安装」（本地是「已启用」「未启用」）分节。
+  const [search, setSearch] = useState("");
   const [communitySort, setCommunitySort] = useState<CommunitySort>("stars");
-  // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
   const [codexPane, setPane] = useState<"market" | "community" | "local" | "mine" | "dsh">("market");
   const pane = codexHost ? codexPane : "local";
+  // 直接打开本页（命令面板、深链）时市场可能还没读过，自动读一次，不再要用户点「刷新」。
+  useEffect(() => {
+    if (codexHost && !market) void actions.refreshScriptMarket();
+  }, [codexHost]);
+  const query = search.trim().toLocaleLowerCase();
   const filteredMarketScripts = useMemo(() => {
-    const query = marketSearch.trim().toLocaleLowerCase();
     if (!query) return marketScripts;
     return marketScripts.filter((script) => {
       const haystack = [
@@ -10274,7 +10279,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
         .toLocaleLowerCase();
       return haystack.includes(query);
     });
-  }, [marketSearch, marketScripts]);
+  }, [query, marketScripts]);
   // 用户没手动选排序时跟随数据：清单里每个脚本都标了更新时间就默认「最近更新」，否则保持清单原顺序。
   const [marketSortChoice, setMarketSortChoice] = useState<ScriptMarketSort | null>(null);
   const marketSort = marketSortChoice ?? defaultMarketSort(marketScripts);
@@ -10283,7 +10288,6 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
     [filteredMarketScripts, marketSort],
   );
   const hasMarketUpdateTimes = marketScripts.some((script) => parseMarketTime(script.updatedAt) !== null);
-  const installedCount = marketScripts.filter((script) => script.installed).length;
   // market_id -> 本地脚本 key。只用 user 来源的脚本：内置脚本走的是 builtin: 前缀，
   // 后端 delete_user_script 只接受 user:，映射过去会直接报错。
   const installedKeyByMarketId = useMemo(() => {
@@ -10295,179 +10299,136 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
     return map;
   }, [scripts]);
   const localEnabled = codexHost ? inventory?.enabled !== false : inventory?.claude_enabled === true;
-  // 精选与社区栏共用的排版切换。
-  const viewToggle = (
-    <div className="script-market-view-toggle" role="group" aria-label={t("拓展排版")}>
-      <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
-        <LayoutGrid className="h-4 w-4" />
-        {t("板块")}
-      </Button>
-      <Button aria-pressed={marketView === "list"} onClick={() => setMarketView("list")} size="sm" variant={marketView === "list" ? "secondary" : "ghost"}>
-        <List className="h-4 w-4" />
-        {t("列表")}
-      </Button>
-    </div>
+  const skipNextStart = Boolean(inventory?.skip_next_start);
+  const localScripts = (query
+    ? scripts.filter((script) => [script.name, script.key, script.package?.id, script.package?.description].filter(Boolean).join(" ").toLocaleLowerCase().includes(query))
+    : scripts);
+  const enabledScripts = localScripts.filter((script) => extensionEnabledForHost(script, host));
+  const idleScripts = localScripts.filter((script) => !extensionEnabledForHost(script, host));
+  const scriptRow = (script: (typeof scripts)[number]) => <ScriptRow key={`${host}:${script.key}`} host={host} script={script} globalEnabled={localEnabled} actions={actions} />;
+  const marketRow = (script: ScriptMarketItem) => (
+    <MarketScriptCard actions={actions} installedKey={installedKeyByMarketId.get(script.id)} key={script.id} script={script} />
   );
+  const switchLabel = codexHost ? t("启用本地拓展") : t("启用 Claude 拓展");
+  const panes = [
+    { id: "market" as const, label: t("精选"), count: marketScripts.length + marketPackages.length },
+    { id: "community" as const, label: t("社区") },
+    { id: "local" as const, label: t("本地"), count: scripts.length },
+    { id: "mine" as const, label: t("我发布的") },
+    { id: "dsh" as const, label: t("dsh 插件") },
+  ];
+  const sortControl = pane === "market" ? (
+    <AppSelect
+      ariaLabel={t("拓展市场排序")}
+      className="script-market-sort"
+      onChange={(value) => setMarketSortChoice(value)}
+      options={[
+        { value: "default", label: t("默认顺序") },
+        {
+          value: "updated",
+          label: t("最近更新"),
+          title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供更新时间"),
+        },
+        { value: "name", label: t("名称") },
+      ]}
+      size="sm"
+      title={t("拓展市场排序")}
+      value={marketSort}
+    />
+  ) : pane === "community" ? (
+    <AppSelect
+      ariaLabel={t("社区拓展排序")}
+      className="script-market-sort"
+      onChange={(value) => setCommunitySort(value)}
+      options={[
+        { value: "stars", label: t("星数") },
+        { value: "updated", label: t("最近更新") },
+        { value: "name", label: t("名称") },
+      ]}
+      size="sm"
+      title={t("社区拓展排序")}
+      value={communitySort}
+    />
+  ) : null;
   return (
-    <div className="tp-page user-scripts-page">
+    <div className="tp-page cx-page user-scripts-page">
       <TopbarActions>
-        {codexHost ? <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")}>
+        {codexHost ? <button className="cx-secondary" disabled={reloading} onClick={() => void reload()} title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")} type="button">
           <RefreshCw className={reloading ? "animate-spin" : ""} />
           {t("热重载拓展")}
-        </Button> : <Button onClick={onOpenClaude} size="sm" variant="secondary">
+        </button> : <button className="cx-secondary" onClick={onOpenClaude} type="button">
           <AppWindow />
           {t("Claude 增强版")}
-        </Button>}
-        <Button onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()} size="sm" variant="secondary">
-          <RefreshCw />
-          {t("刷新")}
-        </Button>
+        </button>}
+        {/* 不常用的整体开关收进三点菜单；关着时页面顶部会有一条提示带「启用」。 */}
+        <Menu label={t("更多操作")}>
+          <MenuItem onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()}>{t("刷新列表")}</MenuItem>
+          <MenuItem checked={localEnabled} disabled={!inventory} onClick={() => void actions.setUserScriptsEnabled(!localEnabled, host)}>{switchLabel}</MenuItem>
+          {codexHost ? <MenuItem checked={skipNextStart} disabled={!inventory} onClick={() => void actions.setUserScriptsSkipNextStart(!skipNextStart)}>{t("下次启动跳过拓展")}</MenuItem> : null}
+          {codexHost && inventory?.builtins?.length ? <MenuItem onClick={onOpenBuiltins}>{t("管理内置拓展")}</MenuItem> : null}
+        </Menu>
       </TopbarActions>
       <ExtensionsHero host={host} focus={focus} onHostChange={onHostChange} />
-      {/* 状态条：两个整体开关 + 一行摘要，代替原来四行「键：值」的统计卡。 */}
-      <div className="user-scripts-strip">
-        <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个拓展的启停设置")}>
-          <input
-            aria-label={codexHost ? t("启用本地拓展") : t("启用 Claude 拓展")}
-            checked={localEnabled}
-            disabled={!inventory}
-            onChange={() => void actions.setUserScriptsEnabled(!localEnabled, host)}
-            type="checkbox"
-          />
-          <ToggleVisual />
-          <span>{codexHost ? t("启用本地拓展") : t("启用 Claude 拓展")}</span>
-        </label>
-        {codexHost ? <label className="relay-bare-switch user-scripts-switch" title={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")}>
-          <input
-            aria-label={t("下次启动跳过拓展")}
-            checked={Boolean(inventory?.skip_next_start)}
-            disabled={!inventory}
-            onChange={() => void actions.setUserScriptsSkipNextStart(!inventory?.skip_next_start)}
-            type="checkbox"
-          />
-          <ToggleVisual />
-          <span>{t("下次启动跳过拓展")}</span>
-        </label> : null}
-        <span className="user-scripts-summary">
-          {codexHost ? <>
-            {tf("拓展市场 {0} 个，已安装 {1} 个", [marketScripts.length, installedCount])}
-            {market?.market.updatedAt ? ` · ${tf("清单更新于 {0}", [formatMarketUpdatedAt(market.market.updatedAt)])}` : market ? ` · ${market.market.message}` : ` · ${t("尚未刷新")}`}
-          </> : <>
-            {tf("适配 Claude 的拓展 {0} 个，已启用 {1} 个", [scripts.length, scripts.filter((script) => extensionEnabledForHost(script, host)).length])}
-            {` · ${t("重启 Claude 增强版后应用")}`}
-          </>}
-        </span>
-      </div>
-      {codexHost ? <ExtensionCreatorCard /> : null}
-      <div className="script-market-toolbar">
-        {codexHost ? <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("拓展")}>
-          <button aria-selected={pane === "market"} data-active={pane === "market"} onClick={() => setPane("market")} role="tab" type="button">
-            {t("精选")}<span>{marketScripts.length + marketPackages.length}</span>
-          </button>
-          <button aria-selected={pane === "community"} data-active={pane === "community"} onClick={() => setPane("community")} role="tab" type="button">
-            {t("社区拓展")}
-          </button>
-          <button aria-selected={pane === "local"} data-active={pane === "local"} onClick={() => setPane("local")} role="tab" type="button">
-            {t("本地拓展")}<span>{scripts.length}</span>
-          </button>
-          <button aria-selected={pane === "mine"} data-active={pane === "mine"} onClick={() => setPane("mine")} role="tab" type="button">
-            {t("我发布的")}
-          </button>
-          <button aria-selected={pane === "dsh"} data-active={pane === "dsh"} onClick={() => setPane("dsh")} role="tab" type="button">
-            {t("dsh 插件")}
-          </button>
-        </div> : <strong className="user-scripts-local-title">{t("本地拓展")}<span>{scripts.length}</span></strong>}
-        {pane === "market" ? <>
-          <div className="script-market-search">
-            <Search className="h-4 w-4" />
-            <Input
-              aria-label={t("搜索拓展市场")}
-              onChange={(event) => setMarketSearch(event.currentTarget.value)}
-              placeholder={t("搜索名称、作者、描述或标签")}
-              value={marketSearch}
-            />
-          </div>
-          <AppSelect
-            ariaLabel={t("拓展市场排序")}
-            className="script-market-sort"
-            onChange={(value) => setMarketSortChoice(value)}
-            options={[
-              { value: "default", label: t("默认顺序") },
-              {
-                value: "updated",
-                label: t("最近更新"),
-                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供更新时间"),
-              },
-              { value: "name", label: t("名称") },
-            ]}
-            size="sm"
-            title={t("拓展市场排序")}
-            value={marketSort}
-          />
-          {viewToggle}
-        </> : pane === "community" ? <>
-          {/* 和精选栏同一套搜索 / 排序 / 排版控件。 */}
-          <div className="script-market-search">
-            <Search className="h-4 w-4" />
-            <Input
-              aria-label={t("搜索社区拓展")}
-              onChange={(event) => setCommunitySearch(event.currentTarget.value)}
-              placeholder={t("搜索名称、仓库、作者或描述")}
-              value={communitySearch}
-            />
-          </div>
-          <AppSelect
-            ariaLabel={t("社区拓展排序")}
-            className="script-market-sort"
-            onChange={(value) => setCommunitySort(value)}
-            options={[
-              { value: "stars", label: t("星数") },
-              { value: "updated", label: t("最近更新") },
-              { value: "name", label: t("名称") },
-            ]}
-            size="sm"
-            title={t("社区拓展排序")}
-            value={communitySort}
-          />
-          {viewToggle}
-        </> : pane === "local" && codexHost ? <span className="user-scripts-summary">{t("内置、手动安装、市场安装和对话生成的拓展；可在这里启停，单文件脚本可删除")}</span> : null}
-      </div>
+      <CxToolbar onQuery={setSearch} placeholder={codexHost ? t("搜索拓展：名称、作者、描述或标签") : t("搜索适配 Claude 的拓展")} query={search}>
+        {codexHost ? <ExtensionCreatorCard /> : null}
+      </CxToolbar>
+      {/* 顶部最多一条状态提示：整体关闭优先，其次是「下次启动跳过」。 */}
+      {inventory && !localEnabled ? (
+        <CxBanner
+          detail={codexHost ? t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") : t("重启 Claude 增强版后应用")}
+          icon={<PowerOff />}
+          title={codexHost ? t("本地拓展已整体关闭") : t("Claude 拓展已关闭")}
+          tone="warn"
+        >
+          <button className="cx-secondary" onClick={() => void actions.setUserScriptsEnabled(true, host)} type="button">{t("启用")}</button>
+        </CxBanner>
+      ) : codexHost && skipNextStart ? (
+        <CxBanner detail={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")} icon={<PowerOff />} title={t("下次启动会跳过拓展")} tone="warn">
+          <button className="cx-secondary" onClick={() => void actions.setUserScriptsSkipNextStart(false)} type="button">{t("取消跳过")}</button>
+        </CxBanner>
+      ) : null}
+      {codexHost ? <CxFilters items={panes} label={t("拓展")} onChange={setPane} trailing={sortControl} value={pane} /> : null}
       {pane === "market" ? (
-        <>
         <CuratedPackagesSection
           blockedInstalled={market?.market.blockedInstalled ?? []}
-          emptyText={market?.status === "failed" ? market.message : t("点击刷新加载拓展市场。")}
+          emptyText={market?.status === "failed" ? market.message : t("正在读取拓展市场…")}
           hasScripts={marketScripts.length > 0}
+          installedScripts={sortedMarketScripts.filter((script) => script.installed).map(marketRow)}
           onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(); }}
           onOpenUrl={(url) => void actions.openExternalUrl(url)}
           packages={marketPackages}
-          search={marketSearch}
-          view={marketView}
+          search={search}
         >
-          {sortedMarketScripts.map((script) => (
-            <MarketScriptCard
-              actions={actions}
-              installedKey={installedKeyByMarketId.get(script.id)}
-              key={script.id}
-              script={script}
-              view={marketView}
-            />
-          ))}
+          {sortedMarketScripts.filter((script) => !script.installed).map(marketRow)}
         </CuratedPackagesSection>
-        </>
       ) : pane === "community" ? (
-        <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} search={communitySearch} sort={communitySort} view={marketView} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+        <CommunityExtensionsPanel onCurated={actions.refreshScriptMarket} search={search} sort={communitySort} onInstalled={actions.reloadUserScripts} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
       ) : pane === "mine" ? (
-        <MyPublishedPanel onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+        <MyPublishedPanel onOpenUrl={(url) => void actions.openExternalUrl(url)} search={search} />
       ) : pane === "dsh" ? (
-        <DshPluginsPanel />
+        <DshPluginsPanel search={search} />
       ) : (
-        <Panel>
-          <div className="table">
-            {scripts.length ? [...scripts].sort((a, b) => Number(extensionEnabledForHost(b, host)) - Number(extensionEnabledForHost(a, host))).map((script) => <ScriptRow key={`${host}:${script.key}`} host={host} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{codexHost ? t("还没有本地拓展。") : t("还没有适配 Claude 的本地拓展。")}</div>}
-          </div>
+        <>
+          {enabledScripts.length ? (
+            <CxSection count={enabledScripts.length} title={t("已启用")}>
+              <CxCard>{enabledScripts.map(scriptRow)}</CxCard>
+            </CxSection>
+          ) : null}
+          {idleScripts.length ? (
+            <CxSection count={idleScripts.length} title={t("未启用")}>
+              <CxCard>{idleScripts.map(scriptRow)}</CxCard>
+            </CxSection>
+          ) : null}
+          {!localScripts.length ? (
+            <CxCard>
+              <CxEmpty title={query ? t("没有匹配的拓展。") : codexHost ? t("还没有本地拓展。") : t("还没有适配 Claude 的本地拓展。")}>
+                {query ? <button className="cx-secondary" onClick={() => setSearch("")} type="button">{t("清除搜索")}</button>
+                  : codexHost ? <button className="cx-secondary" onClick={() => setPane("market")} type="button">{t("浏览精选")}</button> : null}
+              </CxEmpty>
+            </CxCard>
+          ) : null}
           {codexHost && inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
-        </Panel>
+        </>
       )}
     </div>
   );
@@ -11829,12 +11790,10 @@ function formatRelativeAge(time: number, now = Date.now()): string {
 function MarketScriptCard({
   script,
   actions,
-  view = "grid",
   installedKey,
 }: {
   script: ScriptMarketItem;
   actions: Actions;
-  view?: "grid" | "list";
   /// 已安装市场脚本在本地清单里的 key（`user:market-*.js`）。后端按 id 生成文件名，
   /// 前端不重算，直接取自 user_scripts 清单；为空表示未安装或不可删除。
   installedKey?: string;
@@ -11842,62 +11801,46 @@ function MarketScriptCard({
   // 「未安装」是默认状态：满屏同一个徽标只是噪音，只给已安装 / 可更新打标。
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : null;
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
-  const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
   const updatedTime = parseMarketTime(script.updatedAt);
   // 头像：清单给的图标，否则主页仓库作者的 GitHub 头像；主页就是市场仓库时退回名字首字，免得全是同一个头像。
   const homepageRepo = isGitHubHomepage ? script.homepage.replace(/^https?:\/\/github\.com\//, "").split(/[/?#]/).slice(0, 2).join("/") : "";
   const icon = script.icon || (homepageRepo && !SCRIPT_MARKET_REPOSITORY_URL.includes(homepageRepo) ? githubAvatar(homepageRepo) : "");
   const updatedText = updatedTime !== null ? tf("{0}更新", [formatRelativeAge(updatedTime)]) : "";
+  const meta = [script.author || t("未知作者"), `v${script.version}`, updatedText].filter(Boolean).join(" · ");
+  // 已安装且是最新版时不再给按钮（重新安装收进菜单），未安装 / 可更新时右侧一个按钮。
+  const showInstall = !script.installed || script.updateAvailable;
   return (
     <ExtensionCard
       description={script.description}
-      facts={
-        <>
-          <span>{script.author || t("未知作者")}</span>
-          <span>v{script.version}</span>
-          {updatedTime !== null ? <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>{updatedText}</time> : null}
-        </>
-      }
       icon={icon}
-      link={
-        script.homepage
-          ? {
-            url: script.homepage,
-            text: homepageRepo || t("主页"),
-            title: githubSupportLabel,
-            button: isGitHubHomepage ? <><Star className="h-4 w-4" />Star<ExternalLink className="h-3 w-3" /></> : <><ExternalLink className="h-4 w-4" />{t("主页")}</>,
-          }
-          : null
-      }
-      meta={
+      link={script.homepage ? { url: script.homepage, text: isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : t("主页") } : null}
+      menu={
         <>
-          {script.author || t("未知作者")} · v{script.version}
-          {updatedTime !== null ? (
-            <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
-              {" · "}{updatedText}
-            </time>
+          {script.installed && !script.updateAvailable ? (
+            <MenuItem onClick={() => void actions.installMarketScript(script.id)}>
+              <span className="ext-row-menu-item"><Download size={14} />{t("重新安装")}</span>
+            </MenuItem>
+          ) : null}
+          {installedKey ? (
+            <MenuItem danger onClick={() => void actions.deleteUserScript(installedKey)}>
+              <span className="ext-row-menu-item"><Trash2 size={14} />{t("卸载")}</span>
+            </MenuItem>
           ) : null}
         </>
       }
+      meta={meta}
       name={script.name}
       onOpenUrl={(url) => void actions.openExternalUrl(url)}
       primary={
-        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm" variant={view === "list" && script.installed && !script.updateAvailable ? "ghost" : view === "list" ? "secondary" : "default"}>
-          <Download className="h-4 w-4" />
-          {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
-        </Button>
-      }
-      secondary={
-        installedKey ? (
-          <Button onClick={() => void actions.deleteUserScript(installedKey)} size="sm" variant={view === "list" ? "ghost" : "outline"}>
-            <Trash2 className="h-4 w-4" />
-            {t("卸载")}
-          </Button>
+        showInstall ? (
+          <button className="cx-secondary" onClick={() => void actions.installMarketScript(script.id)} type="button">
+            <Download />
+            {script.updateAvailable ? t("更新") : t("安装")}
+          </button>
         ) : null
       }
       status={status ? { text: status, highlight: script.updateAvailable } : null}
       tags={script.tags}
-      view={view}
     />
   );
 }
@@ -16962,30 +16905,23 @@ type ExtensionCreatorStatus = {
 };
 
 /// 「对话造拓展」：把拓展创作 MCP 接入 Codex 后，用户在 Codex 对话里描述需求，agent 直接写出拓展并热重载。
-/// 拓展页顶部的理念横幅：Codex++ 的增强能力都以拓展的形式开放，标签列出拓展能改到的地方。
+/// 拓展页顶部的理念：Codex++ 的增强能力都以拓展的形式开放，下面列出拓展能改到的地方（放在悬停里）。
 const extensionCapabilities = [
   "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
 ] as const;
 
 function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void }) {
-  // 页面标题就是「万物皆拓展」：这里是一句理念 + 能改到的地方，宿主切换放在右侧；只有一个宿主时不显示切换。
+  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧；只有一个宿主时不显示切换。
   const hosts = (["codex", "claude"] as const).filter((target) => agentVisible(focus, target));
   return (
-    <section className="extensions-hero" aria-label={t("万物皆拓展")}>
-      <div className="extensions-hero-text">
-        <p className="extensions-hero-lead">
-          {host === "codex"
-            ? t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")
-            : t("给 Claude 增强版装拓展：只显示声明了适配 Claude 的拓展。")}
-        </p>
-        {host === "codex" ? (
-          <ul className="extensions-hero-capabilities">
-            {extensionCapabilities.map((label) => <li key={label}>{t(label)}</li>)}
-          </ul>
-        ) : null}
-      </div>
+    <section className="ext-hero" aria-label={t("万物皆拓展")}>
+      <p className="ext-hero-lead" title={host === "codex" ? `${t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}\n${extensionCapabilities.map((label) => t(label)).join(" · ")}` : undefined}>
+        {host === "codex"
+          ? t("界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。")
+          : t("给 Claude 增强版装拓展：只显示声明了适配 Claude 的拓展。")}
+      </p>
       {hosts.length > 1 ? (
-        <div className="mg-segmented extension-host-switch" role="group" aria-label={t("拓展宿主")}>
+        <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
           {hosts.map((target) => (
             <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
               <AgentGlyph agent={target} />
@@ -16998,6 +16934,8 @@ function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionH
   );
 }
 
+/// 工具条右侧的主按钮「对话造拓展」：一键把拓展创作 MCP 接入 Codex；接入后按钮变成「已接入」，再点一次取消接入。
+/// 说明放在悬停里，不再单独占一张卡。
 function ExtensionCreatorCard() {
   const [state, setState] = useState<ExtensionCreatorStatus | null>(null);
   const [busy, setBusy] = useState<"connect" | "disconnect" | null>(null);
@@ -17022,25 +16960,19 @@ function ExtensionCreatorCard() {
     : state?.status === "disconnected" ? t("已取消接入，新开的 Codex 对话不再加载拓展创作工具；要造拓展时再接入")
     : state?.status === "conflict" ? state.message : t("在 Codex 对话里描述需求，agent 直接写出拓展并热重载"));
   return (
-    <div className="extension-creator-card" data-status={state?.status ?? "loading"} data-error={error ? "true" : undefined}>
-      <span className="extension-creator-icon" aria-hidden="true"><Sparkles /></span>
-      <div className="extension-creator-text">
-        <div className="extension-creator-title">
-          {t("对话造拓展")}
-          {connected ? <span className="extension-creator-badge">{t("已接入 Codex")}</span> : null}
-        </div>
-        <div className="extension-creator-hint" title={state?.extensionsDirectory}>{hint}</div>
-      </div>
-      {connected ? (
-        <Button disabled={busy !== null} onClick={() => void request("disconnect")} size="sm" variant="outline">
-          {busy === "disconnect" ? t("取消中…") : t("取消接入")}
-        </Button>
-      ) : (
-        <Button disabled={busy !== null || !state || state.status === "conflict"} onClick={() => void request("connect")} size="sm">
-          {busy === "connect" ? t("接入中…") : t("接入 Codex")}
-        </Button>
-      )}
-    </div>
+    <button
+      aria-pressed={connected}
+      className={connected ? "cx-secondary ext-creator" : "cx-primary ext-creator"}
+      data-error={error ? "true" : undefined}
+      data-status={state?.status ?? "loading"}
+      disabled={busy !== null || !state || (!connected && state.status === "conflict")}
+      onClick={() => void request(connected ? "disconnect" : "connect")}
+      title={`${hint}${connected ? `\n${t("再点一次取消接入")}` : ""}${state?.extensionsDirectory ? `\n${state.extensionsDirectory}` : ""}`}
+      type="button"
+    >
+      {connected ? <Check /> : <Sparkles />}
+      {busy === "connect" ? t("接入中…") : busy === "disconnect" ? t("取消中…") : connected ? t("对话造拓展已接入") : t("对话造拓展")}
+    </button>
   );
 }
 
@@ -17065,16 +16997,22 @@ function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExten
   const enabled = builtins.filter((builtin) => builtin.enabled && !builtin.replacedBy).length;
   const replaced = builtins.filter((builtin) => builtin.replacedBy);
   return (
-    <div className="builtin-extensions">
-      <div className="builtin-extensions-title">
-        <strong>{t("内置拓展")}</strong>
-        <small>
-          {tf("Codex++ 自带的功能都是内置拓展：已启用 {0} / 共 {1} 项。可以被声明 replaces 的拓展顶替。", [String(enabled), String(builtins.length)])}
-          {replaced.length ? ` ${tf("已被顶替：{0}", [replaced.map((builtin) => `${t(builtin.name)} → ${String(builtin.replacedBy).replace(/^user:/, "")}`).join("、")])}` : ""}
-        </small>
-      </div>
-      <Button size="sm" variant="secondary" onClick={onOpen}>{t("管理内置拓展")}</Button>
-    </div>
+    <CxSection title={t("内置")}>
+      <CxCard>
+        <CxRow
+          badges={<CxBadge tone={enabled ? "ok" : "neutral"}>{tf("已启用 {0} / 共 {1} 项", [String(enabled), String(builtins.length)])}</CxBadge>}
+          detail={replaced.length
+            ? tf("已被顶替：{0}", [replaced.map((builtin) => `${t(builtin.name)} → ${String(builtin.replacedBy).replace(/^user:/, "")}`).join("、")])
+            : t("Codex++ 自带的功能，开关与参数在「内置拓展」页管理")}
+          icon={<Blocks />}
+          onClick={onOpen}
+          title={t("内置拓展")}
+          tooltip={tf("Codex++ 自带的功能都是内置拓展：已启用 {0} / 共 {1} 项。可以被声明 replaces 的拓展顶替。", [String(enabled), String(builtins.length)])}
+        >
+          <ChevronRight className="ext-row-chevron" />
+        </CxRow>
+      </CxCard>
+    </CxSection>
   );
 }
 
@@ -17142,97 +17080,102 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
     pkg?.backend ? { text: t("常驻后台") } : null,
   ];
   const capabilityTags = capabilityCandidates.filter((tag): tag is CapabilityTag => tag !== null);
+  // 一行只放一句说明：有描述用描述，没有就列能力；完整的能力清单放进悬停。警示类能力单独打橙色标签。
+  const plainTags = capabilityTags.filter((tag) => tag.tone !== "warn");
+  const warnTags = capabilityTags.filter((tag) => tag.tone === "warn");
+  const detailText = displayDescription || plainTags.map((tag) => tag.text).join(" · ");
+  const detailHover = [displayDescription, ...plainTags.map((tag) => tag.text)].filter(Boolean).join("\n");
+  // 状态点：已加载 = 绿，加载失败 = 红，整体关闭 / 未加载 = 橙，关着 = 灰。
+  const stateTone = state === "loaded" ? "ok" : state === "failed" ? "danger" : state === "off" ? "off" : "warn";
+  // 开关本身已经说明「开 / 关」，状态文字只在开关之外还有话说时显示（未加载、失败、整体关闭）。
+  const quietState = state === "loaded" || state === "off";
   return (
     <>
-    <div className="table-row user-script-row">
-      <div className="user-script-name">
-        <strong>{displayName}</strong>
-        {displayDescription ? <small title={displayDescription}>{displayDescription}</small> : null}
-        {capabilityTags.length ? (
-          <div className="user-script-tags">
-            {capabilityTags.map((tag) => (
-              <span className="user-script-tag" data-tone={tag.tone} key={tag.text} title={tag.title ?? tag.text}>{tag.text}</span>
-            ))}
-          </div>
-        ) : null}
-      </div>
-      <span>{source}</span>
-      <div className="user-script-state">
-        <label className="relay-bare-switch" title={enabled ? t("关闭该拓展") : t("启用该拓展")}>
-          <input
-            aria-label={tf("启用 {0}", [script.name])}
-            checked={enabled}
-            onChange={() => void actions.setUserScriptEnabled(script.key, !enabled, host)}
-            type="checkbox"
-          />
-          <ToggleVisual />
-        </label>
-        <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
-      </div>
-      <div className="script-row-actions">
-        {hasSettings ? (
-          <button
-            type="button"
-            className="mg-icon-button"
-            title={configOpen ? t("收起设置") : t("设置")}
-            aria-label={tf("{0} 设置", [displayName])}
-            aria-expanded={configOpen}
-            data-active={configOpen || undefined}
-            onClick={() => setConfigOpen((open) => !open)}
-          >
-            <Settings size={16} />
-          </button>
-        ) : null}
-        {canPublish || canDelete || managerPage ? (
-          <Menu label={tf("{0} 的更多操作", [displayName])}>
-            {managerPage ? (
-              <MenuItem onClick={() => setPanelOpen((open) => !open)}>
-                <span className="user-script-menu-item"><AppWindow className="h-4 w-4" />{panelOpen ? t("收起面板") : t("打开面板")}</span>
-              </MenuItem>
-            ) : null}
-            {canPublish ? (
-              <MenuItem onClick={() => setPublishOpen(true)}>
-                <span className="user-script-menu-item"><Upload className="h-4 w-4" />{t("发布到 GitHub")}</span>
-              </MenuItem>
-            ) : null}
-            {canDelete ? (
-              <MenuItem danger onClick={() => void actions.deleteUserScript(script.key)}>
-                <span className="user-script-menu-item"><Trash2 className="h-4 w-4" />{t("删除")}</span>
-              </MenuItem>
-            ) : null}
-          </Menu>
-        ) : null}
-      </div>
-    </div>
+    <CxRow
+      badges={
+        <>
+          <CxBadge>{source}</CxBadge>
+          {warnTags.map((tag) => <CxBadge key={tag.text} title={tag.title ?? tag.text} tone="warn">{t("资源超限")}</CxBadge>)}
+        </>
+      }
+      className="ext-local-row"
+      detail={detailText ? <span title={detailHover}>{detailText}</span> : undefined}
+      icon={<CxStatusIcon tone={stateTone}><Puzzle /></CxStatusIcon>}
+      muted={!enabled}
+      title={displayName}
+    >
+      <span className="user-script-state-label" data-state={state} hidden={quietState || undefined} title={stateHint}>{label}</span>
+      {hasSettings ? (
+        <button
+          type="button"
+          className="mg-icon-button"
+          title={configOpen ? t("收起设置") : t("设置")}
+          aria-label={tf("{0} 设置", [displayName])}
+          aria-expanded={configOpen}
+          data-active={configOpen || undefined}
+          onClick={() => setConfigOpen((open) => !open)}
+        >
+          <Settings size={16} />
+        </button>
+      ) : null}
+      <label className="relay-bare-switch" title={enabled ? t("关闭该拓展") : t("启用该拓展")}>
+        <input
+          aria-label={tf("启用 {0}", [script.name])}
+          checked={enabled}
+          onChange={() => void actions.setUserScriptEnabled(script.key, !enabled, host)}
+          type="checkbox"
+        />
+        <ToggleVisual />
+      </label>
+      {canPublish || canDelete || managerPage ? (
+        <Menu label={tf("{0} 的更多操作", [displayName])}>
+          {managerPage ? (
+            <MenuItem onClick={() => setPanelOpen((open) => !open)}>
+              <span className="user-script-menu-item"><AppWindow className="h-4 w-4" />{panelOpen ? t("收起面板") : t("打开面板")}</span>
+            </MenuItem>
+          ) : null}
+          {canPublish ? (
+            <MenuItem onClick={() => setPublishOpen(true)}>
+              <span className="user-script-menu-item"><Upload className="h-4 w-4" />{t("发布到 GitHub")}</span>
+            </MenuItem>
+          ) : null}
+          {canDelete ? (
+            <MenuItem danger onClick={() => void actions.deleteUserScript(script.key)}>
+              <span className="user-script-menu-item"><Trash2 className="h-4 w-4" />{t("删除")}</span>
+            </MenuItem>
+          ) : null}
+        </Menu>
+      ) : <span className="user-script-menu-spacer" aria-hidden="true" />}
+    </CxRow>
     {publishOpen && script.package?.id ? (
       <ExtensionPublishDialog id={script.package.id} onClose={() => setPublishOpen(false)} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
     ) : null}
     {panelOpen && managerPage ? (
-      <ExtensionManagerPanel
+      <div className="cx-row-expand"><ExtensionManagerPanel
         scriptKey={script.key}
         config={script.package?.config ?? {}}
         onSaveConfig={(values) => actions.setExtensionConfig(script.key, values)}
         onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
-      />
+      /></div>
     ) : null}
     {configOpen && settingsPage ? (
-      <ExtensionManagerPanel
+      <div className="cx-row-expand"><ExtensionManagerPanel
         kind="settings"
         scriptKey={script.key}
         config={script.package?.config ?? {}}
         onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { silent: true })}
         onToast={(message) => actions.showExtensionNotice(displayName, message)}
-      />
+      /></div>
     ) : null}
     {configOpen && !settingsPage && configSchema.length ? (
-      <ExtensionConfigForm
+      <div className="cx-row-expand"><ExtensionConfigForm
         fields={configSchema}
         values={script.package?.config ?? {}}
         onCancel={() => setConfigOpen(false)}
         onSave={async (values) => {
           if (await actions.setExtensionConfig(script.key, values)) setConfigOpen(false);
         }}
-      />
+      /></div>
     ) : null}
     </>
   );

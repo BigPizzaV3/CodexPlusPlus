@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, ExternalLink, Loader2, RefreshCw, Search, ShieldAlert, ShieldCheck, Star } from "lucide-react";
+import { Download, Loader2, RefreshCw, ShieldAlert, ShieldCheck, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxSection } from "./cx-layout";
+import { MenuItem } from "./ManagementPages";
 import { Switch } from "./gateway-ui";
 import { t, tf } from "./i18n";
 import { ExtensionCard } from "./ExtensionCard";
@@ -110,18 +111,16 @@ function minutesAgo(seconds: number): number {
   return Math.max(0, Math.floor((Date.now() / 1000 - seconds) / 60));
 }
 
-/** 搜索、排序、排版由拓展页的工具栏统一控制，和精选栏同一排。 */
+/** 搜索、排序由拓展页的工具条统一控制，和精选栏同一排；列表按「已安装」「可安装」分节。 */
 export function CommunityExtensionsPanel({
   search,
   sort,
-  view,
   onInstalled,
   onCurated,
   onOpenUrl,
 }: {
   search: string;
   sort: CommunitySort;
-  view: "grid" | "list";
   onInstalled: () => Promise<void>;
   onCurated?: () => Promise<void>;
   onOpenUrl: (url: string) => void;
@@ -214,101 +213,114 @@ export function CommunityExtensionsPanel({
   };
 
   const enabled = listing?.enabled ?? true;
+  const row = (entry: Entry) => {
+    const facts = [
+      entry.author || entry.owner,
+      entry.version ? `v${entry.version}` : "",
+      entry.license,
+      entry.pushedAt ? tf("更新于 {0}", [entry.pushedAt.slice(0, 10)]) : "",
+      !entry.compatible ? tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine]) : "",
+    ].filter(Boolean).join(" · ");
+    const local = entry.installed?.channel === "local";
+    return (
+      <ExtensionCard
+        badges={
+          <>
+            <CxBadge title={t("GitHub 星数")}><Star size={11} />{entry.stars}</CxBadge>
+            {riskBadges(entry.permissions).map((badge) => <CxBadge key={badge} title={t("安装前会列出它要的全部权限")}>{badge}</CxBadge>)}
+            {entry.warnings?.length ? <CxBadge title={entry.warnings.join("\n")} tone="danger">{t("可疑")}</CxBadge> : null}
+            {!entry.compatible ? <CxBadge title={facts} tone="warn">{t("需要更新 Codex++")}</CxBadge> : null}
+          </>
+        }
+        description={entry.description}
+        dimmed={!entry.compatible}
+        icon={entry.icon || entry.ownerAvatar}
+        key={entry.repo}
+        link={{ url: entry.url, text: entry.repo }}
+        menu={
+          <>
+            {entry.installed && !local ? (
+              <MenuItem disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)}>
+                <span className="ext-row-menu-item"><Download size={14} />{t("重新安装")}</span>
+              </MenuItem>
+            ) : null}
+            {curation?.maintainer ? (
+              <MenuItem disabled={reviewing !== ""} onClick={() => setReviewing(entry.repo)}>
+                <span className="ext-row-menu-item"><ShieldCheck size={14} />{t("审核")}</span>
+              </MenuItem>
+            ) : null}
+          </>
+        }
+        meta={facts}
+        name={entry.name}
+        onOpenUrl={onOpenUrl}
+        primary={
+          // 本机源码不给安装按钮：从 GitHub 重装会覆盖本机源码；已安装的重装收进菜单。
+          entry.installed ? null : (
+            <button className="cx-secondary" disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)} type="button">
+              {preparing === entry.repo ? <Loader2 className="animate-spin" /> : <Download />}
+              {t("安装")}
+            </button>
+          )
+        }
+        status={
+          local
+            ? { text: tf("本机源码 {0}", [entry.installed!.version]), title: t("你在本机编写并发布的拓展，在「本地拓展」里管理") }
+            : entry.installed
+            ? { text: tf("已安装 {0}", [versionText(entry.installed)]) }
+            : null
+        }
+        tags={entry.keywords}
+      />
+    );
+  };
+  const installed = entries.filter((entry) => entry.installed);
+  const available = entries.filter((entry) => !entry.installed);
+  const refreshed = enabled && listing?.fetchedAt ? (
+    <>
+      <span title={listing.problems.length ? tf("{0} 个仓库暂时读不到，下次刷新再试", [listing.problems.length]) : undefined}>
+        {tf("列表更新于 {0} 分钟前", [minutesAgo(listing.fetchedAt)])}
+      </span>
+      <button aria-label={t("刷新")} className="mg-icon-button" disabled={loading} onClick={() => void load(true)} title={t("刷新")} type="button">
+        {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+      </button>
+    </>
+  ) : null;
   return (
-    <div className="community-ext">
-      <div className="community-ext-intro">
-        <div className="community-ext-intro-head">
-          <ShieldAlert className="h-4 w-4" />
-          <strong>{t("社区拓展未经 Codex++ 审核")}</strong>
-          <label className="community-ext-switch">
-            <span>{t("显示社区拓展")}</span>
-            <Switch label={t("显示社区拓展")} on={enabled} onToggle={() => void setEnabled(!enabled)} />
-          </label>
-        </div>
-        <p>{t("这里列出 GitHub 上打了 codexpp-extension 标签的拓展包仓库。作者可以在新版本里加入任意代码，只安装你信任的作者的拓展。安装时锁定到作者发布的版本，并在安装前列出它要的权限。")}</p>
-      </div>
+    <>
+      {/* 未审核提醒和「显示社区拓展」开关合成一条；长说明放进悬停。 */}
+      <CxBanner
+        detail={<span title={t("这里列出 GitHub 上打了 codexpp-extension 标签的拓展包仓库。作者可以在新版本里加入任意代码，只安装你信任的作者的拓展。安装时锁定到作者发布的版本，并在安装前列出它要的权限。")}>{t("只安装你信任的作者的拓展；安装前会列出它要的权限。")}</span>}
+        icon={<ShieldAlert />}
+        title={t("社区拓展未经 Codex++ 审核")}
+        tone="warn"
+      >
+        <Switch label={t("显示社区拓展")} on={enabled} onToggle={() => void setEnabled(!enabled)} />
+      </CxBanner>
       {listing?.message ? <div className={`community-ext-notice${listing.stale ? " is-error" : ""}`}>{listing.message}</div> : null}
       {error ? <div className="community-ext-notice is-error">{error}</div> : null}
       {notice ? <div className="community-ext-notice">{notice}</div> : null}
-      {enabled && listing?.fetchedAt ? (
-        <div className="community-ext-meta">
-          {tf("{0} 个拓展 · 列表更新于 {1} 分钟前", [listing.entries.length, minutesAgo(listing.fetchedAt)])}
-          {listing.problems.length ? ` · ${tf("{0} 个仓库暂时读不到，下次刷新再试", [listing.problems.length])}` : ""}
-          <Button disabled={loading} onClick={() => void load(true)} size="sm" variant="ghost">
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {t("刷新")}
-          </Button>
-        </div>
+      {enabled && installed.length ? (
+        <CxSection aside={refreshed} count={installed.length} title={t("已安装")}>
+          <CxCard>{installed.map(row)}</CxCard>
+        </CxSection>
       ) : null}
-      {enabled ? (
-        entries.length ? (
-          <div className={view === "list" ? "community-ext-list" : "script-market-grid"}>
-            {entries.map((entry) => (
-              <ExtensionCard
-                badges={
-                  <>
-                    {riskBadges(entry.permissions).map((badge) => <span className="community-ext-badge" key={badge}>{badge}</span>)}
-                    {entry.warnings?.length ? <span className="community-ext-badge is-suspicious" title={entry.warnings.join("\n")}>{t("可疑")}</span> : null}
-                  </>
-                }
-                description={entry.description}
-                dimmed={!entry.compatible}
-                facts={
-                  <>
-                    <span className="community-ext-stars"><Star className="h-3 w-3" />{entry.stars}</span>
-                    {entry.version ? <span>{tf("默认分支 {0}", [entry.version])}</span> : null}
-                    {entry.license ? <span>{entry.license}</span> : null}
-                    {entry.pushedAt ? <span>{tf("更新于 {0}", [entry.pushedAt.slice(0, 10)])}</span> : null}
-                    {!entry.compatible ? <span className="community-ext-warning">{tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine])}</span> : null}
-                  </>
-                }
-                icon={entry.icon || entry.ownerAvatar}
-                key={entry.repo}
-                link={{ url: entry.url, text: entry.repo, button: <><Star className="h-4 w-4" />{entry.stars}<ExternalLink className="h-3 w-3" /></> }}
-                meta={
-                  <>
-                    {entry.author || entry.owner} · v{entry.version}
-                    {entry.license ? ` · ${entry.license}` : ""}
-                    {entry.pushedAt ? ` · ${tf("更新于 {0}", [entry.pushedAt.slice(0, 10)])}` : ""}
-                    {!entry.compatible ? ` · ${tf("需要拓展 API v{0}，请先更新 Codex++", [entry.engine])}` : ""}
-                  </>
-                }
-                name={entry.name}
-                onOpenUrl={onOpenUrl}
-                primary={
-                  entry.installed?.channel === "local" ? null : (
-                    // 本机源码不给安装按钮：从 GitHub 重装会覆盖本机源码。
-                    <Button disabled={!entry.compatible || preparing !== ""} onClick={() => void prepare(entry)} size="sm" variant={entry.installed ? "ghost" : view === "grid" ? "default" : "secondary"}>
-                      {preparing === entry.repo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                      {entry.installed ? t("重新安装") : t("安装")}
-                    </Button>
-                  )
-                }
-                secondary={
-                  curation?.maintainer ? (
-                    <Button disabled={reviewing !== ""} onClick={() => setReviewing(entry.repo)} size="sm" title={t("审核这个拓展的最新版本，通过后收录进精选")} variant="ghost">
-                      <ShieldCheck className="h-4 w-4" />{t("审核")}
-                    </Button>
-                  ) : null
-                }
-                status={
-                  entry.installed?.channel === "local"
-                    ? { text: tf("本机源码 {0}", [entry.installed.version]), title: t("你在本机编写并发布的拓展，在「本地拓展」里管理") }
-                    : entry.installed
-                    ? { text: tf("已安装 {0}", [versionText(entry.installed)]) }
-                    : null
-                }
-                tags={entry.keywords}
-                view={view}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="empty">{loading ? t("正在读取社区拓展…") : listing?.entries.length ? t("没有匹配的拓展。") : t("还没有社区拓展。给仓库加上 codexpp-extension 标签即可出现在这里。")}</div>
-        )
-      ) : (
-        <div className="empty">{t("社区拓展已关闭，不会访问 GitHub。")}</div>
-      )}
+      {enabled && available.length ? (
+        <CxSection aside={installed.length ? null : refreshed} count={available.length} title={t("可安装")}>
+          <CxCard>{available.map(row)}</CxCard>
+        </CxSection>
+      ) : null}
+      {!enabled ? (
+        <CxCard>
+          <CxEmpty title={t("社区拓展已关闭，不会访问 GitHub。")}>
+            <button className="cx-secondary" onClick={() => void setEnabled(true)} type="button">{t("显示社区拓展")}</button>
+          </CxEmpty>
+        </CxCard>
+      ) : !entries.length ? (
+        <CxCard>
+          <CxEmpty title={loading ? t("正在读取社区拓展…") : listing?.entries.length ? t("没有匹配的拓展。") : t("还没有社区拓展。给仓库加上 codexpp-extension 标签即可出现在这里。")} />
+        </CxCard>
+      ) : null}
       {prepared ? <InstallDialog onCancel={cancel} onInstall={(enable) => void install(enable)} prepared={prepared} /> : null}
       {reviewing ? (
         <CurationReviewDialog
@@ -324,12 +336,13 @@ export function CommunityExtensionsPanel({
           repo={reviewing}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
 export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; onCancel: () => void; onInstall: (enable: boolean) => void }) {
-  const [enable, setEnable] = useState(false);
+  // 装上就启用：大多数人装了就是要用，不想用的可以在这里取消勾选。
+  const [enable, setEnable] = useState(true);
   const lines = permissionLines(prepared.permissions);
   // 精选 / 官方拓展审核过，不用危险样式吓人；社区拓展保持红色确认。
   const reviewed = prepared.channel === "official" || prepared.channel === "curated";
