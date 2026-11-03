@@ -325,6 +325,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
+import { CxBanner, CxCard, CxFilters, CxEmpty } from "./cx-layout";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -6199,42 +6200,22 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
 
   if (featured.length === 0) return null;
 
+  // 参照 Cursor 顶部那条横幅：图标、标题、一行说明、右侧一个按钮；两个广告位合在同一个框里，上下各一行。
   return (
-    <div className={`sponsor-board ${featured.length === 1 ? "sponsor-board-single" : ""}`}>
+    <div className="hub-sponsor">
       {featured.map((ad) => (
-        <Panel className="jojocode-overview sponsor-slot" key={ad.id || ad.title}>
-          <CardContent>
-            <div className="sponsor-slot-content">
-              <div className="sponsor-slot-main">
-                {ad.image ? (
-                  <img alt="" className="sponsor-logo" src={ad.image} />
-                ) : (
-                  <div className="jojocode-overview-mark">
-                    <Network className="h-5 w-5" />
-                  </div>
-                )}
-                <div className="sponsor-slot-copy">
-                  <span className="eyebrow">{t("推荐内容")}</span>
-                  <h2>{formatAdTitle(ad.title)}</h2>
-                  <p className="recommendation-description" title={ad.description}>{ad.description}</p>
-                </div>
-              </div>
-              {ad.highlights?.length ? (
-                <div className="jojocode-model-tags sponsor-slot-tags">
-                  {ad.highlights.map((item) => (
-                    <span key={item}>{item}</span>
-                  ))}
-                </div>
-              ) : null}
-              <div className="sponsor-slot-actions">
-                <Button onClick={() => void actions.openExternalUrl(ad.url)}>
-                  <ExternalLink className="h-4 w-4" />
-                  {t("打开推荐内容")}
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Panel>
+        <div className="hub-sponsor-item" key={ad.id || ad.title} title={ad.highlights?.length ? ad.highlights.join(" · ") : undefined}>
+          <CxBanner
+            detail={ad.description}
+            icon={ad.image ? <img alt="" src={ad.image} /> : <Network />}
+            title={formatAdTitle(ad.title)}
+          >
+            <button className="cx-secondary" onClick={() => void actions.openExternalUrl(ad.url)} type="button">
+              {t("查看")}
+              <ExternalLink />
+            </button>
+          </CxBanner>
+        </div>
       ))}
     </div>
   );
