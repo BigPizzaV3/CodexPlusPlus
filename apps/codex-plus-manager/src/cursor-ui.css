@@ -241,6 +241,8 @@
   align-items: center;
 }
 
+/* 每个 Agent 行右边都给启动 / 停止按钮留同样的位置（没有按钮的行也留），状态点才对成一列，不被按钮挤跑。 */
+:root .shell .cx-side-agent .cx-side-item,
 :root .shell .cx-side-agent.has-run .cx-side-item {
   padding-right: 36px;
 }
