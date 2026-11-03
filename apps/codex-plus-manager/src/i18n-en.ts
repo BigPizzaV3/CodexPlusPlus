@@ -160,6 +160,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 的生图请求发给谁": "Where Codex image requests go",
   "上游只给图片链接时，下载下来再交给 Codex": "Download image links from upstream and hand Codex the data",
   "更多设置": "More settings",
+  "还没收到请求": "No requests yet",
+  "可用": "Available",
   "先打开上面的「启用 Codex 皮肤」": "Turn on \"Enable Codex skin\" above first",
   "价格、上下文窗口、思考等级、代理、限速": "Pricing, context windows, reasoning, proxy, rate limits",
   "手动停止": "Stopped by user",

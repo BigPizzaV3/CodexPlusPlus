@@ -250,7 +250,8 @@ function AgentRow({
               {agent.version ? <CxBadge>{agent.version}</CxBadge> : null}
             </span>
             <span className="cx-row-detail gw-agent-meta" title={drift?.endpoint ? tf("现在连的是 {0}", [drift.endpoint]) : undefined}>
-              <span className="gw-agent-badge" data-tone={diagnostic.tone}>{t(diagnostic.badge)}</span>
+              {/* 「等待请求验证」读起来像出了问题：还没见到请求只是还没用过，写「还没收到请求」。 */}
+              <span className="gw-agent-badge" data-tone={diagnostic.tone}>{diagnostic.badge === "等待请求验证" ? t("还没收到请求") : t(diagnostic.badge)}</span>
               {connected && !diagnostic.reconnect ? <span>{tf("{0} 个模型", [modelCount])}</span> : null}
               {note ? <span>{note}</span> : null}
               {diagnostic.reconnect ? (

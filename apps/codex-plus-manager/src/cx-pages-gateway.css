@@ -927,3 +927,27 @@
   font-size: 13px;
   font-weight: 500;
 }
+
+/* 供应商行：拖动把手不再单独占一列（左边空一大块），悬停时浮在行的左边距里；编辑铅笔也只在悬停时出现。 */
+:root .shell .gw-pool-row {
+  position: relative;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto 22px;
+  padding-left: 18px;
+}
+
+:root .shell .gw-pool-row > .gw-grip {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  transform: translateY(-50%);
+}
+
+:root .shell .gw-pool-row .gw-pool-edit {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+:root .shell .gw-pool-row:hover .gw-pool-edit,
+:root .shell .gw-pool-row .gw-pool-edit:focus-visible {
+  opacity: 1;
+}

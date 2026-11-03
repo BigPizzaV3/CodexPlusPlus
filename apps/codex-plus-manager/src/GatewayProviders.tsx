@@ -691,7 +691,9 @@ function PoolRow({
           <i className="gw-dot" data-tone={tone} />
           {/* 订阅账号空闲时显示套餐（和剩余额度），中转站（sub2api / new-api）显示倍率（和余额），其它供应商显示 Key 数。 */}
           {!enabled ? t("已关闭") : status.state === "idle" && entry.account && entry.plan ? entry.plan
-            : status.state === "idle" && billing.probe?.rate ? <RelayBillingPoolLabel probe={billing.probe} /> : <MemberStatusLabel status={status} />}
+            : status.state === "idle" && billing.probe?.rate ? <RelayBillingPoolLabel probe={billing.probe} />
+            // 只有一个 Key（订阅登录就是一个账号）时「🔑 1」没信息量，写「可用」。
+            : status.text === "{0} 个 Key" && Number(status.args[0]) <= 1 ? t("可用") : <MemberStatusLabel status={status} />}
           {enabled && entry.quota ? <QuotaBadge quota={entry.quota} /> : null}
           {enabled && billing.probe ? <RelayBillingPoolBadge failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} /> : null}
           {vendorBalance.balance ? <ProviderBalancePoolBadge balance={vendorBalance.balance} loading={vendorBalance.loading} onRefresh={vendorBalance.refresh} /> : null}
