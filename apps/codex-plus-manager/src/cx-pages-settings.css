@@ -279,3 +279,89 @@
   width: 120px;
   height: 30px;
 }
+
+/* ── 缓存清理 ───────────────────────────────────────────────── */
+
+:root .shell .cx-cache-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 播报区本身不占位（空的时候不多出一道间距）。 */
+:root .shell .cx-cache-page > [role="status"],
+:root .shell .cx-cache-page > [role="alert"] {
+  display: contents;
+}
+
+:root .shell .cx-cache-page > .cx-section + .cx-section {
+  margin-top: 6px;
+}
+
+/* 一排数字 + 右侧主按钮，同在一张卡里。 */
+:root .shell .cx-cache-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-right: 16px;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-cache-summary .cx-stats {
+  flex: 1 1 auto;
+  background: transparent;
+}
+
+:root .shell .cx-cache-app {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-cache-app .cache-app-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: transparent;
+}
+
+:root .shell .cx-cache-app .cache-app-icon img {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+:root .shell .cx-cache-app .hub-agent-glyph {
+  width: 15px;
+  height: 15px;
+}
+
+:root .shell .cx-cache-bar {
+  position: relative;
+  display: inline-block;
+  width: 120px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+}
+
+:root .shell .cx-cache-bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: hsl(var(--foreground) / 0.55);
+}
+
+:root .shell .cx-cache-size {
+  width: 84px;
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+:root .shell .cx-cache-page .tp-foot {
+  margin: 4px 0 0;
+}

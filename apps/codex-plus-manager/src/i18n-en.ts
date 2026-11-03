@@ -12,6 +12,9 @@ export const EN_PLAIN: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "仅统计": "Stats only",
+  "全部选择（含日志）": "Select all (including logs)",
+  "单独选择": "Opt-in",
   "网关和旧版本地协议代理共用这些设置": "Shared by the gateway and the legacy local protocol proxy",
   "重试参数": "Retry parameters",
   "接入地址": "Endpoints",
@@ -3217,6 +3220,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
   // cx-pages:settings —— settings 组新增词条写在这一行下面
+  "选择 {0}": "Select {0}",
   "最多 {0} 次": "Up to {0} tries",
   "间隔 {0} 秒": "{0}s interval",
   // ----
