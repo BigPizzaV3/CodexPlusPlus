@@ -341,10 +341,10 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
-test("赞助商推荐集中在首页：首页是侧栏第一项和启动落脚页，其他页面不再放广告位", () => {
+test("首页：状态、精选推荐、常用入口、更多推荐；广告只在首页，首页是侧栏第一项和启动落脚页", () => {
   const app = functionSource("App");
-  assert.match(app, /\{route === "home" \? <HomeScreen ads=\{ads\} actions=\{actions\} \/> : null\}/);
-  assert.equal((text.match(/<HomeScreen /g) ?? []).length, 1);
+  assert.match(app, /\{route === "home" \? \(\n\s*<HomeScreen\n\s*ads=\{ads\}/);
+  assert.equal((text.match(/<HomeScreen\b/g) ?? []).length, 1);
   assert.doesNotMatch(text, /SponsorBoard|FloatingSponsor/);
   assert.doesNotMatch(functionSource("OverviewScreen"), /featuredAds|AdGrid/);
   // 侧栏主模式第一项；旧「推荐内容」路由跳到首页，设置模式里不再有这一项。
@@ -352,13 +352,22 @@ test("赞助商推荐集中在首页：首页是侧栏第一项和启动落脚�
   assert.match(app, /target === "recommendations" \? "home" : target/);
   assert.match(app, /if \(next === "home"\) await refreshAds\(true\);/);
   assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"recommendations"/);
-  // 首页：置顶位做大卡片，其余一行一条；同一家去重；只放赞助商；明确标「推广」。
   const home = functionSource("HomeScreen");
-  assert.match(home, /featuredAds\(ads\)/);
+  // 首页不能全是广告：先是状态，再是精选推荐，然后常用入口，最后更多推荐。
+  const order = ['title={t("状态")}', 'title={t("精选推荐")}', 'title={t("常用")}', 'title={t("更多推荐")}'].map((needle) => home.indexOf(needle));
+  assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > order[position - 1])), String(order));
+  // 只管增强时不显示网关一行，入口也按使用模式过滤。
+  assert.match(home, /\{enhanceOnly \? null : \(/);
+  assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
+  // 推荐：精选最多两张；其余默认露 3 条；同一家去重；只放赞助商；明确标「推广」。
+  assert.match(home, /const heroes = sponsors\.slice\(0, 2\);/);
+  assert.match(home, /const shownRest = showAllAds \? rest : rest\.slice\(0, 3\);/);
   assert.match(home, /!topIdentities\.has\(adIdentity\(ad\)\)/);
   assert.match(home, /\.filter\(\(ad\) => ad\.type === "sponsor"\)/);
   assert.match(home, /t\("推广"\)/);
-  assert.match(home, /<AdGrid actions=\{actions\} ads=\{rest\}/);
+  // 精选卡片不用 button：旧版 WebKit 里 button 做网格项会被大图撑宽、整页错位。
+  assert.match(home, /<div\n\s*className="home-hero"/);
+  assert.doesNotMatch(home, /<button[^>]*className="home-hero"/);
   assert.match(functionSource("featuredAds"), /filter\(\(ad\) => !isExpiredAd\(ad\)\)/);
 });
 

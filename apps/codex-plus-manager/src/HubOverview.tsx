@@ -38,7 +38,8 @@ const USAGE_REFRESH_MS = 30_000;
 /** 侧栏状态卡、总览、网关页共用的网关数据在 gateway-store 里；这里转出 hook，保持原来的引用路径。 */
 export { useGatewayPayload };
 
-function useTodayUsage(): UsageSummary | null {
+/** 今日用量（总览统计、首页网关一行共用），定时刷新。 */
+export function useTodayUsage(): UsageSummary | null {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   useEffect(() => {
     let cancelled = false;

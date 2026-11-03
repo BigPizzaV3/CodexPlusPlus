@@ -528,13 +528,16 @@ const agentCacheReport = {
   ],
 };
 
-// 推荐内容演示数据：中性名称，横幅用内联 SVG，不请求外部图片。
+// 推荐内容演示数据：中性名称，横幅用内联 SVG（尺寸和真实广告图一样大），不请求外部图片。
 const demoBanner = (label: string, hue: number) =>
-  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="200"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="640" height="200" fill="url(#g)"/><text x="40" y="118" font-family="Helvetica" font-size="44" font-weight="700" fill="white">${label}</text></svg>`)}`;
+  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="1600" height="640" fill="url(#g)"/><text x="400" y="360" font-family="Helvetica" font-size="120" font-weight="700" fill="white">${label}</text></svg>`)}`;
 const demoAds = [
   { id: "demo-a", type: "sponsor", title: "示例中转站 A", description: "稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: ["价格划算", "稳定接入", "高缓存命中"] },
   { id: "demo-b", type: "sponsor", title: "示例聚合平台 B", description: "一个 Key 访问多家模型，兼容 Claude Code 等工具。", url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: ["多模型", "兼容 Claude Code"] },
   { id: "demo-c", type: "sponsor", title: "示例服务 C", description: "开放、稳定、高性价比的模型中转。", url: "https://example.com/c", image: demoBanner("Service C", 20), highlights: ["按量计费"] },
+  { id: "demo-e", type: "sponsor", title: "示例云 E", description: "150+ 主流模型，企业级 MaaS，按需选用，适合团队统一采购和管理。这一句故意写得很长，用来检查一行说明超出宽度时会不会把页面撑宽。", url: "https://example.com/e", image: demoBanner("Cloud E", 200), highlights: ["150+ 模型", "企业级"] },
+  { id: "demo-f", type: "sponsor", title: "示例站 F", description: "兼容 OpenAI / Anthropic 协议。", url: "https://example.com/f", highlights: ["支持开票"] },
+  { id: "demo-g", type: "sponsor", title: "示例平台 G", description: "国内直连，低延迟。", url: "https://example.com/g", image: demoBanner("G", 120), highlights: [] },
   { id: "demo-d", type: "normal", title: "示例教程", description: "如何把多个 Agent 接到同一个供应商池。", url: "https://example.com/d", highlights: [] },
 ];
 

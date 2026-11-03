@@ -131,7 +131,7 @@ import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-conf
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
-import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
+import { AgentGlyph, HubOverview, useGatewayPayload, useTodayUsage } from "./HubOverview";
 import { publishGatewayPayload } from "./gateway-store";
 import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "./log-view-model";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
@@ -5255,7 +5255,19 @@ export function App() {
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
-          {route === "home" ? <HomeScreen ads={ads} actions={actions} /> : null}
+          {route === "home" ? (
+            <HomeScreen
+              ads={ads}
+              actions={actions}
+              tools={shownTools}
+              focus={agentFocus}
+              codexRunning={codexAppRunning}
+              launchPending={launchPending}
+              onLaunchCodex={() => void (codexAppRunning ? restart() : launch())}
+              onNavigate={(next) => void navigate(next)}
+              onOpenAgent={(agent) => void switchTool(agent, agentEntryRoute(agent))}
+            />
+          ) : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "computerUse" ? <ComputerUsePage /> : null}
@@ -10974,19 +10986,100 @@ function SessionsScreen({
   );
 }
 
-/// 首页：整个程序的落脚页，专门放赞助商推荐（原「推荐内容」页）。
+/// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐，下面是常用入口和更多推荐。
 ///
-/// 上面是大卡片（置顶位；没有置顶位时取前两条），下面一行一条列出其余赞助商。
+/// 推荐：置顶位做大卡片（没有置顶位时取前两条），其余一行一条，默认只露 3 条。
 /// 置顶位和推荐池里同一家常有两个 id、同一个落地页，按 adIdentity 去重。只展示赞助商，普通推荐不显示。
-function HomeScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
+function HomeScreen({
+  ads,
+  actions,
+  tools,
+  focus,
+  codexRunning,
+  launchPending,
+  onLaunchCodex,
+  onNavigate,
+  onOpenAgent,
+}: {
+  ads: AdsResult | null;
+  actions: Actions;
+  tools: ToolEntry[];
+  focus: AgentFocus;
+  codexRunning: boolean;
+  launchPending: boolean;
+  onLaunchCodex: () => void;
+  onNavigate: (route: Route) => void;
+  onOpenAgent: (agent: ToolId) => void;
+}) {
+  const gateway = useGatewayPayload(10_000);
+  const usage = useTodayUsage();
+  const [showAllAds, setShowAllAds] = useState(false);
+  const enhanceOnly = providersHidden(focus);
+  const connected = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
+
   const topAds = featuredAds(ads);
   const topIdentities = new Set(topAds.map(adIdentity));
   const pool = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad) && !topIdentities.has(adIdentity(ad)));
   const sponsors = [...topAds, ...pool].filter((ad) => ad.type === "sponsor");
-  const heroCount = Math.max(Math.min(topAds.filter((ad) => ad.type === "sponsor").length, 4), Math.min(sponsors.length, 2));
-  const heroes = sponsors.slice(0, heroCount);
-  const rest = sponsors.slice(heroCount);
+  const heroes = sponsors.slice(0, 2);
+  const rest = sponsors.slice(heroes.length);
+  const shownRest = showAllAds ? rest : rest.slice(0, 3);
   const open = (ad: AdItem) => void actions.openExternalUrl(ad.url);
+
+  const shortcuts: Array<{ route: Route; label: string; detail: string; icon: LucideIcon }> = [
+    { route: "userScripts", label: t("万物皆拓展"), detail: t("给 Codex、Claude 加功能的脚本"), icon: Blocks },
+    { route: "context", label: t("MCP 与 Skills"), detail: t("一处管理所有 Agent 的 MCP 和 Skill"), icon: Network },
+    { route: "sessions", label: t("会话"), detail: t("找回、继续各 Agent 的本地会话"), icon: MessagesSquare },
+    { route: "gatewayProviders", label: t("供应商池"), detail: t("添加 Key，一个 Agent 同时用多家"), icon: Server },
+    { route: "gatewayUsage", label: t("用量"), detail: t("调用次数、Token 与费用"), icon: BarChart3 },
+    { route: "settings", label: t("设置"), detail: t("主题、更新、日志与诊断"), icon: Settings },
+  ];
+
+  const agentRow = (tool: ToolEntry) => {
+    const viaGateway = connected.has(tool.id);
+    if (tool.id === "codex") {
+      const mode = viaGateway ? t("经网关") : tool.activeRelayName ? tf("直连 · {0}", [tool.activeRelayName]) : t("直连");
+      return (
+        <CxRow
+          detail={`${codexRunning ? t("运行中") : t("未运行")} · ${mode}`}
+          icon={<CxStatusIcon tone={codexRunning ? "ok" : "off"}><AgentGlyph agent="codex" className="home-agent-glyph" /></CxStatusIcon>}
+          key={tool.id}
+          onClick={() => onOpenAgent(tool.id)}
+          title={tool.name}
+        >
+          <button className="cx-secondary" disabled={launchPending} onClick={(event) => { event.stopPropagation(); onLaunchCodex(); }} type="button">
+            {codexRunning ? <RotateCcw /> : <Play />}
+            {codexRunning ? t("重启") : t("启动")}
+          </button>
+        </CxRow>
+      );
+    }
+    return (
+      <CxRow
+        detail={viaGateway ? t("已经通过 Codex++ 网关接入") : t("未接入网关")}
+        icon={<CxStatusIcon tone={viaGateway ? "ok" : "off"}><AgentGlyph agent={tool.id} className="home-agent-glyph" /></CxStatusIcon>}
+        key={tool.id}
+        onClick={() => onOpenAgent(tool.id)}
+        title={tool.name}
+      >
+        {viaGateway || enhanceOnly ? <ChevronRight aria-hidden="true" className="cx-set-chevron" /> : (
+          <button className="cx-secondary" onClick={(event) => { event.stopPropagation(); onNavigate("gateway"); }} type="button">{t("接入")}</button>
+        )}
+      </CxRow>
+    );
+  };
+
+  const gatewayDetail = !gateway
+    ? t("读取中…")
+    : gateway.helperRunning
+      ? [
+          tf("运行中 · 端口 {0}", [gateway.port]),
+          tf("{0} 个供应商", [gateway.pool.length]),
+          tf("{0} 个 Agent 已接入", [connected.size]),
+          usage ? tf("今日 {0} 次调用", [usage.totals.calls]) : "",
+        ].filter(Boolean).join(" · ")
+      : connected.size ? t("网关未运行") : t("还没有 Agent 接入");
+
   return (
     <div className="tp-page home-page">
       <TopbarActions>
@@ -10995,44 +11088,87 @@ function HomeScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions 
           {t("刷新推荐")}
         </button>
       </TopbarActions>
-      {!ads ? <CxCard><CxEmpty title={t("尚未加载推荐内容")} /></CxCard> : null}
-      {ads && !sponsors.length ? (
+
+      <CxSection title={t("状态")}>
         <CxCard>
-          <CxEmpty detail={t("推荐来自远端广告源，稍后再来看看。")} title={t("暂无赞助商推荐。")}>
-            <button className="cx-secondary" onClick={() => void actions.refreshAds()} type="button"><RefreshCw />{t("刷新推荐")}</button>
-          </CxEmpty>
+          {tools.map(agentRow)}
+          {enhanceOnly ? null : (
+            <CxRow
+              detail={gatewayDetail}
+              icon={<CxStatusIcon tone={gateway?.helperRunning ? "ok" : "off"}><Waypoints /></CxStatusIcon>}
+              onClick={() => onNavigate("hub")}
+              title={t("聚合网关")}
+            >
+              <ChevronRight aria-hidden="true" className="cx-set-chevron" />
+            </CxRow>
+          )}
         </CxCard>
-      ) : null}
+      </CxSection>
+
       {heroes.length ? (
-        <CxSection count={heroes.length} title={t("精选推荐")}>
+        <CxSection aside={<span>{t("赞助商推荐：支持 Codex++ 的服务")}</span>} title={t("精选推荐")}>
           <div className="home-heroes" data-count={heroes.length}>
             {heroes.map((ad) => (
-              <button className="home-hero" key={adIdentity(ad)} onClick={() => open(ad)} title={`${ad.description}\n${ad.url}`} type="button">
+              <div
+                className="home-hero"
+                key={adIdentity(ad)}
+                onClick={() => open(ad)}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(ad); } }}
+                role="link"
+                tabIndex={0}
+                title={`${ad.description}\n${ad.url}`}
+              >
                 {ad.image ? <img alt="" className="home-hero-image" src={ad.image} /> : <span className="home-hero-image home-hero-placeholder"><Sparkles aria-hidden="true" /></span>}
-                <span className="home-hero-body">
-                  <span className="home-hero-head">
+                <div className="home-hero-body">
+                  <div className="home-hero-head">
                     <strong>{formatAdTitle(ad.title)}</strong>
                     <span className="home-ad-tag">{t("推广")}</span>
-                  </span>
-                  <span className="home-hero-text">{ad.description}</span>
+                  </div>
+                  <p className="home-hero-text">{ad.description}</p>
                   {ad.highlights?.length ? (
-                    <span className="home-hero-chips">
+                    <div className="home-hero-chips">
                       {ad.highlights.filter(Boolean).slice(0, 4).map((item) => <span key={item}>{item}</span>)}
-                    </span>
+                    </div>
                   ) : null}
-                  <span className="home-hero-foot">
+                  <div className="home-hero-foot">
                     <span className="home-hero-host">{adHost(ad.url)}</span>
                     <span className="home-hero-cta">{t("了解更多")}<ArrowRight aria-hidden="true" /></span>
-                  </span>
-                </span>
-              </button>
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
         </CxSection>
       ) : null}
+
+      <CxSection title={t("常用")}>
+        <div className="home-shortcuts">
+          {shortcuts.filter((item) => routeVisible(focus, item.route)).map((item) => {
+            const Icon = item.icon;
+            return (
+              <button className="home-shortcut" key={item.route} onClick={() => onNavigate(item.route)} type="button">
+                <Icon aria-hidden="true" />
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.detail}</small>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </CxSection>
+
       {rest.length ? (
-        <CxSection aside={<span>{t("与 Codex 内插件菜单使用同一个远端广告源")}</span>} count={rest.length} title={t("更多推荐")}>
-          <AdGrid actions={actions} ads={rest} empty={t("暂无赞助商推荐。")} />
+        <CxSection
+          aside={rest.length > 3 ? (
+            <button className="hub-link" onClick={() => setShowAllAds((current) => !current)} type="button">
+              {showAllAds ? t("收起") : tf("查看全部 {0} 条", [rest.length])}
+            </button>
+          ) : null}
+          count={rest.length}
+          title={t("更多推荐")}
+        >
+          <AdGrid actions={actions} ads={shownRest} empty={t("暂无赞助商推荐。")} />
         </CxSection>
       ) : null}
     </div>

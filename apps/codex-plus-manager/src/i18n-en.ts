@@ -121,6 +121,15 @@ export const EN_PLAIN: Record<string, string> = {
   "推广": "Sponsored",
   "了解更多": "Learn more",
   "首页": "Home",
+  "常用": "Shortcuts",
+  "给 Codex、Claude 加功能的脚本": "Scripts that add features to Codex and Claude",
+  "一处管理所有 Agent 的 MCP 和 Skill": "MCP servers and Skills for every agent",
+  "找回、继续各 Agent 的本地会话": "Find and resume local agent sessions",
+  "添加 Key，一个 Agent 同时用多家": "Add keys; one agent, many providers",
+  "调用次数、Token 与费用": "Calls, tokens and cost",
+  "主题、更新、日志与诊断": "Theme, updates, logs and diagnostics",
+  "重启": "Restart",
+  "接入": "Connect",
   "精选推荐": "Featured",
   "更多推荐": "More",
   "推荐来自远端广告源，稍后再来看看。": "Recommendations come from a remote source. Check back later.",
@@ -3380,6 +3389,9 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "查看全部 {0} 条": "Show all {0}",
+  "运行中 · 端口 {0}": "Running · port {0}",
+  "今日 {0} 次调用": "{0} calls today",
   "{0} 个直连供应商在接入网关期间不生效，已隐藏。点上方「直连」断开网关后恢复；要把它们加进供应商池，去「供应商池」→「添加供应商」→「导入」。": "{0} direct providers are inactive while on the gateway and are hidden. Click Direct above to disconnect and bring them back; to add them to the provider pool, go to Provider pool → Add provider → Import.",
   "已完成 {0} / 3 步": "{0} of 3 steps done",
   "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。": "Open {0} to see its pages below: overview, connection & providers, built-in extensions, skins… Other agents appear after switching to All features in settings.",
