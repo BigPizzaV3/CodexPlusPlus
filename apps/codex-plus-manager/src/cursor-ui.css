@@ -133,7 +133,7 @@
 }
 
 :root .shell .cx-side-nav::-webkit-scrollbar {
-  display: none;
+  width: 4px;
 }
 
 :root .shell .cx-side-group {
@@ -1750,4 +1750,32 @@
 /* 往下滚之后，吸顶的标题行下面一条细线，和正文分开；顶部时不画。 */
 :root.mac-titlebar .shell .screen[data-scrolled] > header.cx-page-head {
   box-shadow: 0 1px 0 hsl(var(--cx-row-divider));
+}
+
+/* 细滚动条（侧栏导航、模型选择器里那排供应商筛选）：4px 滑块、不画轨道，鼠标移上去略深一点。 */
+:root .shell .cx-side-nav::-webkit-scrollbar-track,
+.gw-portal .gw-mp-filters::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:root .shell .cx-side-nav::-webkit-scrollbar-thumb,
+.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.25);
+}
+
+:root .shell .cx-side-nav::-webkit-scrollbar-thumb:hover,
+.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.45);
+}
+
+.gw-portal .gw-mp-filters {
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
+.gw-portal .gw-mp-filters::-webkit-scrollbar {
+  height: 4px;
 }

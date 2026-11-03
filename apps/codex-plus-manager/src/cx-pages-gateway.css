@@ -994,3 +994,23 @@
     transition: none !important;
   }
 }
+
+/* 供应商行带了拖动动画（transition / transform），WebKit 下这类子元素不受卡片 overflow + 圆角裁剪，
+   悬停底色会在首尾行露出直角。首尾行和行内容直接继承卡片的圆角，不靠裁剪（拖动时行移出卡片也不会被裁掉）。 */
+:root .shell .gw-pool-card > .gw-pool-item:first-child,
+:root .shell .gw-pool-card > .gw-pool-item:first-child > .gw-pool-row {
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+}
+
+:root .shell .gw-pool-card > .gw-pool-item:last-child,
+:root .shell .gw-pool-card > .gw-pool-item:last-child > .gw-pool-row {
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
+/* 最后一行展开时，圆角落在详情底部，行本身不再圆。 */
+:root .shell .gw-pool-card > .gw-pool-item:last-child[data-expanded="true"] > .gw-pool-row {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}

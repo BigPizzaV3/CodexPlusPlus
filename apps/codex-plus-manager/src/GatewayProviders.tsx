@@ -658,7 +658,7 @@ function PoolRow({
     if (ok) await run(`remove:${entry.id}`, "delete_gateway_provider", { id: entry.id }, t("删除供应商"));
   };
   return (
-    <div className="gw-pool-item" data-dragging={dragging || isDragging} data-off={!enabled} data-pool-id={entry.id} ref={setNodeRef} style={{ transform: DndCSS.Translate.toString(transform), transition: isDragging ? "none" : transition ?? "transform 200ms ease" }}>
+    <div className="gw-pool-item" data-dragging={dragging || isDragging} data-expanded={expanded} data-off={!enabled} data-pool-id={entry.id} ref={setNodeRef} style={{ transform: DndCSS.Translate.toString(transform), transition: isDragging ? "none" : transition ?? "transform 200ms ease" }}>
       {/* 整行点击展开；把手、开关、按钮各管各的。 */}
       <div
         className="gw-pool-row"
