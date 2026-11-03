@@ -11919,7 +11919,8 @@ function SortableRelayProfileCard({
   );
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
-    transition,
+    // 拖动中跟手、松手时 200ms 滑到新位置。
+    transition: isDragging ? "none" : transition ?? "transform 200ms ease",
   };
 
   return (
@@ -12142,6 +12143,14 @@ function MarketScriptCard({
   );
 }
 
+// 模型行的拖动 ID 要稳定：原来用行号当 ID，排完序动画会对到别的行上。
+type SortableModelWindowRow = ModelWindowRow & { sortId: string };
+let nextModelRowSortId = 0;
+
+function withModelRowSortId(row: ModelWindowRow, sortId?: string): SortableModelWindowRow {
+  return { ...row, sortId: sortId ?? `model-row-${++nextModelRowSortId}` };
+}
+
 function RelayProfileDetail({
   profile,
   relayFiles,
@@ -12165,8 +12174,9 @@ function RelayProfileDetail({
 }) {
   const detailBodyRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<RelayProfile>(profile);
-  const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
-    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelAutoCompact),
+  const [modelWindowRows, setModelWindowRows] = useState<SortableModelWindowRow[]>(() =>
+    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelAutoCompact)
+      .map((row) => withModelRowSortId(row)),
   );
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
@@ -12209,7 +12219,8 @@ function RelayProfileDetail({
     const switchedProfile = lastDetailProfileIdRef.current !== profile.id;
     lastDetailProfileIdRef.current = profile.id;
     if (switchedProfile || !unsavedRowEditsRef.current) {
-      setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact));
+      setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact)
+        .map((row) => withModelRowSortId(row)));
     }
     // 依赖里刻意不放 profile.modelMetadata / 原始 relayFiles：元数据改动是本编辑器自己触发的
     // （删行会清该模型元数据），把它当依赖会让「删行 → 清元数据 → 重建行」把删掉的行加回来。
@@ -12479,7 +12490,7 @@ function SortableModelWindowEntry({ id, children }: SortableModelWindowEntryProp
   const sortable = useSortable({ id });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(sortable.transform),
-    transition: sortable.transition,
+    transition: sortable.isDragging ? "none" : sortable.transition ?? "transform 200ms ease",
   };
 
   return (
@@ -12582,8 +12593,8 @@ function RelayProfileEditor({
   isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
   actions: Actions;
-  modelWindowRows: ModelWindowRow[];
-  setModelWindowRows: (value: ModelWindowRow[]) => void;
+  modelWindowRows: SortableModelWindowRow[];
+  setModelWindowRows: (value: SortableModelWindowRow[]) => void;
 }) {
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
   const [relayProxyUrl, setRelayProxyUrl] = useState("");
@@ -12898,9 +12909,9 @@ function RelayProfileEditor({
   const handleModelRowsDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const activeIndex = Number(String(active.id).replace("model-row-", ""));
-    const overIndex = Number(String(over.id).replace("model-row-", ""));
-    if (!Number.isInteger(activeIndex) || !Number.isInteger(overIndex)) return;
+    const activeIndex = modelWindowRows.findIndex((row) => row.sortId === active.id);
+    const overIndex = modelWindowRows.findIndex((row) => row.sortId === over.id);
+    if (activeIndex < 0 || overIndex < 0) return;
     const nextRows = reorderModelWindowRows(modelWindowRows, activeIndex, overIndex);
     if (nextRows === modelWindowRows) return;
     // 导入面板的身份按行索引保存；排序时关闭它，避免面板跟着错误的行移动。
@@ -13133,21 +13144,23 @@ function RelayProfileEditor({
     });
     // 上游获取的行窗口/压缩列一律为空：内置命中时立即回填（同一回填裁决）
     setModelWindowRows(merged.map((row) => {
-      if (row.window.trim() && row.autoCompact.trim()) return row;
+      const current = modelWindowRows.find((existing) => existing.model.trim() === row.model.trim());
+      const sortableRow = withModelRowSortId(row, current?.sortId);
+      if (row.window.trim() && row.autoCompact.trim()) return sortableRow;
       const entry = builtinIndex.get(modelMetadataKey(row.model));
       const patch = builtinRowBackfillValue(row.model, row.window, row.autoCompact, entry);
       return patch.window || patch.autoCompact
         ? {
-            ...row,
+            ...sortableRow,
             ...(patch.window ? { window: patch.window } : {}),
             ...(patch.autoCompact ? { autoCompact: patch.autoCompact } : {}),
           }
-        : row;
+        : sortableRow;
     }));
   };
   const appendEmptyModelRow = () => {
     modelSlugOriginsRef.current = [...modelSlugOriginsRef.current, ""];
-    setModelWindowRows([...modelWindowRows, { model: "", window: "", autoCompact: "", imageHandling: "" }]);
+    setModelWindowRows([...modelWindowRows, withModelRowSortId({ model: "", window: "", autoCompact: "", imageHandling: "" })]);
   };
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
   const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
@@ -13539,7 +13552,7 @@ function RelayProfileEditor({
                     onDragEnd={handleModelRowsDragEnd}
                   >
                     <SortableContext
-                      items={modelWindowRows.map((_, index) => `model-row-${index}`)}
+                      items={modelWindowRows.map((row) => row.sortId)}
                       strategy={verticalListSortingStrategy}
                     >
                       {modelWindowRows.map((row, index) => {
@@ -13578,7 +13591,7 @@ function RelayProfileEditor({
                           : null;
 
                         return (
-                      <SortableModelWindowEntry id={`model-row-${index}`} key={index}>
+                      <SortableModelWindowEntry id={row.sortId} key={row.sortId}>
                         {(sortable) => (
                           <>
                         <div className="relay-model-row">

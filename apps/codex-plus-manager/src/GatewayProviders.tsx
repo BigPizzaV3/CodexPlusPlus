@@ -2,12 +2,16 @@
  *
  * 与直连模式完全独立：这里的增删改只动 gateway.json；「导入…」是把直连模式的供应商复制一份过来。
  */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { appConfirm } from "./app-dialog";
 import { Check, ChevronRight, Copy, GripVertical, Pencil, Plus, RefreshCw, Search, X, Zap } from "lucide-react";
 import { t, tf } from "./i18n";
+import { providerPoolSections, reorderProviderSlots } from "./provider-pool-layout";
 import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
 import {
@@ -127,6 +131,15 @@ export function ProvidersView({
   const [adding, setAdding] = useState<false | "catalog" | "import">(false);
   const pendingImports = pendingImportCount(payload);
   const [dragging, setDragging] = useState<string | null>(null);
+  // 拖动用 dnd-kit：行跟手移动、松手时有位移动画；按住把手稍微一动（4px）才算拖，单击照样展开。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  useEffect(() => {
+    document.body.classList.toggle("gw-sorting", dragging !== null);
+    return () => document.body.classList.remove("gw-sorting");
+  }, [dragging]);
   // 编辑已有供应商的表单；新添加走 ProviderAdder。
   const [form, setForm] = useState<FormState | null>(null);
   const openCatalog = () => setAdding("catalog");
@@ -135,11 +148,11 @@ export function ProvidersView({
   const listRef = useRef<HTMLDivElement>(null);
   const needle = query.trim().toLowerCase();
   const ordered = order ? order.map((id) => pool.find((entry) => entry.id === id)).filter((entry): entry is GatewayPoolEntry => Boolean(entry)) : pool;
-  const visible = ordered.filter((entry) => !needle || entry.name.toLowerCase().includes(needle) || entry.models.some((model) => model.toLowerCase().includes(needle)));
-  // 关掉的供应商默认折叠在「已关闭」里；搜索时、或者一家都没开时照常全列出来。
-  const [offOpen, setOffOpen] = useState(false);
-  const onList = visible.filter(providerEnabled);
-  const offList = visible.filter((entry) => !providerEnabled(entry));
+  // 开启 / 关闭两组只是展示上的分组，不改池里的调度顺序（搜索也匹配地址和模型）。
+  const { active: onList, inactive: offList } = providerPoolSections(ordered, query);
+  const visible = ordered.filter((entry) => onList.includes(entry) || offList.includes(entry));
+  // 关掉的供应商默认折叠在「已关闭」里；搜索时、或者一家都没开时照常全列出来。从别的页跳到某家时先展开，免得它正好藏在折叠里。
+  const [offOpen, setOffOpen] = useState(Boolean(expanded));
   const collapseOff = onList.length > 0 && offList.length > 0 && !needle;
   const renderRow = (entry: GatewayPoolEntry) => (
     <PoolRow
@@ -148,7 +161,6 @@ export function ProvidersView({
       entry={entry}
       expanded={expanded === entry.id}
       key={entry.id}
-      onGripDown={(event) => startDrag(entry.id, event)}
       onEdit={() => setForm({ mode: "edit", entry })}
       loggingIn={Boolean(entry.account) && loginPending === entry.account}
       onRelogin={() => void login(entry.account as AccountKind)}
@@ -158,50 +170,33 @@ export function ProvidersView({
     />
   );
 
-  /** 按住把手上下拖动排序。用指针事件实现：桌面端 webview 会拦截 HTML5 拖放，原生 draggable 拖不动。 */
-  const startDrag = (id: string, event: ReactPointerEvent) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
+  /** 组内排序回填到原来的槽位：开启 / 关闭两组交错时，另一组的位置不变，折叠着也不会被挤到队尾。 */
+  const finishDrag = (event: DragEndEvent, group: GatewayPoolEntry[]) => {
+    setDragging(null);
+    const ids = group.map((entry) => entry.id);
+    const from = ids.indexOf(String(event.active.id));
+    const to = ids.indexOf(String(event.over?.id ?? ""));
+    if (from < 0 || to < 0 || from === to) return;
     const initial = pool.map((entry) => entry.id);
-    let current = initial;
-    setExpanded(null);
-    setDragging(id);
-    setOrder(initial);
-    // 落点按其它行的中线算：指针越过哪几行的中线，就排在它们后面。行高不同、列表正在重排时也不会来回跳。
-    const move = (moveEvent: PointerEvent) => {
-      const others = [...(listRef.current?.querySelectorAll<HTMLElement>("[data-pool-id]") ?? [])]
-        .filter((row) => row.dataset.poolId !== id)
-        .map((row) => {
-          const rect = row.getBoundingClientRect();
-          return { id: row.dataset.poolId ?? "", middle: rect.top + rect.height / 2 };
-        })
-        .sort((left, right) => left.middle - right.middle);
-      if (!others.length) return;
-      const above = others.filter((row) => row.middle < moveEvent.clientY);
-      const next = current.filter((item) => item !== id);
-      const index = above.length ? next.indexOf(above[above.length - 1].id) + 1 : next.indexOf(others[0].id);
-      next.splice(Math.max(index, 0), 0, id);
-      if (next.join("\n") === current.join("\n")) return;
-      current = next;
-      setOrder(next);
-    };
-    const finish = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-      document.body.classList.remove("gw-sorting");
-      setDragging(null);
-      if (current.join("\n") === initial.join("\n")) {
-        setOrder(null);
-        return;
-      }
-      void run("reorder", "reorder_gateway_providers", { ids: current }, t("调整顺序"), true).finally(() => setOrder(null));
-    };
-    document.body.classList.add("gw-sorting");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
+    const groupOrder = ids.slice();
+    groupOrder.splice(from, 1);
+    groupOrder.splice(to, 0, ids[from]);
+    const next = reorderProviderSlots(initial, groupOrder);
+    if (next.join("\n") === initial.join("\n")) return;
+    setOrder(next);
+    void run("reorder", "reorder_gateway_providers", { ids: next }, t("调整顺序"), true).finally(() => setOrder(null));
   };
+  /** 一组可拖动排序的行：两组各自一个拖动区，只在组内换位置。 */
+  const sortableList = (group: GatewayPoolEntry[], className: string, extra?: ReactNode) => (
+    <DndContext collisionDetection={closestCenter} onDragCancel={() => setDragging(null)} onDragEnd={(event) => finishDrag(event, group)} onDragStart={(event) => { setExpanded(null); setDragging(String(event.active.id)); }} sensors={sensors}>
+      <SortableContext items={group.map((entry) => entry.id)} strategy={verticalListSortingStrategy}>
+        <div className={className} data-sorting={dragging !== null || order !== null}>
+          {group.map(renderRow)}
+          {extra}
+        </div>
+      </SortableContext>
+    </DndContext>
+  );
 
   const { login, importLocal, pending: loginPending, dialog: loginDialog } = useAccountLogin(payload, run, notify);
   const localLogins = useLocalLogins(payload?.gateway.localLoginDiscovery === true, pool.map((entry) => entry.id).join("\n"));
@@ -242,12 +237,9 @@ export function ProvidersView({
         ) : null}
       </div>
       {pool.length ? (
-        // 拖动排序按 listRef 里所有行的位置算，「已关闭」那一组也在里面，拖动时相对顺序不乱。
+        // 开启的一组在上面；关掉的收进「已关闭」，两组各自拖动排序。
         <div className="gw-pool-lists" ref={listRef}>
-          <div className="gw-card gw-pool-card">
-            {(collapseOff ? onList : visible).map(renderRow)}
-            {visible.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null}
-          </div>
+          {sortableList(collapseOff ? onList : visible, "gw-card gw-pool-card", visible.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null)}
           {collapseOff ? (
             <>
               <button aria-expanded={offOpen} className="gw-pool-off-toggle" onClick={() => setOffOpen(!offOpen)} type="button">
@@ -255,11 +247,7 @@ export function ProvidersView({
                 {t("已关闭")}
                 <span className="cx-section-count">{offList.length}</span>
               </button>
-              {offOpen ? (
-                <div className="gw-card gw-pool-card gw-pool-off-card">
-                  {offList.map(renderRow)}
-                </div>
-              ) : null}
+              {offOpen ? sortableList(offList, "gw-card gw-pool-card gw-pool-off-card") : null}
             </>
           ) : null}
         </div>
@@ -575,7 +563,6 @@ function PoolRow({
   expanded,
   dragging,
   onToggleExpand,
-  onGripDown,
   onEdit,
   onRelogin,
   loggingIn,
@@ -587,13 +574,14 @@ function PoolRow({
   expanded: boolean;
   dragging: boolean;
   onToggleExpand: () => void;
-  onGripDown: (event: ReactPointerEvent) => void;
   onEdit: () => void;
   onRelogin: () => void;
   /** 这个账号类型正在登录（浏览器 / 设备码），按钮显示进行中。 */
   loggingIn: boolean;
 }) {
   const enabled = providerEnabled(entry);
+  // 拖动中跟手移动，松手时 200ms 滑到新位置；拖着的那一行本身不加过渡，免得跟不上指针。
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: entry.id });
   const status = memberStatus(payload, entry.id);
   const failures = (payload?.health.keys ?? []).filter((key) => key.relayId === entry.id && key.state !== "ok");
   const breaker = payload?.health.providers.some((item) => item.relayId === entry.id && item.breakerOpen);
@@ -670,7 +658,7 @@ function PoolRow({
     if (ok) await run(`remove:${entry.id}`, "delete_gateway_provider", { id: entry.id }, t("删除供应商"));
   };
   return (
-    <div className="gw-pool-item" data-dragging={dragging} data-off={!enabled} data-pool-id={entry.id}>
+    <div className="gw-pool-item" data-dragging={dragging || isDragging} data-off={!enabled} data-pool-id={entry.id} ref={setNodeRef} style={{ transform: DndCSS.Translate.toString(transform), transition: isDragging ? "none" : transition ?? "transform 200ms ease" }}>
       {/* 整行点击展开；把手、开关、按钮各管各的。 */}
       <div
         className="gw-pool-row"
@@ -680,9 +668,10 @@ function PoolRow({
         }}
       >
         <span
+          {...attributes}
+          {...listeners}
           aria-label={t("拖动排序")}
           className="gw-grip"
-          onPointerDown={onGripDown}
           title={t("拖动排序：同一个模型有多家时按这个顺序尝试")}
         >
           <GripVertical className="h-4 w-4" />

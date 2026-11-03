@@ -979,3 +979,18 @@
   height: 22px;
   color: hsl(var(--muted-foreground));
 }
+
+/* 拖动排序：被拖的那一行浮起来；系统要求减少动态效果时去掉位移动画。 */
+:root .shell .gw-pool-item[data-dragging="true"] {
+  position: relative;
+  z-index: 2;
+  /* 实色底：半透明会透出下面那一行的字。 */
+  background: hsl(var(--card));
+  box-shadow: 0 6px 18px hsl(var(--shadow-color) / 0.28), 0 0 0 1px hsl(var(--border));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .shell .gw-pool-item {
+    transition: none !important;
+  }
+}
