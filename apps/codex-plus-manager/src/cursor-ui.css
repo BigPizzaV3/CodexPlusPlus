@@ -1642,3 +1642,49 @@
 :root .shell .cx-page > * {
   flex-shrink: 0;
 }
+
+/* 挂在 body 上的三点菜单（不在 .shell 里，所以不带 .shell 前缀）。 */
+.shell-portal .mg-menu-floating {
+  z-index: 80;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--popover));
+  box-shadow: 0 12px 32px hsl(0 0% 0% / 0.35);
+  color: hsl(var(--foreground));
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.shell-portal .mg-menu-floating button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-portal .mg-menu-floating button:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+
+.shell-portal .mg-menu-floating button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.shell-portal .mg-menu-floating .mg-danger {
+  color: hsl(var(--status-error));
+}
+
+.shell-portal .mg-menu-floating button[aria-checked="true"]::after {
+  content: "✓";
+  float: right;
+  color: hsl(var(--status-success));
+}

@@ -118,6 +118,7 @@ export const EN_PLAIN: Record<string, string> = {
   "读入为草稿，检查无误后自动保存": "Loaded as a draft; saved automatically once it checks out",
   // ----
   // 侧栏与设置模式（Cursor 风格布局）
+  "Codex 正由 Codex++ 网关接管": "Codex is managed by the Codex++ gateway",
   "推荐用网关的供应商池：本身就按模型分发，所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "The gateway's provider pool is recommended: it already routes by model for every agent. To use it only with Codex direct, create it here.",
   "推荐用网关「路由」里的模型组：所有 Agent 都能用。只想给 Codex 直连用，在这里建。": "Model groups under the gateway's Routing are recommended: every agent can use them. To use it only with Codex direct, create it here.",
   "故障转移是 Codex 专用的小网关。网关「路由」里的模型组做的是同一件事，所有 Agent 都能用；在下面点「加入供应商池」，会建好同名模型组。": "Failover is a small gateway just for Codex. Model groups under the gateway's Routing do the same for every agent; click Add to provider pool below to create a model group with the same name.",
@@ -3365,6 +3366,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 个直连供应商在接入网关期间不生效，已隐藏。点上方「直连」断开网关后恢复；要把它们加进供应商池，去「供应商池」→「添加供应商」→「导入」。": "{0} direct providers are inactive while on the gateway and are hidden. Click Direct above to disconnect and bring them back; to add them to the provider pool, go to Provider pool → Add provider → Import.",
   "已完成 {0} / 3 步": "{0} of 3 steps done",
   "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。": "Open {0} to see its pages below: overview, connection & providers, built-in extensions, skins… Other agents appear after switching to All features in settings.",
   "{0} 的页面": "{0} pages",

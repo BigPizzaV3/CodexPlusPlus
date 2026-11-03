@@ -2,6 +2,7 @@
  * https://github.com/farion1231/cc-switch — Codex 写入使用本仓库的原有后端。
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
@@ -39,14 +40,45 @@ export function SearchField({ value, onChange, placeholder }: { value: string; o
 export function Menu({ label = t("更多操作"), children }: { label?: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // 菜单挂到 body 上、按按钮位置定位：放在 overflow: hidden 的卡片里（供应商行、连接方式）也不会被裁掉。
+  const [position, setPosition] = useState<{ top: number; right: number; up: boolean } | null>(null);
+  const place = () => {
+    const box = ref.current?.getBoundingClientRect();
+    if (!box) return;
+    const up = window.innerHeight - box.bottom < 260 && box.top > window.innerHeight - box.bottom;
+    setPosition({ top: up ? box.top - 4 : box.bottom + 4, right: Math.max(8, window.innerWidth - box.right), up });
+  };
   useEffect(() => {
     if (!open) return;
-    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    place();
+    const close = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
     const escape = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const reposition = () => place();
     document.addEventListener("mousedown", close); document.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
+    window.addEventListener("resize", reposition); document.addEventListener("scroll", reposition, true);
+    return () => {
+      document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape);
+      window.removeEventListener("resize", reposition); document.removeEventListener("scroll", reposition, true);
+    };
   }, [open]);
-  return <div className="mg-menu-wrap" ref={ref}><button type="button" className="mg-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)}><MoreHorizontal size={17} /></button>{open && <div className="mg-menu" role="menu" onClick={() => setOpen(false)}>{children}</div>}</div>;
+  const menu = open ? (
+    <div
+      className="mg-menu mg-menu-floating"
+      onClick={() => setOpen(false)}
+      ref={menuRef}
+      role="menu"
+      style={position ? { position: "fixed", top: position.top, right: position.right, transform: position.up ? "translateY(-100%)" : undefined } : undefined}
+    >
+      {children}
+    </div>
+  ) : null;
+  // 单独渲染组件（测试）时没有 document：退回原地渲染。
+  const portal = typeof document !== "undefined" && document.body && typeof createPortal === "function";
+  return <div className="mg-menu-wrap" ref={ref}><button type="button" className="mg-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); setOpen(!open); }}><MoreHorizontal size={17} /></button>{menu && portal ? createPortal(<div className="shell-portal">{menu}</div>, document.body) : menu}</div>;
 }
 /** 菜单项；传了 `checked` 就是单选项（例如 Skill 的分组），选中的项右侧打勾。 */
 export function MenuItem({ children, onClick, disabled, danger, checked }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean }) {

@@ -385,10 +385,10 @@ test("直连供应商和网关供应商池打通：每行标出是否已在池�
   // 提示收在「直连供应商」标题右侧一行，不再单独一张卡。
   assert.match(screen, /<span className="cx-pool-hint"/);
   assert.doesNotMatch(screen, /\{poolBanner\}/);
-  // 接管期间的只读列表也带「加入供应商池」，但没有使用 / 编辑 / 删除。
-  const readonly = screen.slice(screen.indexOf("{normalized.relayProfilesEnabled && takenOverByGateway ? ("), screen.indexOf("{normalized.relayProfilesEnabled && !takenOverByGateway ? ("));
-  assert.match(readonly, /<PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>/);
-  assert.doesNotMatch(readonly, /onSwitchProfile|onEdit|removeRelayProfile/);
+  // 接管期间直连供应商整块隐藏，只留「被网关接管」一行说明，没有使用 / 编辑 / 删除。
+  const takenOver = screen.slice(screen.indexOf("{normalized.relayProfilesEnabled && takenOverByGateway ? ("), screen.indexOf("{normalized.relayProfilesEnabled && !takenOverByGateway ? ("));
+  assert.match(takenOver, /title=\{t\("Codex 正由 Codex\+\+ 网关接管"\)\}/);
+  assert.doesNotMatch(takenOver, /directProfiles\.map|onSwitchProfile|onEdit|removeRelayProfile/);
   assert.match(functionSource("SortableRelayProfileCard"), /\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>\}/);
 });
 
@@ -405,7 +405,8 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
   assert.match(header, /<div className="third-party-import" ref=\{thirdPartyImportTriggerRef\}>/);
   assert.doesNotMatch(screen, /disabled=\{takenOverByGateway\}/);
-  assert.match(screen, /t\("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。"\)/);
+  // #2801：列表藏起来后给出去处：点「直连」断开后恢复，迁移到供应商池走「添加供应商 → 导入」。
+  assert.match(screen, /点上方「直连」断开网关后恢复；要把它们加进供应商池，去「供应商池」→「添加供应商」→「导入」/);
 });
 
 test("多开页可以直接编辑、删除供应商：删除先查占用再二次确认，网关托管项不给入口（#2801）", () => {

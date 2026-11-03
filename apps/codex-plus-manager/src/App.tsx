@@ -8026,30 +8026,18 @@ function RelayScreen({
           <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
         </CxBanner>
       ) : null}
-      {/* Codex 被新版网关接管：直连供应商只读列出，不能切换、编辑、删除（断开并还原前改它们会让还原出错）；
-          仍可「加入供应商池」，把它们迁到网关。编辑、删除在「多开」页。 */}
+      {/* Codex 被网关接管：直连供应商整块隐藏，只留一行说明被谁接管、怎么回到直连。
+          直连供应商在接入期间不生效，改它们会让「断开并还原」出错；要编辑、删除去「多开」页，
+          要迁到网关去「供应商池」→「添加供应商 → 导入」。 */}
       {normalized.relayProfilesEnabled && takenOverByGateway ? (
-        <CxSection
-          aside={poolHint ?? <span title={t("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。")}>{t("接入网关期间不生效")}</span>}
-          count={directProfiles.length}
-          title={t("直连供应商")}
-        >
-          <CxCard>
-            {directProfiles.map((profile) => (
-              <CxRow
-                badges={<span className="relay-tag" data-tone={relayProfileTagTone(profile)}>{relayProfileModeLabel(profile)}</span>}
-                detail={profile.relayMode === "official" && !profile.officialMixApiKey ? t("使用 Codex 当前登录的 ChatGPT 账号") : relayProfileConfigBrief(profile)}
-                icon={<span className="cx-relay-initial">{providerInitial(profile.name)}</span>}
-                key={profile.id}
-                muted
-                title={profile.name || t("未命名供应商")}
-              >
-                <PoolLinkControl link={poolLink} profileId={profile.id} />
-              </CxRow>
-            ))}
-            {!directProfiles.length ? <CxEmpty title={t("还没有直连供应商")} /> : null}
-          </CxCard>
-        </CxSection>
+        <CxCard className="cx-takeover">
+          <CxEmpty
+            detail={tf("{0} 个直连供应商在接入网关期间不生效，已隐藏。点上方「直连」断开网关后恢复；要把它们加进供应商池，去「供应商池」→「添加供应商」→「导入」。", [directProfiles.length])}
+            title={t("Codex 正由 Codex++ 网关接管")}
+          >
+            {onOpenGateway ? <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
+          </CxEmpty>
+        </CxCard>
       ) : null}
       {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
       {normalized.relayProfilesEnabled && !takenOverByGateway ? (
