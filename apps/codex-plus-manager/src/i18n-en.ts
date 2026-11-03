@@ -40,6 +40,17 @@ export const EN_PLAIN: Record<string, string> = {
   "启用到 Agent": "Enable for agents",
   "未知目录": "Unknown folder",
   "会话索引": "Session index",
+  "精选": "Featured",
+  "对话造拓展": "Build by chat",
+  "接入中…": "Connecting…",
+  "取消中…": "Disconnecting…",
+  "审核": "Review",
+  "可疑": "Suspicious",
+  "新开一个 Codex 对话，说「帮我做个拓展：…」即可；不造拓展时可取消接入，省下工具说明占用的上下文": "Open a new Codex chat and say \"Build me an extension: …\". Disconnect when you're not building extensions to save the context taken by tool descriptions",
+  "已取消接入，新开的 Codex 对话不再加载拓展创作工具；要造拓展时再接入": "Disconnected. New Codex chats no longer load the extension-building tools; connect again when you want to build one",
+  "在 Codex 对话里描述需求，agent 直接写出拓展并热重载": "Describe what you want in a Codex chat; the agent writes the extension and hot-reloads it",
+  "Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。": "Codex++ is built on an everything-is-an-extension architecture: the UI, commands, tools available to the model, agent-loop hooks, and the requests and replies sent to the model can all be taken over by extensions. Say the word in a Codex chat and you can build your own.",
+  "你在本机编写并发布的拓展，在「本地拓展」里管理": "An extension you wrote and published from this machine; manage it under Local",
   // ----
   // cx-pages:agents —— agents 组新增词条写在这一行下面
   // ----
