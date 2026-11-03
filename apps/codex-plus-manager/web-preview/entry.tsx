@@ -21,6 +21,9 @@ async function start() {
   // 和正式版 main.tsx 一样，`#tray-panel` 打开托盘快捷面板。
   if (window.location.hash === "#tray-panel") {
     const { TrayPanel } = await import("../src/TrayPanel");
+    // 和正式版一样加载 Cursor 风格层（main.tsx 里是全局导入，托盘窗口也用它）。
+    await import("../src/cursor-ui.css");
+    await import("../src/cx-tray.css");
     createRoot(app).render(<TrayPanel />);
     return;
   }

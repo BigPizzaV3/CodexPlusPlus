@@ -12,6 +12,7 @@ import "./cx-pages-gateway.css";
 import "./cx-pages-resources.css";
 import "./cx-pages-agents.css";
 import "./cx-pages-settings.css";
+import "./cx-tray.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.
