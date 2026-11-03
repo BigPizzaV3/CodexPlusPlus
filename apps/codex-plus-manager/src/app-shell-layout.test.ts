@@ -64,7 +64,9 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relay"|"relayEnvironment"/);
   assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance", "relay", "relayEnvironment",/);
-  assert.match(text, /\{ key: "legacyRelay", label: t\("旧版供应商配置"\)[^\n]*route: "relay", group: "agent"/);
+  // 原「旧版供应商配置」「旧版代理设置」合成设置模式里的「Codex 连接」一项；旧路由 relayEnvironment 打开同一页。
+  assert.match(text, /\{ key: "codexConnection", label: t\("Codex 连接"\)[^\n]*route: "relay", group: "agent"/);
+  assert.doesNotMatch(text, /key: "legacyProxy"/);
   // 内容区顶部不再画 Agent 页签。
   assert.doesNotMatch(functionSource("App"), /<AgentPageTabs\b/);
 });
@@ -211,9 +213,14 @@ test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算
   assert.match(functionSource("requestLogAgent"), /return entry\.agent \|\| "codex";/);
 });
 
-test("旧版 Codex 供应商配置页顶部：没接入时建议改用新版网关，接入后显示状态并能断开还原", () => {
+test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没接入时建议改用新版网关，接入后显示状态并能断开还原", () => {
   const app = functionSource("App");
   assert.match(app, /<LegacyRelayGatewayHint[\s\S]*onOpenGateway=\{\(\) => void navigate\("gatewayProviders"\)\}/);
+  // 连接方式作为 connection 传进 RelayScreen，只在列表视图显示；旧版代理设置作为 advanced 收进同一页底部。
+  assert.match(app, /\{route === "relay" \|\| route === "relayEnvironment" \? \(\n\s*<RelayScreen/);
+  assert.match(app, /connection=\{\(\n\s*<LegacyRelayGatewayHint/);
+  assert.match(app, /advanced=\{\(\n\s*<ProxySettingsScreen/);
+  assert.match(app, /advancedOpen=\{route === "relayEnvironment"\}/);
   assert.match(app, /onDisconnect=\{\(\) => setLegacyDisconnectOpen\(true\)\}/);
   assert.match(app, /legacyDisconnectOpen \? \(\s*<AgentDisconnectDialog/);
   assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
@@ -223,16 +230,21 @@ test("旧版 Codex 供应商配置页顶部：没接入时建议改用新版网�
   assert.match(hint, /form\.activeRelayId === CODEX_GATEWAY_RELAY_ID/);
   assert.match(hint, /t\("Codex 当前经 Codex\+\+ 网关（新版）"\)/);
   assert.match(hint, /t\("Codex 已从网关切回直连"\)/);
+  // 两行：经 Codex++ 网关、直连；断开并还原在网关一行的菜单里。
+  assert.match(hint, /title=\{t\("经 Codex\+\+ 网关"\)\}/);
+  assert.match(hint, /title=\{t\("直连"\)\}/);
+  assert.match(hint, /<MenuItem danger onClick=\{onDisconnect\}>\{t\("断开并还原"\)\}<\/MenuItem>/);
   // 列表里托管的网关供应商单独标出，只能「使用」，不能编辑、删除。
   const card = functionSource("SortableRelayProfileCard");
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(card, /data-tone="gateway">\{t\("新版网关"\)\}/);
   assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra">/);
-  // 被网关接管时旧版列表整块隐藏，要先断开并还原；页签名带「旧版」。
+  // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进供应商池。
   const relay = functionSource("RelayScreen");
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(relay, /\{normalized\.relayProfilesEnabled && !takenOverByGateway \? \(/);
-  assert.match(text, /id: "relay", get label\(\) \{ return t\("旧版供应商配置"\); \}/);
+  assert.match(relay, /\{normalized\.relayProfilesEnabled && takenOverByGateway \? \(/);
+  assert.match(text, /id: "relay", get label\(\) \{ return t\("Codex 连接"\); \}/);
 });
 
 test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
@@ -328,14 +340,35 @@ test("置顶推荐位只放在网关总览一处，各 Agent 的概览不再重�
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
 });
 
+test("直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
+  const link = functionSource("useCodexPoolLink");
+  // 复制走网关「导入供应商」同一条命令；只认直连供应商（codex）和聚合供应商（aggregate）两种来源。
+  assert.match(link, /importCandidates\(payload\)\.filter\(\(item\) => \(item\.source === "codex" \|\| item\.source === "aggregate"\) && profileIds\.includes\(item\.id\)\)/);
+  assert.match(link, /invoke<GatewayResult>\("import_gateway_providers", \{/);
+  assert.match(link, /publishGatewayPayload\(result\);/);
+  const control = functionSource("PoolLinkControl");
+  assert.match(control, /t\("已在供应商池"\)/);
+  assert.match(control, /t\("加入供应商池"\)/);
+  const screen = functionSource("RelayScreen");
+  assert.match(screen, /const poolLink = useCodexPoolLink\(actions, normalized\.relayProfiles\.map\(\(profile\) => profile\.id\)\);/);
+  assert.match(screen, /onClick=\{\(\) => void poolLink\.addAll\(\)\}/);
+  // 接管期间的只读列表也带「加入供应商池」，但没有使用 / 编辑 / 删除。
+  const readonly = screen.slice(screen.indexOf("{normalized.relayProfilesEnabled && takenOverByGateway ? ("), screen.indexOf("{normalized.relayProfilesEnabled && !takenOverByGateway ? ("));
+  assert.match(readonly, /<PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>/);
+  assert.doesNotMatch(readonly, /onSwitchProfile|onEdit|removeRelayProfile/);
+  assert.match(functionSource("SortableRelayProfileCard"), /\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>\}/);
+});
+
 test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时保留恢复入口（#2801）", () => {
   const screen = functionSource("RelayScreen");
   assert.doesNotMatch(screen, /actions=\{takenOverByGateway \? null : \(/);
+  // 总开关收进页面底部「高级」；关闭时页面顶部一条提示带「打开配置切换」。
   assert.match(screen, /\{!takenOverByGateway \|\| !normalized\.relayProfilesEnabled \? <label\r?\n\s+className="switch-row compact relay-master-switch/);
-  assert.match(screen, /\{takenOverByGateway \? null : \(\r?\n\s+<Button\r?\n\s+onClick=\{\(\) => \{ setNewProfileDraft\(null\); setDetailProfileId\(null\); setProviderCatalogOpen\(true\); \}\}/);
+  assert.match(screen, /onClick=\{\(\) => void saveRelaySettings\(\{ \.\.\.normalized, relayProfilesEnabled: true \}\)\}/);
+  assert.match(screen, /\{takenOverByGateway \? null : \(\r?\n\s+<button className="cx-primary" onClick=\{\(\) => \{ setNewProfileDraft\(null\); setDetailProfileId\(null\); setProviderCatalogOpen\(true\); \}\}/);
   assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关/);
   // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
-  const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf('<div className="mg-content">'));
+  const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf("{connection}"));
   assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
   assert.match(header, /<div className="third-party-import" ref=\{thirdPartyImportTriggerRef\}>/);
   assert.doesNotMatch(screen, /disabled=\{takenOverByGateway\}/);

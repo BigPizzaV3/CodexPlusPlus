@@ -379,6 +379,9 @@ const gateway = ok({
     { id: "hj", name: "哈基米 国模", protocol: "responses", baseUrl: "https://api.biuapi.com" },
     { id: "kimi", name: "Kimi 官方", protocol: "responses", baseUrl: "https://api.moonshot.cn" },
     { id: "deepseek", name: "DeepSeek", protocol: "responses", baseUrl: "https://api.deepseek.com" },
+    // 和演示设置里的直连供应商同 id：「Codex 连接」页据此显示「加入供应商池」。
+    { id: "default", name: "默认中转", protocol: "responses", baseUrl: "https://api.deepseek.com/v1" },
+    { id: "sub2api-demo", name: "sub2api 中转（演示）", protocol: "responses", baseUrl: "https://sub2api.example.com/v1" },
   ],
   claudeProviders: [{ id: "official", name: "Claude Official" }],
   grokProfiles: [],

@@ -131,10 +131,11 @@ import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
+import { publishGatewayPayload } from "./gateway-store";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, importCandidates, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -1397,7 +1398,8 @@ const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string; tools?: readonly string[] }> = [
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
-  { id: "relay", get label() { return t("旧版供应商配置"); }, icon: KeyRound, tool: "codex" },
+  // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
+  { id: "relay", get label() { return t("Codex 连接"); }, icon: Cable, tool: "codex" },
   { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
   { id: "claude", get label() { return t("增强"); }, icon: Languages, tool: "claude" },
   // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
@@ -1430,6 +1432,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // Agent 专属设置：目前只有 Codex 有专属选项（启动参数等）。
   // Claude / Grok 没有独立设置项，原来那页只有一个跳回各自主页的按钮，所以不再给它们显示。
   { id: "agentSettings", get label() { return t("设置"); }, icon: Settings, tool: "codex" },
+  // 旧入口：打开「Codex 连接」并展开「高级」（托盘、命令面板、拓展深链仍可能用到这条路由）。
   { id: "relayEnvironment", get label() { return t("旧版代理设置"); }, icon: ShieldCheck, tool: "codex" },
   { id: "requestLog", get label() { return t("请求日志"); }, icon: List },
   // 拓展贡献的管理器页面（codexpp.json 的 manager.nav）：侧栏入口按拓展列出，这里只是它们共用的路由。
@@ -2826,7 +2829,7 @@ export function App() {
     }
     setRoute(next);
     if (next === "overview") await refreshOverview(true);
-    if (next === "relay" || next === "multiLaunch") {
+    if (next === "relay" || next === "relayEnvironment" || next === "multiLaunch") {
       await refreshSettings(true);
       await refreshWeixinStatus(true);
       await refreshRelay(true);
@@ -2835,7 +2838,8 @@ export function App() {
       await refreshCcsProviders(true);
     }
     if (next === "multiLaunch") await refreshMultiLaunchInstances(true);
-    if (next === "relayEnvironment") await refreshRelayEnvironment(true);
+    // 「Codex 连接」页底部的「高级」里有环境检测：两个入口都要读。
+    if (next === "relay" || next === "relayEnvironment") await refreshRelayEnvironment(true);
     if (next === "gatewaySettings") await refreshOverview(true);
     if (next === "sessions") {
       await refreshSettings(true);
@@ -4979,15 +4983,9 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "relay" ? (
-            <LegacyRelayGatewayHint
-              form={settingsForm}
-              onDisconnect={() => setLegacyDisconnectOpen(true)}
-              onManageAgents={() => void navigate("gateway")}
-              onOpenGateway={() => void navigate("gatewayProviders")}
-            />
-          ) : null}
-          {route === "relay" ? (
+          {/* 「Codex 连接」一页：连接方式（经网关 / 直连）+ 直连供应商（可加入供应商池）+ 高级（原「旧版代理设置」）。
+              旧入口 relayEnvironment 打开同一页并展开「高级」。 */}
+          {route === "relay" || route === "relayEnvironment" ? (
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
@@ -4995,6 +4993,26 @@ export function App() {
               ccsProviders={ccsProviders}
               form={settingsForm}
               actions={actions}
+              onOpenGateway={() => void navigate("gatewayProviders")}
+              advancedOpen={route === "relayEnvironment"}
+              connection={(
+                <LegacyRelayGatewayHint
+                  form={settingsForm}
+                  onDisconnect={() => setLegacyDisconnectOpen(true)}
+                  onManageAgents={() => void navigate("gateway")}
+                  onOpenGateway={() => void navigate("gatewayProviders")}
+                />
+              )}
+              advanced={(
+                <ProxySettingsScreen
+                  dirty={settingsDirty}
+                  form={settingsForm}
+                  relayEnvironment={relayEnvironment}
+                  onFormChange={setSettingsForm}
+                  onOpenGatewaySettings={() => void navigate("gatewaySettings")}
+                  actions={actions}
+                />
+              )}
             />
           ) : null}
           {route === "multiLaunch" ? (
@@ -5002,16 +5020,6 @@ export function App() {
               form={settingsForm}
               relayFiles={relayFiles}
               onOpenRelay={() => void navigate("relay")}
-              actions={actions}
-            />
-          ) : null}
-          {route === "relayEnvironment" ? (
-            <ProxySettingsScreen
-              dirty={settingsDirty}
-              form={settingsForm}
-              relayEnvironment={relayEnvironment}
-              onFormChange={setSettingsForm}
-              onOpenGatewaySettings={() => void navigate("gatewaySettings")}
               actions={actions}
             />
           ) : null}
@@ -6585,101 +6593,83 @@ function ProxySettingsScreen({
   };
 
 
+  // 嵌在「Codex 连接」页底部的「高级」折叠区里：每项一行，说明一行，长说明放悬停。
   return (
-    <div className="settings-page proxy-settings-page">
+    <div className="settings-page proxy-settings-page cx-codex-advanced-body">
       <SettingsAutoSave dirty={dirty} form={form} actions={actions} />
-      <Panel>
-        <CardHead
-          title={t("本地服务与请求避震已移到网关设置")}
-          detail={t("本地服务状态、请求体上限和请求避震对新旧两套同时生效，统一在「网关 → 网关设置」里改。")}
-        />
-        <CardContent className="settings-content">
-          <Button onClick={onOpenGatewaySettings} size="sm" variant="secondary">
-            {t("打开网关设置")}
-            <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
-        </CardContent>
-      </Panel>
+      <CxRow
+        detail={t("新旧两套共用，统一在「设置 → 网关」里改。")}
+        title={t("本地服务与请求避震")}
+        tooltip={t("本地服务状态、请求体上限和请求避震对新旧两套同时生效，统一在「网关 → 网关设置」里改。")}
+      >
+        <button className="cx-secondary" onClick={onOpenGatewaySettings} type="button">
+          {t("打开网关设置")}
+          <ArrowRight aria-hidden="true" />
+        </button>
+      </CxRow>
 
       {takenOverByGateway ? (
-        <p className="relay-switch-off-note" role="status">
-          {t("Codex 正由 Codex++ 网关接管，旧版代理设置不起作用，已隐藏。断开并还原后恢复。")}
-        </p>
-      ) : (
-      <>
-      <Panel>
-        <SwitchPanelHead
-          checked={form.protocolProxyMapUnlistedModels}
-          detail={t("把 Codex 后台任务的固定模型名改写为当前供应商的默认模型")}
-          label={t("改写目录外模型名")}
-          onChange={(checked) => onFormChange({ ...form, protocolProxyMapUnlistedModels: checked })}
+        <CxRow
+          detail={t("Codex 正由 Codex++ 网关接管，旧版代理设置不起作用，已隐藏。断开并还原后恢复。")}
+          muted
           title={t("目录外模型映射（旧版）")}
         />
-        <CardContent className="settings-content setting-rows">
-          <p className="setting-footnote" title={t("Codex 的自动审查（codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，不经选模；第三方上游没有这些名字，原样转发只会报「模型不存在」并可能反复消耗额度。开启后，不在当前供应商模型列表里的请求模型会改写为该供应商的默认模型再转发（#1183 / #1446 / #1457）；官方登录与聚合供应商不受影响，已配置「自动审批模型」时 codex-auto-review 仍按该配置改写。默认关闭：开启后手填但未写进模型列表的模型也会被改写，请先把要用的模型都加进列表。")}>
-            {t("自动审查、标题摘要等后台任务固定使用 gpt-* 内部模型名，第三方上游没有这些名字会报「模型不存在」。开启后，不在当前供应商模型列表里的模型会改写为该供应商的默认模型；官方登录与聚合供应商不受影响。")}
-          </p>
-          {form.protocolProxyMapUnlistedModels ? (
-            <p className="setting-warning">{t("注意：手填但没写进模型列表的模型也会被改写，请先把要用的模型都加进列表。")}</p>
-          ) : null}
-          <p className="setting-footnote">{t("接入网关的 Agent 不用这一项：网关会把供应商池里没有的模型改写成该 Agent 的主模型。")}</p>
-        </CardContent>
-      </Panel>
-
-      <Panel>
-        <CardHead
-          title={t("供应商独立代理（旧版供应商）")}
-          detail={t("为旧版的单个供应商单独指定 HTTP 代理；留空表示沿用系统代理。网关供应商的代理在供应商池里编辑供应商时设置。")}
+      ) : (
+      <>
+      <CxRow
+        detail={form.protocolProxyMapUnlistedModels
+          ? t("注意：手填但没写进模型列表的模型也会被改写，请先把要用的模型都加进列表。")
+          : t("后台任务的固定模型名改写为当前供应商的默认模型；接入网关的 Agent 不用这一项。")}
+        title={t("目录外模型映射（旧版）")}
+        tooltip={t("Codex 的自动审查（codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，不经选模；第三方上游没有这些名字，原样转发只会报「模型不存在」并可能反复消耗额度。开启后，不在当前供应商模型列表里的请求模型会改写为该供应商的默认模型再转发（#1183 / #1446 / #1457）；官方登录与聚合供应商不受影响，已配置「自动审批模型」时 codex-auto-review 仍按该配置改写。默认关闭：开启后手填但未写进模型列表的模型也会被改写，请先把要用的模型都加进列表。")}
+      >
+        <Switch
+          label={t("改写目录外模型名")}
+          on={form.protocolProxyMapUnlistedModels}
+          onToggle={() => onFormChange({ ...form, protocolProxyMapUnlistedModels: !form.protocolProxyMapUnlistedModels })}
         />
-        <CardContent className="settings-content">
-          {proxyProfiles.length ? (
-            <div className="proxy-provider-list">
-              {proxyProfiles.map((profile) => (
-                <div className="proxy-provider-row" key={profile.id}>
-                  <div className="proxy-provider-meta">
-                    <strong>{profile.name || t("未命名供应商")}</strong>
-                    <small>
-                      {relayProtocolLabel(profile.protocol)} ·{" "}
-                      {proxyConfigured[profile.id] ? t("已配置独立代理") : t("未配置独立代理")}
-                    </small>
-                  </div>
-                  <Input
-                    aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
-                    placeholder={t("例如 http://127.0.0.1:7890，留空表示使用系统代理")}
-                    value={proxyUrls[profile.id] ?? ""}
-                    onChange={(event) => {
-                      // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
-                      const value = event.currentTarget.value;
-                      setProxyUrls((current) => ({ ...current, [profile.id]: value }));
-                    }}
-                  />
-                  <Button
-                    disabled={
-                      proxyBusyId === profile.id ||
-                      (proxyUrls[profile.id] ?? "").trim() === (savedProxyUrls[profile.id] ?? "").trim()
-                    }
-                    onClick={() => void saveProviderProxy(profile)}
-                    variant="secondary"
-                  >
-                    {proxyBusyId === profile.id ? t("保存中…") : t("保存")}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="field-hint">{t("还没有可配置独立代理的供应商。")}</p>
-          )}
-          <p className="field-hint">
-            {t("保存后需重新应用该供应商并重启 Codex，独立代理才会作用于会话请求。")}
-          </p>
-        </CardContent>
-      </Panel>
+      </CxRow>
 
+      <div className="cx-codex-proxy-head" title={t("为旧版的单个供应商单独指定 HTTP 代理；留空表示沿用系统代理。网关供应商的代理在供应商池里编辑供应商时设置。")}>
+        <strong>{t("供应商独立代理（旧版供应商）")}</strong>
+        <small>{t("保存后需重新应用该供应商并重启 Codex，独立代理才会作用于会话请求。")}</small>
+      </div>
+      {proxyProfiles.length ? proxyProfiles.map((profile) => (
+        <CxRow
+          detail={proxyConfigured[profile.id] ? t("已配置独立代理") : t("未配置独立代理")}
+          key={profile.id}
+          title={profile.name || t("未命名供应商")}
+        >
+          <Input
+            aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
+            className="cx-codex-proxy-input"
+            placeholder={t("留空使用系统代理，例如 http://127.0.0.1:7890")}
+            value={proxyUrls[profile.id] ?? ""}
+            onChange={(event) => {
+              // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
+              const value = event.currentTarget.value;
+              setProxyUrls((current) => ({ ...current, [profile.id]: value }));
+            }}
+          />
+          <button
+            className="cx-secondary"
+            disabled={
+              proxyBusyId === profile.id ||
+              (proxyUrls[profile.id] ?? "").trim() === (savedProxyUrls[profile.id] ?? "").trim()
+            }
+            onClick={() => void saveProviderProxy(profile)}
+            type="button"
+          >
+            {proxyBusyId === profile.id ? t("保存中…") : t("保存")}
+          </button>
+        </CxRow>
+      )) : (
+        <CxRow detail={t("还没有可配置独立代理的供应商。")} muted title={t("供应商独立代理（旧版供应商）")} />
+      )}
       </>
       )}
 
       <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
-
     </div>
   );
 }
@@ -7315,12 +7305,12 @@ function codexGatewayKeepsLogin(profile: RelayProfile | undefined): boolean {
 }
 
 /**
- * 旧版 Codex 供应商配置页顶部的提示。
+ * 「Codex 连接」页顶部的「连接方式」：Codex 要么经 Codex++ 网关（供应商池），要么直连下面某个供应商，二选一。
  * - Codex 还指向托管供应商、网关里却没有它的接入记录（降级后又升级、gateway.json 换过或坏了）：
  *   给「切回直连」，否则页面一直显示「被网关接管」却断不开；
- * - Codex 正经网关接入：显示状态，可去管理或直接断开并还原；
- * - 断开过但托管供应商还在：提示点它的「使用」即可重新接入；
- * - 其余：建议改用新版网关的供应商池（这里的配置照旧生效）。
+ * - Codex 正经网关接入：网关一行「使用中」，可去管理或断开并还原；
+ * - 断开过但托管供应商还在（Codex 已从网关切回直连）：网关一行给「重新接入」；
+ * - 从没接入过：建议改用新版网关（这里的直连配置照旧生效）。
  */
 function LegacyRelayGatewayHint({
   form,
@@ -7351,73 +7341,134 @@ function LegacyRelayGatewayHint({
       cancelled = true;
     };
   }, [onGateway, form.relayProfiles]);
-  if (onGateway && (!managed || bound === false)) {
-    return (
-      <div className="legacy-gateway-hint" data-state="orphan" role="status">
-        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
-        <div className="legacy-gateway-hint-text">
-          <strong>{t("Codex 还指向网关托管的供应商")}</strong>
-          <span>{t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}</span>
-        </div>
-        <Button onClick={onDisconnect} size="sm">
-          {t("切回直连")}
-        </Button>
-      </div>
-    );
-  }
-  if (managed && onGateway) {
-    const count = codexGatewayModelCount(managed);
-    return (
-      <div className="legacy-gateway-hint" data-state="connected" role="status">
-        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
-        <div className="legacy-gateway-hint-text">
-          <strong>
-            {t("Codex 当前经 Codex++ 网关（新版）")}
-            {codexGatewayKeepsLogin(managed) ? <span className="legacy-gateway-hint-badge">{t("保留 ChatGPT 登录")}</span> : null}
-          </strong>
-          <span>
-            {count
-              ? tf("用网关供应商池里的 {0} 个模型。接入期间旧版供应商列表已隐藏；要改用它们，先点「断开并还原」恢复接入前的配置。", [count])
-              : t("用网关供应商池里的模型。接入期间旧版供应商列表已隐藏；要改用它们，先点「断开并还原」恢复接入前的配置。")}
-          </span>
-        </div>
-        <Button onClick={onManageAgents} size="sm" variant="secondary">
-          {t("管理接入")}
-          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
-        </Button>
-        <Button onClick={onDisconnect} size="sm" variant="outline">
-          {t("断开并还原")}
-        </Button>
-      </div>
-    );
-  }
-  if (managed) {
-    return (
-      <div className="legacy-gateway-hint" role="note">
-        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
-        <div className="legacy-gateway-hint-text">
-          <strong>{t("Codex 已从网关切回直连")}</strong>
-          <span>{t("想回到新版网关，在下面「Codex++ 网关」那一项点「使用」，或到「Agent 接入」里打开 Codex。")}</span>
-        </div>
-        <Button onClick={onManageAgents} size="sm" variant="secondary">
-          {t("打开 Agent 接入")}
-          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
-        </Button>
-      </div>
-    );
-  }
+  const orphan = onGateway && (!managed || bound === false);
+  const viaGateway = onGateway && !orphan;
+  const direct = form.relayProfiles.find((profile) => profile.id === form.activeRelayId && profile.id !== CODEX_GATEWAY_RELAY_ID);
+  const count = codexGatewayModelCount(managed);
+  // 状态标题：屏幕阅读器和悬停提示都读这一句。
+  const status = orphan
+    ? t("Codex 还指向网关托管的供应商")
+    : viaGateway
+      ? t("Codex 当前经 Codex++ 网关（新版）")
+      : managed
+        ? t("Codex 已从网关切回直连")
+        : t("建议改用新版网关");
   return (
-    <div className="legacy-gateway-hint" role="note">
-      <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
-      <div className="legacy-gateway-hint-text">
-        <strong>{t("建议改用新版网关")}</strong>
-        <span>{t("在网关的「供应商池」统一管理供应商，多个 Agent 共用，支持多 Key 轮换、按模型路由、故障转移与用量统计。这里是旧版的 Codex 直连配置，仍可继续使用。")}</span>
-      </div>
-      <Button onClick={onOpenGateway} size="sm" variant="secondary">
-        {t("打开供应商池")}
-        <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
-      </Button>
-    </div>
+    <CxSection className="cx-codex-connection" title={<span title={status}>{t("连接方式")}</span>}>
+      {orphan ? (
+        <CxBanner
+          detail={t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}
+          icon={<Waypoints />}
+          title={status}
+          tone="warn"
+        >
+          <button className="cx-primary" onClick={onDisconnect} type="button">{t("切回直连")}</button>
+        </CxBanner>
+      ) : null}
+      <CxCard>
+        <CxRow
+          badges={(
+            <>
+              {viaGateway ? <CxBadge tone="ok">{t("使用中")}</CxBadge> : managed ? null : <CxBadge>{t("推荐")}</CxBadge>}
+              {viaGateway && codexGatewayKeepsLogin(managed) ? <CxBadge>{t("保留 ChatGPT 登录")}</CxBadge> : null}
+            </>
+          )}
+          detail={viaGateway
+            ? count
+              ? tf("用供应商池里的 {0} 个模型：多 Key 轮换、按模型路由、出错自动换下一家", [count])
+              : t("用供应商池里的模型：多 Key 轮换、按模型路由、出错自动换下一家")
+            : t("所有 Agent 共用一个供应商池：多 Key 轮换、按模型路由、出错自动换下一家")}
+          icon={<CxStatusIcon tone={viaGateway ? "ok" : undefined}><Waypoints /></CxStatusIcon>}
+          title={t("经 Codex++ 网关")}
+          tooltip={status}
+        >
+          {viaGateway ? (
+            <>
+              <button className="cx-secondary" onClick={onManageAgents} type="button">{t("管理接入")}</button>
+              <Menu>
+                <MenuItem onClick={onOpenGateway}>{t("打开供应商池")}</MenuItem>
+                <MenuItem danger onClick={onDisconnect}>{t("断开并还原")}</MenuItem>
+              </Menu>
+            </>
+          ) : orphan ? null : (
+            <button className="cx-secondary" onClick={onManageAgents} type="button">{managed ? t("重新接入") : t("接入网关")}</button>
+          )}
+        </CxRow>
+        <CxRow
+          badges={!onGateway && direct ? <CxBadge tone="ok">{t("使用中")}</CxBadge> : null}
+          detail={onGateway
+            ? t("接入网关期间不生效；断开并还原后回到接入前的直连供应商")
+            : direct
+              ? tf("Codex 直接请求「{0}」，不经网关", [direct.name || t("未命名供应商")])
+              : t("Codex 直接请求下面选中的供应商，不经网关")}
+          icon={<CxStatusIcon tone={!onGateway && direct ? "ok" : undefined}><Cable /></CxStatusIcon>}
+          title={t("直连")}
+        />
+      </CxCard>
+    </CxSection>
+  );
+}
+
+/**
+ * 直连供应商与网关供应商池的对应：哪些已经复制进池（池里的供应商带 `codex:<id>` 来源）、哪些还能复制。
+ * 复制走网关「导入供应商」同一条命令，只往池里加，不改直连配置，也不切换 Codex 的连接方式。
+ */
+function useCodexPoolLink(actions: Actions, profileIds: string[]) {
+  const payload = useGatewayPayload(15_000);
+  const [importing, setImporting] = useState<string | null>(null);
+  // 只看当前直连列表里还在的供应商：刚删掉、网关数据还没刷新的不算。
+  const candidates = importCandidates(payload).filter((item) => (item.source === "codex" || item.source === "aggregate") && profileIds.includes(item.id));
+  const stateOf = (profileId: string): "pooled" | "available" | null => {
+    const item = candidates.find((candidate) => candidate.id === profileId);
+    return item ? (item.imported ? "pooled" : "available") : null;
+  };
+  const pending = candidates.filter((item) => !item.imported);
+  const importItems = async (items: ImportCandidate[], key: string) => {
+    if (!items.length || importing) return;
+    setImporting(key);
+    try {
+      const result = await invoke<GatewayResult>("import_gateway_providers", {
+        items: items.map((item) => ({ source: item.source, id: item.id })),
+        skipAgents: [],
+      });
+      publishGatewayPayload(result);
+      await actions.showMessage(t("加入供应商池"), result.message, isSuccessStatus(result.status) ? "ok" : "failed");
+    } catch (error) {
+      await actions.showMessage(t("加入供应商池"), stringifyError(error), "failed");
+    } finally {
+      setImporting(null);
+    }
+  };
+  return {
+    ready: payload !== null,
+    stateOf,
+    pending,
+    importing,
+    addOne: (profileId: string) => importItems(candidates.filter((item) => item.id === profileId), profileId),
+    addAll: () => importItems(pending, "all"),
+  };
+}
+type CodexPoolLink = ReturnType<typeof useCodexPoolLink>;
+
+/** 行右侧的「已在供应商池 / 加入供应商池」。 */
+function PoolLinkControl({ link, profileId }: { link: CodexPoolLink; profileId: string }) {
+  const state = link.stateOf(profileId);
+  if (state === "pooled") return <CxBadge title={t("网关的供应商池里已经有它，所有接入网关的 Agent 都能用")} tone="ok">{t("已在供应商池")}</CxBadge>;
+  if (state !== "available") return null;
+  return (
+    <button
+      className="cx-secondary cx-pool-add"
+      disabled={link.importing !== null}
+      onClick={(event) => {
+        event.stopPropagation();
+        void link.addOne(profileId);
+      }}
+      title={t("复制进网关的供应商池：所有接入网关的 Agent 都能用；直连配置照旧保留")}
+      type="button"
+    >
+      {link.importing === profileId ? <Loader2 className="animate-spin" /> : <Waypoints />}
+      {t("加入供应商池")}
+    </button>
   );
 }
 
@@ -7428,6 +7479,10 @@ function RelayScreen({
   ccsProviders,
   form,
   actions,
+  connection,
+  advanced,
+  advancedOpen = false,
+  onOpenGateway,
 }: {
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
@@ -7435,9 +7490,19 @@ function RelayScreen({
   ccsProviders: CcsProvidersResult | null;
   form: BackendSettings;
   actions: Actions;
+  /** 页面顶部的「连接方式」（经网关 / 直连）。只在列表视图显示，进编辑页不显示。 */
+  connection?: ReactNode;
+  /** 页面底部「高级」折叠区里的内容：目录外模型映射、供应商独立代理、环境检测。 */
+  advanced?: ReactNode;
+  /** 从「旧版代理设置」的旧入口进来时直接展开「高级」。 */
+  advancedOpen?: boolean;
+  /** 打开网关的供应商池。 */
+  onOpenGateway?: () => void;
 }) {
   const normalized = normalizeSettings(form);
   const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
+  // 直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可以一键复制进去。
+  const poolLink = useCodexPoolLink(actions, normalized.relayProfiles.map((profile) => profile.id));
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
@@ -7658,43 +7723,50 @@ function RelayScreen({
     );
   }
 
+  const directProfiles = normalized.relayProfiles.filter((profile) => profile.id !== CODEX_GATEWAY_RELAY_ID);
+  const openCatalog = () => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); };
+  const viewCount = (view: ProviderViewKind) => normalized.relayProfiles.filter((profile) => relayProviderView(profile) === view).length;
+  const viewTip: Record<ProviderViewKind, string> = {
+    direct: t("直接访问 Responses API 供应商：只写入 Base URL 与 Key，不做协议转换。"),
+    modelAggregation: t("把成员模型合并到 Codex 模型列表，带供应商前缀的模型固定发送到对应成员。"),
+    routing: t("供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。"),
+    failover: t("多个供应商组成请求池，支持失败切换、会话轮转、请求轮转与权重；成员可以是 API 供应商或官方登录账号。"),
+  };
+  const emptyView: Record<ProviderViewKind, { title: string; detail: string; action: string; run: () => void }> = {
+    direct: { title: t("这个分页还没有直连供应商"), detail: t("直连分页只显示 Responses 直连且未配置模型路由的供应商；其他供应商在其余分页，配置不会丢失。"), action: t("添加供应商"), run: openCatalog },
+    routing: { title: t("这个分页还没有需协议转换的供应商"), detail: t("Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。"), action: t("添加供应商"), run: openCatalog },
+    failover: { title: t("还没有故障转移配置"), detail: t("在编辑页勾选成员供应商，并选择失败切换、轮转或权重策略。"), action: t("创建故障转移配置"), run: () => createNewAggregateProfile("provider") },
+    modelAggregation: { title: t("还没有模型聚合配置"), detail: t("把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。"), action: t("创建模型聚合配置"), run: () => createNewAggregateProfile("model") },
+  };
+  // 「加入供应商池」的提示：只要还有直连供应商没进池就提一次；网关接管期间同样可以迁移。
+  const poolBanner = normalized.relayProfilesEnabled && poolLink.pending.length ? (
+    <CxBanner
+      detail={t("加入后 Codex、Claude Code 等所有接入网关的 Agent 都能用，支持多 Key 轮换和故障转移；直连配置照旧保留。")}
+      icon={<Waypoints />}
+      title={tf("{0} 个直连供应商还不在供应商池里", [poolLink.pending.length])}
+    >
+      {onOpenGateway ? <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
+      <button className="cx-primary" disabled={poolLink.importing !== null} onClick={() => void poolLink.addAll()} type="button">
+        {poolLink.importing === "all" ? <Loader2 className="animate-spin" /> : <Waypoints />}
+        {t("全部加入")}
+      </button>
+    </CxBanner>
+  ) : null;
+
   return (
-    <div className="mg-page relay-management-page">
+    <div className="mg-page relay-management-page cx-page cx-codex-connection-page">
       <PageHeader
         icon={<KeyRound className="h-5 w-5" />}
-        title={t("供应商列表")}
+        title={t("Codex 连接")}
         actions={(
           <>
-            {/* 总开关很少改动：收成标题栏里的小开关，完整说明放在悬停提示里；关闭时下方另有提示条。 */}
-            {/* Codex 被新版网关接管时，旧版的切换、添加都不起作用；只有总开关关闭时保留重新开启入口。
-                「从第三方导入」保留（#2801）：导入只写旧版供应商列表、不动 Codex 配置，
-                导进来的供应商可以直接多开，也能在网关「添加供应商 → 导入…」里复制进供应商池。 */}
-            {!takenOverByGateway || !normalized.relayProfilesEnabled ? <label
-              className="switch-row compact relay-master-switch relay-master-switch-compact"
-              title={takenOverByGateway
-                ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前网关。")
-                : t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
-            >
-              <input
-                aria-label={t("启用供应商配置切换")}
-                checked={normalized.relayProfilesEnabled}
-                onChange={(event) => {
-                  const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
-                  void saveRelaySettings(next);
-                }}
-                type="checkbox"
-              />
-              <span>{t("配置切换")}</span>
-              <ToggleVisual />
-            </label> : null}
+            {/* 「从第三方导入」接管期间也保留（#2801）：导入只写直连供应商列表、不动 Codex 配置，
+                导进来的供应商可以直接多开，也能「加入供应商池」给网关用。 */}
             <div className="third-party-import" ref={thirdPartyImportTriggerRef}>
-              <Button
-                onClick={openThirdPartyImport}
-                variant="secondary"
-              >
-                <Download className="h-4 w-4" />
+              <button className="cx-secondary" onClick={openThirdPartyImport} type="button">
+                <Download />
                 {t("从第三方导入")}
-              </Button>
+              </button>
               {thirdPartyImportOpen ? (
                 <div
                   className="third-party-import-menu"
@@ -7786,119 +7858,132 @@ function RelayScreen({
               ) : null}
             </div>
             {takenOverByGateway ? null : (
-              <Button
-                onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}
-              >
-                <Plus className="h-4 w-4" />
+              <button className="cx-primary" onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }} type="button">
+                <Plus />
                 {t("添加供应商")}
-              </Button>
+              </button>
             )}
           </>
         )}
       />
-      <div className="mg-content">
-        <Panel className="relay-management-panel">
-          <CardContent>
-          <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
-          <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
-          {!normalized.relayProfilesEnabled ? (
-            <p className="relay-switch-off-note" role="status">
-              {takenOverByGateway
-                ? t("供应商配置切换已关闭，Codex++ 无法重新接入 Codex。重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关。")
-                : t("供应商配置切换已关闭：Codex++ 不会写入 Codex 的 config.toml / auth.json，供应商列表已隐藏。需要切换时打开右上角的「配置切换」。")}
-            </p>
+      {connection}
+      <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
+      <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
+      {!normalized.relayProfilesEnabled ? (
+        <CxBanner
+          detail={takenOverByGateway
+            ? t("Codex++ 无法重新接入 Codex。重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关。")
+            : t("Codex++ 不会写入 Codex 的 config.toml / auth.json，直连供应商列表已隐藏。")}
+          icon={<PowerOff />}
+          title={t("供应商配置切换已关闭")}
+          tone="warn"
+        >
+          <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
+        </CxBanner>
+      ) : null}
+      {poolBanner}
+      {/* Codex 被新版网关接管：直连供应商只读列出，不能切换、编辑、删除（断开并还原前改它们会让还原出错）；
+          仍可「加入供应商池」，把它们迁到网关。编辑、删除在「多开」页。 */}
+      {normalized.relayProfilesEnabled && takenOverByGateway ? (
+        <CxSection
+          aside={<span title={t("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。")}>{t("接入网关期间不生效")}</span>}
+          count={directProfiles.length}
+          title={t("直连供应商")}
+        >
+          <CxCard>
+            {directProfiles.map((profile) => (
+              <CxRow
+                badges={<span className="relay-tag" data-tone={relayProfileTagTone(profile)}>{relayProfileModeLabel(profile)}</span>}
+                detail={profile.relayMode === "official" && !profile.officialMixApiKey ? t("使用 Codex 当前登录的 ChatGPT 账号") : relayProfileConfigBrief(profile)}
+                icon={<span className="cx-relay-initial">{providerInitial(profile.name)}</span>}
+                key={profile.id}
+                muted
+                title={profile.name || t("未命名供应商")}
+              >
+                <PoolLinkControl link={poolLink} profileId={profile.id} />
+              </CxRow>
+            ))}
+            {!directProfiles.length ? <CxEmpty title={t("还没有直连供应商")} /> : null}
+          </CxCard>
+        </CxSection>
+      ) : null}
+      {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
+      {normalized.relayProfilesEnabled && !takenOverByGateway ? (
+        <CxSection
+          aside={(providerView === "failover" || providerView === "modelAggregation") && visibleProfiles.length ? (
+            <button className="cx-secondary" onClick={() => createNewAggregateProfile(providerView === "failover" ? "provider" : "model")} type="button">
+              <Plus />
+              {providerView === "failover" ? t("新建故障转移") : t("新建模型聚合")}
+            </button>
           ) : null}
-          {/* Codex 被新版网关接管：旧版列表整块隐藏，断开并还原后恢复（状态与断开按钮在页面顶部）。 */}
-          {normalized.relayProfilesEnabled && takenOverByGateway ? (
-            <p className="relay-switch-off-note" role="status">
-              {t("Codex 正由 Codex++ 网关接管，旧版供应商列表已隐藏。点上方「断开并还原」（或「切回直连」）后恢复。")}
-              {/* #2801：列表藏起来后用户找不到编辑 / 删除和 cc-switch 导入，在这里指路。 */}
-              {" "}{t("这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。")}
-            </p>
+          count={directProfiles.length}
+          title={t("直连供应商")}
+        >
+          <CxFilters
+            items={(["direct", "modelAggregation", "routing", "failover"] as ProviderViewKind[]).map((view) => ({
+              id: view,
+              label: <span title={viewTip[view]}>{view === "direct" ? t("直连") : view === "modelAggregation" ? t("模型聚合") : view === "routing" ? t("需协议转换") : t("故障转移")}</span>,
+              count: viewCount(view),
+            }))}
+            label={t("供应商配置模式")}
+            onChange={selectProviderView}
+            value={providerView}
+          />
+          {!visibleProfiles.length ? (
+            <CxCard>
+              <CxEmpty detail={emptyView[providerView].detail} title={emptyView[providerView].title}>
+                <button className="cx-secondary" onClick={emptyView[providerView].run} type="button">{emptyView[providerView].action}</button>
+              </CxEmpty>
+            </CxCard>
           ) : null}
-          {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
-          {normalized.relayProfilesEnabled && !takenOverByGateway ? (
-            <>
-            {/* 分页与「新建」按钮同一行：按钮靠右，不再单独占一行把列表往下推。 */}
-            <div className="provider-view-bar">
-              <div className="provider-view-tabs" role="tablist" aria-label={t("供应商配置模式")}>
-                <button aria-selected={providerView === "direct"} className={providerView === "direct" ? "active" : ""} onClick={() => selectProviderView("direct")} role="tab" title={t("直接访问 Responses API 供应商：只写入 Base URL 与 Key，不做协议转换。")} type="button">
-                  <Cable className="h-4 w-4" />
-                  <span>{t("直连")}</span>
-                  <CircleHelp className="provider-view-help" size={13} />
-                </button>
-                <button aria-selected={providerView === "modelAggregation"} className={providerView === "modelAggregation" ? "active" : ""} onClick={() => selectProviderView("modelAggregation")} role="tab" title={t("把成员模型合并到 Codex 模型列表，带供应商前缀的模型固定发送到对应成员。")} type="button">
-                  <Layers3 className="h-4 w-4" />
-                  <span>{t("模型聚合")}</span>
-                  <CircleHelp className="provider-view-help" size={13} />
-                </button>
-                <button aria-selected={providerView === "routing"} className={providerView === "routing" ? "active" : ""} onClick={() => selectProviderView("routing")} role="tab" title={t("供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。")} type="button">
-                  <GitBranch className="h-4 w-4" />
-                  <span>{t("需协议转换")}</span>
-                  <CircleHelp className="provider-view-help" size={13} />
-                </button>
-                <button aria-selected={providerView === "failover"} className={providerView === "failover" ? "active" : ""} onClick={() => selectProviderView("failover")} role="tab" title={t("多个供应商组成请求池，支持失败切换、会话轮转、请求轮转与权重；成员可以是 API 供应商或官方登录账号。")} type="button">
-                  <ArrowRightLeft className="h-4 w-4" />
-                  <span>{t("故障转移")}</span>
-                  <CircleHelp className="provider-view-help" size={13} />
-                </button>
-              </div>
-              {(providerView === "failover" || providerView === "modelAggregation") && visibleProfiles.length ? (
-                <div className="provider-aggregate-toolbar">
-                  <Button
-                    onClick={() => createNewAggregateProfile(providerView === "failover" ? "provider" : "model")}
-                    size="sm"
-                    variant="secondary"
-                  >
-                    <Plus className="h-4 w-4" />
-                    {providerView === "failover" ? t("新建故障转移") : t("新建模型聚合")}
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-              {providerView === "direct" && !visibleProfiles.length ? (
-                <div className="provider-aggregate-empty">
-                  <strong>{t("这个分页还没有直连供应商")}</strong>
-                  <span>{t("直连分页只显示 Responses 直连且未配置模型路由的供应商；其他供应商在其余分页，配置不会丢失。")}</span>
-                  <Button onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}>{t("添加供应商")}</Button>
-                </div>
-              ) : null}
-              {providerView === "routing" && !visibleProfiles.length ? (
-                <div className="provider-aggregate-empty">
-                  <strong>{t("这个分页还没有需协议转换的供应商")}</strong>
-                  <span>{t("Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。")}</span>
-                  <Button onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}>{t("添加供应商")}</Button>
-                </div>
-              ) : null}
-              {providerView === "failover" && !visibleProfiles.length ? (
-                <div className="provider-aggregate-empty">
-                  <strong>{t("还没有故障转移配置")}</strong>
-                  <span>{t("在编辑页勾选成员供应商，并选择失败切换、轮转或权重策略。")}</span>
-                  <Button onClick={() => createNewAggregateProfile("provider")}>{t("创建故障转移配置")}</Button>
-                </div>
-              ) : null}
-              {providerView === "modelAggregation" && !visibleProfiles.length ? (
-                <div className="provider-aggregate-empty">
-                  <strong>{t("还没有模型聚合配置")}</strong>
-                  <span>{t("把成员模型合并到 Codex 列表，选中模型会固定发送到对应供应商。")}</span>
-                  <Button onClick={() => createNewAggregateProfile("model")}>{t("创建模型聚合配置")}</Button>
-                </div>
-              ) : null}
-              <RelayProfileList
-                form={normalized}
-                visibleProfiles={visibleProfiles}
-                onEdit={(profileId) => void editRelayProfile(profileId)}
-                onFormChange={saveRelaySettings}
-                onReorder={reorderRelaySettings}
-                onSwitchProfile={switchRelayProfileFromList}
-                disabled={actions.relaySwitching}
-                actions={actions}
+          <RelayProfileList
+            form={normalized}
+            visibleProfiles={visibleProfiles}
+            onEdit={(profileId) => void editRelayProfile(profileId)}
+            onFormChange={saveRelaySettings}
+            onReorder={reorderRelaySettings}
+            onSwitchProfile={switchRelayProfileFromList}
+            disabled={actions.relaySwitching}
+            poolLink={poolLink}
+            actions={actions}
+          />
+        </CxSection>
+      ) : null}
+      {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。 */}
+      <CxSection title={t("高级")}>
+        <CxCard>
+          <details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced" id="codex-connection-advanced" open={advancedOpen || undefined}>
+            <summary>
+              {t("配置切换、模型映射、独立代理与环境检测")}
+              <span className="cx-set-summary-hint">{normalized.relayProfilesEnabled ? t("配置切换已开启") : t("配置切换已关闭")}</span>
+            </summary>
+            <CxRow
+              detail={t("关闭后 Codex++ 不再写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
+              title={t("供应商配置切换")}
+            >
+              {!takenOverByGateway || !normalized.relayProfilesEnabled ? <label
+              className="switch-row compact relay-master-switch relay-master-switch-compact"
+              title={takenOverByGateway
+                ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前网关。")
+                : t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
+            >
+              <input
+                aria-label={t("启用供应商配置切换")}
+                checked={normalized.relayProfilesEnabled}
+                onChange={(event) => {
+                  const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
+                  void saveRelaySettings(next);
+                }}
+                type="checkbox"
               />
-            </>
-          ) : null}
-          </CardContent>
-        </Panel>
-      </div>
+              <span>{t("配置切换")}</span>
+              <ToggleVisual />
+            </label> : null}
+            </CxRow>
+            {advanced}
+          </details>
+        </CxCard>
+      </CxSection>
     </div>
   );
 }
@@ -11405,9 +11490,12 @@ function RelayProfileList({
   onEdit,
   onSwitchProfile,
   disabled = false,
+  poolLink,
   actions,
 }: {
   form: BackendSettings;
+  /** 和网关供应商池的对应：每张卡片右侧显示「已在供应商池 / 加入供应商池」。 */
+  poolLink?: CodexPoolLink;
   visibleProfiles?: RelayProfile[];
   onFormChange: (value: BackendSettings) => void;
   /// 拖拽排序落手专用：只走乐观更新路径；复制、删除等表单改动仍走 onFormChange。
@@ -11437,6 +11525,7 @@ function RelayProfileList({
         <div className="relay-profile-list">
           {visibleProfiles.map((profile, index) => (
             <SortableRelayProfileCard
+              poolLink={poolLink}
               actions={actions}
               form={form}
               index={index}
@@ -11462,9 +11551,11 @@ function SortableRelayProfileCard({
   onEdit,
   onSwitchProfile,
   disabled = false,
+  poolLink,
   actions,
 }: {
   form: BackendSettings;
+  poolLink?: CodexPoolLink;
   profile: RelayProfile;
   index: number;
   onFormChange: (value: BackendSettings) => void;
@@ -11573,6 +11664,7 @@ function SortableRelayProfileCard({
           <CheckCircle2 className="h-4 w-4" />
           {active ? t("使用中") : t("使用")}
         </Button>
+        {gatewayManaged || !poolLink ? null : <PoolLinkControl link={poolLink} profileId={profile.id} />}
         {gatewayManaged ? null : (
         <span className="relay-card-extra">
           <Button
@@ -16313,8 +16405,7 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
-    { key: "legacyRelay", label: t("旧版供应商配置"), icon: KeyRound, route: "relay", group: "agent", keywords: "relay legacy provider 旧版 直连 供应商 cc-switch" },
-    { key: "legacyProxy", label: t("旧版代理设置"), icon: ShieldCheck, route: "relayEnvironment", group: "agent", keywords: "proxy legacy 旧版 代理 映射 环境" },
+    { key: "codexConnection", label: t("Codex 连接"), icon: Cable, route: "relay", group: "agent", keywords: "relay legacy provider proxy 旧版 直连 供应商 代理 映射 环境 cc-switch 网关 供应商池" },
     { key: "gateway", label: t("网关"), icon: SlidersHorizontal, route: "gatewaySettings", group: "agent", keywords: "gateway port key 网关 端口 监听" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
     { key: "recommendations", label: t("推荐内容"), icon: ExternalLink, route: "recommendations", group: "tools", keywords: "ads 推荐" },
@@ -16330,7 +16421,7 @@ const settingsModeRoutes = new Set<Route>(["settings", "about", "agentSettings",
 const customizeRoutes: Route[] = ["context", "skills"];
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
 function activeSettingsEntry(entries: SettingsNavEntry[], route: Route, settingsSections: string[]) {
-  const target: Route = route === "maintenance" ? "agentSettings" : route === "about" ? "settings" : route;
+  const target: Route = route === "maintenance" ? "agentSettings" : route === "about" ? "settings" : route === "relayEnvironment" ? "relay" : route;
   if (target === "settings") return entries.find((entry) => entry.route === "settings" && entry.sections?.[0] === settingsSections[0])?.key ?? "general";
   return entries.find((entry) => entry.route === target)?.key ?? null;
 }

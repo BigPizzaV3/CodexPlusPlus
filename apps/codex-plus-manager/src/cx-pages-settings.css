@@ -544,3 +544,126 @@
   border-radius: 0;
   background: transparent;
 }
+
+/* ── Codex 连接（原旧版供应商配置 + 旧版代理设置） ───────────── */
+
+/* 直连供应商卡片：沿用原卡片结构，去掉外框，和其它列表一样平铺在一张卡里。 */
+:root .shell .cx-codex-connection-page .relay-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-codex-connection-page .relay-profile-card {
+  min-height: 56px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:root .shell .cx-codex-connection-page .relay-profile-card + .relay-profile-card {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-codex-connection-page .relay-profile-card:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .cx-codex-connection-page .relay-profile-card.active {
+  background: hsl(var(--accent) / 0.55);
+  box-shadow: inset 2px 0 0 hsl(var(--status-success));
+}
+
+:root .shell .cx-codex-connection-page .relay-card-actions {
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-codex-connection-page .relay-tag {
+  border: 0;
+  border-radius: 6px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.72);
+}
+
+:root .shell .cx-codex-connection-page .relay-active-badge {
+  border: 0;
+  border-radius: 6px;
+  background: hsl(var(--status-success) / 0.14);
+  color: hsl(var(--status-success));
+}
+
+:root .shell .cx-codex-connection-page .relay-use-button {
+  border-radius: 8px;
+}
+
+:root .shell .cx-relay-initial {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+:root .shell .cx-pool-add {
+  height: 28px;
+  white-space: nowrap;
+}
+
+:root .shell .cx-pool-add svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 高级折叠区：内容是一行一项。 */
+:root .shell .cx-codex-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+
+:root .shell .cx-codex-advanced-body > .cx-row,
+:root .shell .cx-codex-advanced > .cx-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-codex-proxy-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 14px 6px;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-codex-proxy-head strong {
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .cx-codex-proxy-head small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-codex-proxy-input {
+  width: 260px;
+  height: 30px;
+}
+
+:root .shell .cx-codex-advanced-body .relay-environment-panel,
+:root .shell .cx-codex-advanced-body > .panel {
+  margin: 0;
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  border-radius: 0;
+  background: transparent;
+}
+
+/* 连接方式里两行的状态点在图标右下角。 */
+:root .shell .cx-codex-connection .cx-row-icon svg {
+  width: 16px;
+  height: 16px;
+}
