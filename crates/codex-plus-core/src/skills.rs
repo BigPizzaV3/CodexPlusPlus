@@ -221,7 +221,13 @@ pub struct SkillRepoGuard {
     generation: u64,
 }
 
-type CoordinationScope = Option<Vec<PathBuf>>;
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CoordinationPath {
+    normalized: PathBuf,
+    ancestors: Vec<(SkillPathIdentity, PathBuf)>,
+}
+
+type CoordinationScope = Option<Vec<CoordinationPath>>;
 
 #[derive(Default)]
 struct SkillsCoordination {
@@ -235,7 +241,11 @@ impl SkillsCoordination {
     fn skill_generation(&self, scope: &CoordinationScope, id: &str) -> u64 {
         self.skills.iter()
             .filter(|((other_scope, other), _)| {
-                coordination_scopes_overlap(scope, other_scope) && skill_names_may_alias(other, id)
+                if skill_names_may_alias(other, id) {
+                    coordination_scopes_overlap(scope, other_scope)
+                } else {
+                    coordination_scopes_nested(scope, other_scope)
+                }
             })
             .map(|(_, generation)| *generation)
             .max()
@@ -271,17 +281,29 @@ impl SkillsCoordination {
 
     fn changed_skill(&mut self, scope: CoordinationScope, id: &str) {
         let generation = self.next_generation();
+        self.skills.retain(|(other_scope, other), _| {
+            other != id || !coordination_scopes_same_paths(&scope, other_scope)
+        });
         self.skills.insert((scope, id.to_string()), generation);
     }
 
     fn changed_repo(&mut self, scope: CoordinationScope, key: &str) {
         let generation = self.next_generation();
+        self.repos.retain(|(other_scope, other), _| {
+            other != key || !coordination_scopes_same_paths(&scope, other_scope)
+        });
+        self.repo_changes.retain(|(other_scope, other), _| {
+            other != key || !coordination_scopes_same_paths(&scope, other_scope)
+        });
         self.repos.insert((scope.clone(), key.to_string()), generation);
         self.repo_changes.insert((scope, key.to_string()), generation);
     }
 
     fn changed_repo_settings(&mut self, scope: CoordinationScope, key: &str) {
         let generation = self.next_generation();
+        self.repo_changes.retain(|(other_scope, other), _| {
+            other != key || !coordination_scopes_same_paths(&scope, other_scope)
+        });
         self.repo_changes.insert((scope, key.to_string()), generation);
     }
 }
@@ -294,7 +316,7 @@ fn skills_coordination() -> MutexGuard<'static, SkillsCoordination> {
         .expect("Skill 协调锁中毒，拒绝继续修改")
 }
 
-fn coordination_path(path: &Path) -> Option<PathBuf> {
+fn coordination_path(path: &Path) -> Option<CoordinationPath> {
     if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
         return None;
     }
@@ -306,7 +328,22 @@ fn coordination_path(path: &Path) -> Option<PathBuf> {
                 for part in missing.iter().rev() {
                     resolved.push(part);
                 }
-                return Some(resolved);
+                let mut ancestors = Vec::new();
+                let mut current = resolved.as_path();
+                loop {
+                    match skill_path_identity(current) {
+                        Ok(identity) => ancestors.push((identity, resolved.strip_prefix(current).ok()?.to_path_buf())),
+                        Err(_) => match std::fs::symlink_metadata(current) {
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            _ => return None,
+                        },
+                    }
+                    match current.parent() {
+                        Some(parent) if parent != current => current = parent,
+                        _ => break,
+                    }
+                }
+                return Some(CoordinationPath { normalized: resolved, ancestors });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 match std::fs::symlink_metadata(ancestor) {
@@ -332,7 +369,15 @@ fn coordination_path_starts_with(path: &Path, root: &Path) -> bool {
             )
         }))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let mut parts = path.components();
+        root.components().all(|root_part| parts.next().is_some_and(|part| {
+            part.as_os_str().to_string_lossy().to_lowercase()
+                == root_part.as_os_str().to_string_lossy().to_lowercase()
+        }))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         path.starts_with(root)
     }
@@ -341,14 +386,57 @@ fn coordination_path_starts_with(path: &Path, root: &Path) -> bool {
 fn coordination_scopes_overlap(left: &CoordinationScope, right: &CoordinationScope) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.iter().any(|left| right.iter().any(|right| {
-            coordination_path_starts_with(left, right) || coordination_path_starts_with(right, left)
+            coordination_path_starts_with(&left.normalized, &right.normalized)
+                || coordination_path_starts_with(&right.normalized, &left.normalized)
+                || left.ancestors.iter().any(|(left_id, left_suffix)| {
+                    right.ancestors.iter().any(|(right_id, right_suffix)| {
+                        left_id == right_id && (
+                            coordination_path_starts_with(left_suffix, right_suffix)
+                                || coordination_path_starts_with(right_suffix, left_suffix)
+                        )
+                    })
+                })
         })),
         _ => true,
     }
 }
 
+fn coordination_scopes_nested(left: &CoordinationScope, right: &CoordinationScope) -> bool {
+    fn strictly_nested(left: &Path, right: &Path) -> bool {
+        coordination_path_starts_with(left, right) && !coordination_path_starts_with(right, left)
+    }
+    match (left, right) {
+        (Some(_), Some(_)) if coordination_scopes_same_paths(left, right) => false,
+        (Some(left), Some(right)) => left.iter().any(|left| right.iter().any(|right| {
+            strictly_nested(&left.normalized, &right.normalized)
+                || strictly_nested(&right.normalized, &left.normalized)
+                || left.ancestors.iter().any(|(left_id, left_suffix)| {
+                    right.ancestors.iter().any(|(right_id, right_suffix)| {
+                        left_id == right_id && (
+                            strictly_nested(left_suffix, right_suffix) || strictly_nested(right_suffix, left_suffix)
+                        )
+                    })
+                })
+        })),
+        _ => true,
+    }
+}
+
+fn coordination_scopes_same_paths(left: &CoordinationScope, right: &CoordinationScope) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.len() == right.len()
+            && left.iter().zip(right).all(|(left, right)| left.normalized == right.normalized),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn coordination_scope_is_current(captured: &CoordinationScope, current: &CoordinationScope) -> bool {
-    captured.is_none() || captured == current
+    match (captured, current) {
+        (None, _) => true,
+        (Some(_), Some(_)) => coordination_scopes_same_paths(captured, current),
+        _ => false,
+    }
 }
 
 #[cfg(windows)]
@@ -374,7 +462,12 @@ fn windows_names_equal(left: &str, right: &str) -> bool {
     result == 0 || result == 2
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn skill_names_may_alias(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn skill_names_may_alias(left: &str, right: &str) -> bool {
     left == right
 }
@@ -2489,7 +2582,7 @@ fn skill_directory_digest(path: &Path) -> anyhow::Result<Option<[u8; 32]>> {
     Ok(Some(hasher.finalize().into()))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SkillPathIdentity {
     device: u64,
     file: u64,
@@ -3399,6 +3492,58 @@ mod tests {
         let second_scope = second.coordination_scope();
         assert!(first_scope.is_some() && second_scope.is_some());
         assert!(!coordination_scopes_overlap(&first_scope, &second_scope));
+    }
+
+    #[test]
+    fn shared_filesystem_ancestor_identifies_mount_aliases() {
+        let identity = SkillPathIdentity { device: 11, file: 42 };
+        let scope = |path: &str, suffix: &str| Some(vec![CoordinationPath {
+            normalized: PathBuf::from(path),
+            ancestors: vec![(identity, PathBuf::from(suffix))],
+        }]);
+        let first = scope("/mount-one/shared", "skills/alpha");
+        let alias = scope("/mount-two/shared", "skills/alpha");
+        let unrelated = scope("/mount-two/other", "skills/beta");
+        assert!(coordination_scopes_overlap(&first, &alias));
+        assert!(!coordination_scopes_overlap(&first, &unrelated));
+    }
+
+    #[test]
+    fn generation_entries_are_reused_when_a_path_identity_changes() {
+        let scope = |file| Some(vec![CoordinationPath {
+            normalized: PathBuf::from("/state/skills.json"),
+            ancestors: vec![(SkillPathIdentity { device: 11, file }, PathBuf::new())],
+        }]);
+        let mut coordination = SkillsCoordination::default();
+        coordination.changed_skill(scope(1), "alpha");
+        let captured = coordination.skill_generation(&scope(1), "alpha");
+        coordination.changed_skill(scope(2), "alpha");
+        assert_eq!(coordination.skills.len(), 1);
+        assert!(coordination.skill_generation(&scope(1), "alpha") > captured);
+    }
+
+    #[test]
+    fn nested_library_invalidates_a_different_skill_import() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let first = manager(&first_temp);
+        let second = SkillsManager::new(
+            first.source_dir.join("alpha"),
+            second_temp.path().join("backups"),
+            second_temp.path().join("state.json"),
+            second_temp.path().join("codex"),
+        );
+        let first_external = first_temp.path().join("external/alpha");
+        let second_external = second_temp.path().join("external/beta");
+        write_skill(&first_external, "first");
+        write_skill(&second_external, "second");
+        let scope = first.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, "alpha"));
+        let (staging, imported) = first.stage_directory_import("alpha", &first_external, LOCAL_IMPORT_REPO_KEY).unwrap();
+
+        second.import_from_directory("beta", &second_external).unwrap();
+        assert!(first.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert_eq!(std::fs::read_to_string(second.source_dir.join("beta/SKILL.md")).unwrap(), "second");
     }
 
     #[test]
