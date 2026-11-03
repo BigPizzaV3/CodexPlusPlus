@@ -200,7 +200,7 @@ pub struct SkillDownloadGuard {
     installed_snapshot: Option<InstalledSkill>,
     repo_snapshot: SkillRepo,
     contents: SkillContentSnapshot,
-    coordination_scope: Option<PathBuf>,
+    coordination_scope: CoordinationScope,
     skill_generation: u64,
     repo_generation: u64,
 }
@@ -217,20 +217,22 @@ pub struct SkillRepoGuard {
     pub repo: SkillRepo,
     state_path: PathBuf,
     repo_snapshot: SkillRepo,
-    coordination_scope: Option<PathBuf>,
+    coordination_scope: CoordinationScope,
     generation: u64,
 }
+
+type CoordinationScope = Option<Vec<PathBuf>>;
 
 #[derive(Default)]
 struct SkillsCoordination {
     generation: u64,
-    skills: BTreeMap<(Option<PathBuf>, String), u64>,
-    repos: BTreeMap<(Option<PathBuf>, String), u64>,
-    repo_changes: BTreeMap<(Option<PathBuf>, String), u64>,
+    skills: BTreeMap<(CoordinationScope, String), u64>,
+    repos: BTreeMap<(CoordinationScope, String), u64>,
+    repo_changes: BTreeMap<(CoordinationScope, String), u64>,
 }
 
 impl SkillsCoordination {
-    fn skill_generation(&self, scope: &Option<PathBuf>, id: &str) -> u64 {
+    fn skill_generation(&self, scope: &CoordinationScope, id: &str) -> u64 {
         self.skills.iter()
             .filter(|((other_scope, other), _)| {
                 coordination_scopes_overlap(scope, other_scope) && skill_names_may_alias(other, id)
@@ -240,17 +242,17 @@ impl SkillsCoordination {
             .unwrap_or_default()
     }
 
-    fn repo_generation(&self, scope: &Option<PathBuf>, key: &str) -> u64 {
+    fn repo_generation(&self, scope: &CoordinationScope, key: &str) -> u64 {
         Self::scoped_repo_generation(&self.repos, scope, key)
     }
 
-    fn repo_change_generation(&self, scope: &Option<PathBuf>, key: &str) -> u64 {
+    fn repo_change_generation(&self, scope: &CoordinationScope, key: &str) -> u64 {
         Self::scoped_repo_generation(&self.repo_changes, scope, key)
     }
 
     fn scoped_repo_generation(
-        entries: &BTreeMap<(Option<PathBuf>, String), u64>,
-        scope: &Option<PathBuf>,
+        entries: &BTreeMap<(CoordinationScope, String), u64>,
+        scope: &CoordinationScope,
         key: &str,
     ) -> u64 {
         entries.iter()
@@ -267,18 +269,18 @@ impl SkillsCoordination {
         self.generation
     }
 
-    fn changed_skill(&mut self, scope: Option<PathBuf>, id: &str) {
+    fn changed_skill(&mut self, scope: CoordinationScope, id: &str) {
         let generation = self.next_generation();
         self.skills.insert((scope, id.to_string()), generation);
     }
 
-    fn changed_repo(&mut self, scope: Option<PathBuf>, key: &str) {
+    fn changed_repo(&mut self, scope: CoordinationScope, key: &str) {
         let generation = self.next_generation();
         self.repos.insert((scope.clone(), key.to_string()), generation);
         self.repo_changes.insert((scope, key.to_string()), generation);
     }
 
-    fn changed_repo_settings(&mut self, scope: Option<PathBuf>, key: &str) {
+    fn changed_repo_settings(&mut self, scope: CoordinationScope, key: &str) {
         let generation = self.next_generation();
         self.repo_changes.insert((scope, key.to_string()), generation);
     }
@@ -336,13 +338,17 @@ fn coordination_path_starts_with(path: &Path, root: &Path) -> bool {
     }
 }
 
-fn coordination_scopes_overlap(left: &Option<PathBuf>, right: &Option<PathBuf>) -> bool {
+fn coordination_scopes_overlap(left: &CoordinationScope, right: &CoordinationScope) -> bool {
     match (left, right) {
-        (Some(left), Some(right)) => {
+        (Some(left), Some(right)) => left.iter().any(|left| right.iter().any(|right| {
             coordination_path_starts_with(left, right) || coordination_path_starts_with(right, left)
-        }
+        })),
         _ => true,
     }
+}
+
+fn coordination_scope_is_current(captured: &CoordinationScope, current: &CoordinationScope) -> bool {
+    captured.is_none() || captured == current
 }
 
 #[cfg(windows)]
@@ -405,25 +411,17 @@ impl SkillsManager {
         self
     }
 
-    /// 用全部受管理路径的共同祖先形成保守范围；相交范围不能互相隔离。
-    fn coordination_scope(&self) -> Option<PathBuf> {
+    /// 路径不完整时返回全局范围；任意受管路径相交都不能互相隔离。
+    fn coordination_scope(&self) -> CoordinationScope {
         let paths = [
             self.source_dir.clone(),
             self.backups_dir.clone(),
             self.state_path.clone(),
             self.linked_dir(),
         ];
-        let mut paths = paths.iter().chain(self.agent_dirs.iter().map(|(_, dir)| dir));
-        let mut root = coordination_path(paths.next()?)?;
-        for path in paths {
-            let path = coordination_path(path)?;
-            while !coordination_path_starts_with(&path, &root) {
-                if !root.pop() {
-                    return None;
-                }
-            }
-        }
-        Some(root)
+        paths.iter().chain(self.agent_dirs.iter().map(|(_, dir)| dir))
+            .map(|path| coordination_path(path))
+            .collect()
     }
 
     pub fn agent_dirs(&self) -> &[(String, PathBuf)] {
@@ -679,7 +677,7 @@ impl SkillsManager {
     pub fn repo_guard_is_current(&self, guard: &SkillRepoGuard) -> anyhow::Result<bool> {
         let coordination = skills_coordination();
         if guard.repo != guard.repo_snapshot || self.state_path != guard.state_path
-            || self.coordination_scope() != guard.coordination_scope
+            || !coordination_scope_is_current(&guard.coordination_scope, &self.coordination_scope())
         {
             return Ok(false);
         }
@@ -713,7 +711,7 @@ impl SkillsManager {
         let new_key = resolved.key();
         let mut coordination = skills_coordination();
         let mut state = self.load_state_checked_unlocked()?;
-        if self.coordination_scope() != guard.coordination_scope
+        if !coordination_scope_is_current(&guard.coordination_scope, &self.coordination_scope())
             || coordination.repo_change_generation(&guard.coordination_scope, &old_key) != guard.generation
             || !state.repos.iter().any(|repo| repo == original)
             || state.repos.iter().any(|repo| repo.key() == new_key)
@@ -938,10 +936,10 @@ impl SkillsManager {
         &self,
         staging: &Path,
         installed: InstalledSkill,
-        generation: (Option<PathBuf>, u64),
+        generation: (CoordinationScope, u64),
     ) -> anyhow::Result<SkillsState> {
         let mut coordination = skills_coordination();
-        if self.coordination_scope() != generation.0
+        if !coordination_scope_is_current(&generation.0, &self.coordination_scope())
             || coordination.skill_generation(&generation.0, &installed.id) != generation.1
         {
             anyhow::bail!("导入期间 Skill 已改变，请重新导入");
@@ -1243,7 +1241,7 @@ impl SkillsManager {
                 && repo.branch == guard.repo_snapshot.branch
                 && repo.subdir == guard.repo_snapshot.subdir
         });
-        if self.coordination_scope() != guard.coordination_scope
+        if !coordination_scope_is_current(&guard.coordination_scope, &self.coordination_scope())
             || !repo_exists
             || coordination.repo_generation(&guard.coordination_scope, &key) != guard.repo_generation
             || coordination.skill_generation(&guard.coordination_scope, &guard.id) != guard.skill_generation
@@ -3380,6 +3378,27 @@ mod tests {
         let scope = manager(&temp).coordination_scope();
         assert!(scope.is_some());
         assert!(coordination_scopes_overlap(&None, &scope));
+        assert!(coordination_scope_is_current(&None, &scope));
+        assert!(!coordination_scope_is_current(&scope, &None));
+    }
+
+    #[test]
+    fn disjoint_paths_remain_independent_when_they_share_a_common_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_root = temp.path().join("one");
+        let second_root = temp.path().join("two");
+        let first = SkillsManager::new(
+            first_root.join("skills"), first_root.join("backups"),
+            first_root.join("state.json"), second_root.join("home-one"),
+        );
+        let second = SkillsManager::new(
+            second_root.join("skills"), second_root.join("backups"),
+            second_root.join("state.json"), first_root.join("home-two"),
+        );
+        let first_scope = first.coordination_scope();
+        let second_scope = second.coordination_scope();
+        assert!(first_scope.is_some() && second_scope.is_some());
+        assert!(!coordination_scopes_overlap(&first_scope, &second_scope));
     }
 
     #[test]
