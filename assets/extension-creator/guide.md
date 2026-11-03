@@ -5,18 +5,37 @@
 拓展是跑在 Codex 桌面 App 页面里的 JavaScript，能给 Codex 加页面、菜单、
 会话行操作，或者改造页面行为。完成后拓展立刻热重载生效，用户不用重启。
 
+## 同一对话持续修改
+
+- **同一个对话后续默认继续修改原来的拓展，保留已有功能；只有用户明确说新建另一个，才创建新的。**
+  “再加个功能”“顺便支持……”都属于继续修改，不能据此换 id 或另建拓展。
+- 工具根据 Codex 在本次调用里传来的 `threadId` 保存关联，重连后仍记得；不同对话各自独立。
+  `guide`、`list`、`read`、`write`、`configure` 返回的 `conversation.extensionId` 就是本对话当前目标，
+  为 null 表示尚未关联。不要拿全局最近修改的拓展、页面当前显示的对话或其他对话的目标来推测。
+- 首次创建时，`write` 提供未占用的 `id`、`name` 和 `files`，成功后自动关联。
+  继续修改时先 `read({})` 读回原代码，再 `write({ files: [...] })`；也可以明确填写同一个 id。
+  写入文件仍是完整内容，必须在原代码上添加功能，不能只写新增部分导致旧功能丢失。
+- 更新时省略的名称、版本、配置、入口、权限路由、钩子等清单声明会保留；显式提供的字段会替换原值。
+  要新增入口或列表项时先读原清单，再传包含旧项和新项的完整列表。没有提供的包内文件也会保留。
+- 只有用户明确要求另建一个拓展时，才传 `newExtension: true`，同时给未占用的 `id`、`name` 和 `files`；
+  成功后当前对话关联到新拓展，旧拓展保留。出错时先修复原因，不能擅自把 `newExtension` 改成 true。
+- 用户明确指定编辑某个已有拓展（包括新开对话继续编辑）时，调用 `read({ id: "原拓展", select: true })`
+  读回并选中它。普通 `read({ id: "其他拓展" })` 只读参考，不改变当前关联。
+- 缺少可信 `threadId` 时仍可读取指定 id，但不能写入或建立关联；不要编造 ID 或绕过工具直接写拓展目录。
+  告诉用户当前客户端未传递对话身份，需要使用支持此能力的 Codex 客户端重新连接拓展工具。
+
 ## 工作流程
 
 1. 先弄清用户想要什么：出现在哪里（图标栏整页 / Codex++ 菜单开关或按钮 / 会话行「更多」菜单 / 直接改页面）、
    点了做什么、要不要记住设置。需求含糊时先问，别猜。
 2. 要改 Codex 原生界面时（换图标、改颜色、隐藏或挪动按钮、在输入框旁加东西），先用
    `codexpp_extension_inspect` 查页面结构，不要凭印象猜选择器。见下文「改 Codex 原生界面」。
-3. 用 `codexpp_extension_write` 写入：给一个简短的英文 `id`（字母数字 `-` `_`），中文 `name` 与 `description`，
-   代码放在 `files` 里（默认入口 `renderer.js`）。`codexpp.json` 由工具生成，不要自己写。
+3. 用 `codexpp_extension_write` 写入：首次创建给一个简短的英文 `id`（字母数字 `-` `_`），中文 `name` 与 `description`；
+   后续默认使用本对话的关联继续修改。代码放在 `files` 里（默认入口 `renderer.js`）。`codexpp.json` 由工具生成，不要自己写。
 4. 看返回结果里的 `status` / `error`：
    - `loaded` 且没有 `error`：改了界面的话用 `codexpp_extension_screenshot` 截图确认真的生效（选择器没命中
      时拓展不会报错，只是没效果），再告诉用户去哪里看（例如「左侧图标栏新出现的 X 入口」）。
-   - `failed` 或有 `error`：读错误、改代码、再写一次。同一个 `id` 重复写入会覆盖。
+   - `failed` 或有 `error`：读错误、改代码、在同一个关联拓展上再写一次，不要因报错另建一个。
    - `reload.reloaded = false`：按 `reload.reason` 告诉用户需要做什么（通常是在 Codex++ 管理器里点「热重载」）。
 5. 改已有拓展前先 `codexpp_extension_read` 读回现有代码，在它的基础上改。
 6. 不提供删除：用户不想要了就 `codexpp_extension_set_enabled` 停用，并告诉用户拓展目录在哪里、可以手动删除。
@@ -139,8 +158,8 @@ npx esbuild src/main.js --bundle --minify --format=iife --outfile=/tmp/my-ext/di
 - 扩展名不是图片 / 音频 / 字体的 `sourcePath` 按 UTF-8 文本复制，单个最大 4 MiB、合计最大 8 MiB；打包时开 `--minify`，
   只打进用到的部分。页面脚本要用 `--format=iife`（入口里照常调用 `codexPlus.extension`）。
 - 打包产物会随 Codex 页面注入，越小越好。
-- 之后改这个拓展：`codexpp_extension_read` 里大文件的 `content` 是 `null`（只给大小）；重写拓展包时要把它们再用 `sourcePath`
-  带上一次，否则会丢。改源码就重新打包再写入。
+- 之后改这个拓展：`codexpp_extension_read` 里大文件的 `content` 是 `null`（只给大小）；没有改动的包内文件会保留，
+  不要用 null 或占位符覆盖。改源码时重新打包，再用 `sourcePath` 写回相同路径。
 
 ## 可配置项
 

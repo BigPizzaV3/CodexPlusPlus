@@ -840,7 +840,7 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     assert_eq!(*runtime.manager_payload.lock().unwrap(), transient_payload);
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
-        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false})
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false, "settingsRevision": ""})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
@@ -870,6 +870,25 @@ async fn backend_status_includes_active_official_usage_alert_setting() {
     let result = handle_bridge_request(ctx, "/backend/status", json!({})).await;
 
     assert_eq!(result["hideOfficialUsageAlert"], true);
+}
+
+#[tokio::test]
+async fn backend_status_carries_settings_revision_for_heartbeat() {
+    // 前端 5 秒一次的心跳靠这个字段判断设置有没有变：没变就不再拉一份 166 KB 的
+    // /settings/get。字段拿不到（空串）时前端退回全量拉取，所以这里只保证「有就传对」。
+    let settings = BackendSettings {
+        settings_revision: "rev-42".to_string(),
+        ..Default::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/backend/status", json!({})).await;
+
+    assert_eq!(result["settingsRevision"], "rev-42");
 }
 
 #[tokio::test]
@@ -1017,7 +1036,7 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
             &std::fs::read_to_string(temp.path().join("user_scripts.json")).unwrap()
         )
         .unwrap(),
-        json!({"enabled": false, "scripts": {}})
+        json!({"enabled": false, "scripts": {}, "claude_scripts": {}})
     );
 }
 
@@ -1194,7 +1213,7 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
 
     assert_eq!(
         status,
-        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false})
+        json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false, "settingsRevision": ""})
     );
     assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
     assert_eq!(loaded["scripts"][0]["key"], "builtin:demo.js");

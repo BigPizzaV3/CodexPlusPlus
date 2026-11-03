@@ -60,6 +60,44 @@ impl ProviderCache {
         Ok(db.pragma_query_value(None, "data_version", |row| row.get(0))?)
     }
 
+    pub(super) fn read_snapshot(storage: &Path, cutoff: NaiveDate) -> anyhow::Result<Self> {
+        let path = database_path(storage)?;
+        if !fs::symlink_metadata(&path)?.is_file() {
+            anyhow::bail!("provider cache is not a regular file");
+        }
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        db.busy_timeout(Duration::from_millis(100))?;
+        // 所有别名、覆盖边界和拒绝身份来自同一只读快照，不创建、迁移或淘汰数据。
+        db.execute_batch("BEGIN DEFERRED;")?;
+        let version: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version != 2 {
+            anyhow::bail!("unsupported provider cache version");
+        }
+        let mut aliases = BTreeMap::new();
+        {
+            let mut statement =
+                db.prepare("SELECT id,target FROM aliases WHERE last_seen>=?1 LIMIT ?2")?;
+            let rows = statement
+                .query_map(params![Self::since(cutoff), MAX_EVENTS + 1], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+            for row in rows {
+                let (id, target) = row?;
+                aliases.insert(id, target);
+            }
+        }
+        if aliases.len() > MAX_EVENTS {
+            anyhow::bail!("provider alias limit");
+        }
+        Ok(Self {
+            path,
+            db: Some(db),
+            aliases,
+            cutoff: Some(cutoff),
+            ..Self::default()
+        })
+    }
+
     pub(super) fn open(&mut self, home: &Path, cutoff: NaiveDate) -> anyhow::Result<bool> {
         fs::create_dir_all(home)?;
         let path = database_path(home)?;
@@ -646,11 +684,14 @@ impl ProviderCache {
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
-        let tx = db.unchecked_transaction()?;
+        let tx = db
+            .is_autocommit()
+            .then(|| db.unchecked_transaction())
+            .transpose()?;
         let mut floor = self
             .capture_floor("completed_proxy_requests")?
             .saturating_add(1);
-        let mut statement = tx.prepare(
+        let mut statement = db.prepare(
             "SELECT at,data FROM completed_proxy_requests
             WHERE session=?1 AND at>=?2 AND at<=?3 AND at>=?4 ORDER BY at DESC,id LIMIT 8193",
         )?;
@@ -669,7 +710,9 @@ impl ProviderCache {
             rows.retain(|(at, _)| *at >= floor);
         }
         drop(statement);
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(Captured {
             rows: rows.into_iter().map(|(_, row)| row).collect(),
             floor,
@@ -680,6 +723,21 @@ impl ProviderCache {
     pub(super) fn rejected_proxy_ids<'a>(
         &self,
         rows: impl IntoIterator<Item = &'a RequestEvidence>,
+    ) -> anyhow::Result<HashSet<String>> {
+        self.check_proxy_ids(rows, true)
+    }
+
+    pub(super) fn rejected_proxy_ids_read_only<'a>(
+        &self,
+        rows: impl IntoIterator<Item = &'a RequestEvidence>,
+    ) -> anyhow::Result<HashSet<String>> {
+        self.check_proxy_ids(rows, false)
+    }
+
+    fn check_proxy_ids<'a>(
+        &self,
+        rows: impl IntoIterator<Item = &'a RequestEvidence>,
+        persist: bool,
     ) -> anyhow::Result<HashSet<String>> {
         let db = self
             .db
@@ -702,12 +760,15 @@ impl ProviderCache {
         }
         // 批量检查三类输入，避免逐事件查询；也发现采集线程尚未处理的 ID 复用。
         let ids: Vec<_> = current.keys().copied().collect();
-        let tx = db.unchecked_transaction()?;
+        let tx = db
+            .is_autocommit()
+            .then(|| db.unchecked_transaction())
+            .transpose()?;
         for batch in ids.chunks(256) {
             let slots = std::iter::repeat_n("?", batch.len())
                 .collect::<Vec<_>>()
                 .join(",");
-            let mut statement = tx.prepare(&format!(
+            let mut statement = db.prepare(&format!(
                 "SELECT id,data FROM completed_proxy_requests WHERE id IN ({slots})"
             ))?;
             let stored = statement.query_map(rusqlite::params_from_iter(batch.iter()), |row| {
@@ -720,7 +781,7 @@ impl ProviderCache {
                     rejected.insert(id);
                 }
             }
-            let mut statement = tx.prepare(&format!(
+            let mut statement = db.prepare(&format!(
                 "SELECT id FROM rejected_proxy_ids WHERE id IN ({slots})"
             ))?;
             let denied = statement.query_map(rusqlite::params_from_iter(batch.iter()), |row| {
@@ -730,10 +791,10 @@ impl ProviderCache {
                 rejected.insert(id?);
             }
         }
-        {
+        if persist {
             let now = Local::now().timestamp_millis();
             let today = now.div_euclid(86_400_000) * 86_400_000;
-            let mut statement = tx.prepare_cached(
+            let mut statement = db.prepare_cached(
                 "INSERT INTO rejected_proxy_ids VALUES(?1,?2)
                 ON CONFLICT(id) DO UPDATE SET at=excluded.at WHERE at<?3",
             )?;
@@ -741,7 +802,9 @@ impl ProviderCache {
                 statement.execute(params![id, now, today])?;
             }
         }
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(rejected)
     }
 

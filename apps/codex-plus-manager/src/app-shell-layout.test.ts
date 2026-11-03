@@ -90,7 +90,7 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   assert.match(button, /variant="default"/);
   // 顶栏：只在 Codex 的页面里、排在页面操作挂载点之后。Codex++ 不只服务 Codex，
   // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不放。
-  assert.match(entry, /const onCodexPage = routeTool\(route\) === "codex" \|\| \(route === "overview" && activeTool === "codex"\);/);
+  assert.match(entry, /const onCodexPage = \(routeTool\(route\) === "codex" && \(route !== "userScripts" \|\| activeTool === "codex"\)\) \|\| \(route === "overview" && activeTool === "codex"\);/);
   assert.match(
     entry,
     /<div className="topbar-page-actions" data-topbar-actions \/>\n[\s\S]{0,400}\{onCodexPage \? <CodexLaunchButton className="topbar-codex-launch" size="sm" state=\{codexLaunch\} \/> : null\}/,
@@ -198,7 +198,10 @@ test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算
 test("旧版 Codex 供应商配置页顶部：没接入时建议改用新版网关，接入后显示状态并能断开还原", () => {
   const app = functionSource("App");
   assert.match(app, /<LegacyRelayGatewayHint[\s\S]*onOpenGateway=\{\(\) => void navigate\("gatewayProviders"\)\}/);
-  assert.match(app, /invoke<\{ status: string; message: string \}>\("disable_gateway_binding", \{ agent: "codex" \}\)/);
+  assert.match(app, /onDisconnect=\{\(\) => setLegacyDisconnectOpen\(true\)\}/);
+  assert.match(app, /legacyDisconnectOpen \? \(\s*<AgentDisconnectDialog/);
+  assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
+  assert.doesNotMatch(app, /"disable_gateway_binding", \{ agent: "codex" \}/);
   const hint = functionSource("LegacyRelayGatewayHint");
   assert.match(hint, /t\("建议改用新版网关"\)/);
   assert.match(hint, /form\.activeRelayId === CODEX_GATEWAY_RELAY_ID/);
@@ -303,11 +306,12 @@ test("置顶推荐位只放在网关总览一处，各 Agent 的概览不再重�
   assert.equal((text.match(/<SponsorBoard /g) ?? []).length, 1);
 });
 
-test("Codex 被网关接管时，旧版供应商页的配置切换、添加供应商隐藏（不是置灰），从第三方导入保留（#2801）", () => {
+test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时保留恢复入口（#2801）", () => {
   const screen = functionSource("RelayScreen");
   assert.doesNotMatch(screen, /actions=\{takenOverByGateway \? null : \(/);
-  assert.match(screen, /\{takenOverByGateway \? null : <label\r?\n\s+className="switch-row compact relay-master-switch/);
+  assert.match(screen, /\{!takenOverByGateway \|\| !normalized\.relayProfilesEnabled \? <label\r?\n\s+className="switch-row compact relay-master-switch/);
   assert.match(screen, /\{takenOverByGateway \? null : \(\r?\n\s+<Button\r?\n\s+onClick=\{\(\) => \{ setNewProfileDraft\(null\); setDetailProfileId\(null\); setProviderCatalogOpen\(true\); \}\}/);
+  assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关/);
   // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
   const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf('<div className="mg-content">'));
   assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
@@ -390,13 +394,17 @@ test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
   assert.match(hub, /export function HubTopology\(/);
 });
 
-test("首次使用引导：首次启动自动打开（预览模式除外），看完或跳过都记下版本；设置页可重新打开；每一步的目标在侧栏都有锚点", () => {
+test("首次入门清单与可选导览分开；模式确认后显示清单，旧用户可从设置重开", () => {
   const app = functionSource("App");
   // 使用模式问卷先弹，答完才进引导。
-  assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} \/> : null\}/);
+  assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} onCancel=\{cancelAgentFocus\} \/> : null\}/);
   assert.match(app, /\{tourOpen && !agentFocusOpen \? <OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/> : null\}/);
+  assert.match(app, /setupOpen && !agentFocusOpen \? \(\s*<OnboardingSetup/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
-  assert.match(functionSource("initialTourOpen"), /has\("previewRoute"\)/);
+  assert.match(functionSource("initialSetupOpen"), /has\("previewRoute"\)/);
+  assert.match(functionSource("initialSetupOpen"), /shouldShowSetup\(/);
+  assert.match(app, /if \(agentFocusOpen \|\| tourOpen\) return;\s*setPaletteOpen/);
+  assert.match(app, /updatePrompt && !agentFocusOpen && !tourOpen/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
   const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");
@@ -459,6 +467,17 @@ test("会话页可以删除会话，不再有「在终端继续」；Claude Code
   assert.match(sessions, /appConfirm\(/);
   const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /gateway_commands::delete_agent_session,/);
+});
+
+test("会话页列出 Claude Desktop 的会话：标出 Desktop / 已归档，恢复命令用 cliSessionId，删除前提示先退出 Desktop", () => {
+  const sessions = readSource("./GatewaySessions.tsx");
+  assert.match(sessions, /session\.surface === "desktop" \? <span className="gw-pill"/);
+  assert.match(sessions, /session\.archived \? <span className="gw-pill">\{t\("已归档"\)\}/);
+  assert.match(sessions, /const id = session\.resumeId \?\? session\.id;/);
+  assert.match(sessions, /需要先退出 Claude Desktop/);
+  const commands = readSource("../src-tauri/src/gateway_commands.rs");
+  assert.match(commands, /sessions::list_claude_sessions_with_desktop\(/);
+  assert.match(commands, /"claude" if desktop => \{\n\s*if codex_plus_core::computer_use::claude_desktop_running\(\)/);
 });
 
 test("添加供应商是弹出框，不再铺在供应商池页面里；池为空时显示引导", () => {

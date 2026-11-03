@@ -218,10 +218,16 @@ async function evaluate(c, expression) {
         detached: true,
         stdio: 'ignore',
         windowsHide: false,
+        env: process.env,
       });
       child.unref();
     } else {
-      const openArgs = ['-n', '-a', APP, '--args', `--inspect=127.0.0.1:${port}`];
+      const openArgs = ['-n', '-a', APP];
+      // LaunchServices 不保证继承脚本环境；只给这次受管副本启动传入插件目录。
+      if (process.env.CLAUDE_CODE_PLUGIN_DIRS) {
+        openArgs.push('--env', `CLAUDE_CODE_PLUGIN_DIRS=${process.env.CLAUDE_CODE_PLUGIN_DIRS}`);
+      }
+      openArgs.push('--args', `--inspect=127.0.0.1:${port}`);
       if (PROFILE) openArgs.push(`--user-data-dir=${PROFILE}`); // 必须用 = 形式，空格分隔 Chromium 不认
       const r = spawnSync('open', openArgs, { encoding: 'utf8' });
       if (r.status !== 0) {

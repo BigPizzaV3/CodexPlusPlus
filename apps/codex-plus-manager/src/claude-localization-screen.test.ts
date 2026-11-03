@@ -102,7 +102,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ready = {
   status: "ok", supported: true, prepared: true, needsRebuild: false,
   running: false, nodeAvailable: true, sourceVersion: "1.2.3", copyVersion: "1.2.3",
-  catalogEntries: 1234, localization: true, voiceInput: true, computerUse: false,
+  catalogEntries: 1234, localization: true, voiceInput: true, extensions: false, computerUse: false,
   bashTimeout: { enabled: false, defaultEnabled: true, defaultSeconds: 120, maxEnabled: true, maxSeconds: 1800 },
 };
 
@@ -200,6 +200,19 @@ test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开�
   const page = quiet.render();
   assert.equal(warning(page), false, "未接入时不应显示冲突提醒");
   assert.ok(text(page).includes("二选一"), "仍保留一句二选一的说明");
+});
+
+test("Claude 增强页不再重复提供万物皆拓展开关，保留其他增强项", () => {
+  for (const extensions of [false, true]) {
+    const screen = harness({ status: { ...ready, extensions }, autoDetected: true });
+    const page = screen.render();
+    assert.equal(inputs(page).some((input) => input.props["aria-label"] === "万物皆拓展"), false);
+    assert.doesNotMatch(text(page), /万物皆拓展/);
+    for (const feature of ["界面汉化", "语音输入", "Computer Use", "解锁 Bash 时间限制"]) {
+      assert.ok(text(page).includes(feature), feature);
+    }
+    assert.equal(screen.calls.length, 0);
+  }
 });
 
 test("Bash 时间限制可分别修改默认值和最大值", async () => {

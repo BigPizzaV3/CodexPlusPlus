@@ -1092,20 +1092,35 @@ fn restore_codex_files(
     saved: &CodexLiveStash,
     live: &CodexLiveStash,
 ) -> anyhow::Result<()> {
+    let config = restored_codex_config(saved, live)?;
+    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[0]), config.as_deref())?;
+    let auth = restored_codex_auth(saved, live)?;
+    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[1]), auth.as_deref())?;
+    Ok(())
+}
+
+fn restored_codex_config(
+    saved: &CodexLiveStash,
+    live: &CodexLiveStash,
+) -> anyhow::Result<Option<String>> {
     let config_paths = match &saved.config_changed {
         Some(changed) => changed.iter().map(|key| key.path.clone()).collect(),
         None => {
             legacy_codex_config_paths(saved.config_toml.as_deref(), live.config_toml.as_deref())
         }
     };
-    let config = stash::restore_toml(
+    stash::restore_toml(
         saved.config_toml.as_deref(),
         live.config_toml.as_deref(),
         &config_paths,
     )
-    .context("还原 Codex 的 config.toml 失败")?;
-    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[0]), config.as_deref())?;
+    .context("还原 Codex 的 config.toml 失败")
+}
 
+fn restored_codex_auth(
+    saved: &CodexLiveStash,
+    live: &CodexLiveStash,
+) -> anyhow::Result<Option<String>> {
     let auth_changed = match &saved.auth_changed {
         Some(changed) => changed.clone(),
         // 旧版存档：只认得出网关自己的 token（cpx-gw- 开头），把它们换回接入前的值。
@@ -1125,15 +1140,67 @@ fn restore_codex_files(
             })
             .collect(),
     };
-    let auth = stash::restore_json(
+    stash::restore_json(
         saved.auth_json.as_deref(),
         live.auth_json.as_deref(),
         &auth_changed,
         |key, _, now| stash::value_at(now, &key.path) != key.written.as_ref(),
     )
-    .context("还原 Codex 的 auth.json 失败")?;
-    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[1]), auth.as_deref())?;
-    Ok(())
+    .context("还原 Codex 的 auth.json 失败")
+}
+
+/// 只计算有实时存档的 Codex 还原结果，不调用会写应用状态、目录和迁移记录的供应商切换。
+/// 借出的登录须由调用方先在隔离副本里收回；没有可精确投影的存档时返回 None。
+pub(crate) fn preview_codex_stashed_restore(
+    ctx: &ApplyContext,
+    binding: &AgentBinding,
+) -> anyhow::Result<Option<Vec<(PathBuf, Option<String>)>>> {
+    let settings = ctx.settings.load()?;
+    let live = capture_codex_live(ctx);
+    if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID
+        || taken_over(ctx, &ToolId::Codex).is_some()
+    {
+        return Ok(Some(vec![(
+            ctx.codex_home.join(CODEX_LIVE_FILES[1]),
+            live.auth_json,
+        )]));
+    }
+    let Some(saved) = stash::load_stash::<CodexLiveStash>(&codex_stash_path(ctx)) else {
+        return Ok(None);
+    };
+    if !settings.relay_profiles_enabled {
+        bail!("Codex 的供应商配置总开关已关闭");
+    }
+    let previous = binding.restore.codex_previous_relay_id.trim();
+    let target = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == previous && profile.id != CODEX_GATEWAY_RELAY_ID)
+        .or_else(|| {
+            settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id != CODEX_GATEWAY_RELAY_ID)
+        })
+        .context("Codex 没有可切回的直连供应商")?;
+    if settings
+        .aggregate_relay_profiles
+        .iter()
+        .any(|profile| profile.id == previous)
+        || target.relay_mode == RelayMode::Aggregate
+    {
+        return Ok(None);
+    }
+    Ok(Some(vec![
+        (
+            ctx.codex_home.join(CODEX_LIVE_FILES[0]),
+            restored_codex_config(&saved, &live)?,
+        ),
+        (
+            ctx.codex_home.join(CODEX_LIVE_FILES[1]),
+            restored_codex_auth(&saved, &live)?,
+        ),
+    ]))
 }
 
 /// 把托管供应商放进直连模式的列表并切过去（已经在用时只刷新它的配置）。
@@ -1147,7 +1214,7 @@ fn write_codex(
 ) -> anyhow::Result<()> {
     let mut settings = ctx.settings.load()?;
     if !settings.relay_profiles_enabled {
-        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：先在 Codex 设置里打开");
+        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：请在 Codex++ 的「供应商列表」里打开「配置切换」");
     }
     // Codex 在 WSL 里运行：网关额外监听 WSL 网卡，地址写成它（#2773）；拿不到时保持回环。
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();

@@ -1,0 +1,31 @@
+Mode: built-in image_gen, transparent_background=true.
+Reference: user-provided blue-haired chibi maid character turnaround.
+Generated source: call_bCVWkCnOrFbMvwyFhT800QSA.png.
+
+Use case: stylized-concept.
+Asset type: production transparent 2D desktop pet sprite sheet.
+Draw the same blue-haired chibi maid character from the front: very long
+royal blue hair with light blue tips, white lace headband, small blue bows,
+big blue eyes, navy blue long-sleeve maid dress with subtle gold trim,
+white apron with a blue whale motif, small navy shoes, chibi proportions.
+She enjoys a bowl of plain fluffy white rice using wooden chopsticks.
+Four frames in reading order: idle holding a rice bowl, lifting a bite,
+rice at her mouth with happily closed eyes, chewing with puffed cheeks.
+Keep character scale, head position, feet baseline and bowl position
+consistent. Only the right arm, chopsticks, mouth and eyes change.
+True transparent RGBA background. No grid, labels, scenery or watermark.
+
+The generated sheet is 2048x1144. Runtime uses 512x568 viewports at
+(472, -20), (1072, -20), (472, 550), (1072, 550). Extra transparent
+headroom aligns the feet and prevents the adjacent row from leaking.
+The packaged PNG is
+resampled to 1024x572, preserving alpha, to stay below the asset limit.
+
+The twelve-frame playback atlas is assets/rice-maid-sequence.webp
+(1024x852, four columns by three rows, 256x284 per frame). It is derived
+from that original PNG with scripts/build-sequence.py. The script uses
+Pillow and NumPy to extract the four anchor poses and gently raise/lower
+the bowl area, and FFmpeg motion interpolation to add two in-between
+poses to each transition, including the return to idle. It does not
+generate a new character or change the original source artwork. Runtime
+shows one atlas layer without whole-character crossfades.

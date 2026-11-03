@@ -78,12 +78,14 @@ export function GatewayPage({
   tab: controlledTab,
   onTabChange,
   extraSettings,
+  onOpenCodexProviderSettings,
 }: {
   notify: Notify;
   tab?: Tab;
   onTabChange?: (tab: Tab) => void;
   /** 「网关设置」末尾附加的内容：主窗口传进来的新旧共用本地服务设置。 */
   extraSettings?: ReactNode;
+  onOpenCodexProviderSettings?: () => void;
 }) {
   const [payload, setPayload] = useState<GatewayPayload | null>(memo.payload);
   const [busy, setBusy] = useState<string | null>(memo.payload ? null : "load");
@@ -223,7 +225,7 @@ export function GatewayPage({
             <span>{t("本地网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
           </p>
         ) : null}
-        {tab === "agents" ? <AgentsView busy={busy} notify={notify} onManage={() => setTab("providers")} payload={payload} run={run} /> : null}
+        {tab === "agents" ? <AgentsView busy={busy} notify={notify} onManage={() => setTab("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
         {tab === "sessions" ? <SessionsView notify={notify} /> : null}
         {tab === "providers" ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "routing" ? <RoutingView busy={busy} payload={payload} run={run} /> : null}

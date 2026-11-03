@@ -23,8 +23,13 @@
 }
 
 .tour-card {
+  box-sizing: border-box;
   position: fixed;
-  width: 320px;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 16px 16px 14px;
   border: 1px solid hsl(var(--border));
   border-radius: 12px;
@@ -35,7 +40,7 @@
 }
 
 .tour-card[data-centered="true"] {
-  width: 380px;
+  width: min(380px, calc(100vw - 24px));
 }
 
 .tour-close {
@@ -68,6 +73,7 @@
 
 .tour-card h3 {
   margin: 4px 0 6px;
+  padding-right: 24px;
   font-size: 15px;
   font-weight: 650;
 }
@@ -77,6 +83,7 @@
   color: hsl(var(--muted-foreground));
   font-size: 12.5px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .tour-dots {
@@ -101,6 +108,7 @@
 
 .tour-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
 }
@@ -137,6 +145,12 @@
   filter: brightness(1.08);
 }
 
+.tour-actions button:disabled,
+.agent-focus-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .tour-actions button:focus-visible,
 .tour-close:focus-visible {
   outline: 2px solid hsl(var(--ring));
@@ -155,7 +169,7 @@
 .tour-card.agent-focus-card {
   top: 50%;
   left: 50%;
-  width: 440px;
+  width: min(440px, calc(100vw - 24px));
   transform: translate(-50%, -50%);
 }
 
@@ -170,6 +184,18 @@
   background: hsl(var(--warning, 38 92% 50%) / 0.12);
   color: hsl(var(--foreground));
   font-size: 11.5px;
+}
+
+.agent-focus-status {
+  margin: 0 0 12px;
+}
+
+.agent-focus-status p {
+  margin: 0 0 8px;
+}
+
+.tour-card p[role="alert"] {
+  color: hsl(var(--destructive));
 }
 
 .agent-focus-list {

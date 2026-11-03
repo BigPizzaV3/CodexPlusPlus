@@ -1366,10 +1366,19 @@ fn backend_status_value(
 ) -> anyhow::Result<Value> {
     let mut status = status?;
     if let Some(object) = status.as_object_mut() {
+        let settings = settings.ok();
         let hide = settings
-            .map(|settings| crate::assets::hide_official_usage_alert_config(&settings))
+            .as_ref()
+            .map(crate::assets::hide_official_usage_alert_config)
             .unwrap_or(false);
         object.insert("hideOfficialUsageAlert".to_string(), Value::Bool(hide));
+        // 设置快照的版本。前端 5 秒一次的心跳靠它判断设置有没有变：没变就不用再拉一次整份
+        // /settings/get（166 KB 的 JSON，编解码开销全落在渲染进程主线程上）。
+        let revision = settings
+            .as_ref()
+            .map(|settings| settings.settings_revision.clone())
+            .unwrap_or_default();
+        object.insert("settingsRevision".to_string(), Value::from(revision));
     }
     Ok(status)
 }
