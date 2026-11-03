@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 478
+      "lines": 483
     },
     {
       "name": "01-registry.js",
@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2799
+      "lines": 2803
     },
     {
       "name": "20-menu.js",
@@ -38,7 +38,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2394
+      "lines": 2406
     },
     {
       "name": "41-extension-detail.js",
@@ -72,8 +72,8 @@
     },
     {
       "name": "71-model-picker-groups.js",
-      "description": "原生模型选择器按供应商分组折叠（聚合供应商场景）",
-      "lines": 1179
+      "description": "原生模型选择器供应商图标入口与模型列表导航（聚合供应商场景）",
+      "lines": 1192
     },
     {
       "name": "80-session-share.js",
@@ -118,17 +118,17 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1090
+      "lines": 1113
     },
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 454
+      "lines": 505
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1351
+      "lines": 1385
     },
     {
       "name": "91-extension-rpc.js",
@@ -143,7 +143,7 @@
     {
       "name": "92-extension-slots.js",
       "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
-      "lines": 676
+      "lines": 728
     },
     {
       "name": "92-extension-extras.js",
@@ -163,7 +163,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 682
+      "lines": 684
     },
     {
       "name": "96-builtin-extensions.js",
@@ -183,7 +183,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 182
+      "lines": 183
     },
     {
       "name": "98-avatar-overlay-layout.js",

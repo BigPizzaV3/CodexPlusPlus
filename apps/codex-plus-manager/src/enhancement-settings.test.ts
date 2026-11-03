@@ -180,7 +180,7 @@ test("enhancement switches come only from the settings catalog", () => {
   }
   // 会话维护页的自动修复开关与 Codex 设置页同一条文案。
   assert.match(appSource, /const providerSyncItem = enhancementItem\("providerSyncEnabled"\);/);
-  assert.match(appSource, /<strong>\{t\(providerSyncItem\.title\)\}<\/strong>/);
+  assert.match(appSource, /<SettingRow title=\{t\(providerSyncItem\.title\)\} description=\{t\(providerSyncItem\.description\)\}>/);
   assert.match(appSource, /<strong>\{t\(masterItem\.title\)\}<\/strong>/);
 });
 

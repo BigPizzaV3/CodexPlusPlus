@@ -4,6 +4,24 @@ use std::sync::{Mutex, MutexGuard};
 
 static GLOBAL_STATE: Mutex<()> = Mutex::new(());
 
+/// 先停测试所属目录的后台，再重新抛出断言失败，避免 Windows 运行时退出时等住子进程管道。
+/// future 若启动了连接等任务，必须先等待那些任务退出，不能在清理之后又启动后台。
+pub async fn with_extension_backend_cleanup<T>(
+    managers: &[&codex_plus_core::user_scripts::UserScriptManager],
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    use futures_util::FutureExt;
+
+    let outcome = std::panic::AssertUnwindSafe(future).catch_unwind().await;
+    for manager in managers {
+        codex_plus_core::extension_backend::stop_all(manager).await;
+    }
+    match outcome {
+        Ok(value) => value,
+        Err(failure) => std::panic::resume_unwind(failure),
+    }
+}
+
 /// 串行化会改进程级状态的用例：设置路径覆盖、诊断日志路径、环境变量等。
 ///
 /// 合并前这些用例分散在不同测试程序里，靠进程隔离互不干扰；合并后同一进程内并行，

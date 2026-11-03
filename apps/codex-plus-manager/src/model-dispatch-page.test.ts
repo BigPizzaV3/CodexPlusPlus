@@ -7,7 +7,7 @@ const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url
 
 test("总览「最近请求」是真实请求列表，对得上路由记录的那条可展开看这次怎么走的，右上角去请求日志", () => {
   const hub = read("HubOverview.tsx");
-  assert.match(hub, /<h3>\{t\("最近请求"\)\}<\/h3>/);
+  assert.match(hub, /title=\{t\("最近请求"\)\}/);
   assert.match(hub, /onNavigate\("requestLog"\)/);
   assert.doesNotMatch(hub, /gatewayRouting/);
   assert.match(hub, /useRequestFlow\(FLOW_REFRESH_MS\)/);
@@ -32,19 +32,18 @@ test("路由页：「我的组」和「自动组」两段卡片，卡片上直�
   assert.match(page, /\{t\("自动组"\)\}/);
   assert.match(page, /"save_gateway_auto_group", \{\s*model: group\.name,/);
   assert.match(page, /onPick=\{\(\) => onChange\(\{ pick: member\.model \}\)\}/);
-  assert.match(page, /onToggle=\{\(\) => onChange\(\{ hideMembers: !group\.hideMembers \}\)\}/);
+  // 隐藏成员在组卡片标题行的三点菜单里（打勾项），卡片不再有底栏。
+  assert.match(page, /<MenuItem checked=\{group\.hideMembers === true\} disabled=\{disabled\} onClick=\{\(\) => onChange\(\{ hideMembers: !group\.hideMembers \}\)\}>/);
+  assert.doesNotMatch(page, /gw-route-group-foot/);
   // 编辑器不管隐藏成员与手动选中：保存时沿用卡片上的。
   assert.match(page, /hideMembers: previous\?\.hideMembers \?\? false, pick: previous\?\.pick \?\? ""/);
 });
 
-test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池里「按模型」是供应商 × 模型矩阵，点列头回到列表展开那一家", () => {
+test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池只有按供应商的列表（「按模型」矩阵已去掉）", () => {
   const app = read("App.tsx");
   assert.match(app, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"\];/);
   const providers = read("GatewayProviders.tsx");
-  assert.match(providers, /<ModelMatrix\s/);
-  assert.match(providers, /setView\("list"\);\s*setExpanded\(id\);/);
-  const matrix = read("GatewayModelMatrix.tsx");
-  assert.match(matrix, /onClick=\{\(\) => onOpenProvider\(entry\.id\)\}/);
-  assert.match(matrix, /title=\{tf\("在供应商池里打开「\{0\}」", \[maskAccountName\(entry\.name\)\]\)\}/);
+  assert.doesNotMatch(providers, /<ModelMatrix\s|t\("按模型"\)/);
+  assert.match(providers, /placeholder=\{t\("查找供应商"\)\}/);
   assert.match(read("GatewayAgents.tsx"), /section\.key === "group" && nav\.openModelGroups \?/);
 });

@@ -8,7 +8,9 @@ import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen,
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
-import { AgentColumn, ManagementDrawer, MatrixCell, Menu, MenuItem, SearchField } from "./ManagementPages";
+import { AgentToggle, ManagementDrawer, Menu, MenuItem } from "./ManagementPages";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { AgentGlyph } from "./HubOverview";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
@@ -32,7 +34,7 @@ type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number
 const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
 const skillBatchRegistry = new SkillBatchRegistry();
 const ok = (r: Result) => r.status === "ok";
-function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={"mg-button " + (primary ? "mg-primary" : "")} onClick={onClick} disabled={disabled}>{children}</button>; }
+function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={primary ? "cx-primary" : "cx-secondary"} onClick={onClick} disabled={disabled}>{children}</button>; }
 function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) { return <div className="mg-search"><Search size={14} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>; }
 // 标题由外壳顶栏显示；这里只把页面操作送进顶栏。
 function Header({ actions }: { icon?: ReactNode; title?: string; actions: ReactNode }) { return <TopbarActions>{actions}</TopbarActions>; }
@@ -194,7 +196,8 @@ function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<S
   return <section className="mg-skill-group" ref={setNodeRef} data-dragging={isDragging}
     style={{ transform: CSS.Transform.toString(transform), transition }}>{children(handle)}</section>;
 }
-function GroupAgentSelect({ group, agent, busy, operations, onChange }: { group: SkillGroup<Skill>; agent: McpAgentId; busy: boolean; operations: PendingSkillBatchOperation[]; onChange: (enabled: boolean) => void }) {
+/** 分组标题上的批量开关：和行里的 Agent 胶囊同一列，一组全开是实心、部分开是半实心；点一下全开或全关。 */
+function GroupAgentSelect({ group, agent, busy, operations, count, onChange }: { group: SkillGroup<Skill>; agent: McpAgentId; busy: boolean; operations: PendingSkillBatchOperation[]; count?: number; onChange: (enabled: boolean) => void }) {
   const pendingById = new Map<string, boolean>();
   for (const operation of operations) {
     if (operation.agent !== agent) continue;
@@ -209,11 +212,13 @@ function GroupAgentSelect({ group, agent, busy, operations, onChange }: { group:
     return { ...skill, agents };
   }), agent);
   const name = agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : "Grok";
-  return <label className="mg-skill-batch-cell" title={`${group.label} · ${name} · ${t("全选")}`}>
-    <input type="checkbox" aria-label={`${group.label} · ${name} · ${t("全选")}`} checked={state.checked}
-      ref={(element) => { if (element) element.indeterminate = state.mixed; }} disabled={busy || !state.total}
-      onChange={(event) => onChange(event.target.checked)} />
-  </label>;
+  const label = `${group.label} · ${name} · ${t("全选")}`;
+  return <button type="button" className="cx-agent-toggle cx-skill-batch" aria-label={label}
+    title={count === undefined ? label : `${label}（${tf("已启用 {0} 个 Skill", [count])}）`}
+    aria-pressed={state.mixed ? "mixed" : state.checked} disabled={busy || !state.total}
+    onClick={() => onChange(!state.checked)}>
+    <AgentGlyph agent={agent} /><span>{name}</span>
+  </button>;
 }
 export function SkillsPage({ notify }: { notify: Notify }) {
   const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>({ version: 0, value: null });
@@ -502,112 +507,118 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setGroupSortDirection(null);
   };
   const agentCount = (agent: McpAgentId) => (data?.skills || []).filter((s) => s.installed && skillAgents(s).includes(agent)).length;
-  // 与 MCP 页同一张表：名称 | 来源 | 每个 Agent 一列勾选 | 操作。分组、详情、卸载收进行末的「更多」菜单。
+  // 参照 MCP 页（Cursor 的 Customize）：每个 Skill 一行，右侧是各 Agent 的开关胶囊；分组是卡片外的小标题，
+  // 标题右侧同一列位置是这一组的批量开关。详情、分组、卸载收进行末的三点菜单。
   const renderSkillRow = (s: Skill) => {
     const update = s.bundled ? undefined : updates.find((item) => item.id === s.id);
     // 只卸载 Codex++ 管理的或 Codex 目录里的；Claude / Grok 自己目录里的 Skill 不动。
     const canUninstall = s.installed && !s.bundled && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
     const assignment = skillGroupAssignment(s, customGroupNames, customGroupAssignments, assignmentsByIdentity);
-    return <div className="mg-matrix-row" key={skillIdentityKey(s)}>
-      <button type="button" className="mg-row-main" onClick={() => setDetail(s)}>
-        <div><strong title={s.name || s.id}>{s.name || s.id}</strong>{s.updateAvailable ? <span className="mg-badge">{t("可更新")}</span> : null}</div>
-        <small title={s.description}>{s.description || t("暂无描述")}</small>
-      </button>
-      <div className="mg-skill-source" title={s.repoKey || sourceLabel(s)}>
-        {repoUrl(s) ? <button className="mg-link-button" onClick={() => openRepo(s.repoKey)} type="button">{sourceLabel(s)}</button> : <small>{sourceLabel(s)}</small>}
+    const on = s.installed && agentColumns.some((agent) => skillAgents(s).includes(agent));
+    return <CxRow className="cx-skill-row" key={skillIdentityKey(s)}
+      icon={<CxStatusIcon tone={on ? "ok" : "off"}><BookOpen /></CxStatusIcon>}
+      title={s.name || s.id}
+      badges={<>
+        <small className="cx-skill-source" title={s.repoKey || sourceLabel(s)}>{sourceLabel(s)}</small>
+        {s.updateAvailable ? <CxBadge tone="warn">{t("可更新")}</CxBadge> : null}
+      </>}
+      detail={<span title={s.description}>{s.description || t("暂无描述")}</span>}
+      onClick={() => setDetail(s)}>
+      {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable ? <Button onClick={() => { queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
+      <div className="cx-agent-toggles" role="group" aria-label={t("启用到 Agent")}>
+        {agentColumns.map((agent) => <AgentToggle agent={agent} key={agent} name={s.name || s.id}
+          enabled={s.installed && skillAgents(s).includes(agent)}
+          disabled={busy || !s.installed || s.bundled || skillBatchHasPending(batchOperations, [s], agent)}
+          title={data?.agentSkillsDirs?.[agent]}
+          hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
+          onToggle={() => void run("set_skill_enabled_for", { agent, id: s.id, enabled: !skillAgents(s).includes(agent) })} />)}
       </div>
-      {agentColumns.map((agent) => <MatrixCell agent={agent} key={agent} name={s.name || s.id}
-        enabled={s.installed && skillAgents(s).includes(agent)}
-        disabled={busy || !s.installed || s.bundled || skillBatchHasPending(batchOperations, [s], agent)}
-        hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
-        onToggle={() => void run("set_skill_enabled_for", { agent, id: s.id, enabled: !skillAgents(s).includes(agent) })} />)}
-      <div className="mg-row-actions">
-        {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button primary onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable ? <Button onClick={() => { queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
-        <Menu>
-          <MenuItem onClick={() => setDetail(s)}>{t("查看详情")}</MenuItem>
-          {!s.bundled && customGroupNames.length ? <>
-            <div className="mg-menu-label">{t("分组")}</div>
-            <MenuItem checked={!assignment} onClick={() => assignSkillGroup(s, "")}>{t("按来源")}</MenuItem>
-            {customGroupNames.map((group) => <MenuItem checked={assignment === customSkillGroupKey(group)} key={group} onClick={() => assignSkillGroup(s, group)}>{group}</MenuItem>)}
-          </> : null}
-          {canUninstall ? <MenuItem danger disabled={busy || Boolean(update)} onClick={() => void run("uninstall_skill", { id: s.id })}>{t("卸载")}</MenuItem> : null}
-        </Menu>
-      </div>
-    </div>;
+      <Menu>
+        <MenuItem onClick={() => setDetail(s)}>{t("查看详情")}</MenuItem>
+        {repoUrl(s) ? <MenuItem onClick={() => openRepo(s.repoKey)}>{t("管理仓库")}</MenuItem> : null}
+        {!s.bundled && customGroupNames.length ? <>
+          <div className="mg-menu-label">{t("分组")}</div>
+          <MenuItem checked={!assignment} onClick={() => assignSkillGroup(s, "")}>{t("按来源")}</MenuItem>
+          {customGroupNames.map((group) => <MenuItem checked={assignment === customSkillGroupKey(group)} key={group} onClick={() => assignSkillGroup(s, group)}>{group}</MenuItem>)}
+        </> : null}
+        {canUninstall ? <MenuItem danger disabled={busy || Boolean(update)} onClick={() => void run("uninstall_skill", { id: s.id })}>{t("卸载")}</MenuItem> : null}
+      </Menu>
+    </CxRow>;
   };
   const discoverCount = (data?.skills || []).filter((s) => !s.installed || s.bundled).length;
   const installedCount = (data?.skills || []).filter((s) => s.installed).length;
-  const tabTotal = tab === "discover" ? discoverCount : installedCount;
-  return <div className="mg-page mg-skills-page">
+  const sortLabel = `${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`;
+  return <div className="mg-page cx-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
-      <Button onClick={() => void load()} disabled={busy || loading}><RefreshCw size={16}/>{t("刷新目录")}</Button>
-      <Button onClick={() => void importLocalSkills()} disabled={busy}><FolderOpen size={16}/>{t("从本地目录导入")}</Button>
-      <Button onClick={() => void run("import_ccs_skills", {})} disabled={busy}><BookOpen size={16}/>{t("从 cc-switch 导入")}</Button>
-      <Button onClick={() => setRepoOpen(true)}><Link size={16}/>{t("管理仓库")}</Button>
+      <Button onClick={() => void load()} disabled={busy || loading}><RefreshCw size={14}/>{t("刷新目录")}</Button>
+      <Menu>
+        <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
+        <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>
+      </Menu>
     </>} />
-    <div className="mg-toolbar">
-      <div className="mg-segmented">
-        <button type="button" data-active={tab === "discover"} onClick={() => setTab("discover")}>{t("发现")} · {discoverCount}</button>
-        <button type="button" data-active={tab === "installed"} onClick={() => setTab("installed")}>{t("已安装")} · {installedCount}</button>
-      </div>
-      <SearchField value={query} onChange={setQuery} placeholder={t("搜索 Skills 或仓库")} />
-      <span>{items.length === tabTotal ? `${tabTotal} ${t("个 Skill")}` : `${items.length} / ${tabTotal}`}</span>
-      <div className="mg-push mg-toolbar-actions">
+    <CxToolbar query={query} onQuery={setQuery} placeholder={t("搜索 Skills 或仓库")}>
+      <button type="button" className="cx-primary" onClick={() => setRepoOpen(true)}><Link size={15}/>{t("管理仓库")}</button>
+    </CxToolbar>
+    <CxFilters label="Skills" value={tab} onChange={setTab}
+      items={[{ id: "installed", label: t("已安装"), count: installedCount }, { id: "discover", label: t("发现"), count: discoverCount }]}
+      trailing={<>
         <button type="button" className="mg-icon-button" title={t("新建分组")} aria-label={t("新建分组")}
-          onClick={createCustomGroup}><FolderPlus size={17}/></button>
+          onClick={createCustomGroup}><FolderPlus size={16}/></button>
         <button type="button" className="mg-icon-button" disabled={busy || loading}
-          aria-label={`${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`}
+          aria-label={sortLabel}
           title={`${t("按名称排序")} (${groupSortDirection === "asc" ? "Z-A" : "A-Z"})`} onClick={() => {
             const direction = nextSkillGroupSortDirection(groupSortDirection);
             setGroupOrder(sortSkillGroupKeys(allGroups, direction));
             setGroupSortDirection(direction);
-          }}>{groupSortDirection === "asc" ? <ArrowDownAZ size={17}/> : groupSortDirection === "desc" ? <ArrowDownZA size={17}/> : <ArrowDownUp size={17}/>}</button>
+          }}>{groupSortDirection === "asc" ? <ArrowDownAZ size={16}/> : groupSortDirection === "desc" ? <ArrowDownZA size={16}/> : <ArrowDownUp size={16}/>}</button>
         {groups.length > 1 ? <>
           <button type="button" className="mg-icon-button" title={t("全部折叠")} aria-label={t("全部折叠")}
-            onClick={() => setExpandedGroups((old) => { const next = new Set(old); groups.forEach((group) => next.delete(group.key)); return next; })}><ChevronsUp size={17}/></button>
+            onClick={() => setExpandedGroups((old) => { const next = new Set(old); groups.forEach((group) => next.delete(group.key)); return next; })}><ChevronsUp size={16}/></button>
           <button type="button" className="mg-icon-button" title={t("全部展开")} aria-label={t("全部展开")}
-            onClick={() => setExpandedGroups(new Set(allGroups.map((group) => group.key)))}><ChevronsDown size={17}/></button>
+            onClick={() => setExpandedGroups(new Set(allGroups.map((group) => group.key)))}><ChevronsDown size={16}/></button>
         </> : null}
-      </div>
-    </div>
-    <div className="mg-content">
-      {updateFailures && <section className="mg-skill-failures" role="region" aria-label={t("Skill 操作失败摘要")}>
-        <div className="mg-skill-failures-head"><strong role="status" aria-live="polite">{tf("{0} 次 Skill 操作失败", [updateFailures.count])}</strong>
-          <button type="button" className="mg-icon-button" aria-label={t("关闭 Skill 失败摘要")} title={t("关闭 Skill 失败摘要")} onClick={skillBatchRegistry.clearFailures}><X size={16}/></button></div>
-        <ul tabIndex={0} aria-label={t("失败的 Skill 列表")}>{updateFailures.details.map((detail) => <li key={detail.id}><strong>{detail.id}</strong>：{detail.message}</li>)}</ul>
-      </section>}
-      <div className="mg-matrix mg-agent-matrix mg-skill-matrix" aria-busy={loading} data-columns={agentColumns.length}>
-        <div className="mg-matrix-head"><span>{t("技能")}</span><span>{t("来源")}</span>{agentColumns.map((agent) => <AgentColumn agent={agent} count={agentCount(agent)} key={agent} title={data?.agentSkillsDirs?.[agent]} />)}<span className="mg-actions-label">{t("操作")}</span></div>
-        {!groups.length ? <div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div> :
-          <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
-            <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
-          const collapsed = !expandedGroups.has(group.key) && !query.trim();
-          const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
-          const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && skill.updateAvailable && !updates.some((item) => item.id === skill.id));
-          const pendingUpdates = allGroupItems.filter((skill) => skill.installed && !skill.bundled && updates.some((item) => item.command === "update_skill" && item.id === skill.id && item.repoKey === skill.repoKey)).length;
-          const hasUpdates = pendingUpdates > 0 || allGroupItems.some((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
-          const updateLabel = `${group.label} · ${tf("更新组内可更新 Skill（{0}）", [updateTargets.length])}${pendingUpdates ? ` · ${tf("进行中或排队 {0} 项", [pendingUpdates])}` : ""}`;
-          const movable = group.kind === "repo" || group.kind === "custom";
-          return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
-            <div className="mg-skill-group-row">
-              <div className="mg-skill-group-name">{handle}<button type="button" className="mg-group-head" aria-expanded={!collapsed} onClick={() => setExpandedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
-                <ChevronDown size={15} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong title={group.label}>{group.label}</strong><small>{group.items.length} {t("个 Skill")}</small>
-              </button></div>
-              <span className="mg-skill-batch-label">{t("全选")}</span>
-              {agentColumns.map((agent) => <GroupAgentSelect group={group} agent={agent} key={agent}
-                busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
-                onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
-              <div className="mg-row-actions">
-                {hasUpdates && <button type="button" className="mg-icon-button" aria-label={updateLabel} title={updateLabel} disabled={!updateTargets.length}
-                  onClick={() => queueGroupUpdates(updateTargets)}><CloudDownload size={15}/></button>}
-                {group.kind === "custom" ? <><Button disabled={busy} onClick={() => renameCustomGroup(group.label)}>{t("重命名")}</Button><Button disabled={busy} onClick={() => deleteCustomGroup(group.label)}>{t("删除分组")}</Button></> : null}
+      </>} />
+    {updateFailures && <CxBanner tone="warn" icon={<X />} title={<span role="status" aria-live="polite">{tf("{0} 次 Skill 操作失败", [updateFailures.count])}</span>}
+      detail={<ul className="cx-skill-failures" tabIndex={0} aria-label={t("失败的 Skill 列表")}>{updateFailures.details.map((detail) => <li key={detail.id}><strong>{detail.id}</strong>：{detail.message}</li>)}</ul>}>
+      <button type="button" className="mg-icon-button" aria-label={t("关闭 Skill 失败摘要")} title={t("关闭 Skill 失败摘要")} onClick={skillBatchRegistry.clearFailures}><X size={16}/></button>
+    </CxBanner>}
+    {data?.repoErrors?.length ? <CxBanner tone="warn" icon={<Link />} title={t("部分仓库读取失败")} detail={<span className="cx-skill-repo-errors">{data.repoErrors.map((e) => <span key={e}>{e}</span>)}</span>} /> : null}
+    <div className="cx-skill-groups" aria-busy={loading} data-columns={agentColumns.length}>
+      {!groups.length ? <CxCard><CxEmpty title={loading ? t("正在扫描…") : t("没有匹配的 Skill")} /></CxCard> :
+        <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
+          <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
+        const collapsed = !expandedGroups.has(group.key) && !query.trim();
+        const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
+        const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && skill.updateAvailable && !updates.some((item) => item.id === skill.id));
+        const pendingUpdates = allGroupItems.filter((skill) => skill.installed && !skill.bundled && updates.some((item) => item.command === "update_skill" && item.id === skill.id && item.repoKey === skill.repoKey)).length;
+        const hasUpdates = pendingUpdates > 0 || allGroupItems.some((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
+        const updateLabel = `${group.label} · ${tf("更新组内可更新 Skill（{0}）", [updateTargets.length])}${pendingUpdates ? ` · ${tf("进行中或排队 {0} 项", [pendingUpdates])}` : ""}`;
+        const movable = group.kind === "repo" || group.kind === "custom";
+        return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
+          <header className="cx-skill-group-head">
+            {handle}
+            <button type="button" className="cx-skill-group-toggle" aria-expanded={!collapsed} onClick={() => setExpandedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
+              <ChevronDown size={14} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong title={group.label}>{group.label}</strong><span className="cx-section-count">{group.items.length}</span>
+            </button>
+            <div className="cx-skill-group-aside">
+              {hasUpdates && <button type="button" className="mg-icon-button" aria-label={updateLabel} title={updateLabel} disabled={!updateTargets.length}
+                onClick={() => queueGroupUpdates(updateTargets)}><CloudDownload size={15}/></button>}
+              <div className="cx-agent-toggles" role="group" aria-label={`${group.label} · ${t("全选")}`}>
+                {agentColumns.map((agent) => <GroupAgentSelect group={group} agent={agent} key={agent}
+                  busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
+                  count={agentCount(agent)}
+                  onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
               </div>
+              {group.kind === "custom" ? <Menu label={tf("{0} 的更多操作", [group.label])}>
+                <MenuItem disabled={busy} onClick={() => renameCustomGroup(group.label)}>{t("重命名")}</MenuItem>
+                <MenuItem danger disabled={busy} onClick={() => deleteCustomGroup(group.label)}>{t("删除分组")}</MenuItem>
+              </Menu> : <span className="cx-skill-menu-spacer" aria-hidden="true" />}
             </div>
-            {!collapsed ? group.items.map(renderSkillRow) : null}
-          </>}</SortableSkillGroup>;
-        })}</SortableContext></DndContext>}
-      </div>
-      {data?.repoErrors?.length ? <div className="mg-notice mg-warning">{data.repoErrors.map((e) => <p key={e}>{e}</p>)}</div> : null}
+          </header>
+          {/* 空分组只留标题（数量 0），不再画一张空卡片。 */}
+          {!collapsed && group.items.length ? <CxCard>{group.items.map(renderSkillRow)}</CxCard> : null}
+        </>}</SortableSkillGroup>;
+      })}</SortableContext></DndContext>}
     </div>
     {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} updates={updates} onClose={() => setRepoOpen(false)} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(command, args) => { queueUpdate(command, args); }} />}
     {detail && <SkillDetailDrawer skill={detail} count={data?.repoCounts?.[detail.repoKey]} onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(detail.repoKey)} />}

@@ -38,7 +38,9 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
   };
   const context = vm.createContext({
     React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck"].map((name) => [name, name])),
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck", "Menu", "MenuItem"].map((name) => [name, name])),
+    // 页面骨架组件（cx-layout）按名字渲染成占位元素。
+    AgentCx: new Proxy({}, { get: (_target, name) => String(name) }),
     t: (text: string) => text,
     setTimeout: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: (id: number) => timers.delete(id),
@@ -83,12 +85,17 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
 function text(element: any): string {
   if (element == null || typeof element === "boolean") return "";
   if (Array.isArray(element)) return element.map(text).join("");
-  return typeof element === "object" ? text(element.props.children) : String(element);
+  if (typeof element !== "object") return String(element);
+  // 骨架组件（CxRow / CxBanner …）的标题、说明放在 props 里，按显示顺序一起算进页面文字。
+  const slots = String(element.type).startsWith("Cx") ? [element.props.icon, element.props.title, element.props.badges, element.props.detail] : [];
+  return [...slots, element.props.children].map(text).join("");
 }
 function buttons(element: any): Element[] {
   if (element == null || typeof element !== "object") return [];
   if (Array.isArray(element)) return element.flatMap(buttons);
-  return [...(element.type === "Button" ? [element] : []), ...buttons(element.props.children)];
+  // 页头的「启动增强版」是 Button 组件，页内操作是骨架的原生 button（图标按钮的文字在 sr-only 里）。
+  // 检查、重新检测收进了三点菜单（MenuItem）。
+  return [...(element.type === "Button" || element.type === "button" || element.type === "MenuItem" ? [element] : []), ...buttons(element.props.children)];
 }
 function inputs(element: any): Element[] {
   if (element == null || typeof element !== "object") return [];
@@ -102,7 +109,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ready = {
   status: "ok", supported: true, prepared: true, needsRebuild: false,
   running: false, nodeAvailable: true, sourceVersion: "1.2.3", copyVersion: "1.2.3",
-  catalogEntries: 1234, localization: true, voiceInput: true, computerUse: false,
+  catalogEntries: 1234, localization: true, voiceInput: true, extensions: false, computerUse: false,
   bashTimeout: { enabled: false, defaultEnabled: true, defaultSeconds: 120, maxEnabled: true, maxSeconds: 1800 },
 };
 
@@ -199,7 +206,22 @@ test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开�
   await tick();
   const page = quiet.render();
   assert.equal(warning(page), false, "未接入时不应显示冲突提醒");
-  assert.ok(text(page).includes("二选一"), "仍保留一句二选一的说明");
+  // 二选一的说明收进 Computer Use 那一行的悬停提示，不再常驻占一行。
+  assert.ok(JSON.stringify(page).includes("二选一"), "仍保留一句二选一的说明");
+  assert.equal(text(page).includes("两套独立实现"), false);
+});
+
+test("Claude 增强页不再重复提供万物皆拓展开关，保留其他增强项", () => {
+  for (const extensions of [false, true]) {
+    const screen = harness({ status: { ...ready, extensions }, autoDetected: true });
+    const page = screen.render();
+    assert.equal(inputs(page).some((input) => input.props["aria-label"] === "万物皆拓展"), false);
+    assert.doesNotMatch(text(page), /万物皆拓展/);
+    for (const feature of ["界面汉化", "语音输入", "Computer Use", "解锁 Bash 时间限制"]) {
+      assert.ok(text(page).includes(feature), feature);
+    }
+    assert.equal(screen.calls.length, 0);
+  }
 });
 
 test("Bash 时间限制可分别修改默认值和最大值", async () => {
@@ -430,4 +452,27 @@ test("Bash 秒数允许清空后重输，失焦才显示规范值并保存数字
     await tick();
     assert.equal(input(name).props.value, Number(value));
   }
+});
+
+test("还没制作增强版时，右上角「启动增强版」先制作再启动，一步完成；制作失败就不启动", async () => {
+  const unprepared = { ...ready, prepared: false, copyVersion: "" };
+  const screen = harness({ status: unprepared, autoDetected: true });
+  screen.render(); screen.render();
+  const launch = () => buttons(screen.topbar()).find((button) => /启动增强版|制作中…|启动中…/.test(text(button)))!;
+  assert.equal(launch().props.disabled, false, "没制作也能直接点启动");
+  launch().props.onClick();
+  assert.equal(JSON.stringify(screen.calls[0].args[0]), JSON.stringify({ action: "prepare" }));
+  screen.render();
+  assert.equal(text(launch()), "制作中…");
+  screen.calls[0].resolve(ready);
+  await tick();
+  assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "launch" }), "制作成功后自动启动");
+
+  const failing = harness({ status: unprepared, autoDetected: true });
+  failing.render(); failing.render();
+  buttons(failing.topbar())[0].props.onClick();
+  failing.calls[0].resolve({ status: "failed", message: "制作失败", data: {} });
+  await tick();
+  assert.equal(failing.calls.length, 1, "制作失败不能继续启动");
+  assert.match(text(failing.render()), /制作失败/);
 });

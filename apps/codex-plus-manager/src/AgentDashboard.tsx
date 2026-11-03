@@ -1,6 +1,6 @@
 /**
- * Agent 概览仪表板（Codex、Claude Code、Grok 共用）：一条接入状态栏、一排数据、最近会话与最近请求两栏、
- * 底部配置摘要，Codex 另在下方放健康检查（children）。
+ * Agent 概览仪表板（Codex、Claude Code、Grok 共用）：一条状态行（版本 + 接入状态 + 切换）、CxStats 一排数字、
+ * 「最近会话」「最近请求」两节列表、底部配置摘要，Codex 另在下方放健康检查（children）。样式在 cx-pages-agents.css。
  * Claude Code / Grok 的状态、操作和今日数据由这里按网关数据算；Codex 的由概览页传入（供应商切换、24 小时请求统计）。
  * 数据都来自现成接口，这里只读不写；跳到会话、请求日志时带上 Agent，落在它自己的页签和过滤下。
  */
@@ -13,7 +13,7 @@ import { AgentGlyph, useGatewayPayload } from "./HubOverview";
 import { formatElapsed, formatTokens, modelDisplay, relativeTime, shortPath, type AgentSessionView, type UsageSummary } from "./gateway-model";
 import { providersHidden } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
-import "./AgentDashboard.css";
+import { CxBadge, CxCard, CxEmpty, CxRow, CxSection, CxStats, CxStatusIcon } from "./cx-layout";
 
 export type DashboardAgent = "codex" | "claude" | "grok";
 type Route = "gateway" | "context" | "skills";
@@ -121,19 +121,18 @@ export function AgentDashboard({
         : access === "direct" ? t("未接入网关 · 用它自己的设置")
           : t("读取中…"),
   };
-  const heroActions = enhanceOnly ? (agent === "codex" ? null : (
-    <button className="agent-dash-button" disabled={launching} onClick={() => void launch()} type="button">
-      {launching ? <Loader2 aria-hidden="true" className="agent-dash-spin" size={13} /> : <Play aria-hidden="true" size={13} />}
+  const launchButton = (
+    <button className="cx-secondary" disabled={launching} onClick={() => void launch()} type="button">
+      {launching ? <Loader2 aria-hidden="true" className="cx-dash-spin" /> : <Play aria-hidden="true" />}
       {t("在终端启动")}
     </button>
-  )) : actions ?? (
+  );
+  // 每个 Agent 只有一个主操作：没接入 / 被改掉时是「接入网关」，接入后退成次要的「管理接入」。
+  const heroActions = enhanceOnly ? (agent === "codex" ? null : launchButton) : actions ?? (
     <>
-      <button className="agent-dash-button" data-primary={access === "direct" || access === "drift" ? "true" : undefined} onClick={() => onNavigate("gateway")} type="button">
+      {launchButton}
+      <button className={access === "direct" || access === "drift" ? "cx-primary cx-dash-primary" : "cx-secondary"} onClick={() => onNavigate("gateway")} type="button">
         {access === "gateway" ? t("管理接入") : access === "drift" ? t("重新接入") : t("接入网关")}
-      </button>
-      <button className="agent-dash-button" disabled={launching} onClick={() => void launch()} type="button">
-        {launching ? <Loader2 aria-hidden="true" className="agent-dash-spin" size={13} /> : <Play aria-hidden="true" size={13} />}
-        {t("在终端启动")}
       </button>
     </>
   );
@@ -144,84 +143,76 @@ export function AgentDashboard({
     { label: t("可用模型"), value: view?.enabled ? view.models.length : "—" },
   ];
   const configPath = view?.configPath ?? (agent === "codex" ? "~/.codex/config.toml" : "");
+  const statusDot = ({ gateway: "ok", relay: "ok", drift: "warn", missing: "warn", direct: "off" } as const)[heroStatus.tone];
 
   return (
-    <div className="agent-dash">
-      <section className="agent-dash-hero">
-        <span className="agent-dash-glyph"><AgentGlyph agent={agent} /></span>
-        <div className="agent-dash-title">
-          <strong>{name}{version || view?.version ? <small>{version || view?.version}</small> : null}</strong>
-          <span data-tone={heroStatus.tone}><i aria-hidden="true" />{heroStatus.text}</span>
-        </div>
-        <div className="agent-dash-actions">{heroActions}</div>
-      </section>
+    <div className="cx-page cx-dash">
+      {/* 状态行：Agent、版本、经哪家供应商 / 网关，右侧切换与管理。 */}
+      <CxCard className="cx-dash-status">
+        <CxRow
+          badges={version || view?.version ? <CxBadge>{version || view?.version}</CxBadge> : null}
+          detail={heroStatus.text}
+          icon={<CxStatusIcon tone={statusDot}><AgentGlyph agent={agent} /></CxStatusIcon>}
+          title={name}
+        >
+          {heroActions}
+        </CxRow>
+      </CxCard>
 
-      {enhanceOnly ? null : <dl className="agent-dash-stats">
-        {statItems.map((item) => (
-          <div key={item.label}>
-            <dt>{item.label}</dt>
-            <dd data-mono={item.mono === false ? "false" : undefined} data-tone={item.tone} title={typeof item.value === "string" ? item.value : undefined}>{item.value}</dd>
-          </div>
-        ))}
-      </dl>}
+      {enhanceOnly ? null : (
+        <CxStats items={statItems.map((item) => ({
+          label: item.label,
+          value: <span className="cx-dash-stat-value" data-mono={item.mono === false ? "false" : undefined} title={typeof item.value === "string" ? item.value : undefined}>{item.value}</span>,
+          tone: item.tone === "warn" ? "warn" : undefined,
+        }))} />
+      )}
 
-      <div className="agent-dash-grid" data-single={enhanceOnly ? "true" : undefined}>
-        <section className="agent-dash-card">
-          <header>
-            <h3>{t("最近会话")}</h3>
-            <button onClick={() => onOpenList("sessions", agent)} type="button">{t("全部")}<ArrowUpRight aria-hidden="true" size={13} /></button>
-          </header>
-          {sessions === null ? <p className="agent-dash-empty">{t("读取中…")}</p> : sessions.length === 0 ? (
-            <p className="agent-dash-empty">{tf("还没有 {0} 的本地会话。", [name])}</p>
-          ) : (
-            <ul>
-              {sessions.map((session) => {
-                const time = relativeTime(session.updatedAtMs, now);
-                return (
-                  <li key={session.id}>
-                    <span className="agent-dash-main">
-                      <strong title={session.title}>{session.title || t("未命名会话")}</strong>
-                      <small title={session.cwd}>{shortPath(session.cwd) || "~"}</small>
-                    </span>
-                    <time>{time.args.length ? tf(time.text, time.args) : t(time.text)}</time>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+      <div className="cx-dash-lists" data-single={enhanceOnly ? "true" : undefined}>
+        <CxSection
+          aside={<button className="cx-dash-link" onClick={() => onOpenList("sessions", agent)} type="button">{t("全部")}<ArrowUpRight aria-hidden="true" size={13} /></button>}
+          title={t("最近会话")}
+        >
+          <CxCard className="cx-dash-list">
+            {sessions === null ? <CxEmpty title={t("读取中…")} /> : sessions.length === 0 ? (
+              <CxEmpty title={tf("还没有 {0} 的本地会话。", [name])} />
+            ) : sessions.map((session) => {
+              const time = relativeTime(session.updatedAtMs, now);
+              return (
+                <CxRow detail={<span title={session.cwd}>{shortPath(session.cwd) || "~"}</span>} key={session.id} title={<span title={session.title}>{session.title || t("未命名会话")}</span>}>
+                  <time className="cx-dash-time">{time.args.length ? tf(time.text, time.args) : t(time.text)}</time>
+                </CxRow>
+              );
+            })}
+          </CxCard>
+        </CxSection>
 
-        {enhanceOnly ? null : <section className="agent-dash-card">
-          <header>
-            <h3>{t("最近请求")}</h3>
-            <button onClick={() => onOpenList("requestLog", agent)} type="button">{t("请求日志")}<ArrowUpRight aria-hidden="true" size={13} /></button>
-          </header>
-          {requests === null ? <p className="agent-dash-empty">{t("读取中…")}</p> : requests.length === 0 ? (
-            <p className="agent-dash-empty">
-              {agent === "codex"
-                ? t("最近没有经过本地代理的请求。直连且未开启协议转换时，请求不经过本地代理，这里不会有记录。")
-                : view?.enabled ? t("还没有经过网关的请求。在它里面发一条消息试试。") : t("接入网关后，这里显示它的每次请求走了哪家供应商。")}
-            </p>
-          ) : (
-            <ul>
-              {requests.map((request) => (
-                <li key={request.id}>
-                  <span className="agent-dash-main">
-                    <strong title={request.model}>{request.model}</strong>
-                    <small>{request.provider ? `→ ${request.provider}` : "—"}</small>
-                  </span>
-                  <time>{request.running ? t("进行中") : formatElapsed(request.durationMs)}</time>
-                  {request.running ? <Loader2 aria-hidden="true" className="agent-dash-spin agent-dash-state" size={14} />
-                    : request.success ? <CheckCircle2 aria-label={t("成功")} className="agent-dash-state" data-tone="ok" size={14} />
-                      : <XCircle aria-label={t("失败")} className="agent-dash-state" data-tone="err" size={14} />}
-                </li>
+        {enhanceOnly ? null : (
+          <CxSection
+            aside={<button className="cx-dash-link" onClick={() => onOpenList("requestLog", agent)} type="button">{t("请求日志")}<ArrowUpRight aria-hidden="true" size={13} /></button>}
+            title={t("最近请求")}
+          >
+            <CxCard className="cx-dash-list">
+              {requests === null ? <CxEmpty title={t("读取中…")} /> : requests.length === 0 ? (
+                <CxEmpty
+                  detail={agent === "codex"
+                    ? t("直连且未开启协议转换时，请求不经过本地代理，这里不会有记录。")
+                    : view?.enabled ? t("在它里面发一条消息试试。") : t("接入网关后，这里显示它的每次请求走了哪家供应商。")}
+                  title={agent === "codex" ? t("最近没有经过本地代理的请求") : t("还没有经过网关的请求")}
+                />
+              ) : requests.map((request) => (
+                <CxRow detail={request.provider ? `→ ${request.provider}` : "—"} key={request.id} title={<span title={request.model}>{request.model}</span>}>
+                  <time className="cx-dash-time">{request.running ? t("进行中") : formatElapsed(request.durationMs)}</time>
+                  {request.running ? <Loader2 aria-hidden="true" className="cx-dash-spin cx-dash-state" size={14} />
+                    : request.success ? <CheckCircle2 aria-label={t("成功")} className="cx-dash-state" data-tone="ok" size={14} />
+                      : <XCircle aria-label={t("失败")} className="cx-dash-state" data-tone="err" size={14} />}
+                </CxRow>
               ))}
-            </ul>
-          )}
-        </section>}
+            </CxCard>
+          </CxSection>
+        )}
       </div>
 
-      <footer className="agent-dash-foot">
+      <footer className="cx-dash-foot">
         <button onClick={() => onNavigate("context")} type="button">MCP <b>{mcpCount ?? "—"}</b><ArrowUpRight aria-hidden="true" size={12} /></button>
         <button onClick={() => onNavigate("skills")} type="button">Skills <b>{skillCount ?? "—"}</b><ArrowUpRight aria-hidden="true" size={12} /></button>
         {configPath ? <span title={configPath}>{t("配置文件")} <code>{shortPath(configPath)}</code></span> : null}

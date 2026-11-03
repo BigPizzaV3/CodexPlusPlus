@@ -889,11 +889,24 @@ async function start(message) {
 }
 "#;
 
+/// 常驻的响应流工作进程。进程与读回复的线程都不挂在任何 tokio 运行时上：
+/// 工作进程是全进程共用的，第一次用到它的运行时可能先结束（测试的每个用例、临时运行时）。
+/// 挂在那个运行时上时，Windows 的管道读取在阻塞线程池里永远等不到 EOF，运行时关停会一直
+/// 卡住；Unix 上读回复的任务随运行时消失，之后的请求只会超时。
 struct ResponseWorker {
-    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
-    pending: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
+    stdin: std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>,
+    pending: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    _child: tokio::sync::Mutex<tokio::process::Child>,
+    child: std::sync::Mutex<std::process::Child>,
+}
+
+impl Drop for ResponseWorker {
+    fn drop(&mut self) {
+        // 换掉旧工作进程（中间件变了）时结束它；读线程随之读到 EOF 退出。
+        let mut child = self.child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 static RESPONSE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -932,49 +945,56 @@ fn response_fingerprint(middlewares: &[(String, ExtensionGatewayMiddleware)]) ->
 }
 
 async fn spawn_response_worker() -> anyhow::Result<ResponseWorker> {
-    use tokio::io::AsyncBufReadExt;
+    use std::io::BufRead;
     let node = crate::extension_node::require_node()?;
-    let mut command = tokio::process::Command::new(node);
+    let mut command = std::process::Command::new(node);
     command
         .args(["--input-type=module", "-e", RESPONSE_RUNNER])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    crate::extension_backend::set_host_exe_env(&mut command);
+        .stderr(std::process::Stdio::null());
+    if let Ok(exe) = std::env::current_exe() {
+        command.env(crate::extension_backend::HOST_EXE_ENV, exe);
+    }
     #[cfg(windows)]
-    command.creation_flags(crate::windows_create_no_window());
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
     let mut child = command.spawn()?;
     let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("响应流工作进程没有 stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("响应流工作进程没有 stdout"))?;
-    let pending: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Default::default();
+    let pending: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Default::default();
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     {
         let pending = pending.clone();
         let alive = alive.clone();
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if let Some(id) = message.get("id").and_then(Value::as_u64) {
-                    if let Some(sender) = pending.lock().await.remove(&id) {
-                        let _ = sender.send(message);
+        std::thread::Builder::new()
+            .name("codex-plus-response-worker".into())
+            .spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                        let sender = pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
+                        if let Some(sender) = sender {
+                            let _ = sender.send(message);
+                        }
                     }
                 }
-            }
-            alive.store(false, std::sync::atomic::Ordering::SeqCst);
-            for (_, sender) in pending.lock().await.drain() {
-                let _ = sender.send(json!({ "error": "响应流工作进程已退出" }));
-            }
-        });
+                alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                for (_, sender) in pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain() {
+                    let _ = sender.send(json!({ "error": "响应流工作进程已退出" }));
+                }
+            })?;
     }
     Ok(ResponseWorker {
-        stdin: tokio::sync::Mutex::new(stdin),
+        stdin: std::sync::Arc::new(std::sync::Mutex::new(stdin)),
         pending,
         alive,
-        _child: tokio::sync::Mutex::new(child),
+        child: std::sync::Mutex::new(child),
     })
 }
 
@@ -992,10 +1012,16 @@ async fn response_worker(fingerprint: &str) -> anyhow::Result<std::sync::Arc<Res
 
 impl ResponseWorker {
     async fn send(&self, message: Value) -> anyhow::Result<()> {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = self.stdin.lock().await;
-        stdin.write_all(format!("{message}\n").as_bytes()).await?;
-        stdin.flush().await?;
+        use std::io::Write;
+        // 写管道可能在对方读得慢时阻塞：放到阻塞线程里写，写完即返回（不会长时间占着线程）。
+        let stdin = self.stdin.clone();
+        let line = format!("{message}\n");
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            stdin.write_all(line.as_bytes())?;
+            stdin.flush()
+        })
+        .await??;
         Ok(())
     }
 
@@ -1003,9 +1029,9 @@ impl ResponseWorker {
         let id = RESPONSE_IDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         message["id"] = json!(id);
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.pending.lock().await.insert(id, sender);
+        self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, sender);
         if let Err(error) = self.send(message).await {
-            self.pending.lock().await.remove(&id);
+            self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
             return Err(error);
         }
         match tokio::time::timeout(timeout, receiver).await {
@@ -1015,7 +1041,7 @@ impl ResponseWorker {
             },
             Ok(Err(_)) => anyhow::bail!("响应流工作进程没有回应"),
             Err(_) => {
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
                 anyhow::bail!("响应流中间件超时（{} 秒）", timeout.as_secs())
             }
         }

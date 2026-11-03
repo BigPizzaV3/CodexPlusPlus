@@ -71,7 +71,7 @@ test("高度夹在上下限之间；参数不对、未知方法、依赖抛错�
   }
 });
 
-test("srcdoc 把 CSP 与引导脚本放在 head 最前面，页面不能联网", () => {
+test("srcdoc 把 CSP 与引导脚本放在 head 最前面，资源请求受限制", () => {
   const page = managerPanelSrcdoc('<!doctype html><html lang="zh"><head><title>x</title></head><body>hi</body></html>', "dark");
   const head = page.slice(page.indexOf("<head>") + 6);
   assert.ok(head.startsWith('<meta charset="utf-8"><meta http-equiv="Content-Security-Policy"'), "CSP 在页面自己的内容之前");
@@ -79,8 +79,26 @@ test("srcdoc 把 CSP 与引导脚本放在 head 最前面，页面不能联网",
   assert.match(page, /dataset\.theme="dark"/);
   assert.match(MANAGER_PANEL_CSP, /default-src 'none'/);
   assert.doesNotMatch(MANAGER_PANEL_CSP, /connect-src/, "没有放开 connect-src：fetch / WebSocket 都被 default-src 'none' 挡住");
-  assert.match(managerPanelSrcdoc("<p>片段</p>", "light"), /^<!doctype html><html><head>.*<\/head><body><p>片段<\/p><\/body><\/html>$/s);
-  assert.match(managerPanelSrcdoc("<html><body>x</body></html>", "light"), /^<html><head><meta charset/);
+  assert.match(managerPanelSrcdoc("<p>片段</p>", "light"), /^<!doctype html><html><head>.*<p>片段<\/p><\/head><\/html>$/s);
+  assert.match(managerPanelSrcdoc("<html><body>x</body></html>", "light"), /^<!doctype html><html><head><meta charset/);
+});
+
+test("srcdoc 的可信策略必须先于原始 HTML，不受注释和伪 head 影响", () => {
+  for (const html of [
+    "<!-- <head> --><html><head><title>注释</title></head><body>内容</body></html>",
+    '<script>const bait = "<head>";</script><p>脚本</p>',
+    "<header>页眉</header><p>片段</p>",
+  ]) {
+    const page = managerPanelSrcdoc(html, "light");
+    assert.match(page, /^<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy"/);
+    assert.ok(page.indexOf("window.codexPlusManager") < page.indexOf(html), "引导和策略出现在任何拓展内容之前");
+    assert.ok(page.includes(html), "保留原始页面内容");
+  }
+});
+
+test("面板策略禁止表单外发和改写基础 URL", () => {
+  assert.match(MANAGER_PANEL_CSP, /(?:^|; )form-action 'none'(?:;|$)/);
+  assert.match(MANAGER_PANEL_CSP, /(?:^|; )base-uri 'none'(?:;|$)/);
 });
 
 test("引导脚本在页面里提供 codexPlusManager：请求经 postMessage 发给宿主，只收宿主回的消息", async () => {

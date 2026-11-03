@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      rust_test_filter:
+        description: "只跑名字匹配的 Rust 用例并串行执行（留空跑全量），排查平台相关失败时用"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -72,7 +77,14 @@ jobs:
       - name: Rust tests
         # 有用例卡死时到点失败，不要一直占着 runner 到作业 6 小时上限（编译加测试平时 20 分钟左右）。
         timeout-minutes: 60
-        run: cargo test --workspace
+        env:
+          RUST_TEST_FILTER: ${{ inputs.rust_test_filter }}
+        run: |
+          if ($env:RUST_TEST_FILTER) {
+            cargo test --workspace -- $env:RUST_TEST_FILTER --test-threads=1
+          } else {
+            cargo test --workspace
+          }
 
       - name: Build release application
         run: cargo build --release

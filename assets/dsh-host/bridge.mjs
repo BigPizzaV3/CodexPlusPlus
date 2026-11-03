@@ -871,7 +871,8 @@ async function commandFor(host, { name, rawInput, sessionId }) {
 function socketPath(configPath) {
   let key = configPath
   try {
-    key = realpathSync(configPath)
+    // Windows 的普通 realpath 不展开 8.3 短名；各入口必须按系统解析出的同一路径连接。
+    key = process.platform === 'win32' ? realpathSync.native(configPath) : realpathSync(configPath)
   } catch {
     // 配置不在了也照样算出路径，连接会失败再退回。
   }

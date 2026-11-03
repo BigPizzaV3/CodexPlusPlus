@@ -9,12 +9,11 @@ import test from "node:test";
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
 test("provider view tabs keep model aggregation right after direct", () => {
-  const start = source.indexOf('className="provider-view-tabs"');
-  assert.ok(start >= 0, "App.tsx 里找不到 provider-view-tabs");
-
-  const tabs = source.slice(start);
-  const block = tabs.slice(0, tabs.indexOf("</div>"));
-  const order = [...block.matchAll(/selectProviderView\("([A-Za-z]+)"\)/g)].map((match) => match[1]);
+  // 分页是「Codex 连接」页直连供应商一节的筛选胶囊，顺序就是这个数组。
+  const match = source.match(/items=\{\(\[([^\]]+)\] as ProviderViewKind\[\]\)\.map/);
+  assert.ok(match, "App.tsx 里找不到供应商分页胶囊");
+  const order = [...match[1].matchAll(/"([A-Za-z]+)"/g)].map((item) => item[1]);
 
   assert.deepEqual(order, ["direct", "modelAggregation", "routing", "failover"]);
+  assert.match(source, /onChange=\{selectProviderView\}/);
 });

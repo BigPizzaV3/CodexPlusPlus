@@ -5,6 +5,11 @@
 
 export type PageGroup<R extends string> = { id: string; routes: R[] };
 
+/** 共享页面用 tools 声明可用的 Agent；tool 继续保留页面原来的主归属。 */
+export function pageVisibleForTool(page: { tool?: string; tools?: readonly string[] } | undefined, tool: string): boolean {
+  return page?.tools ? page.tools.includes(tool) : !page?.tool || page.tool === tool;
+}
+
 /** 当前 Agent 能看到的分组页面：不属于任何 Agent 的页面（概览）或属于当前 Agent 的页面。 */
 export function visibleGroupRoutes<R extends string>(group: PageGroup<R>, toolOf: (route: R) => string | undefined, tool: string): R[] {
   return group.routes.filter((route) => {

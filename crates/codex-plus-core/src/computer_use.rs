@@ -1045,7 +1045,7 @@ pub fn status() -> anyhow::Result<StatusReport> {
 }
 
 /// Claude Desktop 是否在运行。只在 macOS/Windows 上探测，失败一律当作没运行。
-fn claude_desktop_running() -> bool {
+pub fn claude_desktop_running() -> bool {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("/usr/bin/pgrep")

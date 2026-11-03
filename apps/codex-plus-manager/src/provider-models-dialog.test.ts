@@ -25,6 +25,6 @@ test("供应商池顶栏的搜索框和按钮同高、不带按钮自己的上�
 
 test("Agent 接入的开关在模型下拉之后", () => {
   const agents = read("GatewayAgents.tsx");
-  const row = agents.slice(agents.indexOf('className="gw-agent-row"'));
+  const row = agents.slice(agents.indexOf('className="gw-agent-row cx-row"'));
   assert.ok(row.indexOf("<ModelPicker") < row.indexOf("<Switch"));
 });

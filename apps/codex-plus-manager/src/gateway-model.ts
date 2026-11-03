@@ -153,6 +153,35 @@ export type LocalLogin = { id: string; name: string; account: string };
 /** 开始登录的结果：要打开的网址、验证码、说明，以及原样传回去的状态。 */
 export type SubscriptionLoginStart = { openUrl?: string; userCode?: string; message: string; state: unknown };
 
+export type GatewayAgentDiagnostics = {
+  state: "disabled" | "configChanged" | "configMissing" | "configUnreadable" | "configUnverified" | "gatewayStopped" | "awaitingTraffic" | "active" | "upstreamError";
+  endpoint: string | null;
+  expectedEndpoint: string;
+  configEvidence: Array<{ path: string; field: string; code: string; endpoint: string | null; expectedEndpoint: string | null }>;
+  requests: number;
+  errors: number;
+  inFlight: number;
+  lastSeenMs: number | null;
+  recentError: { kind: string; status: number | null; atMs: number } | null;
+};
+
+export type GatewayDisconnectFile = {
+  path: string;
+  kind: "modify" | "remove" | "create";
+  diff: string;
+  redacted: boolean;
+};
+
+export type GatewayDisconnectPreview = {
+  agent: string;
+  previewToken: string;
+  files: GatewayDisconnectFile[];
+  warnings: string[];
+  canDisconnect: boolean;
+  /** 没法逐项预览时（Codex 接入前没留下实时存档等）：断开会完整切换到这个直连供应商，确认后走「完整切换并断开」。 */
+  fullSwitch?: { relayId: string; name: string } | null;
+};
+
 export type GatewayAgentView = {
   agent: GatewayAgentId;
   name: string;
@@ -163,11 +192,15 @@ export type GatewayAgentView = {
   /** 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。 */
   hint?: string;
   enabled: boolean;
+  /** 原生配置可能仍由网关管理，即使绑定记录已经关闭。 */
+  requiresDisconnectPreview?: boolean;
   baseUrl: string;
   defaultModel: string;
   models: string[];
   /** 开着网关、但配置已被别的工具改掉：认得出的工具名与现在连的地址。 */
   drift?: { by?: string | null; endpoint: string } | null;
+  /** 配置与最近实际请求的联合诊断；旧版后端没有。 */
+  diagnostics?: GatewayAgentDiagnostics | null;
   /** Agent 自带的模型：用它自己的登录或 Key 直连厂商，不经 Codex++；选中即断开网关。 */
   ownModels?: OwnModels | null;
 };
@@ -229,6 +262,8 @@ export type GatewayPayload = {
   gateway: GatewaySettings;
   port: number;
   helperRunning: boolean;
+  /** Codex 旧版供应商配置总开关；旧版后端没有这个字段。 */
+  relayProfilesEnabled?: boolean;
   /** 网关自己的供应商池（不含 Key）。 */
   pool: GatewayPoolEntry[];
   groups: GatewayGroupEntry[];
@@ -1368,7 +1403,8 @@ export function shortDate(date: string, english = false): string {
 /* —————————————— 会话 —————————————— */
 
 export type SessionAgent = "codex" | "claude" | "grok";
-export type AgentSessionView = { agent: SessionAgent; id: string; title: string; cwd: string; updatedAtMs: number };
+/** `surface: "desktop"` 是 Claude Desktop 里的会话；`resumeId` 是在终端恢复时用的 id（Desktop 会话与列表 id 不同）。 */
+export type AgentSessionView = { agent: SessionAgent; id: string; title: string; cwd: string; updatedAtMs: number; surface?: "desktop"; archived?: boolean; resumeId?: string };
 
 /** 合并各 Agent 的会话：按更新时间倒序，按 Agent 和关键词（标题、目录、id）过滤。 */
 export function filterSessions(sessions: AgentSessionView[], agent: SessionAgent | "all", query: string): AgentSessionView[] {

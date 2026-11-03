@@ -105,6 +105,7 @@ pub mod sub2api;
 pub mod tools;
 pub mod update;
 pub mod extension_backend;
+pub mod extension_claude;
 pub mod extension_codex;
 pub mod extension_creator;
 pub mod extension_gateway;

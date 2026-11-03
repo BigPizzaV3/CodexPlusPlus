@@ -2670,6 +2670,8 @@
     return enabled && !paused ? "install" : "cleanup";
   }
 
+  let dreamSkinCleanupRoot = null;
+
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
@@ -2680,21 +2682,23 @@
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
       runtimeInstalled: !!runtimeState,
     });
-    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
-    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (action === "cleanup") {
+    if (action === "cleanup") {
+      const root = document.documentElement;
+      // 首次仍清旧残留；关闭后不再每轮扫描全页，新运行时或根节点出现时重新清理。
+      if (!root || dreamSkinCleanupRoot !== root || runtimeState) {
         cleanupDreamSkin();
-      } else {
-        const state = runtimeState;
-        state?.ensure?.();
-        ensureDreamSkinCompanion(
-          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
-        );
+        dreamSkinCleanupRoot = root;
       }
       return;
     }
-    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
-      cleanupDreamSkin();
+    dreamSkinCleanupRoot = null;
+    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
+    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
+      const state = runtimeState;
+      state?.ensure?.();
+      ensureDreamSkinCompanion(
+        window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+      );
       return;
     }
     installDreamSkin(settings);

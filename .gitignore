@@ -47,3 +47,13 @@ stepfun-*-stall-bugreport.md
 
 # agent/CLI 本地临时目录（.zcode/ 之外的变体）
 .zcodetmp/
+.tmp_*/
+
+# 并行 agent 用的独立 target 目录（默认的 target/ 已忽略，这些是变体）
+/target-*/
+
+# 设计 / 验收截图等本地产物，不入库
+/artifacts/
+
+# 2026-10 官网改版草稿，已被 site/ 的正式实现取代，暂留本地不入库
+/site-next/

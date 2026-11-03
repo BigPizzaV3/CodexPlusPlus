@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   AGENT_FOCUS_VERSION,
   agentVisible,
+  commitAgentFocusSelection,
   parseAgentFocus,
   providersHidden,
   serializeAgentFocus,
@@ -63,4 +64,38 @@ test("只用增强功能：保留 Codex 与 Claude Code，隐藏供应商；不�
   assert.equal(providersHidden("enhance"), true);
   for (const focus of [null, "all", "codex"] as const) assert.equal(providersHidden(focus), false);
   assert.deepEqual(visibleAgents("enhance", [{ agent: "codex" }, { agent: "claude" }, { agent: "grok" }]), [{ agent: "codex" }, { agent: "claude" }]);
+});
+
+test("增强模式必须等配置保存成功后才提交；保存失败可再次尝试", async () => {
+  const committed: string[] = [];
+  let finish!: (saved: boolean) => void;
+  const attempt = commitAgentFocusSelection("enhance", {
+    disableRelaySwitching: () => new Promise<boolean>((resolve) => { finish = resolve; }),
+    commit: (mode) => committed.push(mode),
+  });
+  assert.deepEqual([...committed], [], "配置仍在保存时不能切换界面");
+  finish(false);
+  assert.equal(await attempt, false);
+  assert.deepEqual([...committed], [], "失败后保留原模式");
+  assert.equal(await commitAgentFocusSelection("enhance", {
+    disableRelaySwitching: async () => true,
+    commit: (mode) => committed.push(mode),
+  }), true);
+  assert.deepEqual(committed, ["enhance"], "重试成功后仅提交一次");
+});
+
+test("增强模式配置保存抛错时不提交，其他模式不修改供应商切换", async () => {
+  const committed: string[] = [];
+  await assert.rejects(commitAgentFocusSelection("enhance", {
+    disableRelaySwitching: async () => { throw new Error("fixture save failed"); },
+    commit: (mode) => committed.push(mode),
+  }), /fixture save failed/);
+  assert.deepEqual([...committed], []);
+  for (const mode of ["codex", "all"] as const) {
+    assert.equal(await commitAgentFocusSelection(mode, {
+      disableRelaySwitching: async () => { throw new Error("不应调用"); },
+      commit: (next) => committed.push(next),
+    }), true);
+  }
+  assert.deepEqual(committed, ["codex", "all"]);
 });

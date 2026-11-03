@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { hostCall } from './host-call.mjs'
 import { parseYaml } from './yaml.mjs'
+import { createLoader, createSessionPersistence, createSettings } from './settings-services.mjs'
 import {
   AgentRegistry, MIRROR_SERVICES, messageText, SUPPORTED_SERVICES, SessionMirror, createCredentials, createFs, createJobs, createLlm, createSchedule,
   createApproval, createAttachments, createFileReferences, createGoals, createPlanMode, createSubagents, PLAN_MODE_WRITE_TOOLS, createSessionTelemetry, createSessionTitle, createShellEnv, createSpillStore, createStorage, createTokenMeter, createSessionQuery, createShell, createStorageDomain, createSubprocess, createUserQuestions, createWeb, createWebhookRuntime,
@@ -64,12 +65,16 @@ const SHIMS = {
   '@deepseek-ai/dsh-session-telemetry': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-plan-mode': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-goal': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
-  '@deepseek-ai/dsh-subagent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
+  '@deepseek-ai/dsh-subagent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-subagent.mjs')).href,
   '@deepseek-ai/dsh-attachment': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-file-reference': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-host-webserver': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-mcp-resources': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-services.mjs')).href,
   '@deepseek-ai/dsh-client-connection': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-client-connection.mjs')).href,
+  '@deepseek-ai/dsh-settings': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-settings.mjs')).href,
+  '@deepseek-ai/dsh-skill-filesystem': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-skill-filesystem.mjs')).href,
+  '@deepseek-ai/dsh-session/surface': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-session-surface.mjs')).href,
+  '@deepseek-ai/dsh-agent': pathToFileURL(join(HOST_DIR, 'shims', 'dsh-agent.mjs')).href,
 }
 /**
  * 能映射到 Codex 钩子的 dsh 事件。监听器由配套拓展包的钩子脚本经 bridge.mjs 调用，
@@ -767,6 +772,22 @@ export class Host {
     return instance
   }
 
+  /** loader.entries() 的数据：每个加载过的行一项；返回这一行的 fiber（插件比较 entry.fiber === ctx.fiber）。同一行派生的子 ctx 复用它。 */
+  registerLoaderEntry(state) {
+    this.loaderEntries ??= new Map()
+    const existing = this.loaderEntries.get(state.key)
+    if (existing) return existing.fiber
+    const options = { id: state.rowId, name: state.moduleName ?? state.pluginName, config: state.config }
+    const fiber = { entry: { options } }
+    this.loaderEntries.set(state.key, { options, fiber, disabled: false })
+    return fiber
+  }
+
+  /** 宿主级 loader：和每个插件 ctx.loader 读同一份已登记的行。 */
+  hostLoader() {
+    return (this.hostLoaderInstance ??= createLoader({ entries: () => (this.loaderEntries ? this.loaderEntries.values() : []) }))
+  }
+
   /** 所有插件共用的替身服务（按需建）。credentials / storageDomain 按插件建，见 createContext。 */
   sharedServices() {
     if (this.shared) return this.shared
@@ -1188,6 +1209,8 @@ export class Host {
         if (key === 'dshHomePath') return (...parts) => join(host.dataDir ?? join(HOST_DIR, '..', 'data'), ...parts.map(String))
         const provided = host.findService(key, row?.isolate)
         if (provided !== undefined) return provided
+        // loader 在 !!js 表达式里读宿主里已登记的行（better-sidebar 的 disabled 表达式用它）；其余按插件建的服务在表达式里不可用。
+        if (key === 'loader') return host.hostLoader()
         return SUPPORTED_SERVICES.has(key) ? host.sharedServices()[key] : undefined
       },
       has: (_target, key) => typeof key === 'string' && (key === 'dshHomePath' || SUPPORTED_SERVICES.has(key) || host.findService(key, row?.isolate) !== undefined),
@@ -1552,6 +1575,10 @@ export class Host {
       credentials: createCredentials(state.config, { dataDir: state.dataDir, emit: (event, args) => host.emitEvent(event, args) }),
       storageDomain,
       storage: createStorage(storageDomain),
+      // settings 落在插件自己的数据目录（初始值取该行配置）；loader 报告宿主里加载过的行；sessionPersistence 不暴露 Codex 的会话日志。
+      settings: createSettings({ dataDir: state.dataDir, rowId: state.rowId, config: state.config, emit: (event, args) => host.emitEvent(event, args) }),
+      loader: createLoader({ entries: () => (host.loaderEntries ? host.loaderEntries.values() : []) }),
+      sessionPersistence: createSessionPersistence(),
       spillStore: createSpillStore(state.dataDir),
       attachments: (host.pluginAttachments ??= new Map()).set(state.key, createAttachments(state.dataDir)).get(state.key),
       // 网页路由（dsh 的 webServer）：挂到配套拓展包后台的 /ext/<配套拓展>/<路径>，经 Codex++ 本地代理接收。
@@ -1604,8 +1631,15 @@ export class Host {
       // dsh 的 ctx.typert：登记类型化 RPC 方法（生成的 TYPERT 清单或 descriptors），前端 ctx.remote 经 connection.rpc 调过来。
       typert: (() => {
         const register = (manifest) => {
-          const dispose = host.registerTypert(manifest, { isolate: state.isolate })
+          const registered = host.registerTypert(manifest, { isolate: state.isolate })
           if (Array.isArray(manifest?.invocations) ? manifest.invocations.length : manifest?.descriptors?.length) mapTo(CONNECTION_TARGET)
+          // 记下已登记的 包/面（cost-meter 等用 ctx.typert.getPackage 判断清单是不是已经登记过）。
+          const faceKey = manifest?.package && manifest?.face ? `${manifest.package}/${manifest.face}` : undefined
+          if (faceKey) (host.typertFaces ??= new Set()).add(faceKey)
+          const dispose = async () => {
+            if (faceKey) host.typertFaces?.delete(faceKey)
+            return registered()
+          }
           track(dispose)
           return dispose
         }
@@ -1647,6 +1681,8 @@ export class Host {
         }
         return {
           register,
+          // dsh 的 typert.getPackage(包, 面)：这个包的这一面清单登记过就返回 { package, face }，没有返回 undefined。
+          getPackage: (name, face) => (host.typertFaces?.has(`${name}/${face}`) ? { package: String(name), face: String(face) } : undefined),
           local: descriptors,
           remotes: descriptors,
           lookups: { ...lookups, registerHost: lookups.register, configureHost: lookups.register },
@@ -1725,7 +1761,7 @@ export class Host {
       name: state.pluginName,
       config: state.config,
       // Cordis 的 fiber：插件常读 ctx.fiber.entry.options.id 拿自己这一行的 id（当命名空间、存储键）。
-      fiber: { entry: { options: { id: state.rowId, name: state.pluginName, config: state.config } } },
+      fiber: host.registerLoaderEntry(state),
       logger,
       timer,
       setTimeout: timer.setTimeout,
@@ -2242,6 +2278,8 @@ export class Host {
       key: `${packageKey}/${row.id}`,
       rowId: row.id,
       pluginName: plugin.name ?? row.id,
+      // 这一行引用的模块名（通常是包名）：loader.entries() 的 options.name 用它，插件按包名认自己那一行。
+      moduleName: row.name,
       config,
       tools: record.tools,
       notes: record.notes,
@@ -2422,8 +2460,7 @@ export class Host {
     const scanned = scanSkills(root, budget)
     let realRoot
     try {
-      // Windows 的 \\?\ 扩展路径需走原生解析，避免依赖目录被误判为不可读。
-      realRoot = realpathSync.native(root)
+      realRoot = realpathSync(root)
     } catch {
       realRoot = root
     }
@@ -2431,7 +2468,7 @@ export class Host {
       // 依赖包必须真的在本包目录里；软链到包外（如 pnpm store、别的 checkout）不扫，避免读到包外的文件。
       let real
       try {
-        real = realpathSync.native(directory)
+        real = realpathSync(directory)
       } catch {
         continue
       }
@@ -2601,6 +2638,18 @@ async function renderValue(def, args, value, attachments) {
 
 async function serve(registryPath) {
   const host = new Host()
+  // Codex 每次重连 MCP 都会 spawn 一套新宿主，却不一定关掉旧连接的管道：只靠 stdin 的
+  // close 事件退出会留下孤儿——它一直停在 createInterface 上等数据，什么也不做，白占内存
+  // （实测一天内累积到 45 个进程、2.2 GB，把整台机器的调度都拖重）。
+  // 这里盯住父进程 id：被 init 收养（ppid 变 1）或父进程换了，就当作连接已断，主动收摊。
+  const parentPid = process.ppid
+  const parentWatch = setInterval(() => {
+    if (process.ppid === parentPid && process.ppid > 1) return
+    clearInterval(parentWatch)
+    void host.dispose().catch(() => {}).finally(() => hostExit(0))
+  }, 5000)
+  // 定时器不撑住事件循环：stdio 还连着的时候进程本来就活着。
+  parentWatch.unref?.()
   let registry = { plugins: [] }
   try {
     registry = readJson(registryPath)

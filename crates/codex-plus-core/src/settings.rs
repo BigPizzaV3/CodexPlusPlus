@@ -1082,6 +1082,9 @@ pub struct BackendSettings {
     /// 关闭后只在用户手动点「检查更新」时联网检查。
     #[serde(rename = "updateAutoCheck", default = "default_true")]
     pub update_auto_check: bool,
+    /// 检查到新版本时在后台把安装包下好，但不安装；用户点「安装」才安装。默认开。
+    #[serde(rename = "updateAutoDownload", default = "default_true")]
+    pub update_auto_download: bool,
     /// 用户在更新提示里选择「跳过此版本」的版本号（#1272）。只压制该版本及更低版本的自动提示，
     /// 出现更高版本时重新提示；手动检查不受影响。空串表示没有跳过。
     #[serde(rename = "updateSkippedVersion", default)]
@@ -1118,6 +1121,9 @@ pub struct BackendSettings {
     // 与「准备副本」这件事互不影响——副本只是所有增强共同的前置条件。
     #[serde(rename = "claudeAppLocalization", default = "default_true")]
     pub claude_app_localization: bool,
+    /// 默认关闭：只在受管 Claude 副本启动时加载声明适配 Claude Code 的拓展。
+    #[serde(rename = "claudeAppExtensions", default)]
+    pub claude_app_extensions: bool,
     // 默认关闭：Computer Use 需要改写副本的 app.asar 并关掉 Electron 的 asar 完整性校验，
     // 功能本身还受订阅与组织策略约束；误开没有收益，显式勾选才做。
     #[serde(rename = "claudeAppComputerUse", default)]
@@ -1447,6 +1453,7 @@ impl Default for BackendSettings {
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             update_auto_check: true,
+            update_auto_download: true,
             update_skipped_version: String::new(),
             codex_app_standalone_quota_unlock: false,
             codex_app_disable_work_view: false,
@@ -1460,6 +1467,7 @@ impl Default for BackendSettings {
             codex_app_proxy_request_status: true,
             claude_app_voice_input: true,
             claude_app_localization: true,
+            claude_app_extensions: false,
             claude_app_computer_use: false,
             claude_app_bash_timeout: ClaudeBashTimeoutSettings::default(),
             computer_use_approval: default_computer_use_approval(),
@@ -2737,6 +2745,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         }
         target.insert("dictation".to_string(), Value::Object(dictation));
     }
+    merge_bool_setting(target, source, "claudeAppExtensions");
     merge_bool_setting(target, source, "relayPreserveNonproviderSettings");
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
@@ -2797,6 +2806,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     // 保证任何走 /settings/set 的调用都不会被静默丢弃。
     // Codex++ 更新提醒偏好（#1272）：「跳过此版本」由管理器单独写入，必须在白名单里。
     merge_bool_setting(target, source, "updateAutoCheck");
+    merge_bool_setting(target, source, "updateAutoDownload");
     if let Some(value) = source.get("updateSkippedVersion").and_then(Value::as_str) {
         target.insert(
             "updateSkippedVersion".to_string(),
@@ -3945,6 +3955,38 @@ mod tests {
         let parsed: BackendSettings = serde_json::from_value(off).unwrap();
         assert!(!parsed.claude_app_voice_input, "显式关闭必须被尊重");
         assert!(!parsed.claude_app_localization, "显式关闭必须被尊重");
+    }
+
+    #[test]
+    fn claude_extensions_default_off_and_respect_explicit_choice() {
+        assert!(!BackendSettings::default().claude_app_extensions);
+        let mut value = serde_json::to_value(BackendSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("claudeAppExtensions");
+        let legacy: BackendSettings = serde_json::from_value(value.clone()).unwrap();
+        assert!(!legacy.claude_app_extensions, "旧配置不能自动加载 Claude 拓展");
+
+        for enabled in [true, false] {
+            value["claudeAppExtensions"] = json!(enabled);
+            let parsed: BackendSettings = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(parsed.claude_app_extensions, enabled);
+            assert_eq!(serde_json::to_value(parsed).unwrap()["claudeAppExtensions"], enabled);
+        }
+    }
+
+    #[test]
+    fn claude_extensions_partial_updates_persist_explicit_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(!store.load().unwrap().claude_app_extensions);
+
+        for enabled in [true, false] {
+            let updated = store.update(json!({"claudeAppExtensions": enabled})).unwrap();
+            assert_eq!(updated.claude_app_extensions, enabled);
+            assert_eq!(store.load().unwrap().claude_app_extensions, enabled);
+            let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(raw["claudeAppExtensions"], json!(enabled));
+        }
     }
 
     #[test]

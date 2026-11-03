@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowRightLeft, Check, Copy, Loader2, Play, RefreshCw, Save, Square } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2, Play, RefreshCw, Square } from "lucide-react";
 import { PageHeader } from "./ManagementPages";
 import { AppSelect } from "./AppSelect";
+import { Switch } from "./gateway-ui";
+import { CxBadge, CxBanner, CxCard, CxRow, CxSection } from "./cx-layout";
 import { agentQueueState, DEFAULT_MAX_CONCURRENT_TASKS_LIMIT, normalizeConcurrency } from "./agent-collaboration-queue";
 import { t, tf } from "./i18n";
 import "./AgentCollaborationPage.css";
@@ -81,6 +83,8 @@ const formatTime = (value: number) => Number.isFinite(value) && value > 0
   : "—";
 
 export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: string } = {}) {
+  /** 子 Agent 列表里展开的那一个（空 = 全部收起）。 */
+  const [openAgentId, setOpenAgentId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [runtime, setRuntime] = useState<CodexRuntime | null>(null);
   const [draft, setDraft] = useState<CollaborationConfig>(defaultConfig);
@@ -228,8 +232,15 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
     }
     if (value !== draft.maxRuntimeMinutes) editConfig({ ...draft, maxRuntimeMinutes: value });
   };
-  const editAgent = (id: string, patch: Partial<Agent>) => editConfig({ ...draft, agents: draft.agents.map((agent) => agent.id === id ? { ...agent, ...patch } : agent) });
-  const saveConfig = () => {
+  const editAgent = (id: string, patch: Partial<Agent>, save = false) => {
+    editConfig({ ...draft, agents: draft.agents.map((agent) => agent.id === id ? { ...agent, ...patch } : agent) });
+    if (save) requestSave();
+  };
+  // 即改即存：开关和下拉改完立刻保存，文本框在失焦时保存；正在保存时排到保存结束后再存一次。
+  const saveRequested = useRef(false);
+  const [saveTick, setSaveTick] = useState(0);
+  const requestSave = () => { saveRequested.current = true; setSaveTick((tick) => tick + 1); };
+  const saveConfig = (silent = false) => {
     const invalid = draft.agents.find((agent) => agent.executable.trim() && !absolutePath(agent.executable));
     if (invalid) { setActionError(`请填写 ${invalid.name} 可执行文件的绝对路径。`); return; }
     if (parsedRuntimeMinutes(runtimeText) === null) {
@@ -237,11 +248,20 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
       return;
     }
     void mutate("save_config", { ...draft, agents: draft.agents.map((agent) => ({ ...agent, executable: agent.executable.trim(), model: agent.model.trim() })) }, () => {
-      setNotice("子 Agent 设置已保存。");
+      if (!silent) setNotice("子 Agent 设置已保存。");
       setMcpConfig(null);
       setCopied("");
     });
   };
+
+  useEffect(() => {
+    if (!saveRequested.current || busyRef.current || !snapshot) return;
+    saveRequested.current = false;
+    if (dirtyRef.current) saveConfig(true);
+    // saveConfig 每次渲染都是新的，只在请求保存或忙碌结束时触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveTick, busy, snapshot]);
+  const saveOnBlur = () => { if (dirtyRef.current) requestSave(); };
 
   const tasks = [...(snapshot?.tasks ?? [])].sort((a, b) => b.createdAtMs - a.createdAtMs);
   const selected = tasks.find((task) => task.id === selectedId);
@@ -354,93 +374,145 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
     }
   };
 
-  return <div className="mg-page agent-collaboration-page">
+  const saveState = busy === "save_config" ? t("正在保存…") : dirty ? t("未保存的修改会在失焦后保存") : t("改动会自动保存");
+  const integrationStatus = snapshot?.integration?.status;
+  const runtimeTitle = runtimeRefreshing ? "正在刷新 Codex 工具…" : runtimeSucceeded ? "Codex 工具已刷新" : runtime?.status === "unavailable" ? "暂未连接到 Codex 运行时" : runtime?.status === "error" ? "工具刷新失败" : runtime?.toolsReady ? "子 Agent 工具已就绪，列表待确认" : runtime ? "工具刷新尚未完成" : "尚未检查运行中的 Codex 工具";
+  const runtimeTone = runtimeRefreshing ? "neutral" : runtimeSucceeded ? "ok" : runtime?.status === "error" ? "danger" : runtime ? "warn" : "neutral";
+  const defaultUnavailable = draft.enabled && !draft.agents.some((agent) => agent.id === draft.defaultAgentId && agent.enabled);
+  const banner = readError ? `读取协作状态失败：${readError}` : actionError ? `操作失败：${actionError}` : "";
+
+  // 参照 Cursor 设置页：一排示例提示（胶囊）→ 常规设置一张卡 → 每个子 Agent 一张卡 → 接入 Codex 一张卡 → 调试与任务记录（收起）。
+  // 设置即改即存，不再有「保存配置」按钮。
+  return <div className="mg-page agent-collaboration-page cx-collab-page">
     <PageHeader icon={<ArrowRightLeft size={20} strokeWidth={1.5} />} title="子 Agent 设置" actions={
-      <button className="mg-button" type="button" onClick={() => void refresh()} disabled={refreshing || Boolean(busy)}>
-        <RefreshCw size={15} className={refreshing ? "agent-collaboration-spin" : ""} />{refreshing ? "刷新中…" : "刷新"}
+      <button className="cx-secondary" type="button" onClick={() => void refresh()} disabled={refreshing || Boolean(busy)}>
+        <RefreshCw size={14} className={refreshing ? "agent-collaboration-spin" : ""} />{refreshing ? "刷新中…" : "刷新"}
       </button>
     } />
     <div className="agent-collaboration-content" aria-busy={!snapshot && refreshing}>
-      <div className="agent-collaboration-intro">
-        <p>在 Codex 对话里调用外部子 Agent，结果由 Codex 在原对话中汇总。</p>
-        <div className="agent-collaboration-examples" aria-label="在 Codex 对话中的用法"><span>“让 DeepSeek 实现这个功能”</span><span>“让 Claude Code 审核这次改动”</span><span>“交给默认子 Agent 调查这个报错”</span></div>
-        <p className="agent-collaboration-hint">在这里选好默认子 Agent，保存设置并接入 Codex，然后回到对话中分派任务。</p>
+      <div className="agent-collaboration-examples cx-collab-examples" aria-label="在 Codex 对话中的用法"
+        title={`在 Codex 对话里调用外部子 Agent，结果由 Codex 在原对话中汇总。\n外部 CLI 子 Agent，不接管已经打开的桌面会话。`}>
+        <span>“让 DeepSeek 实现这个功能”</span><span>“让 Claude Code 审核这次改动”</span><span>“交给默认子 Agent 调查这个报错”</span>
       </div>
 
-      {readError && <p className="agent-collaboration-error" role="alert">读取协作状态失败：{readError}</p>}
-      {actionError && <p className="agent-collaboration-error" role="alert">操作失败：{actionError}</p>}
-      {notice && <p className="agent-collaboration-notice" role="status">{notice}</p>}
+      {/* 顶部最多一条提示：出错优先，其次是刚完成的操作。 */}
+      {banner ? <div role="alert"><CxBanner icon={<AlertTriangle />} title={banner} tone="warn" /></div>
+        : notice ? <p className="cx-set-notice" role="status"><CheckCircle2 size={14} />{notice}</p> : null}
       {!snapshot && refreshing && <p className="agent-collaboration-loading" role="status"><Loader2 size={15} className="agent-collaboration-spin" />正在读取协作配置…</p>}
 
-      <section className="agent-collaboration-section" aria-labelledby="agent-collaboration-config-title">
-        <div className="agent-collaboration-section-head">
-          <div><h2 id="agent-collaboration-config-title">子 Agent 配置</h2><p>选择可调用的 CLI 与默认模型。CLI 路径留空时自动查找已安装的程序。</p></div>
-          <button type="button" className="mg-button mg-primary" disabled={!snapshot || !dirty || Boolean(busy)} onClick={saveConfig}>
-            {busy === "save_config" ? <Loader2 size={15} className="agent-collaboration-spin" /> : <Save size={15} />}{busy === "save_config" ? "保存中…" : "保存配置"}
-          </button>
-        </div>
-        <label className="agent-collaboration-enable">
-          <input type="checkbox" checked={draft.enabled} disabled={!snapshot || busy === "save_config"} onChange={(event) => editConfig({ ...draft, enabled: event.target.checked })} />
-          <span><strong>启用外部子 Agent</strong><small>默认关闭，保存后生效。</small></span>
-          <span className="mg-badge">{snapshot?.config.enabled ? "已启用" : "未启用"}</span>
-        </label>
-        <div className="agent-collaboration-default">
-          <div className="mg-field"><span>默认子 Agent</span><AppSelect ariaLabel="默认子 Agent" disabled={!snapshot || busy === "save_config"} id="agent-collaboration-default" onChange={(next) => editConfig({ ...draft, defaultAgentId: next })} options={draft.agents.map((agent) => ({ value: agent.id, label: `${agent.name}${agent.enabled ? "" : "（未启用）"}` }))} value={draft.defaultAgentId} /></div>
-          <label className="mg-field" htmlFor="agent-collaboration-runtime"><span>单个任务运行上限（分钟）</span><input id="agent-collaboration-runtime" type="number" min={1} max={maxRuntimeMinutesLimit} step={1} value={runtimeText} disabled={!snapshot || busy === "save_config"} aria-invalid={parsedRuntimeMinutes(runtimeText) === null} onChange={(event) => editRuntimeText(event.target.value)} onBlur={() => { if (parsedRuntimeMinutes(runtimeText) === null) setRuntimeText(String(draft.maxRuntimeMinutes)); }} /></label>
-          <p className="agent-collaboration-hint">说“交给默认子 Agent”时使用此选择；直接说“让 DeepSeek”或“让 Claude Code”时使用指定的子 Agent。子 Agent 任务超过运行上限（1–240 分钟，默认 10）会被终止。{draft.enabled && !draft.agents.some((agent) => agent.id === draft.defaultAgentId && agent.enabled) && " 所选默认子 Agent 尚未启用，默认分派不可用；仍可点名调用其他已启用的子 Agent。"}</p>
-        </div>
-        <div className="agent-collaboration-agents">
-          {draft.agents.map((agent) => {
-            const savedAgent = snapshot?.config.agents.find((item) => item.id === agent.id);
-            const savedPath = savedAgent?.executable === agent.executable.trim();
-            const availability = savedPath ? snapshot?.availability?.find((item) => item.id === agent.id) : undefined;
-            const available = availability?.available;
-            return <div className="agent-collaboration-agent" key={agent.id}>
-              <label className="agent-collaboration-agent-title"><input type="checkbox" checked={agent.enabled} disabled={!snapshot || busy === "save_config"} onChange={(event) => editAgent(agent.id, { enabled: event.target.checked })} /><strong>{agent.name}</strong></label>
-              <label className="mg-field" htmlFor={`agent-collaboration-path-${agent.id}`}><span>可执行文件路径（可选）</span><input id={`agent-collaboration-path-${agent.id}`} value={agent.executable} disabled={!snapshot || busy === "save_config"} placeholder={availability?.path || "留空自动查找已安装的 CLI"} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => editAgent(agent.id, { executable: event.target.value })} /></label>
-              <label className="mg-field" htmlFor={`agent-collaboration-model-${agent.id}`}><span>{agent.id === "deepseek" ? "模型路由（可选）" : "模型（可选）"}</span><input id={`agent-collaboration-model-${agent.id}`} value={agent.model} disabled={!snapshot || busy === "save_config"} placeholder={agent.id === "deepseek" ? "deepseek-account/deepseek-flash" : "留空沿用该 CLI 默认模型"} spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={agent.id === "deepseek" ? "agent-collaboration-deepseek-model-hint" : undefined} onChange={(event) => editAgent(agent.id, { model: event.target.value })} />{agent.id === "deepseek" && <small id="agent-collaboration-deepseek-model-hint">使用 provider/model 格式。账户登录用 deepseek-account，API 密钥用 deepseek-official；留空沿用 headless 默认模型。</small>}</label>
-              <div className="mg-field"><span>{t("同时执行任务数")}</span><AppSelect ariaLabel={tf("{0} 同时执行任务数", [agent.name])} disabled={!snapshot || busy === "save_config"} id={`agent-collaboration-concurrency-${agent.id}`} onChange={(next) => editAgent(agent.id, { maxConcurrentTasks: normalizeConcurrency(Number(next), concurrencyMax) })} options={Array.from({ length: concurrencyMax }, (_, index) => ({ value: String(index + 1), label: index === 0 ? t("1（逐个执行，其余排队）") : String(index + 1) }))} value={String(agent.maxConcurrentTasks)} /><small className="agent-collaboration-agent-note">{t("同一 Agent 最多同时运行的任务数。超出时排队，任一任务结束后按提交顺序启动下一个；并发任务请使用不同的工作目录，避免互相修改相同文件。")}</small></div>
-              <small className="agent-collaboration-agent-state" data-unavailable={available === false}>{!savedPath ? "路径尚未保存" : availability?.recovered ? "已保存的路径已失效（桌面版更新后版本目录会变化），本次自动使用当前 CLI；清空路径保存可一直自动查找" : available === true ? "已找到 CLI 文件" : availability?.configuredMissing ? "已保存的路径不存在；清空路径保存可自动查找，或重新填写" : available === false ? "未找到 CLI 文件" : agent.executable.trim() ? "已配置，执行任务时验证" : "留空自动查找已安装的 CLI"}{availability?.path && <code>{availability.path}</code>}</small>
-              {agent.id === "deepseek" && <>
-                <label className="agent-collaboration-auth"><input type="checkbox" checked={agent.reuseSavedAuth} disabled={!snapshot || busy === "save_config"} aria-describedby="agent-collaboration-deepseek-auth-hint" onChange={(event) => editAgent(agent.id, { reuseSavedAuth: event.target.checked })} /><span>复用 DSH 已保存的登录与密钥</span></label>
-                <small id="agent-collaboration-deepseek-auth-hint" className="agent-collaboration-agent-note">默认关闭。开启后由 dsh 自行读取已保存的认证，Codex++ 不读取或保存登录与密钥；不会自动选择桌面当前使用的模型。</small>
-              </>}
-            </div>;
-          })}
-        </div>
-        <p className="agent-collaboration-hint">路径检测只确认 CLI 文件存在，登录状态在执行任务时验证。{dirty && " 有未保存的修改；子 Agent 使用已保存的配置。"}</p>
-      </section>
+      <CxSection aside={<span role="status">{saveState}</span>} title={t("常规")}>
+        <CxCard>
+          <CxRow detail="在 Codex 对话中把任务交给外部 CLI。默认关闭。" title="启用外部子 Agent">
+            <Switch disabled={!snapshot || busy === "save_config"} label="启用外部子 Agent" on={draft.enabled} onToggle={() => { editConfig({ ...draft, enabled: !draft.enabled }); requestSave(); }} />
+          </CxRow>
+          <CxRow
+            badges={defaultUnavailable ? <CxBadge tone="warn" title="所选默认子 Agent 尚未启用，默认分派不可用；仍可点名调用其他已启用的子 Agent。">未启用</CxBadge> : null}
+            detail="说“交给默认子 Agent”时使用"
+            title="默认子 Agent"
+            tooltip="说“交给默认子 Agent”时使用此选择；直接说“让 DeepSeek”或“让 Claude Code”时使用指定的子 Agent。"
+          >
+            <AppSelect ariaLabel="默认子 Agent" className="cx-set-select" disabled={!snapshot || busy === "save_config"} id="agent-collaboration-default" onChange={(next) => { editConfig({ ...draft, defaultAgentId: next }); requestSave(); }} options={draft.agents.map((agent) => ({ value: agent.id, label: `${agent.name}${agent.enabled ? "" : "（未启用）"}` }))} size="sm" value={draft.defaultAgentId} />
+          </CxRow>
+          <CxRow detail="超过上限的任务会被终止（1–240 分钟，默认 10）" title="单个任务运行上限">
+            <label className="gw-unit-input" htmlFor="agent-collaboration-runtime">
+              <input id="agent-collaboration-runtime" type="number" min={1} max={maxRuntimeMinutesLimit} step={1} value={runtimeText} disabled={!snapshot || busy === "save_config"} aria-invalid={parsedRuntimeMinutes(runtimeText) === null} onChange={(event) => editRuntimeText(event.target.value)} onBlur={() => { if (parsedRuntimeMinutes(runtimeText) === null) setRuntimeText(String(draft.maxRuntimeMinutes)); saveOnBlur(); }} />
+              <span>{t("分钟")}</span>
+            </label>
+          </CxRow>
+        </CxCard>
+      </CxSection>
 
-      <section className="agent-collaboration-section agent-collaboration-integration" aria-labelledby="agent-collaboration-mcp-title">
-        <div className="agent-collaboration-section-head"><div><h2 id="agent-collaboration-mcp-title">在 Codex 对话中使用</h2><p>接入会登记子 Agent 工具，并尝试在本机 Codex 中刷新。已登记配置可单独刷新工具。</p></div><div className="agent-collaboration-integration-actions">
-          <button type="button" className="mg-button" disabled={!snapshot || Boolean(busy) || dirty} onClick={refreshCodex}>{busy === "refresh_codex" ? <Loader2 size={15} className="agent-collaboration-spin" /> : <RefreshCw size={15} />}{busy === "refresh_codex" ? "刷新中…" : "刷新 Codex 工具"}</button>
-          <button type="button" className="mg-button mg-primary" disabled={!snapshot || Boolean(busy) || dirty} onClick={connectCodex}>{busy === "connect_codex" ? <Loader2 size={15} className="agent-collaboration-spin" /> : <ArrowRightLeft size={15} />}{busy === "connect_codex" ? "接入并刷新中…" : "一键接入并刷新"}</button>
-        </div></div>
-        <div className="agent-collaboration-integration-state" data-status={snapshot?.integration?.status ?? "not_connected"} role="status"><strong>{!snapshot ? "正在读取接入状态…" : snapshot.integration?.status === "connected" ? "已接入配置" : snapshot.integration?.status === "conflict" ? "接入配置有冲突" : snapshot.integration?.status === "not_connected" ? "尚未接入 Codex" : "尚未检测到接入配置"}</strong><span>{snapshot?.integration?.message || "保存子 Agent 设置后，点击“一键接入并刷新”。"}</span></div>
-        {(snapshot?.integration?.home || snapshot?.integration?.configPath) && <p className="agent-collaboration-hint">{snapshot?.integration?.home ? "Codex 配置目录：" : "Codex 配置文件："}<code>{snapshot?.integration?.home || snapshot?.integration?.configPath}</code></p>}
-        <div className="agent-collaboration-runtime-state" data-status={runtimeRefreshing ? "refreshing" : runtimeSucceeded ? "ready" : runtime?.status === "ready" ? "partial" : runtime?.status ?? "unchecked"} role="status" aria-busy={runtimeRefreshing}>
-          <small>运行中的 Codex · 最近一次工具刷新</small>
-          <strong>{runtimeRefreshing ? "正在刷新 Codex 工具…" : runtimeSucceeded ? "Codex 工具已刷新" : runtime?.status === "unavailable" ? "暂未连接到 Codex 运行时" : runtime?.status === "error" ? "工具刷新失败" : runtime?.toolsReady ? "子 Agent 工具已就绪，列表待确认" : runtime ? "工具刷新尚未完成" : "尚未检查运行中的 Codex 工具"}</strong>
-          <span>{runtimeRefreshing ? "正在重新加载本机 MCP 配置、检查子 Agent 工具并刷新列表缓存。" : runtime?.message || "点击“刷新 Codex 工具”，检查子 Agent 工具是否已在本机 Codex 中加载。"}</span>
-          {runtime && !runtimeRefreshing && <div className="agent-collaboration-runtime-steps"><span data-complete={runtime.reloadSucceeded === true}>{runtime.reloadSucceeded ? "MCP 已重载" : "MCP 重载未确认"}</span><span data-complete={runtime.toolsReady === true}>{runtime.toolsReady ? `已找到子 Agent 工具${runtime.toolCount > 0 ? `（${runtime.toolCount} 个）` : ""}` : "子 Agent 工具未确认"}</span><span data-complete={runtime.cacheRefreshed === true}>{runtime.cacheRefreshed ? "工具列表缓存已刷新" : "工具列表刷新待确认"}</span></div>}
-          {runtime?.status === "unavailable" && !runtimeRefreshing && <span>请用 Codex++ 启动或接管 Codex 后重试，也可在 Codex 中手动重新加载 MCP。</span>}
-        </div>
-        <p className="agent-collaboration-hint">Codex 的 MCP 工具列表可能缓存约 5 分钟，刷新会重新加载配置并更新列表缓存。</p>
-        <p className="agent-collaboration-hint">刷新后的工具从下一轮消息起可用，当前正在进行的回合不会中途增加工具。也可手动重新加载 MCP 或开启新对话。{dirty && " 请先保存设置，再接入或刷新。"}</p>
-        <details className="agent-collaboration-manual"><summary>手动接入与配置导出</summary><div className="agent-collaboration-manual-body">
-          <p className="agent-collaboration-hint">也可以复制配置，合并到对应客户端的 MCP 设置后重新连接。</p>
-          <button type="button" className="mg-button" disabled={mcpLoading || !snapshot || Boolean(busy)} onClick={() => void loadMcpConfig()}>{mcpLoading ? <Loader2 size={15} className="agent-collaboration-spin" /> : <Copy size={15} />}{mcpLoading ? "读取中…" : mcpConfig ? "重新生成配置" : "生成手动配置"}</button>
-          {mcpError && <p className="agent-collaboration-error" role="alert">{mcpError}</p>}
-          {copied && <p className="agent-collaboration-notice" role="status">{copied}已复制。</p>}
-          {mcpConfig && <div className="agent-collaboration-mcp-configs">
-            {[{ label: "Codex 配置", value: mcpConfig.codexToml }, { label: "Claude 配置", value: mcpConfig.claudeJson }].map((item) => <div className="agent-collaboration-mcp-code" key={item.label}><div><h3>{item.label}</h3><button type="button" className="mg-button" onClick={() => void copyText(item.value, item.label)}>{copied === item.label ? <Check size={14} /> : <Copy size={14} />}复制</button></div><pre tabIndex={0} aria-label={item.label}>{item.value}</pre></div>)}
-            <details className="agent-collaboration-mcp-command"><summary>其他 MCP 客户端的启动参数</summary><pre tabIndex={0}>{JSON.stringify({ command: mcpConfig.command, args: mcpConfig.args }, null, 2)}</pre></details>
-          </div>}
-        </div></details>
-      </section>
+      {/* 所有子 Agent 在一张卡里，一行一个：开关就地启用；点行展开它的路径、模型和并发（只有启用的能展开，一次展开一个）。 */}
+      <CxSection count={draft.agents.filter((agent) => agent.enabled).length} title={<span title="选择可调用的 CLI 与默认模型。CLI 路径留空时自动查找已安装的程序。路径检测只确认 CLI 文件存在，登录状态在执行任务时验证。">子 Agent</span>}>
+        <CxCard className="cx-collab-agents">
+        {draft.agents.map((agent) => {
+          const savedAgent = snapshot?.config.agents.find((item) => item.id === agent.id);
+          const savedPath = savedAgent?.executable === agent.executable.trim();
+          const availability = savedPath ? snapshot?.availability?.find((item) => item.id === agent.id) : undefined;
+          const available = availability?.available;
+          const stateText = !savedPath ? "路径尚未保存" : availability?.recovered ? "已保存的路径已失效（桌面版更新后版本目录会变化），本次自动使用当前 CLI；清空路径保存可一直自动查找" : available === true ? "已找到 CLI 文件" : availability?.configuredMissing ? "已保存的路径不存在；清空路径保存可自动查找，或重新填写" : available === false ? "未找到 CLI 文件" : agent.executable.trim() ? "已配置，执行任务时验证" : "留空自动查找已安装的 CLI";
+          const stateTone = available === false || availability?.configuredMissing ? "warn" : available === true && !availability?.recovered ? "ok" : availability?.recovered ? "warn" : "neutral";
+          const expanded = agent.enabled && openAgentId === agent.id;
+          const summary = [agent.model.trim() || (agent.id === "deepseek" ? "" : t("默认模型")), agent.maxConcurrentTasks > 1 ? tf("同时 {0} 个", [agent.maxConcurrentTasks]) : ""].filter(Boolean).join(" · ");
+          return <div className="cx-collab-agent" data-open={expanded || undefined} key={agent.id}>
+            <CxRow
+              badges={agent.enabled || available === false ? <CxBadge tone={stateTone} title={stateText}>{available === true && !availability?.recovered ? "已找到 CLI" : available === false ? "未找到 CLI" : availability?.recovered ? "已自动改用当前 CLI" : !savedPath ? "未保存" : "待验证"}</CxBadge> : null}
+              detail={<>{availability?.path ? <code className="cx-set-path" title={stateText}>{availability.path}</code> : stateText}{agent.enabled && summary && !expanded ? <span className="cx-collab-summary"> · {summary}</span> : null}</>}
+              muted={!agent.enabled}
+              onClick={agent.enabled ? () => setOpenAgentId(expanded ? "" : agent.id) : undefined}
+              title={agent.name}
+            >
+              <Switch disabled={!snapshot || busy === "save_config"} label={tf("启用 {0}", [agent.name])} on={agent.enabled} onToggle={() => { if (!agent.enabled) setOpenAgentId(agent.id); editAgent(agent.id, { enabled: !agent.enabled }, true); }} />
+              {agent.enabled ? (expanded ? <ChevronDown aria-hidden="true" className="cx-set-chevron" /> : <ChevronRight aria-hidden="true" className="cx-set-chevron" />) : <span className="cx-collab-chevron-space" />}
+            </CxRow>
+            {/* 关着的子 Agent 只留标题行；打开并展开后再显示它的路径、模型和并发。 */}
+            {expanded ? <div className="cx-collab-agent-body">
+              <CxRow detail="留空自动查找已安装的 CLI" title="可执行文件路径">
+                <input className="cx-collab-input" id={`agent-collaboration-path-${agent.id}`} aria-label={tf("{0} 可执行文件路径", [agent.name])} value={agent.executable} disabled={!snapshot || busy === "save_config"} placeholder={availability?.path || "自动查找"} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => editAgent(agent.id, { executable: event.target.value })} onBlur={saveOnBlur} />
+              </CxRow>
+              <CxRow
+                detail={agent.id === "deepseek" ? "provider/model 格式；留空沿用默认模型" : "留空沿用该 CLI 默认模型"}
+                title={agent.id === "deepseek" ? "模型路由" : "模型"}
+                tooltip={agent.id === "deepseek" ? "使用 provider/model 格式。账户登录用 deepseek-account，API 密钥用 deepseek-official；留空沿用 headless 默认模型。" : undefined}
+              >
+                <input className="cx-collab-input" id={`agent-collaboration-model-${agent.id}`} aria-label={tf("{0} 模型", [agent.name])} value={agent.model} disabled={!snapshot || busy === "save_config"} placeholder={agent.id === "deepseek" ? "deepseek-account/deepseek-flash" : "默认模型"} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => editAgent(agent.id, { model: event.target.value })} onBlur={saveOnBlur} />
+              </CxRow>
+              <CxRow
+                detail={t("超出时排队，按提交顺序启动")}
+                title={t("同时执行任务数")}
+                tooltip={t("同一 Agent 最多同时运行的任务数。超出时排队，任一任务结束后按提交顺序启动下一个；并发任务请使用不同的工作目录，避免互相修改相同文件。")}
+              >
+                <AppSelect ariaLabel={tf("{0} 同时执行任务数", [agent.name])} className="cx-set-select" disabled={!snapshot || busy === "save_config"} id={`agent-collaboration-concurrency-${agent.id}`} onChange={(next) => editAgent(agent.id, { maxConcurrentTasks: normalizeConcurrency(Number(next), concurrencyMax) }, true)} options={Array.from({ length: concurrencyMax }, (_, index) => ({ value: String(index + 1), label: index === 0 ? t("1（逐个执行，其余排队）") : String(index + 1) }))} size="sm" value={String(agent.maxConcurrentTasks)} />
+              </CxRow>
+              {agent.id === "deepseek" && <CxRow
+                detail="由 dsh 自行读取，Codex++ 不读取或保存"
+                title="复用 DSH 已保存的登录与密钥"
+                tooltip="默认关闭。开启后由 dsh 自行读取已保存的认证，Codex++ 不读取或保存登录与密钥；不会自动选择桌面当前使用的模型。"
+              >
+                <Switch disabled={!snapshot || busy === "save_config"} label="复用 DSH 已保存的登录与密钥" on={agent.reuseSavedAuth} onToggle={() => editAgent(agent.id, { reuseSavedAuth: !agent.reuseSavedAuth }, true)} />
+              </CxRow>}
+            </div> : null}
+          </div>;
+        })}
+        </CxCard>
+      </CxSection>
 
-      <details className="agent-collaboration-debug"><summary>调试与任务记录 <span className="agent-collaboration-count">{tasks.length}</span>{hasUnfinishedTasks && <span className="agent-collaboration-status" data-status="running">有任务执行中</span>}</summary><div className="agent-collaboration-debug-body">
-      <p className="agent-collaboration-hint">日常任务直接在 Codex 对话中交给子 Agent。这里用于检查执行情况，或单独发送调试任务。</p>
+      <CxSection title={<span title="接入会登记子 Agent 工具，并尝试在本机 Codex 中刷新。已登记配置可单独刷新工具。">在 Codex 对话中使用</span>}>
+        <CxCard className="agent-collaboration-integration">
+          <CxRow
+            badges={<CxBadge tone={integrationStatus === "connected" ? "ok" : integrationStatus === "conflict" ? "warn" : "neutral"}>{!snapshot ? "读取中" : integrationStatus === "connected" ? "已接入配置" : integrationStatus === "conflict" ? "接入配置有冲突" : "尚未接入 Codex"}</CxBadge>}
+            detail={snapshot?.integration?.message || "保存子 Agent 设置后，点击“一键接入并刷新”。"}
+            title="接入 Codex"
+            tooltip={snapshot?.integration?.home || snapshot?.integration?.configPath ? `${snapshot?.integration?.home ? "Codex 配置目录：" : "Codex 配置文件："}${snapshot?.integration?.home || snapshot?.integration?.configPath}` : undefined}
+          >
+            <button type="button" className="cx-primary" disabled={!snapshot || Boolean(busy) || dirty} onClick={connectCodex}>{busy === "connect_codex" ? <Loader2 size={15} className="agent-collaboration-spin" /> : <ArrowRightLeft size={15} />}{busy === "connect_codex" ? "接入并刷新中…" : "一键接入并刷新"}</button>
+          </CxRow>
+          <CxRow
+            badges={<CxBadge tone={runtimeTone}>{runtimeTitle}</CxBadge>}
+            detail={runtimeRefreshing ? "正在重新加载本机 MCP 配置、检查子 Agent 工具并刷新列表缓存。" : runtime?.status === "unavailable" ? "请用 Codex++ 启动或接管 Codex 后重试，也可在 Codex 中手动重新加载 MCP。" : runtime?.message || "检查子 Agent 工具是否已在本机 Codex 中加载"}
+            title="运行中的 Codex"
+            tooltip={[
+              runtime && !runtimeRefreshing ? [runtime.reloadSucceeded ? "MCP 已重载" : "MCP 重载未确认", runtime.toolsReady ? `已找到子 Agent 工具${runtime.toolCount > 0 ? `（${runtime.toolCount} 个）` : ""}` : "子 Agent 工具未确认", runtime.cacheRefreshed ? "工具列表缓存已刷新" : "工具列表刷新待确认"].join(" · ") : "",
+              "Codex 的 MCP 工具列表可能缓存约 5 分钟，刷新会重新加载配置并更新列表缓存。",
+              "刷新后的工具从下一轮消息起可用，当前正在进行的回合不会中途增加工具。也可手动重新加载 MCP 或开启新对话。",
+            ].filter(Boolean).join("\n")}
+          >
+            <button type="button" className="cx-secondary" disabled={!snapshot || Boolean(busy) || dirty} onClick={refreshCodex}>{busy === "refresh_codex" ? <Loader2 size={14} className="agent-collaboration-spin" /> : <RefreshCw size={14} />}{busy === "refresh_codex" ? "刷新中…" : "刷新工具"}</button>
+          </CxRow>
+          <details className="cx-set-disclosure agent-collaboration-manual"><summary>手动接入与配置导出<span className="cx-set-summary-hint">也可以复制配置，合并到对应客户端的 MCP 设置后重新连接。</span></summary><div className="cx-set-block agent-collaboration-manual-body">
+            <button type="button" className="cx-secondary" disabled={mcpLoading || !snapshot || Boolean(busy)} onClick={() => void loadMcpConfig()}>{mcpLoading ? <Loader2 size={14} className="agent-collaboration-spin" /> : <Copy size={14} />}{mcpLoading ? "读取中…" : mcpConfig ? "重新生成配置" : "生成手动配置"}</button>
+            {mcpError && <p className="agent-collaboration-error" role="alert">{mcpError}</p>}
+            {copied && <p className="cx-set-notice" role="status"><CheckCircle2 size={14} />{copied}已复制。</p>}
+            {mcpConfig && <div className="agent-collaboration-mcp-configs">
+              {[{ label: "Codex 配置", value: mcpConfig.codexToml }, { label: "Claude 配置", value: mcpConfig.claudeJson }].map((item) => <div className="agent-collaboration-mcp-code" key={item.label}><div><h3>{item.label}</h3><button type="button" className="cx-secondary" onClick={() => void copyText(item.value, item.label)}>{copied === item.label ? <Check size={14} /> : <Copy size={14} />}复制</button></div><pre tabIndex={0} aria-label={item.label}>{item.value}</pre></div>)}
+              <details className="agent-collaboration-mcp-command"><summary>其他 MCP 客户端的启动参数</summary><pre tabIndex={0}>{JSON.stringify({ command: mcpConfig.command, args: mcpConfig.args }, null, 2)}</pre></details>
+            </div>}
+          </div></details>
+        </CxCard>
+      </CxSection>
+
+      <CxSection count={tasks.length} title={<span title="日常任务直接在 Codex 对话中交给子 Agent。这里用于检查执行情况，或单独发送调试任务。">调试与任务记录</span>}>
+      <details className="agent-collaboration-debug cx-collab-debug"><summary>{hasUnfinishedTasks ? <span className="agent-collaboration-status" data-status="running">有任务执行中</span> : "发送调试任务、查看任务结果"}</summary><div className="agent-collaboration-debug-body">
       <section className="agent-collaboration-section" aria-labelledby="agent-collaboration-create-title">
         <div className="agent-collaboration-section-head"><div><h2 id="agent-collaboration-create-title">{continuation ? "继续调试对话" : "发送调试任务"}</h2><p>任务可以访问所选工作目录，请先完成目标 CLI 的登录。</p></div></div>
         {continuation && <div className="agent-collaboration-continuation"><div><strong>续聊 {agentName(continuation.agentId)} 的任务</strong><span>{continuation.prompt}</span><small>任务 {continuation.id} · 沿用原会话与工作目录</small></div><button type="button" className="mg-button" disabled={busy === "submit"} onClick={() => { setContinueTaskId(""); setPrompt(""); }}>返回新任务</button></div>}
@@ -484,7 +556,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
       </section>
 
       </div></details>
-      <p className="agent-collaboration-hint agent-collaboration-footnote">外部 CLI 子 Agent，不接管已经打开的桌面会话。</p>
+      </CxSection>
     </div>
   </div>;
 }

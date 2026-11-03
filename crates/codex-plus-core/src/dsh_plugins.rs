@@ -111,6 +111,30 @@ const HOST_FILES: &[(&str, &str)] = &[
         "shims/dsh-client-connection.mjs",
         include_str!("../../../assets/dsh-host/shims/dsh-client-connection.mjs"),
     ),
+    (
+        "shims/dsh-settings.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-settings.mjs"),
+    ),
+    (
+        "shims/dsh-skill-filesystem.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-skill-filesystem.mjs"),
+    ),
+    (
+        "settings-services.mjs",
+        include_str!("../../../assets/dsh-host/settings-services.mjs"),
+    ),
+    (
+        "shims/dsh-session-surface.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-session-surface.mjs"),
+    ),
+    (
+        "shims/dsh-agent.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-agent.mjs"),
+    ),
+    (
+        "shims/dsh-subagent.mjs",
+        include_str!("../../../assets/dsh-host/shims/dsh-subagent.mjs"),
+    ),
 ];
 
 const REGISTRY_VERSION: u32 = 1;
@@ -189,6 +213,9 @@ pub const HOST_PROVIDED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-host-webserver",
     "@deepseek-ai/dsh-mcp-resources",
     "@deepseek-ai/dsh-client-connection",
+    "@deepseek-ai/dsh-settings",
+    "@deepseek-ai/dsh-skill-filesystem",
+    "@deepseek-ai/dsh-agent",
 ];
 
 /// 插件来源。
@@ -379,7 +406,8 @@ pub fn parse_source(input: &str) -> anyhow::Result<PluginSource> {
             path: home.join(rest).to_string_lossy().into_owned(),
         });
     }
-    if Path::new(text).is_absolute() {
+    // Windows 上 `/x`、`\x` 不算绝对路径，但 npm 包名不会以它们开头：也当本地目录。
+    if Path::new(text).is_absolute() || text.starts_with('/') || text.starts_with('\\') {
         return Ok(PluginSource::Local {
             path: text.to_string(),
         });
@@ -567,6 +595,20 @@ pub fn locate_program(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// 去掉 Windows canonicalize 带上的 `\\?\` verbatim 前缀（`\\?\UNC\` 换回 `\\`）。
+/// 交给 Node 的插件根目录使用普通路径，避免与依赖扫描得到的路径混用两种表示。
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        // 只处理盘符路径；`\\?\Volume{...}` 之类去掉前缀就不是合法路径了。
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// 子进程的 PATH：npm 是 Node 脚本，需要能找到 node。
 fn child_path(toolchain: &Toolchain) -> OsString {
     let mut dirs = Vec::new();
@@ -724,6 +766,19 @@ impl DshPlugins {
         Ok(directory.join("host.mjs"))
     }
 
+    /// 有没有「接上之后真的能提供工具」的插件：登记过、开着、包目录还在。
+    ///
+    /// 没有的话这条 MCP 就只剩空转：Codex 每开一个会话/重连一次就 spawn 一个宿主
+    /// （一个 Node 进程 68 MB），宿主却没有任何工具可以响应。实测一天能攒到 45 个常驻
+    /// 孤儿、2.2 GB。调用方据此决定要不要真的把宿主拉起来。
+    pub fn has_enabled_plugins(&self) -> anyhow::Result<bool> {
+        Ok(self
+            .load()?
+            .plugins
+            .iter()
+            .any(|record| record.enabled && Path::new(&record.root).exists()))
+    }
+
     pub fn load(&self) -> anyhow::Result<Registry> {
         match std::fs::read_to_string(self.registry_path()) {
             Ok(text) => {
@@ -789,6 +844,7 @@ impl DshPlugins {
             PluginSource::Local { path } => {
                 let directory = Path::new(path)
                     .canonicalize()
+                    .map(|directory| strip_verbatim_prefix(&directory))
                     .with_context(|| format!("目录不存在：{path}"))?;
                 if !directory.join("package.json").is_file() {
                     bail!("{} 下没有 package.json，不是 dsh 插件包", directory.display());
@@ -1214,8 +1270,8 @@ fn fetch_git(
     if !package.join("package.json").is_file() {
         bail!("仓库{}里没有 package.json", subdir.map(|sub| format!("的 {sub} 目录")).unwrap_or_default());
     }
-    let package = package.canonicalize()?;
-    if !package.starts_with(checkout.canonicalize()?) {
+    let package = canonical_dir(&package)?;
+    if !package.starts_with(canonical_dir(&checkout)?) {
         bail!("git 子目录指向仓库以外");
     }
     reject_links_outside(&package)?;
@@ -1223,6 +1279,12 @@ fn fetch_git(
     let cleaned = staging.join("package");
     copy_dir_filtered(&package, &cleaned)?;
     Ok(cleaned)
+}
+
+/// 规范化路径并去掉 Windows 的 `\\?\` 前缀：这些路径要交给 Node 宿主，Node 的 `pathToFileURL` /
+/// `import()` 会把 `\\?\D:\x` 变成无效的 `file:////?/D:/x`，插件代码就加载不了。
+fn canonical_dir(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(strip_verbatim_prefix(&path.canonicalize()?))
 }
 
 /// 包里的符号链接不能指向包外：宿主会从包目录加载代码与 SKILL.md。
@@ -1978,12 +2040,14 @@ impl DshPlugins {
         let mut errors = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for (key, extension_id, root, enabled, version) in declared {
+            // 包边界已由清单解析验证；比较时沿用导入记录交给 Node 的路径表示。
+            let root = strip_verbatim_prefix(&root);
             let id = extension_plugin_id(&extension_id);
             seen.insert(id.clone());
             let fingerprint = dsh_fingerprint(&root, &version);
             let existing = registry.plugins.iter().find(|plugin| plugin.id == id);
             let outcome = (|| -> anyhow::Result<bool> {
-                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || plugin.root != root.to_string_lossy()) {
+                if enabled && existing.is_none_or(|plugin| plugin.owner_fingerprint.as_deref() != Some(fingerprint.as_str()) || strip_verbatim_prefix(Path::new(&plugin.root)) != root) {
                     self.import_local_as(&root, &id, toolchain)?;
                     self.update(&id, |record| {
                         record.owner = Some(key.clone());
@@ -2047,6 +2111,12 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
         bail!("状态目录必须是绝对路径");
     }
     let plugins = DshPlugins::new(&state_dir);
+    // 一个能用的插件都没有时不要再拉 Node 宿主：Codex 每开一个会话就 spawn 一次这条 MCP，
+    // 空宿主每个 68 MB（加上这层包装进程 12 MB），一天下来能堆几十个常驻孤儿。
+    // 直接以「没有工具」收场，Codex 侧看到的就是一份空工具表。用户装了插件再接入即可。
+    if !plugins.has_enabled_plugins()? {
+        return Ok(0);
+    }
     let host = plugins.ensure_host()?;
     let node = locate_node().context("没有找到 Node 运行时，dsh 插件 MCP 无法启动")?;
     let mut command = Command::new(node);
@@ -2069,4 +2139,78 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<i32> {
     }
     let status = command.status().context("无法启动 dsh 插件宿主")?;
     Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_prefix_is_stripped_for_drive_and_unc_paths() {
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\D:\a\plugin")), PathBuf::from(r"D:\a\plugin"));
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share\p")), PathBuf::from(r"\\server\share\p"));
+        // 非盘符的 verbatim 路径与普通路径原样保留。
+        assert_eq!(strip_verbatim_prefix(Path::new(r"\\?\Volume{x}\p")), PathBuf::from(r"\\?\Volume{x}\p"));
+        assert_eq!(strip_verbatim_prefix(Path::new("/tmp/plugin")), PathBuf::from("/tmp/plugin"));
+    }
+
+    #[test]
+    fn has_enabled_plugins_follows_registry_and_package_dir() {
+        // 这个判断决定 MCP 要不要真的拉起 Node 宿主：判错就会白养一堆 68 MB 的孤儿进程。
+        let temp = tempfile::tempdir().unwrap();
+        let plugins = DshPlugins::new(temp.path());
+        assert!(
+            !plugins.has_enabled_plugins().unwrap(),
+            "注册表不存在时视为没有插件"
+        );
+
+        let present = temp.path().join("pkg-present");
+        std::fs::create_dir_all(&present).unwrap();
+        let missing = temp.path().join("pkg-missing");
+        let record = |id: &str, enabled: bool, root: &Path| PluginRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            version: String::new(),
+            source: PluginSource::Local {
+                path: root.display().to_string(),
+            },
+            root: root.display().to_string(),
+            managed: false,
+            enabled,
+            disabled_rows: Vec::new(),
+            configs: BTreeMap::new(),
+            imported_at: 0,
+            report: Value::Null,
+            imported_skills: Vec::new(),
+            owner: None,
+            owner_fingerprint: None,
+        };
+        let save = |records: Vec<PluginRecord>| {
+            std::fs::create_dir_all(plugins.root()).unwrap();
+            std::fs::write(
+                plugins.registry_path(),
+                serde_json::to_string(&Registry {
+                    version: REGISTRY_VERSION,
+                    plugins: records,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        save(vec![record("off", false, &present)]);
+        assert!(!plugins.has_enabled_plugins().unwrap(), "停用的插件不算");
+
+        save(vec![record("gone", true, &missing)]);
+        assert!(
+            !plugins.has_enabled_plugins().unwrap(),
+            "包目录被删掉的插件不算"
+        );
+
+        save(vec![
+            record("gone", true, &missing),
+            record("live", true, &present),
+        ]);
+        assert!(plugins.has_enabled_plugins().unwrap(), "有一个能用的就算");
+    }
 }

@@ -1,0 +1,16 @@
+{
+  "name": "dsh-settings-demo",
+  "version": "0.1.0",
+  "description": "设置、loader、sessionPersistence、skill 文件系统提供方、surface 折叠、子 agent 描述、模型选择这几个运行时包的替身探测",
+  "type": "module",
+  "main": "index.js",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/dsh-skill-filesystem": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-agent": "*"
+  }
+}

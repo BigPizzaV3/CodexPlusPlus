@@ -131,7 +131,9 @@ mod tests {
         let mut set = FileSet::new();
         (OPENCODE.write)(&env, &sample_wiring(), &mut set).unwrap();
         let changes = set.changes().unwrap();
-        let after: Value = serde_json::from_str(changes[0].after.as_deref().unwrap()).unwrap();
+        let text = changes[0].after.as_deref().unwrap();
+        let after = super::super::files::parse_jsonc(text).unwrap();
+        assert!(text.contains("// mine"));
         assert_eq!(after["theme"], "dark");
         assert_eq!(after["provider"]["mine"]["npm"], "x");
         assert_eq!(

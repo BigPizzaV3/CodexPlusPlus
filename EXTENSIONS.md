@@ -8,6 +8,7 @@ window.codexPlus
 
 本文档描述**当前已经可用**的接口。接口版本：`apiVersion = 1`（适配层 `1.2.0`）。
 
+- Claude Desktop 的 Code 本地会话使用独立的 `claudeDesktop` 声明接入按钮、后台工具和会话事件，见 [Claude 适配指南](docs/claude-desktop-extensions.md)。它不注入 `window.codexPlus`，不改变本文的 Codex 接口。
 - 想了解设计取舍与已知限制的来龙去脉，见 [docs/specs/2026-09-30-ui-extension-api-design.md](docs/specs/2026-09-30-ui-extension-api-design.md)
 - 类型声明：起 `types/codex-plus-extensions.d.ts`，在脚本开头加 `/// <reference types="./codex-plus-extensions" />` 即可获得编辑器补全
 
@@ -1073,9 +1074,9 @@ codexPlus.extension((ctx) => {
 | `navigate(target)` | 跳到管理器的另一个页面 |
 | `call(route, payload)` | 调本拓展清单 `permissions.routes` 声明过、且开放给拓展页面的 Codex++ 数据路由（目前是 `/agent-pet/*`） |
 
-- 页面放在**沙箱 iframe** 里，只允许脚本：拿不到管理器页面与它的接口，不能弹窗、不能跳转顶层页面。
-- 页面**不能联网**，也不能加载包外的文件（CSP `default-src 'none'`）：脚本、样式写在页面里，图片等资源用 `asset()` 取，
-  要访问网络或本机文件就放进常驻后台，经 `backend.call` 调。
+- 页面放在**沙箱 iframe** 里，允许脚本和表单交互：拿不到管理器页面与它的接口，不能弹窗、不能跳转顶层页面。
+- CSP 限制外部资源请求和表单外发（`default-src 'none'`、`form-action 'none'`）：脚本、样式写在页面里，图片等资源用 `asset()` 取，
+  要访问网络或本机文件就放进常驻后台，经 `backend.call` 调。CSP 不阻止 iframe 自身导航，不能当作完全断网的安全边界；只安装信任作者的拓展。
 - `page` 必须是包内的 .html 文件，最大 1 MiB；`title` 不填用拓展名。拓展停用时面板打不开。
 - 也可以只声明 `manager`（不带页面脚本）：纯管理器工具类的拓展。
 

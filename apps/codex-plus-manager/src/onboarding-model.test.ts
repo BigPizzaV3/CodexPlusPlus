@@ -46,7 +46,7 @@ test("只用增强功能时去掉网关、供应商池、Agent 接入三步，�
   const steps = tourSteps(null, true);
   const ids = steps.map((step) => step.id);
   for (const hidden of ["hub", "providers", "agents-connect"]) assert.ok(!ids.includes(hidden));
-  assert.deepEqual(ids, ["welcome", "agents", "management", "palette", "settings"]);
+  assert.deepEqual(ids, ["welcome", "management", "agents", "palette", "settings"]);
   assert.match(steps[0].body, /供应商仍由你自己的工具管理/);
   assert.equal(steps[0].args, undefined);
 });

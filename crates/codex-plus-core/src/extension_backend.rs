@@ -52,6 +52,7 @@ lines.on("line", async (line) => {
         if (!create) throw new Error(`${message.script} 没有默认导出函数`);
         methods = await create({
           extension: message.extension,
+          ...(message.host ? { host: message.host } : {}),
           config: message.config ?? {},
           dataDir: message.dataDir,
           emit: (event, payload) => write({ event: String(event), payload: payload ?? null }),
@@ -151,6 +152,12 @@ struct Backend {
     _child: tokio::process::Child,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackendHost {
+    Codex,
+    ClaudeDesktop,
+}
+
 /// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -163,16 +170,26 @@ fn slot(manager: &UserScriptManager, key: &str) -> String {
 fn slot_prefix(manager: &UserScriptManager) -> String {
     format!("{}\u{0}", manager.config_path().display())
 }
+
+fn host_slot(manager: &UserScriptManager, key: &str, host: BackendHost) -> String {
+    match host {
+        BackendHost::Codex => slot(manager, key),
+        BackendHost::ClaudeDesktop => format!("claudeDesktop\u{0}{}", slot(manager, key)),
+    }
+}
 static EVENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// 拓展后台的可写数据目录：`<用户脚本配置目录>/extension-data/<拓展 id>`。
-fn data_dir(manager: &UserScriptManager, extension: &str) -> PathBuf {
+/// 两个宿主使用同级独立目录，避免 Claude 与合法的 Codex 拓展 id 碰撞。
+fn data_dir(manager: &UserScriptManager, extension: &str, host: BackendHost) -> PathBuf {
     manager
         .user_dir()
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| manager.user_dir().to_path_buf())
-        .join("extension-data")
+        .join(match host {
+            BackendHost::Codex => "extension-data",
+            BackendHost::ClaudeDesktop => "claude-extension-data",
+        })
         .join(extension)
 }
 
@@ -187,10 +204,14 @@ fn fingerprint(script: &std::path::Path, config: &Value) -> String {
     format!("{}|{modified}|{config}", script.display())
 }
 
-async fn spawn(manager: &UserScriptManager, (extension, script, config): (String, PathBuf, Value)) -> anyhow::Result<Backend> {
+async fn spawn(
+    manager: &UserScriptManager,
+    (extension, script, config): (String, PathBuf, Value),
+    host: BackendHost,
+) -> anyhow::Result<Backend> {
     let fingerprint = fingerprint(&script, &config);
     let node = crate::extension_node::require_node()?;
-    let data = data_dir(manager, &extension);
+    let data = data_dir(manager, &extension, host);
     std::fs::create_dir_all(&data).with_context(|| format!("无法创建拓展数据目录 {}", data.display()))?;
     let mut command = tokio::process::Command::new(node);
     command
@@ -200,14 +221,22 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    set_host_exe_env(&mut command);
+    match host {
+        BackendHost::Codex => set_host_exe_env(&mut command),
+        BackendHost::ClaudeDesktop => {
+            command.env_remove(HOST_EXE_ENV);
+        }
+    }
     // Windows 上不能闪出黑色终端窗口。
     #[cfg(windows)]
     command.creation_flags(crate::windows_create_no_window());
     let mut child = command.spawn().context("无法启动拓展后台")?;
     let stdin = Arc::new(Mutex::new(child.stdin.take().context("拓展后台没有 stdin")?));
     let stdout = child.stdout.take().context("拓展后台没有 stdout")?;
-    let init = json!({ "script": script, "extension": extension, "config": config, "dataDir": data });
+    let mut init = json!({ "script": script, "extension": extension, "config": config, "dataDir": data });
+    if host == BackendHost::ClaudeDesktop {
+        init["host"] = json!("claudeDesktop");
+    }
     {
         let mut writer = stdin.lock().await;
         writer.write_all(format!("{init}\n").as_bytes()).await?;
@@ -237,7 +266,12 @@ async fn spawn(manager: &UserScriptManager, (extension, script, config): (String
                     let host_stdin = host_stdin.clone();
                     let host_manager = host_manager.clone();
                     tokio::spawn(async move {
-                        let reply = match host_call(&message, &host_manager).await {
+                        let result = if host == BackendHost::ClaudeDesktop {
+                            Err(anyhow::anyhow!("Claude Desktop 后台未开放 Codex 宿主调用"))
+                        } else {
+                            host_call(&message, &host_manager).await
+                        };
+                        let reply = match result {
                             Ok(result) => json!({ "hostReply": host_id, "result": result }),
                             Err(error) => json!({ "hostReply": host_id, "error": format!("{error:#}") }),
                         };
@@ -556,8 +590,9 @@ async fn ensure_started(
     key: &str,
     declared: (String, PathBuf, Value),
     wanted: &str,
+    host: BackendHost,
 ) -> anyhow::Result<()> {
-    let key = &slot(manager, key);
+    let key = &host_slot(manager, key, host);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         {
@@ -583,7 +618,7 @@ async fn ensure_started(
         };
         if starter {
             let _guard = StartingGuard { key: key.to_string(), notify };
-            let backend = spawn(manager, declared).await?;
+            let backend = spawn(manager, declared, host).await?;
             BACKENDS.lock().await.insert(key.to_string(), backend);
             return Ok(());
         }
@@ -610,20 +645,47 @@ pub async fn call(
     timeout: Duration,
     instance: Option<&str>,
 ) -> anyhow::Result<Value> {
+    call_for_host(manager, key, method, params, timeout, instance, BackendHost::Codex).await
+}
+
+/// Claude Mods 只调用清单显式声明的方法，后台进程、状态目录和宿主权限均与 Codex 分开。
+pub(crate) async fn call_claude(
+    manager: &UserScriptManager,
+    key: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    instance: Option<&str>,
+) -> anyhow::Result<Value> {
+    call_for_host(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop).await
+}
+
+async fn call_for_host(
+    manager: &UserScriptManager,
+    key: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    instance: Option<&str>,
+    host: BackendHost,
+) -> anyhow::Result<Value> {
     if method.is_empty() || method.len() > 128 {
         anyhow::bail!("方法名无效");
     }
     // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
-    let declared = match declared_backend(manager, key) {
+    let declared = match match host {
+        BackendHost::Codex => declared_backend(manager, key),
+        BackendHost::ClaudeDesktop => manager.enabled_claude_extension_backend(key, method),
+    } {
         Ok(declared) => declared,
         Err(error) => {
-            BACKENDS.lock().await.remove(&slot(manager, key));
+            BACKENDS.lock().await.remove(&host_slot(manager, key, host));
             return Err(error);
         }
     };
     let wanted = fingerprint(&declared.1, &declared.2);
-    ensure_started(manager, key, declared, &wanted).await?;
-    let key = &slot(manager, key);
+    ensure_started(manager, key, declared, &wanted, host).await?;
+    let key = &host_slot(manager, key, host);
     let receiver = {
         let mut backends = BACKENDS.lock().await;
         let Some(backend) = backends.get_mut(key) else {
@@ -657,7 +719,12 @@ pub async fn call(
             anyhow::bail!("{error}")
         }
         Ok(Err(_)) => anyhow::bail!("拓展后台没有回应"),
-        Err(_) => anyhow::bail!("调用 {method} 超时"),
+        Err(_) => {
+            if host == BackendHost::ClaudeDesktop {
+                BACKENDS.lock().await.remove(key);
+            }
+            anyhow::bail!("调用 {method} 超时");
+        }
     }
 }
 
@@ -705,6 +772,16 @@ pub async fn stop_all(manager: &UserScriptManager) {
     BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
 }
 
+/// Claude MCP 断开时只停止它托管的后台，不影响 Codex 页面的后台。
+pub async fn stop_all_claude(manager: &UserScriptManager) {
+    let prefix = format!("claudeDesktop\u{0}{}", slot_prefix(manager));
+    BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
+}
+
+pub(crate) async fn stop_claude(manager: &UserScriptManager, key: &str) {
+    BACKENDS.lock().await.remove(&host_slot(manager, key, BackendHost::ClaudeDesktop));
+}
+
 /// 停掉一个拓展的后台。给了 `instance` 时，只在最近一次调用也来自它时才停：
 /// 热重载时旧实例的 stop 可能晚于新实例的首次调用到达，不能把新后台停了。返回是否停掉。
 pub async fn stop(manager: &UserScriptManager, key: &str, instance: Option<&str>) -> bool {
@@ -732,6 +809,16 @@ pub async fn route_http(method: &str, raw_path: &str, raw_headers: &str, body: &
 
 pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path: &str, raw_headers: &str, body: &[u8]) -> (u16, String, Vec<u8>) {
     let fail = |status: u16, message: String| (status, "application/json; charset=utf-8".to_string(), json!({ "error": message }).to_string().into_bytes());
+    let header = |name: &str| raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim());
+    // 普通 GET 不一定带 Origin：同时挡住 DNS 重绑定与跨站资源请求，保留本机客户端和同源页面。
+    if !host_is_loopback(header("host").unwrap_or_default()) {
+        return fail(403, "extension routes only accept loopback hosts".into());
+    }
+    if header("origin").is_some_and(|origin| !origin.is_empty())
+        || header("sec-fetch-site").is_some_and(|site| site.eq_ignore_ascii_case("cross-site"))
+    {
+        return fail(403, "extension routes do not accept browser requests".into());
+    }
     let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
     let Some(rest) = path.strip_prefix("/ext/") else {
         return fail(404, "not found".into());
@@ -867,8 +954,84 @@ pub async fn route_upgrade_with(
     #[cfg(windows)]
     let mut upstream = tokio::net::windows::named_pipe::ClientOptions::new().open(socket).with_context(|| format!("连不上拓展的升级服务 {socket}"))?;
     upstream.write_all(&head).await?;
+    #[cfg(unix)]
     let _ = tokio::io::copy_bidirectional(stream, &mut upstream).await;
+    #[cfg(windows)]
+    {
+        let result = copy_upgrade_until_eof(stream, &mut upstream, Duration::from_secs(5)).await;
+        drop(upstream);
+        result.context("拓展升级连接转发失败")?;
+    }
     Ok(())
+}
+
+/// Windows 命名管道的 shutdown 不会发送 EOF；任一端结束后停止新读取，排空已读缓冲再释放管道。
+#[cfg(any(windows, test))]
+async fn copy_upgrade_until_eof<A, B>(
+    first: &mut A,
+    second: &mut B,
+    drain_timeout: Duration,
+) -> std::io::Result<(u64, u64)>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (stop, mut stopped) = tokio::sync::watch::channel(false);
+    let (first_read, first_write) = tokio::io::split(first);
+    let (second_read, second_write) = tokio::io::split(second);
+    let forward_stopped = stopped.clone();
+    let reverse_stopped = stopped.clone();
+    let transfers = async move {
+        let (forward, reverse) = tokio::join!(
+            copy_upgrade_direction(first_read, second_write, stop.clone(), forward_stopped),
+            copy_upgrade_direction(second_read, first_write, stop, reverse_stopped),
+        );
+        Ok::<_, std::io::Error>((forward?, reverse?))
+    };
+    tokio::pin!(transfers);
+    tokio::select! {
+        result = &mut transfers => result,
+        _ = stopped.changed() => {
+            // 只限制断开后的排空；正常 WebSocket 可以一直保持连接。
+            tokio::time::timeout(drain_timeout, &mut transfers).await.map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "拓展升级连接收尾超时，缓冲未能全部写出")
+            })?
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+async fn copy_upgrade_direction<R, W>(
+    mut reader: R,
+    mut writer: W,
+    stop: tokio::sync::watch::Sender<bool>,
+    mut stopped: tokio::sync::watch::Receiver<bool>,
+) -> std::io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let result = async {
+        let mut buffer = [0_u8; 8 * 1024];
+        let mut copied = 0;
+        loop {
+            let count = tokio::select! {
+                biased;
+                _ = stopped.changed() => break,
+                count = reader.read(&mut buffer) => count?,
+            };
+            if count == 0 {
+                break;
+            }
+            // read 可取消，write_all 不可取消：另一方向结束也不能静默丢掉已读的数据。
+            writer.write_all(&buffer[..count]).await?;
+            copied += count as u64;
+        }
+        Ok(copied)
+    }.await;
+    stop.send_replace(true);
+    result
 }
 
 /// 定时任务调度：每分钟给声明了 schedules 的拓展后台发一次 `__tick`（没起就先起），到点与否由后台按本机时区判断。
@@ -963,4 +1126,364 @@ pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
     let mut result = events(&manager, key, since, wait).await;
     result["status"] = json!("ok");
     Ok(result)
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::copy_upgrade_until_eof;
+    use std::io;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+    use tokio::sync::Notify;
+
+    #[cfg(windows)]
+    const WINDOWS_RELAY_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[cfg(windows)]
+    async fn windows_stage_timeout<F: std::future::Future>(
+        scenario: &str,
+        stage: &str,
+        future: F,
+    ) -> F::Output {
+        tokio::time::timeout(WINDOWS_RELAY_TIMEOUT, future)
+            .await
+            .unwrap_or_else(|_| panic!("{scenario}: {stage} 在 5 秒内未完成"))
+    }
+
+    #[cfg(windows)]
+    async fn windows_named_pipe_pair() -> (
+        tokio::net::windows::named_pipe::NamedPipeServer,
+        tokio::net::windows::named_pipe::NamedPipeClient,
+    ) {
+        use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+        let name = format!(r"\\.\pipe\codexplus-upgrade-{}", uuid::Uuid::new_v4());
+        let server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&name)
+            .expect("创建测试命名管道");
+        let client = ClientOptions::new().open(&name).expect("连接测试命名管道");
+        windows_stage_timeout("命名管道建连", "server.connect", server.connect())
+            .await
+            .expect("命名管道 server.connect 失败");
+        (server, client)
+    }
+
+    #[cfg(windows)]
+    async fn windows_tcp_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
+        use tokio::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定测试 TCP listener");
+        let address = listener.local_addr().expect("读取测试 TCP 地址");
+        let (client, accepted) = windows_stage_timeout("TCP 建连", "connect/accept", async {
+            tokio::join!(TcpStream::connect(address), listener.accept())
+        })
+        .await;
+        let client = client.expect("测试 TCP client.connect 失败");
+        let (relay, _) = accepted.expect("测试 TCP listener.accept 失败");
+        (client, relay)
+    }
+
+    /// 模拟命名管道：shutdown 成功返回，但另一端不会因此收到 EOF。
+    struct PipeLikeStream {
+        inner: DuplexStream,
+        read_signal: Option<Arc<Notify>>,
+        fail_writes: bool,
+    }
+
+    impl AsyncRead for PipeLikeStream {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+            let previous = buffer.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
+            if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > previous {
+                if let Some(signal) = &self.read_signal {
+                    signal.notify_one();
+                }
+            }
+            result
+        }
+    }
+
+    impl AsyncWrite for PipeLikeStream {
+        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &[u8]) -> Poll<io::Result<usize>> {
+            if self.fail_writes {
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "测试写入失败")));
+            }
+            Pin::new(&mut self.inner).poll_write(cx, buffer)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_stops_on_either_eof_without_pipe_shutdown() {
+        for close_client in [true, false] {
+            let (mut client, mut relay_client) = tokio::io::duplex(64);
+            let (mut peer, pipe) = tokio::io::duplex(64);
+            let relay = async move {
+                let mut pipe = PipeLikeStream { inner: pipe, read_signal: None, fail_writes: false };
+                copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1)).await
+            };
+            let exchange = async {
+                client.write_all(b"request").await.unwrap();
+                let mut request = [0; 7];
+                peer.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"request");
+                if close_client {
+                    client.shutdown().await.unwrap();
+                    assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+                } else {
+                    peer.shutdown().await.unwrap();
+                    assert_eq!(client.read(&mut [0]).await.unwrap(), 0);
+                }
+            };
+            let (copied, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(relay, exchange)
+            }).await.expect("任一端 EOF 后都应释放管道");
+            assert_eq!(copied.unwrap(), (7, 0));
+        }
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_preserves_large_simultaneous_transfers() {
+        let forward: Vec<_> = (0..96 * 1024).map(|index| (index % 251) as u8).collect();
+        let reverse: Vec<_> = (0..80 * 1024).map(|index| (index % 239) as u8).collect();
+        let (mut client, mut relay_client) = tokio::io::duplex(31);
+        let (mut peer, pipe) = tokio::io::duplex(47);
+        let relay = async move {
+            let mut pipe = PipeLikeStream { inner: pipe, read_signal: None, fail_writes: false };
+            copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1)).await
+        };
+        let client_exchange = async {
+            {
+                let (mut reader, mut writer) = tokio::io::split(&mut client);
+                let mut received = vec![0; reverse.len()];
+                let (written, read) = tokio::join!(writer.write_all(&forward), reader.read_exact(&mut received));
+                written.unwrap();
+                read.unwrap();
+                assert_eq!(received, reverse);
+            }
+            client.shutdown().await.unwrap();
+        };
+        let peer_exchange = async {
+            let (mut reader, mut writer) = tokio::io::split(&mut peer);
+            let mut received = vec![0; forward.len()];
+            let (written, read) = tokio::join!(writer.write_all(&reverse), reader.read_exact(&mut received));
+            written.unwrap();
+            read.unwrap();
+            assert_eq!(received, forward);
+        };
+        let (copied, (), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(relay, client_exchange, peer_exchange)
+        }).await.expect("双向背压不能互相卡住");
+        assert_eq!(copied.unwrap(), (forward.len() as u64, reverse.len() as u64));
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_drains_a_read_buffer_after_other_direction_eof() {
+        let payload = vec![0x5a; 4096];
+        let read_signal = Arc::new(Notify::new());
+        let (mut client, mut relay_client) = tokio::io::duplex(8);
+        let (mut peer, pipe) = tokio::io::duplex(8192);
+        let signal = read_signal.clone();
+        let relay = async move {
+            let mut pipe = PipeLikeStream { inner: pipe, read_signal: Some(signal), fail_writes: false };
+            copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1)).await
+        };
+        let exchange = async {
+            peer.write_all(&payload).await.unwrap();
+            read_signal.notified().await;
+            client.shutdown().await.unwrap();
+            tokio::task::yield_now().await;
+            let mut received = vec![0; payload.len()];
+            client.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, payload, "停止信号不能取消已经开始的 write_all");
+        };
+        let (copied, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay, exchange)
+        }).await.expect("接收端恢复读取后应排空缓冲");
+        assert_eq!(copied.unwrap(), (0, payload.len() as u64));
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_timeout_only_bounds_draining() {
+        let drain_timeout = Duration::from_millis(50);
+        let read_signal = Arc::new(Notify::new());
+        let (mut client, mut relay_client) = tokio::io::duplex(8);
+        let (mut peer, pipe) = tokio::io::duplex(8192);
+        let signal = read_signal.clone();
+        let relay = async move {
+            let mut pipe = PipeLikeStream { inner: pipe, read_signal: Some(signal), fail_writes: false };
+            copy_upgrade_until_eof(&mut relay_client, &mut pipe, drain_timeout).await
+        };
+        let exchange = async {
+            // 活跃连接的空闲时间可以超过收尾期限；只有 EOF 后才开始计时。
+            tokio::time::sleep(drain_timeout * 2).await;
+            peer.write_all(&[0x5a; 4096]).await.unwrap();
+            read_signal.notified().await;
+            client.shutdown().await.unwrap();
+            // 不读回传内容，让另一个方向的 write_all 保持背压。
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay, exchange)
+        }).await.expect("无法排空时必须有界结束");
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("缓冲未能全部写出"));
+    }
+
+    #[tokio::test]
+    async fn upgrade_relay_write_failure_stops_the_other_reader() {
+        let (mut client, mut relay_client) = tokio::io::duplex(64);
+        let (_peer, pipe) = tokio::io::duplex(64);
+        let mut pipe = PipeLikeStream { inner: pipe, read_signal: None, fail_writes: true };
+        let relay = copy_upgrade_until_eof(&mut relay_client, &mut pipe, Duration::from_secs(1));
+        let exchange = async {
+            client.write_all(b"request").await.unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(relay, exchange)
+        }).await.expect("写入失败后不能留下另一个方向的读取");
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn upgrade_relay_windows_tcp_client_drop_closes_named_pipe() {
+        let (mut upstream, mut relay_pipe) = windows_named_pipe_pair().await;
+        let (mut client, mut relay_tcp) = windows_tcp_pair().await;
+        let relay = tokio::spawn(async move {
+            let result =
+                copy_upgrade_until_eof(&mut relay_tcp, &mut relay_pipe, Duration::from_secs(5))
+                    .await;
+            drop(relay_pipe);
+            drop(relay_tcp);
+            result
+        });
+
+        windows_stage_timeout(
+            "TCP client drop",
+            "client -> named pipe 转发",
+            client.write_all(b"request"),
+        )
+        .await
+        .expect("TCP client 写入失败");
+        let mut request = [0; 7];
+        windows_stage_timeout(
+            "TCP client drop",
+            "named pipe 收到 request",
+            upstream.read_exact(&mut request),
+        )
+        .await
+        .expect("命名管道读取 request 失败");
+        assert_eq!(&request, b"request");
+        windows_stage_timeout(
+            "TCP client drop",
+            "named pipe -> client 转发",
+            upstream.write_all(b"response"),
+        )
+        .await
+        .expect("命名管道写入 response 失败");
+        let mut response = [0; 8];
+        windows_stage_timeout(
+            "TCP client drop",
+            "client 收到 response",
+            client.read_exact(&mut response),
+        )
+        .await
+        .expect("TCP client 读取 response 失败");
+        assert_eq!(&response, b"response");
+
+        drop(client);
+        let mut byte = [0];
+        let count = windows_stage_timeout(
+            "TCP client drop",
+            "命名管道观察到 EOF",
+            upstream.read(&mut byte),
+        )
+        .await
+        .expect("命名管道 EOF 读取失败");
+        assert_eq!(
+            count, 0,
+            "TCP client 断开后，relay 应关闭命名管道 client 句柄"
+        );
+        let copied = windows_stage_timeout("TCP client drop", "relay helper 退出", relay)
+            .await
+            .expect("relay task panic");
+        assert_eq!(copied.expect("relay helper 返回 I/O 错误"), (7, 8));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn upgrade_relay_windows_named_pipe_upstream_close_closes_tcp() {
+        let (mut upstream, mut relay_pipe) = windows_named_pipe_pair().await;
+        let (mut client, mut relay_tcp) = windows_tcp_pair().await;
+        let relay = tokio::spawn(async move {
+            let result =
+                copy_upgrade_until_eof(&mut relay_tcp, &mut relay_pipe, Duration::from_secs(5))
+                    .await;
+            drop(relay_pipe);
+            drop(relay_tcp);
+            result
+        });
+
+        windows_stage_timeout(
+            "upstream close",
+            "client -> named pipe 转发",
+            client.write_all(b"request"),
+        )
+        .await
+        .expect("TCP client 写入失败");
+        let mut request = [0; 7];
+        windows_stage_timeout(
+            "upstream close",
+            "named pipe 收到 request",
+            upstream.read_exact(&mut request),
+        )
+        .await
+        .expect("命名管道读取 request 失败");
+        assert_eq!(&request, b"request");
+        windows_stage_timeout(
+            "upstream close",
+            "named pipe -> client 转发",
+            upstream.write_all(b"response"),
+        )
+        .await
+        .expect("命名管道写入 response 失败");
+        let mut response = [0; 8];
+        windows_stage_timeout(
+            "upstream close",
+            "client 收到 response",
+            client.read_exact(&mut response),
+        )
+        .await
+        .expect("TCP client 读取 response 失败");
+        assert_eq!(&response, b"response");
+
+        drop(upstream);
+        let mut byte = [0];
+        let count = windows_stage_timeout(
+            "upstream close",
+            "TCP client 观察到 EOF",
+            client.read(&mut byte),
+        )
+        .await
+        .expect("TCP EOF 读取失败");
+        assert_eq!(count, 0, "命名管道上游关闭后，relay 应关闭 TCP 连接");
+        let copied = windows_stage_timeout("upstream close", "relay helper 退出", relay)
+            .await
+            .expect("relay task panic");
+        assert_eq!(copied.expect("relay helper 返回 I/O 错误"), (7, 8));
+    }
 }
