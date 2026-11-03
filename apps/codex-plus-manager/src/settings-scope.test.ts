@@ -68,9 +68,9 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
 
 test("标题：设置模式用分类名，Agent 自己的页面和其余页面都用页面名", () => {
   const entry = functionSource("App");
-  assert.match(entry, /settingsEntryKey\n\s*\? settingsEntries\.find\(\(entry\) => entry\.key === settingsEntryKey\)\?\.label/);
+  assert.match(entry, /settingsEntryKey\r?\n\s*\? settingsEntries\.find\(\(entry\) => entry\.key === settingsEntryKey\)\?\.label/);
   // Agent 自己的页面：Agent 名字在侧栏，标题直接是页面名（概览、内置拓展…）。
-  assert.match(entry, /onAgentPage\n\s*\? routeTitle\(route\)/);
+  assert.match(entry, /onAgentPage\r?\n\s*\? routeTitle\(route\)/);
   assert.match(entry, /<h1 title=\{[^\n]*\}>\{pageTitle\}<\/h1>/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
 });
