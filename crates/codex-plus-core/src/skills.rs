@@ -233,13 +233,14 @@ type CoordinationScope = Option<Vec<CoordinationPath>>;
 struct SkillsCoordination {
     generation: u64,
     skills: BTreeMap<(CoordinationScope, String), u64>,
+    nested_skills: BTreeMap<(CoordinationScope, String), u64>,
     repos: BTreeMap<(CoordinationScope, String), u64>,
     repo_changes: BTreeMap<(CoordinationScope, String), u64>,
 }
 
 impl SkillsCoordination {
     fn skill_generation(&self, scope: &CoordinationScope, id: &str) -> u64 {
-        self.skills.iter()
+        let changed = self.skills.iter()
             .filter(|((other_scope, other), _)| {
                 if skill_names_may_alias(other, id) {
                     coordination_scopes_overlap(scope, other_scope)
@@ -249,7 +250,13 @@ impl SkillsCoordination {
             })
             .map(|(_, generation)| *generation)
             .max()
+            .unwrap_or_default();
+        self.nested_skills.iter()
+            .filter(|((other_scope, _), _)| coordination_scopes_nested(scope, other_scope))
+            .map(|(_, generation)| *generation)
+            .max()
             .unwrap_or_default()
+            .max(changed)
     }
 
     fn repo_generation(&self, scope: &CoordinationScope, key: &str) -> u64 {
@@ -281,30 +288,48 @@ impl SkillsCoordination {
 
     fn changed_skill(&mut self, scope: CoordinationScope, id: &str) {
         let generation = self.next_generation();
-        self.skills.retain(|(other_scope, other), _| {
-            other != id || !coordination_scopes_same_paths(&scope, other_scope)
-        });
-        self.skills.insert((scope, id.to_string()), generation);
+        Self::record_generation(&mut self.skills, scope, id, generation);
+    }
+
+    fn changed_nested_skill(&mut self, scope: CoordinationScope, id: &str) {
+        let generation = self.next_generation();
+        Self::record_generation(&mut self.nested_skills, scope, id, generation);
     }
 
     fn changed_repo(&mut self, scope: CoordinationScope, key: &str) {
         let generation = self.next_generation();
-        self.repos.retain(|(other_scope, other), _| {
-            other != key || !coordination_scopes_same_paths(&scope, other_scope)
-        });
-        self.repo_changes.retain(|(other_scope, other), _| {
-            other != key || !coordination_scopes_same_paths(&scope, other_scope)
-        });
-        self.repos.insert((scope.clone(), key.to_string()), generation);
-        self.repo_changes.insert((scope, key.to_string()), generation);
+        Self::record_generation(&mut self.repos, scope.clone(), key, generation);
+        Self::record_generation(&mut self.repo_changes, scope, key, generation);
     }
 
     fn changed_repo_settings(&mut self, scope: CoordinationScope, key: &str) {
         let generation = self.next_generation();
-        self.repo_changes.retain(|(other_scope, other), _| {
-            other != key || !coordination_scopes_same_paths(&scope, other_scope)
+        Self::record_generation(&mut self.repo_changes, scope, key, generation);
+    }
+
+    fn record_generation(
+        entries: &mut BTreeMap<(CoordinationScope, String), u64>,
+        mut scope: CoordinationScope,
+        key: &str,
+        generation: u64,
+    ) {
+        entries.retain(|(other_scope, other), _| {
+            if other != key || !coordination_scopes_same_paths(&scope, other_scope) {
+                return true;
+            }
+            // 旧路径身份仍可能被其他挂载路径引用。
+            if let (Some(current), Some(previous)) = (&mut scope, other_scope) {
+                for (current, previous) in current.iter_mut().zip(previous) {
+                    for ancestor in &previous.ancestors {
+                        if !current.ancestors.contains(ancestor) {
+                            current.ancestors.push(ancestor.clone());
+                        }
+                    }
+                }
+            }
+            false
         });
-        self.repo_changes.insert((scope, key.to_string()), generation);
+        entries.insert((scope, key.to_string()), generation);
     }
 }
 
@@ -316,10 +341,21 @@ fn skills_coordination() -> MutexGuard<'static, SkillsCoordination> {
         .expect("Skill 协调锁中毒，拒绝继续修改")
 }
 
+#[cfg(test)]
+thread_local! {
+    static COORDINATION_MISSING_PATH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        std::cell::RefCell::new(None);
+}
+
 fn coordination_path(path: &Path) -> Option<CoordinationPath> {
     if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
         return None;
     }
+    // 暂存过程可能在解析期间创建目录；多次仍无法确认时保持保守。
+    (0..3).find_map(|_| coordination_path_once(path))
+}
+
+fn coordination_path_once(path: &Path) -> Option<CoordinationPath> {
     let mut ancestor = path;
     let mut missing = Vec::new();
     loop {
@@ -346,6 +382,12 @@ fn coordination_path(path: &Path) -> Option<CoordinationPath> {
                 return Some(CoordinationPath { normalized: resolved, ancestors });
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(test)]
+                COORDINATION_MISSING_PATH_HOOK.with(|hook| {
+                    if let Some(hook) = hook.borrow_mut().take() {
+                        hook(ancestor);
+                    }
+                });
                 match std::fs::symlink_metadata(ancestor) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     _ => return None,
@@ -373,8 +415,10 @@ fn coordination_path_starts_with(path: &Path, root: &Path) -> bool {
     {
         let mut parts = path.components();
         root.components().all(|root_part| parts.next().is_some_and(|part| {
-            part.as_os_str().to_string_lossy().to_lowercase()
-                == root_part.as_os_str().to_string_lossy().to_lowercase()
+            match (part.as_os_str().to_str(), root_part.as_os_str().to_str()) {
+                (Some(part), Some(root_part)) => macos_names_may_alias(part, root_part),
+                _ => true,
+            }
         }))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -403,10 +447,10 @@ fn coordination_scopes_overlap(left: &CoordinationScope, right: &CoordinationSco
 
 fn coordination_scopes_nested(left: &CoordinationScope, right: &CoordinationScope) -> bool {
     fn strictly_nested(left: &Path, right: &Path) -> bool {
-        coordination_path_starts_with(left, right) && !coordination_path_starts_with(right, left)
+        left.components().count() > right.components().count()
+            && coordination_path_starts_with(left, right)
     }
     match (left, right) {
-        (Some(_), Some(_)) if coordination_scopes_same_paths(left, right) => false,
         (Some(left), Some(right)) => left.iter().any(|left| right.iter().any(|right| {
             strictly_nested(&left.normalized, &right.normalized)
                 || strictly_nested(&right.normalized, &left.normalized)
@@ -463,8 +507,16 @@ fn windows_names_equal(left: &str, right: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_names_may_alias(left: &str, right: &str) -> bool {
+    use objc2_foundation::{NSComparisonResult, NSString};
+    let left = NSString::from_str(left).decomposedStringWithCanonicalMapping();
+    let right = NSString::from_str(right).decomposedStringWithCanonicalMapping();
+    left.caseInsensitiveCompare(&right) == NSComparisonResult::Same
+}
+
+#[cfg(target_os = "macos")]
 fn skill_names_may_alias(left: &str, right: &str) -> bool {
-    left.to_lowercase() == right.to_lowercase()
+    macos_names_may_alias(left, right)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -512,9 +564,12 @@ impl SkillsManager {
             self.state_path.clone(),
             self.linked_dir(),
         ];
-        paths.iter().chain(self.agent_dirs.iter().map(|(_, dir)| dir))
+        let mut scope: Vec<_> = paths.iter().chain(self.agent_dirs.iter().map(|(_, dir)| dir))
             .map(|path| coordination_path(path))
-            .collect()
+            .collect::<Option<_>>()?;
+        // 状态文件通过原子替换写入；父目录身份和文件名足以识别共享路径。
+        scope[2].ancestors.retain(|(_, suffix)| !suffix.as_os_str().is_empty());
+        Some(scope)
     }
 
     pub fn agent_dirs(&self) -> &[(String, PathBuf)] {
@@ -537,38 +592,42 @@ impl SkillsManager {
         validate_skill_id(id)?;
         let mut coordination = skills_coordination();
         self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
-        if enabled {
-            self.ensure_managed_source_unlocked(id, &mut coordination)?;
-        }
-        if agent == "codex" {
-            return self.set_enabled_unlocked(id, enabled, &mut coordination);
-        }
-        let dir = self.agent_dir(agent)?;
-        let link = dir.join(id);
-        let metadata = std::fs::symlink_metadata(&link);
-        if !enabled {
-            return match metadata {
-                Ok(metadata) if metadata.file_type().is_symlink() => remove_link(&link),
-                Ok(_) if is_managed_copy(&link) => {
-                    self.backup_directory(id, &link)?;
-                    Ok(())
-                }
-                Ok(_) => anyhow::bail!("{} 是这个 Agent 自己的 Skill，不由 Codex++ 管理，未删除", link.display()),
-                Err(_) => Ok(()),
-            };
-        }
-        if link.join(SKILL_MANIFEST_FILE).is_file() {
-            return Ok(());
-        }
-        if metadata.is_ok() {
-            anyhow::bail!("启用位置已存在其他内容，未覆盖：{}", link.display());
-        }
-        let source = self.source_dir.join(id);
-        if !source.is_dir() {
-            anyhow::bail!("skill 源目录不存在：{}", source.display());
-        }
-        std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
-        link_or_copy(&source, &link).map(|_| ())
+        let result = (|| {
+            if enabled {
+                self.ensure_managed_source_unlocked(id, &mut coordination)?;
+            }
+            if agent == "codex" {
+                return self.set_enabled_unlocked(id, enabled, &mut coordination);
+            }
+            let dir = self.agent_dir(agent)?;
+            let link = dir.join(id);
+            let metadata = std::fs::symlink_metadata(&link);
+            if !enabled {
+                return match metadata {
+                    Ok(metadata) if metadata.file_type().is_symlink() => remove_link(&link),
+                    Ok(_) if is_managed_copy(&link) => {
+                        self.backup_directory(id, &link)?;
+                        Ok(())
+                    }
+                    Ok(_) => anyhow::bail!("{} 是这个 Agent 自己的 Skill，不由 Codex++ 管理，未删除", link.display()),
+                    Err(_) => Ok(()),
+                };
+            }
+            if link.join(SKILL_MANIFEST_FILE).is_file() {
+                return Ok(());
+            }
+            if metadata.is_ok() {
+                anyhow::bail!("启用位置已存在其他内容，未覆盖：{}", link.display());
+            }
+            let source = self.source_dir.join(id);
+            if !source.is_dir() {
+                anyhow::bail!("skill 源目录不存在：{}", source.display());
+            }
+            std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
+            link_or_copy(&source, &link).map(|_| ())
+        })();
+        coordination.changed_nested_skill(self.coordination_scope(), id);
+        result
     }
 
     /// 没有受控源时，从 Codex 或其它 Agent 目录里找到这个 Skill 的真实目录，纳入受控源。
@@ -645,7 +704,7 @@ impl SkillsManager {
         )
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn ensure_skill_name_not_aliased(&self, id: &str, state: &SkillsState) -> anyhow::Result<()> {
         for existing in state.installed.keys() {
             if existing != id && skill_names_may_alias(existing, id) {
@@ -666,11 +725,11 @@ impl SkillsManager {
                     .map_err(|_| anyhow::anyhow!("无法确认 {} 下的 Skill 名称", root.display()))?;
                 if name == id {
                     exact = true;
-                } else if windows_names_equal(&name, id) {
-                    anyhow::bail!("Skill 名称与现有目录大小写冲突：{name}");
+                } else if skill_names_may_alias(&name, id) {
+                    anyhow::bail!("Skill 名称与现有目录冲突：{name}");
                 }
             }
-            // 还要检测 8.3 短名称等 read_dir 不会单独列出的别名。
+            // 还要检测 read_dir 不会单独列出的文件系统别名。
             if !exact && std::fs::symlink_metadata(root.join(id)).is_ok() {
                 anyhow::bail!("Skill 名称是现有目录的别名：{id}");
             }
@@ -678,7 +737,7 @@ impl SkillsManager {
         Ok(())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn ensure_skill_name_not_aliased(&self, _id: &str, _state: &SkillsState) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1334,12 +1393,17 @@ impl SkillsManager {
                 && repo.branch == guard.repo_snapshot.branch
                 && repo.subdir == guard.repo_snapshot.subdir
         });
-        if !coordination_scope_is_current(&guard.coordination_scope, &self.coordination_scope())
-            || !repo_exists
-            || coordination.repo_generation(&guard.coordination_scope, &key) != guard.repo_generation
-            || coordination.skill_generation(&guard.coordination_scope, &guard.id) != guard.skill_generation
-            || state.installed.get(&guard.id) != guard.installed_snapshot.as_ref()
-        {
+        let current_scope = self.coordination_scope();
+        let scope_current = coordination_scope_is_current(&guard.coordination_scope, &current_scope);
+        let repo_current = coordination.repo_generation(&guard.coordination_scope, &key) == guard.repo_generation;
+        let skill_current = coordination.skill_generation(&guard.coordination_scope, &guard.id) == guard.skill_generation;
+        let installed_current = state.installed.get(&guard.id) == guard.installed_snapshot.as_ref();
+        if !scope_current || !repo_exists || !repo_current || !skill_current || !installed_current {
+            #[cfg(test)]
+            eprintln!(
+                "Skill guard: scope_current={scope_current}, captured_scope_known={}, current_scope_known={}, repo_exists={repo_exists}, repo_current={repo_current}, skill_current={skill_current}, installed_current={installed_current}",
+                guard.coordination_scope.is_some(), current_scope.is_some(),
+            );
             anyhow::bail!("下载期间仓库或 Skill 安装记录已改变，请重新下载");
         }
         if guard.install_only
@@ -1453,7 +1517,9 @@ impl SkillsManager {
         validate_skill_id(id)?;
         let mut coordination = skills_coordination();
         self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
-        self.set_enabled_unlocked(id, enabled, &mut coordination)
+        let result = self.set_enabled_unlocked(id, enabled, &mut coordination);
+        coordination.changed_nested_skill(self.coordination_scope(), id);
+        result
     }
 
     fn set_enabled_unlocked(
@@ -3476,6 +3542,20 @@ mod tests {
     }
 
     #[test]
+    fn coordination_path_tolerates_a_directory_created_during_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("created-during-resolution");
+        let expected = path.clone();
+        COORDINATION_MISSING_PATH_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |missing| {
+                assert_eq!(missing, expected);
+                std::fs::create_dir(missing).unwrap();
+            }));
+        });
+        assert!(coordination_path(&path).is_some());
+    }
+
+    #[test]
     fn disjoint_paths_remain_independent_when_they_share_a_common_ancestor() {
         let temp = tempfile::tempdir().unwrap();
         let first_root = temp.path().join("one");
@@ -3508,6 +3588,38 @@ mod tests {
         assert!(!coordination_scopes_overlap(&first, &unrelated));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_unicode_aliases_share_coordination_and_are_not_overwritten() {
+        let composed = "\u{e9}";
+        let decomposed = "e\u{301}";
+        assert!(skill_names_may_alias(composed, decomposed));
+        assert!(!skill_names_may_alias("\u{7532}", "\u{4e59}"));
+        assert!(coordination_path_starts_with(
+            Path::new("/skills/\u{e9}/child"),
+            Path::new("/skills/e\u{301}"),
+        ));
+
+        let scope = |path: &str| Some(vec![CoordinationPath {
+            normalized: PathBuf::from(path),
+            ancestors: Vec::new(),
+        }]);
+        let mut coordination = SkillsCoordination::default();
+        coordination.changed_skill(scope("/skills/\u{e9}"), composed);
+        assert!(coordination.skill_generation(&scope("/skills/e\u{301}"), decomposed) > 0);
+        assert!(!coordination_scopes_overlap(&scope("/skills/\u{7532}"), &scope("/skills/\u{4e59}")));
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        write_skill(&first, "first");
+        write_skill(&second, "second");
+        manager.import_from_directory(composed, &first).unwrap();
+        assert!(manager.import_from_directory(decomposed, &second).is_err());
+        assert_eq!(std::fs::read_to_string(manager.source_dir.join(composed).join("SKILL.md")).unwrap(), "first");
+    }
+
     #[test]
     fn generation_entries_are_reused_when_a_path_identity_changes() {
         let scope = |file| Some(vec![CoordinationPath {
@@ -3520,6 +3632,117 @@ mod tests {
         coordination.changed_skill(scope(2), "alpha");
         assert_eq!(coordination.skills.len(), 1);
         assert!(coordination.skill_generation(&scope(1), "alpha") > captured);
+    }
+
+    #[test]
+    fn atomic_state_replacements_do_not_accumulate_file_identities() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let mut coordination = SkillsCoordination::default();
+        for _ in 0..8 {
+            manager.save_state_unlocked(&SkillsState::default()).unwrap();
+            coordination.changed_skill(manager.coordination_scope(), "alpha");
+        }
+        assert_eq!(coordination.skills.len(), 1);
+        let scope = coordination.skills.keys().next().unwrap().0.as_ref().unwrap();
+        assert_eq!(scope[2].ancestors, manager.coordination_scope().unwrap()[2].ancestors);
+    }
+
+    #[test]
+    fn replaced_path_preserves_generation_visible_through_an_old_alias() {
+        let scope = |path: &str, file| Some(vec![CoordinationPath {
+            normalized: PathBuf::from(path),
+            ancestors: vec![(SkillPathIdentity { device: 11, file }, PathBuf::new())],
+        }]);
+        let old = scope("/mount-one/skills", 1);
+        let alias = scope("/mount-two/skills", 1);
+        let replacement = scope("/mount-one/skills", 2);
+        let mut coordination = SkillsCoordination::default();
+
+        coordination.changed_skill(old.clone(), "alpha");
+        let skill_generation = coordination.skill_generation(&alias, "alpha");
+        coordination.changed_skill(replacement.clone(), "alpha");
+        assert!(skill_generation > 0);
+        assert!(coordination.skill_generation(&alias, "alpha") >= skill_generation);
+
+        coordination.changed_repo(old.clone(), "owner/repo");
+        let repo_generation = coordination.repo_generation(&alias, "owner/repo");
+        let repo_change_generation = coordination.repo_change_generation(&alias, "owner/repo");
+        coordination.changed_repo(replacement.clone(), "owner/repo");
+        assert!(repo_generation > 0);
+        assert!(coordination.repo_generation(&alias, "owner/repo") >= repo_generation);
+        assert!(coordination.repo_change_generation(&alias, "owner/repo") >= repo_change_generation);
+
+        coordination.changed_repo_settings(old, "owner/other");
+        let settings_generation = coordination.repo_change_generation(&alias, "owner/other");
+        coordination.changed_repo_settings(replacement, "owner/other");
+        assert!(settings_generation > 0);
+        assert!(coordination.repo_change_generation(&alias, "owner/other") >= settings_generation);
+    }
+
+    #[test]
+    fn nested_agent_update_invalidates_a_different_skill_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = manager(&temp);
+        let agent_dir = base.source_dir.join("alpha");
+        let manager = base.with_agent_dirs(vec![("nested".into(), agent_dir.clone())]);
+        let alpha = temp.path().join("external/alpha");
+        let beta = temp.path().join("external/beta");
+        write_skill(&alpha, "alpha");
+        write_skill(&beta, "beta");
+        manager.import_from_directory("beta", &beta).unwrap();
+        manager.set_enabled_for("nested", "beta", true).unwrap();
+
+        let scope = manager.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, "alpha"));
+        let (staging, imported) = manager.stage_directory_import("alpha", &alpha, LOCAL_IMPORT_REPO_KEY).unwrap();
+        write_skill(&beta, "updated beta");
+        manager.import_from_directory("beta", &beta).unwrap();
+
+        assert!(manager.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert!(agent_dir.join("beta/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn nested_agent_enable_invalidates_a_different_skill_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = manager(&temp);
+        let agent_dir = base.source_dir.join("alpha");
+        let manager = base.with_agent_dirs(vec![("nested".into(), agent_dir.clone())]);
+        let alpha = temp.path().join("external/alpha");
+        let beta = temp.path().join("external/beta");
+        write_skill(&alpha, "alpha");
+        write_skill(&beta, "beta");
+        manager.import_from_directory("beta", &beta).unwrap();
+
+        let scope = manager.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, "alpha"));
+        let (staging, imported) = manager.stage_directory_import("alpha", &alpha, LOCAL_IMPORT_REPO_KEY).unwrap();
+        manager.set_enabled_for("nested", "beta", true).unwrap();
+
+        assert!(manager.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert!(agent_dir.join("beta/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn nested_agent_disable_invalidates_a_same_skill_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = manager(&temp);
+        let agent_dir = base.source_dir.join("alpha/agents");
+        let manager = base.with_agent_dirs(vec![("nested".into(), agent_dir.clone())]);
+        let alpha = temp.path().join("external/alpha");
+        write_skill(&alpha, "alpha");
+        manager.import_from_directory("alpha", &alpha).unwrap();
+        write_skill(&agent_dir.join("alpha"), "agent copy");
+        std::fs::write(agent_dir.join("alpha/.codex-plus-managed"), "").unwrap();
+
+        let scope = manager.coordination_scope();
+        let generation = (scope.clone(), skills_coordination().skill_generation(&scope, "alpha"));
+        let (staging, imported) = manager.stage_directory_import("alpha", &alpha, LOCAL_IMPORT_REPO_KEY).unwrap();
+        manager.set_enabled_for("nested", "alpha", false).unwrap();
+
+        assert!(manager.commit_staged_import_if_unchanged(&staging, imported, generation).is_err());
+        assert_eq!(std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap(), "alpha");
     }
 
     #[test]
