@@ -50,7 +50,7 @@ fn builds_entries_from_staged_meta() {
         homepage: String::new(),
         icon: "https://raw.githubusercontent.com/x/icon.png".into(),
         keywords: vec![],
-        engine: 1,
+        engine: json!(1),
         compatible: true,
         permissions: Value::Null,
     };

@@ -3707,6 +3707,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "网关响应中间件 {0} 个：可读取并改写模型回复": "{0} gateway response middleware: can read and rewrite model replies",
   "网关请求中间件 {0} 个：可读取并改写发往模型的完整请求": "{0} gateway request middleware: can read and rewrite full model requests",
   "需要拓展 API v{0}，请先更新 Codex++": "Needs extension API v{0}; update Codex++ first",
+  "需要 Codex++ {0}，当前版本不兼容": "Requires Codex++ {0}; the current version is incompatible",
   "默认分支 {0}": "Default branch {0}",
   "Codex 钩子配置未能同步：{0}": "Could not sync Codex hooks config: {0}",
   "此页由拓展「{0}」提供": "This page is provided by the extension \"{0}\"",

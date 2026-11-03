@@ -360,9 +360,10 @@ fn write_codex_model(ctx: &ApplyContext, model: &str) -> anyhow::Result<()> {
 /// 一起改掉，否则选了不生效。
 fn write_claude_model(ctx: &ApplyContext, model: &str) -> anyhow::Result<()> {
     let path = ctx.claude.claude_home.join("settings.json");
-    let mut object = match read_json(&path) {
-        Value::Object(object) => object,
-        _ => Map::new(),
+    let mut object: Map<String, Value> = match stash::read_optional(&path)? {
+        Some(text) => serde_json::from_str(&text)
+            .with_context(|| format!("{} 不是有效的 JSON 对象，请先修好再选择模型", path.display()))?,
+        None => Map::new(),
     };
     object.insert("model".into(), Value::String(model.to_string()));
     if let Some(env) = object.get_mut("env").and_then(Value::as_object_mut)

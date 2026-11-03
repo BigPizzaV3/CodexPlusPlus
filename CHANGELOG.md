@@ -9,7 +9,7 @@
 - **「拓展」改名与入口调整**：Codex++ 自己的能力统一叫「拓展」，「插件」只指 Codex 自带插件；管理器入口改名为「万物皆拓展」并置顶，原「增强」页改为「内置拓展」页，内置功能的开关和拓展共用同一份清单；拓展页去掉了「投稿」入口和社区拓展卡片上的「未审核」徽标。
 - **Agent 桌宠改为官方拓展包**：桌宠（含大肥鱼）不再单占侧栏「工具」入口，设置页从「万物皆拓展 → 本地拓展」里它那一行的「设置」打开。打字特效、背景图、用量状态栏、请求状态条同样改为随 Codex++ 发布的官方拓展包，原有开关在内置拓展里。
 - **下线会话分享**：后端的分享、导出接口早已删除，页面里的分享按钮、导入监听和 `codexAppSessionShare` 开关一并移除。
-- **私有接口订阅**：移除了冒充官方客户端调用私有接口的订阅，网关内置的订阅只保留 Google 系的两家，不内置国内厂商的私有接口订阅。
+- **订阅接入调整**：网关内置 Cursor、Kiro、Zed、Command Code、Devin、Factory、Gemini Code Assist 和 Antigravity 八类订阅；不再内置 Qoder、WorkBuddy、ZCode、Xiaomi MiMo 的私有接口订阅。
 - **界面主题可跟随系统外观**：新装默认跟随系统，托盘面板同步（#2825）。
 
 ### 新增
@@ -22,7 +22,7 @@
 - **对话造拓展**：能查看 Codex 页面结构并截图，能把本机文件按文本复制进包（单个 4 MiB 内），支持取消接入，不造拓展时不占 Codex 的 MCP 工具上下文。
 - **dsh 插件兼容**：可导入 dsh 插件，工具插件经托管 MCP 在 Codex 中运行；补齐事件、前端插件、`llm.stream` 真流式、typert 类型化 RPC、WebSocket 升级转发、自定义 npm registry 等；按 npm 生态实测，整包可用从 41% 升到 59%，导入失败从 27 个降到 6 个。
 - **网关接入更多 Agent**：通用 Agent 接入框架，首个接入 OpenCode，随后接入 OpenChamber、Pi、Gemini CLI、Hermes 等命令行 Agent，以及 Claude Desktop、Zed、VS Code 等桌面应用和 IDE；新增 Chat Completions 与 Gemini 入站协议；通用 Agent 详情里可复制网关地址与 token；Claude Desktop 也能选非 Claude 模型。
-- **更多订阅**：接入 Gemini Code Assist、Antigravity、Cursor、Kiro、Zed、Command Code、Devin、Factory、Qoder、WorkBuddy、ZCode、Xiaomi MiMo 等订阅；赞助商预设新增 ccccccAPI。
+- **更多订阅**：接入 Cursor、Kiro、Zed、Command Code、Devin、Factory、Gemini Code Assist 和 Antigravity；赞助商预设新增 ccccccAPI。
 - **发现本机已登录的订阅账号**（默认关闭）。
 - **模型下拉列出 Agent 自带的模型**：选中即直连、不经 Codex++，每个 Agent 有「显示自带模型」开关；供应商模型的上下文窗口和思考等级可从上游 `/models` 元数据同步（#2807）。
 - **使用模式新增「只用增强功能」**：供应商交给别的工具，隐藏供应商、网关和用量；启动问卷可选「只管理 Codex / 全部功能」，只管 Codex 时隐藏其他 Agent、网关按单 Agent 呈现。
@@ -45,6 +45,12 @@
 
 ### 修复
 
+- Windows DSH 的盘符、UNC 与扩展路径处理，恢复依赖包技能扫描；同一配置文件的短路径、长路径共享后台状态，不同配置保持隔离。
+- Windows WebSocket 在客户端或上游断开后不结束、后台清理卡住；正常长连接不设寿命上限，收尾保留已读缓冲写出并限制最长等待时间。
+- 断开 VS Code、DSH、Buddy 网关接入时，只恢复 Codex++ 管理的配置，保留接入期间用户新增、修改或删除的其他模型与补丁。
+- Claude 设置文件损坏或读取失败时，选择自带模型会报错并保留原文件，不再用空配置覆盖。
+- 社区拓展正确处理 `engines.codexpp` 的 semver 版本范围，保留数字 API 版本兼容检查。
+- 拓展 HTTP 路由校验本机 Host 并拒绝跨站请求；管理器面板的 CSP 在拓展 HTML 之前生效，限制表单外发和外部资源请求。
 - 模型下拉里供应商筛选栏在网格内收缩不了，横向滚动条被隐藏，后面的供应商选不到。
 - 网关里 ChatGPT API 账号中途切换思考强度报 400（#2834）。
 - Codex 详情的「改动了 · 查看」打不开；接入前是聚合供应商时也列出自带模型。

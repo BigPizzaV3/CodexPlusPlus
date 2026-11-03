@@ -809,6 +809,16 @@ pub async fn route_http(method: &str, raw_path: &str, raw_headers: &str, body: &
 
 pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path: &str, raw_headers: &str, body: &[u8]) -> (u16, String, Vec<u8>) {
     let fail = |status: u16, message: String| (status, "application/json; charset=utf-8".to_string(), json!({ "error": message }).to_string().into_bytes());
+    let header = |name: &str| raw_headers.lines().skip(1).filter_map(|line| line.split_once(':')).find(|(key, _)| key.trim().eq_ignore_ascii_case(name)).map(|(_, value)| value.trim());
+    // 普通 GET 不一定带 Origin：同时挡住 DNS 重绑定与跨站资源请求，保留本机客户端和同源页面。
+    if !host_is_loopback(header("host").unwrap_or_default()) {
+        return fail(403, "extension routes only accept loopback hosts".into());
+    }
+    if header("origin").is_some_and(|origin| !origin.is_empty())
+        || header("sec-fetch-site").is_some_and(|site| site.eq_ignore_ascii_case("cross-site"))
+    {
+        return fail(403, "extension routes do not accept browser requests".into());
+    }
     let (path, query) = raw_path.split_once('?').unwrap_or((raw_path, ""));
     let Some(rest) = path.strip_prefix("/ext/") else {
         return fail(404, "not found".into());

@@ -222,6 +222,53 @@ fn claude_without_its_own_address_goes_to_anthropic_and_keeps_other_settings() {
 }
 
 #[test]
+fn claude_own_model_preserves_invalid_settings() {
+    for original in [
+        r#"{"permissions": {"allow": ["Bash"]},"#,
+        "",
+        "null",
+        "[]",
+        "true",
+    ] {
+        let fixture = fixture(57418);
+        let ctx = &fixture.ctx;
+        let path = ctx.claude.claude_home.join("settings.json");
+        std::fs::write(&path, original).unwrap();
+
+        let result = use_own_model(ctx, &BackendSettings::default(), &ToolId::Claude, "sonnet");
+
+        assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes(), "{original:?}");
+        assert!(result.is_err(), "无效的设置应报错：{original:?}");
+    }
+}
+
+#[test]
+fn claude_own_model_preserves_settings_that_cannot_be_read_as_utf8() {
+    let fixture = fixture(57419);
+    let ctx = &fixture.ctx;
+    let path = ctx.claude.claude_home.join("settings.json");
+    let original = [b'{', 0xff, b'}'];
+    std::fs::write(&path, original).unwrap();
+
+    let result = use_own_model(ctx, &BackendSettings::default(), &ToolId::Claude, "sonnet");
+
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(result.is_err(), "读取设置失败时应报错");
+}
+
+#[test]
+fn claude_own_model_creates_missing_settings() {
+    let fixture = fixture(57420);
+    let ctx = &fixture.ctx;
+    let path = ctx.claude.claude_home.join("settings.json");
+    assert!(!path.exists());
+
+    use_own_model(ctx, &BackendSettings::default(), &ToolId::Claude, "sonnet").unwrap();
+
+    assert_eq!(read_json(&path), json!({ "model": "sonnet" }));
+}
+
+#[test]
 fn agents_without_own_models_are_refused() {
     let fixture = fixture(57415);
     let ctx = &fixture.ctx;
