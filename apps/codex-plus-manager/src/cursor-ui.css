@@ -466,10 +466,10 @@
   width: min(100%, var(--cx-content-narrow));
 }
 
-/* 宽表格类页面放宽一些：请求日志、会话、MCP 矩阵。 */
+/* 请求日志、会话、MCP 与其他页面同宽：切换「统计 / 请求」页签时标题不跳。 */
 :root .shell .screen.request-log-screen > *,
 :root .shell .screen.management-screen > * {
-  width: min(100%, 1180px);
+  width: min(100%, var(--cx-content));
 }
 
 :root .shell .cx-page-head {

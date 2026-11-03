@@ -365,7 +365,7 @@
 
 :root .shell .screen.request-log-screen > .request-log-page {
   display: flex;
-  width: min(100%, 1180px);
+  width: min(100%, var(--cx-content));
   height: 100%;
   min-height: 0;
   flex-direction: column;
