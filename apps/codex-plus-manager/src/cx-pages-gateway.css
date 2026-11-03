@@ -444,17 +444,17 @@
   color: hsl(var(--status-error));
 }
 
-/* 耗时一行：「18.4s 首字 820ms」。 */
+/* 耗时两行：「18.4s」下面一行小字「首字 820ms」。 */
 :root .shell .request-log-page .request-log-duration {
   display: flex;
-  align-items: baseline;
-  gap: 5px;
+  flex-direction: column;
+  gap: 1px;
   white-space: nowrap;
 }
 
 :root .shell .request-log-page .request-log-duration small {
-  display: inline;
-  font-size: 11px;
+  display: block;
+  font-size: 10.5px;
 }
 
 :root .shell .request-log-page .request-log-detail {
@@ -475,8 +475,10 @@
   color: hsl(var(--foreground));
 }
 
+/* 默认窗口（1180 宽）内容区约 856px：各列收紧、模型列弹性，耗时把「首字」放到第二行，整表不再被右边截掉。 */
 :root .shell .request-log-page .request-log-row {
-  grid-template-columns: 64px 58px 112px minmax(150px, 1.6fr) 72px 54px 54px 92px 60px 104px;
+  grid-template-columns: 62px 56px 104px minmax(120px, 1.6fr) 58px 52px 52px 84px 56px 66px;
+  min-width: 0;
 }
 
 :root .shell .request-log-page .request-log-status.running {
@@ -649,4 +651,27 @@
 
 :root .shell .gw-route-members {
   padding: 4px 0;
+}
+
+/* 供应商池顶栏和其它页一样：搜索框占满整行，「添加供应商」在最右；不再是右边一个窄框、左边空着。 */
+:root .shell .gw-provider-search-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+:root .shell .gw-provider-search-row .gw-sheet-search {
+  flex: 1 1 auto;
+  width: auto;
+  max-width: none;
+  border-radius: 999px;
+}
+
+:root .shell .gw-provider-search-row .gw-primary-button {
+  flex: none;
+}
+
+:root .shell .gw-provider-search-row .gw-sheet-search input {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }

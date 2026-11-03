@@ -2050,7 +2050,7 @@ export const EN_PLAIN: Record<string, string> = {
   "流失败": "stream failed",
   "推理 tokens": "Reasoning tokens",
   "错误": "Error",
-  "自动重试 ×{0}": "Auto retries ×{0}",
+  "重试 ×{0}": "Retry ×{0}",
   "切换 ×{0}": "Switched ×{0}",
   "统一管理本地协议代理、供应商代理与重试策略":
     "Manage the local protocol proxy, provider proxies, and retry policy in one place",

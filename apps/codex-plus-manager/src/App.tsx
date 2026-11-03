@@ -6821,7 +6821,7 @@ function formatRequestLogDuration(durationMs: number) {
 
 function requestLogRetryLabel(entry: RequestLogEntry) {
   const base = entry.autoRetries > 0
-    ? tf("自动重试 ×{0}", [String(entry.autoRetries)])
+    ? tf("重试 ×{0}", [String(entry.autoRetries)])
     : entry.attempts > 1
       ? tf("切换 ×{0}", [String(entry.attempts)])
       : "";
