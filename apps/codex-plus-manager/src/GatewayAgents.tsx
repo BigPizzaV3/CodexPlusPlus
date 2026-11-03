@@ -2,7 +2,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, ChevronUp, Copy, FileDiff, Layers, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, FileDiff, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -37,6 +37,7 @@ import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
+import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
 import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 export function AgentsView({
@@ -75,17 +76,16 @@ export function AgentsView({
       run={run}
     />
   );
+  // 参照 Cursor 的 Customize：「已接入」「未接入」两节，每个 Agent 一行；选模型 + 打开开关就算接入，详情在行下展开。
+  // 单 Agent 模式只有一行，不分节，直接展开它的设置。
+  const list = (items: GatewayAgentView[]) => <CxCard className="gw-agent-card">{items.map(row)}</CxCard>;
   return (
-    <>
-      <div className="gw-card gw-agent-card">
-        {/* 单 Agent 模式只有一行，不分「已接入 / 未接入」，直接展开它的设置。 */}
-        {!solo && connected.length ? <div className="gw-subhead">{t("已接入")}<em>{connected.length}</em></div> : null}
-        {connected.map(row)}
-        {!solo && others.length ? <div className="gw-subhead">{t("未接入")}<em>{others.length}</em></div> : null}
-        {others.map(row)}
-        {!payload ? <div className="gw-empty">{t("正在读取…")}</div> : null}
-      </div>
-    </>
+    <div className="gw-agents cx-page">
+      {!payload ? <CxCard><CxEmpty title={t("正在读取…")} /></CxCard> : null}
+      {solo && agents.length ? list(agents) : null}
+      {!solo && connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
+      {!solo && others.length ? <CxSection count={others.length} title={t("未接入")}>{list(others)}</CxSection> : null}
+    </div>
   );
 }
 
@@ -215,87 +215,79 @@ function AgentRow({
     <div className="gw-agent" data-expanded={expanded}>
       {/* 已接入时整行点击展开详情，模型下拉和开关各管各的。 */}
       <div
-        className="gw-agent-row"
+        className="gw-agent-row cx-row"
         data-clickable={connected}
         onClick={(event) => {
           if (!connected || (event.target as HTMLElement).closest("button, a, input")) return;
           onToggleExpand();
         }}
       >
-        <span className="gw-agent-icon-box"><AgentIcon agent={agent.agent} className="gw-agent-icon" /></span>
-        <div className="gw-agent-main">
-          <div className="gw-agent-title">
-            <strong>{agent.name}</strong>
-            {agent.version ? <span className="gw-version">{agent.version}</span> : null}
-          </div>
-          <small className="gw-agent-meta" title={drift?.endpoint ? tf("现在连的是 {0}", [drift.endpoint]) : undefined}>
-            <span className="gw-agent-badge" data-tone={diagnostic.tone}>{t(diagnostic.badge)}</span>
-            {connected && !diagnostic.reconnect ? (
-              <span className="gw-agent-count" title={tf("{0} 个模型", [modelCount])}>
-                <Layers aria-hidden="true" />
-                {modelCount}
-              </span>
-            ) : null}
-            {note ? <span>{note}</span> : null}
-            {diagnostic.reconnect ? (
-              reconnectAllowed ? (
-                <button className="gw-link gw-drift-reconnect" disabled={busy !== null} onClick={() => void reconnect()} type="button">
-                  {t("重新接入")}
-                </button>
-              ) : (
-                <>
-                  <span>{t("供应商配置切换已关闭，在供应商配置页打开后才能切换")}</span>
-                  {onOpenCodexProviderSettings ? (
-                    <button className="gw-link gw-drift-reconnect" onClick={onOpenCodexProviderSettings} type="button">
-                      {t("打开供应商页")}
-                    </button>
-                  ) : null}
-                </>
-              )
-            ) : null}
-          </small>
+        <div className="cx-row-main">
+          <span className="cx-row-icon gw-agent-icon-box">
+            <CxStatusIcon tone={!connected ? undefined : diagnostic.tone === "error" ? "danger" : "ok"}>
+              {/* 包一层：CxStatusIcon 把直接子级的 <i> 当状态点，Claude / Grok 的遮罩图标正是 <i>。 */}
+              <span className="gw-agent-glyph"><AgentIcon agent={agent.agent} className="gw-agent-icon" /></span>
+            </CxStatusIcon>
+          </span>
+          <span className="cx-row-copy">
+            <span className="cx-row-title">
+              <strong>{agent.name}</strong>
+              {agent.version ? <CxBadge>{agent.version}</CxBadge> : null}
+            </span>
+            <span className="cx-row-detail gw-agent-meta" title={drift?.endpoint ? tf("现在连的是 {0}", [drift.endpoint]) : undefined}>
+              <span className="gw-agent-badge" data-tone={diagnostic.tone}>{t(diagnostic.badge)}</span>
+              {connected && !diagnostic.reconnect ? <span>{tf("{0} 个模型", [modelCount])}</span> : null}
+              {note ? <span>{note}</span> : null}
+              {diagnostic.reconnect ? (
+                reconnectAllowed ? (
+                  <button className="gw-link gw-drift-reconnect" disabled={busy !== null} onClick={() => void reconnect()} type="button">
+                    {t("重新接入")}
+                  </button>
+                ) : (
+                  <>
+                    <span>{t("供应商配置切换已关闭，在供应商配置页打开后才能切换")}</span>
+                    {onOpenCodexProviderSettings ? (
+                      <button className="gw-link gw-drift-reconnect" onClick={onOpenCodexProviderSettings} type="button">
+                        {t("打开供应商页")}
+                      </button>
+                    ) : null}
+                  </>
+                )
+              ) : null}
+            </span>
+          </span>
         </div>
-        <ModelPicker
-          agent={agent}
-          connected={connected}
-          draft={draft}
-          onDisconnect={() => {
-            setPickerOpen(false);
-            if (connected || agent.requiresDisconnectPreview) void disconnect();
-          }}
-          onOpenChange={setPickerOpen}
-          onPick={pick}
-          onPickOwn={(item) => void pickOwn(item)}
-          open={pickerOpen}
-          payload={payload}
-        />
-        <Switch disabled={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
-        <button
-          aria-expanded={expanded}
-          aria-label={isClaude ? t("档位") : t("详情")}
-          className="gw-chevron"
-          data-open={expanded}
-          disabled={!connected}
-          onClick={onToggleExpand}
-          type="button"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
+        <div className="cx-row-controls">
+          <ModelPicker
+            agent={agent}
+            connected={connected}
+            draft={draft}
+            onDisconnect={() => {
+              setPickerOpen(false);
+              if (connected || agent.requiresDisconnectPreview) void disconnect();
+            }}
+            onOpenChange={setPickerOpen}
+            onPick={pick}
+            onPickOwn={(item) => void pickOwn(item)}
+            open={pickerOpen}
+            payload={payload}
+          />
+          <Switch disabled={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
+          <button
+            aria-expanded={expanded}
+            aria-label={isClaude ? t("档位") : t("详情")}
+            className="gw-chevron"
+            data-open={expanded}
+            disabled={!connected}
+            onClick={onToggleExpand}
+            type="button"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       {expanded && connected ? (
-        <>
-          <AgentDetail agent={agent} busy={busy} draft={draft} onDisconnect={() => void disconnect()} onSave={(next) => void save(next)} onViewConfigDiff={() => setConfigDiffOpen(true)} payload={payload} run={run} />
-          <div className="gw-collapse-bar">
-            <button className="gw-text-button" onClick={onToggleExpand} type="button">
-              {t("收起")}
-              <ChevronUp className="h-3.5 w-3.5" />
-            </button>
-            <button className="gw-text-button gw-collapse-manage" onClick={onManage} type="button">
-              <List className="h-4 w-4" />
-              {t("管理")}
-            </button>
-          </div>
-        </>
+        <AgentDetail agent={agent} busy={busy} draft={draft} onDisconnect={() => void disconnect()} onManage={onManage} onSave={(next) => void save(next)} onViewConfigDiff={() => setConfigDiffOpen(true)} payload={payload} run={run} />
       ) : null}
       {disconnectTarget ? (
         <AgentDisconnectDialog
@@ -320,7 +312,10 @@ function AgentRow({
   );
 }
 
-/** 展开的详情：在 Agent 里怎么切模型、模型列表（可挑选供应商）、Claude 档位、其它选项、改动的文件。 */
+/**
+ * 展开的详情（行下展开，不跳页）：接入状态、用哪些供应商、Claude 档位，常用的就这几行；
+ * 起名 / 审批 / 生图模型、未知模型名、默认窗口这些默认值大多数人不用改，收进「高级」。底部是改动的文件、查看差异、断开并还原。
+ */
 function AgentDetail({
   agent,
   payload,
@@ -329,6 +324,7 @@ function AgentDetail({
   run,
   onSave,
   onDisconnect,
+  onManage,
   onViewConfigDiff,
 }: {
   agent: GatewayAgentView;
@@ -338,6 +334,8 @@ function AgentDetail({
   run: Run;
   onSave: (next: BindingDraft) => void;
   onDisconnect: () => void;
+  /** 去供应商池（弹窗里是关掉弹窗再去）。 */
+  onManage: () => void;
   onViewConfigDiff: () => void;
 }) {
   const isClaude = agent.agent === "claude";
@@ -367,15 +365,6 @@ function AgentDetail({
   return (
     <div className="gw-agent-detail">
       <AgentDiagnostics agent={agent} helperRunning={Boolean(payload?.helperRunning)} />
-      {/* 只有 Claude Code 的档位切换需要说明；其它 Agent 在自己的模型列表里直接选，不用再讲一遍。 */}
-      {isClaude ? (
-        <div className="gw-detail-row">
-          <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
-          <div className="gw-detail-value">
-            <span>{t("在 Claude Code 的")} <code className="gw-code">/model</code> {t("里切换 opus · sonnet · haiku 档，各档用的模型在下面设置。")}</span>
-          </div>
-        </div>
-      ) : null}
       {agent.hint ? (
         <div className="gw-detail-row">
           <span className="gw-detail-label">{tf("在 {0} 里", [agent.name])}</span>
@@ -440,13 +429,17 @@ function AgentDetail({
                 );
               })}
               {providers.length === 0 ? <div className="gw-empty">{t("供应商池是空的")}</div> : null}
+              <button className="gw-text-button gw-select-manage" onClick={() => { setSelecting(false); onManage(); }} type="button">
+                <List className="h-3.5 w-3.5" />
+                {t("管理供应商池")}
+              </button>
             </div>
           </Floating>
         </div>
       </div>
-      {agent.ownModels ? <OwnModelsRow agent={agent} busy={busy} payload={payload} run={run} /> : null}
+      {/* 只有 Claude Code 的档位切换需要说明，放在悬停提示里；其它 Agent 在自己的模型列表里直接选。 */}
       {isClaude ? (
-        <div className="gw-detail-row">
+        <div className="gw-detail-row" title={`${t("在 Claude Code 的")} /model ${t("里切换 opus · sonnet · haiku 档，各档用的模型在下面设置。")}`}>
           <span className="gw-detail-label">{t("档位")}</span>
           <div className="gw-detail-value gw-chip-row">
             {tiers.map(([key, label]) => (
@@ -462,44 +455,48 @@ function AgentDetail({
           </div>
         </div>
       ) : null}
-      {/* 目前只有 Codex 自己会发生图请求；别的 Agent 有了生图工具再显示。 */}
-      {agent.agent === "codex" ? <ImageModelRow agent={agent.agent} busy={busy} payload={payload} run={run} /> : null}
-      {/* Codex「替我审批」固定请求 codex-auto-review：默认改写成主模型，可单独指定，避免落到 ChatGPT 订阅额度上（#2703）。 */}
-      {/* Codex 给会话起名时另开临时线程（首次用内置轻量模型，重新起名用会话当前模型），默认照原模型路由，可单独指定。 */}
-      {agent.agent === "codex" ? (
-        <div className="gw-detail-row">
-          <span className="gw-detail-label">{t("起名模型")}</span>
-          <div className="gw-detail-value gw-chip-row" title={t("Codex 给会话起名、重新起名的请求发给这个模型；不指定时照 Codex 自己选的模型路由")}>
-            <TierPicker
-              emptyLabel={t("不单独指定")}
-              exclude={draft.poolExclude}
-              label={t("起名")}
-              onPick={(model) => onSave({ ...draft, titleModel: model })}
-              payload={payload}
-              value={draft.titleModel}
-            />
+      <details className="gw-detail-advanced">
+        <summary>
+          <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+          {t("高级")}
+        </summary>
+        {agent.ownModels ? <OwnModelsRow agent={agent} busy={busy} payload={payload} run={run} /> : null}
+        {/* 目前只有 Codex 自己会发生图请求；别的 Agent 有了生图工具再显示。 */}
+        {agent.agent === "codex" ? <ImageModelRow agent={agent.agent} busy={busy} payload={payload} run={run} /> : null}
+        {/* Codex「替我审批」固定请求 codex-auto-review：默认改写成主模型，可单独指定，避免落到 ChatGPT 订阅额度上（#2703）。 */}
+        {/* Codex 给会话起名时另开临时线程（首次用内置轻量模型，重新起名用会话当前模型），默认照原模型路由，可单独指定。 */}
+        {agent.agent === "codex" ? (
+          <div className="gw-detail-row">
+            <span className="gw-detail-label">{t("起名模型")}</span>
+            <div className="gw-detail-value gw-chip-row" title={t("Codex 给会话起名、重新起名的请求发给这个模型；不指定时照 Codex 自己选的模型路由")}>
+              <TierPicker
+                emptyLabel={t("不单独指定")}
+                exclude={draft.poolExclude}
+                label={t("起名")}
+                onPick={(model) => onSave({ ...draft, titleModel: model })}
+                payload={payload}
+                value={draft.titleModel}
+              />
+            </div>
           </div>
-        </div>
-      ) : null}
-      {agent.agent === "codex" ? (
-        <div className="gw-detail-row">
-          <span className="gw-detail-label">{t("审批模型")}</span>
-          <div className="gw-detail-value gw-chip-row" title={t("Codex「替我审批」的请求（codex-auto-review）发给这个模型；同默认模型时按「未知模型名」规则处理")}>
-            <TierPicker
-              exclude={draft.poolExclude}
-              label={t("审批")}
-              onPick={(model) => onSave({ ...draft, autoReviewModel: model })}
-              payload={payload}
-              value={draft.autoReviewModel}
-            />
+        ) : null}
+        {agent.agent === "codex" ? (
+          <div className="gw-detail-row">
+            <span className="gw-detail-label">{t("审批模型")}</span>
+            <div className="gw-detail-value gw-chip-row" title={t("Codex「替我审批」的请求（codex-auto-review）发给这个模型；同默认模型时按「未知模型名」规则处理")}>
+              <TierPicker
+                exclude={draft.poolExclude}
+                label={t("审批")}
+                onPick={(model) => onSave({ ...draft, autoReviewModel: model })}
+                payload={payload}
+                value={draft.autoReviewModel}
+              />
+            </div>
           </div>
-        </div>
-      ) : null}
-      <div className="gw-detail-row">
-        <span className="gw-detail-label">{t("其它")}</span>
-        <div className="gw-detail-value gw-chip-row">
-          <div className="gw-inline-field">
-            <span>{t("未知模型名")}</span>
+        ) : null}
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{t("未知模型名")}</span>
+          <div className="gw-detail-value gw-chip-row">
             <AppSelect
               disabled={busy !== null}
               label={t("未知模型名")}
@@ -512,9 +509,11 @@ function AgentDetail({
               value={draft.unknownModel}
             />
           </div>
-          {/* 窗口按模型在供应商池里填；这里只给池里没写窗口的模型兜底。 */}
-          <label className="gw-inline-field" title={t("供应商池里没写窗口的模型用这个；按模型的窗口在供应商池的详情里填")}>
-            <span>{t("默认窗口")}</span>
+        </div>
+        {/* 窗口按模型在供应商池里填；这里只给池里没写窗口的模型兜底。 */}
+        <label className="gw-detail-row gw-detail-window" title={t("供应商池里没写窗口的模型用这个；按模型的窗口在供应商池的详情里填")}>
+          <span>{t("默认窗口")}</span>
+          <div className="gw-detail-value">
             <input
               className="gw-inline-input"
               onBlur={() => {
@@ -525,28 +524,32 @@ function AgentDetail({
               placeholder={t("例如 200k")}
               value={windowText}
             />
-          </label>
-          {isClaude ? (
-            <label className="gw-inline-field gw-inline-check" title={t("非 claude-* 模型名时 Claude Code 默认不发 effort，打开后照常发送。")}>
-              <input checked={draft.claudeEnableEffort} disabled={busy !== null} onChange={(event) => onSave({ ...draft, claudeEnableEffort: event.currentTarget.checked })} type="checkbox" />
-              <span>{t("强制启用推理强度")}</span>
+          </div>
+        </label>
+        <div className="gw-detail-row">
+          <span className="gw-detail-label">{t("其它")}</span>
+          <div className="gw-detail-value gw-chip-row">
+            {isClaude ? (
+              <label className="gw-inline-field gw-inline-check" title={t("非 claude-* 模型名时 Claude Code 默认不发 effort，打开后照常发送。")}>
+                <input checked={draft.claudeEnableEffort} disabled={busy !== null} onChange={(event) => onSave({ ...draft, claudeEnableEffort: event.currentTarget.checked })} type="checkbox" />
+                <span>{t("强制启用推理强度")}</span>
+              </label>
+            ) : null}
+            <label className="gw-inline-field gw-inline-check" title={t("关掉后，新添加的供应商默认不给这个 Agent 用；添加时仍可手动勾选。")}>
+              <input checked={draft.autoJoinProviders} disabled={busy !== null} onChange={(event) => onSave({ ...draft, autoJoinProviders: event.currentTarget.checked })} type="checkbox" />
+              <span>{t("添加供应商时自动加入")}</span>
             </label>
-          ) : null}
-          <label className="gw-inline-field gw-inline-check" title={t("关掉后，新添加的供应商默认不给这个 Agent 用；添加时仍可手动勾选。")}>
-            <input checked={draft.autoJoinProviders} disabled={busy !== null} onChange={(event) => onSave({ ...draft, autoJoinProviders: event.currentTarget.checked })} type="checkbox" />
-            <span>{t("添加供应商时自动加入")}</span>
-          </label>
+          </div>
         </div>
-      </div>
+      </details>
       <div className="gw-detail-row gw-detail-foot">
-        <span className="gw-detail-label gw-detail-file">
+        <span className="gw-detail-label gw-detail-file" title={agent.configPath ?? ""}>
           {t("改动了")} <code>{agent.configPath ?? ""}</code>
         </span>
         <div className="gw-detail-value">
           <button className="gw-text-button" disabled={busy !== null} onClick={onViewConfigDiff} type="button">
             <FileDiff className="h-3.5 w-3.5" />
             {t("查看差异")}
-            <ChevronRight className="h-3.5 w-3.5" />
           </button>
           <button className="gw-danger-link" disabled={busy !== null} onClick={onDisconnect} type="button">{t("断开并还原")}</button>
         </div>
@@ -555,48 +558,55 @@ function AgentDetail({
   );
 }
 
+/** 接入状态一行：请求数、最近请求；地址、配置证据、最近错误收进「诊断详情」，有错误时默认展开。 */
 function AgentDiagnostics({ agent, helperRunning }: { agent: GatewayAgentView; helperRunning: boolean }) {
   const diagnostics = agent.diagnostics;
   const presentation = agentDiagnosticPresentation(agent, helperRunning);
   const lastSeen = diagnostics?.lastSeenMs
     ? new Date(diagnostics.lastSeenMs).toLocaleString()
     : "";
+  const pending = presentation.tone === "pending"
+    ? diagnostics?.state === "awaitingTraffic"
+      ? t("配置已指向网关；尚未观察到请求，请在 Agent 里发送一条消息。")
+      : t("尚无足够信息确认请求路径。")
+    : "";
   return (
     <div className="gw-detail-row">
       <span className="gw-detail-label">{t("接入诊断")}</span>
       <div className="gw-detail-value gw-agent-diagnostics">
         <div className="gw-agent-diagnostic-summary">
-          <span className="gw-agent-badge" data-tone={presentation.tone}>{t(presentation.badge)}</span>
           {diagnostics ? <span>{tf("请求 {0} · 失败 {1} · 进行中 {2}", [diagnostics.requests, diagnostics.errors, diagnostics.inFlight])}</span> : null}
           {lastSeen ? <span>{tf("最近请求：{0}", [lastSeen])}</span> : null}
+          {!diagnostics && pending ? <span>{pending}</span> : null}
         </div>
-        {presentation.tone === "pending" ? <p>{diagnostics?.state === "awaitingTraffic"
-          ? t("配置已指向网关；尚未观察到请求，请在 Agent 里发送一条消息。")
-          : t("尚无足够信息确认请求路径。")}</p> : null}
-        {diagnostics?.state === "configUnreadable" ? <p>{t("未能读取配置，暂时无法判断请求会经过哪里。")}</p> : null}
         {diagnostics ? (
-          <div className="gw-agent-diagnostic-endpoints">
-            <p><span>{t("当前地址")}</span><code>{diagnostics.endpoint || t("未读取到地址")}</code></p>
-            <p><span>{t("预期地址")}</span><code>{diagnostics.expectedEndpoint}</code></p>
-          </div>
-        ) : null}
-        {diagnostics?.recentError ? (
-          <p className="gw-agent-diagnostic-error">
-            {tf("最近一次网关错误：{0}", [`${t(diagnosticErrorLabel(diagnostics.recentError.kind))}${diagnostics.recentError.status ? ` · HTTP ${diagnostics.recentError.status}` : ""}`])}
-          </p>
-        ) : null}
-        {diagnostics?.configEvidence.length ? (
-          <dl className="gw-agent-diagnostic-evidence">
-            {diagnostics.configEvidence.map((evidence, index) => (
-              <div key={`${evidence.path}:${evidence.field}:${index}`}>
-                <dt><code>{evidence.path}</code><span>{evidence.field}</span></dt>
-                <dd>
-                  <span>{t(diagnosticEvidenceLabel(evidence.code))}</span>
-                  {evidence.endpoint ? <code>{evidence.endpoint}</code> : null}
-                </dd>
-              </div>
-            ))}
-          </dl>
+          <details className="gw-agent-diagnostic-more" open={presentation.tone === "error" || undefined}>
+            <summary>{t("诊断详情")}</summary>
+            {pending ? <p>{pending}</p> : null}
+            {diagnostics.state === "configUnreadable" ? <p>{t("未能读取配置，暂时无法判断请求会经过哪里。")}</p> : null}
+            <div className="gw-agent-diagnostic-endpoints">
+              <p><span>{t("当前地址")}</span><code>{diagnostics.endpoint || t("未读取到地址")}</code></p>
+              <p><span>{t("预期地址")}</span><code>{diagnostics.expectedEndpoint}</code></p>
+            </div>
+            {diagnostics.recentError ? (
+              <p className="gw-agent-diagnostic-error">
+                {tf("最近一次网关错误：{0}", [`${t(diagnosticErrorLabel(diagnostics.recentError.kind))}${diagnostics.recentError.status ? ` · HTTP ${diagnostics.recentError.status}` : ""}`])}
+              </p>
+            ) : null}
+            {diagnostics.configEvidence.length ? (
+              <dl className="gw-agent-diagnostic-evidence">
+                {diagnostics.configEvidence.map((evidence, index) => (
+                  <div key={`${evidence.path}:${evidence.field}:${index}`}>
+                    <dt><code>{evidence.path}</code><span>{evidence.field}</span></dt>
+                    <dd>
+                      <span>{t(diagnosticEvidenceLabel(evidence.code))}</span>
+                      {evidence.endpoint ? <code>{evidence.endpoint}</code> : null}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+          </details>
         ) : null}
       </div>
     </div>

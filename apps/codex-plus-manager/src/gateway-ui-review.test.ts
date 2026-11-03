@@ -65,7 +65,7 @@ test("界面上显示供应商名的地方都打码（含悬停提示、无障�
   assert.match(providers, /<strong>\{maskAccountName\(item\.name\)\}<\/strong>/);
   assert.doesNotMatch(providers, /<strong>\{item\.name\}<\/strong>/);
   const usage = read("GatewayUsage.tsx");
-  assert.match(usage, /<strong>\{maskAccountName\(balance\.provider\)\}<\/strong>/);
+  assert.match(usage, /title=\{maskAccountName\(balance\.provider\)\}/);
   assert.doesNotMatch(usage, /title=\{group\.label\}/);
   // 提示（toast）里的后端文案统一过 maskAccountText。
   assert.match(read("gateway-ui.tsx"), /notify\(title, maskAccountText\(result\.message\), "ok"\)/);

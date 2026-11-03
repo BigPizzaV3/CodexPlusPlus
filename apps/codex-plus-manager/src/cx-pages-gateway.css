@@ -1,1 +1,519 @@
 /* 页面重排 · gateway 组（cx-layout 骨架之外的页面专属样式）。前缀统一 `:root .shell`。 */
+
+/* ── 总览（hub） ─────────────────────────────────────────────── */
+
+/* 一列骨架：块不被压扁，整页由外壳滚动。 */
+:root .shell .hub-page.cx-page > * {
+  flex-shrink: 0;
+}
+
+:root .shell .hub-page .hub-link {
+  height: 24px;
+  padding: 0 6px;
+}
+
+/* 拓扑图一张卡，不再套边框。 */
+:root .shell .hub-topology-card {
+  overflow: visible;
+}
+
+:root .shell .hub-split-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 最近请求：卡片里一行一条，行间细线与其它列表一致；最多显示 10 条，不在卡片里再滚动。 */
+:root .shell .hub-page .hub-flow-list {
+  max-height: none;
+  padding: 0;
+}
+
+:root .shell .hub-page .hub-flow-list > li {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .hub-page .hub-flow-list > li:first-child {
+  border-top: 0;
+}
+
+:root .shell .hub-page .hub-flow-toggle {
+  padding: 10px 14px;
+}
+
+:root .shell .hub-page .hub-flow-toggle:not(:disabled):hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+/* 推荐位：Cursor 顶部那种一条横幅；两个广告位合在一个框里，上下各一行。 */
+:root .shell .hub-sponsor {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .hub-sponsor-item + .hub-sponsor-item {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .hub-sponsor .cx-banner {
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root .shell .hub-sponsor .cx-banner .cx-row-detail {
+  white-space: nowrap;
+}
+
+:root .shell .hub-sponsor .cx-banner-icon {
+  overflow: hidden;
+}
+
+:root .shell .hub-sponsor .cx-banner-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ── Agent 接入（gateway） ───────────────────────────────────── */
+
+:root .shell .gw-agents.cx-page {
+  gap: 16px;
+}
+
+/* 一个 Agent 一行（cx-row），行间细线；展开的详情接在行下面，同一张卡里。 */
+:root .shell .gw-agent + .gw-agent {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent > .gw-agent-row.cx-row {
+  display: flex;
+  min-height: 60px;
+  padding: 0 12px 0 0;
+  border-bottom: 0;
+}
+
+:root .shell .gw-agent > .gw-agent-row[data-clickable="true"] {
+  cursor: pointer;
+}
+
+:root .shell .gw-agent > .gw-agent-row[data-clickable="true"]:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .gw-agent-row .cx-row-icon.gw-agent-icon-box {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+}
+
+:root .shell .gw-agent-row .gw-agent-glyph {
+  display: inline-flex;
+}
+
+:root .shell .gw-agent-row .gw-agent-glyph .gw-agent-icon {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .gw-agent-row .cx-row-detail.gw-agent-meta {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+
+/* 说明一行用「 · 」隔开：状态 · 9 个模型 · opus · sonnet · haiku。 */
+:root .shell .gw-agent-row .gw-agent-meta > * + *::before {
+  margin: 0 6px;
+  color: hsl(var(--muted-foreground) / 0.6);
+  content: "·";
+}
+
+:root .shell .gw-agent-row .gw-agent-meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态不再画成描边小胶囊：就是一段文字，出错标红，已到达标绿。 */
+:root .shell .gw-agent-row .gw-agent-badge {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .gw-agent-row .gw-agent-badge::before {
+  display: none;
+}
+
+:root .shell .gw-agent-row .gw-agent-badge[data-tone="on"] {
+  color: hsl(var(--status-success));
+}
+
+:root .shell .gw-agent-row .gw-agent-badge[data-tone="error"] {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .gw-agent-row .gw-drift-reconnect {
+  flex: none;
+  font-size: 12.5px;
+}
+
+:root .shell .gw-agent-row .cx-row-controls {
+  gap: 10px;
+}
+
+/* 右侧默认模型下拉：不铺底，像 Cursor 行尾的下拉一样只显示文字和箭头。 */
+:root .shell .gw-agent-row .gw-picker {
+  width: auto;
+  max-width: 280px;
+}
+
+:root .shell .gw-agent-row .gw-picker-button {
+  width: auto;
+  max-width: 280px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+}
+
+:root .shell .gw-agent-row .gw-picker-button:hover,
+:root .shell .gw-agent-row .gw-picker-button[aria-expanded="true"] {
+  border-color: hsl(var(--border));
+  background: hsl(var(--accent) / 0.5);
+}
+
+:root .shell .gw-agent-row .gw-chevron:disabled {
+  visibility: hidden;
+}
+
+/* 展开的详情：左列标签与 Agent 名对齐，行间细线。 */
+:root .shell .gw-agent[data-expanded="true"] > .gw-agent-row {
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-agent-detail {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 16px 6px 56px;
+}
+
+:root .shell .gw-agent .gw-detail-row {
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 44px;
+  padding: 6px 0;
+}
+
+:root .shell .gw-agent .gw-detail-row + .gw-detail-row,
+:root .shell .gw-agent .gw-detail-advanced,
+:root .shell .gw-agent .gw-detail-advanced + .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-detail-label,
+:root .shell .gw-agent .gw-detail-window > span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .gw-agent .gw-detail-value {
+  font-size: 13px;
+}
+
+:root .shell .gw-agent .gw-model-chip {
+  height: 26px;
+  font-size: 12.5px;
+}
+
+/* 「高级」折叠区：一行小标题，点开是同样的标签 / 控件行。 */
+:root .shell .gw-detail-advanced > summary {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+:root .shell .gw-detail-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .gw-detail-advanced > summary:hover {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .gw-detail-advanced > summary svg {
+  transition: transform 0.15s ease;
+}
+
+:root .shell .gw-detail-advanced[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+:root .shell .gw-detail-advanced > summary + .gw-detail-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-agent .gw-detail-foot .gw-detail-value {
+  justify-content: flex-end;
+}
+
+:root .shell .gw-agent .gw-detail-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 诊断详情：默认收起，有错误时展开。 */
+:root .shell .gw-agent-diagnostic-more > summary {
+  width: max-content;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:root .shell .gw-agent-diagnostic-more[open] > summary {
+  margin-bottom: 6px;
+}
+
+:root .shell .gw-select-list .gw-select-manage {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: 4px;
+  padding: 6px 8px;
+}
+
+:root .shell .gw-agent .gw-detail-value .app-select {
+  flex: none;
+  width: 240px;
+}
+
+:root .shell .gw-agent .gw-detail-value .app-select.gw-image-select {
+  width: 320px;
+}
+
+/* ── 用量 · 统计（gatewayUsage） ─────────────────────────────── */
+
+:root .shell .gw-usage.cx-page > *,
+:root .shell .gw-agents.cx-page > * {
+  flex-shrink: 0;
+}
+
+:root .shell .gw-usage .cx-stat-hint [data-tone="err"] {
+  color: hsl(var(--status-warning));
+}
+
+/* 图表卡：去掉旧卡片的描边，留白与其它卡片一致。 */
+:root .shell .gw-usage .gw-chart-card {
+  padding: 16px 18px 14px;
+  border: 0;
+}
+
+/* 明细的「按供应商 / 按模型 / 按 Agent」：小号胶囊，放在小标题右侧。 */
+:root .shell .gw-usage .gw-split-pills {
+  gap: 4px;
+}
+
+:root .shell .gw-usage .gw-split-pills > button {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+:root .shell .gw-usage .gw-usage-table {
+  border: 0;
+}
+
+:root .shell .gw-usage .gw-usage-row + .gw-usage-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .gw-usage .gw-usage-balance {
+  font-size: 13.5px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .gw-usage .gw-usage-balance-missing {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+/* ── 用量 · 请求（requestLog） ───────────────────────────────── */
+
+/* 标题、页签、工具条和表格同宽；页签只占自己的高度，表格卡占满剩下的高度并在卡内滚动。 */
+:root .shell .screen.request-log-screen {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+:root .shell .screen.request-log-screen > .request-log-page {
+  display: flex;
+  width: min(100%, 1180px);
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+:root .shell .request-log-page > :not(.request-log-card) {
+  flex-shrink: 0;
+}
+
+:root .shell .request-log-page .request-log-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12.5px;
+}
+
+:root .shell .request-log-page .request-log-refresh {
+  width: 30px;
+  justify-content: center;
+  padding: 0;
+}
+
+:root .shell .request-log-page .cx-filters-trailing .app-select.request-log-select {
+  width: 128px;
+}
+
+:root .shell .request-log-page .cx-filters-trailing .app-select.request-log-session-select {
+  width: 200px;
+}
+
+:root .shell .request-log-page .request-log-card {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+/* 表格：去掉外框和多余的颜色，只有行间细线；状态码中性灰，失败标红，进行中带绿点。 */
+:root .shell .request-log-page .request-log-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+
+:root .shell .request-log-page .request-log-row {
+  grid-template-columns: 64px 48px 112px minmax(150px, 1.6fr) 72px 54px 54px 92px 60px 104px;
+  min-height: 40px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+:root .shell .request-log-page .request-log-head {
+  min-height: 34px;
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+  background: hsl(var(--card));
+  font-size: 11.5px;
+  letter-spacing: 0;
+}
+
+:root .shell .request-log-page .request-log-entry {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .request-log-page .request-log-head + .request-log-entry {
+  border-top: 0;
+}
+
+:root .shell .request-log-page .request-log-entry:hover,
+:root .shell .request-log-page .request-log-entry[aria-expanded="true"] {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .request-log-page .request-log-status {
+  font-weight: 500;
+}
+
+:root .shell .request-log-page .request-log-status.ok {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .request-log-page .request-log-status.bad {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .request-log-page .request-log-status.running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: hsl(var(--foreground));
+}
+
+:root .shell .request-log-page .request-log-status.running::before {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: hsl(var(--status-success));
+  content: "";
+}
+
+:root .shell .request-log-page .request-log-retry {
+  color: hsl(var(--status-warning));
+  font-weight: 450;
+}
+
+:root .shell .request-log-page .request-log-error-cell {
+  color: hsl(var(--status-error));
+}
+
+/* 耗时一行：「18.4s 首字 820ms」。 */
+:root .shell .request-log-page .request-log-duration {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+:root .shell .request-log-page .request-log-duration small {
+  display: inline;
+  font-size: 11px;
+}
+
+:root .shell .request-log-page .request-log-detail {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+  background: hsl(var(--accent) / 0.2);
+}
+
+:root .shell .request-log-page .request-log-chip {
+  background: transparent;
+}
+
+:root .shell .request-log-page .request-log-chip:hover {
+  border-color: hsl(var(--input));
+}
+
+/* 全局的 .bad / .ok 会把整行染色（浅色主题下尤其明显）：行本身保持正文色，只有状态和错误摘要上色。 */
+:root .shell .request-log-page .request-log-entry {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .request-log-page .request-log-row {
+  grid-template-columns: 64px 58px 112px minmax(150px, 1.6fr) 72px 54px 54px 92px 60px 104px;
+}
+
+:root .shell .request-log-page .request-log-status.running {
+  white-space: nowrap;
+}
