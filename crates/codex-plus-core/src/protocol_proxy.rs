@@ -5026,25 +5026,27 @@ fn upstream_is_zhipu_responses_api(relay: &crate::settings::RelayProfile) -> boo
             .eq_ignore_ascii_case("/api/v1")
 }
 
-/// 只处理 Responses `input[].content[]` 里的 `input_image`；工具输出和其他
-/// 协议中的图片块保持原样。
+/// 只处理 Responses `input[].content[]` 与 `function_call_output.output[]`
+/// 里的 `input_image`；其他协议中的图片块保持原样。
 fn strip_input_image_details(body: &mut Value) -> bool {
     let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return false;
     };
     let mut changed = false;
     for item in items {
-        let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for part in parts {
-            if part.get("type").and_then(Value::as_str) != Some("input_image") {
-                continue;
-            }
-            let Some(part) = part.as_object_mut() else {
+        for parts_key in ["content", "output"] {
+            let Some(parts) = item.get_mut(parts_key).and_then(Value::as_array_mut) else {
                 continue;
             };
-            changed |= part.remove("detail").is_some();
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) != Some("input_image") {
+                    continue;
+                }
+                let Some(part) = part.as_object_mut() else {
+                    continue;
+                };
+                changed |= part.remove("detail").is_some();
+            }
         }
     }
 
@@ -13770,6 +13772,42 @@ mod parallel_tool_call_pairing_tests {
             ProxySessionHeaders::default(),
         ).await.unwrap();
         assert_eq!(out["input"][0]["content"][1]["detail"], "original");
+    }
+
+    /// 智谱原生 Responses 的 tool 输出同样可能出现 `input_image.detail`；
+    /// `function_call_output.output[]` 与普通消息一起剥离。
+    #[tokio::test]
+    async fn zhipu_responses_strips_tool_output_image_detail() {
+        let zhipu = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let body = json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "function_call", "call_id": "call_read", "name": "view_image", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_read", "output": [
+                    {"type": "input_text", "text": "screenshot"},
+                    {"type": "input_image", "image_url": "[image omitted]", "detail": "original"}
+                ]}
+            ]
+        });
+        let (_, out, _, _) = upstream_request_parts(
+            &zhipu,
+            body,
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+
+        assert_eq!(out["input"][1]["type"], "function_call_output");
+        assert_eq!(out["input"][1]["output"][1]["type"], "input_image");
+        assert!(out["input"][1]["output"][1].get("detail").is_none());
     }
 
     /// Chat 形态的 `image_url.detail` 不在 Responses `input[].content[]` 路径内，
