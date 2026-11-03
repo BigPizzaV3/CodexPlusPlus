@@ -325,7 +325,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
-import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxCard, CxEmpty, CxRow, CxSection } from "./cx-layout";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
@@ -10903,19 +10903,17 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
   return (
     <div className="tp-page rec-page">
       <TopbarActions>
-        <Button onClick={() => void actions.refreshAds()} size="sm" variant="secondary">
+        <button className="cx-secondary" onClick={() => void actions.refreshAds()} type="button">
           <RefreshCw />
           {t("刷新推荐")}
-        </Button>
+        </button>
       </TopbarActions>
-      {!ads ? <p className="rec-empty">{t("尚未加载推荐内容")}</p> : null}
+      {!ads ? <CxCard><CxEmpty title={t("尚未加载推荐内容")} /></CxCard> : null}
       {ads ? (
-        <section className="tp-page">
-          <div className="tp-section-head"><h3>{t("赞助商推荐")}</h3><span>{tf("{0} 条", [sponsors.length])}</span></div>
+        <CxSection aside={<span>{t("与 Codex 内插件菜单使用同一个远端广告源")}</span>} count={sponsors.length} title={t("赞助商推荐")}>
           <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
-        </section>
+        </CxSection>
       ) : null}
-      <p className="tp-foot">{t("与 Codex 内插件菜单使用同一个远端广告源")}</p>
     </div>
   );
 }
@@ -17197,30 +17195,25 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
 }
 
 function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
-  if (!ads.length) return <div className="rec-empty">{empty}</div>;
+  // 一行一条：小缩略图、标题 + 域名、一行介绍，亮点做成标题旁的小标签；整行点开落地页。
+  if (!ads.length) return <CxCard><CxEmpty title={empty} /></CxCard>;
   return (
-    <div className="rec-grid">
+    <CxCard className="rec-list">
       {ads.map((ad) => (
-        <button className="tp-card rec-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} title={ad.url} type="button">
-          {ad.image ? <img alt="" className="rec-image" loading="lazy" src={ad.image} /> : null}
-          <div className="rec-body">
-            <div className="rec-title">
-              <strong>{formatAdTitle(ad.title)}</strong>
-              <small>{adHost(ad.url)}</small>
-              <ExternalLink aria-hidden="true" />
-            </div>
-            <p className="rec-desc" title={ad.description}>{ad.description}</p>
-            {ad.highlights?.length ? (
-              <div className="rec-tags">
-                {ad.highlights.map((item) => (
-                  <span key={item}>{item}</span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        </button>
+        <CxRow
+          badges={ad.highlights?.slice(0, 3).map((item) => <CxBadge key={item}>{item}</CxBadge>)}
+          detail={ad.description}
+          icon={ad.image ? <img alt="" className="rec-thumb" loading="lazy" src={ad.image} /> : <ExternalLink />}
+          key={ad.id || `${ad.type}-${ad.title}`}
+          onClick={() => void actions.openExternalUrl(ad.url)}
+          title={formatAdTitle(ad.title)}
+          tooltip={`${ad.description}\n${ad.url}`}
+        >
+          <span className="rec-host">{adHost(ad.url)}</span>
+          <ExternalLink aria-hidden="true" className="cx-set-chevron" />
+        </CxRow>
       ))}
-    </div>
+    </CxCard>
   );
 }
 

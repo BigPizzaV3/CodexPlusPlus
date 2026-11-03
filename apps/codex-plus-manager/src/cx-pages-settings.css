@@ -365,3 +365,30 @@
 :root .shell .cx-cache-page .tp-foot {
   margin: 4px 0 0;
 }
+
+/* ── 推荐内容 ───────────────────────────────────────────────── */
+
+/* 缩略图：原来的大色块横幅缩成 56×32 的小图。 */
+:root .shell .rec-list .cx-row-icon {
+  width: 56px;
+  height: 32px;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+:root .shell .rec-list .cx-row-icon img.rec-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: left center;
+}
+
+:root .shell .rec-list .cx-row {
+  min-height: 60px;
+}
+
+:root .shell .rec-host {
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
