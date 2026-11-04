@@ -16,6 +16,7 @@ type CodexPlusToastType = "info" | "success" | "warn" | "error";
 type CodexPlusExtensionRoute =
   | "/diagnostics/log"
   | "/thread-usage-history"
+  | "/usage/history"
   | "/archived-thread"
   | "/export-markdown"
   | "/user-scripts/list"

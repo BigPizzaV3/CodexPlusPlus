@@ -5,6 +5,9 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "本机用量历史": "Local usage history",
+  "启用本机用量历史": "Enable local usage history",
+  "允许扩展按需读取本机用量元数据，默认关闭。": "Allow extensions to read local usage metadata on demand. Disabled by default.",
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
   "每秒读取一次新请求": "Reads new requests every second",
   "还没有请求日志": "No request logs yet",

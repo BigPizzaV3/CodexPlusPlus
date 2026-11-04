@@ -490,6 +490,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppSideChatSave: boolean;
   codexAppMarkdownExport: boolean;
   codexAppUsageStatusLine: boolean;
+  usageHistoryEnabled: boolean;
   codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
@@ -1567,6 +1568,7 @@ const defaultSettings: BackendSettings = {
   codexAppSideChatSave: false,
   codexAppMarkdownExport: true,
   codexAppUsageStatusLine: true,
+  usageHistoryEnabled: false,
   codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
@@ -11566,6 +11568,15 @@ function AgentSettingsScreen({
   return (
     <>
       <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
+      <CxSection id="codex-settings-usage-history" title={t("本机用量历史")}>
+        <CxRow title={t("启用本机用量历史")} detail={t("允许扩展按需读取本机用量元数据，默认关闭。")}>
+          <Switch
+            label={t("启用本机用量历史")}
+            on={form.usageHistoryEnabled}
+            onToggle={() => onFormChange({ ...form, usageHistoryEnabled: !form.usageHistoryEnabled })}
+          />
+        </CxRow>
+      </CxSection>
       {/* 放在「高级」卡片里，默认收起；填了参数时标题旁显示条数，不用展开也知道有没有设。 */}
       <details className="cx-set-disclosure cx-set-disclosure-first" open={count > 0 || undefined}>
         <summary>
@@ -18161,6 +18172,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
+    usageHistoryEnabled: settings.usageHistoryEnabled === true,
     ...normalizeWhaleBalanceSettings(settings),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     weixinConnectReasoningEffort: (settings.weixinConnectReasoningEffort || "").trim(),

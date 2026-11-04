@@ -1539,6 +1539,23 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("thread usage live task failed: {error}"))
     }
 
+    async fn usage_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("structured usage history task failed: {error}"))
+    }
+
+    async fn clear_usage_history(&self) {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let _ = tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::clear_history(&home);
+        })
+        .await;
+    }
+
     async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
         let adapter = self.storage_adapter();
         tokio::task::spawn_blocking(move || {

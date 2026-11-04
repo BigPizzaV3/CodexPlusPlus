@@ -514,6 +514,7 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.8.2",
  "uuid",
+ "windows 0.58.0",
 ]
 
 [[package]]
