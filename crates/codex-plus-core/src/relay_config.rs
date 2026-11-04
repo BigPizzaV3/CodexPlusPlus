@@ -4934,6 +4934,10 @@ pub(crate) fn uses_official_deepseek_responses(profile: &RelayProfile) -> bool {
 /// 改为直接列出 MCP 工具。Chat Completions 协议由代理把 tool_search 转成 function
 /// 工具，不受影响，因此只判定 Responses。
 pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
+    // 手动开关优先：非 Kimi 的中转也可能不认 tool_search（#2868）。
+    if profile.disable_tool_search {
+        return true;
+    }
     if profile.protocol != RelayProtocol::Responses {
         return false;
     }

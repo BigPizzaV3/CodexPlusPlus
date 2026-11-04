@@ -180,6 +180,10 @@ pub struct RelayProfile {
     /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_responses_image_detail: bool,
+    /// 不向该上游发送 `tool_search` 托管工具：部分第三方 Responses 上游不认识
+    /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disable_tool_search: bool,
     /// Codex「替我审批」固定请求 `codex-auto-review`，第三方上游通常不认识这个模型；
     /// 填写后协议代理把它改写成这里的模型（#1446）。留空则原样转发。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -399,6 +403,7 @@ impl Default for RelayProfile {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            disable_tool_search: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -1635,6 +1640,7 @@ impl BackendSettings {
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
                 strip_responses_image_detail: false,
+            disable_tool_search: false,
                 auto_review_model: String::new(),
                 multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
@@ -1707,6 +1713,7 @@ impl BackendSettings {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            disable_tool_search: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -4319,6 +4326,20 @@ mod tests {
         let saved = serde_json::to_value(profile).unwrap();
         assert_eq!(saved["modelRoutes"][0]["targetRelayId"], "relay-b");
         assert_eq!(saved["modelRoutes"][0]["targetModel"], "provider-luna");
+    }
+
+    #[test]
+    fn relay_profile_disable_tool_search_roundtrips_in_camel_case() {
+        // #2868：手动关闭 tool_search 的开关按 disableToolSearch 往返。
+        let profile: RelayProfile =
+            serde_json::from_str(r#"{"id":"relay-a","name":"A","disableToolSearch":true}"#).unwrap();
+        assert!(profile.disable_tool_search);
+        let saved = serde_json::to_value(&profile).unwrap();
+        assert_eq!(saved["disableToolSearch"], true);
+        // 默认 false 不序列化。
+        let default: RelayProfile = serde_json::from_str(r#"{"id":"relay-a","name":"A"}"#).unwrap();
+        assert!(!default.disable_tool_search);
+        assert!(serde_json::to_value(&default).unwrap()["disableToolSearch"].is_null());
     }
 
     /// 旧版按供应商勾选上下文条目的 `contextSelection` / `contextSelectionInitialized`

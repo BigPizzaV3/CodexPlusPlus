@@ -52,6 +52,7 @@ fn fixture() -> Fixture {
             proxy: None,
             strip_image_generation_tool: None,
             strip_responses_image_detail: None,
+            disable_tool_search: None,
         },
         "",
         None,

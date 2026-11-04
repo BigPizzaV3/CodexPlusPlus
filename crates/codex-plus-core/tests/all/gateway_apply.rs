@@ -57,6 +57,74 @@ fn deepseek_input() -> ProviderInput {
         proxy: None,
         strip_image_generation_tool: None,
         strip_responses_image_detail: None,
+            disable_tool_search: None,
+    }
+}
+
+/// #2871：网关路径下，池里有一家不认 tool_search 的上游（Kimi 官方 Responses）时，
+/// 它服务的模型（单家那份和多家自动组）元数据都写 supports_search_tool=false。
+#[test]
+fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
+    let Fixture { ctx, .. } = fixture(29523);
+    let kimi = ProviderInput {
+        name: "Kimi".into(),
+        base_url: "https://api.moonshot.cn/v1".into(),
+        protocol: RelayProtocol::Responses,
+        keys: vec!["sk-kimi".into()],
+        model: "kimi-k3".into(),
+        model_list: "kimi-k3\ndeepseek-v4-pro".into(),
+        price: None,
+        model_prices: None,
+        proxy: None,
+        strip_image_generation_tool: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+    };
+    create_provider(&ctx.gateway, &kimi, "preset:kimi", None).unwrap();
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut direct = codex_plus_core::provider_import::pool_relay_profile(
+        "直连",
+        "https://api.direct.test/v1",
+        "sk-direct",
+        RelayProtocol::Responses,
+        "gpt-direct",
+        "gpt-direct",
+        &[],
+    )
+    .unwrap();
+    direct.id = "direct".into();
+    direct.relay_mode = RelayMode::PureApi;
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut direct).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    seeded.relay_profiles = vec![direct];
+    seeded.active_relay_id = "direct".into();
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings,
+        &ctx.codex_home,
+        seeded,
+        "direct",
+    )
+    .unwrap();
+    enable_binding(&ctx, &ToolId::Codex, binding()).unwrap();
+    refresh_enabled(&ctx).unwrap();
+
+    let settings = ctx.settings.load().unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    let object = metadata.as_object().unwrap();
+    assert!(!object.is_empty());
+    // Kimi 不认 tool_search：它名下每个模型的元数据都带 supports_search_tool=false。
+    for (key, entry) in object {
+        assert_eq!(
+            entry["supports_search_tool"],
+            json!(false),
+            "{key} 应由 Kimi 上游关掉 tool_search"
+        );
     }
 }
 
@@ -426,6 +494,7 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
             proxy: None,
             strip_image_generation_tool: None,
             strip_responses_image_detail: None,
+            disable_tool_search: None,
         },
         "",
         None,
@@ -596,6 +665,7 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 proxy: None,
                 strip_image_generation_tool: None,
                 strip_responses_image_detail: None,
+            disable_tool_search: None,
             },
             "",
             None,
@@ -1753,6 +1823,7 @@ fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
             proxy: None,
             strip_image_generation_tool: None,
             strip_responses_image_detail: None,
+            disable_tool_search: None,
         },
         "",
         None,

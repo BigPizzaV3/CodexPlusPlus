@@ -7859,6 +7859,54 @@ base_url = "https://api.moonshot.cn/v1"
     assert_eq!(k3["supports_search_tool"], false);
 }
 
+/// #2868：非 Kimi 的 Responses 中转手动开 `disableToolSearch` 后同样落 catalog 并关掉
+/// `supports_search_tool`；关闭时不变。
+#[test]
+fn apply_disable_tool_search_disables_search_tool_in_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "agent-space".to_string(),
+        name: "AgentSpace".to_string(),
+        model: "gpt-5.5".to_string(),
+        upstream_base_url: "https://api.agent.space/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        disable_tool_search: true,
+        config_contents: r#"model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://api.agent.space/v1"
+"#
+        .to_string(),
+        model_list: "gpt-5.5".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let catalog_path = temp.path().join("model-catalogs").join("agent-space.json");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["supports_search_tool"], false, "{}", model["slug"]);
+    }
+
+    // 关掉开关后不再关 supports_search_tool。
+    let off = RelayProfile {
+        disable_tool_search: false,
+        ..profile
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &off, "").unwrap();
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["supports_search_tool"], true, "{}", model["slug"]);
+    }
+}
+
 /// 其他 Responses 上游不受影响：没有窗口/元数据时仍保持「不落 catalog」。
 #[test]
 fn apply_other_responses_upstream_keeps_catalog_unmanaged() {

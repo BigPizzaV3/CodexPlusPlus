@@ -648,6 +648,8 @@ export type RelayProfile = {
   stripImageGenerationTool?: boolean;
   /** #2870：转发前移除 Responses 图片 `detail`，默认关闭。 */
   stripResponsesImageDetail?: boolean;
+  /** #2868：不向上游发送 tool_search，默认关闭。 */
+  disableToolSearch?: boolean;
   /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
   anthropicAuthHeader?: string;
   /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192；填了则优先于请求值。 */
@@ -12645,6 +12647,7 @@ function RelayProfileEditor({
     profile.strictResponsesReasoning === true,
     profile.stripImageGenerationTool === true,
     profile.stripResponsesImageDetail === true,
+    profile.disableToolSearch === true,
   ].filter(Boolean).length;
   const [stabilizePromptPrefixBusy, setStabilizePromptPrefixBusy] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
@@ -14234,6 +14237,10 @@ function RelayProfileEditor({
                   <label className="switch-row compact relay-switch-row relay-field-strip-responses-image-detail">
                     <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
                     <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
+                  </label>
+                  <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
+                    <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />
+                    <span><strong>{t("不发送 tool_search（上游不支持时开启）")}</strong><small>{t("部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                 </> : null}
                 </div>
@@ -18326,6 +18333,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     strictResponsesReasoning: profile.strictResponsesReasoning === true,
     stripImageGenerationTool: profile.stripImageGenerationTool === true,
     stripResponsesImageDetail: profile.stripResponsesImageDetail === true,
+    disableToolSearch: profile.disableToolSearch === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
     anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
     anthropicPromptCache: profile.anthropicPromptCache !== false,
