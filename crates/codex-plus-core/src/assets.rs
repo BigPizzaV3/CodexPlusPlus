@@ -158,6 +158,8 @@ const NATIVE_FAST_UNLOCK_SCRIPT: &str = concat!(
 );
 const NATIVE_PREDICTIONS_SCRIPT: &str =
     include_str!("../../../assets/inject/native-predictions.js");
+pub(crate) const NATIVE_THREAD_GOAL_SCRIPT: &str =
+    include_str!("../../../assets/inject/native-thread-goal.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
     include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
@@ -646,7 +648,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
                 native_predictions_script(),
                 json!(crate::native_predictions::runtime_settings(settings)),
             ),
-            renderer_runtime
+            format!("{}\n{}", NATIVE_THREAD_GOAL_SCRIPT, renderer_runtime)
         ),
         stepwise_runtime,
         dream_skin_target_runtime,

@@ -1146,6 +1146,7 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    installCodexThreadGoalForwarding();
     const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
       && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
