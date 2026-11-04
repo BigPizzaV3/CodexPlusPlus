@@ -2360,7 +2360,6 @@ mod tests {
     fn codex_hidden_shared_member_does_not_hide_qualified_provider_entries() {
         let mut gateway = gateway("kimi-k3");
         gateway.auto_models = true;
-        let route_before = routed(&gateway, "deepseek-v4-pro");
         gateway.groups.push(GatewayGroup {
             hide_members: true,
             ..group(
@@ -2375,7 +2374,14 @@ mod tests {
         assert!(models.iter().any(|model| model == "ds/deepseek-v4-pro"));
         assert!(models.iter().any(|model| model == "mirror/deepseek-v4-pro"));
         assert!(models.iter().any(|model| model == "group/shared"));
-        assert_eq!(routed(&gateway, "deepseek-v4-pro"), route_before);
+        assert_eq!(
+            routed(&gateway, "ds/deepseek-v4-pro"),
+            vec![pair("ds", "deepseek-v4-pro")]
+        );
+        assert_eq!(
+            routed(&gateway, "mirror/deepseek-v4-pro"),
+            vec![pair("mirror", "deepseek-v4-pro")]
+        );
 
         // 默认及显式声明仍沿用通用发布逻辑的例外。
         binding.extra_models.push("deepseek-v4-pro".into());

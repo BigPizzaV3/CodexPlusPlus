@@ -17,6 +17,13 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
   };
   const pending: Array<{ resolve: (value: any) => void; reject: (error: Error) => void }> = [];
   const invalidated: any[] = [];
+  const timers: Array<() => void> = sharedWindow.testTimers ||= [];
+  const listeners: Map<string, Array<(event: any) => void>> = sharedWindow.testListeners ||= new Map();
+  sharedWindow.setTimeout ||= (callback: () => void) => timers.push(callback);
+  sharedWindow.addEventListener ||= (type: string, callback: (event: any) => void) => {
+    if (!listeners.has(type)) listeners.set(type, []);
+    listeners.get(type)!.push(callback);
+  };
   const queries = ["local", "remote"].map(host => ({ queryKey: ["models", host] }));
   const Response = sharedWindow.testResponse ||= class {
     payload: any;
@@ -41,9 +48,13 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
   const api = vm.runInContext(`(() => {${declarations}${functions}
     return { load: loadCodexModelCatalog, refresh: refreshCodexModelCatalogForSettings,
       patch: patchModelContainer, install: installModelJsonResponsePatch,
+      installMessages: patchAppServerModelMessages, record: recordModelListRequest,
+      patchMcp: patchMcpModelResponseData, patchStatsig: patchStatsigModelDynamicConfig,
+      installStatsig: patchStatsigModelWhitelist,
       catalog: () => codexModelCatalog }; })()`, context);
   return {
-    api, pending, invalidated, window: sharedWindow, settings: () => settings,
+    api, pending, invalidated, timers, window: sharedWindow, settings: () => settings,
+    emit: (type: string, event: any) => listeners.get(type)?.forEach(callback => callback(event)),
     tick: (ms: number) => { now += ms; },
     update: (next: any) => {
       const previous = settings;
@@ -59,6 +70,11 @@ const catalog = (models: string[], metadata = {}) => ({
   sources: [{ id: "relay-profile:gateway", type: "relay_profile_model_list" }],
 });
 const settle = async () => { for (let index = 0; index < 15; index++) await Promise.resolve(); };
+async function load(r: ReturnType<typeof runtime>, models: string[], metadata = {}) {
+  const request = r.api.load(true);
+  r.pending.shift()!.resolve(catalog(models, metadata));
+  await request;
+}
 
 it("catalog fingerprint changes bypass cache and invalidate only local model queries", async () => {
   const r = runtime();
@@ -175,4 +191,212 @@ it("response wrappers use the current runtime after hot reinjection", async () =
   const response = new r.window.testResponse({ hostId: "local", models: [{ model: "native" }] });
   const value = await response.json();
   assert.deepEqual(value.models.map((entry: any) => entry.model), ["a/new"]);
+});
+
+it("in-flight model/list requests retain their host and are consumed once after reinjection", async () => {
+  const r = runtime();
+  await load(r, ["a/old"]);
+  r.api.installMessages();
+  const request = { id: 17, method: "model/list", params: { hostId: "local" } };
+  r.emit("codex-message-from-view", { detail: { type: "mcp-request", request } });
+  assert.equal((request.params as any).includeHidden, true);
+  const next = runtime(r.window, r.settings());
+  await load(next, ["a/new"]);
+  next.api.installMessages();
+  const response = { type: "mcp-response", message: { id: 17, result: { models: [{ model: "native" }] } } };
+  next.emit("message", { data: response });
+  assert.deepEqual(response.message.result.models.map(entry => entry.model), ["a/new"]);
+  const duplicate = { type: "mcp-response", message: { id: 17, result: { models: [{ model: "native" }] } } };
+  assert.equal(next.api.patchMcp(duplicate), false);
+  assert.equal(duplicate.message.result.models[0].model, "native");
+});
+
+it("an old request timeout cannot expire a reused ID after reinjection", async () => {
+  for (const reinject of [false, true]) {
+    const r = runtime();
+    await load(r, ["a/current"]);
+    r.api.record("reused", "local");
+    assert.equal(r.api.patchMcp({ type: "mcp-response", message: { id: "reused", result: { data: [] } } }), true);
+    const next = reinject ? runtime(r.window, r.settings()) : r;
+    next.api.record("reused", "local");
+    r.timers[0]();
+    const response = { type: "mcp-response", message: { id: "reused", result: { data: [{ model: "native" }] } } };
+    assert.equal(next.api.patchMcp(response), true);
+    assert.deepEqual(response.message.result.data.map(entry => entry.model), ["a/current"]);
+    next.api.record("expired", "local");
+    next.timers.at(-1)!();
+    assert.equal(next.api.patchMcp({ type: "mcp-response", message: { id: "expired", result: { data: [] } } }), false);
+  }
+});
+
+it("colliding local and remote request IDs bypass catalog patches even after reinjection", async () => {
+  for (const hosts of [["local", "remote"], ["remote", "local"]]) {
+    const r = runtime();
+    await load(r, ["shared-model"], { "shared-model": { hidden: true } });
+    r.api.record("collision", hosts[0]);
+    const next = runtime(r.window, r.settings());
+    next.api.record("collision", hosts[1]);
+    next.api.record("collision", hosts[1]);
+    const response = { type: "mcp-response", hostId: "local", message: { id: "collision",
+      result: { models: [{ model: "shared-model", hidden: false }, { model: "remote-native" }] } } };
+    const original = structuredClone(response);
+    assert.equal(next.api.patchMcp(response), false);
+    assert.deepEqual(response, original);
+    const duplicate = structuredClone(original);
+    assert.equal(next.api.patchMcp(duplicate), false);
+    assert.deepEqual(duplicate, original);
+    next.api.record("unknown", "");
+    const unknown = { type: "mcp-response", message: { id: "unknown", result: { data: [{ model: "native" }] } } };
+    assert.equal(next.api.patchMcp(unknown), true);
+    assert.deepEqual(unknown.message.result.data.map(entry => entry.model), ["native", "shared-model"]);
+  }
+});
+
+it("explicitly remote model collections, metadata and defaults remain untouched", async () => {
+  const r = runtime();
+  await load(r, ["shared-model"], { "shared-model": { hidden: true, displayName: "Local name" } });
+  for (const models of [[{ model: "shared-model", hidden: false, displayName: "Remote name" }], ["shared-model"]]) {
+    const value = { hostId: "remote", models, data: [{ model: "shared-model", hidden: false }],
+      availableModels: new Set(["remote-native"]), available_models: ["remote-native"],
+      hiddenModels: ["shared-model"], hidden_models: ["shared-model"], defaultModel: "remote-native",
+      model: "remote-selected", reasoningEffort: "ultra" };
+    const original = structuredClone(value);
+    assert.equal(r.api.patch(value, "local"), false, "explicit remote host overrides the local hint");
+    assert.deepEqual(value, original);
+    r.api.install();
+    assert.deepEqual(await new r.window.testResponse(value).json(), original);
+  }
+});
+
+it("MCP requests keep remote identity across reinjection and conflicting local response hints", async () => {
+  const r = runtime();
+  await load(r, ["shared-model"], { "shared-model": { hidden: true } });
+  r.api.record("remote-request", "remote");
+  const next = runtime(r.window, r.settings());
+  const response = { type: "mcp-response", hostId: "local", message: { id: "remote-request",
+    result: { models: [{ model: "shared-model", hidden: false }, { model: "remote-native" }] } } };
+  const original = structuredClone(response);
+  assert.equal(next.api.patchMcp(response), false);
+  assert.deepEqual(response, original);
+  next.api.record("nested-remote", "local");
+  const nested = { type: "mcp-response", message: { id: "nested-remote",
+    result: { hostId: "remote", models: [{ model: "shared-model", hidden: false }] } } };
+  const nestedOriginal = structuredClone(nested);
+  assert.equal(next.api.patchMcp(nested), false);
+  assert.deepEqual(nested, nestedOriginal);
+  assert.equal(next.api.patch(nested, "local"), false);
+  assert.deepEqual(nested, nestedOriginal);
+});
+
+it("remote access restores native collections previously filtered through a shared local cache", async () => {
+  const r = runtime();
+  await load(r, ["shared-model", "a/local-only"], { "shared-model": { hidden: true, displayName: "Local name" } });
+  const value = { models: [{ model: "shared-model", hidden: false, displayName: "Remote name" }, { model: "remote-native" }],
+    availableModels: ["shared-model", "remote-native"], available_models: new Set(["shared-model", "remote-native"]),
+    defaultModel: "remote-native" };
+  const original = structuredClone(value);
+  const nativeShared = value.models[0];
+  r.api.patch(value, "local");
+  assert.deepEqual(value.models.map(entry => entry.model), ["shared-model", "a/local-only"]);
+  assert.equal(nativeShared.hidden, false);
+  assert.equal(nativeShared.displayName, "Remote name");
+  r.api.patch(value, "remote");
+  assert.deepEqual(value, original);
+  const config = { value: { available_models: ["remote-native"], defaultModel: "remote-native" } };
+  r.api.patchStatsig(config, "local");
+  r.api.patchStatsig(config, "remote");
+  assert.deepEqual([...config.value.available_models], ["remote-native"]);
+  assert.equal(config.value.defaultModel, "remote-native");
+  r.api.patchStatsig(config);
+  r.api.patchStatsig(config, "remote");
+  assert.deepEqual([...config.value.available_models], ["remote-native"]);
+});
+
+it("hostless Statsig refresh retracts only owned additions and preserves native and external models", async () => {
+  const r = runtime();
+  await load(r, ["a/deleted", "native-overlap"]);
+  const config = { value: { available_models: ["native", "native-overlap"],
+    defaultModel: "native", model: "selected-model", reasoningEffort: "ultra" } };
+  r.api.patchStatsig(config);
+  assert.deepEqual([...config.value.available_models], ["native", "native-overlap", "a/deleted"]);
+  config.value.available_models.push("external-update");
+  const next = runtime(r.window, r.settings());
+  await load(next, ["a/current"]);
+  next.api.patchStatsig(config);
+  assert.deepEqual([...config.value.available_models], ["native", "native-overlap", "external-update", "a/current"]);
+  assert.equal(config.value.defaultModel, "native");
+  assert.equal(config.value.model, "selected-model");
+  assert.equal(config.value.reasoningEffort, "ultra");
+  await load(next, ["a/latest"]);
+  next.api.patchStatsig(config);
+  assert.deepEqual([...config.value.available_models], ["native", "native-overlap", "external-update", "a/latest"]);
+  const unknownOrigin = { value: { available_models: ["native", "a/deleted"] } };
+  next.api.patchStatsig(unknownOrigin);
+  assert.deepEqual([...unknownOrigin.value.available_models], ["native", "a/deleted", "a/latest"],
+    "no host or ownership evidence permits deleting an existing native name");
+});
+
+it("Statsig can restore a local native snapshot without treating it as an owned addition", async () => {
+  const r = runtime();
+  await load(r, ["a/old"]);
+  const config = { value: { available_models: ["native"], defaultModel: "native" } };
+  r.api.patchStatsig(config, "local");
+  assert.deepEqual([...config.value.available_models], ["a/old"]);
+  assert.equal(config.value.defaultModel, "a/old");
+  await load(r, ["a/new"]);
+  r.api.patchStatsig(config);
+  assert.deepEqual([...config.value.available_models], ["native", "a/new"]);
+  assert.equal(config.value.defaultModel, "native");
+  await load(r, ["a/last"]);
+  r.api.patchStatsig(config);
+  assert.deepEqual([...config.value.available_models], ["native", "a/last"]);
+});
+
+it("Statsig skips explicit remote values and clients even when local names overlap", async () => {
+  const r = runtime();
+  await load(r, ["shared-model"]);
+  const remote = { value: { hostId: "remote", available_models: ["remote-native"], defaultModel: "remote-native" } };
+  const original = structuredClone(remote);
+  assert.equal(r.api.patchStatsig(remote, "local"), remote);
+  assert.deepEqual(remote, original);
+  const config = { value: { available_models: ["remote-native"] } };
+  r.window.__STATSIG__ = { firstInstance: { hostId: "remote", getDynamicConfig: () => config } };
+  r.api.installStatsig();
+  assert.deepEqual(r.window.__STATSIG__.firstInstance.getDynamicConfig("107580212"), config);
+  assert.deepEqual(config.value.available_models, ["remote-native"]);
+});
+
+it("Statsig upgrades unwrap a saved original getter and use the newest runtime", async () => {
+  for (const version of ["3", "4"]) {
+    const r = runtime();
+    await load(r, ["a/old"]);
+    let legacyCalls = 0;
+    const config = { value: { available_models: ["native"] } };
+    const client = {
+      __codexPlusModelWhitelistPatched: version,
+      __codexPlusModelWhitelistOriginalGet: function () { assert.equal(this, client); return config; },
+      getDynamicConfig: (_name: string) => { legacyCalls++; return { value: { available_models: ["legacy-stale"] } }; },
+    };
+    r.window.__STATSIG__ = { firstInstance: client };
+    r.api.installStatsig();
+    assert.equal(legacyCalls, 0);
+    assert.deepEqual([...config.value.available_models], ["native", "a/old"]);
+    const next = runtime(r.window, r.settings());
+    await load(next, ["a/new"]);
+    next.api.installStatsig();
+    assert.deepEqual([...client.getDynamicConfig("107580212").value.available_models], ["native", "a/new"]);
+    assert.equal(legacyCalls, 0);
+  }
+});
+
+it("a legacy Statsig wrapper without a saved getter is not relabeled as a raw getter", async () => {
+  const r = runtime();
+  await load(r, ["a/current"]);
+  const legacy = () => ({ value: { available_models: ["native", "unowned-legacy"] } });
+  const client: any = { __codexPlusModelWhitelistPatched: "3", getDynamicConfig: legacy };
+  r.window.__STATSIG__ = { firstInstance: client };
+  r.api.installStatsig();
+  assert.equal(client.getDynamicConfig, legacy);
+  assert.equal(client.__codexPlusModelWhitelistOriginalGet, undefined);
+  assert.equal(client.__codexPlusModelWhitelistPatched, "3");
 });
