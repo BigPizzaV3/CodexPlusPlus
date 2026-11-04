@@ -15,7 +15,7 @@ import { t, tf } from "./i18n";
 import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
 import "./ComputerUsePage.css";
 
-type CuTargetId = "claudeCode" | "claudeDesktop" | "codex" | "dsh" | "zcode" | "workBuddy";
+type CuTargetId = "claudeCode" | "claudeDesktop" | "codex" | "dsh" | "zcode" | "workBuddy" | "devin";
 type CuTargetState = "registered" | "missing" | "needs_update" | "foreign" | "unsupported";
 type CuTarget = { id: string; label: string; configPath: string; registered: boolean; state: CuTargetState; message: string };
 type CuTargets = Record<CuTargetId, CuTarget>;
@@ -80,7 +80,7 @@ type CuApprovalState = {
 
 // Codex 自带 Computer Use，不提供接入；status 里的 codex 只用来发现旧版本留下的条目，
 // 那会让 Codex 同时出现两套电脑控制工具，见下方的残留提示。
-const targetIds: CuTargetId[] = ["claudeCode", "claudeDesktop", "dsh", "zcode", "workBuddy"];
+const targetIds: CuTargetId[] = ["claudeCode", "claudeDesktop", "dsh", "zcode", "workBuddy", "devin"];
 const targetFallback: Record<CuTargetId, { label: string; configPath: string }> = {
   claudeCode: { label: "Claude Code", configPath: "~/.claude.json" },
   claudeDesktop: { label: "Claude Desktop", configPath: "claude_desktop_config.json" },
@@ -88,6 +88,7 @@ const targetFallback: Record<CuTargetId, { label: string; configPath: string }> 
   dsh: { label: "DeepSeek Harness", configPath: "~/.dsh/profiles/desktop/cordis.patch.yml" },
   zcode: { label: "ZCode", configPath: "~/.zcode/cli/config.json" },
   workBuddy: { label: "WorkBuddy AI", configPath: "~/.workbuddy-ai/mcp.json" },
+  devin: { label: "Devin", configPath: "~/.config/devin/mcp_config.json" },
 };
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const hasValue = (value?: string) => Boolean(value && value.trim());
@@ -98,8 +99,8 @@ const elidePath = (value: string, limit = 52) => {
   const tail = limit - head - 1;
   return `${value.slice(0, head)}…${value.slice(-tail)}`;
 };
-// 自定义目标可选的类型，与上面列出的内置目标一致。
-const customKinds: CuTargetId[] = targetIds;
+// 自定义目标可选的类型：与上面列出的内置目标一致，但 Devin 不支持自定义目录（后端 CUSTOM_KINDS 也没有它）。
+const customKinds: CuTargetId[] = targetIds.filter((id) => id !== "devin");
 // 输入框占位说明：告诉用户该填哪一层目录。渲染时再过 t()。
 const customDirHint: Record<CuTargetId, string> = {
   claudeCode: "CLAUDE_CONFIG_DIR 指向的目录（里面有 .claude.json）",
@@ -108,6 +109,7 @@ const customDirHint: Record<CuTargetId, string> = {
   dsh: "包含 cordis.patch.yml 的目录",
   zcode: "包含 config.json 的目录",
   workBuddy: "包含 mcp.json 的目录",
+  devin: "包含 mcp_config.json 的目录",
 };
 // 后端的状态说明里，这两句与徽标完全同义，再显示一行只会把列表拉长。
 const redundantMessages = new Set(["已接入", "尚未接入"]);
@@ -960,7 +962,7 @@ function ComputerUseMacPage() {
               <CxRow title={t("耗时")}><span className="cx-set-value">{typeof check.durationMs === "number" ? `${check.durationMs} ms` : "—"}</span></CxRow>
             </> : null}
           </CxCard>
-          <p className="cx-set-note">{t("接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy）才会加载工具，工具名以")}<code>mcp__codex-plus-cu__</code>{t("与")}<code>mcp__codex-plus-browser__</code>{t("前缀出现在工具列表中。")}</p>
+          <p className="cx-set-note">{t("接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy、Devin）才会加载工具，工具名以")}<code>mcp__codex-plus-cu__</code>{t("与")}<code>mcp__codex-plus-browser__</code>{t("前缀出现在工具列表中。")}</p>
         </CxSection>
       </>}
     </div>

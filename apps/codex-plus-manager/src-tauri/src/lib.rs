@@ -124,14 +124,14 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
         "install" => {
             let id = target.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy"
+                    "install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy / devin"
                 )
             })?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::install(parsed)?)?
         }
         "uninstall" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy（codex：移除旧版本留在 Codex 里的条目）"))?;
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy / devin（codex：移除旧版本留在 Codex 里的条目）"))?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::uninstall(parsed)?)?
         }

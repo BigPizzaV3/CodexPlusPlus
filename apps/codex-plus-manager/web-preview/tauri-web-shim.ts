@@ -595,6 +595,7 @@ const demoComputerUseTargets = () => ({
   dsh: demoComputerUseTarget("dsh", "DeepSeek Harness", "~/.dsh/config.toml", true),
   zcode: demoComputerUseTarget("zcode", "ZCode", "~/.zcode/mcp.json", false),
   workBuddy: demoComputerUseTarget("workBuddy", "WorkBuddy AI", "~/.workbuddy/mcp.json", false),
+  devin: demoComputerUseTarget("devin", "Devin", "~/.config/devin/mcp_config.json", false),
 });
 const demoClaudeEnhance = {
   supported: true,
