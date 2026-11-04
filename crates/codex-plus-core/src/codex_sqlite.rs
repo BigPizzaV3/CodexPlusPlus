@@ -4,6 +4,43 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+/// 读取已打开 SQLite 文件的稳定身份。
+/// 采集期间源文件可能被替换或轮转，路径和创建时间不足以区分，优先使用系统文件身份。
+pub fn opened_file_identity(file: &fs::File) -> std::io::Result<(u64, u64)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        unsafe {
+            GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)
+                .map_err(|_| std::io::Error::last_os_error())?;
+        }
+        Ok((
+            u64::from(info.dwVolumeSerialNumber),
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        ))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = file;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "opened file identity is unavailable on this platform",
+        ))
+    }
+}
+
 pub fn default_codex_home_dir() -> PathBuf {
     crate::codex_home::default_codex_home_dir()
 }
@@ -252,10 +289,9 @@ pub fn latest_unarchived_goal_thread_model(home: &Path) -> Option<String> {
         if !db_path.exists() {
             continue;
         }
-        let Ok(db) = Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) else {
+        let Ok(db) =
+            Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             continue;
         };
         if !connection_has_table(&db, "automation_runs") || !connection_has_table(&db, "threads") {

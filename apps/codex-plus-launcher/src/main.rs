@@ -25,6 +25,12 @@ pub fn set_navigation_handler(handler: impl Fn(Value) -> Result<()> + Send + Syn
         .unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(handler));
 }
 
+/// 与查询使用同一主目录，关闭设置后立即释放用量索引。
+pub fn clear_usage_history() {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    codex_plus_data::usage_history::clear_history(&home);
+}
+
 fn show_gui(payload: Value) -> Result<()> {
     let handler = NAVIGATION_HANDLER
         .get_or_init(|| Mutex::new(None))
@@ -1549,11 +1555,7 @@ impl BridgeDataService for LauncherDataService {
     }
 
     async fn clear_usage_history(&self) {
-        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-        let _ = tokio::task::spawn_blocking(move || {
-            codex_plus_data::usage_history::clear_history(&home);
-        })
-        .await;
+        let _ = tokio::task::spawn_blocking(clear_usage_history).await;
     }
 
     async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {

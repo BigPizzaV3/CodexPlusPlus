@@ -382,6 +382,11 @@ pub async fn handle_bridge_request(
         }
         "/settings/set" => {
             let result = ctx.settings.set_settings(payload.clone()).await;
+            if let Ok(settings) = &result
+                && !settings.usage_history_enabled
+            {
+                ctx.data.clear_usage_history().await;
+            }
             // Codex 设置页改了设置：通知管理器重新读取，两边开关保持一致。
             if result.is_ok() {
                 crate::settings::notify_external_settings_change();
