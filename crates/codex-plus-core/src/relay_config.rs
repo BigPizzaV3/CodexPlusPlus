@@ -1984,6 +1984,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
+        || profile.enables_pure_api_image_generation()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -5956,6 +5957,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
+        || profile.enables_pure_api_image_generation()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -6153,6 +6155,48 @@ fn restore_profile_provider_name_for_backfill(
     Ok(doc.to_string())
 }
 
+/// Codex 只在 provider 满足「`requires_openai_auth = false` 且 `http_headers` 里有非空
+/// `x-openai-actor-authorization`」时，才给非 ChatGPT 登录的会话注册原生 `image_gen`
+/// （openai/codex `ModelProviderInfo::uses_openai_actor_authorization`，#1433）。
+/// 这个头只是占位：provider 此时走本地代理，代理不向上游透传它。
+pub const PURE_API_IMAGE_GENERATION_HEADER: &str = "x-openai-actor-authorization";
+pub const PURE_API_IMAGE_GENERATION_HEADER_VALUE: &str = "codex-plus-pure-api-image-generation";
+
+fn apply_pure_api_image_generation_header(provider: &mut Table, enabled: bool) {
+    if enabled {
+        provider["requires_openai_auth"] = toml_edit::value(false);
+        if !provider
+            .get("http_headers")
+            .is_some_and(Item::is_table_like)
+        {
+            provider.insert(
+                "http_headers",
+                toml_edit::value(toml_edit::InlineTable::new()),
+            );
+        }
+        provider["http_headers"][PURE_API_IMAGE_GENERATION_HEADER] =
+            toml_edit::value(PURE_API_IMAGE_GENERATION_HEADER_VALUE);
+        return;
+    }
+    // 关闭时只摘掉本工具写的占位头，用户自己配的同名头原样保留。
+    let Some(headers) = provider
+        .get_mut("http_headers")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return;
+    };
+    if headers
+        .get(PURE_API_IMAGE_GENERATION_HEADER)
+        .and_then(Item::as_str)
+        == Some(PURE_API_IMAGE_GENERATION_HEADER_VALUE)
+    {
+        headers.remove(PURE_API_IMAGE_GENERATION_HEADER);
+        if headers.is_empty() {
+            provider.remove("http_headers");
+        }
+    }
+}
+
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
     complete_relay_profile_config_with_proxy_port(
         profile,
@@ -6295,6 +6339,7 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.request_compatibility_enabled()
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
+        || profile.enables_pure_api_image_generation()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {
@@ -6311,6 +6356,7 @@ fn complete_relay_profile_config_with_proxy_port(
         // auth.json 凭据。纯 API 也必须显式携带供应商 Key，不能改成依赖官方登录。
         provider["experimental_bearer_token"] = toml_edit::value(api_key.trim());
     }
+    apply_pure_api_image_generation_header(provider, profile.enables_pure_api_image_generation());
 
     sync_managed_session_provider(&mut doc, profile.relay_mode == RelayMode::Aggregate);
 
