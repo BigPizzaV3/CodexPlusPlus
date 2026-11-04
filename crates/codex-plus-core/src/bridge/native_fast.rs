@@ -377,10 +377,18 @@ fn is_local_asset(url: &str, prefixes: &[&str]) -> bool {
                 .strip_prefix(module)
                 .and_then(|rest| rest.strip_suffix(".js"))
                 .is_some_and(|hash| {
-                    !hash.is_empty()
+                    let legacy = !hash.is_empty()
                         && hash
                             .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                    let rspack = module.is_empty()
+                        && hash.split_once('.').is_some_and(|(id, digest)| {
+                            !id.is_empty()
+                                && id.bytes().all(|c| c.is_ascii_digit())
+                                && !digest.is_empty()
+                                && digest.bytes().all(|c| c.is_ascii_hexdigit())
+                        });
+                    legacy || rspack
                 })
         })
 }
@@ -1031,6 +1039,7 @@ mod tests {
         for url in [
             "app://-/assets/app-boot-a1.js",
             "app://-/assets/renamed_entry-B2c.js?v=1",
+            "app://-/assets/348410.ae8bb87271.js",
         ] {
             assert!(is_local_asset(url, ANY_MODULE), "{url}");
         }
@@ -1042,6 +1051,10 @@ mod tests {
             "app://-/assets/a/b.js",
             "app://-/assets/app boot.js",
             "app://-/assets/app-boot.css",
+            "app://-/assets/348410.not-hex.js",
+            "app://-/assets/name.abcdef.js",
+            "app://-/assets/348410..abcdef.js",
+            "app://-/assets/async/348410.abcdef.js",
         ] {
             assert!(!is_local_asset(url, ANY_MODULE), "{url}");
         }
