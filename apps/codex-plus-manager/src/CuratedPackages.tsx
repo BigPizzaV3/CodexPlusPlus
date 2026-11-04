@@ -1,6 +1,7 @@
 import { Children, useEffect, useState, type ReactNode } from "react";
-import { BadgeCheck, Download, ExternalLink, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { BadgeCheck, Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxSection } from "./cx-layout";
+import { MenuItem } from "./ManagementPages";
 import { InstallDialog, errorText, request, type Prepared } from "./CommunityExtensionsPanel";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CurationReviewDialog, curationRequest, useCurationStatus, type CuratedUpdate } from "./ExtensionCuration";
@@ -34,16 +35,16 @@ export type CuratedPackage = {
 export type BlockedInstall = { id: string; repo: string };
 
 /**
- * 精选栏：拓展包（官方在前）和老脚本卡片（children）放进同一个网格。拓展包安装走锁定提交的 preparePackage
+ * 精选栏：拓展包（官方在前）和老脚本行（children）按「已安装」「可安装」分两节。拓展包安装走锁定提交的 preparePackage
  * （仓库与提交由后端从清单里查），确认框与社区栏共用，只是说明文字换成「已审核」。
  */
 export function CuratedPackagesSection({
   packages,
   blockedInstalled,
   search,
-  view,
   hasScripts,
   emptyText,
+  installedScripts = [],
   children,
   onInstalled,
   onOpenUrl,
@@ -51,10 +52,12 @@ export function CuratedPackagesSection({
   packages: CuratedPackage[];
   blockedInstalled: BlockedInstall[];
   search: string;
-  view: "grid" | "list";
   /** 清单里有老脚本（只是被搜索过滤掉了），用来区分「没有匹配」和「清单为空」。 */
   hasScripts: boolean;
   emptyText: string;
+  /** 已安装的老脚本行，排在「已安装」一节。 */
+  installedScripts?: ReactNode[];
+  /** 未安装的老脚本行，排在「可安装」一节。 */
   children?: ReactNode;
   onInstalled: () => Promise<void>;
   onOpenUrl: (url: string) => void;
@@ -118,8 +121,7 @@ export function CuratedPackagesSection({
     }
   };
 
-  const scriptCards = Children.toArray(children);
-  const cards = visible.map((item) => {
+  const row = (item: CuratedPackage) => {
     const update = updates[item.repo.toLowerCase()];
     const status = item.localSource
       ? { text: tf("本机源码 {0}", [item.installedVersion]), title: t("你在本机编写并发布的拓展，在「本地拓展」里管理") }
@@ -128,78 +130,76 @@ export function CuratedPackagesSection({
       : item.installed
       ? { text: tf("已安装 {0}", [item.installedVersion || item.installedSha.slice(0, 7)]) }
       : null;
+    const facts = [
+      item.author || item.repo.split("/")[0],
+      item.tag ?? `v${item.version}`,
+      tf("锁定 {0}", [item.sha.slice(0, 7)]),
+      item.updatedAt ? tf("更新于 {0}", [item.updatedAt.slice(0, 10)]) : "",
+    ].filter(Boolean).join(" · ");
+    // 已是审核版本时不再给按钮：状态标签已经说明。
+    const showInstall = !item.localSource && (!item.installed || item.updateAvailable);
     return (
       <ExtensionCard
-        badges={item.official ? <span className="community-ext-badge is-official"><BadgeCheck />{t("官方")}</span> : <span className="community-ext-badge is-curated">{t("精选")}</span>}
-        channel={item.channel}
+        badges={item.official ? <CxBadge tone="ok"><BadgeCheck size={12} />{t("官方")}</CxBadge> : null}
         description={item.description}
-        facts={
-          <>
-            <span>{tf("审核版本 {0}", [item.tag ?? item.version ?? item.sha.slice(0, 7)])}</span>
-            <span title={item.sha}>{tf("锁定提交 {0}", [item.sha.slice(0, 7)])}</span>
-            {item.author ? <span>{item.author}</span> : null}
-            {item.updatedAt ? <span>{tf("更新于 {0}", [item.updatedAt.slice(0, 10)])}</span> : null}
-          </>
-        }
         icon={item.icon || githubAvatar(item.repo)}
         key={item.id}
-        link={{ url: `https://github.com/${item.repo}`, text: item.repo, button: <><ExternalLink className="h-4 w-4" />GitHub</> }}
-        meta={
-          <>
-            {item.author || item.repo.split("/")[0]} · {item.tag ?? `v${item.version}`}
-            <span title={item.sha}>{" · "}{tf("锁定 {0}", [item.sha.slice(0, 7)])}</span>
-            {item.updatedAt ? ` · ${tf("更新于 {0}", [item.updatedAt.slice(0, 10)])}` : ""}
-          </>
+        link={{ url: `https://github.com/${item.repo}`, text: item.repo }}
+        menu={
+          curation?.maintainer ? (
+            <MenuItem disabled={reviewing !== ""} onClick={() => setReviewing(item.repo)}>
+              <span className="ext-row-menu-item"><ShieldCheck size={14} />{update ? tf("审核更新 {0}", [update.latestTag ?? update.latestSha.slice(0, 7)]) : t("审核")}</span>
+            </MenuItem>
+          ) : null
         }
+        meta={facts}
         name={item.name}
         onOpenUrl={onOpenUrl}
         primary={
-          item.localSource ? null : (
-            <Button disabled={preparing !== "" || (item.installed && !item.updateAvailable)} onClick={() => void prepare(item)} size="sm" variant={item.installed && !item.updateAvailable ? "ghost" : view === "grid" ? "default" : "secondary"}>
-              {preparing === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {item.updateAvailable ? t("更新") : item.installed ? t("已是审核版本") : t("安装")}
-            </Button>
-          )
-        }
-        secondary={
-          curation?.maintainer ? (
-            <Button
-              disabled={reviewing !== ""}
-              onClick={() => setReviewing(item.repo)}
-              size="sm"
-              title={update ? t("作者发了新版本，审核后再更新精选里锁定的提交") : t("重新审核：检查最新版本，或修改官方标记")}
-              variant={update ? "secondary" : "ghost"}
-            >
-              <ShieldCheck className="h-4 w-4" />
-              {update ? tf("审核更新 {0}", [update.latestTag ?? update.latestSha.slice(0, 7)]) : t("审核")}
-            </Button>
+          showInstall ? (
+            <button className={item.updateAvailable ? "cx-secondary" : "cx-secondary ext-install"} disabled={preparing !== ""} onClick={() => void prepare(item)} type="button">
+              {preparing === item.id ? <Loader2 className="animate-spin" /> : <Download />}
+              {item.updateAvailable ? t("更新") : t("安装")}
+            </button>
           ) : null
         }
         status={status}
         tags={item.tags}
-        view={view}
       />
     );
-  });
+  };
+
+  const installedPackages = visible.filter((item) => item.installed || item.localSource).sort((a, b) => Number(b.updateAvailable) - Number(a.updateAvailable));
+  const availablePackages = visible.filter((item) => !item.installed && !item.localSource);
+  const scriptRows = Children.toArray(children);
+  const installedCount = installedPackages.length + installedScripts.length;
+  const availableCount = availablePackages.length + scriptRows.length;
   return (
     <>
       {blockedInstalled.length ? (
-        <div className="community-ext-notice is-error">
-          <ShieldAlert className="h-4 w-4" />
-          {tf("这些已安装的拓展已被 Codex++ 下架，建议在「本地拓展」里停用：{0}", [blockedInstalled.map((item) => `${item.id}（${item.repo}）`).join("、")])}
-        </div>
+        <CxBanner icon={<ShieldAlert />} title={t("已安装的拓展被下架")} tone="warn" detail={tf("这些已安装的拓展已被 Codex++ 下架，建议在「本地拓展」里停用：{0}", [blockedInstalled.map((item) => `${item.id}（${item.repo}）`).join("、")])} />
       ) : null}
       {error ? <div className="community-ext-notice is-error">{error}</div> : null}
       {notice ? <div className="community-ext-notice">{notice}</div> : null}
-      {/* 拓展包和老脚本放进同一个网格，官方在前、精选次之、脚本最后。 */}
-      {cards.length || scriptCards.length ? (
-        <div className={view === "list" ? "community-ext-list" : "script-market-grid"}>
-          {cards}
-          {scriptCards}
-        </div>
-      ) : (
-        <div className="empty">{packages.length || hasScripts ? t("没有匹配的拓展。") : emptyText}</div>
-      )}
+      {installedCount ? (
+        <CxSection count={installedCount} title={t("已安装")}>
+          <CxCard>
+            {installedPackages.map(row)}
+            {installedScripts}
+          </CxCard>
+        </CxSection>
+      ) : null}
+      {availableCount ? (
+        <CxSection count={availableCount} title={t("可安装")}>
+          <CxCard>
+            {availablePackages.map(row)}
+            {scriptRows}
+          </CxCard>
+        </CxSection>
+      ) : null}
+      {!installedCount && !availableCount ? (
+        <CxCard><CxEmpty title={packages.length || hasScripts ? t("没有匹配的拓展。") : emptyText} /></CxCard>
+      ) : null}
       {prepared ? <InstallDialog onCancel={cancel} onInstall={(enable) => void install(enable)} prepared={prepared} /> : null}
       {reviewing ? (
         <CurationReviewDialog

@@ -44,6 +44,7 @@ fn legacy_placeholder_keys_restore_without_unrejecting_real_conflicts() {
                 started_at_ms: at - 100,
                 attempts: Some(1),
                 auto_retries: Some(0),
+                final_response_evidence: None,
                 agent: String::new(),
                 usage: Some(RequestEvidenceUsage {
                     input_tokens: Some(100),

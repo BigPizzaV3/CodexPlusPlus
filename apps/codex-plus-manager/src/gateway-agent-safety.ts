@@ -31,6 +31,11 @@ export function disconnectPreviewReady(preview: GatewayDisconnectPreview | null,
   return Boolean(preview?.canDisconnect && preview.agent === agent && preview.previewToken.trim());
 }
 
+/** 预览没法逐项列出改动、但可以完整切换到某个直连供应商：给「完整切换并断开」。 */
+export function fullSwitchReady(preview: GatewayDisconnectPreview | null, agent: string): preview is GatewayDisconnectPreview {
+  return Boolean(preview && !preview.canDisconnect && preview.fullSwitch && preview.agent === agent && preview.previewToken.trim());
+}
+
 export function disconnectFileLabel(kind: GatewayDisconnectPreview["files"][number]["kind"]): string {
   switch (kind) {
     case "create": return "将创建";

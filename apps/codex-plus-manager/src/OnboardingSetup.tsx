@@ -25,7 +25,7 @@ type VerifiedProbe = { fingerprint: string; candidateId: string; ok: boolean };
 
 export function OnboardingSetup({
   focus, codexInstalled, codexRunning, launchPending, codexEnhancementsEnabled,
-  notify, onChangeMode, onDismiss, onTour, onNavigate, onCheckCodex, onLaunch,
+  notify, onChangeMode, onDismiss, onTour, onNavigate, onCheckCodex, onLaunch, defaultExpanded = true,
 }: {
   focus: AgentFocus;
   codexInstalled: boolean | null;
@@ -39,9 +39,11 @@ export function OnboardingSetup({
   onNavigate: (target: Destination, agent?: string) => void;
   onCheckCodex: () => Promise<boolean>;
   onLaunch: () => Promise<boolean>;
+  /** 放在侧栏底部时默认收成一张进度卡，点开再展开清单。 */
+  defaultExpanded?: boolean;
 }) {
   const enhance = focus === "enhance";
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [selectedAgent, setSelectedAgent] = useState("codex");
   const [payload, setPayload] = useState<GatewayPayload | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -216,16 +218,34 @@ export function OnboardingSetup({
     unroutable: t("默认模型没有可用供应商，请检查模型和供应商范围。"),
   };
 
+  // 三步里完成了几步：侧栏进度卡上的「1/3」和进度环。
+  const doneSteps = [Boolean(focus), configured, ready].filter(Boolean).length;
   return (
-    <section aria-label={t("入门清单")} className="onboarding-setup">
+    <section aria-label={t("入门清单")} className="onboarding-setup" data-expanded={expanded}>
       <header className="setup-header">
-        <div><strong>{t("开始使用 Codex++")}</strong><span>{ready ? t("已验证，可以开始") : configured ? t("下一步：验证并开始") : t("下一步：完成配置")}</span></div>
+        <div>
+          <strong title={t("开始使用 Codex++")}>{t("开始使用")}</strong>
+          <span className="setup-progress" title={tf("已完成 {0} / 3 步", [doneSteps])}>
+            {`${doneSteps}/3`}
+            <svg aria-hidden="true" className="setup-ring" viewBox="0 0 16 16">
+              <circle cx="8" cy="8" fill="none" r="6" strokeWidth="2" />
+              <circle cx="8" cy="8" fill="none" r="6" strokeDasharray={`${(doneSteps / 3) * 37.7} 37.7`} strokeLinecap="round" strokeWidth="2" transform="rotate(-90 8 8)" />
+            </svg>
+          </span>
+          <span>{ready ? t("已验证，可以开始") : configured ? t("下一步：验证并开始") : t("下一步：完成配置")}</span>
+        </div>
         <div className="setup-tools">
           <button aria-label={t("查看界面导览")} title={t("查看界面导览")} onClick={onTour} type="button"><CircleHelp size={15} /></button>
           <button aria-label={expanded ? t("收起入门清单") : t("展开入门清单")} aria-expanded={expanded} title={expanded ? t("收起入门清单") : t("展开入门清单")} onClick={() => setExpanded(!expanded)} type="button">{expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
           <button aria-label={t("稍后设置")} title={t("稍后设置")} disabled={launchPending || pending.current} onClick={() => onDismiss(false)} type="button"><X size={15} /></button>
         </div>
       </header>
+      {/* 收起时：一个按钮直达下一步（参照 Cursor 侧栏的 Getting Started）。都验证过就直接完成。 */}
+      {!expanded ? (
+        <button className="setup-next" disabled={launchPending} onClick={() => (ready ? void finish() : setExpanded(true))} type="button">
+          {ready ? (agentId === "codex" ? t("启动 Codex 并完成") : t("完成配置")) : configured ? t("验证并开始") : enhance ? t("完成增强配置") : t("添加供应商并接入")}
+        </button>
+      ) : null}
       {expanded ? (
         <div className="setup-steps">
           <div className="setup-step">

@@ -70,6 +70,8 @@ struct RequestEvidence {
     started_at_ms: i64,
     attempts: Option<u32>,
     auto_retries: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_response_evidence: Option<String>,
     usage: Option<RequestEvidenceUsage>,
     #[serde(
         default,

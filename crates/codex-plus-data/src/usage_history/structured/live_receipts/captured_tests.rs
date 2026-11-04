@@ -46,6 +46,43 @@ fn cache_only_receipts_survive_rotation_without_scanned_events_or_writes() {
 }
 
 #[test]
+fn versioned_retry_contract_survives_cache_reload_and_saved_proof_revalidation() {
+    let (root, mut cache, at) = fixture();
+    let mut record = request("retried", at, -10, 10, 2, 3);
+    record.attempts = Some(2);
+    record.auto_retries = Some(1);
+    record.final_response_evidence = Some("final-response-v1".into());
+    cache.capture_proxy(&[record]).unwrap();
+    drop(cache);
+    let mut input = json!([receipt("live", at, 10, 2, 3)]);
+    let proof = check(root.path(), &[], &input);
+    assert!(positive(&proof), "{proof}");
+    for key in ["model", "provider", "requestIds", "requestSignatures"] {
+        input[0][key] = proof[0][key].clone();
+    }
+    assert_eq!(check(root.path(), &[], &input), proof);
+}
+
+#[test]
+fn delayed_final_response_survives_cache_reload_and_retains_competitors() {
+    let (root, mut cache, at) = fixture();
+    let mut record = request("delayed", at, -63_925, 172115, 179, 171904);
+    record.final_response_evidence = Some("final-response-v1".into());
+    cache.capture_proxy(&[record]).unwrap();
+    let mut input = json!([receipt("live", at, 172115, 179, 171904)]);
+    let proof = check(root.path(), &[], &input);
+    assert!(positive(&proof), "{proof}");
+    for key in ["model", "provider", "requestIds", "requestSignatures"] {
+        input[0][key] = proof[0][key].clone();
+    }
+    assert_eq!(check(root.path(), &[], &input), proof);
+    cache
+        .capture_proxy(&[request("legacy", at, -90_000, 172115, 179, 171904)])
+        .unwrap();
+    assert!(!positive(&check(root.path(), &[], &input)));
+}
+
+#[test]
 fn cached_competitors_persisted_rejections_and_changed_signatures_are_not_hidden() {
     let (root, mut cache, at) = fixture();
     let a = request("a", at, -10, 10, 2, 3);
