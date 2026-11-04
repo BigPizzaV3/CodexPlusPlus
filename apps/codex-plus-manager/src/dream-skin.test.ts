@@ -227,6 +227,13 @@ describe("dream skin theme helpers", () => {
     assert.match(renderer, /data-ds-part/);
     assert.match(renderer, /MutationObserver/);
     assert.match(compatibility, /main\[class\*="_MainContentSurface_"\]/);
+    // 适配层先按属性找主内容区（与上游 shell-main 契约一致），类名只做兜底（#2893）。
+    const ensureMain = compatibility.match(/function ensureDreamSkinMainSurface\(\) \{[^]*?\n  \}/)?.[0] ?? "";
+    assert.ok(
+      ensureMain.indexOf("main[data-app-shell-main-surface]") > -1
+        && ensureMain.indexOf("main[data-app-shell-main-surface]") < ensureMain.indexOf("_MainContentSurface_"),
+      "先认 data-app-shell-main-surface，再认类名",
+    );
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);

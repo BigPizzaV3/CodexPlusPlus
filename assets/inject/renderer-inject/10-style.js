@@ -2033,8 +2033,11 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    // `main` 的 CSS Modules 类名新旧格式都认（#2893）：`_MainContentSurface_哈希` / `MainContentSurface-哈希`。
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"], main[class^="MainContentSurface-"], main[class*=" MainContentSurface-"]');
+    // 优先按 `data-app-shell-main-surface` 属性找，和上游梦皮的选择器契约（shell-main）一致；
+    // 属性不受 CSS Modules 哈希格式变化影响（26.1029 把类名改成了 `MainContentSurface-哈希`，属性仍在）。
+    // 属性也没有时，再按类名找，新旧格式都认（#2893）。
+    const modularSurface = document.querySelector("main[data-app-shell-main-surface]")
+      || document.querySelector('main[class*="_MainContentSurface_"], main[class^="MainContentSurface-"], main[class*=" MainContentSurface-"]');
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
