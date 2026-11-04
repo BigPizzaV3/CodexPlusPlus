@@ -229,3 +229,57 @@ check("late native surfaces stay viewport aligned after sidebar transforms, resi
   for (const key of ["rectReads", "styleReads", "layerWrites", "markerWrites", "styleCommits"])
     assert.equal(work[key], 0, `settled native surfaces do not poll: ${key}`);
 });
+
+check("existing capsules follow toolbar and outer material semantic changes", async page => {
+  await html(page, materialCss, toolbarMarkup(false).replace(" data-browser-sidebar-toolbar", ""));
+  const materialProperties = ["backgroundImage", "backdropFilter", "isolation", "position"];
+  const nativeMaterial = await css(page, "#address", materialProperties);
+  await configure(page, { opacity: .3 });
+  await page.$eval("#toolbar", node => node.setAttribute("data-browser-sidebar-toolbar", ""));
+  await settle(page);
+  const blended = async label => {
+    const frame = await shot(page);
+    for (const selector of ["#navigation", "#address", "#control"])
+      near(await sample(page, frame, selector), [44, 56, 92], `${label} ${selector}`);
+  };
+  await blended("late toolbar designation");
+  await page.$eval("#address", node => {
+    const wrapper = document.createElement("div");
+    wrapper.id = "material-wrapper";
+    wrapper.style.cssText = "display:contents";
+    wrapper.setAttribute("data-menu-overlay-surface", "true");
+    node.replaceWith(wrapper);
+    wrapper.append(node);
+  });
+  await settle(page);
+  await page.$eval("#material-wrapper", node => node.removeAttribute("data-menu-overlay-surface"));
+  await settle(page);
+  await blended("inner capsule promoted after outer material removal");
+  await page.$eval("#toolbar", node => node.removeAttribute("data-browser-sidebar-toolbar"));
+  await settle(page);
+  assert.deepEqual(await css(page, "#address", materialProperties), nativeMaterial, "removing toolbar designation restores native capsule styles");
+  assert.equal(await page.$eval("#address", node => node.hasAttribute("data-codex-plus-image-paint")), false, "former toolbar material is no longer locally painted");
+  await page.$eval("#toolbar", node => node.setAttribute("data-browser-sidebar-toolbar", ""));
+  await settle(page);
+  await blended("toolbar designation restored");
+});
+
+check("toolbar newly transformed by inline style keeps the viewport wallpaper fixed", async page => {
+  await html(page, materialCss + "#toolbar{position:relative;width:700px}", toolbarMarkup(false));
+  await configure(page, { dataUrl: assets.pattern, opacity: .3 });
+  const aligned = async label => {
+    const frame = await shot(page), [, top, , height] = await rect(page, "#address");
+    near(pixel(frame, 380, top + height / 2), [92, 59, 44], `${label} left wallpaper`);
+    near(pixel(frame, 420, top + height / 2), [44, 56, 92], `${label} right wallpaper`);
+  };
+  await aligned("initial fixed paint");
+  await page.$eval("#toolbar", node => { node.style.transform = "translateX(100px)"; });
+  await settle(page);
+  await aligned("transform added without a resize event");
+  await page.$eval("#toolbar", node => { node.style.transform = ""; });
+  await settle(page);
+  await aligned("transform removed without a resize event");
+  const work = await delta(page, () => page.waitForTimeout(180));
+  for (const key of ["rectReads", "styleReads", "layerWrites", "markerWrites", "styleCommits"])
+    assert.equal(work[key], 0, `semantic and geometry updates settle without polling: ${key}`);
+});

@@ -41,7 +41,9 @@ These browser fixtures verify rendering contracts and work counts, not real App 
 The native-surface cases reproduce Codex 26.1029's composer attributes and toolbar
 materials. They compare empty material pixels against a single fixed wallpaper layer,
 while comparing attachments and icons against their untinted native pixels. The
-transform cases exercise the native footer and toolbar themselves. A non-identity
+transform cases exercise the native footer and toolbar themselves.
+Toolbar lifecycle cases also cover late host designation, nested capsule promotion,
+and adding/removing an inline transform without a resize event. A non-identity
 transform on an additional shared ancestor that keeps the entire subtree below the
 global wallpaper is a pre-existing stacking limitation, not covered as a passing
 alignment guarantee by these tests.

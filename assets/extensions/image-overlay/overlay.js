@@ -892,9 +892,16 @@
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
+        if (node.matches(toolbarSelector)) {
+          // 原生容器可能在子控件已挂载后才声明工具栏身份。
+          if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); pruneNeeded = true; changed = true; }
+          // 工具栏自身由浏览器定位，但其新补画表面仍须跟踪 none → transform。
+          if (invalidatePaintChains(node)) changed = true;
+        }
         if (node.closest?.(browserSelector) && !node.matches(browserSelector)) {
           if (node.closest(toolbarSelector)) {
-            if (isToolbarSurface(node)) { addToolbarSurface(node); changed = true; }
+            if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); changed = true; }
+            else if (isToolbarSurface(node)) { addToolbarSurface(node); changed = true; }
             if (invalidatePaintChains(node)) changed = true;
             pruneNeeded ||= semanticAttributes.has(node);
           }
