@@ -315,11 +315,20 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
   const [choosing, setChoosing] = useState<{ item: SubscriptionView; skip?: GatewayAgentId[] } | null>(null);
   // 当前这次登录的序号：取消或开始新的登录后，旧登录的收尾不再改界面。
   const attempt = useRef(0);
+  // 私有接口订阅的 `login()` 要等选登录方式 → 登录这一整段结束才返回：调用方（添加供应商）
+  // 在返回后就关掉整个界面，提前返回会把选择弹窗一起销毁，登录页根本拉不起来（#2879）。
+  const chooserDone = useRef<(() => void) | null>(null);
+  const settleChooser = () => {
+    const done = chooserDone.current;
+    chooserDone.current = null;
+    done?.();
+  };
   const cancel = () => {
     attempt.current += 1;
     setPending(null);
     setDeviceCode(null);
     setChoosing(null);
+    settleChooser();
     void invoke("cancel_gateway_login").catch(() => undefined);
   };
   /** 私有接口订阅的登录：开始 → （验证码弹窗 / 浏览器）→ 等完成后加进池里。 */
@@ -328,6 +337,9 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
     const id = ++attempt.current;
     const current = () => attempt.current === id;
     const title = tf("登录 {0}", [item.name]);
+    // 选择弹窗这一步结束了，登录本身结束时再通知 `login()` 的调用方。
+    const done = chooserDone.current;
+    chooserDone.current = null;
     setChoosing(null);
     setPending(kind);
     setDeviceCode(null);
@@ -360,6 +372,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         setPending(null);
         setDeviceCode(null);
       }
+      done?.();
     }
   };
   /** 登录订阅账号：ChatGPT / ChatGPT API / SuperGrok 走浏览器登录；Copilot 先显示验证码，再等你在 GitHub 上授权。
@@ -371,8 +384,11 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         await notify(t("登录失败"), t("当前版本不支持这个订阅"), "failed");
         return;
       }
-      setChoosing({ item: subscription, skip });
-      return;
+      settleChooser();
+      return new Promise<void>((resolve) => {
+        chooserDone.current = resolve;
+        setChoosing({ item: subscription, skip });
+      });
     }
     const id = ++attempt.current;
     const current = () => attempt.current === id;
@@ -412,7 +428,10 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
   const dialog = choosing ? (
     <SubscriptionLoginDialog
       item={choosing.item}
-      onCancel={() => setChoosing(null)}
+      onCancel={() => {
+        setChoosing(null);
+        settleChooser();
+      }}
       onStart={(method, input) => void loginSubscription(choosing.item, method, input, choosing.skip)}
     />
   ) : deviceCode ? (

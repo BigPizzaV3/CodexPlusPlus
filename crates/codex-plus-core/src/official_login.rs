@@ -170,6 +170,26 @@ fn jwt_claims(token: &str) -> Option<Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
+/// access token 的签发时间（JWT `iat`，Unix 秒）。
+fn jwt_iat_secs(token: &str) -> Option<u64> {
+    jwt_claims(token)?.get("iat")?.as_u64()
+}
+
+fn has_last_refresh(object: &serde_json::Map<String, Value>) -> bool {
+    object
+        .get("last_refresh")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+/// `last_refresh` 的 RFC 3339 时间戳：给了签发时间用它，否则用现在。
+pub(crate) fn last_refresh_stamp(issued_at_secs: Option<u64>) -> String {
+    match issued_at_secs {
+        Some(secs) => crate::extension_curation::utc_iso(secs),
+        None => crate::extension_curation::now_iso(),
+    }
+}
+
 fn jwt_exp_ms(token: &str) -> Option<i64> {
     jwt_claims(token)?
         .get("exp")?
@@ -388,15 +408,24 @@ pub fn auth_contents_with_member_login(
     object
         .entry("auth_mode".to_string())
         .or_insert_with(|| json!("chatgpt"));
-    // 刷新时间戳也带上：成员快照里的 `last_refresh` 是它最后刷新的时间，缺了 Codex
-    // 会按"从未刷新"处理。已存在（live 里的）不覆盖。
-    if !object.contains_key("last_refresh")
+    // 刷新时间戳也带上：成员快照里的 `last_refresh` 是它最后刷新的时间。已存在（live 里的）不覆盖。
+    if !has_last_refresh(&object)
         && let Some(last_refresh) = serde_json::from_str::<Value>(member_auth_contents)
             .ok()
             .and_then(|value| value.get("last_refresh").cloned())
         && !last_refresh.is_null()
     {
         object.insert("last_refresh".to_string(), last_refresh);
+    }
+    // 成员快照也没有时（网关自己登录的账号旧版不写这个字段）补一个：Codex 26.1029 起缺
+    // `last_refresh` 时 getAuthStatus 报 `Token data is not available`，启动即弹登录页（#2890）。
+    if !has_last_refresh(&object) {
+        let issued_at = object
+            .get("tokens")
+            .and_then(|tokens| tokens.get("access_token"))
+            .and_then(Value::as_str)
+            .and_then(jwt_iat_secs);
+        object.insert("last_refresh".to_string(), json!(last_refresh_stamp(issued_at)));
     }
     Some(format!(
         "{}\n",
@@ -731,6 +760,8 @@ fn auth_with_tokens(
     if !account_id.trim().is_empty() {
         value["tokens"]["account_id"] = serde_json::json!(account_id);
     }
+    // 刚刷新过：同步刷新时间戳，Codex 据此判断登录态是否可用（#2890）。
+    value["last_refresh"] = serde_json::json!(last_refresh_stamp(None));
     Ok(serde_json::to_string_pretty(&value)?)
 }
 
@@ -867,6 +898,51 @@ mod tests {
         assert_eq!(
             token_refresh_proxy(&profile).as_deref(),
             Some(crate::relay_proxy::DIRECT_PROXY)
+        );
+    }
+
+    /// #2890：网关自己登录的账号快照没有 `last_refresh`，借给 Codex 时要补上，
+    /// 否则 Codex 26.1029 报 `Token data is not available`、启动即弹登录页。
+    #[test]
+    fn lending_member_without_last_refresh_backfills_it_from_token_iat() {
+        let access = fake_jwt(json!({ "iat": 1_793_750_400u64, "exp": 1_794_614_400u64 }));
+        let member = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": "id",
+                "access_token": access,
+                "refresh_token": "r",
+                "account_id": "acct-1"
+            }
+        })
+        .to_string();
+        let merged = auth_contents_with_member_login(r#"{"OPENAI_API_KEY":"cpx-gw"}"#, &member, false)
+            .expect("成员有凭据时应写出 auth.json");
+        let auth: Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(auth["last_refresh"], "2026-11-04T00:00:00.000Z", "{auth}");
+        assert_eq!(auth["auth_mode"], "chatgpt");
+        assert_eq!(auth["OPENAI_API_KEY"], "cpx-gw");
+    }
+
+    #[test]
+    fn member_last_refresh_is_kept_when_present() {
+        let member = json!({
+            "tokens": { "access_token": "a", "refresh_token": "r", "account_id": "acct-1" },
+            "last_refresh": "2026-10-01T00:00:00Z"
+        })
+        .to_string();
+        let merged = auth_contents_with_member_login("{}", &member, false).unwrap();
+        let auth: Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(auth["last_refresh"], "2026-10-01T00:00:00Z");
+    }
+
+    #[test]
+    fn refreshed_tokens_stamp_last_refresh() {
+        let updated = auth_with_tokens(r#"{"auth_mode":"chatgpt","tokens":{}}"#, "a2", "r2", "acct-1").unwrap();
+        let auth: Value = serde_json::from_str(&updated).unwrap();
+        assert!(
+            auth["last_refresh"].as_str().is_some_and(|stamp| stamp.ends_with('Z')),
+            "{auth}"
         );
     }
 

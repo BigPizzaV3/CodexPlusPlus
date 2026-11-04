@@ -222,7 +222,9 @@ pub fn account_from_tokens(tokens: &Value) -> anyhow::Result<ChatGptAccount> {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "account_id": account_id,
-        }
+        },
+        // Codex 26.1029 起缺这个字段会判定未登录（#2890）。
+        "last_refresh": crate::official_login::last_refresh_stamp(None),
     }))?;
     Ok(ChatGptAccount {
         email,
