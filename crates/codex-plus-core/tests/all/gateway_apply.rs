@@ -1301,6 +1301,20 @@ fn providers_live_only_in_the_gateway_store() {
         GroupSticky::Session,
         "会话固定方式随组保存"
     );
+    // Agent 绑定里也引用着它（#2897）：删掉后不能留着 `deepseek-2/…`。
+    store
+        .update(|gateway| {
+            let binding = gateway.bindings.entry("codex".to_string()).or_default();
+            binding.model = "deepseek-2/deepseek-v4-pro[1M]".into();
+            binding.extra_models = vec![
+                "deepseek-2/deepseek-v4-pro".into(),
+                "deepseek/deepseek-v4-flash".into(),
+            ];
+            binding.auto_review_model = "deepseek-2/deepseek-v4-pro".into();
+            binding.title_model = "deepseek/deepseek-v4-flash".into();
+            Ok(())
+        })
+        .unwrap();
     let gateway = delete_provider(store, "deepseek-2").unwrap();
     assert!(gateway.provider("deepseek-2").is_none());
     assert_eq!(
@@ -1308,6 +1322,11 @@ fn providers_live_only_in_the_gateway_store() {
         1,
         "删掉供应商时路由组里指向它的成员一起去掉"
     );
+    let binding = &gateway.bindings["codex"];
+    assert_eq!(binding.model, "", "默认模型指向它时清空，回落到池里的默认");
+    assert_eq!(binding.extra_models, vec!["deepseek/deepseek-v4-flash".to_string()]);
+    assert_eq!(binding.auto_review_model, "");
+    assert_eq!(binding.title_model, "deepseek/deepseek-v4-flash", "指向别家的不动");
     assert!(delete_provider(store, "deepseek-2").is_err());
 }
 

@@ -781,11 +781,32 @@ fn expand_model(
     if let Some((relay, upstream)) = qualified_provider(gateway, binding, model) {
         return vec![(relay.clone(), upstream)];
     }
-    binding_pool_relays(gateway, binding)
-        .into_iter()
+    let pool = binding_pool_relays(gateway, binding);
+    let serving: Vec<(RelayProfile, String)> = pool
+        .iter()
         .filter(|relay| serves(relay, model))
-        .map(|relay| (relay.clone(), model.to_string()))
-        .collect()
+        .map(|relay| ((*relay).clone(), model.to_string()))
+        .collect();
+    if !serving.is_empty() {
+        return serving;
+    }
+    // `<供应商 id>/<模型>` 指向的供应商已经不在池里（删了 / 关了 / 被挑选排除），又没人把整串当
+    // 模型名声明：前缀只是 Codex++ 的供应商 id，原样发给别家上游必然报「无权访问模型」（#2897）。
+    // 池里有别家提供去掉前缀的同名模型时，改由它们回答。只对 Agent 直接请求的模型（depth 0）这样做：
+    // 路由组成员钉在某家上，那家关了就该跳过，不能换成别家。
+    if depth == 0
+        && let Some((_, rest)) = model.split_once('/')
+        && !model.starts_with(GROUP_MODEL_PREFIX)
+        && !rest.trim().is_empty()
+    {
+        let rest = rest.trim();
+        return pool
+            .into_iter()
+            .filter(|relay| serves(relay, rest))
+            .map(|relay| (relay.clone(), rest.to_string()))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// 成员是不是通配符。
@@ -1676,6 +1697,31 @@ mod tests {
         assert!(
             !should_log_model_rewrite("claude", "gpt-unknown-throttle"),
             "同一个模型 60 秒内只记一次"
+        );
+    }
+
+    /// #2897：`<已删除的供应商>/<模型>` 不能带着前缀发给别家，池里有人提供同名模型时去掉前缀交给它。
+    #[test]
+    fn qualified_model_of_a_removed_provider_drops_the_prefix() {
+        let mut gateway = gateway("kimi-k3");
+        // 绑定里还声明着删掉的供应商的模型（删除前留下的）。
+        gateway.bindings.get_mut("claude").unwrap().extra_models =
+            vec!["gone/deepseek-v4-flash".to_string()];
+        assert_eq!(
+            routed(&gateway, "gone/deepseek-v4-flash"),
+            vec![pair("ds", "deepseek-v4-flash")]
+        );
+        // 关掉的供应商同理。
+        assert_eq!(
+            routed(&gateway, "off/kimi-k3"),
+            vec![pair("kimi", "kimi-k3")]
+        );
+        // 没人提供去掉前缀的模型时不乱发：落回原来的「未知模型」处理。
+        assert!(
+            routed(&gateway, "gone/nobody-serves-this")
+                .iter()
+                .all(|(_, model)| !model.starts_with("gone/")),
+            "前缀不能原样发给上游"
         );
     }
 

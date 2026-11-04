@@ -3362,8 +3362,29 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
                 .members
                 .retain(|member| route::member_outlives_provider(remaining, id, &member.model));
         }
+        // Agent 绑定里指向它的模型也清掉（#2897）：默认模型、附加模型、分档模型、审批 / 标题模型
+        // 留着 `<id>/…` 会让请求带着这个前缀落到别家上游。清空的单值字段回落到池里的默认。
+        let outlives = |model: &str| {
+            let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+            route::member_outlives_provider(remaining, id, &slug)
+        };
         for binding in gateway.bindings.values_mut() {
             binding.pool_exclude.retain(|excluded| excluded != id);
+            binding.extra_models.retain(|model| outlives(model));
+            let roles = &mut binding.claude_roles;
+            for field in [
+                &mut binding.model,
+                &mut binding.auto_review_model,
+                &mut binding.title_model,
+                &mut roles.opus,
+                &mut roles.sonnet,
+                &mut roles.haiku,
+                &mut roles.subagent,
+            ] {
+                if !outlives(field) {
+                    field.clear();
+                }
+            }
         }
         Ok(())
     })?;
