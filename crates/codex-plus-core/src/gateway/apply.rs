@@ -2262,7 +2262,7 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         proxy: None,
         strip_image_generation_tool: None,
         strip_responses_image_detail: None,
-                disable_tool_search: None,
+        disable_tool_search: None,
     })?;
     if bearer {
         profile.anthropic_auth_header =
@@ -2318,7 +2318,7 @@ pub fn copy_grok_profile(
         proxy: None,
         strip_image_generation_tool: None,
         strip_responses_image_detail: None,
-                disable_tool_search: None,
+        disable_tool_search: None,
     })?;
     if !windows.is_empty() {
         relay.model_windows = serde_json::to_string(&windows)?;

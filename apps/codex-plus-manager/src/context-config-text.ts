@@ -210,9 +210,10 @@ export function contextEntryToTomlSection(tableName: string, entry: CodexContext
 function relativeContextSubtableToAbsolute(line: string, tableName: string, id: string): string {
   const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
   if (!match) return line;
-  const subtable = match[1].trim();
-  if (!subtable || subtable.includes(".")) return line;
-  return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
+  const path = parseTomlDottedPath(match[1].trim());
+  if (!path?.length) return line;
+  // 多级子表（如 `[tools.foo]`）同样是相对路径，不能原样落到根级（#2887）。
+  return `[${[tableName, id, ...path].map(tomlKey).join(".")}]`;
 }
 
 export function allContextConfigToml(entries: CodexContextEntries): string {

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   contextEntriesFromConfig,
+  contextEntryToTomlSection,
+  splitContextConfigText,
   parseContextEntries,
   stripContextEntriesFromConfig,
 } from "./context-config-text.ts";
@@ -93,4 +95,22 @@ command = "node"
   assert.ok(!kept.includes("VIVADO_PATH"), kept);
   assert.ok(kept.includes("[mcp_servers.premiere-pro.env]"), kept);
   assert.ok(kept.includes("ADOBE_HOME"), kept);
+});
+
+test("multi-level subtables round-trip under their own server", () => {
+  const config = `[mcp_servers.github]
+command = "gh-mcp"
+
+[mcp_servers.github.tools.search]
+approval_mode = "approve"
+`;
+  const split = splitContextConfigText(config);
+  assert.match(split.context, /\[mcp_servers\.github\.tools\.search\]/);
+  assert.doesNotMatch(split.context, /^\[tools\.search\]/m);
+  const entry = parseContextEntries(split.context, "mcp", "mcp_servers")[0];
+  assert.equal(contextEntryToTomlSection("mcp_servers", entry), `[mcp_servers.github]
+command = "gh-mcp"
+
+[mcp_servers.github.tools.search]
+approval_mode = "approve"`);
 });

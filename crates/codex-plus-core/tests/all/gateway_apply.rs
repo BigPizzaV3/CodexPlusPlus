@@ -57,7 +57,7 @@ fn deepseek_input() -> ProviderInput {
         proxy: None,
         strip_image_generation_tool: None,
         strip_responses_image_detail: None,
-            disable_tool_search: None,
+        disable_tool_search: None,
     }
 }
 
@@ -118,6 +118,9 @@ fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
     let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
     let object = metadata.as_object().unwrap();
     assert!(!object.is_empty());
+    // deepseek-v4-pro 由 DeepSeek 和 Kimi 两家服务，是自动组入口；kimi-k3 只有 Kimi 一家。
+    assert!(object.contains_key("deepseek-v4-pro"), "{object:?}");
+    assert!(object.contains_key("kimi-k3"), "{object:?}");
     // Kimi 不认 tool_search：它名下每个模型的元数据都带 supports_search_tool=false。
     for (key, entry) in object {
         assert_eq!(
@@ -665,7 +668,7 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 proxy: None,
                 strip_image_generation_tool: None,
                 strip_responses_image_detail: None,
-            disable_tool_search: None,
+                disable_tool_search: None,
             },
             "",
             None,

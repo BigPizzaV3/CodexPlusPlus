@@ -1640,7 +1640,7 @@ impl BackendSettings {
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
                 strip_responses_image_detail: false,
-            disable_tool_search: false,
+                disable_tool_search: false,
                 auto_review_model: String::new(),
                 multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
