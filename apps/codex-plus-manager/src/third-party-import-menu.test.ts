@@ -10,14 +10,14 @@ const app = await readText("./App.tsx");
 const styles = await readText("./styles.css");
 
 /**
- * 「从第三方导入」菜单的整段源码：从菜单容器开始，到下一个同级区块
- * （供应商分页 tab）之前。菜单内部结构变了这里会立刻失败，属于有意的契约。
+ * 「从第三方导入」菜单的整段源码：从菜单容器开始，到页面正文第一块（连接方式）之前。
+ * 菜单内部结构变了这里会立刻失败，属于有意的契约。
  */
 function importMenuSource() {
   const start = app.indexOf('className="third-party-import-menu"');
   assert.ok(start > 0, "找不到 third-party-import-menu");
-  const end = app.indexOf('className="provider-view-tabs"', start);
-  assert.ok(end > start, "找不到菜单之后的供应商分页 tab");
+  const end = app.indexOf("{connection}", start);
+  assert.ok(end > start, "找不到菜单之后的页面正文");
   return app.slice(start, end);
 }
 

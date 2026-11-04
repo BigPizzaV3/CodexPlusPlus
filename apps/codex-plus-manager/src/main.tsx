@@ -5,7 +5,15 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { CuPipWindow } from "./CuPipWindow";
 import { TrayPanel } from "./TrayPanel";
+import { applyMacTitlebarClass } from "./mac-titlebar";
 import "./styles.css";
+// Cursor 风格层必须最后加载，压过前面的组件样式。
+import "./cursor-ui.css";
+import "./cx-pages-gateway.css";
+import "./cx-pages-resources.css";
+import "./cx-pages-agents.css";
+import "./cx-pages-settings.css";
+import "./cx-tray.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.
@@ -54,6 +62,8 @@ class StartupErrorBoundary extends Component<{ children: ReactNode }, { error: E
 const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
+  // 只有主窗口去掉了系统标题栏；托盘面板、悬浮预览本来就没有标题栏。
+  if (window.location.hash !== "#tray-panel" && window.location.hash !== "#cu-pip") applyMacTitlebarClass();
   // 同一个前端也用于 Computer Use 的悬浮预览窗口（`#cu-pip`）和托盘快捷面板（`#tray-panel`）。
   createRoot(app).render(
     <StartupErrorBoundary>

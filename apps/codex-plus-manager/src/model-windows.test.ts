@@ -222,6 +222,18 @@ describe("model-windows helpers", () => {
       { model: "c", window: "", autoCompact: "70%", imageHandling: "vlm" },
     ]);
   });
+
+  it("reorderModelWindowRows 保留 UI 行 ID，并且不会序列化进模型配置", () => {
+    const rows = [
+      { sortId: "model-row-1", model: "a", window: "1M", autoCompact: "90%", imageHandling: "send-as-is" as const },
+      { sortId: "model-row-2", model: "b", window: "", autoCompact: "", imageHandling: "strip" as const },
+    ];
+    const reordered = reorderModelWindowRows(rows, 0, 1);
+    assert.deepStrictEqual(reordered.map((row) => row.sortId), ["model-row-2", "model-row-1"]);
+    assert.equal(reordered[1], rows[0]);
+    assert.deepStrictEqual(JSON.parse(serializeModelWindowRows(reordered).modelWindows), { a: "1M" });
+    assert.equal(serializeModelWindowRows(reordered).modelList, "b\na");
+  });
 });
 
 // issue #2345：行名可带 [1M] 后缀，而运行期查 model_vlm / model_windows 用的是

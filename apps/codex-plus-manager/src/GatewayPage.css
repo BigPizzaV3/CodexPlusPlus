@@ -231,7 +231,7 @@
   background: hsl(var(--gw-hue) 70% 55%);
 }
 
-/* 字母头像 */
+/* 字母头像：统一中性灰，不再按名字配色（五颜六色太花）；品牌图标见 .gw-avatar-brand。 */
 .gw-avatar {
   display: inline-flex;
   flex-shrink: 0;
@@ -240,10 +240,10 @@
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: hsl(var(--gw-hue, 230) 70% 55% / 0.14);
-  color: hsl(var(--gw-hue, 230) 60% 46%);
+  background: var(--gw-soft);
+  color: var(--gw-mute);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -0.02em;
 }
 

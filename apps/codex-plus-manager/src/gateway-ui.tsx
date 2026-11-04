@@ -127,17 +127,11 @@ export function agentIcon(agent: string): string | undefined {
 
 export const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
 
-function hueOf(name: string): number {
-  let hash = 0;
-  for (const char of name) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % 360;
-  return hash;
-}
-
 export function avatarOf(name: string): string {
   return providerAvatarText(name, "P");
 }
 
-/** 已知厂商用打包的图标（按名字、再按地址识别），其它供应商用按名字固定配色的字母头像。
+/** 已知厂商用打包的图标（按名字、再按地址识别），其它供应商用中性灰的字母头像。
  * 悬停提示里的名字打码（订阅账号名里带邮箱 / 用户名）。 */
 export function Avatar({ name, baseUrl = "", size = "md", plain = false }: { name: string; baseUrl?: string; size?: "sm" | "md" | "lg"; plain?: boolean }) {
   const key = plain ? null : brandIconKey(name, baseUrl);
@@ -150,7 +144,7 @@ export function Avatar({ name, baseUrl = "", size = "md", plain = false }: { nam
     );
   }
   return (
-    <span className="gw-avatar" data-size={size} style={{ "--gw-hue": hueOf(name) } as CSSProperties} title={maskAccountName(name)}>
+    <span className="gw-avatar" data-size={size} title={maskAccountName(name)}>
       {avatarOf(name)}
     </span>
   );

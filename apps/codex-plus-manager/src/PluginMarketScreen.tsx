@@ -1,14 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, CheckCircle2, Download, KeyRound, LoaderCircle, PackageOpen, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Download, KeyRound, LoaderCircle, PackageOpen, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardDescription, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import { AppSelect } from "./AppSelect";
 import { appConfirm } from "./app-dialog";
 import { applyPluginInstallation, filterMarketPlugins, isPluginMarketSuccess, mergePluginMarketCatalog, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketFilter, type MarketPlugin, type MarketResult, type MarketSource } from "./plugin-market-model";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
 import "./PluginMarketScreen.css";
 
 type InstallResult = {
@@ -41,7 +40,6 @@ export function PluginMarketScreen() {
   const [detailPlugin, setDetailPlugin] = useState<MarketPlugin | null>(null);
   const detailDialog = useRef<HTMLDialogElement | null>(null);
   const detailTrigger = useRef<HTMLButtonElement | null>(null);
-  const searchInput = useRef<HTMLInputElement | null>(null);
   const catalogRef = useRef(catalogs);
   const requestRef = useRef<PluginMarketRequests | null>(null);
   if (!requestRef.current) requestRef.current = new PluginMarketRequests();
@@ -98,7 +96,7 @@ export function PluginMarketScreen() {
   const closeDetails = () => {
     setDetailPlugin(null);
     if (detailTrigger.current?.isConnected) detailTrigger.current.focus({ preventScroll: true });
-    else searchInput.current?.focus({ preventScroll: true });
+    else document.querySelector<HTMLInputElement>(".plugin-market-screen .cx-search input")?.focus({ preventScroll: true });
     detailTrigger.current = null;
   };
 
@@ -177,76 +175,78 @@ export function PluginMarketScreen() {
     }
   };
   const busy = !!installing || !!uninstalling;
+  const filterItems: Array<{ id: MarketFilter; label: string }> = [
+    { id: "all", label: t("全部插件") },
+    { id: "available", label: t("可安装") },
+    { id: "installed", label: t("已安装") },
+    { id: "updates", label: t("有更新") },
+    { id: "auth", label: t("需服务授权") },
+  ];
+  // 顶部最多一条提示：进行中的安装 / 卸载 > 加载错误 > 上一次操作的结果。
+  const progress = installing ? tf("正在下载并安装 {0}…", [installing.displayName || installing.name])
+    : uninstalling ? tf("正在卸载 {0}…", [uninstalling.displayName || uninstalling.name]) : "";
 
   return (
-    <div className="plugin-market-screen">
-      {/* 工具栏不再套卡片：来源、搜索、筛选、刷新和数量在一行。 */}
+    <div className="cx-page plugin-market-screen">
+      {/* 一条工具条：搜索 + 来源 + 刷新；下面一排筛选胶囊带数量。 */}
       <div className="plugin-market-toolbar">
-          <div className="plugin-market-controls">
-            <div aria-label={t("插件市场来源")} className="plugin-market-source" role="group">
-              <Button aria-pressed={source === "public"} disabled={busy} onClick={() => selectSource("public")} title={t("收录已确认可公开分发的插件。")} variant={source === "public" ? "secondary" : "ghost"}>
-                {t("公开精选")}
-              </Button>
-              <Button aria-pressed={source === "full"} disabled={busy} onClick={() => selectSource("full")} title={t("完整市场收录全部插件，索引较大，首次加载可能需要几秒。")} variant={source === "full" ? "secondary" : "ghost"}>
-                {t("完整缓存")}
-              </Button>
-            </div>
-            <label className="plugin-market-search">
-              <Search aria-hidden="true" />
-              <Input aria-label={t("搜索插件")} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索名称、作者、描述或标签")} ref={searchInput} type="search" value={query} />
-            </label>
-            <div className="plugin-market-filter">
-              <AppSelect
-                ariaLabel={t("筛选插件")}
-                onChange={(next) => setFilter(next)}
-                options={[
-                  { value: "all", label: t("全部插件") },
-                  { value: "available", label: t("可安装") },
-                  { value: "installed", label: t("已安装") },
-                  { value: "updates", label: t("有更新") },
-                  { value: "auth", label: t("需服务授权") },
-                ] as { value: MarketFilter; label: string }[]}
-                value={filter}
-              />
-            </div>
-            <Button disabled={loading || busy} onClick={() => void loadCatalog(source, true)} variant="outline">
-              <RefreshCw aria-hidden="true" className={loading ? "plugin-market-spinner" : ""} />
-              {loading ? t("加载中…") : t("刷新索引")}
-            </Button>
-          </div>
-          <p aria-live="polite" className="plugin-market-summary">
-            {market ? query.trim() || filter !== "all" ? tf("{0} / {1} 个插件", [filtered.length, market.total]) : tf("{0} 个插件", [market.total]) : loading ? t("正在读取插件清单…") : t("尚未加载插件清单。")}
-            {market?.cached ? <span title={t("使用本地索引缓存")}>{t("缓存")}</span> : null}
-          </p>
+        <CxToolbar onQuery={setQuery} placeholder={t("搜索名称、作者、描述或标签")} query={query}>
+          <AppSelect<MarketSource>
+            ariaLabel={t("插件市场来源")}
+            className="plugin-market-source"
+            disabled={busy}
+            onChange={selectSource}
+            options={[
+              { value: "public", label: t("公开精选") },
+              { value: "full", label: t("完整缓存") },
+            ]}
+            size="sm"
+            title={source === "public" ? t("收录已确认可公开分发的插件。") : t("完整市场收录全部插件，索引较大，首次加载可能需要几秒。")}
+            value={source}
+          />
+          <button aria-label={t("刷新索引")} className="cx-icon-button" disabled={loading || busy} onClick={() => void loadCatalog(source, true)} title={t("刷新索引")} type="button">
+            <RefreshCw aria-hidden="true" className={loading ? "plugin-market-spinner" : ""} />
+          </button>
+        </CxToolbar>
+        <CxFilters
+          items={filterItems.map((item) => ({ ...item, count: market ? filterMarketPlugins(plugins, query, item.id).length : undefined }))}
+          label={t("筛选插件")}
+          onChange={setFilter}
+          trailing={(
+            <p aria-live="polite" className="plugin-market-summary">
+              {market ? null : loading ? t("正在读取插件清单…") : t("尚未加载插件清单。")}
+              {market?.cached ? <span title={t("使用本地索引缓存")}>{t("缓存")}</span> : null}
+            </p>
+          )}
+          value={filter}
+        />
       </div>
 
-      {error ? (
+      {progress ? (
+        <div aria-live="polite" className="plugin-market-feedback" role="status">
+          <CxBanner icon={<LoaderCircle aria-hidden="true" className="plugin-market-spinner" />} title={progress} />
+        </div>
+      ) : error ? (
         <div className="plugin-market-feedback plugin-market-error" role="alert">
-          <span>{error}</span>
-          <Button disabled={loading || busy} onClick={() => void loadCatalog(source, true)} variant="outline">{t("重试")}</Button>
+          <CxBanner icon={<X aria-hidden="true" />} title={error} tone="warn">
+            <button className="cx-secondary" disabled={loading || busy} onClick={() => void loadCatalog(source, true)} type="button">{t("重试")}</button>
+          </CxBanner>
         </div>
-      ) : null}
-      {notice ? (
+      ) : notice ? (
         <div aria-live="polite" className={`plugin-market-feedback ${notice.failed ? "plugin-market-error" : ""}`} role={notice.failed ? "alert" : "status"}>
-          <span>{notice.message}</span>
-          {notice.restart ? <span>{t("新开聊天或重启 Codex++ 后加载已安装插件。")}</span> : null}
-        </div>
-      ) : null}
-      {installing ? (
-        <div aria-live="polite" className="plugin-market-feedback" role="status">
-          <LoaderCircle aria-hidden="true" className="plugin-market-spinner" />
-          <span>{tf("正在下载并安装 {0}…", [installing.displayName || installing.name])}</span>
-        </div>
-      ) : null}
-      {uninstalling ? (
-        <div aria-live="polite" className="plugin-market-feedback" role="status">
-          <LoaderCircle aria-hidden="true" className="plugin-market-spinner" />
-          <span>{tf("正在卸载 {0}…", [uninstalling.displayName || uninstalling.name])}</span>
+          <CxBanner
+            detail={notice.restart ? t("新开聊天或重启 Codex++ 后加载已安装插件。") : undefined}
+            icon={notice.failed ? <X aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+            title={notice.message}
+            tone={notice.failed ? "warn" : "ok"}
+          >
+            <button aria-label={t("关闭")} className="cx-icon-button" onClick={() => setNotice(null)} type="button"><X aria-hidden="true" /></button>
+          </CxBanner>
         </div>
       ) : null}
 
       {!market && loading ? (
-        <div className="plugin-market-empty"><LoaderCircle aria-hidden="true" className="plugin-market-spinner" />{t("正在读取插件清单…")}</div>
+        <CxCard><CxEmpty title={<span className="plugin-market-loading"><LoaderCircle aria-hidden="true" className="plugin-market-spinner" />{t("正在读取插件清单…")}</span>} /></CxCard>
       ) : visible.length ? (
         <div aria-busy={loading} className="plugin-market-grid">
           {visible.map((plugin) => {
@@ -254,42 +254,56 @@ export function PluginMarketScreen() {
             const isUninstalling = uninstalling?.id === plugin.id;
             const title = plugin.displayName || plugin.name;
             return (
-              // 紧凑卡片：标题行带状态标签，说明最多两行，底部一行放版本、大小和操作。
-              <Card className="panel plugin-market-card" key={plugin.id}>
-                <div className="plugin-market-card-heading">
-                  <PackageOpen aria-hidden="true" className="plugin-market-package" />
-                  <CardTitle>{title}</CardTitle>
-                  <div className="plugin-market-status">
-                    {plugin.installed ? <Badge variant="secondary"><CheckCircle2 aria-hidden="true" />{t("已安装")}</Badge> : null}
-                    {plugin.requiresAuth ? <Badge variant="outline"><KeyRound aria-hidden="true" />{t("需服务授权")}</Badge> : null}
-                  </div>
-                </div>
-                <CardDescription className="plugin-market-description">{plugin.description || t("暂无插件描述。")}</CardDescription>
+              // 轻卡片：标题（点开详情）+ 状态标签、两行说明，底部版本大小与一个操作。
+              <article className="plugin-market-card" data-installed={plugin.installed || undefined} key={plugin.id}>
+                <button
+                  aria-label={tf("查看插件 {0} 的详情", [title])}
+                  className="plugin-market-card-main"
+                  onClick={(event) => { detailTrigger.current = event.currentTarget; setDetailPlugin(plugin); }}
+                  type="button"
+                >
+                  <span className="plugin-market-card-heading">
+                    <PackageOpen aria-hidden="true" className="plugin-market-package" />
+                    <strong title={title}>{title}</strong>
+                    {plugin.installed ? <CxBadge tone="ok">{t("已安装")}</CxBadge> : null}
+                    {plugin.requiresAuth ? <CxBadge title={t("需服务授权")}><KeyRound aria-hidden="true" /></CxBadge> : null}
+                  </span>
+                  <span className="plugin-market-description">{plugin.description || t("暂无插件描述。")}</span>
+                </button>
                 <div className="plugin-market-card-foot">
-                  <div className="plugin-market-metadata">
+                  <span className="plugin-market-metadata">
                     <span>{plugin.version ? `v${plugin.version}` : t("版本未声明")}</span>
                     {plugin.bytes > 0 ? <span>{formatBytes(plugin.bytes)}</span> : null}
-                  </div>
-                  <div className="plugin-market-card-actions">
-                    <Button aria-label={tf("查看插件 {0} 的详情", [title])} onClick={(event) => { detailTrigger.current = event.currentTarget; setDetailPlugin(plugin); }} size="sm" variant="ghost">{t("详情")}</Button>
+                  </span>
+                  <span className="plugin-market-card-actions">
                     {plugin.installed ? (
-                      <Button aria-label={tf("卸载插件 {0}", [title])} className="plugin-market-uninstall" disabled={loading || busy} onClick={() => void uninstall(plugin)} size="sm" variant="ghost">
+                      <Button aria-label={tf("卸载插件 {0}", [title])} className="plugin-market-uninstall" disabled={loading || busy} onClick={() => void uninstall(plugin)} size="sm" title={t("卸载")} variant="ghost">
                         {isUninstalling ? <LoaderCircle aria-hidden="true" className="plugin-market-spinner" /> : <Trash2 aria-hidden="true" />}
-                        {isUninstalling ? t("卸载中…") : t("卸载")}
+                        {isUninstalling ? t("卸载中…") : null}
                       </Button>
                     ) : null}
-                    <Button aria-label={tf("安装插件 {0}", [title])} disabled={loading || busy || (plugin.installed && !plugin.updateAvailable)} onClick={() => void install(plugin)} size="sm">
-                      {isInstalling ? <LoaderCircle aria-hidden="true" className="plugin-market-spinner" /> : plugin.installed && !plugin.updateAvailable ? <CheckCircle2 aria-hidden="true" /> : <Download aria-hidden="true" />}
-                      {isInstalling ? t("安装中…") : plugin.updateAvailable ? t("更新插件") : plugin.installed ? t("已安装") : t("下载并安装")}
-                    </Button>
-                  </div>
+                    {plugin.installed && !plugin.updateAvailable ? null : (
+                      <button aria-label={tf("安装插件 {0}", [title])} className="cx-secondary" disabled={loading || busy} onClick={() => void install(plugin)} type="button">
+                        {isInstalling ? <LoaderCircle aria-hidden="true" className="plugin-market-spinner" /> : <Download aria-hidden="true" />}
+                        {isInstalling ? t("安装中…") : plugin.updateAvailable ? t("更新插件") : t("安装")}
+                      </button>
+                    )}
+                  </span>
                 </div>
-              </Card>
+              </article>
             );
           })}
         </div>
       ) : !error ? (
-        <div className="plugin-market-empty"><PackageOpen aria-hidden="true" />{market ? t("没有匹配的插件。") : t("尚未加载插件清单。")}</div>
+        <CxCard>
+          <CxEmpty title={market ? t("没有匹配的插件。") : t("尚未加载插件清单。")}>
+            {market && (query || filter !== "all") ? (
+              <button className="cx-secondary" onClick={() => { setQuery(""); setFilter("all"); }} type="button">{t("清除筛选")}</button>
+            ) : !market ? (
+              <button className="cx-secondary" disabled={loading || busy} onClick={() => void loadCatalog(source, true)} type="button">{t("刷新索引")}</button>
+            ) : null}
+          </CxEmpty>
+        </CxCard>
       ) : null}
 
       {filtered.length > PAGE_SIZE ? (

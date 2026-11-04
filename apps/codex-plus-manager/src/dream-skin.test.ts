@@ -122,7 +122,8 @@ describe("dream skin theme helpers", () => {
     assert.match(app, /installOperation=\{dreamSkinInstallOperation\}/);
     assert.match(app, /DreamSkinInstallProgress label=\{dreamSkinInstallOperationLabel\(installOperation\)\}/);
     assert.match(app, /installPending=\{dreamSkinInstallOperation\?\.source === "pending-community"\}/);
-    assert.match(app, /disabled=\{Boolean\(installOperation\)\} variant="outline" onClick=\{\(\) => void actions\.importDreamSkinThemePackage\(\)\}/);
+    // 导入主题包在「我的主题」工具条上，安装进行中同样禁用。
+    assert.match(app, /disabled=\{Boolean\(installOperation\)\} onClick=\{\(\) => void actions\.importDreamSkinThemePackage\(\)\}/);
     assert.match(app, /className="dream-skin-install-progress-bar" role="progressbar"/);
     assert.doesNotMatch(app, /dream-skin-install-progress-bar[^>]*aria-valuenow/);
     assert.match(css, /\.dream-skin-install-progress-bar > div\s*\{[^}]*animation:\s*task-progress-indeterminate/s);
@@ -410,7 +411,10 @@ describe("dream skin theme helpers", () => {
     assert.match(library, /actions\.selectDreamSkinTheme\(item\)/);
     assert.doesNotMatch(library, /actions\.activateDreamSkinTheme\(\)/);
     assert.doesNotMatch(library, /t\("(?:从图片创建|保存主题|恢复 Dream Skin 默认主题)"\)/);
-    assert.match(customizer, /t\("从图片创建"\)/);
+    // 「从图片创建」只在主题库工具条上放一处（主操作），自定义区不再重复。
+    const toolbar = screen.getText(source).slice(screen.getText(source).indexOf("<CxToolbar onQuery={setLocalQuery}"));
+    assert.match(toolbar.slice(0, toolbar.indexOf("</CxToolbar>")), /t\("从图片创建"\)/);
+    assert.doesNotMatch(customizer, /t\("从图片创建"\)/);
     assert.match(customizer, /t\("保存主题"\)/);
     assert.match(customizer, /t\("恢复 Dream Skin 默认主题"\)/);
     assert.match(customizer, /t\("恢复 Codex 默认配色"\)/);

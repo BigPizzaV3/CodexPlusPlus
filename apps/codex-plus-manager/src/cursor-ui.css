@@ -1,0 +1,1884 @@
+/*
+ * 界面风格 · 参照 Cursor 设置页 / Customize 页。
+ *
+ * 这一层在所有样式之后加载（main.tsx 与预览入口都放在最后），统一用 `:root .shell` 前缀压过
+ * 组件 CSS（组件 CSS 与 styles.css 的加载顺序在预览和正式版里相反，不能只靠先后）。
+ *
+ * 原则：
+ * - 颜色克制：中性灰阶，主按钮黑白反相，只有开关和状态用绿色；
+ * - 一列居中的内容，标题在内容里，不再有顶栏、面包屑和副标题；
+ * - 卡片里按行排列：左边标题 + 一行说明，右边控件，行间一条细线；
+ * - 页签一律是胶囊。
+ */
+
+/* ── 色板 ─────────────────────────────────────────────────────── */
+
+:root.dark,
+:root .dark {
+  --background: 240 2% 8.4%;
+  --foreground: 0 0% 90%;
+  --card: 240 3% 11.2%;
+  --card-foreground: 0 0% 90%;
+  --popover: 240 3% 12.5%;
+  --popover-foreground: 0 0% 90%;
+  --primary: 0 0% 94%;
+  --primary-foreground: 240 3% 9%;
+  --secondary: 240 3% 13.5%;
+  --secondary-foreground: 0 0% 88%;
+  --muted: 240 3% 13%;
+  --muted-foreground: 240 2% 54%;
+  --accent: 220 3% 17%;
+  --accent-foreground: 0 0% 94%;
+  --destructive: 0 66% 58%;
+  --border: 240 3% 15.5%;
+  --input: 240 3% 20%;
+  --ring: 0 0% 62%;
+  --shell-bg: 240 2% 8.4%;
+  --sidebar-bg: 240 6% 10%;
+  --sidebar-muted: 220 3% 17%;
+  --sidebar-border: 240 3% 15.5%;
+  --surface-raised: 240 3% 12.5%;
+  --surface-sunken: 240 2% 7%;
+  --brand-accent: 0 0% 82%;
+  --brand-accent-2: 0 0% 70%;
+  --switch-track: 240 3% 24%;
+  --switch-thumb: 0 0% 100%;
+  --switch-on: 144 44% 44%;
+  --status-success: 144 44% 50%;
+  --status-warning: 38 80% 58%;
+  --status-error: 0 72% 64%;
+  --shadow-color: 0 0% 0%;
+  --cx-row-divider: 240 3% 15.5%;
+}
+
+:root.light,
+:root .light {
+  --background: 0 0% 100%;
+  --foreground: 0 0% 10%;
+  --card: 0 0% 97.3%;
+  --card-foreground: 0 0% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 10%;
+  --primary: 0 0% 9%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 95.5%;
+  --secondary-foreground: 0 0% 12%;
+  --muted: 0 0% 96%;
+  --muted-foreground: 0 0% 42%;
+  --accent: 0 0% 92.5%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 66% 50%;
+  --border: 0 0% 90%;
+  --input: 0 0% 85%;
+  --ring: 0 0% 40%;
+  --shell-bg: 0 0% 100%;
+  --sidebar-bg: 0 0% 97.5%;
+  --sidebar-muted: 0 0% 92.5%;
+  --sidebar-border: 0 0% 90%;
+  --surface-raised: 0 0% 100%;
+  --surface-sunken: 0 0% 97%;
+  --brand-accent: 0 0% 20%;
+  --brand-accent-2: 0 0% 35%;
+  --switch-track: 0 0% 82%;
+  --switch-thumb: 0 0% 100%;
+  --switch-on: 144 50% 40%;
+  --status-success: 144 50% 36%;
+  --status-warning: 32 86% 44%;
+  --status-error: 0 66% 50%;
+  --shadow-color: 0 0% 60%;
+  --cx-row-divider: 0 0% 91%;
+}
+
+:root {
+  --cx-radius: 12px;
+  --cx-content: 1000px;
+  --cx-content-narrow: 820px;
+  --focus-ring: 0 0 0 2px hsl(var(--ring) / 0.35);
+}
+
+/* ── 外壳 ─────────────────────────────────────────────────────── */
+
+:root .shell {
+  grid-template-columns: 236px minmax(0, 1fr);
+  background: hsl(var(--background));
+}
+
+:root .shell .workspace {
+  background: hsl(var(--background));
+}
+
+/* ── 侧栏 ─────────────────────────────────────────────────────── */
+
+:root .shell .cx-side {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px 8px;
+  border-right: 1px solid hsl(var(--sidebar-border));
+  background: hsl(var(--sidebar-bg));
+  overflow: hidden;
+}
+
+:root .shell .cx-side-nav {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+  overflow-y: auto;
+  /* 窗口矮时侧栏要能看出还能往下滚（原来 none 把滚动条藏掉，Agent 列表被截了看不出来）。 */
+  scrollbar-width: thin;
+}
+
+:root .shell .cx-side-nav::-webkit-scrollbar {
+  width: 4px;
+}
+
+:root .shell .cx-side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+:root .shell .cx-side-heading {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 0 10px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  font-weight: 450;
+}
+
+:root .shell .cx-side-item,
+:root .shell .cx-side-back {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.86);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-side-item:hover:not(:disabled),
+:root .shell .cx-side-back:hover {
+  background: hsl(var(--accent) / 0.55);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-side-item.active {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-side-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+:root .shell .cx-side-back {
+  color: hsl(var(--foreground) / 0.8);
+}
+
+:root .shell .cx-side-back svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+
+:root .shell .cx-side-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: hsl(var(--foreground) / 0.72);
+  stroke-width: 1.6;
+}
+
+:root .shell .cx-side-item.active .cx-side-icon {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-side-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-side .side-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground) / 0.5);
+  box-shadow: none;
+}
+
+:root .shell .cx-side .side-dot[data-tone="ok"] {
+  background: hsl(var(--status-success));
+}
+
+:root .shell .cx-side .side-dot[data-tone="direct"] {
+  background: hsl(var(--foreground) / 0.55);
+}
+
+:root .shell .cx-side-agent {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* 状态点一律贴在每行最右边、对成一列；Codex 行的启动 / 停止按钮放在状态点左边（.cx-side-run 的 right），
+   名字给按钮让出位置，长名字不会压到按钮下面。 */
+:root .shell .cx-side-agent .cx-side-item {
+  padding-right: 10px;
+}
+
+:root .shell .cx-side-agent.has-run .cx-side-label {
+  margin-right: 28px;
+}
+
+:root .shell .cx-side-run {
+  position: absolute;
+  right: 22px;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-side-run:hover:not(:disabled) {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-side-run[data-running="false"]:not(:disabled) {
+  color: hsl(var(--status-success));
+}
+
+/* 外部启动、增强脚本未挂载的 Codex：按钮变成提醒色的「重启并挂载」。 */
+:root .shell .cx-side-run[data-unattached="true"]:not(:disabled) {
+  color: hsl(var(--status-warning));
+}
+
+/* 重启图标是描边图标，不能沿用播放 / 停止的实心填充。 */
+:root .shell .cx-side-run[data-unattached="true"] svg {
+  fill: none;
+}
+
+:root .shell .cx-side-run:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+:root .shell .cx-side-run svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* 搜索：主模式是打开 ⌘K 的按钮，设置模式是过滤分类的输入框，长得一样。 */
+:root .shell .cx-side-search {
+  display: flex;
+  height: 32px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 13px;
+  cursor: text;
+}
+
+:root .shell .cx-side-search-button {
+  cursor: pointer;
+}
+
+:root .shell .cx-side-search-button:hover {
+  border-color: hsl(var(--input));
+  color: hsl(var(--foreground) / 0.8);
+}
+
+:root .shell .cx-side-search svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  stroke-width: 1.7;
+}
+
+:root .shell .cx-side-search span {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+:root .shell .cx-side .cx-side-search input {
+  min-width: 0;
+  height: auto;
+  flex: 1 1 auto;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font: inherit;
+}
+
+:root .shell .cx-side .cx-side-search input::placeholder {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-side-search kbd {
+  padding: 1px 5px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+}
+
+:root .shell .cx-side-back + .cx-side-search {
+  margin-top: 6px;
+}
+
+:root .shell .cx-side-empty {
+  margin: 4px 10px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .cx-icon-button {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-icon-button:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-icon-button svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.7;
+}
+
+/* 底部状态卡（对应 Cursor 的 Getting Started）。 */
+:root .shell .cx-side-card {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground) / 0.86);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-side-card:hover,
+:root .shell .cx-side-card.active {
+  border-color: hsl(var(--input));
+}
+
+:root .shell .cx-side-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+:root .shell .cx-side-card-title svg {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .cx-side-card-meta,
+:root .shell .cx-side-card-action {
+  padding-left: 14px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+:root .shell .cx-side-card-action {
+  padding-left: 22px;
+  color: hsl(var(--foreground) / 0.8);
+}
+
+:root .shell .cx-side-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 2px 6px;
+}
+
+:root .shell .cx-side-logo {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 6px;
+}
+
+:root .shell .cx-side-version {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: hsl(var(--foreground) / 0.75);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 内容区 ──────────────────────────────────────────────────── */
+
+:root .shell .screen {
+  gap: 16px;
+  padding: 36px 44px 56px;
+  background: hsl(var(--background));
+}
+
+:root .shell .screen > * {
+  width: min(100%, var(--cx-content));
+  margin-inline: auto;
+}
+
+:root .shell .screen[data-settings-mode="true"] > * {
+  width: min(100%, var(--cx-content-narrow));
+}
+
+/* 请求日志、会话、MCP 与其他页面同宽：切换「统计 / 请求」页签时标题不跳。 */
+:root .shell .screen.request-log-screen > *,
+:root .shell .screen.management-screen > * {
+  width: min(100%, var(--cx-content));
+}
+
+:root .shell .cx-page-head {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 2px;
+}
+
+:root .shell .cx-page-title h1 {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+}
+
+:root .shell .cx-page-head .topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-page-head .topbar-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-page-head .topbar-page-actions:empty {
+  display: none;
+}
+
+/* ── 胶囊页签（所有 .tp-tabs） ───────────────────────────────── */
+
+:root .shell .tp-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 0;
+}
+
+:root .shell .tp-tabs button {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 13px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 13px;
+  font-weight: 450;
+}
+
+:root .shell .tp-tabs button:hover {
+  border-color: hsl(var(--input));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .tp-tabs button[data-active="true"],
+:root .shell .tp-tabs button[aria-selected="true"] {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .tp-tabs button svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.7;
+}
+
+:root .shell .agent-page-tabs-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: hsl(var(--border));
+}
+
+/* ── 卡片 ─────────────────────────────────────────────────────── */
+
+:root .shell .panel {
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  box-shadow: none;
+}
+
+:root .shell .panel:hover {
+  border: 0;
+  box-shadow: none;
+}
+
+:root .shell .panel-head {
+  align-items: baseline;
+  padding: 14px 16px 6px;
+  border-bottom: 0;
+}
+
+:root .shell .panel-head h3,
+:root .shell .panel-head .card-title {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+:root .shell .panel-head p {
+  color: hsl(var(--muted-foreground) / 0.85);
+  font-size: 11.5px;
+}
+
+/* ── 设置行 ───────────────────────────────────────────────────── */
+
+:root .shell .setting-row,
+:root .shell .feature-toggle {
+  padding-block: 13px;
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .setting-row:last-child,
+:root .shell .feature-toggle:last-child {
+  border-bottom: 0;
+}
+
+:root .shell .setting-row-copy strong,
+:root .shell .feature-toggle strong {
+  color: hsl(var(--foreground));
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .setting-row-copy > span,
+:root .shell .feature-toggle small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* 说明固定一行（参照 Cursor 设置页）：悬停不展开，行高不跳；全文在悬停提示里。 */
+
+/* ── 开关：绿色，不发光 ──────────────────────────────────────── */
+
+:root .shell .toggle-switch-visual {
+  width: 36px;
+  height: 21px;
+  background: hsl(var(--switch-track));
+  box-shadow: none;
+}
+
+:root .shell .toggle-switch-thumb {
+  top: 2.5px;
+  left: 2.5px;
+  width: 16px;
+  height: 16px;
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.25);
+}
+
+:root .shell :is(.feature-toggle, .switch-row) > input:checked ~ .toggle-switch-visual,
+:root .shell input:checked ~ .toggle-switch-visual {
+  background: hsl(var(--switch-on));
+  box-shadow: none;
+}
+
+:root .shell [role="switch"][aria-checked="true"] {
+  background: hsl(var(--switch-on));
+  box-shadow: none;
+}
+
+/* ── 输入框 ───────────────────────────────────────────────────── */
+
+:root .shell :is(input[type="text"], input[type="search"], input[type="number"], input[type="password"], input[type="url"], input:not([type]), textarea, select) {
+  border-color: hsl(var(--input) / 0.85);
+  background-color: hsl(var(--background) / 0.6);
+}
+
+:root .shell :is(input, textarea, select):focus-visible {
+  border-color: hsl(var(--ring) / 0.7);
+  box-shadow: none;
+  outline: 0;
+}
+
+/* ── 页内目录：交给侧栏或直接去掉 ───────────────────────────── */
+
+/* 原来的三栏（左侧目录 + 内容）收成单列；目录里的分组锚点不再显示，只留页签（如增强页的三个页签）。 */
+:root .shell .sectioned-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+:root .shell .sectioned-page > .page-section-nav {
+  position: static;
+  display: flex;
+  width: auto;
+  flex-direction: row;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .page-section-nav-list {
+  display: none;
+}
+
+:root .shell .sectioned-body {
+  width: 100%;
+  max-width: none;
+}
+
+/* Agent 胶囊只放文字，图标留给侧栏。 */
+:root .shell .agent-page-tabs button svg {
+  display: none;
+}
+
+/* 增强页的三个页签：横排胶囊。 */
+:root .shell .enhance-tabs {
+  flex-direction: row;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .enhance-tabs button {
+  width: auto;
+  justify-content: center;
+}
+
+/* 万物皆拓展页头：一句理念 + 一排能力标签，宿主切换在右侧。 */
+:root .shell .extensions-hero {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:root .shell .extensions-hero-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+:root .shell .extensions-hero-lead {
+  max-width: 720px;
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+:root .shell .extensions-hero-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:root .shell .extensions-hero-capabilities li {
+  padding: 2px 9px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.72);
+  font-size: 11.5px;
+}
+
+/* 分段控件：与胶囊同一套灰阶。 */
+:root .shell .mg-segmented {
+  border: 1px solid hsl(var(--border));
+  border-radius: 9px;
+  background: transparent;
+  padding: 2px;
+}
+
+:root .shell .mg-segmented button[data-active="true"],
+:root .shell .mg-segmented button[aria-pressed="true"] {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  box-shadow: none;
+}
+
+/* 管理页（会话 / MCP / Skills）：去掉渐变与光晕，勾选与开关统一用绿色。 */
+:root .shell .mg-page {
+  background: transparent;
+}
+
+:root .shell .mg-cell > span[data-on="true"],
+:root .shell .mg-switch.is-on {
+  border-color: transparent;
+  background: hsl(var(--switch-on));
+  color: #fff;
+  box-shadow: none;
+}
+
+:root .shell .mg-primary {
+  border-color: transparent;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  box-shadow: none;
+}
+
+:root .shell .mg-matrix,
+:root .shell .mg-skill-list,
+:root .shell .mg-session-list {
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  box-shadow: none;
+}
+
+:root .shell :is(.mg-matrix-head, .mg-skill-head) {
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell :is(.mg-matrix-row, .mg-skill-row, .mg-session-row):hover {
+  background: hsl(var(--accent) / 0.4);
+}
+
+:root .shell .mg-group-head {
+  border-inline-start: 0;
+  background: transparent;
+}
+
+:root .shell .mg-inline-action,
+:root .shell .mg-link-button {
+  color: hsl(var(--foreground) / 0.85);
+}
+
+:root .shell .mg-inline-action {
+  border-color: hsl(var(--input));
+  background: transparent;
+}
+
+:root .shell .extensions-hero > .extension-host-switch {
+  flex: none;
+  margin: 0;
+}
+
+/* ── 页面骨架（cx-layout.tsx） ───────────────────────────────── */
+
+:root .shell .cx-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+:root .shell .cx-search {
+  display: flex;
+  height: 34px;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-search:focus-within {
+  border-color: hsl(var(--input));
+}
+
+:root .shell .cx-search svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+:root .shell .cx-search input {
+  min-width: 0;
+  height: auto;
+  flex: 1 1 auto;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 13px;
+}
+
+:root .shell .cx-search-clear {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+:root .shell .cx-toolbar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 主按钮：Cursor 的白底黑字胶囊（浅色主题下反过来）。 */
+:root .shell .cx-primary,
+:root .shell .cx-toolbar-actions > .mg-primary {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+:root .shell .cx-primary:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.88);
+}
+
+:root .shell .cx-primary:disabled {
+  /* 禁用时不再是半透明的白块（深色下一大坨灰）：淡灰底 + 灰字。 */
+  opacity: 1;
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  box-shadow: none;
+  cursor: default;
+}
+
+:root .shell .cx-primary svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 次要按钮：描边胶囊。 */
+:root .shell .cx-secondary {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.88);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .cx-secondary:hover:not(:disabled) {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent) / 0.5);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-secondary svg {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .cx-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+:root .shell .cx-pill-count {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+:root .shell .cx-filters-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .cx-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+:root .shell .cx-section + .cx-section {
+  margin-top: 10px;
+}
+
+:root .shell .cx-section-head {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+}
+
+:root .shell .cx-section-head h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .cx-section-count {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+:root .shell .cx-section-aside {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-card {
+  overflow: hidden;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-row {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px 0 0;
+}
+
+:root .shell .cx-row + .cx-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 10px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+:root .shell .cx-row-clickable .cx-row-main {
+  cursor: pointer;
+}
+
+:root .shell .cx-row-clickable:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+:root .shell .cx-row[data-selected] {
+  background: hsl(var(--accent) / 0.55);
+}
+
+:root .shell .cx-row[data-muted] .cx-row-copy {
+  opacity: 0.55;
+}
+
+:root .shell .cx-row-icon,
+:root .shell .cx-add-row-icon,
+:root .shell .cx-banner-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.85);
+}
+
+:root .shell .cx-row-icon svg,
+:root .shell .cx-add-row-icon svg,
+:root .shell .cx-banner-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+
+:root .shell .cx-row-icon img {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .cx-status-icon {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 只认带 data-tone 的 <i> 是状态点：Codex / Claude 的单色图标本身也是 <i>，不能被当成状态点缩小挪到右下角（概览、首页的图标歪了）。 */
+:root .shell .cx-status-icon > i[data-tone] {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 50%;
+  background: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-status-icon > i[data-tone="ok"] { background: hsl(var(--status-success)); }
+:root .shell .cx-status-icon > i[data-tone="warn"] { background: hsl(var(--status-warning)); }
+:root .shell .cx-status-icon > i[data-tone="danger"] { background: hsl(var(--status-error)); }
+
+:root .shell .cx-row-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root .shell .cx-row-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-row-title strong {
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-row-detail {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-row-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-badge {
+  display: inline-flex;
+  height: 20px;
+  flex: none;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.72);
+  font-size: 11.5px;
+  font-weight: 450;
+  white-space: nowrap;
+}
+
+:root .shell .cx-badge[data-tone="ok"] { background: hsl(var(--status-success) / 0.14); color: hsl(var(--status-success)); }
+:root .shell .cx-badge[data-tone="warn"] { background: hsl(var(--status-warning) / 0.14); color: hsl(var(--status-warning)); }
+:root .shell .cx-badge[data-tone="danger"] { background: hsl(var(--status-error) / 0.14); color: hsl(var(--status-error)); }
+
+:root .shell .cx-add-row {
+  display: flex;
+  width: 100%;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-add-row:hover:not(:disabled) {
+  background: hsl(var(--accent) / 0.55);
+}
+
+:root .shell .cx-add-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-add-row-icon {
+  background: hsl(var(--accent) / 0.7);
+}
+
+:root .shell .cx-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-banner[data-tone="ok"] .cx-banner-icon {
+  background: hsl(var(--status-success) / 0.14);
+  color: hsl(var(--status-success));
+}
+
+:root .shell .cx-banner[data-tone="warn"] .cx-banner-icon {
+  background: hsl(var(--status-warning) / 0.14);
+  color: hsl(var(--status-warning));
+}
+
+:root .shell .cx-banner .cx-row-detail {
+  white-space: normal;
+}
+
+:root .shell .cx-banner-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+:root .shell .cx-stats {
+  display: grid;
+  overflow: hidden;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-stat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+}
+
+:root .shell .cx-stat + .cx-stat {
+  border-left: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-stat-label,
+:root .shell .cx-stat-hint {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-stat-value {
+  color: hsl(var(--foreground));
+  font-size: 20px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .cx-stat-value[data-tone="ok"] { color: hsl(var(--status-success)); }
+:root .shell .cx-stat-value[data-tone="warn"] { color: hsl(var(--status-warning)); }
+:root .shell .cx-stat-value[data-tone="danger"] { color: hsl(var(--status-error)); }
+
+:root .shell .cx-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 16px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  text-align: center;
+}
+
+:root .shell .cx-empty strong {
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .cx-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* 行内的 Agent 开关：一个 Agent 一枚小胶囊，开了就是实心。替代原来的多列勾选矩阵。 */
+:root .shell .cx-agent-toggles {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+:root .shell .cx-agent-toggle {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:root .shell .cx-agent-toggle:hover:not(:disabled) {
+  border-color: hsl(var(--input));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-agent-toggle[aria-pressed="true"] {
+  border-color: hsl(var(--status-success) / 0.45);
+  background: hsl(var(--status-success) / 0.12);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-agent-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+:root .shell .cx-agent-toggle svg,
+:root .shell .cx-agent-toggle img {
+  width: 13px;
+  height: 13px;
+}
+
+/* 用骨架重排过的页面：一列，块与块之间统一 16px。 */
+:root .shell .cx-page {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0;
+  background: transparent;
+}
+
+:root .shell .screen > .cx-page,
+:root .shell .screen.management-screen > .cx-page {
+  width: min(100%, var(--cx-content));
+}
+
+:root .shell .cx-agent-toggle {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 标题、胶囊与正文同宽：管理类页面（会话 / MCP / Skills）也收到内容列宽度。 */
+:root .shell .screen.management-screen > :is(.cx-page-head, .tp-tabs, .cx-page) {
+  width: min(100%, var(--cx-content));
+}
+
+/* 侧栏里当前 Agent 下面的页面：缩进、细字、左侧一条竖线（参照 Cursor 侧栏仓库下的会话列表）。 */
+:root .shell .cx-side-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px 18px;
+  padding-left: 10px;
+  border-left: 1px solid hsl(var(--sidebar-border));
+}
+
+:root .shell .cx-side-subitem {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-side-subitem:hover {
+  background: hsl(var(--accent) / 0.5);
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-side-subitem.active {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+/* Agent 行在显示子页面时不再整行高亮，只由子项表示当前页。 */
+:root .shell .cx-side-agent + .cx-side-subnav {
+  margin-top: 2px;
+}
+
+/* 内置增强：一行工具条 = 页签 + 搜索 + 保存状态 + 总开关。 */
+:root .shell .cx-enhance-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+:root .shell .cx-enhance-bar .enhance-tabs {
+  flex: none;
+}
+
+:root .shell .cx-enhance-search {
+  height: 32px;
+}
+
+:root .shell .cx-enhance-bar .cx-enhance-save {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-enhance-bar .cx-enhance-save [role="status"]:not(.is-dirty) {
+  display: none;
+}
+
+:root .shell .cx-enhance-master-switch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  cursor: pointer;
+}
+
+:root .shell .cx-enhance-master-switch > span strong {
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 12.5px;
+  font-weight: 450;
+  white-space: nowrap;
+}
+
+:root .shell .cx-enhance-master-switch > input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 展开了子页面的 Agent 行只加粗不铺底，当前页由子项表示，避免两处高亮。 */
+:root .shell .cx-side-item.active.has-subnav {
+  background: transparent;
+  font-weight: 500;
+}
+
+:root .shell .cx-side-item.active.has-subnav:hover {
+  background: hsl(var(--accent) / 0.55);
+}
+
+:root .shell .cx-enhance-bar .cx-enhance-search {
+  min-width: 160px;
+  flex: 1 1 auto;
+}
+
+/* 增强页的三个页签：胶囊选中态只换底色，不再画旧版的下划线（会把胶囊撑高）。 */
+:root .shell .enhance-tabs button[aria-selected="true"]::after {
+  display: none;
+}
+
+:root .shell .enhance-tabs button {
+  padding: 0 13px;
+  font-weight: 450;
+}
+
+:root .shell .enhance-tabs button:hover,
+:root .shell .enhance-tabs button[aria-selected="true"] {
+  color: hsl(var(--foreground));
+}
+
+/* ── 入门清单：侧栏底部的进度卡（参照 Cursor 的 Getting Started） ──
+   收起时：标题 + 「1/3」进度环 + 下一步说明 + 一个按钮；展开时清单在卡片上方弹出，盖在内容区上。 */
+:root .shell .cx-side {
+  position: relative;
+  z-index: 5;
+  overflow: visible;
+}
+
+:root .shell .cx-side .onboarding-setup {
+  position: relative;
+  flex: none;
+  max-height: none;
+  margin: 8px 0 4px;
+  overflow: visible;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+}
+
+:root .shell .cx-side .setup-header {
+  align-items: flex-start;
+  gap: 6px;
+}
+
+:root .shell .cx-side .setup-header > div:first-child {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+:root .shell .cx-side .setup-header strong {
+  overflow: hidden;
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-side .setup-header > div:first-child > span:last-child {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .setup-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .setup-ring {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .setup-ring circle:first-child {
+  stroke: hsl(var(--border));
+}
+
+:root .shell .setup-ring circle:last-child {
+  stroke: hsl(var(--status-success));
+}
+
+:root .shell .cx-side .setup-tools {
+  gap: 0;
+}
+
+:root .shell .cx-side .setup-tools button {
+  width: 22px;
+  height: 22px;
+}
+
+:root .shell .setup-next {
+  display: flex;
+  width: 100%;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 7px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+:root .shell .setup-next:hover:not(:disabled) {
+  background: hsl(var(--accent) / 0.7);
+}
+
+/* 展开：清单在卡片上方弹出，一列三步。 */
+:root .shell .cx-side .onboarding-setup[data-expanded="true"] .setup-steps {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  width: 380px;
+  max-height: calc(100vh - 140px);
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--popover));
+  box-shadow: 0 12px 32px hsl(0 0% 0% / 0.35);
+}
+
+:root .shell .cx-side .setup-step-content > strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .cx-side .setup-step-content p,
+:root .shell .cx-side .setup-choice {
+  font-size: 12px;
+}
+
+:root .shell .cx-side .setup-number[data-done="true"] {
+  border-color: transparent;
+  background: hsl(var(--status-success) / 0.16);
+}
+
+:root .shell .cx-side .setup-text-action {
+  color: hsl(var(--foreground) / 0.85);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 管理类页面（连接与供应商、多开、MCP、Skills、会话列表…）按内容长高，整页滚动。
+   原来 .mg-page 被 flex 限高并 overflow: hidden，内容一多，带 overflow: hidden 的卡片（如「连接方式」）
+   会被压成 0 高。Codex 会话页的列表自己滚动，不在此列。 */
+:root .shell .screen.management-screen > .cx-page:not(.mg-session-page) {
+  flex: none;
+  height: auto;
+  min-height: auto;
+  overflow: visible;
+}
+
+:root .shell .cx-page > * {
+  flex-shrink: 0;
+}
+
+/* 挂在 body 上的三点菜单（不在 .shell 里，所以不带 .shell 前缀）。 */
+.shell-portal .mg-menu-floating {
+  z-index: 80;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--popover));
+  box-shadow: 0 12px 32px hsl(0 0% 0% / 0.35);
+  color: hsl(var(--foreground));
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.shell-portal .mg-menu-floating button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shell-portal .mg-menu-floating button:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+
+.shell-portal .mg-menu-floating button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.shell-portal .mg-menu-floating .mg-danger {
+  color: hsl(var(--status-error));
+}
+
+.shell-portal .mg-menu-floating button[aria-checked="true"]::after {
+  content: "✓";
+  float: right;
+  color: hsl(var(--status-success));
+}
+
+/* 禁用的开关：整体半透明在深色卡片上几乎看不见（只剩一个圈），改成灰色轨道 + 灰色圆点。 */
+:root .shell .gw-switch:disabled {
+  opacity: 1;
+  background: hsl(var(--muted-foreground) / 0.2);
+}
+
+:root .shell .gw-switch:disabled span {
+  background: hsl(var(--muted-foreground) / 0.45);
+  box-shadow: none;
+}
+
+/* ── macOS 无系统标题栏（mac-titlebar.ts） ─────────────────────────
+   红黄绿按钮在系统默认位置（左上角，中心约在顶部 14px），侧栏顶部留出这一行并可拖动窗口；
+   页面标题行吸顶，和按钮同一行，就是原来的标题栏。 */
+:root .shell .cx-titlebar-drag {
+  display: none;
+}
+
+:root.mac-titlebar .shell .cx-side {
+  padding-top: 0;
+}
+
+:root.mac-titlebar .shell .cx-titlebar-drag {
+  display: block;
+  flex: none;
+  height: 36px;
+  margin: 0 -8px;
+}
+
+:root.mac-titlebar .shell .screen {
+  padding-top: 0;
+}
+
+:root.mac-titlebar .shell .screen > header.cx-page-head,
+:root.mac-titlebar .shell .screen.management-screen > header.cx-page-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  box-sizing: content-box;
+  width: auto;
+  min-height: 32px;
+  margin-inline: -44px;
+  margin-bottom: 4px;
+  /* 标题行 32px、上留 14px：不贴窗口顶边；吸顶后滚动的内容也从这条底色下面过。 */
+  padding: 14px calc(44px + (100% - min(100%, var(--cx-content))) / 2) 10px;
+  background: hsl(var(--background));
+}
+
+:root.mac-titlebar .shell .screen[data-settings-mode="true"] > header.cx-page-head {
+  padding-inline: calc(44px + (100% - min(100%, var(--cx-content-narrow))) / 2);
+}
+
+/* 往下滚之后，吸顶的标题行下面一条细线，和正文分开；顶部时不画。 */
+:root.mac-titlebar .shell .screen[data-scrolled] > header.cx-page-head {
+  box-shadow: 0 1px 0 hsl(var(--cx-row-divider));
+}
+
+/* 细滚动条（侧栏导航、模型选择器里那排供应商筛选）：4px 滑块、不画轨道，鼠标移上去略深一点。 */
+:root .shell .cx-side-nav::-webkit-scrollbar-track,
+.gw-portal .gw-mp-filters::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:root .shell .cx-side-nav::-webkit-scrollbar-thumb,
+.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.25);
+}
+
+:root .shell .cx-side-nav::-webkit-scrollbar-thumb:hover,
+.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.45);
+}
+
+.gw-portal .gw-mp-filters {
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
+.gw-portal .gw-mp-filters::-webkit-scrollbar {
+  height: 4px;
+}
+
+/* 供应商池右下角的悬浮提示（去首页看赞助商推荐）：小卡片浮在内容区右下角，不挡侧栏。 */
+:root .shell .cx-float-hint {
+  position: fixed;
+  right: 24px;
+  bottom: 20px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  background: hsl(var(--popover, var(--card)));
+  box-shadow: 0 10px 28px hsl(var(--shadow-color) / 0.28);
+}
+
+:root .shell .cx-float-hint-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: hsl(var(--foreground));
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-float-hint-main:hover {
+  background: hsl(var(--accent));
+}
+
+:root .shell .cx-float-hint-main > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-float-hint-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+:root .shell .cx-float-hint-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .cx-float-hint-copy small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-float-hint-close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  align-self: flex-start;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+
+:root .shell .cx-float-hint-close:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-float-hint-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 它是 .screen 的直接子元素，别被「子元素占满内容列宽、居中」的规则拉成一整条。 */
+:root .shell .screen > .cx-float-hint {
+  width: auto;
+  max-width: 360px;
+  margin: 0;
+  left: auto;
+}
