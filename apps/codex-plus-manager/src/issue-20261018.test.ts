@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { parseModelMetadataMap, synchronizeModelMetadataLiteSupport } from "./model-metadata.ts";
 import { reasoningParameterMode, setModelReasoningParameterMode } from "./model-reasoning.ts";
-import { requestCompatibilityEnabled, settingsRequireLocalHelper, stripImageGenerationToolEnabled } from "./model-routes.ts";
+import { pureApiImageGenerationEnabled, requestCompatibilityEnabled, settingsRequireLocalHelper, stripImageGenerationToolEnabled } from "./model-routes.ts";
 
 test("reasoning modes retain level drafts, round trip and require the helper only when opted in", () => {
   const original = JSON.stringify({ model: { custom: "kept", supported_reasoning_levels: [{ effort: "high" }] }, other: { custom: true } });
@@ -27,6 +27,18 @@ test("reasoning modes retain level drafts, round trip and require the helper onl
   assert.equal(stripImageGenerationToolEnabled({ ...strip, protocol: "chatCompletions" }), false);
   assert.equal(stripImageGenerationToolEnabled({ ...strip, relayMode: "official" }), false);
   assert.equal(stripImageGenerationToolEnabled({ ...strip, relayMode: "official", officialMixApiKey: true }), true);
+  // #1433：纯 API 原生生图只对纯 API 供应商生效，并要求本地代理。
+  const imageGen = { ...profile, modelMetadata: original, pureApiImageGeneration: true };
+  assert.equal(pureApiImageGenerationEnabled(imageGen), true);
+  const imageGenChat = { ...imageGen, protocol: "chatCompletions" as const };
+  assert.equal(pureApiImageGenerationEnabled(imageGenChat), true);
+  assert.equal(settingsRequireLocalHelper({ ...settings, relayProfiles: [imageGen] }), true);
+  const imageGenOfficial = { ...imageGen, relayMode: "official" as const, officialMixApiKey: true };
+  assert.equal(pureApiImageGenerationEnabled(imageGenOfficial), false);
+  const imageGenAggregate = { ...imageGen, relayMode: "aggregate" as const };
+  assert.equal(pureApiImageGenerationEnabled(imageGenAggregate), false);
+  const imageGenOff = { ...profile, modelMetadata: original };
+  assert.equal(pureApiImageGenerationEnabled(imageGenOff), false);
 });
 
 test("Lite controls edit one selected model and preserve the rest of an imported document", () => {

@@ -46,6 +46,8 @@ fn fixture() -> Fixture {
             model_prices: None,
             proxy: None,
             strip_image_generation_tool: None,
+            strip_responses_image_detail: None,
+            disable_tool_search: None,
         },
         "preset:deepseek",
         None,
@@ -141,15 +143,16 @@ fn opencode_keeps_user_edits_made_while_connected() {
     assert!(text.contains("\"codexplus/deepseek-v4-pro\""));
     assert!(text.contains("http://127.0.0.1:57321/gw/opencode/v1"));
     assert!(text.contains("\"theme\": \"dark\""));
+    assert!(text.contains("// 我的配置"));
 
     // 接入期间用户自己加了一项。
-    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut value = agents::files::parse_jsonc(&text).unwrap();
     value["autoupdate"] = serde_json::json!(false);
     std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 
     disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
-    let restored: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let restored =
+        agents::files::parse_jsonc(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(restored["model"], "anthropic/x");
     assert_eq!(restored["autoupdate"], false);
     assert!(restored.get("provider").is_none());

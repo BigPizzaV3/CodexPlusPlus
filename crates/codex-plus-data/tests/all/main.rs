@@ -8,4 +8,5 @@ mod provider_sync;
 mod storage_adapter;
 mod storage_safety_regressions;
 mod usage_candidate_db;
+mod usage_history;
 mod wsl_rollout_path;

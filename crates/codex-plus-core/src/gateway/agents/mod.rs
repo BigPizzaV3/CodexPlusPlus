@@ -18,6 +18,7 @@ pub mod catalog_tools;
 pub mod connect;
 pub mod env;
 pub mod files;
+mod jsonc_edit;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

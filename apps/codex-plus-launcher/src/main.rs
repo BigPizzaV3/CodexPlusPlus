@@ -25,6 +25,12 @@ pub fn set_navigation_handler(handler: impl Fn(Value) -> Result<()> + Send + Syn
         .unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(handler));
 }
 
+/// 与查询使用同一主目录，关闭设置后立即释放用量索引。
+pub fn clear_usage_history() {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    codex_plus_data::usage_history::clear_history(&home);
+}
+
 fn show_gui(payload: Value) -> Result<()> {
     let handler = NAVIGATION_HANDLER
         .get_or_init(|| Mutex::new(None))
@@ -827,10 +833,12 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<
         Option<codex_plus_data::SessionIndexRepairReport>,
     > {
+        // 索引修复只补 thread_items 投影，不改 provider；由独立的
+        // sessionIndexRepairEnabled 门控，与 provider sync 的批量改写分开（#2846）。
         if check_setting
             && !codex_plus_core::settings::SettingsStore::default()
                 .load()?
-                .provider_sync_enabled
+                .session_index_repair_enabled
         {
             return Ok(None);
         }
@@ -867,39 +875,40 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
     }
 }
 
-/// 「激活已有实例」路径上的供应商同步。
+/// 「激活已有实例」路径上的供应商同步与会话索引修复。
 ///
-/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
-/// 前后各取一次 app state 快照；此路径没有启动后 monitor，因此在这里修复索引。
-/// 同步失败只记日志——用户这次点击
-/// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
+/// 两件事由独立开关控制（#2846）：
+/// - providerSyncEnabled：启动/激活时做供应商同步（批量改写会话 model_provider），
+///   前后各取一次 app state 快照；
+/// - sessionIndexRepairEnabled：激活路径没有启动后 monitor，在这里补跑索引修复。
+/// 同步失败只记日志——用户这次点击的诉求是把已有窗口拉到前台，不能因同步失败而中止。
 async fn run_activation_provider_sync(
     hooks: &LauncherHooks,
     settings: &codex_plus_core::settings::BackendSettings,
 ) {
-    if !settings.provider_sync_enabled {
-        return;
-    }
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
-        &home,
-        "launcher.activate_existing.before",
-    );
-    if let Err(error) = hooks.run_provider_sync().await {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.activate_existing_provider_sync.failed",
-            json!({ "message": error.to_string() }),
+    if settings.provider_sync_enabled {
+        let home = codex_plus_core::relay_config::default_codex_home_dir();
+        codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+            &home,
+            "launcher.activate_existing.before",
+        );
+        if let Err(error) = hooks.run_provider_sync().await {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.activate_existing_provider_sync.failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+        codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+            &home,
+            "launcher.activate_existing.after_provider_sync",
         );
     }
+    // 索引修复走自己的开关；不开 provider sync 的用户也会想修历史会话。
     repair_session_index_automatically(
         hooks.index_repair_checks_setting(),
         session_snapshot().debug_port,
     )
     .await;
-    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
-        &home,
-        "launcher.activate_existing.after_provider_sync",
-    );
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -1539,6 +1548,29 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("thread usage live task failed: {error}"))
     }
 
+    async fn usage_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("structured usage history task failed: {error}"))
+    }
+
+    async fn usage_archive(&self, request: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let settings = codex_plus_core::paths::default_settings_path();
+        Ok(tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_archive::query_archive(&home, &settings, &request)
+        })
+        .await
+        .unwrap_or_else(|_| json!({"status":"failed","code":"archive-task-failed"})))
+    }
+
+    async fn clear_usage_history(&self) {
+        let _ = tokio::task::spawn_blocking(clear_usage_history).await;
+    }
+
     async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
         let adapter = self.storage_adapter();
         tokio::task::spawn_blocking(move || {
@@ -1757,6 +1789,11 @@ impl BridgeRuntimeService for LauncherRuntimeService {
             .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
         let started = codex_plus_core::bridge::request_app_server_client_capture(&websocket_url);
         Ok(serde_json::json!({ "status": "ok", "started": started }))
+    }
+
+    async fn set_thread_goal_in_owner(&self, payload: Value) -> anyhow::Result<Value> {
+        let debug_port = *self.debug_port.lock().unwrap();
+        codex_plus_core::native_thread_goal::set_in_owner(debug_port, payload).await
     }
 
     async fn script_market_list(&self) -> anyhow::Result<Value> {
@@ -2629,6 +2666,31 @@ mod tests {
         *NAVIGATION_HANDLER.get().unwrap().lock().unwrap() = None;
     }
 
+    #[tokio::test]
+    async fn thread_goal_uses_the_launchers_current_instance_port() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let length = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..length]).starts_with("GET /json "));
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]"
+            ).await.unwrap();
+        });
+        let runtime = LauncherRuntimeService::new(1, default_user_script_manager());
+        runtime.set_debug_port(port);
+        let result = runtime.set_thread_goal_in_owner(json!({
+            "hostId": "local", "threadId": "synthetic-thread", "requestId": "test-request",
+            "params": { "objective": "synthetic objective" }
+        })).await;
+        let served = tokio::time::timeout(std::time::Duration::from_secs(3), server).await;
+        assert!(served.unwrap().is_ok());
+        assert_eq!(result.unwrap_err().to_string(), "会话所在窗口暂不可用，请稍后重试设置目标");
+    }
+
     #[test]
     fn existing_launcher_path_drains_pending_remote_control_recovery_before_activation() {
         let source = include_str!("main.rs");
@@ -2734,11 +2796,24 @@ mod tests {
             .expect("next function after the helper");
         let body = &source[start..end];
 
-        // 只在设置启用时同步，与完整启动流程一致。
-        assert!(body.contains("if !settings.provider_sync_enabled"));
+        // provider sync 只在设置启用时做，与完整启动流程一致（#2846 拆开后仍由 providerSyncEnabled 门控）。
+        assert!(body.contains("if settings.provider_sync_enabled"));
         // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
         assert!(!body.contains("hooks.run_provider_sync().await?"));
         assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
+        // 索引修复由独立开关控制，即使 provider sync 关着也要照常跑：
+        // 断言 repair_session_index_automatically 本体的开关读的是 sessionIndexRepairEnabled。
+        let repair_body_start = source
+            .find("async fn repair_session_index_automatically")
+            .expect("repair helper");
+        let repair_body_end = source[repair_body_start..]
+            .find("\n}\n\n/// 「激活已有实例」")
+            .map(|offset| repair_body_start + offset + 3)
+            .expect("end of repair helper");
+        let repair_body = &source[repair_body_start..repair_body_end];
+        assert!(repair_body.contains("session_index_repair_enabled"));
+        // 且 repair 不再被 providerSyncEnabled 顺带门控。
+        assert!(!repair_body.contains("provider_sync_enabled"));
         let compact = body.split_whitespace().collect::<String>();
         assert!(compact.contains(
             "repair_session_index_automatically(hooks.index_repair_checks_setting(),session_snapshot().debug_port,).await"

@@ -195,22 +195,29 @@ describe("session more menu lifecycle", () => {
     );
     const source = schedule.slice(schedule.indexOf("  function scheduleScan("), schedule.indexOf("  const onScanVisibilityChange"));
     let pruned = 0;
+    let slotsPruned = 0;
     let relevanceChecks = 0;
     const window = { __codexSessionDeleteScanPending: true };
-    const scheduleScan = new Function("window", "document", "pruneRemovedSessionActions", "shouldScheduleScan",
+    const scheduleScan = new Function("window", "document", "pruneRemovedSessionActions", "shouldScheduleScan", "pruneRemovedCodexPlusUiSlots",
       `${source}\nreturn scheduleScan;`,
     )(window, { hidden: true }, (mutations: Array<{ removedNodes: Array<{ nodeType: number }> }>) => {
       if (mutations.some((mutation) => mutation.removedNodes.some((node) => node.nodeType === 1))) pruned++;
-    }, () => { relevanceChecks++; return false; });
+    }, () => { relevanceChecks++; return false; }, (mutations: Array<{ removedNodes: Array<{ nodeType: number }> }>) => {
+      if (mutations.some((mutation) => mutation.removedNodes.some((node) => node.nodeType === 1))) slotsPruned++;
+      return false;
+    });
     scheduleScan([{ removedNodes: [{ nodeType: 1 }] }]);
     assert.equal(pruned, 1);
+    assert.equal(slotsPruned, 1);
     assert.equal(relevanceChecks, 0);
     window.__codexSessionDeleteScanPending = false;
     scheduleScan([{ removedNodes: [{ nodeType: 1 }] }]);
     assert.equal(pruned, 2);
+    assert.equal(slotsPruned, 2);
     assert.equal(relevanceChecks, 1);
     scheduleScan([{ removedNodes: [{ nodeType: 3 }] }]);
     assert.equal(pruned, 2);
+    assert.equal(slotsPruned, 2);
     const view = await readFile(
       new URL("../../../assets/inject/renderer-inject/95-conversation-view.js", import.meta.url), "utf8",
     );
@@ -225,9 +232,9 @@ describe("session more menu lifecycle", () => {
     const window = { __codexSessionDeleteScanPending: false };
     const timers: Array<() => void> = [];
     let needsScan = true;
-    const scheduleScan = new Function("window", "document", "pruneRemovedSessionActions", "shouldScheduleScan",
+    const scheduleScan = new Function("window", "document", "pruneRemovedSessionActions", "shouldScheduleScan", "pruneRemovedCodexPlusUiSlots",
       "setTimeout", "runScheduledScan", `${source}\nreturn scheduleScan;`,
-    )(window, { hidden: false }, () => needsScan, () => false,
+    )(window, { hidden: false }, () => needsScan, () => false, () => false,
       (callback: () => void) => { timers.push(callback); return timers.length; },
       () => { window.__codexSessionDeleteScanPending = false; });
     const removed = [{ removedNodes: [{ nodeType: 1 }] }];
@@ -2740,6 +2747,8 @@ describe("拓展接口层", () => {
     for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
+    assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");
+    assert.ok(routes.includes("/usage/archive"), "固定 schema 的独立消费者封存应开放给拓展");
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
@@ -2750,6 +2759,21 @@ describe("拓展接口层", () => {
     // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
     for (const forbidden of ["/codex-model-catalog", "/codex-config-model"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应开放给拓展`);
+    }
+  });
+
+  it("用量路由的公开类型与运行时白名单保持一致", async () => {
+    const routes = await readRouteWhitelist();
+    const declarations = await readFile(
+      new URL("../../../types/codex-plus-extensions.d.ts", import.meta.url),
+      "utf8",
+    );
+    const routeType = declarations.match(/type CodexPlusExtensionRoute\s*=([\s\S]*?);/);
+    assert.ok(routeType, "找不到公开路由类型");
+    const declared = Array.from(routeType[1].matchAll(/"([^"]+)"/g), ([, route]) => route);
+    for (const route of ["/usage/history", "/usage/archive"]) {
+      assert.ok(routes.includes(route), `${route} 未开放`);
+      assert.ok(declared.includes(route), `${route} 缺少公开类型`);
     }
   });
 
@@ -3574,7 +3598,7 @@ describe("拓展运行时内核", () => {
     };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage", "document",
       `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices, sessionItem: codexPlusSessionItem, sessionsCall: codexPlusSessionsCall };`,
     )(
       window,
@@ -3606,6 +3630,7 @@ describe("拓展运行时内核", () => {
       (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
       (message: string) => toasts.push(message),
       localStorage,
+      { documentElement: { lang: "en-US" } },
     ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
       bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
       services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void;
@@ -3924,6 +3949,290 @@ describe("拓展运行时内核", () => {
     assert.match(scan, /refreshCodexPlusMessageSlots\(\);\n\s+refreshCodexPlusSidePanels\(\);/);
   });
 
+  describe("插槽 DOM 资源生命周期", () => {
+    class SlotNode {
+      nodeType = 1;
+      dataset: Record<string, string> = {};
+      attributes = new Map<string, string>();
+      children: SlotNode[] = [];
+      parentElement: SlotNode | null = null;
+      root = false;
+      className = "";
+      __codexPlusSlotCleanup: (() => void) | null = null;
+      __codexPlusSlotInfo?: string;
+      get isConnected(): boolean { return this.root || !!this.parentElement?.isConnected; }
+      get firstChild(): SlotNode | null { return this.children[0] || null; }
+      get firstElementChild(): SlotNode | null { return this.firstChild; }
+      get lastChild(): SlotNode | null { return this.children.at(-1) || null; }
+      get nextSibling(): SlotNode | null {
+        const siblings = this.parentElement?.children || [];
+        return siblings[siblings.indexOf(this) + 1] || null;
+      }
+      get nextElementSibling(): SlotNode | null { return this.nextSibling; }
+      set textContent(_value: string) { for (const child of [...this.children]) child.remove(); }
+      dataKey(name: string) { return name.slice(5).replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase()); }
+      setAttribute(name: string, value: string) {
+        if (name.startsWith("data-")) this.dataset[this.dataKey(name)] = value;
+        else this.attributes.set(name, value);
+      }
+      getAttribute(name: string) { return name.startsWith("data-") ? this.dataset[this.dataKey(name)] ?? null : this.attributes.get(name) ?? null; }
+      hasAttribute(name: string) { return this.getAttribute(name) !== null; }
+      matches(selector: string): boolean {
+        return selector.split(",").some((part) => {
+          const match = /^\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(part.trim());
+          return !!match && this.hasAttribute(match[1]) && (match[2] === undefined || this.getAttribute(match[1]) === match[2]);
+        });
+      }
+      querySelectorAll(selector: string): SlotNode[] {
+        return this.children.flatMap((child) => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
+      }
+      appendChild(child: SlotNode) { return this.insertBefore(child, null); }
+      insertBefore(child: SlotNode, before: SlotNode | null) {
+        child.remove();
+        const index = before ? this.children.indexOf(before) : -1;
+        this.children.splice(index < 0 ? this.children.length : index, 0, child);
+        child.parentElement = this;
+        return child;
+      }
+      remove() {
+        const siblings = this.parentElement?.children;
+        if (siblings) siblings.splice(siblings.indexOf(this), 1);
+        this.parentElement = null;
+      }
+    }
+
+    async function slotRuntime() {
+      const source = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+      const body = new SlotNode();
+      body.root = true;
+      const anchor = body.appendChild(new SlotNode());
+      let registry = { slots: new Map<string, any>() };
+      const window: Record<string, any> = {};
+      const timers = new Map<number, () => void>();
+      const failures: unknown[] = [];
+      let timerId = 0;
+      let api: any;
+      const document = {
+        body, hidden: false,
+        createElement: () => new SlotNode(),
+        querySelectorAll: (selector: string) => body.querySelectorAll(selector),
+      };
+      const load = (options: { freshRegistry?: boolean } = {}) => {
+        if (options.freshRegistry) registry = { slots: new Map<string, any>() };
+        let loaded: any;
+        loaded = new Function(
+          "window", "document", "codexPlusRegistry", "codexPlusExtensionItems", "runCodexPlusExtensionCallback",
+          "markCodexPlusExtensionNode", "registerCodexPlusExtension", "codexPlusCurrentExtensionScriptKey",
+          "codexPlusExtensionIdSeed", "codexPlusRefreshExtensionHosts", "anchors", "setTimeout", "clearTimeout",
+          `${source}
+            codexPlusUiSlotAnchors = (slot) => anchors(slot);
+            installCodexPlusSlotStyle = () => {};
+            return {
+              refresh: refreshCodexPlusUiSlots, register: codexPlusRegisterExtensionSlot,
+              prune: pruneRemovedCodexPlusUiSlots, cleanups: codexPlusUiSlotCleanups,
+              cleanup: codexPlusRunSlotCleanup,
+              scheduleMessage: scheduleCodexPlusMessageSlotsRefresh,
+              setObserver: (observer) => { codexPlusMessageObserver = observer; },
+            };`,
+        )(
+          window, document, registry, (items: Map<string, unknown>) => [...items.values()],
+          (_key: string, _label: string, callback: () => unknown) => {
+            try { return { ok: true, value: callback() }; }
+            catch (error) { failures.push(error); return { ok: false }; }
+          },
+          (node: SlotNode, key: string) => { node.setAttribute("data-codex-plus-ext", key); return node; },
+          (_kind: string, items: Map<string, unknown>, id: string, definition: object, scriptKey: string) => {
+            const item = { ...definition, id, scriptKey };
+            items.set(id, item);
+            return () => { if (items.get(id) === item) items.delete(id); };
+          },
+          () => "user:slot-test", () => "slot", () => loaded.refresh(),
+          (slot: string) => slot === "composer.below" && anchor.isConnected ? [{ parent: anchor, place: "end" }] : [],
+          (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
+          (id: number) => timers.delete(id),
+        );
+        api = loaded;
+        return loaded;
+      };
+      load();
+      return { get api() { return api; }, get registry() { return registry; }, load, body, anchor, window, timers, failures, document };
+    }
+
+    it("父树脱离后清理一次，已清理 DOM 再插回会重新渲染", async () => {
+      const h = await slotRuntime();
+      let renders = 0;
+      let cleanups = 0;
+      h.api.register({ slot: "composer.below", render: () => { renders++; return () => { cleanups++; }; } }, { id: "a" });
+      const container = h.anchor.querySelectorAll("[data-codex-plus-slot-item]")[0];
+      h.api.refresh();
+      assert.equal(renders, 1);
+      h.anchor.remove();
+      const mutations = [{ target: h.body, removedNodes: [h.anchor] }];
+      assert.equal(h.api.prune(mutations), false, "整页离开不另排补扫");
+      h.api.prune(mutations);
+      assert.equal(cleanups, 1);
+      assert.equal(h.api.cleanups.size, 0);
+      assert.equal(container.dataset.slotVersion, undefined);
+      h.body.appendChild(h.anchor);
+      h.api.refresh();
+      assert.equal(renders, 2);
+      assert.equal(h.api.cleanups.size, 1);
+    });
+
+    it("同批移走再插回不误清理、也不重新渲染", async () => {
+      const h = await slotRuntime();
+      let renders = 0;
+      let cleanups = 0;
+      h.api.register({ slot: "composer.below", render: () => { renders++; return () => { cleanups++; }; } });
+      h.anchor.remove();
+      h.body.appendChild(h.anchor);
+      assert.equal(h.api.prune([{ target: h.body, removedNodes: [h.anchor] }]), false);
+      h.api.refresh();
+      assert.equal(cleanups, 0);
+      assert.equal(renders, 1);
+    });
+
+    it("原生移除插槽宿主或单项时请求补扫，注销后的自有移除不补扫", async () => {
+      const h = await slotRuntime();
+      let cleanups = 0;
+      const handle = h.api.register({ slot: "composer.below", render: () => () => { cleanups++; } });
+      const host = h.anchor.firstChild!;
+      host.remove();
+      assert.equal(h.api.prune([{ target: h.anchor, removedNodes: [host] }]), true);
+      assert.equal(cleanups, 1);
+      h.api.refresh();
+      const nextHost = h.anchor.firstChild!;
+      const container = nextHost.firstChild!;
+      container.remove();
+      assert.equal(h.api.prune([{ target: nextHost, removedNodes: [container] }]), true);
+      assert.equal(cleanups, 2);
+      h.api.refresh();
+      handle();
+      assert.equal(cleanups, 3);
+      assert.equal(h.api.prune([{ target: h.anchor, removedNodes: [nextHost] }]), false);
+    });
+
+    it("refresh、注销和未投递移除记录的脱离节点都能回收", async () => {
+      const h = await slotRuntime();
+      let renders = 0;
+      let cleanups = 0;
+      const definition = { slot: "composer.below", render: () => { renders++; return () => { cleanups++; }; } };
+      const handle = h.api.register(definition, { id: "same" });
+      handle.refresh();
+      assert.equal(renders, 2);
+      assert.equal(cleanups, 1);
+      h.anchor.remove();
+      handle();
+      assert.equal(cleanups, 2, "注销不等待 MutationObserver 投递");
+      assert.equal(h.api.cleanups.size, 0);
+      h.body.appendChild(h.anchor);
+      h.api.register(definition, { id: "same" });
+      assert.equal(renders, 3, "同 id 注册不能误用已清理版本");
+    });
+
+    it("一个清理抛异常仍继续清理其它项，重入也只运行一次", async () => {
+      const h = await slotRuntime();
+      const calls: string[] = [];
+      let mutations: unknown[];
+      h.api.register({ slot: "composer.below", render: () => () => {
+        calls.push("a");
+        h.api.prune(mutations);
+        throw new Error("cleanup failed");
+      } }, { id: "a" });
+      h.api.register({ slot: "composer.below", render: () => () => { calls.push("b"); } }, { id: "b" });
+      h.anchor.remove();
+      mutations = [{ target: h.body, removedNodes: [h.anchor] }];
+      h.api.prune(mutations);
+      assert.deepEqual(calls, ["a", "b"]);
+      assert.equal(h.failures.length, 1);
+      assert.equal(h.api.cleanups.size, 0);
+    });
+
+    it("重新注入空注册表不撤销旧实例，旧句柄仍能正常注销", async () => {
+      const h = await slotRuntime();
+      let renders = 0;
+      let cleanups = 0;
+      let disconnected = 0;
+      const handle = h.api.register({ slot: "composer.below", render: () => { renders++; return () => { cleanups++; }; } });
+      const container = h.anchor.querySelectorAll("[data-codex-plus-slot-item]")[0];
+      const old = h.api;
+      const oldRegistry = h.registry;
+      old.setObserver({ disconnect: () => { disconnected++; } });
+      old.scheduleMessage();
+      const pendingMessage = [...h.timers.values()][0];
+      h.load({ freshRegistry: true });
+      assert.notEqual(h.registry, oldRegistry);
+      assert.equal(h.registry.slots.size, 0);
+      assert.equal(oldRegistry.slots.size, 1);
+      h.api.refresh();
+      old.refresh();
+      old.scheduleMessage();
+      assert.equal(renders, 1);
+      assert.equal(cleanups, 0);
+      assert.equal(disconnected, 0);
+      assert.deepEqual([...h.timers.values()], [pendingMessage]);
+      assert.equal(old.cleanups.size, 1);
+      assert.equal(container.isConnected, true);
+      assert.equal(container.dataset.slotVersion, "0");
+      handle();
+      assert.equal(oldRegistry.slots.size, 0);
+      assert.equal(cleanups, 1);
+      assert.equal(old.cleanups.size, 0);
+      assert.equal(container.isConnected, false);
+    });
+
+    it("新运行时通过节点撤销旧回调时摘掉原 Map，异常和重入不重复清理", async () => {
+      const h = await slotRuntime();
+      let cleanups = 0;
+      let container: SlotNode;
+      const handle = h.api.register({ slot: "composer.below", render: () => function (this: unknown) {
+        assert.equal(this, undefined, "保持 cleanup 无接收者调用语义");
+        cleanups++;
+        h.api.cleanup(container);
+        throw new Error("cleanup failed");
+      } });
+      container = h.anchor.querySelectorAll("[data-codex-plus-slot-item]")[0];
+      const old = h.api;
+      const callback = container.__codexPlusSlotCleanup!;
+      h.load({ freshRegistry: true });
+      h.api.cleanup(container);
+      callback();
+      assert.equal(cleanups, 1);
+      assert.equal(h.failures.length, 1);
+      assert.equal(old.cleanups.size, 0);
+      assert.equal(container.dataset.slotVersion, undefined);
+      handle();
+      assert.equal(cleanups, 1);
+      assert.equal(container.isConnected, false);
+    });
+
+    it("旧版节点没有挂载记录时不提前撤销，后续移除仍能回收回调", async () => {
+      const h = await slotRuntime();
+      const host = h.anchor.appendChild(new SlotNode());
+      host.setAttribute("data-codex-plus-ui-slot", "composer.below");
+      const container = host.appendChild(new SlotNode());
+      container.setAttribute("data-codex-plus-slot-item", "");
+      container.dataset.slotItemId = "user:slot-test:slot:legacy";
+      container.dataset.slotVersion = "0";
+      let cleanups = 0;
+      container.__codexPlusSlotCleanup = () => { cleanups++; };
+      h.load({ freshRegistry: true });
+      h.api.refresh();
+      assert.equal(cleanups, 0);
+      assert.equal(host.isConnected, true);
+      let renders = 0;
+      h.api.register({ slot: "composer.below", render: () => { renders++; } }, { id: "legacy" });
+      assert.equal(renders, 0, "已发布节点版本不变时沿用原有渲染");
+      host.remove();
+      h.api.prune([{ target: h.anchor, removedNodes: [host] }]);
+      assert.equal(cleanups, 1);
+      assert.equal(container.__codexPlusSlotCleanup, null);
+      assert.equal(container.dataset.slotVersion, undefined);
+      h.api.prune([{ target: h.anchor, removedNodes: [host] }]);
+      assert.equal(cleanups, 1);
+    });
+  });
+
   it("服务：inject 的拓展等依赖齐全才应用，提供者卸载即卸载、换提供者后重新应用", async () => {
     const k = await kernel();
     const seen: string[] = [];
@@ -4149,7 +4458,7 @@ describe("拓展运行时内核", () => {
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
     const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
     const ctx = k.create(() => {});
-    // 测试环境的语言是 Node 的 navigator.language（en-US）：zh 词条不会被选中。
+    // 测试页面固定为 en-US，不依赖宿主 Node 的系统语言。
     assert.match(ctx.locale.current, /^en/);
     assert.equal(ctx.locale.t("hi", { name: "Ada" }), "Hello Ada", "包内 locale 登记在拓展 id 命名空间");
     assert.equal(ctx.locale.t("meta.title"), "Greeter", "点号路径取嵌套词条");
@@ -4591,5 +4900,91 @@ describe("拓展输入触发、快捷键与主题", () => {
     assert.throws(() => api.themes.apply("missing"), /没有主题/);
     api.themes.apply(null);
     assert.equal(styles.has("codex-plus-extension-theme"), false);
+  });
+});
+
+describe("拓展桥只读轮询合并", () => {
+  // 拓展面板普遍用 setInterval 轮询只读接口，同一 payload 会在几百毫秒内重复打到桥上。
+  // 这里守住合并窗口：窗口内同参只发一次、失败不缓存、不在表里的路由行为不变。
+  type BridgeCall = { route: string; payload: Record<string, unknown> };
+
+  async function harness() {
+    const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
+    const api = await readFile(new URL("91-extension-api.js", fragmentDir), "utf8");
+    const start = api.indexOf("  const codexPlusExtensionRoutes = new Set([");
+    const onceAt = api.indexOf("  function codexPlusExtensionCallOnce(");
+    assert.ok(start >= 0 && onceAt > start, "找不到拓展桥实现");
+    const tailAt = api.indexOf("\n  /**", onceAt);
+    const end = tailAt > onceAt ? tailAt : api.length;
+    const calls: BridgeCall[] = [];
+    let failNext = false;
+    const fakeWindow = {
+      __codexSessionDeleteBridge: (route: string, payload: Record<string, unknown>) => {
+        calls.push({ route, payload });
+        if (failNext) {
+          failNext = false;
+          return Promise.reject(new Error("bridge-boom"));
+        }
+        return Promise.resolve({ status: "ok", seq: calls.length });
+      },
+    };
+    const factory = new Function(
+      "window",
+      `${api.slice(start, end)}
+return { call: codexPlusExtensionCall, routes: codexPlusExtensionRoutes };`,
+    ) as (window: unknown) => {
+      call: (route: string, payload?: Record<string, unknown>) => Promise<unknown>;
+      routes: Set<string>;
+    };
+    const built = factory(fakeWindow);
+    return {
+      call: built.call,
+      routes: built.routes,
+      calls,
+      failNext: () => { failNext = true; },
+    };
+  }
+
+  it("窗口内同参只打一次桥", async () => {
+    const h = await harness();
+    const [first, second] = await Promise.all([
+      h.call("/request-log/recent", { limit: 5 }),
+      h.call("/request-log/recent", { limit: 5 }),
+    ]);
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(first, second);
+  });
+
+  it("参数不同就各打一次", async () => {
+    const h = await harness();
+    await Promise.all([
+      h.call("/request-log/recent", { limit: 5 }),
+      h.call("/request-log/recent", { limit: 9 }),
+    ]);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("失败不留在合并窗口里，下一次真的重试", async () => {
+    const h = await harness();
+    h.failNext();
+    await assert.rejects(h.call("/thread-usage-live", { session: "s1" }), /bridge-boom/);
+    const ok = await h.call("/thread-usage-live", { session: "s1" });
+    assert.deepEqual(ok, { status: "ok", seq: 2 });
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("未登记窗口的只读路由每次照常发", async () => {
+    const h = await harness();
+    await Promise.all([
+      h.call("/diagnostics/log", { event: "a" }),
+      h.call("/diagnostics/log", { event: "a" }),
+    ]);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("白名单外的路由仍然拒绝", async () => {
+    const h = await harness();
+    await assert.rejects(h.call("/settings/set", {}), /未开放的路由/);
+    assert.equal(h.calls.length, 0);
   });
 });

@@ -1,0 +1,890 @@
+/* 页面重排 · agents 组（cx-layout 骨架之外的页面专属样式）。前缀统一 `:root .shell`。 */
+
+/* ── 通用小件 ─────────────────────────────────────────────── */
+
+:root .shell .cx-row-chevron {
+  width: 15px;
+  height: 15px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 卡片外小标题右侧的「全部 ↗」链接。 */
+:root .shell .cx-dash-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:root .shell .cx-dash-link:hover {
+  color: hsl(var(--foreground));
+}
+
+/* ── 概览（AgentDashboard） ────────────────────────────────── */
+
+/* 页面是限高的 flex 列：带 overflow:hidden 的卡片会被压成 0 高，块一律不收缩。 */
+:root .shell .cx-dash > * {
+  flex: none;
+}
+
+:root .shell .cx-dash-status .cx-row-icon .hub-agent-glyph {
+  width: 18px;
+  height: 18px;
+}
+
+:root .shell .cx-dash-status .cx-row-icon i.hub-agent-glyph {
+  background: currentColor;
+}
+
+:root .shell .cx-dash-status .cx-row {
+  min-height: 60px;
+}
+
+:root .shell .cx-dash-status .agent-dash-select {
+  min-width: 160px;
+}
+
+:root .shell .cx-dash-primary {
+  height: 30px;
+}
+
+:root .shell .cx-dash-stat-value {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-dash-stat-value[data-mono="false"] {
+  font-family: inherit;
+}
+
+:root .shell .cx-dash-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+:root .shell .cx-dash-lists[data-single="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:root .shell .cx-dash-lists > .cx-section + .cx-section {
+  margin-top: 0;
+}
+
+:root .shell .cx-dash-list .cx-row {
+  min-height: 48px;
+}
+
+:root .shell .cx-dash-list .cx-row-main {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+:root .shell .cx-dash-list .cx-empty {
+  padding: 22px 16px;
+}
+
+:root .shell .cx-dash-time {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+:root .shell .cx-dash-state {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-dash-state[data-tone="ok"] { color: hsl(var(--status-success)); }
+:root .shell .cx-dash-state[data-tone="err"] { color: hsl(var(--status-error)); }
+
+:root .shell .cx-dash-spin {
+  animation: cx-agents-spin 1s linear infinite;
+}
+
+@keyframes cx-agents-spin {
+  to { transform: rotate(360deg); }
+}
+
+:root .shell .cx-dash-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-dash-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+:root .shell .cx-dash-foot button:hover {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .cx-dash-foot b {
+  color: hsl(var(--foreground));
+  font-weight: 500;
+}
+
+:root .shell .cx-dash-foot code {
+  font-size: 11.5px;
+}
+
+:root .shell .overview-health-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .overview-health-list .cx-row-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+@media (max-width: 860px) {
+  :root .shell .cx-dash-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── 内置增强（EnhanceScreen） ─────────────────────────────── */
+
+:root .shell .cx-enhance-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+:root .shell .cx-enhance-body > * {
+  flex: none;
+}
+
+:root .shell .cx-enhance-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+:root .shell .cx-enhance-pane[hidden] {
+  display: none;
+}
+
+/* 卡片里一行一项：标题 + 小标签、两行内的说明，右侧开关。 */
+:root .shell .cx-feature-card .feature-toggle,
+:root .shell .cx-enhance-master .feature-toggle {
+  gap: 24px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:root .shell .cx-feature-card .feature-toggle:hover,
+:root .shell .cx-enhance-master .feature-toggle:hover {
+  background: hsl(var(--accent) / 0.3);
+}
+
+:root .shell .cx-feature-card .feature-toggle strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+:root .shell .cx-feature-card .feature-toggle small {
+  max-width: 720px;
+  margin-top: 2px;
+  font-size: 12.5px;
+}
+
+:root .shell .cx-feature-card .feature-toggle .cx-badge {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+:root .shell .cx-feature-card > .builtin-card {
+  gap: 0;
+}
+
+:root .shell .cx-feature-card > .builtin-card + .builtin-card {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+/* 打开后的子选项：同一张卡里缩进一级，细线隔开，不再套边框。 */
+:root .shell .cx-feature-card .builtin-card-params {
+  gap: 0;
+  margin: 0 0 6px 14px;
+  padding-left: 12px;
+  border-left: 2px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .cx-feature-card .builtin-card-params > .feature-toggle {
+  padding-block: 9px;
+}
+
+:root .shell .cx-feature-card .builtin-card-params > .app-select,
+:root .shell .cx-feature-card .builtin-card-params > div:first-child:not(.feature-toggle) {
+  margin: 6px 14px 6px 0;
+}
+
+:root .shell .cx-feature-card .builtin-card-note {
+  padding: 0 14px 10px;
+}
+
+:root .shell .cx-feature-card .builtin-card-head.has-settings > .feature-toggle {
+  column-gap: 60px;
+}
+
+:root .shell .cx-feature-card .builtin-card-settings {
+  right: 64px;
+}
+
+/* 总开关：一行，保存状态放在开关左边。 */
+:root .shell .cx-enhance-master .feature-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding-block: 14px;
+}
+
+:root .shell .cx-enhance-master .feature-toggle > .toggle-switch-visual {
+  grid-column: 3;
+}
+
+:root .shell .cx-enhance-save {
+  display: inline-flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .cx-enhance-save > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 语音输入 / 下一步建议两个页签：面板标题与内容之间不再空一大段，开关行与内置拓展同一种行。 */
+:root .shell .enhance-page .enhance-tab-panel > .panel > .panel-head {
+  padding-bottom: 0;
+}
+
+:root .shell .enhance-page .enhance-tab-panel > .panel > .settings-content {
+  padding-top: 0;
+}
+
+:root .shell .enhance-page .enhance-tab-panel .enhance-service-block {
+  margin-top: 4px;
+  padding-top: 0;
+}
+
+:root .shell .enhance-page .enhance-tab-panel .enhance-service-block > .feature-toggle,
+:root .shell .enhance-page .enhance-tab-panel .enhance-service-block > .switch-row {
+  border: 0;
+  border-bottom: 1px solid hsl(var(--cx-row-divider));
+  border-radius: 0;
+  background: transparent;
+  padding-inline: 2px;
+}
+
+/* ── 皮肤管理（DreamSkinScreen） ───────────────────────────── */
+
+:root .shell .dream-skin-page.cx-page {
+  display: flex;
+}
+
+:root .shell .dream-skin-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-enable-switch.switch-row {
+  display: inline-flex;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .dream-skin-page .dream-skin-enable-switch.switch-row:hover {
+  background: transparent;
+}
+
+/* 开关前一个小字「皮肤」，和左边的菜单隔开一道细线。 */
+:root .shell .dream-skin-page .dream-skin-enable-switch {
+  gap: 8px;
+  margin-left: 6px;
+  padding-left: 12px;
+  border-left: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .dream-skin-page .dream-skin-enable-label {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+:root .shell .dream-skin-page .dream-skin-selected-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 0;
+  object-fit: cover;
+}
+
+:root .shell .dream-skin-page .dream-skin-selected-row .cx-row-icon {
+  overflow: hidden;
+}
+
+/* 主题视图胶囊：与页签同一种胶囊，不再套一个分段框。 */
+:root .shell .dream-skin-page .dream-skin-browser-toolbar {
+  margin: 0;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs {
+  display: flex;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs button {
+  display: inline-flex;
+  min-height: 0;
+  font-weight: 450;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs button.is-active {
+  box-shadow: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-view-tabs button > span {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 11.5px;
+}
+
+:root .shell .dream-skin-page .dream-skin-toolbar-button {
+  height: 34px;
+  border-radius: 999px;
+}
+
+/* 主题卡片：无边框的卡片底色，选中用描边，当前运行用绿点标签。 */
+:root .shell .dream-skin-page .dream-skin-theme-list {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  padding: 0;
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-card {
+  border: 1px solid transparent;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-card.is-selected {
+  border-color: hsl(var(--foreground) / 0.45);
+  box-shadow: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-card.is-current::after {
+  border-radius: var(--cx-radius);
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-select {
+  padding: 8px;
+  border-radius: var(--cx-radius);
+}
+
+:root .shell .dream-skin-page .dream-skin-theme-image {
+  border-radius: 8px;
+}
+
+:root .shell .dream-skin-page .dream-skin-market-meta {
+  margin: 0 0 10px;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+/* 自定义主题、诊断与验证：两个同样的折叠卡，默认收起。 */
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold,
+:root .shell .dream-skin-page .dream-skin-customizer {
+  margin: 0;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  box-shadow: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer > summary {
+  min-height: 56px;
+}
+
+/* 没有「有未保存修改」时中间那列是空的，箭头会掉进中间列、比下面的诊断卡靠左；固定放最后一列。 */
+:root .shell .dream-skin-page .dream-skin-customizer > summary::after {
+  grid-column: 3;
+}
+
+/* 诊断折叠与自定义主题共用同一种摘要行（标题 + 说明 + 右侧箭头）。 */
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  gap: 10px;
+  align-items: center;
+  min-height: 56px;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  list-style: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold > summary::after {
+  content: "›";
+  color: hsl(var(--muted-foreground));
+  font-size: 20px;
+  line-height: 1;
+  text-align: center;
+  transform: rotate(90deg);
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold[open] > summary::after {
+  transform: rotate(270deg);
+}
+
+:root .shell .dream-skin-page .dream-skin-diagnostics-fold[open] > .dream-skin-customizer-content {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0 16px;
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer-title > svg {
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer-title strong {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .dream-skin-page .dream-skin-customizer-title small {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+:root .shell .dream-skin-page .dream-skin-fold-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+:root .shell .dream-skin-page .dream-skin-about {
+  margin: 0;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+/* ── 微信连接（WeixinConnectScreen） ───────────────────────── */
+
+:root .shell .weixin-connect-page.cx-page {
+  display: flex;
+  width: min(100%, var(--cx-content));
+  align-items: stretch;
+  margin-inline: auto;
+}
+
+:root .shell .weixin-connect-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .weixin-connect-page .weixin-status-panel {
+  position: static;
+  padding: 0;
+  border: 0;
+}
+
+:root .shell .weixin-connect-page .weixin-status-panel::before {
+  display: none;
+}
+
+:root .shell .weixin-connect-page .weixin-status-panel .cx-row {
+  min-height: 64px;
+}
+
+:root .shell .weixin-status-detail {
+  display: flex;
+  min-width: 0;
+  gap: 4px 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:root .shell .weixin-status-detail > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .weixin-status-detail > span:first-child {
+  flex: 0 1 auto;
+}
+
+:root .shell .weixin-status-detail code {
+  font-size: 11.5px;
+}
+
+:root .shell .weixin-status-detail b {
+  color: hsl(var(--foreground));
+  font-weight: 500;
+}
+
+:root .shell .weixin-autosave .settings-autosave {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+/* 设置卡：SettingRow 行，左标题 + 说明，右控件。 */
+:root .shell .weixin-settings-card {
+  padding: 0 14px;
+}
+
+:root .shell .weixin-settings-card .setting-row {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 380px);
+}
+
+:root .shell .weixin-settings-card .setting-row-control > * {
+  width: 100%;
+}
+
+:root .shell .weixin-settings-card .setting-row-control input {
+  height: 32px;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row > :first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row > button {
+  width: auto;
+  height: auto;
+  flex: none;
+}
+
+:root .shell .weixin-connect-page .weixin-path-row > .cx-icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+/* 模型一行：模型下拉占满，推理强度固定宽度跟在后面，最后是刷新。 */
+:root .shell .weixin-connect-page .weixin-model-row > .weixin-select {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+:root .shell .weixin-connect-page .weixin-model-row > .weixin-effort-select {
+  width: 128px;
+  flex: none;
+}
+
+:root .shell .weixin-connect-page [aria-invalid="true"] .app-select-trigger {
+  border-color: hsl(var(--status-error) / 0.6);
+}
+
+/* 扫码：二维码在左，链接与两个按钮在右。 */
+:root .shell .weixin-qr-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 16px;
+}
+
+:root .shell .weixin-qr-card .weixin-qr-image {
+  width: 180px;
+  flex: none;
+  margin: 0;
+}
+
+:root .shell .weixin-qr-side {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+:root .shell .weixin-qr-side > p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+
+:root .shell .weixin-qr-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 高级：默认收起的一节。 */
+:root .shell .weixin-advanced > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 4px 8px;
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+:root .shell .weixin-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .weixin-advanced > summary::before {
+  content: "›";
+  display: inline-block;
+  color: hsl(var(--muted-foreground));
+  transition: transform 140ms ease;
+}
+
+:root .shell .weixin-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+:root .shell .weixin-advanced > summary small {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .weixin-settings-card .setting-row-control > button {
+  width: auto;
+  margin-left: auto;
+}
+
+/* 开关也是 button：上面的 width: auto 会把它压成只剩圆点（18px），这里还原开关自己的宽度。 */
+:root .shell .weixin-settings-card .setting-row-control > .gw-switch {
+  width: 32px;
+}
+
+/* ── 多开（CodexMultiLaunchScreen） ────────────────────────── */
+
+:root .shell .multi-launch-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .multi-launch-page .multi-launch-instance + .multi-launch-instance,
+:root .shell .multi-launch-page .multi-launch-card + .multi-launch-card {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .multi-launch-page .multi-launch-initial {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground) / 0.85);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+:root .shell .multi-launch-page .cx-row-icon {
+  background: transparent;
+}
+
+:root .shell .multi-launch-page [data-failed="true"] {
+  color: hsl(var(--status-error));
+}
+
+:root .shell .multi-launch-page .multi-launch-hint-icon {
+  width: 14px;
+  height: 14px;
+}
+
+:root .shell .multi-launch-page .relay-profile-list {
+  display: block;
+  gap: 0;
+}
+
+/* ── Claude 增强（ClaudeLocalizationScreen） ───────────────── */
+
+:root .shell .claude-localization-page.cx-page {
+  display: flex;
+  max-width: none;
+  align-items: stretch;
+}
+
+:root .shell .claude-localization-page.cx-page > * {
+  flex: none;
+}
+
+:root .shell .claude-localization-page .claude-l10n-hero {
+  padding: 0;
+  border: 0;
+  background: hsl(var(--card));
+}
+
+:root .shell .claude-localization-page .claude-l10n-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+}
+
+:root .shell .claude-localization-page > .claude-l10n-hint {
+  margin: 0;
+  padding: 0 4px;
+  border: 0;
+}
+
+:root .shell .claude-localization-page .claude-l10n-progress {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+}
+
+:root .shell .claude-localization-page .claude-l10n-progress-pct {
+  color: hsl(var(--foreground));
+}
+
+:root .shell .claude-localization-page .claude-l10n-progress-fill {
+  background: hsl(var(--foreground) / 0.7);
+}
+
+:root .shell .claude-localization-page .claude-l10n-warning {
+  font-weight: 500;
+}
+
+:root .shell .claude-l10n-section-note {
+  overflow: hidden;
+  max-width: 520px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 增强开关：一张卡里一行一项（原来是三列小卡）。 */
+:root .shell .claude-localization-page .claude-l10n-feature-grid {
+  display: block;
+  padding: 0 14px;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row {
+  height: auto;
+  align-items: center;
+  margin: 0;
+  padding: 13px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > * + .switch-row {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row strong {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .switch-row small {
+  display: -webkit-box;
+  max-width: 720px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  margin-top: 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Computer Use 下面那句「二选一」：缩进跟在开关下面，不再单独一块。 */
+:root .shell .claude-localization-page .claude-l10n-feature-grid > .claude-l10n-hint {
+  margin: -6px 0 0;
+  padding: 0 0 12px;
+  border: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:root .shell .claude-localization-page .claude-bash-timeout-editor {
+  margin: 0 0 14px;
+  border: 0;
+  border-left: 2px solid hsl(var(--cx-row-divider));
+  border-radius: 0;
+  background: transparent;
+}
+
+:root .shell .claude-localization-page .claude-bash-timeout-editor .switch-row {
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+}
+
+
+/* 主 Codex 用 Codex 应用图标，不再写「主C」两个字。 */
+:root .shell .multi-launch-page .multi-launch-main-icon {
+  width: 22px;
+  height: 22px;
+  margin: 4px;
+  border-radius: 6px;
+}
+
+/* 微信页顶部的「已自动保存 / 改动会自动保存」平时不显示，只有保存出错（role=alert）时露面，和其它页一致。 */
+:root .shell .weixin-autosave [role="status"] {
+  display: none;
+}

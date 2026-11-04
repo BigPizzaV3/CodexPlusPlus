@@ -48,10 +48,24 @@ test("one queue wave aggregates bounded failure details and exact totals", async
   assert.equal(registry.getFailures(), null);
   registry.enqueueUpdate("seven", "update_skill", async () => registry.recordUpdateOutcome("seven", { success: false, message: "later" }, () => {}));
   await waitForUpdates(registry);
-  assert.deepEqual(registry.getFailures(), { count: 1, details: [{ id: "seven", message: "later" }] });
+  assert.deepEqual(registry.getFailures(), { count: 1, details: [{ repoKey: "", id: "seven", message: "later" }] });
   registry.enqueueUpdate("seven", "update_skill", async () => registry.recordUpdateOutcome("seven", { success: false, message: "new" }, () => {}));
   await waitForUpdates(registry);
-  assert.deepEqual(registry.getFailures(), { count: 2, details: [{ id: "seven", message: "new" }] });
+  assert.deepEqual(registry.getFailures(), { count: 2, details: [{ repoKey: "", id: "seven", message: "new" }] });
+});
+
+test("failures distinguish complete repository and Skill IDs and replace only the matching retry", () => {
+  const registry = new SkillBatchRegistry();
+  const record = (repo: string, id: string, message: string) => registry.recordUpdateOutcome(id, { success: false, message }, () => {}, repo);
+  record("host:a", "b", "first");
+  record("host", "a:b", "second");
+  record("other", "b", "third");
+  record("host:a", "b", "latest");
+  assert.deepEqual(registry.getFailures(), { count: 4, details: [
+    { repoKey: "host:a", id: "b", message: "latest" },
+    { repoKey: "host", id: "a:b", message: "second" },
+    { repoKey: "other", id: "b", message: "third" },
+  ] });
 });
 
 test("a slow update does not block another update or agent work", async () => {
@@ -196,7 +210,7 @@ test("a rejected update releases its slot and reports the complete concurrent wa
     await tick();
     assert.deepEqual([...calls], ["slow", "failed", "other", "next"]);
     await waitForUpdates(registry, 1);
-    assert.deepEqual(registry.getFailures(), { count: 1, details: [{ id: "failed", message: "timeout" }] });
+    assert.deepEqual(registry.getFailures(), { count: 1, details: [{ repoKey: "", id: "failed", message: "timeout" }] });
     assert.deepEqual(reports, []);
   } finally {
     blocked.release();

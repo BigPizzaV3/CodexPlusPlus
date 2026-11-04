@@ -24,7 +24,7 @@ const release = {
   releaseSummary: "### 新增\n- **更新弹窗**", updateAvailable: true, assetName: "update.dmg", assetUrl: "https://example.test/update.dmg",
 };
 
-test("actual update check keeps About data, honors mute, and allows manual prompts", async () => {
+test("actual update check keeps About data, never prompts in the background, and allows manual prompts", async () => {
   const notices: unknown[] = [];
   const updates: unknown[] = [];
   const prompts: unknown[] = [];
@@ -33,20 +33,24 @@ test("actual update check keeps About data, honors mute, and allows manual promp
   const pending = { current: null };
   let response: any = release;
   const check = handler("checkUpdate", {
+    // 后台自动下载另有用例；这里只看检查与提示。
+    downloadUpdateInBackground: () => {},
     updateCheckPending: pending, updateInstallPending: { current: false },
     call: async () => { if (response instanceof Error) throw response; return response; },
     setUpdate: (value: unknown) => updates.push(value), setUpdatePrompt: (value: unknown) => prompts.push(value),
     updateNotifications: { current: notifications }, showNotice: (...args: unknown[]) => notices.push(args),
     t: (value: string) => value, stringifyError: String, ensureUpdatePreferences: async () => {},
   });
+  // 后台检查到新版本不弹窗：只记下结果（侧栏卡片和「版本与更新」据此提示）。
   await check(true);
-  assert.deepEqual(prompts, [release]);
+  assert.deepEqual(prompts, []);
+  assert.equal(updates.length, 1);
   notifications.muteToday();
   await check(true);
-  assert.equal(prompts.length, 1);
+  assert.equal(prompts.length, 0);
   assert.equal(updates.length, 2, "About remains usable while automatic reminders are muted");
   await check(false);
-  assert.equal(prompts.length, 2);
+  assert.equal(prompts.length, 1, "manual checks open the dialog even when muted");
   response = { ...release, status: "failed" };
   await check(true);
   assert.equal(updates.length, 3, "background failures preserve the previous usable release");
@@ -68,6 +72,8 @@ test("a manual check reuses an in-flight background request and overrides today'
   let finish!: (value: unknown) => void;
   const response = new Promise((resolve) => { finish = resolve; });
   const check = handler("checkUpdate", {
+    // 后台自动下载另有用例；这里只看检查与提示。
+    downloadUpdateInBackground: () => {},
     updateCheckPending: { current: null }, updateInstallPending: { current: false },
     call: async () => { requests++; return response; }, setUpdate: () => {},
     setUpdatePrompt: (value: unknown) => prompts.push(value), updateNotifications: { current: notifications },
@@ -90,6 +96,8 @@ test("background checks load saved preferences first, honor auto-check off and s
   let saved = { autoCheck: false, skippedVersion: "" };
   let response: any = release;
   const check = handler("checkUpdate", {
+    // 后台自动下载另有用例；这里只看检查与提示。
+    downloadUpdateInBackground: () => {},
     updateCheckPending: { current: null }, updateInstallPending: { current: false },
     call: async () => { requests++; return response; }, setUpdate: () => {},
     setUpdatePrompt: (value: unknown) => prompts.push(value), updateNotifications: { current: notifications },
@@ -110,13 +118,15 @@ test("background checks load saved preferences first, honor auto-check off and s
   notifications.setPreferences(saved);
   await check(true);
   assert.equal(requests, 2);
-  assert.equal(prompts.length, 1, "a skipped version is not prompted again in the background");
+  assert.equal(prompts.length, 1, "background checks never open the dialog");
+  assert.equal(notifications.shouldRemind(release), false, "a skipped version hides the sidebar reminder");
   assert.equal(notices.length, 0);
   await check(false);
   assert.equal(prompts.length, 2, "manual checks still show the skipped version");
   response = { ...release, latestVersion: "v1.12.0" };
   await check(true);
-  assert.equal(prompts.length, 3, "a newer release than the skipped one prompts again");
+  assert.equal(prompts.length, 2);
+  assert.equal(notifications.shouldRemind(response), true, "a newer release than the skipped one is reminded again");
 });
 
 test("installing the prompted release prevents duplicate downloads and preserves retry data on failure", async () => {
@@ -129,6 +139,7 @@ test("installing the prompted release prevents duplicate downloads and preserves
   const result = new Promise((resolve) => { finish = resolve; });
   let unlistened = 0;
   const install = handler("performUpdate", {
+    releaseOf: handler("releaseOf", {}), updateDownloadPromise: { current: null },
     update: { ...release, latestVersion: "v1.12.0" }, updateInstallPending: pending,
     setUpdateInstallProgress: (state: unknown) => states.push(state), setUpdate: (state: unknown) => updates.push(state),
     t: (value: string) => value, stringifyError: String, showNotice: () => {},
@@ -158,6 +169,7 @@ test("a progress listener failure clears the installation lock and shows the err
   const pending = { current: false };
   const states: any[] = [];
   const install = handler("performUpdate", {
+    releaseOf: handler("releaseOf", {}), updateDownloadPromise: { current: null },
     update: release, updateInstallPending: pending, t: (value: string) => value, stringifyError: String,
     setUpdateInstallProgress: (state: unknown) => states.push(state), showNotice: () => {},
     window: { setTimeout: () => 1, clearTimeout: () => {} },
@@ -167,4 +179,43 @@ test("a progress listener failure clears the installation lock and shows the err
   assert.equal(pending.current, false);
   assert.equal(states.at(-1).failed, true);
   assert.match(states.at(-1).message, /listener unavailable/);
+});
+
+test("有可用更新时自动下载：只下载不安装，下好后标记已下载；关掉开关或已下好时不下载", async () => {
+  const calls: Array<[string, unknown]> = [];
+  const states: unknown[] = [];
+  let updateState: any = release;
+  const download = handler("downloadUpdateInBackground", {
+    releaseOf: handler("releaseOf", {}),
+    settingsRef: { current: { settings: { updateAutoDownload: true } } },
+    updateDownloadPending: { current: null }, updateInstallPending: { current: false }, updateDownloadPromise: { current: null },
+    setUpdateDownload: (value: unknown) => states.push(value),
+    setUpdate: (updater: (current: unknown) => unknown) => { updateState = updater(updateState); },
+    listen: async () => () => {},
+    call: async (command: string, args: unknown) => { calls.push([command, args]); return { status: "ok", message: "", downloaded: true }; },
+    isSuccessStatus: (status: string) => status === "ok", stringifyError: String,
+  });
+  await download(release);
+  // 只调用 download_update，不调用 perform_update（不安装）。
+  assert.deepEqual(calls.map(([command]) => command), ["download_update"]);
+  assert.equal((calls[0][1] as any).release.asset_name, "update.dmg");
+  assert.equal(updateState.downloaded, true);
+  assert.deepEqual(states.at(-1), { version: "v1.11.0", state: "ready", percent: 100 });
+
+  // 后端说已经下好：直接标记，不再下载。
+  calls.length = 0;
+  await download({ ...release, downloaded: true });
+  assert.equal(calls.length, 0);
+
+  // 关掉「有可用更新时自动下载」：不下载。
+  const off = handler("downloadUpdateInBackground", {
+    releaseOf: handler("releaseOf", {}),
+    settingsRef: { current: { settings: { updateAutoDownload: false } } },
+    updateDownloadPending: { current: null }, updateInstallPending: { current: false }, updateDownloadPromise: { current: null },
+    setUpdateDownload: () => {}, setUpdate: () => {}, listen: async () => () => {},
+    call: async (command: string) => { calls.push([command, null]); return { status: "ok" }; },
+    isSuccessStatus: () => true, stringifyError: String,
+  });
+  await off(release);
+  assert.equal(calls.length, 0);
 });

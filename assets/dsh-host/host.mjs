@@ -2638,6 +2638,18 @@ async function renderValue(def, args, value, attachments) {
 
 async function serve(registryPath) {
   const host = new Host()
+  // Codex 每次重连 MCP 都会 spawn 一套新宿主，却不一定关掉旧连接的管道：只靠 stdin 的
+  // close 事件退出会留下孤儿——它一直停在 createInterface 上等数据，什么也不做，白占内存
+  // （实测一天内累积到 45 个进程、2.2 GB，把整台机器的调度都拖重）。
+  // 这里盯住父进程 id：被 init 收养（ppid 变 1）或父进程换了，就当作连接已断，主动收摊。
+  const parentPid = process.ppid
+  const parentWatch = setInterval(() => {
+    if (process.ppid === parentPid && process.ppid > 1) return
+    clearInterval(parentWatch)
+    void host.dispose().catch(() => {}).finally(() => hostExit(0))
+  }, 5000)
+  // 定时器不撑住事件循环：stdio 还连着的时候进程本来就活着。
+  parentWatch.unref?.()
   let registry = { plugins: [] }
   try {
     registry = readJson(registryPath)

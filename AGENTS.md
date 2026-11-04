@@ -99,3 +99,12 @@
 - 默认直接提交并合入 `main`。
 - 仅在用户明确要求时创建 PR。
 - 提交信息、PR 描述里不加 `Co-Authored-By: Claude …` 等 AI 署名；本地 `.git/hooks/commit-msg` 也会自动删掉这一行。
+
+## 发版
+
+- 先在 `CHANGELOG.md` 顶部写好 `## X.Y.Z - YYYY-MM-DD` 一节（这一节原样成为 Release 说明），
+  再跑 `node scripts/release.mjs X.Y.Z`（可先加 `--dry-run` 预览）：改 6 处版本号 → 提交 `release: vX.Y.Z` → 打 tag → 原子推送。
+- 推 `v*` tag 触发 `release-assets.yml`：校验版本号 → 建草稿 Release → 构建 Windows / macOS → 上传 `SHA256SUMS.txt`、`latest.json` → 附件齐了自动发布，只有最新版本才标 Latest。
+- 不要再手动 `gh release create` / 在网页上点发布；网页发布不会触发构建。补跑某个平台用
+  `gh workflow run "Release assets" -f tag=vX.Y.Z -f platform=macos -f publish=true`。
+- 版本号文件清单在 `scripts/release-meta.mjs` 的 `VERSION_FILES`，新增带版本号的文件要登记进去。

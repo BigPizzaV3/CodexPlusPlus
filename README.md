@@ -30,9 +30,9 @@
 
 Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。不想写代码？在 Codex 对话里说一句「把发送按钮改成狗头」，agent 就会写出拓展、热重载并截图确认。
 
-它还内置一个本地网关：Codex、Claude Code、Gemini CLI、OpenCode、Zed 等 50 多个 Agent 共用一份供应商池，按模型名选供应商，Key 冷却或供应商熔断时自动换上游，ChatGPT、GitHub Copilot、Cursor 等订阅也能登录进池。原来的直连模式（官方登录、官方 + API、纯 API、聚合供应商）完整保留，两种模式可以随时切换。
+它还内置一个本地网关：Codex、Claude Code、Gemini CLI、OpenCode、Zed 等 50 多个 Agent 共用一份供应商池，按模型名选供应商，Key 冷却或供应商熔断时自动换上游，ChatGPT、GitHub Copilot、Cursor 等订阅也能登录进池。原来的直连模式（官方登录、官方 + API、纯 API、聚合供应商）完整保留，Codex 在「经网关」和「直连」之间一键切换。
 
-此外还有会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
+此外还有会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。管理器是一个桌面程序的样子：侧栏切 Agent 和页面，顶部页签切分页，齿轮进设置目录；只用 Codex 或只想要增强功能，可以切换使用模式把用不到的页面藏起来。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
 
 ## 交流与支持
 
@@ -177,7 +177,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
     <td valign="top"><strong>🤝 子 Agent 协作</strong><br>在 Codex 对话里委派 DeepSeek、Claude Code，可排队并发。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>💬 会话管理</strong><br>Codex、Claude Code、Grok 的会话放在一起；删除撤销、导出、<a href="docs/turn-rewind.md">轮次回退</a>。</td>
+    <td valign="top"><strong>💬 会话管理</strong><br>Codex、Claude Code、Claude Desktop、Grok 的会话放在一起；删除撤销、导出、<a href="docs/turn-rewind.md">轮次回退</a>。</td>
     <td valign="top"><strong>🧵 Codex 多开</strong><br>每个供应商一个隔离实例。</td>
   </tr>
   <tr>
@@ -195,6 +195,10 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   <tr>
     <td valign="top"><strong>🐳 Agent 桌宠</strong><br>点一下会压扁、带音效，图片随心换。</td>
     <td valign="top"><strong>🧹 缓存清理与皮肤</strong><br>清理 Codex、Claude 缓存；社区主题与自定义图片。</td>
+  </tr>
+  <tr>
+    <td valign="top"><strong>🔁 网关 / 直连一键切换 · 新</strong><br>Codex 的「连接方式」二选一，切换后从 Codex++ 重启生效。</td>
+    <td valign="top"><strong>⬇️ 后台更新 · 新</strong><br>发现新版本先在后台下好安装包，侧栏提示，点「安装」才安装。</td>
   </tr>
 </table>
 
@@ -280,7 +284,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 </p>
 
 <p align="center">
-  <img src="docs/images/readme-preview/request-status-auto-retry.png" alt="请求状态与自动重试：模型繁忙后自动等待、重试成功并继续生成" width="100%">
+  <img src="docs/images/readme-preview/request-status-auto-retry.png" alt="请求状态条：输入框上方显示正在重试第 2 次、模型 gpt-6.1-sol、已用 18 秒、第 3 次尝试，以及上次失败原因 server_is_overloaded" width="100%">
 </p>
 
 ### Computer Use：把 Codex 的桌面控制借给其他 Agent
@@ -299,7 +303,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
     <td width="50%" valign="top"><strong>Claude 增强版</strong><br><img src="docs/images/readme-preview/claude-enhance.webp" alt="Claude 增强版：受管增强版已准备，可开关界面汉化、语音输入与 Computer Use" width="100%"></td>
   </tr>
   <tr>
-    <td valign="top"><strong>会话</strong><br><img src="docs/images/readme-preview/sessions.webp" alt="会话页：Codex、Claude Code、Grok 的本地会话放在一起，可复制与删除" width="100%"></td>
+    <td valign="top"><strong>会话</strong><br><img src="docs/images/readme-preview/sessions.webp" alt="会话页：Codex、Claude Code、Grok 等 Agent 的本地会话放在一起，可复制与删除" width="100%"></td>
     <td valign="top"><strong>AI Agent 缓存清理</strong><br><img src="docs/images/readme-preview/agent-cache.webp" alt="AI Agent 缓存清理：按 Codex、Claude、Codex++ 列出可清理的缓存" width="100%"></td>
   </tr>
 </table>
@@ -329,7 +333,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 ### 模型选择器按供应商分组
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）" width="560">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组：先列出各家供应商和各自的模型数，当前用的那家带标记，点进去再选模型" width="420">
 </p>
 
 ### Codex 里的拓展页
@@ -347,15 +351,15 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   <img src="docs/images/readme-preview/typing-effects.png" alt="Codex 输入框中的彩虹粒子打字特效" width="58%">
 </p>
 
-**Agent 桌宠**：在 Codex 里放一只可拖动的桌宠，点击会压扁并播放音效；图片可从内置图库（Fluent Emoji，运行时联网拉取）挑选，也可填自己的 https 图片地址，音效可导入自定义音频。桌宠类型也可以选「大肥鱼（DeepSeek 鲸鱼）」，即原版用量挂件：余额、价格 / 用量统计、泡泡编辑器与音效。在管理器「Agent 桌宠」页开启，目前支持 Codex，说明见 [Agent 桌宠](docs/agent-pet.md) 与 [大肥鱼](docs/whale-widget.md)。
+**Agent 桌宠**：在 Codex 里放一只可拖动的桌宠，点击会压扁并播放音效；图片可从内置图库（Fluent Emoji，运行时联网拉取）挑选，也可填自己的 https 图片地址，音效可导入自定义音频。桌宠类型也可以选「大肥鱼（DeepSeek 鲸鱼）」，即原版用量挂件：余额、价格 / 用量统计、泡泡编辑器与音效。在「万物皆拓展 → 本地拓展」里桌宠那一行点「设置」开启，目前支持 Codex，说明见 [Agent 桌宠](docs/agent-pet.md) 与 [大肥鱼](docs/whale-widget.md)。
 
 **鲸鱼功能来源与鸣谢：**原始功能、完整界面引擎、鲸鱼角色及内置音效/动图来自 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，本项目将其适配为 Codex++ 内置功能；Codex 桌面版技术路线另参考 [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public)。原始代码与素材声明见随项目保留的 [LICENSE](assets/inject/upstream/whale-widget/LICENSE) 和 [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md)，素材不重新声明为本项目原创。
 
 <details>
   <summary><strong>纯 API Key 如何开启原生 Fast</strong></summary>
 
-1. 打开「Codex → 增强 → 常用增强」，开启增强总开关与「原生 Fast 强制解锁」（默认关闭）。
-2. 直连模式在「Codex → 旧版供应商配置」中为该模型设置「Fast（priority）支持」并保存；网关模式下模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。
+1. 打开「Codex → 内置拓展」，开启顶部的「启用内置拓展」总开关与「原生 Fast 强制解锁」（默认关闭）。
+2. 直连模式在「Codex → 连接与供应商」中为该模型设置「Fast（priority）支持」并保存；网关模式下模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。
 3. 从 Codex++ 重启 Codex，在模型菜单中选择 **⚡ Fast**。
 
 实际可用性与计费由供应商决定。
@@ -375,9 +379,9 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 **3. 接入 Agent**：打开「网关 → Agent 接入」，给要用的 Agent 打开开关并选默认模型。Claude Code、Grok 接入后照常在终端里用。
 
-**4. 启动 Codex**：点 Codex 页右上角的「启动 Codex」或侧栏 Codex 行的 ▶。依赖注入的设置（大部分增强、Fast 解锁等）改完后需从 Codex++ 重启 Codex 才生效。
+**4. 启动 Codex**：点 Codex 页右上角的「启动 Codex」或侧栏 Codex 行的启动按钮。依赖注入的设置（大部分增强、Fast 解锁等）改完后需从 Codex++ 重启 Codex 才生效。
 
-不想用网关？直连模式照旧：在「Codex → 旧版供应商配置」里选供应商后启动即可。完整步骤见官网 [使用教程](https://codexpp.cc/guide.html)。
+不想用网关？直连模式照旧：在「Codex → 连接与供应商」顶部把「连接方式」切到「直连」，选供应商后启动即可。完整步骤见官网 [使用教程](https://codexpp.cc/guide.html)。
 
 <details>
   <summary><strong>从旧版 macOS 升级</strong></summary>
@@ -395,6 +399,8 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 | **直连 · 官方登录 + API** | 保留官方登录与插件入口，模型请求走兼容 API（不消耗官方额度）。 |
 | **直连 · 纯 API** | 自定义 Base URL / Key，无需官方账号。 |
 | **直连 · 聚合供应商** | **故障转移**：多个供应商之间失败切换与轮转。**模型聚合**：带 `cpx-供应商ID/模型名` 前缀的模型固定发往对应成员。 |
+
+Codex 用哪种，在「Codex → 连接与供应商」顶部的「连接方式」里一键切换；直连供应商也能一键加进网关的供应商池。
 
 网关里的模型名有三种写法：
 
@@ -426,7 +432,7 @@ API Key 只保存在本机，界面里只显示打码后的样子；提交反馈
 <details>
   <summary><strong>启动后，为什么没有 Codex++ 菜单？</strong></summary>
 
-确认是在 **Codex++** 界面中点「启动 Codex」打开的官方应用。打开「Codex → 设置」（安装维护在设置页下方）与「关于」页面，检查应用路径、启动状态和诊断日志。macOS 上也可以在「Codex → 设置」里打开「自动接管官方 App」，自己双击启动官方 App 时由 Codex++ 接管。
+增强脚本只挂载到从 **Codex++** 启动的官方应用上。自己从程序坞或开始菜单打开的 Codex，侧栏 Codex 行会提示「未挂载」，这时它的按钮变成「重启并挂载」，点一下即可。仍然没有时，到「设置 → Codex」（含安装维护）和「设置 → 日志与诊断」检查应用路径、启动状态和诊断日志。macOS 上也可以在「设置 → Codex」里打开「自动接管官方 App」，自己双击启动官方 App 时由 Codex++ 接管。
 
 </details>
 
@@ -440,14 +446,14 @@ API Key 只保存在本机，界面里只显示打码后的样子；提交反馈
 <details>
   <summary><strong>退出 Codex++ 后，Agent 为什么连不上？</strong></summary>
 
-接入网关的 Agent 一直指着本机网关，网关只在 Codex++ 运行时可用，再打开 Codex++ 就恢复。想在退出后用回直连，可在「网关设置」里打开「退出 Codex++ 时恢复直连」（默认关闭）；安装更新前总会先切回直连。
+接入网关的 Agent 一直指着本机网关，网关只在 Codex++ 运行时可用，再打开 Codex++ 就恢复。想在退出后用回直连，可在「设置 → 网关」里打开「退出 Codex++ 时恢复直连」（默认关闭）；安装更新前总会先切回直连。
 
 </details>
 
 <details>
   <summary><strong>Computer Use 接入后，客户端里为什么没有工具？</strong></summary>
 
-接入后需要重启对应客户端才会加载工具；Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。仍然没有时，在「Computer Use」页的「配置路径与自定义目录」里核对客户端实际读取的配置目录，必要时登记自定义路径；并确认已在系统设置里给 ChatGPT 授予辅助功能与屏幕录制权限。
+接入后需要重启对应客户端才会加载工具；Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。仍然没有时，在「Computer Use」页的「高级」卡里核对客户端实际读取的配置目录，必要时登记自定义路径；并确认已在系统设置里给 ChatGPT 授予辅助功能与屏幕录制权限。
 
 </details>
 

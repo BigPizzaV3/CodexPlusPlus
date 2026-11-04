@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { t, tf } from "./i18n";
 import { ModelList, Floating, ownCurrent } from "./GatewayAgents";
+import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import {
   glanceAgents,
   agentModels,
@@ -54,6 +55,7 @@ import {
   type GatewayPayload,
   type GatewayResult,
   type ProviderBalance,
+  type PickerItem,
   type UsageSummary,
   maskAccountName,
   visibleOwnModels,
@@ -729,8 +731,10 @@ function GatewayTab({
       const result = await invoke<GatewayResult>(command, args);
       if (result.gateway && Array.isArray(result.pool)) onPayload(result as GatewayPayload);
       setMessage(result.status === "ok" ? "" : result.message);
+      return result.status === "ok";
     } catch (error) {
       setMessage(String(error));
+      return false;
     }
   };
 
@@ -882,9 +886,10 @@ function PanelAgentRow({
 }: {
   agent: GatewayAgentView;
   payload: GatewayPayload | null;
-  onRun: (command: string, args: Record<string, unknown>) => Promise<void>;
+  onRun: (command: string, args: Record<string, unknown>) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState<PickerItem | "disconnect" | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
@@ -897,7 +902,7 @@ function PanelAgentRow({
       data-active={!agent.enabled && !own}
       onClick={() => {
         setOpen(false);
-        if (agent.enabled) void onRun("disable_gateway_binding", { agent: agent.agent });
+        if (agent.enabled || agent.requiresDisconnectPreview) setDisconnectTarget("disconnect");
       }}
       title={tf("{0} 自带的默认值", [agent.name])}
       type="button"
@@ -927,7 +932,8 @@ function PanelAgentRow({
           }}
           onPickOwn={(item) => {
             setOpen(false);
-            void onRun("use_gateway_own_model", { agent: agent.agent, model: item.model });
+            if (agent.enabled || agent.requiresDisconnectPreview) setDisconnectTarget(item);
+            else void onRun("use_gateway_own_model", { agent: agent.agent, model: item.model });
           }}
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
@@ -935,6 +941,18 @@ function PanelAgentRow({
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
         />
       </Floating>
+      {disconnectTarget ? (
+        <AgentDisconnectDialog
+          agent={agent}
+          busy={false}
+          onApply={(previewToken) => disconnectTarget === "disconnect"
+            ? onRun("disable_gateway_binding", { agent: agent.agent, previewToken })
+            : onRun("use_gateway_own_model", { agent: agent.agent, model: disconnectTarget.model, previewToken })}
+          onFullSwitch={(previewToken) => onRun("disable_gateway_binding_full_switch", { agent: agent.agent, previewToken })}
+          onClose={() => setDisconnectTarget(null)}
+          ownModel={disconnectTarget === "disconnect" ? null : disconnectTarget}
+        />
+      ) : null}
     </div>
   );
 }

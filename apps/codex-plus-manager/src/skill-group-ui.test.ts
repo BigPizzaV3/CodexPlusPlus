@@ -80,7 +80,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillBatchRegistry: registry,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
-  for (const name of ["Header", "Button", "SearchField", "AgentColumn", "MatrixCell", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
+  for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
@@ -90,7 +90,8 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     result.push(node);
     if (node.type === "SortableSkillGroup") collect(node.children[0]("handle"), result);
     else node.children?.forEach((item: any) => collect(item, result));
-    if (node.props?.actions) collect(node.props.actions, result);
+    // 骨架组件把一部分内容放在属性里：页面操作、筛选条尾部按钮、行标题旁的小标签与说明。
+    for (const key of ["actions", "trailing", "badges", "detail"]) if (node.props?.[key]) collect(node.props[key], result);
   };
   const render = () => {
     cursor = 0; elements = []; effects.length = 0;
@@ -106,14 +107,14 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const groupHead = (key: string) => {
     const children: Element[] = [];
     collect(group(key).children[0]("handle"), children);
-    const button = children.find((node) => node.type === "button" && node.props.className === "mg-group-head");
+    const button = children.find((node) => node.type === "button" && node.props.className === "cx-skill-group-toggle");
     assert.ok(button);
     return button;
   };
   const groupButton = (key: string, text: string) => {
     const children: Element[] = [];
     collect(group(key).children[0]("handle"), children);
-    const button = children.find((node) => node.type === "Button" && node.children.includes(text));
+    const button = children.find((node) => node.type === "MenuItem" && node.children.includes(text));
     assert.ok(button);
     return button;
   };
@@ -129,7 +130,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     if (!head.props["aria-expanded"]) { head.props.onClick(); render(); }
     const children: Element[] = [];
     collect(group(groupKey).children[0]("handle"), children);
-    const row = children.find((node) => node.type === "div" && node.props.className === "mg-matrix-row" && node.props.key === skillIdentityKey({ repoKey, id }));
+    const row = children.find((node) => node.type === "CxRow" && node.props.className === "cx-skill-row" && node.props.key === skillIdentityKey({ repoKey, id }));
     assert.ok(row);
     const result: Element[] = [];
     collect(row, result);
@@ -137,17 +138,22 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   };
   const sort = () => find((node) => node.type === "button" && String(node.props["aria-label"] || "").startsWith("按名称排序"));
   const order = () => elements.filter((node) => node.type === "SortableSkillGroup").map((node) => node.props.group.key);
-  const selectTab = (name: string) => { find((node) => node.type === "button" && node.children.includes(name)).props.onClick(); render(); };
+  // 「已安装 / 发现」是一排筛选胶囊（CxFilters）。
+  const filters = () => find((node) => node.type === "CxFilters");
+  const tabId = (name: string) => filters().props.items.find((item: { id: string; label: string }) => item.label === name).id;
+  const selectTab = (name: string) => { filters().props.onChange(tabId(name)); render(); };
+  const activeTab = (name: string) => filters().props.value === tabId(name);
+  const search = (value: string) => { find((node) => node.type === "CxToolbar").props.onQuery(value); render(); };
   const drag = (from: string, to: string) => { find((node) => node.type === "DndContext").props.onDragEnd({ active: { id: from }, over: { id: to } }); render(); };
   const savedState = () => JSON.parse(storage.get("codex-plus-plus.skill-groups.v1")!);
   const unmount = () => { for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
-  return { render, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, drag, savedState, prompts, storage, server, registry, calls, requests, notices, hooks };
+  return { render, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, calls, requests, notices, hooks };
 }
 
 test("installed groups default closed and preserve interactions as new groups load", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
   ui.render();
-  assert.equal(ui.find((node) => node.type === "button" && node.children.includes("已安装")).props["data-active"], true);
+  assert.equal(ui.activeTab("已安装"), true);
   assert.equal(ui.groupHead("custom:Manual").props["aria-expanded"], false);
   ui.groupHead("custom:Manual").props.onClick(); ui.render();
   await tick(); ui.render();
@@ -165,15 +171,15 @@ test("installed groups default closed and preserve interactions as new groups lo
   assert.equal(ui.groupHead("repo:later/repo").props["aria-expanded"], false);
   ui.find((node) => node.type === "button" && node.props["aria-label"] === "全部折叠").props.onClick(); ui.render();
   assert.equal(ui.groupHead("custom:Renamed").props["aria-expanded"], false);
-  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  ui.search("alpha");
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
-  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  ui.search("");
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
   ui.selectTab("发现"); ui.selectTab("已安装");
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
   const reopened = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"));
   reopened.render(); await tick(); reopened.render();
-  assert.equal(reopened.find((node) => node.type === "button" && node.children.includes("已安装")).props["data-active"], true);
+  assert.equal(reopened.activeTab("已安装"), true);
   assert.equal(reopened.groupHead("custom:Renamed").props["aria-expanded"], false);
 });
 
@@ -184,10 +190,10 @@ test("collapsing search results preserves hidden groups' open and closed states"
   ui.groupHead("custom:Manual").props.onClick(); ui.render();
   ui.groupHead("repo:a/repo").props.onClick(); ui.render();
   assert.equal(ui.groupHead("repo:z/repo").props["aria-expanded"], false);
-  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  ui.search("alpha");
   assert.deepEqual(ui.order(), ["repo:a/repo", "repo:b/repo"]);
   ui.find((node) => node.type === "button" && node.props["aria-label"] === "全部折叠").props.onClick(); ui.render();
-  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  ui.search("");
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
   assert.equal(ui.groupHead("repo:b/repo").props["aria-expanded"], false);
   assert.equal(ui.groupHead("repo:z/repo").props["aria-expanded"], false);
@@ -198,7 +204,7 @@ test("collapsed installed groups support per-agent batch enable and disable", as
   const ui = createHarness();
   ui.server.skills = [skill("alpha", "a/repo@main"), { ...skill("beta", "a/repo@main"), agents: ["claude"] }, skill("zeta", "z/repo@main")];
   ui.render(); await tick(); ui.render();
-  assert.equal(ui.find((node) => node.type === "button" && node.children.includes("已安装")).props["data-active"], true);
+  assert.equal(ui.activeTab("已安装"), true);
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
   ui.hooks.mutation = async (command, args) => {
     assert.equal(command, "set_skill_enabled_for");
@@ -367,7 +373,7 @@ test("batch selection queues other writes and summarizes a large set of failures
   await tick(); ui.render();
   assert.equal(ui.groupSelect("repo:a/repo", "codex").props.busy, true);
   assert.equal(ui.groupSelect("repo:a/repo", "claude").props.busy, false);
-  const importButton = ui.find((node) => node.type === "Button" && node.children.includes("从 cc-switch 导入"));
+  const importButton = ui.find((node) => node.type === "MenuItem" && node.children.includes("从 cc-switch 导入"));
   assert.notEqual(importButton.props.disabled, true);
   importButton.props.onClick();
   await tick();
@@ -391,7 +397,7 @@ test("filtered batch survives page remount and changes only visible Skills", asy
   const ui = createHarness();
   ui.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "a/repo@main")];
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  ui.search("alpha");
   let release!: () => void;
   ui.hooks.mutation = async (command, args) => {
     assert.equal(command, "set_skill_enabled_for");
@@ -412,8 +418,8 @@ test("filtered batch survives page remount and changes only visible Skills", asy
   for (let i = 0; i < 20 && ui.registry.getSnapshot().length; i++) await tick();
   await tick(); reopened.render();
   assert.equal(reopened.groupSelect("repo:a/repo", "codex").props.busy, false);
-  const alpha = reopened.rowElements("repo:a/repo", "a/repo@main", "alpha").find((node) => node.type === "MatrixCell" && node.props.agent === "codex");
-  const beta = reopened.rowElements("repo:a/repo", "a/repo@main", "beta").find((node) => node.type === "MatrixCell" && node.props.agent === "codex");
+  const alpha = reopened.rowElements("repo:a/repo", "a/repo@main", "alpha").find((node) => node.type === "AgentToggle" && node.props.agent === "codex");
+  const beta = reopened.rowElements("repo:a/repo", "a/repo@main", "beta").find((node) => node.type === "AgentToggle" && node.props.agent === "codex");
   assert.equal(alpha?.props.enabled, true);
   assert.equal(beta?.props.enabled, false);
   assert.deepEqual(ui.requests.filter((request) => request.command === "set_skill_enabled_for").map((request) => request.args.id), ["alpha"]);
@@ -498,9 +504,9 @@ test("known repository groups stay empty in installed view after individual move
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   ui.sort().props.onClick(); ui.render();
   assert.ok(ui.savedState().order.includes("repo:a/repo"));
-  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  ui.search("alpha");
   assert.deepEqual(ui.order(), ["custom:Manual"]);
-  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  ui.search("");
   const restored = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"));
   restored.render(); await tick(); restored.render(); restored.selectTab("已安装");
   assert.equal(restored.group("repo:a/repo").props.group.items.length, 0);
@@ -527,11 +533,11 @@ test("configured empty repositories appear in installed view and retain sort and
   assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.repoKey), ["local", "cc-switch"]);
   assert.ok(!ui.order().includes("repo:local") && !ui.order().includes("repo:cc-switch"));
 
-  ui.find((node) => node.type === "SearchField").props.onChange("local-import"); ui.render();
+  ui.search("local-import");
   assert.deepEqual(ui.order(), ["user"]);
   ui.sort().props.onClick(); ui.render();
   assert.deepEqual(ui.savedState().order, ["repo:a/empty", "custom:Manual", "repo:z/empty"]);
-  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  ui.search("");
   ui.drag("repo:z/empty", "repo:a/empty");
   assert.deepEqual(ui.order(), ["builtin", "user", "repo:z/empty", "repo:a/empty", "custom:Manual"]);
   assert.equal(ui.savedState().sortDirection, null);
@@ -558,7 +564,7 @@ test("an empty skill inventory still shows configured repositories", async () =>
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
   assert.deepEqual(ui.order(), ["builtin", "user", "repo:empty/repo"]);
   assert.equal(ui.group("repo:empty/repo").props.group.items.length, 0);
-  ui.find((node) => node.type === "SearchField").props.onChange("empty"); ui.render();
+  ui.search("empty");
   assert.deepEqual(ui.order(), []);
 });
 
@@ -640,12 +646,12 @@ test("sort, reload and manual drag preserve the full order and pinned groups", a
 test("sorting a filtered list keeps hidden groups and filtered drag is disabled", async () => {
   const ui = createHarness(JSON.stringify({ names: ["middle"], assignments: {} }));
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  ui.find((node) => node.type === "SearchField").props.onChange("alpha"); ui.render();
+  ui.search("alpha");
   assert.deepEqual(ui.order(), ["repo:a/repo"]);
   assert.equal(ui.group("repo:a/repo").props.disabled, true);
   ui.sort().props.onClick(); ui.render();
   assert.deepEqual(ui.savedState().order, ["repo:a/repo", "custom:middle", "repo:z/repo"]);
-  ui.find((node) => node.type === "SearchField").props.onChange(""); ui.render();
+  ui.search("");
   assert.deepEqual(ui.order(), ["builtin", "user", "repo:a/repo", "custom:middle", "repo:z/repo"]);
 });
 

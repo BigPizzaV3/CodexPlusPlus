@@ -429,8 +429,13 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             };
             // 组的推理档位取第一个成员的；Fast 要每个成员都支持才开（#2740）：
             // 请求轮到不支持的那家会被拒。成员一个都对不上时退回按组名生成的通用条目。
+            let members = route::model_entry_members(gateway, binding, &model);
+            // 组里任何一家上游不认 tool_search 时都关掉（#2871）。
+            let group_rejects_search = members
+                .iter()
+                .any(|(relay, _)| crate::relay_config::upstream_rejects_tool_search(relay));
             let mut member_fields = Vec::new();
-            for (relay, upstream) in route::model_entry_members(gateway, binding, &model) {
+            for (relay, upstream) in members {
                 let Some(index) = relays.iter().position(|candidate| candidate.id == relay.id)
                 else {
                     continue;
@@ -474,6 +479,9 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             if codex_favorite(gateway, &relays, &model) {
                 fields.insert("codex_plus_favorite".into(), json!(true));
             }
+            if group_rejects_search {
+                fields.insert("supports_search_tool".into(), json!(false));
+            }
             metadata.insert(model, Value::Object(fields));
             continue;
         }
@@ -512,6 +520,18 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             if codex_favorite(gateway, &relays, &model) {
                 fields.insert("codex_plus_favorite".into(), json!(true));
             }
+            // 自动组任何一家不认 tool_search 都关掉（#2871）。
+            let rejects = relays
+                .iter()
+                .filter(|candidate| {
+                    route::relay_models(*candidate)
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(&upstream))
+                })
+                .any(|candidate| crate::relay_config::upstream_rejects_tool_search(*candidate));
+            if rejects {
+                fields.insert("supports_search_tool".into(), json!(false));
+            }
             metadata.insert(model, Value::Object(fields));
             continue;
         }
@@ -541,6 +561,10 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
         fields.insert("codex_plus_group_id".into(), json!(relay.id));
         if codex_favorite(gateway, &relays, &model) {
             fields.insert("codex_plus_favorite".into(), json!(true));
+        }
+        // 属主上游不认 tool_search 时关掉（#2871）。
+        if crate::relay_config::upstream_rejects_tool_search(relay) {
+            fields.insert("supports_search_tool".into(), json!(false));
         }
         metadata.insert(model, Value::Object(fields));
     }
@@ -1092,20 +1116,35 @@ fn restore_codex_files(
     saved: &CodexLiveStash,
     live: &CodexLiveStash,
 ) -> anyhow::Result<()> {
+    let config = restored_codex_config(saved, live)?;
+    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[0]), config.as_deref())?;
+    let auth = restored_codex_auth(saved, live)?;
+    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[1]), auth.as_deref())?;
+    Ok(())
+}
+
+fn restored_codex_config(
+    saved: &CodexLiveStash,
+    live: &CodexLiveStash,
+) -> anyhow::Result<Option<String>> {
     let config_paths = match &saved.config_changed {
         Some(changed) => changed.iter().map(|key| key.path.clone()).collect(),
         None => {
             legacy_codex_config_paths(saved.config_toml.as_deref(), live.config_toml.as_deref())
         }
     };
-    let config = stash::restore_toml(
+    stash::restore_toml(
         saved.config_toml.as_deref(),
         live.config_toml.as_deref(),
         &config_paths,
     )
-    .context("还原 Codex 的 config.toml 失败")?;
-    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[0]), config.as_deref())?;
+    .context("还原 Codex 的 config.toml 失败")
+}
 
+fn restored_codex_auth(
+    saved: &CodexLiveStash,
+    live: &CodexLiveStash,
+) -> anyhow::Result<Option<String>> {
     let auth_changed = match &saved.auth_changed {
         Some(changed) => changed.clone(),
         // 旧版存档：只认得出网关自己的 token（cpx-gw- 开头），把它们换回接入前的值。
@@ -1125,15 +1164,67 @@ fn restore_codex_files(
             })
             .collect(),
     };
-    let auth = stash::restore_json(
+    stash::restore_json(
         saved.auth_json.as_deref(),
         live.auth_json.as_deref(),
         &auth_changed,
         |key, _, now| stash::value_at(now, &key.path) != key.written.as_ref(),
     )
-    .context("还原 Codex 的 auth.json 失败")?;
-    stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[1]), auth.as_deref())?;
-    Ok(())
+    .context("还原 Codex 的 auth.json 失败")
+}
+
+/// 只计算有实时存档的 Codex 还原结果，不调用会写应用状态、目录和迁移记录的供应商切换。
+/// 借出的登录须由调用方先在隔离副本里收回；没有可精确投影的存档时返回 None。
+pub(crate) fn preview_codex_stashed_restore(
+    ctx: &ApplyContext,
+    binding: &AgentBinding,
+) -> anyhow::Result<Option<Vec<(PathBuf, Option<String>)>>> {
+    let settings = ctx.settings.load()?;
+    let live = capture_codex_live(ctx);
+    if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID
+        || taken_over(ctx, &ToolId::Codex).is_some()
+    {
+        return Ok(Some(vec![(
+            ctx.codex_home.join(CODEX_LIVE_FILES[1]),
+            live.auth_json,
+        )]));
+    }
+    let Some(saved) = stash::load_stash::<CodexLiveStash>(&codex_stash_path(ctx)) else {
+        return Ok(None);
+    };
+    if !settings.relay_profiles_enabled {
+        bail!("Codex 的供应商配置总开关已关闭");
+    }
+    let previous = binding.restore.codex_previous_relay_id.trim();
+    let target = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == previous && profile.id != CODEX_GATEWAY_RELAY_ID)
+        .or_else(|| {
+            settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id != CODEX_GATEWAY_RELAY_ID)
+        })
+        .context("Codex 没有可切回的直连供应商")?;
+    if settings
+        .aggregate_relay_profiles
+        .iter()
+        .any(|profile| profile.id == previous)
+        || target.relay_mode == RelayMode::Aggregate
+    {
+        return Ok(None);
+    }
+    Ok(Some(vec![
+        (
+            ctx.codex_home.join(CODEX_LIVE_FILES[0]),
+            restored_codex_config(&saved, &live)?,
+        ),
+        (
+            ctx.codex_home.join(CODEX_LIVE_FILES[1]),
+            restored_codex_auth(&saved, &live)?,
+        ),
+    ]))
 }
 
 /// 把托管供应商放进直连模式的列表并切过去（已经在用时只刷新它的配置）。
@@ -1147,7 +1238,7 @@ fn write_codex(
 ) -> anyhow::Result<()> {
     let mut settings = ctx.settings.load()?;
     if !settings.relay_profiles_enabled {
-        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：先在 Codex 设置里打开");
+        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：请在 Codex++ 的「供应商列表」里打开「配置切换」");
     }
     // Codex 在 WSL 里运行：网关额外监听 WSL 网卡，地址写成它（#2773）；拿不到时保持回环。
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();
@@ -2170,6 +2261,8 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
     })?;
     if bearer {
         profile.anthropic_auth_header =
@@ -2224,6 +2317,8 @@ pub fn copy_grok_profile(
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
     })?;
     if !windows.is_empty() {
         relay.model_windows = serde_json::to_string(&windows)?;
@@ -2547,6 +2642,12 @@ pub struct ProviderInput {
     /// 转发前移除托管生图工具（#228）；不传表示不改（编辑时保留原来的）。
     #[serde(default)]
     pub strip_image_generation_tool: Option<bool>,
+    /// 转发前移除 Responses 图片 `detail`（#2870）；不传表示不改（编辑时保留原来的）。
+    #[serde(default)]
+    pub strip_responses_image_detail: Option<bool>,
+    /// 不向该上游发送 `tool_search` 托管工具（#2868）；不传表示不改。
+    #[serde(default)]
+    pub disable_tool_search: Option<bool>,
 }
 
 /// 代理地址只接受 http / https / socks5，空串表示不单独走代理。
@@ -2598,6 +2699,8 @@ fn build_relay(input: &ProviderInput) -> anyhow::Result<RelayProfile> {
     )?;
     relay.relay_mode = RelayMode::PureApi;
     relay.strip_image_generation_tool = input.strip_image_generation_tool.unwrap_or(false);
+    relay.strip_responses_image_detail = input.strip_responses_image_detail.unwrap_or(false);
+    relay.disable_tool_search = input.disable_tool_search.unwrap_or(false);
     if keys.len() > 1 {
         relay.api_keys = keys
             .iter()
@@ -2782,6 +2885,14 @@ fn update_provider_in(
     // 没传「移除托管生图工具」时沿用原来的选择。
     if input.strip_image_generation_tool.is_none() {
         relay.strip_image_generation_tool = provider.relay.strip_image_generation_tool;
+    }
+    // 没传「移除图片 detail」时沿用原来的选择。
+    if input.strip_responses_image_detail.is_none() {
+        relay.strip_responses_image_detail = provider.relay.strip_responses_image_detail;
+    }
+    // 没传「不发 tool_search」时沿用原来的选择。
+    if input.disable_tool_search.is_none() {
+        relay.disable_tool_search = provider.relay.disable_tool_search;
     }
     // 地址换到别的站点时丢掉 new-api 访问令牌，免得把它发给新站点（#2793）。
     if newapi_access_origin(&relay) != newapi_access_origin(&provider.relay) {
@@ -3251,8 +3362,29 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
                 .members
                 .retain(|member| route::member_outlives_provider(remaining, id, &member.model));
         }
+        // Agent 绑定里指向它的模型也清掉（#2897）：默认模型、附加模型、分档模型、审批 / 标题模型
+        // 留着 `<id>/…` 会让请求带着这个前缀落到别家上游。清空的单值字段回落到池里的默认。
+        let outlives = |model: &str| {
+            let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+            route::member_outlives_provider(remaining, id, &slug)
+        };
         for binding in gateway.bindings.values_mut() {
             binding.pool_exclude.retain(|excluded| excluded != id);
+            binding.extra_models.retain(|model| outlives(model));
+            let roles = &mut binding.claude_roles;
+            for field in [
+                &mut binding.model,
+                &mut binding.auto_review_model,
+                &mut binding.title_model,
+                &mut roles.opus,
+                &mut roles.sonnet,
+                &mut roles.haiku,
+                &mut roles.subagent,
+            ] {
+                if !outlives(field) {
+                    field.clear();
+                }
+            }
         }
         Ok(())
     })?;
@@ -3468,6 +3600,8 @@ mod tests {
                 model_prices: None,
                 proxy: None,
                 strip_image_generation_tool: None,
+                strip_responses_image_detail: None,
+                disable_tool_search: None,
             },
             "",
             None,
@@ -3512,6 +3646,8 @@ mod tests {
                 model_prices: None,
                 proxy: None,
                 strip_image_generation_tool: None,
+                strip_responses_image_detail: None,
+                disable_tool_search: None,
             },
             "",
             None,

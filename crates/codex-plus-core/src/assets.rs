@@ -151,10 +151,15 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
 const API_QUOTA_GATE_SCRIPT: &str = include_str!("../../../assets/inject/api-quota-gate.js");
-const NATIVE_FAST_UNLOCK_SCRIPT: &str =
-    include_str!("../../../assets/inject/native-fast-unlock.js");
+const NATIVE_FAST_UNLOCK_SCRIPT: &str = concat!(
+    include_str!("../../../assets/inject/native-fast-unlock.js"),
+    "\n",
+    include_str!("../../../assets/inject/native-fast-rspack.js"),
+);
 const NATIVE_PREDICTIONS_SCRIPT: &str =
     include_str!("../../../assets/inject/native-predictions.js");
+pub(crate) const NATIVE_THREAD_GOAL_SCRIPT: &str =
+    include_str!("../../../assets/inject/native-thread-goal.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
     include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
@@ -643,7 +648,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
                 native_predictions_script(),
                 json!(crate::native_predictions::runtime_settings(settings)),
             ),
-            renderer_runtime
+            format!("{}\n{}", NATIVE_THREAD_GOAL_SCRIPT, renderer_runtime)
         ),
         stepwise_runtime,
         dream_skin_target_runtime,

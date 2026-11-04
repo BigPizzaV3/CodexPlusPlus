@@ -17,6 +17,8 @@ use serde_json::{Value, json};
 use crate::managed_mcp::ManagedMcp;
 use crate::user_scripts::{self, ExtensionWrite, UserScriptManager};
 
+mod context;
+
 pub const SERVER_ID: &str = "codex_plus_extensions";
 pub const MCP_FLAG: &str = "--codex-plus-extension-mcp";
 /// 早期接入时写下的条目与启动参数。重新接入时替换掉本工具的旧条目，主程序也继续认旧参数。
@@ -46,7 +48,9 @@ const SCREENSHOT_MAX_WIDTH: f64 = 1400.0;
 const EXTENSION_API_SOURCE: &str =
     include_str!("../../../assets/inject/renderer-inject/91-extension-api.js");
 
-const INSTRUCTIONS: &str = "用户想给 Codex 加功能、改界面、做个小工具，或说「做个插件 / 做个拓展」时，用这些工具在对话里直接做出 Codex++ 拓展（注意：这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管）：先调用 codexpp_extension_guide 读创作指南（只需一次）；要改 Codex 原生界面时先用 codexpp_extension_inspect 查清页面结构，不要猜选择器；再用 codexpp_extension_write 写入，写完用 codexpp_extension_screenshot 截图确认效果，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。改已有拓展前先 codexpp_extension_read。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
+/// Codex 把 MCP 工具折叠成「Deferred tool namespaces」，只给模型看说明的前 ~240 字，
+/// 工具要模型先调 `tool_search` 才加载。所以触发条件、加载方式和「别改仓库源码」必须放在最前面。
+const INSTRUCTIONS: &str = "用户要做或改 Codex++ 拓展（加功能、改界面、做小工具，或说「做个插件 / 做个拓展」）时，一律用本服务的工具在对话里完成；工具还没出现就先用 tool_search 搜 codex_plus_extensions 加载。即使当前工作区就是 CodexPlusPlus 源码仓库，也不要改仓库文件、不要做成内置拓展。第一步调用 codexpp_extension_guide。（这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管。）创作指南只需读一次；要改 Codex 原生界面时先用 codexpp_extension_inspect 查清页面结构，不要猜选择器；再用 codexpp_extension_write 写入，写完用 codexpp_extension_screenshot 截图确认效果，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。同一个对话默认继续修改已关联的拓展，保留已有功能；先 codexpp_extension_read 读取当前代码，read/write 省略 id 即使用本对话关联。只有用户明确说新建另一个拓展才传 newExtension: true；不要因新增需求或遇到错误而自行新建。用户明确要修改另一个已有拓展时，read 传 id 和 select: true 切换本对话目标。关联按工具调用携带的 threadId 隔离并持久保存，不得猜测对话 ID 或借用其他对话的目标。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
 
 /// 服务依赖：拓展目录与 Codex 页面调试端口。端口为空时只写文件、不热重载。
 pub struct ExtensionCreator {
@@ -163,6 +167,7 @@ pub async fn handle_request(creator: &ExtensionCreator, request: Value) -> Optio
                     creator,
                     name,
                     params.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                    params.get("_meta").unwrap_or(&Value::Null),
                 )
                 .await,
             ),
@@ -277,26 +282,28 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "codexpp_extension_guide",
-            "description": "读取 Codex++ 拓展创作指南：拓展能做什么、ctx API、必须遵守的约定、示例，以及可用的后端路由。写拓展前先调用一次。",
+            "description": "读取 Codex++ 拓展创作指南与本对话关联的拓展：ctx API、约定、示例和可用路由。写拓展前先调用一次；后续需求默认继续修改 conversation.extensionId。",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": read_only,
         },
         {
             "name": "codexpp_extension_list",
-            "description": "列出用户已有的 Codex++ 拓展与脚本，含启用状态、加载状态和报错。",
+            "description": "列出用户已有的 Codex++ 拓展与脚本，含启用状态、加载状态、报错和本对话的拓展关联；不切换当前目标。",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
             "annotations": read_only,
         },
         {
             "name": "codexpp_extension_read",
-            "description": "读回一个拓展包的清单与源码，修改已有拓展前使用。",
+            "description": "读回拓展清单与源码，修改前使用。省略 id 读取本对话当前拓展；指定 id 只读参考，不切换目标。用户明确要编辑某个已有拓展时传 id 和 select: true，关联到本对话。",
             "inputSchema": {
                 "type": "object",
-                "properties": {"id": {"type": "string", "description": "拓展 id"}},
-                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string", "description": "拓展 id；省略使用本对话关联"},
+                    "select": {"type": "boolean", "description": "仅在用户明确要求编辑这个已有拓展时设为 true，将 id 关联到本对话；默认 false"}
+                },
                 "additionalProperties": false,
             },
-            "annotations": read_only,
+            "annotations": writes,
         },
         {
             "name": "codexpp_extension_inspect",
@@ -329,12 +336,13 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "codexpp_extension_write",
-            "description": "创建或覆盖一个 Codex++ 拓展包并立刻热重载，返回加载状态与报错。codexpp.json 由本工具根据参数生成；同一 id 重复写入即覆盖，用于迭代修改。",
+            "description": "创建或更新本对话关联的 Codex++ 拓展并热重载。后续需求默认继续更新：省略 id/name/清单字段会沿用原值，先 read 保留原功能。只有用户明确说新建另一个拓展才传 newExtension: true 和未占用的 id。不同对话分别保存目标，不能默认覆盖别的拓展。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "拓展 id：字母、数字、- 和 _，最长 64"},
-                    "name": {"type": "string", "description": "给用户看的名字"},
+                    "id": {"type": "string", "description": "拓展 id：字母、数字、- 和 _，最长 64；首次创建必填，后续省略使用本对话关联"},
+                    "name": {"type": "string", "description": "给用户看的名字；首次创建必填，更新时省略沿用"},
+                    "newExtension": {"type": "boolean", "description": "仅当用户明确要求新建另一个拓展时为 true，必须提供未占用的 id；成功后本对话改为关联新拓展。默认 false"},
                     "description": {"type": "string", "description": "一句话说明拓展做什么"},
                     "version": {"type": "string", "description": "版本号，默认 0.1.0"},
                     "routes": {"type": "array", "items": {"type": "string"}, "description": "拓展需要通过 ctx.call 调用的后端路由，只能从指南列出的可用路由里选；不需要就省略"},
@@ -374,7 +382,7 @@ fn tool_definitions() -> Value {
                         },
                     },
                 },
-                "required": ["id", "name", "files"],
+                "required": ["files"],
                 "additionalProperties": false,
             },
             "annotations": writes,
@@ -392,11 +400,11 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "codexpp_extension_configure",
-            "description": "修改一个拓展包的配置值（只能改清单 config 里声明过的项），只覆盖给出的键，其余保留；保存后热重载。用户说「把 X 改成 Y」且 X 是拓展配置时用它，不必重写代码。secret 项（如 API Key）在清单里显示为 ******，不要让用户把 Key 发进对话，请他们在管理器里填。",
+            "description": "修改本对话拓展的配置值（只能改清单 config 里声明过的项），省略 id 使用当前关联，只覆盖给出的键，其余保留；保存后热重载。用户说「把 X 改成 Y」且 X 是拓展配置时用它，不必重写代码。secret 项（如 API Key）在清单里显示为 ******，不要让用户把 Key 发进对话，请他们在管理器里填。",
             "inputSchema": {
                 "type": "object",
-                "properties": {"id": {"type": "string"}, "values": {"type": "object", "description": "要设置的配置项与值"}},
-                "required": ["id", "values"],
+                "properties": {"id": {"type": "string", "description": "省略使用本对话关联；已有绑定时不能改其他拓展"}, "values": {"type": "object", "description": "要设置的配置项与值"}},
+                "required": ["values"],
                 "additionalProperties": false,
             },
             "annotations": writes,
@@ -554,14 +562,18 @@ struct ScreenshotArguments {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct IdArguments {
-    id: String,
+struct ReadArguments {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    select: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigureArguments {
-    id: String,
+    #[serde(default)]
+    id: Option<String>,
     values: serde_json::Map<String, Value>,
 }
 
@@ -572,13 +584,214 @@ struct EnabledArguments {
     enabled: bool,
 }
 
-async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> anyhow::Result<Value> {
+fn required_thread_id(meta: &Value) -> anyhow::Result<String> {
+    context::thread_id(meta)?.context(
+        "客户端没有提供可信的对话 threadId，无法确认本次修改属于哪个对话，未写入。请使用支持传递 threadId 的 Codex 客户端重新连接拓展工具；不要猜测 ID 或使用当前页面焦点代替。",
+    )
+}
+
+fn conversation_view(thread_id: &str, extension_id: Option<&str>) -> Value {
+    json!({ "threadId": thread_id, "extensionId": extension_id })
+}
+
+fn conversation_status(manager: &UserScriptManager, meta: &Value) -> anyhow::Result<Value> {
+    let Some(thread_id) = context::thread_id(meta)? else {
+        return Ok(Value::Null);
+    };
+    let bindings = context::Bindings::lock(manager)?;
+    Ok(conversation_view(&thread_id, bindings.get(&thread_id)))
+}
+
+fn read_for_conversation(creator: &ExtensionCreator, arguments: Value, meta: &Value) -> anyhow::Result<Value> {
+    let arguments: ReadArguments =
+        serde_json::from_value(arguments).context("codexpp_extension_read 参数无效")?;
+    let thread_id = context::thread_id(meta)?;
+    if arguments.select && thread_id.is_none() {
+        required_thread_id(meta)?;
+    }
+    if arguments.select && arguments.id.is_none() {
+        anyhow::bail!("选择已有拓展时必须提供 id");
+    }
+    // 没有对话身份时仍允许按明确 id 只读参考，但不能建立或借用任何关联。
+    let mut bindings = thread_id.as_ref().map(|_| context::Bindings::lock(&creator.manager)).transpose()?;
+    let current = thread_id.as_deref().and_then(|thread| bindings.as_ref()?.get(thread));
+    let id = arguments.id.as_deref().or(current).context("本对话尚未关联拓展，请提供要读取的 id")?;
+    let mut result = creator.manager.read_extension_package(id)?;
+    let id = id.to_owned();
+    if arguments.select {
+        if result.pointer("/manifest/id").and_then(Value::as_str) != Some(&id) {
+            anyhow::bail!("拓展清单 id 与目录不一致，未建立关联");
+        }
+        bindings.as_mut().unwrap().bind(thread_id.as_deref().unwrap(), &id)?;
+    }
+    result["conversation"] = match thread_id {
+        Some(thread) => conversation_view(&thread, bindings.as_ref().and_then(|bindings| bindings.get(&thread))),
+        None => Value::Null,
+    };
+    Ok(result)
+}
+
+fn prepare_conversation_write(
+    manager: &UserScriptManager,
+    bindings: &context::Bindings,
+    thread_id: &str,
+    arguments: Value,
+) -> anyhow::Result<WriteArguments> {
+    #[derive(Deserialize)]
+    struct Selection {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default, rename = "newExtension")]
+        new_extension: bool,
+    }
+    let selection: Selection = serde_json::from_value(arguments.clone()).context("codexpp_extension_write 参数无效")?;
+    let mut arguments = arguments.as_object().cloned().context("codexpp_extension_write 参数必须是对象")?;
+    arguments.remove("newExtension");
+    let current = bindings.get(thread_id);
+    let updating = current.is_some() && !selection.new_extension;
+    let id = if updating {
+        let current = current.unwrap();
+        if selection.id.as_deref().is_some_and(|id| id != current) {
+            anyhow::bail!("本对话已关联拓展 {current}，默认只能继续修改它。仅当用户明确要求新建另一个拓展时传 newExtension: true；明确要编辑已有拓展时先 read(id, select: true)。");
+        }
+        if !manager.has_extension_package(current) {
+            anyhow::bail!("本对话关联的拓展 {current} 已不存在，未自动重新创建。请恢复该拓展，或按用户明确要求新建/选择拓展。");
+        }
+        current.to_owned()
+    } else {
+        let id = selection.id.context("首次创建或明确新建拓展时必须提供 id 和 name")?;
+        user_scripts::validate_extension_id(&id)?;
+        match std::fs::symlink_metadata(manager.user_dir().join(&id)) {
+            Ok(_) => anyhow::bail!("拓展 id {id} 已被占用，未覆盖。用户明确要修改它时先 read(id, select: true)；新建请使用未占用的 id。"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("无法检查拓展目录"),
+        }
+        id
+    };
+    if updating {
+        let existing = manager.read_extension_package(&id)?;
+        let manifest = existing["manifest"].as_object().context("当前拓展清单损坏，未覆盖")?;
+        if manifest.get("id").and_then(Value::as_str) != Some(&id) {
+            anyhow::bail!("当前拓展清单 id 与关联不一致，未覆盖");
+        }
+        // 更新只继承省略的声明；显式传值仍可替换。源码由 agent 读回后在原功能上修改。
+        for key in [
+            "name", "description", "version", "renderer", "hooks", "gateway", "tools", "config",
+            "backend", "toolPipeline", "providers", "skills", "agents", "mcpServers", "instructions",
+            "schedules", "prompts", "resources", "manager", "preload", "launch", "replaces", "instances", "dsh",
+        ] {
+            if !arguments.contains_key(key) {
+                if let Some(value) = manifest.get(key) {
+                    arguments.insert(key.to_owned(), value.clone());
+                }
+            }
+        }
+        if !arguments.contains_key("routes") {
+            if let Some(routes) = existing.pointer("/manifest/permissions/routes") {
+                arguments.insert("routes".into(), routes.clone());
+            }
+        }
+    }
+    arguments.insert("id".into(), json!(id));
+    serde_json::from_value(Value::Object(arguments)).context("codexpp_extension_write 参数无效")
+}
+
+fn write_for_conversation(creator: &ExtensionCreator, arguments: Value, meta: &Value) -> anyhow::Result<(String, Value, Value)> {
+    let thread_id = required_thread_id(meta)?;
+    // 目标解析、写包和保存关联在同一把跨进程锁内；异步热重载前释放。
+    let mut bindings = context::Bindings::lock(&creator.manager)?;
+    let arguments = prepare_conversation_write(&creator.manager, &bindings, &thread_id, arguments)?;
+    let mut files = BTreeMap::new();
+    let mut assets = BTreeMap::new();
+    let mut copied_text = std::collections::BTreeSet::new();
+    for file in arguments.files {
+        let duplicate = match (file.content, file.source_path) {
+            (Some(content), None) => files.insert(file.path.clone(), content).is_some(),
+            (None, Some(source)) if user_scripts::extension_asset_mime(&file.path).is_some() => {
+                assets.insert(file.path.clone(), std::path::PathBuf::from(source)).is_some()
+            }
+            (None, Some(source)) => {
+                let text = read_copied_text(&file.path, &source)?;
+                copied_text.insert(file.path.clone());
+                files.insert(file.path.clone(), text).is_some()
+            }
+            _ => anyhow::bail!("文件 {} 要给 content（文本）或 sourcePath（本机文件）其中之一", file.path),
+        };
+        if duplicate || (files.contains_key(&file.path) && assets.contains_key(&file.path)) {
+            anyhow::bail!("文件 {} 重复出现", file.path);
+        }
+    }
+    let written = creator.manager.write_extension_package(&ExtensionWrite {
+        id: arguments.id.clone(),
+        name: arguments.name,
+        version: arguments.version,
+        description: arguments.description,
+        routes: arguments.routes,
+        renderer: arguments.renderer,
+        hooks: arguments.hooks,
+        gateway: arguments.gateway,
+        tools: arguments.tools,
+        config: arguments.config,
+        backend: arguments.backend,
+        tool_pipeline: arguments.tool_pipeline,
+        providers: arguments.providers,
+        extra: [
+            ("skills", arguments.skills),
+            ("agents", arguments.agents),
+            ("mcpServers", arguments.mcp_servers),
+            ("instructions", arguments.instructions),
+            ("schedules", arguments.schedules),
+            ("prompts", arguments.prompts),
+            ("resources", arguments.resources),
+            ("manager", arguments.manager),
+            ("preload", arguments.preload),
+            ("launch", arguments.launch),
+            ("replaces", arguments.replaces),
+            ("instances", arguments.instances),
+            ("dsh", arguments.dsh),
+        ]
+            .into_iter()
+            .filter_map(|(key, item)| item.map(|item| (key.to_string(), item)))
+            .collect(),
+        files,
+        assets,
+        copied_text,
+        max_file_bytes: None,
+    })?;
+    bindings.bind(&thread_id, &arguments.id)?;
+    let conversation = conversation_view(&thread_id, Some(&arguments.id));
+    Ok((arguments.id, written, conversation))
+}
+
+fn configure_for_conversation(creator: &ExtensionCreator, arguments: Value, meta: &Value) -> anyhow::Result<(String, Value, Value)> {
+    let arguments: ConfigureArguments =
+        serde_json::from_value(arguments).context("codexpp_extension_configure 参数无效")?;
+    let thread_id = required_thread_id(meta)?;
+    let mut bindings = context::Bindings::lock(&creator.manager)?;
+    let current = bindings.get(&thread_id);
+    if let (Some(current), Some(requested)) = (current, arguments.id.as_deref()) {
+        if current != requested {
+            anyhow::bail!("本对话已关联拓展 {current}，未修改 {requested} 的配置。用户明确要切换目标时先 read(id, select: true)。");
+        }
+    }
+    let id = arguments.id.as_deref().or(current).context("本对话尚未关联拓展，请先选择要配置的拓展")?.to_owned();
+    if !creator.manager.has_extension_package(&id) {
+        anyhow::bail!("没有 id 为 {id} 的用户拓展包");
+    }
+    let key = user_scripts::extension_package_key(&id);
+    let config = creator.manager.update_extension_config(&key, &arguments.values)?;
+    bindings.bind(&thread_id, &id)?;
+    Ok((key, config, conversation_view(&thread_id, Some(&id))))
+}
+
+async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value, meta: &Value) -> anyhow::Result<Value> {
     match name {
         "codexpp_extension_guide" => Ok(json!({
             "guide": GUIDE,
             "apiVersion": user_scripts::EXTENSION_API_VERSION,
             "availableRoutes": extension_routes(),
             "extensionsDirectory": creator.manager.user_dir().to_string_lossy(),
+            "conversation": conversation_status(&creator.manager, meta)?,
         })),
         "codexpp_extension_list" => {
             let live = live_status(&creator.debug_ports).await.map(|(_, status)| status);
@@ -587,79 +800,16 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
                 "extensionsDirectory": creator.manager.user_dir().to_string_lossy(),
                 "codexConnected": live.is_some(),
                 "items": summarize_items(&inventory, None),
+                "conversation": conversation_status(&creator.manager, meta)?,
             }))
         }
-        "codexpp_extension_read" => {
-            let arguments: IdArguments =
-                serde_json::from_value(arguments).context("codexpp_extension_read 参数无效")?;
-            creator.manager.read_extension_package(&arguments.id)
-        }
+        "codexpp_extension_read" => read_for_conversation(creator, arguments, meta),
         "codexpp_extension_write" => {
-            let arguments: WriteArguments =
-                serde_json::from_value(arguments).context("codexpp_extension_write 参数无效")?;
-            let mut files = BTreeMap::new();
-            let mut assets = BTreeMap::new();
-            let mut copied_text = std::collections::BTreeSet::new();
-            for file in arguments.files {
-                let duplicate = match (file.content, file.source_path) {
-                    (Some(content), None) => files.insert(file.path.clone(), content).is_some(),
-                    // 图片、音频、字体：按字节复制成资源。
-                    (None, Some(source)) if user_scripts::extension_asset_mime(&file.path).is_some() => {
-                        assets.insert(file.path.clone(), std::path::PathBuf::from(source)).is_some()
-                    }
-                    // 其余按文本复制（打包产物等）：不经模型逐字转写，上限放宽。
-                    (None, Some(source)) => {
-                        let text = read_copied_text(&file.path, &source)?;
-                        copied_text.insert(file.path.clone());
-                        files.insert(file.path.clone(), text).is_some()
-                    }
-                    _ => anyhow::bail!("文件 {} 要给 content（文本）或 sourcePath（本机文件）其中之一", file.path),
-                };
-                if duplicate || (files.contains_key(&file.path) && assets.contains_key(&file.path)) {
-                    anyhow::bail!("文件 {} 重复出现", file.path);
-                }
-            }
-            let written = creator.manager.write_extension_package(&ExtensionWrite {
-                id: arguments.id.clone(),
-                name: arguments.name,
-                version: arguments.version,
-                description: arguments.description,
-                routes: arguments.routes,
-                renderer: arguments.renderer,
-                hooks: arguments.hooks,
-                gateway: arguments.gateway,
-                tools: arguments.tools,
-                config: arguments.config,
-                backend: arguments.backend,
-                tool_pipeline: arguments.tool_pipeline,
-                providers: arguments.providers,
-                extra: [
-                    ("skills", arguments.skills),
-                    ("agents", arguments.agents),
-                    ("mcpServers", arguments.mcp_servers),
-                    ("instructions", arguments.instructions),
-                    ("schedules", arguments.schedules),
-                    ("prompts", arguments.prompts),
-                    ("resources", arguments.resources),
-                    ("manager", arguments.manager),
-                    ("preload", arguments.preload),
-                    ("launch", arguments.launch),
-                    ("replaces", arguments.replaces),
-                    ("instances", arguments.instances),
-                    ("dsh", arguments.dsh),
-                ]
-                    .into_iter()
-                    .filter_map(|(key, item)| item.map(|item| (key.to_string(), item)))
-                    .collect(),
-                files,
-                assets,
-                copied_text,
-                // 逐字写的 content 守住默认的单文件上限；复制来的文本另有上限。
-                max_file_bytes: None,
-            })?;
-            let key = user_scripts::extension_package_key(&arguments.id);
+            let (id, written, conversation) = write_for_conversation(creator, arguments, meta)?;
+            let key = user_scripts::extension_package_key(&id);
             let mut result = reload_and_report(creator, &key).await?;
             result["written"] = written;
+            result["conversation"] = conversation;
             Ok(result)
         }
         "codexpp_extension_set_enabled" => {
@@ -674,13 +824,11 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value) -> 
         }
         "codexpp_extension_reload" => reload_and_report(creator, "").await,
         "codexpp_extension_configure" => {
-            let arguments: ConfigureArguments =
-                serde_json::from_value(arguments).context("codexpp_extension_configure 参数无效")?;
-            let key = user_scripts::extension_package_key(&arguments.id);
-            let config = creator.manager.update_extension_config(&key, &arguments.values)?;
+            let (key, config, conversation) = configure_for_conversation(creator, arguments, meta)?;
             let mut result = reload_and_report(creator, &key).await?;
             let schema = result.pointer("/extension/package/configSchema").cloned().unwrap_or(Value::Null);
             result["config"] = user_scripts::mask_secret_config(&schema, &config);
+            result["conversation"] = conversation;
             Ok(result)
         }
         name if name.contains("__") => call_extension_tool(creator, name, arguments).await,

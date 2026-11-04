@@ -180,6 +180,9 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn request_app_server_client_capture(&self) -> anyhow::Result<Value> {
         anyhow::bail!("app-server client capture is unavailable")
     }
+    async fn set_thread_goal_in_owner(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("会话目标转发暂不可用")
+    }
     /// 拉市场清单，并合并本地已安装状态。
     async fn script_market_list(&self) -> anyhow::Result<Value> {
         anyhow::bail!("script market is unavailable")
@@ -266,6 +269,20 @@ pub trait BridgeDataService: Send + Sync {
     async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
     }
+    /// 向本机拓展提供只读用量历史，与状态栏和 Gateway 计费分离。
+    async fn usage_history(&self, _query: Value) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "unavailable",
+            "complete": false,
+            "message": "结构化用量历史服务未接入",
+        }))
+    }
+    /// 独立消费者封存，不是原生账单或归属验证，不参与 usage_history。
+    async fn usage_archive(&self, _request: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","code":"archive-unavailable"}))
+    }
+    /// 关闭查询时释放本进程的只读缓存，默认实现兼容其他数据服务。
+    async fn clear_usage_history(&self) {}
     async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
     }
@@ -369,6 +386,11 @@ pub async fn handle_bridge_request(
         }
         "/settings/set" => {
             let result = ctx.settings.set_settings(payload.clone()).await;
+            if let Ok(settings) = &result
+                && !settings.usage_history_enabled
+            {
+                ctx.data.clear_usage_history().await;
+            }
             // Codex 设置页改了设置：通知管理器重新读取，两边开关保持一致。
             if result.is_ok() {
                 crate::settings::notify_external_settings_change();
@@ -467,6 +489,13 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
+        "/thread-goal/set-in-owner" => Ok(match ctx.settings.get_settings().await {
+            Ok(settings) if settings.enhancements_enabled => thread_goal_result_value(
+                ctx.runtime.set_thread_goal_in_owner(payload.clone()).await,
+            ),
+            Ok(_) => crate::native_thread_goal::GoalForwardError::EnhancementsDisabled.response(),
+            Err(_) => crate::native_thread_goal::GoalForwardError::ForwardFailed.response(),
+        }),
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager(payload.clone()).await,
@@ -527,6 +556,27 @@ pub async fn handle_bridge_request(
                 .thread_usage_live(session_from_payload(&payload))
                 .await
         }
+        "/usage/archive" => match ctx.settings.get_settings().await {
+            Ok(settings) if settings.usage_history_enabled => {
+                ctx.data.usage_archive(payload.clone()).await
+            }
+            _ => Ok(json!({"status":"unavailable","enabled":false})),
+        },
+        "/usage/history" => match ctx.settings.get_settings().await {
+            Ok(settings) if settings.usage_history_enabled => {
+                ctx.data.usage_history(payload.clone()).await
+            }
+            _ => {
+                ctx.data.clear_usage_history().await;
+                Ok(json!({
+                    "status": "unavailable",
+                    "enabled": false,
+                    "complete": false,
+                    "records": [],
+                    "message": "本机用量历史未开启或设置不可用",
+                }))
+            }
+        },
         // 大肥鱼（Agent 桌宠拓展）的数据路由：拓展白名单里开放，但只有启用中的拓展在清单里声明了它才干活。
         // 本机用量统计与余额查询都在 Codex++ 里做，供应商的 Key 不交给页面。
         "/whale/media" if ctx.settings.extension_route_declared(path) => Ok(crate::assets::whale_media()),
@@ -627,6 +677,24 @@ pub async fn handle_bridge_request(
                 .unwrap_or_default()
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
+        }
+        "/thread-resume-model-metadata" => {
+            let request = payload.clone();
+            tokio::task::spawn_blocking(move || {
+                anyhow::ensure!(
+                    request.get("host_id").and_then(Value::as_str) == Some("local")
+                        && request.get("hostId").is_none_or(|host| host.as_str() == Some("local")),
+                    "Thread model metadata is local-only"
+                );
+                let thread_id = request.get("thread_id").and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("Thread ID is required"))?;
+                let snapshot = crate::codex_sqlite::thread_resume_model_metadata(
+                    &crate::codex_home::default_codex_home_dir(), thread_id,
+                )?.ok_or_else(|| anyhow::anyhow!("Saved thread model settings were not found"))?;
+                let mut value = serde_json::to_value(snapshot)?;
+                value["status"] = json!("ok");
+                Ok(value)
+            }).await.unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())))
         }
         "/side-chat/source" | "/side-chat/save" => {
             let request = payload.clone();
@@ -925,6 +993,10 @@ impl BridgeRuntimeService for CoreRuntimeService {
             .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
         let started = crate::bridge::request_app_server_client_capture(websocket_url);
         Ok(json!({ "status": "ok", "started": started }))
+    }
+
+    async fn set_thread_goal_in_owner(&self, payload: Value) -> anyhow::Result<Value> {
+        crate::native_thread_goal::set_in_owner(self.debug_port, payload).await
     }
 
     async fn open_devtools(&self) -> anyhow::Result<Value> {
@@ -1336,10 +1408,19 @@ fn backend_status_value(
 ) -> anyhow::Result<Value> {
     let mut status = status?;
     if let Some(object) = status.as_object_mut() {
+        let settings = settings.ok();
         let hide = settings
-            .map(|settings| crate::assets::hide_official_usage_alert_config(&settings))
+            .as_ref()
+            .map(crate::assets::hide_official_usage_alert_config)
             .unwrap_or(false);
         object.insert("hideOfficialUsageAlert".to_string(), Value::Bool(hide));
+        // 设置快照的版本。前端 5 秒一次的心跳靠它判断设置有没有变：没变就不用再拉一次整份
+        // /settings/get（166 KB 的 JSON，编解码开销全落在渲染进程主线程上）。
+        let revision = settings
+            .as_ref()
+            .map(|settings| settings.settings_revision.clone())
+            .unwrap_or_default();
+        object.insert("settingsRevision".to_string(), Value::from(revision));
     }
     Ok(status)
 }
@@ -1594,6 +1675,14 @@ fn failed_from_error(payload: &Value, error: anyhow::Error) -> Value {
     })
 }
 
+fn thread_goal_result_value(result: anyhow::Result<Value>) -> Value {
+    match result {
+        Ok(value) if value.get("status").and_then(Value::as_str) == Some("ok") => value,
+        Ok(_) => crate::native_thread_goal::GoalForwardError::ForwardFailed.response(),
+        Err(error) => crate::native_thread_goal::failed_response(&error),
+    }
+}
+
 fn session_from_payload(payload: &Value) -> SessionRef {
     let parse_host = |value: &Value| {
         value
@@ -1638,6 +1727,34 @@ fn empty_user_script_inventory() -> Value {
         "enabled": true,
         "scripts": []
     })
+}
+
+#[cfg(test)]
+mod thread_goal_route_tests {
+    use super::*;
+    use crate::native_thread_goal::GoalForwardError;
+
+    #[test]
+    fn goal_route_keeps_only_known_structured_error_codes() {
+        for (error, expected_code) in [
+            (GoalForwardError::OwnerChanged, "goal-owner-changed"),
+            (GoalForwardError::RequestLimit, "goal-request-limit"),
+            (GoalForwardError::RequestIdConflict, "goal-request-id-conflict"),
+            (GoalForwardError::NativeGetterAmbiguous, "goal-native-getter-ambiguous"),
+        ] {
+            let response = thread_goal_result_value(Err(error.into()));
+            assert_eq!(response, json!({
+                "status": "failed", "code": expected_code,
+                "message": "会话所在窗口暂不可用，请稍后重试设置目标"
+            }));
+        }
+        let response = thread_goal_result_value(Err(anyhow::anyhow!(
+            "Runtime.evaluate: secret-token at app://-/private.js"
+        )));
+        assert_eq!(response["code"], "goal-forward-failed");
+        assert!(!response.to_string().contains("secret"));
+        assert!(!response.to_string().contains("app://"));
+    }
 }
 
 #[cfg(test)]

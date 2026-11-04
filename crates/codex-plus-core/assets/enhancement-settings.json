@@ -54,11 +54,20 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "sessionIndexRepairEnabled",
+      "group": "core",
+      "control": "bool",
+      "title": "启动前修复会话索引",
+      "description": "启动前检查会话数据库中缺失的消息投影并补齐；只增不改，不会改写会话归属。运行期间每 30 分钟复查索引。保存设置后生效。",
+      "masterGated": false,
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "providerSyncEnabled",
       "group": "core",
       "control": "bool",
-      "title": "启动前自动修复历史会话",
-      "description": "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。",
+      "title": "切换供应商时同步会话归属",
+      "description": "启动前把历史会话的供应商归属批量改写到当前供应商，让不同供应商名下的会话归入当前列表。只改写归属，不删除会话。保存设置后生效。",
       "masterGated": false,
       "surfaces": ["manager", "codex"]
     },
@@ -118,6 +127,15 @@
       "control": "bool",
       "title": "第三方模型回答完自动折叠过程",
       "description": "给第三方模型的回复补上「最终回答 / 过程」标记，回答完后像官方模型一样把推理和命令过程收起来。只对经过 Codex++ 本地代理或网关的请求生效；个别上游不接受这个标记时请关闭。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
+      "key": "codexAppOfflineAutoReview",
+      "builtin": "offline-auto-review",
+      "group": "plugins",
+      "control": "bool",
+      "title": "拿不到远程开关时补开「替我审批」",
+      "description": "国内网络下 Codex 拉不到 OpenAI 的远程功能开关，权限菜单里的「替我审批」会消失。开启后只在远程开关完全为空时补开这一项，审批请求走当前供应商；能正常拿到远程开关时不做任何改动。关闭后重新启动 Codex 生效。",
       "surfaces": ["manager", "codex"]
     },
     {
@@ -311,7 +329,7 @@
       "group": "standalone",
       "control": "bool",
       "title": "官方额度解锁",
-      "description": "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。",
+      "description": "官方订阅额度耗尽后仍可发送，不区分供应商模式；纯官方登录发出的请求仍可能被官方拒绝。只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。",
       "descriptionWhenEnhancementsOn": "增强开启时此能力已自动生效；此开关只在关闭增强后生效。",
       "masterGated": false,
       "surfaces": ["manager", "codex"],

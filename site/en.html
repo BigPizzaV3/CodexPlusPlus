@@ -47,7 +47,7 @@
       <a href="#faq">FAQ</a>
     </nav>
     <div class="nav-actions">
-      <span class="nav-version mono" data-site-version>v2.1.4</span>
+      <span class="nav-version mono" data-site-version>v2.2.0</span>
       <a class="lang-link" href="index.html" hreflang="zh-CN" lang="zh-CN">中文</a>
       <button class="icon-btn" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
         <svg class="i-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -74,7 +74,7 @@
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download <span data-site-version>v2.1.4</span>
+          Download <span data-site-version>v2.2.0</span>
         </a>
         <a class="btn btn-ghost btn-lg" href="#create">See how to build one</a>
       </div>
@@ -83,24 +83,24 @@
 
     <div class="tour">
       <div class="tour-tabs" role="tablist" aria-label="Manager tour">
-        <button class="tour-tab" role="tab" id="tab-ext" aria-controls="panel-ext" aria-selected="true" data-title="Global management › Extensions" data-cap="Featured, community, local extensions, and dsh plugins on one page: install others' work and manage your own.">Extensions</button>
-        <button class="tour-tab" role="tab" id="tab-hub" aria-controls="panel-hub" aria-selected="false" data-title="Gateway › Overview" data-cap="Who is using it, which provider answers, and whether it is healthy, on one screen.">Overview</button>
-        <button class="tour-tab" role="tab" id="tab-pool" aria-controls="panel-pool" aria-selected="false" data-title="Gateway › Provider pool" data-cap="Add a provider once and every agent can use it; subscriptions show quota, relays show multiplier and balance.">Provider pool</button>
-        <button class="tour-tab" role="tab" id="tab-routing" aria-controls="panel-routing" aria-selected="false" data-title="Gateway › Routing" data-cap="In order, rotate, weighted, quota first, or speed first; models offered by several providers group themselves.">Routing</button>
-        <button class="tour-tab" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="false" data-title="Global management › Usage" data-cap="Cost, tokens, and cache hits broken down by agent, provider, and model.">Usage</button>
-        <button class="tour-tab" role="tab" id="tab-log" aria-controls="panel-log" aria-selected="false" data-title="Global management › Usage › Requests" data-cap="Status, automatic retries, time to first token, tokens, and cost per request, with the reason for every failure.">Request log</button>
+        <button class="tour-tab" role="tab" id="tab-ext" aria-controls="panel-ext" aria-selected="true" data-title="Everything is an extension" data-cap="Featured, community, local extensions, and dsh plugins on one page: install others' work and manage your own.">Extensions</button>
+        <button class="tour-tab" role="tab" id="tab-hub" aria-controls="panel-hub" aria-selected="false" data-title="Aggregate gateway › Overview" data-cap="Who is using it, which provider answers, and whether it is healthy, on one screen.">Overview</button>
+        <button class="tour-tab" role="tab" id="tab-pool" aria-controls="panel-pool" aria-selected="false" data-title="Aggregate gateway › Provider pool" data-cap="Add a provider once and every agent can use it; subscriptions show quota, relays show multiplier and balance.">Provider pool</button>
+        <button class="tour-tab" role="tab" id="tab-routing" aria-controls="panel-routing" aria-selected="false" data-title="Aggregate gateway › Routing" data-cap="In order, rotate, weighted, quota first, or speed first; models offered by several providers group themselves.">Routing</button>
+        <button class="tour-tab" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="false" data-title="Aggregate gateway › Usage" data-cap="Cost, tokens, and cache hits broken down by agent, provider, and model.">Usage</button>
+        <button class="tour-tab" role="tab" id="tab-log" aria-controls="panel-log" aria-selected="false" data-title="Aggregate gateway › Usage › Requests" data-cap="Status, automatic retries, time to first token, tokens, and cost per request, with the reason for every failure.">Request log</button>
         <button class="tour-tab" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="false" data-title="Live demo · sample data" data-cap="The real manager frontend running in your browser. Click around; the data is for demonstration only."><span class="live-dot" aria-hidden="true"></span>Live demo</button>
       </div>
       <div class="window">
-        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span id="tourTitle">Global management › Extensions</span></div>
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span id="tourTitle">Everything is an extension</span></div>
         <div class="tour-stage">
           <div class="tour-panel active" role="tabpanel" id="panel-ext" aria-labelledby="tab-ext"><img src="assets/ext-featured.webp" alt="Extensions page: capability tags, the build-by-chatting entry, and reviewed official and featured extension packages" width="2880" height="1800"></div>
           <div class="tour-panel" role="tabpanel" id="panel-hub" aria-labelledby="tab-hub"><img src="assets/gateway-hub-en.webp" alt="Gateway overview: Codex and Claude Code reach the provider pool through Codex++, with today's calls, cooling keys, and rate limits per provider" loading="lazy" width="2880" height="1800"></div>
           <div class="tour-panel" role="tabpanel" id="panel-pool" aria-labelledby="tab-pool"><img src="assets/gateway-providers-en.webp" alt="Provider pool: ChatGPT subscription, DeepSeek, Kimi, Zhipu GLM, and two relays with quota, multiplier, balance, and rate-limit recovery" loading="lazy" width="2880" height="1200"></div>
           <div class="tour-panel" role="tabpanel" id="panel-routing" aria-labelledby="tab-routing"><img src="assets/gateway-routing-en.webp" alt="Routing: a Main coding group in order and a Budget rotation group, with automatic groups below" loading="lazy" width="2880" height="1800"></div>
           <div class="tour-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage"><img src="assets/usage-stats-en.webp" alt="Usage statistics: estimated cost, tokens, cache hit rate, calls, and a daily bar chart" loading="lazy" width="2880" height="1800"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-log" aria-labelledby="tab-log"><img src="assets/usage-requests-en.webp" alt="Request log: an in-flight request, an automatic retry, a 429 that moved to the next provider, and tokens and cost" loading="lazy" width="2880" height="1520"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live"><iframe title="Codex++ manager live demo (sample data)" data-src="manager-preview/?previewRoute=userScripts&amp;lang=en&amp;v=20261031"></iframe></div>
+          <div class="tour-panel" role="tabpanel" id="panel-log" aria-labelledby="tab-log"><img src="assets/usage-requests-en.webp" alt="Request log: an in-flight request, an automatic retry, a 429 that moved to the next provider, and tokens and cost" loading="lazy" width="2880" height="1720"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live"><iframe title="Codex++ manager live demo (sample data)" data-src="manager-preview/?previewRoute=userScripts&amp;lang=en&amp;v=20261104"></iframe></div>
         </div>
       </div>
       <p class="tour-cap" id="tourCap" aria-live="polite">Featured, community, local extensions, and dsh plugins on one page: install others' work and manage your own.</p>
@@ -404,7 +404,7 @@
       <article class="card reveal">
         <div class="card-body">
           <h3>All sessions together</h3>
-          <p>Local Codex, Claude Code, and Grok sessions in one list to search, delete, and undo.</p>
+          <p>Local Codex, Claude Code, Claude Desktop, and Grok sessions in one list to search, delete, and undo.</p>
         </div>
         <a class="card-shot" href="assets/sessions-en.webp" data-zoom><img src="assets/sessions-en.webp" alt="Sessions: local Codex, Claude Code, and Grok sessions in one list" loading="lazy"></a>
       </article>
@@ -479,12 +479,12 @@
     </div>
     <div class="strip">
       <figure class="shot-card reveal">
-        <a class="shot" href="assets/request-status-auto-retry.png" data-zoom><img src="assets/request-status-auto-retry.png" alt="Request status and automatic retry: the model was busy, Codex++ waited, retried, and generation continued" loading="lazy"></a>
-        <figcaption><b>Request shock absorption</b><span>Back off and retry upstream overloads, with each step visible in the chat.</span></figcaption>
+        <a class="shot" href="assets/request-status-auto-retry.png" data-zoom><img src="assets/request-status-auto-retry.png" alt="Request status bar above the composer: retrying for the 2nd time on gpt-6.1-sol, 18s elapsed, attempt 3, last failure server_is_overloaded" loading="lazy"></a>
+        <figcaption><b>Request shock absorption</b><span>Retries upstream overloads and shows the attempt, elapsed time, and last failure above the composer.</span></figcaption>
       </figure>
       <figure class="shot-card reveal">
-        <a class="shot contain" href="assets/model-picker-groups.png" data-zoom><img src="assets/model-picker-groups.png" alt="Model picker folded by provider groups" loading="lazy"></a>
-        <figcaption><b>Grouped model picker</b><span>Folded by provider, with reasoning levels, Fast, and favorites.</span></figcaption>
+        <a class="shot contain" href="assets/model-picker-groups.png" data-zoom><img src="assets/model-picker-groups.png" alt="Model picker grouped by provider: each provider with its model count, the current one marked; click in to pick a model" loading="lazy"></a>
+        <figcaption><b>Grouped model picker</b><span>Pick a provider first, then its model; the current one is marked.</span></figcaption>
       </figure>
       <figure class="shot-card reveal">
         <a class="shot" href="assets/extension-market.png" data-zoom><img src="assets/extension-market.png" alt="Codex++ extension marketplace: community scripts and workflow tools" loading="lazy"></a>
@@ -500,7 +500,7 @@
     <div class="sec-head reveal">
       <span class="eyebrow">Modes</span>
       <h2>Gateway or direct,<em> switch any time</em></h2>
-      <p>The two modes are independent. Leave the gateway off and Codex++ works just like 1.x.</p>
+      <p>The two modes are independent; Codex switches between them with one click under Connection at the top of Connection &amp; providers. Leave the gateway off and Codex++ works just like 1.x.</p>
     </div>
     <div class="compare">
       <article class="mode featured reveal">
@@ -524,7 +524,7 @@
           <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Chat Completions providers are converted locally to Responses for Codex</li>
           <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Codex multi-launch, model tests, and Provider Doctor</li>
         </ul>
-        <p class="fit"><b>Best for:</b> Codex only, or configs that keep working after Codex++ quits. Pick a provider under Codex → Provider configuration (legacy).</p>
+        <p class="fit"><b>Best for:</b> Codex only, or configs that keep working after Codex++ quits. Pick a provider under Codex → Connection &amp; providers.</p>
       </article>
     </div>
     <div class="window-note reveal">
@@ -559,7 +559,7 @@ your-model<span class="h">[128000]</span></pre>
       </li>
       <li class="step reveal">
         <h3>Launch Codex</h3>
-        <p>Click Launch Codex or the ▶ next to Codex in the sidebar to inject enhancements. Injection-based settings apply after restarting Codex from Codex++.</p>
+        <p>Click Launch Codex or the start button next to Codex in the sidebar to inject enhancements. Injection-based settings apply after restarting Codex from Codex++.</p>
       </li>
     </ol>
     <div class="downloads">
@@ -579,7 +579,7 @@ your-model<span class="h">[128000]</span></pre>
         <i>Read →</i>
       </a>
     </div>
-    <p class="start-note">Prefer not to use the gateway? Direct mode still works: pick a provider under Codex → Provider configuration (legacy) and launch. API keys stay on your machine.</p>
+    <p class="start-note">Prefer not to use the gateway? Direct mode still works: in Codex → Connection &amp; providers, set Connection to Direct, pick a provider, and launch. API keys stay on your machine.</p>
   </div>
 </section>
 
@@ -612,7 +612,7 @@ your-model<span class="h">[128000]</span></pre>
         </details>
         <details class="faq-item">
           <summary>Why is there no Codex++ menu after launch?<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>Make sure you launched the official app from the <b>Codex++</b> manager with the "Launch Codex" button. Check the app path, launch status and diagnostic logs under Codex → Settings (maintenance is at the bottom) and the About page. On macOS you can also turn on "Auto-takeover of the official app" so Codex++ takes over when you open the official app yourself.</p></div>
+          <div class="faq-a"><p>Enhancements are only attached to an official app launched from <b>Codex++</b>. If you opened Codex yourself, the Codex row in the sidebar says it is not attached and its button becomes "Restart &amp; attach"; click it. If the menu is still missing, check the app path, launch status and diagnostic logs under Settings → Codex (which includes install &amp; maintenance) and Settings → Logs &amp; Diagnostics. On macOS you can also turn on "Auto-takeover of the official app" so Codex++ takes over when you open the official app yourself.</p></div>
         </details>
         <details class="faq-item">
           <summary>Why do requests fail after switching providers?<span class="faq-x" aria-hidden="true"></span></summary>
@@ -620,15 +620,15 @@ your-model<span class="h">[128000]</span></pre>
         </details>
         <details class="faq-item">
           <summary>Why can't my agents connect after I quit Codex++?<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>Agents connected to the gateway keep pointing at the local gateway, which only runs while Codex++ is open; reopening Codex++ restores them. To fall back to direct connections on exit, turn on "Restore direct connections when Codex++ exits" in Gateway settings (off by default). Codex++ always switches back to direct mode before installing an update.</p></div>
+          <div class="faq-a"><p>Agents connected to the gateway keep pointing at the local gateway, which only runs while Codex++ is open; reopening Codex++ restores them. To fall back to direct connections on exit, turn on "Restore direct connections when Codex++ exits" under Settings → Gateway (off by default). Codex++ always switches back to direct mode before installing an update.</p></div>
         </details>
         <details class="faq-item" id="faq-native-fast">
           <summary>Why is the native Fast switch still missing?<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>Confirm that you saved and restarted Codex through Codex++. In direct mode, open the model's settings under Codex → Provider configuration (legacy), set “Fast (priority) support”, then save both the model and provider before restarting. In gateway mode, a model group supports Fast when every member does. Only declare support that your provider actually offers; unlocking the client control does not change service limits or billing.</p></div>
+          <div class="faq-a"><p>Confirm that you saved and restarted Codex through Codex++. In direct mode, open the model's settings under Codex → Connection &amp; providers, set “Fast (priority) support”, then save both the model and provider before restarting. In gateway mode, a model group supports Fast when every member does. Only declare support that your provider actually offers; unlocking the client control does not change service limits or billing.</p></div>
         </details>
         <details class="faq-item" id="faq-computer-use">
           <summary>Computer Use tools don't show up in my client<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>Restart the client after connecting. Fully quit Claude Desktop first, because it rewrites its own config on exit. If the tools are still missing, check the config directory the client actually reads under “Config paths and custom directories” on the Computer Use page, and make sure ChatGPT has Accessibility and Screen Recording permissions. macOS only for now.</p></div>
+          <div class="faq-a"><p>Restart the client after connecting. Fully quit Claude Desktop first, because it rewrites its own config on exit. If the tools are still missing, check the config directory the client actually reads in the “Advanced” card on the Computer Use page, and make sure ChatGPT has Accessibility and Screen Recording permissions. macOS only for now.</p></div>
         </details>
         <details class="faq-item">
           <summary>Can enhancements be disabled? Will they survive official app updates?<span class="faq-x" aria-hidden="true"></span></summary>
@@ -684,7 +684,7 @@ your-model<span class="h">[128000]</span></pre>
       <h2>Your Codex, <em>your way</em></h2>
       <p>Free and open source · AGPL-3.0 · Windows and macOS. Extensions, config, and session data stay on your own computer.</p>
       <div class="hero-cta">
-        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Download <span data-site-version>v2.1.4</span></a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Download <span data-site-version>v2.2.0</span></a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">Star on GitHub</a>
       </div>
     </div>

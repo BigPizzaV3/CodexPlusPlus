@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { AlertTriangle, Asterisk, ChevronDown, ChevronRight, ChevronUp, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Asterisk, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
@@ -53,6 +53,9 @@ import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } fro
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
+import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
+import { Menu, MenuItem } from "./ManagementPages";
+import { AgentGlyph } from "./HubOverview";
 
 type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
 export type GatewayTab = Tab;
@@ -78,12 +81,14 @@ export function GatewayPage({
   tab: controlledTab,
   onTabChange,
   extraSettings,
+  onOpenCodexProviderSettings,
 }: {
   notify: Notify;
   tab?: Tab;
   onTabChange?: (tab: Tab) => void;
   /** 「网关设置」末尾附加的内容：主窗口传进来的新旧共用本地服务设置。 */
   extraSettings?: ReactNode;
+  onOpenCodexProviderSettings?: () => void;
 }) {
   const [payload, setPayload] = useState<GatewayPayload | null>(memo.payload);
   const [busy, setBusy] = useState<string | null>(memo.payload ? null : "load");
@@ -223,7 +228,7 @@ export function GatewayPage({
             <span>{t("本地网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
           </p>
         ) : null}
-        {tab === "agents" ? <AgentsView busy={busy} notify={notify} onManage={() => setTab("providers")} payload={payload} run={run} /> : null}
+        {tab === "agents" ? <AgentsView busy={busy} notify={notify} onManage={() => setTab("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
         {tab === "sessions" ? <SessionsView notify={notify} /> : null}
         {tab === "providers" ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "routing" ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
@@ -255,6 +260,9 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const autos = (payload?.autoGroups ?? []).filter(hit);
   const visibleAutos = autos.filter((group) => !group.hidden);
   const hiddenAutos = autos.filter((group) => group.hidden);
+  // 自动组默认折叠（多家都有的模型一多就是一长串）；自己还没建组、或正在搜索时直接展开。
+  const [autosOpen, setAutosOpen] = useState<boolean | null>(null);
+  const autosShown = autosOpen ?? ((payload?.groups ?? []).length === 0 || Boolean(needle));
 
   const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {
     const next = { ...group, ...patch };
@@ -276,9 +284,10 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
 
   return (
     <>
-      <div className="gw-models-toolbar">
-        <label className="gw-sheet-search gw-models-search">
-          <Search className="h-4 w-4" />
+      {/* 一行工具条：搜索 + 自动建组 + 新建组。组是什么放在「我的组」标题的悬停说明里，不再单独占一行。 */}
+      <div className="gw-models-toolbar cx-routing-toolbar">
+        <label className="cx-search gw-models-search">
+          <Search aria-hidden="true" />
           <input aria-label={t("搜索组或模型")} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索组或模型")} value={query} />
         </label>
         <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按供应商池的顺序依次尝试。")}>
@@ -290,18 +299,17 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
             onToggle={() => void run("auto-models", "save_gateway_auto_models", { enabled: !autoOn }, t("自动建组"), true)}
           />
         </div>
-        <button className="gw-primary-button" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
-          <Plus className="h-4 w-4" />
+        <button className="cx-primary" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
+          <Plus />
           {t("新建组")}
         </button>
       </div>
-      <p className="gw-models-hint">{t("组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。")}</p>
 
       {!payload ? <div className="gw-card gw-empty">{t("正在读取…")}</div> : null}
 
       {payload ? (
-        <SectionLabel aside={<em>{t("Agent 里以 group/<id> 出现")}</em>}>
-          {t("我的组")}<em>{mine.length}</em>
+        <SectionLabel>
+          <span title={t("组让 Agent 把几个模型当成一个来选：按什么方式先试哪个、同一会话要不要固定、出错换谁，都在卡片上改。Agent 里以 group/<id> 出现。")}>{t("我的组")}</span><em>{mine.length}</em>
         </SectionLabel>
       ) : null}
       {payload && mine.length === 0 ? (
@@ -323,10 +331,15 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
       ))}
 
       {payload ? (
-        <SectionLabel aside={<em>{autoOn ? t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它") : t("自动建组已关闭")}</em>}>
-          {t("自动组")}<em>{visibleAutos.length}</em>
+        <SectionLabel>
+          <button aria-expanded={autosShown} className="cx-section-toggle" onClick={() => setAutosOpen(!autosShown)} title={t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它")} type="button">
+            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+            {t("自动组")}
+          </button>
+          <em>{visibleAutos.length}</em>
         </SectionLabel>
       ) : null}
+      {!autosShown ? null : <>
       {payload && !autoOn ? (
         <div className="gw-card gw-empty">
           <strong>{t("自动建组已关闭")}</strong>
@@ -369,6 +382,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
             : null}
         </div>
       ) : null}
+      </>}
 
       {editing ? (
         <GroupEditor
@@ -440,6 +454,16 @@ function GroupCard({
             title={manual ? t("手动模式只用选中的那个成员，不需要会话固定") : undefined}
             value={group.sticky ?? "cache"}
           />
+          {/* 次要操作收进三点菜单：隐藏成员（打勾）、编辑、恢复默认、隐藏这个自动组、删除。路由方式的含义在下拉选项的说明里。 */}
+          <Menu label={t("组操作")}>
+            <MenuItem checked={group.hideMembers === true} disabled={disabled} onClick={() => onChange({ hideMembers: !group.hideMembers })}>
+              <span title={t("打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。")}>{t("隐藏成员")}</span>
+            </MenuItem>
+            {onEdit ? <MenuItem disabled={disabled} onClick={onEdit}>{t("编辑")}</MenuItem> : null}
+            {onReset ? <MenuItem disabled={disabled} onClick={onReset}><span title={t("回到依次、缓存期内固定、不隐藏成员")}>{t("恢复默认")}</span></MenuItem> : null}
+            {onHide ? <MenuItem disabled={disabled} onClick={onHide}><span title={t("这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试")}>{t("隐藏这个组")}</span></MenuItem> : null}
+            {onDelete ? <MenuItem danger disabled={disabled} onClick={onDelete}>{t("删除")}</MenuItem> : null}
+          </Menu>
         </div>
       </header>
       <ol className="gw-route-members" data-manual={manual}>
@@ -458,19 +482,6 @@ function GroupCard({
         ))}
         {group.members.length === 0 ? <li className="gw-route-member-empty">{t("没有成员")}</li> : null}
       </ol>
-      <footer className="gw-route-group-foot">
-        <label className="gw-route-hide" title={t("打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。")}>
-          <Switch disabled={disabled} label={t("隐藏成员")} on={group.hideMembers === true} onToggle={() => onChange({ hideMembers: !group.hideMembers })} />
-          <span>{t("隐藏成员")}</span>
-        </label>
-        <span className="gw-route-group-mode">{t(groupModeDescription(group.mode))}</span>
-        <span className="gw-row-buttons">
-          {onEdit ? <button className="gw-text-button" disabled={disabled} onClick={onEdit} type="button">{t("编辑")}</button> : null}
-          {onReset ? <button className="gw-text-button" disabled={disabled} onClick={onReset} title={t("回到依次、缓存期内固定、不隐藏成员")} type="button">{t("恢复默认")}</button> : null}
-          {onHide ? <button className="gw-text-button" disabled={disabled} onClick={onHide} title={t("这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试")} type="button">{t("隐藏")}</button> : null}
-          {onDelete ? <button className="gw-text-button" disabled={disabled} onClick={onDelete} type="button">{t("删除")}</button> : null}
-        </span>
-      </footer>
     </section>
   );
 }
@@ -732,103 +743,112 @@ function GroupEditor({
 
 function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
   const agentFocus = useAgentFocus();
+  // 刚复制的那一行，图标短暂换成对勾。
+  const [copied, setCopied] = useState<string | null>(null);
   if (!payload) return null;
   const mode = payload.gateway.keyPolicy.mode;
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
   const localDiscovery = payload.gateway.localLoginDiscovery === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
+  const listen = `http://127.0.0.1:${payload.port}`;
+  const copy = (key: string, value: string) => {
+    void navigator.clipboard?.writeText(value).then(() => {
+      setCopied(key);
+      window.setTimeout(() => setCopied((current) => (current === key ? null : current)), 1500);
+    });
+  };
+  const copyButton = (key: string, value: string) => (
+    <button aria-label={t("复制")} className="cx-set-icon-button" onClick={() => copy(key, value)} title={t("复制")} type="button">
+      {copied === key ? <Check /> : <Copy />}
+    </button>
+  );
+  const keyRotationHint = mode === "roundRobin" ? t("每个请求换下一个 Key，用量更平均，但上游缓存命中会变低。") : t("同一会话固定一个 Key，出错才换；保住上游的提示词缓存。");
+  const restoreHint = restoreOnExit
+    ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
+    : t("Agent 一直指着网关：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。");
+  const suffixHint = modelSuffix
+    ? t("多家都有的模型，在 Codex 的模型列表和输入框里显示成「GPT-6 Astra（ChatGPT Pro）」，自动组显示「（自动）」。")
+    : t("只显示模型名「GPT-6 Astra」，看不出是哪一家；Codex 选择器里仍按供应商分组。");
+  const discoveryHint = localDiscovery
+    ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。")
+    : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。");
+  // 参照 Cursor 设置页：地址一节、选项一节；每行标题 + 一行说明，右侧控件。地址可复制，token 更换收进三点菜单。
   return (
     <>
-      <SectionLabel>{t("网关")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("监听地址")}</strong>
-            <small>{t("只监听本机；各 Agent 用自己的路径和 token 接入。")}</small>
-          </div>
-          <code>{`http://127.0.0.1:${payload.port}`}</code>
-          <span className="gw-pill" data-tone={payload.helperRunning ? "ok" : "warning"}>{payload.helperRunning ? t("运行中") : t("未运行")}</span>
-        </div>
-        {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
-          const binding = payload.gateway.bindings[agent.agent];
-          return (
-            <div className="gw-setting-row" key={agent.agent}>
-              <div>
-                <strong>{tf("{0} 接入地址", [agent.name])}</strong>
-                <small>{agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}</small>
-              </div>
-              <code title={agent.baseUrl}>{agent.baseUrl}</code>
-              {binding?.token ? (
-                <button className="gw-text-button" disabled={busy !== null} onClick={() => void run(`rotate:${agent.agent}`, "rotate_gateway_token", { agent: agent.agent }, t("更换 token"))} title={t("换一个新的本地 token，旧 token 立即失效")} type="button">
-                  {t("更换 token")}
-                </button>
-              ) : <span />}
-            </div>
-          );
-        })}
-      </div>
+      <CxSection title={t("接入地址")}>
+        <CxCard>
+          <CxRow
+            badges={<CxBadge tone={payload.helperRunning ? "ok" : "warn"}>{payload.helperRunning ? t("运行中") : t("未运行")}</CxBadge>}
+            detail={<code className="cx-set-path">{listen}</code>}
+            icon={<Waypoints />}
+            title={t("监听地址")}
+            tooltip={t("只监听本机；各 Agent 用自己的路径和 token 接入。")}
+          >
+            {copyButton("listen", listen)}
+          </CxRow>
+          {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
+            const binding = payload.gateway.bindings[agent.agent];
+            return (
+              <CxRow
+                badges={agent.enabled ? null : <CxBadge>{t("未接入")}</CxBadge>}
+                detail={<code className="cx-set-path" title={agent.baseUrl}>{agent.baseUrl}</code>}
+                icon={<AgentGlyph agent={agent.agent} />}
+                key={agent.agent}
+                title={agent.name}
+                tooltip={agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}
+              >
+                {copyButton(agent.agent, agent.baseUrl)}
+                {binding?.token ? (
+                  <Menu>
+                    <MenuItem disabled={busy !== null} onClick={() => void run(`rotate:${agent.agent}`, "rotate_gateway_token", { agent: agent.agent }, t("更换 token"))}>
+                      {t("更换 token")}
+                    </MenuItem>
+                  </Menu>
+                ) : <span className="cx-set-menu-spacer" />}
+              </CxRow>
+            );
+          })}
+        </CxCard>
+      </CxSection>
 
-      <SectionLabel>{t("网关选项")}</SectionLabel>
-      <div className="gw-card">
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("多 Key 轮换")}</strong>
-            <small>{mode === "roundRobin" ? t("每个请求换下一个 Key，用量更平均，但上游缓存命中会变低。") : t("同一会话固定一个 Key，出错才换；保住上游的提示词缓存。")}</small>
-          </div>
-          <span />
-          <AppSelect
-            disabled={busy !== null}
-            label={t("多 Key 轮换")}
-            onChange={(next) => saveOptions(next, restoreOnExit)}
-            options={[
-              { value: "sticky", label: t("会话粘性（推荐）"), hint: t("同一会话固定一个 Key，出错才换") },
-              { value: "roundRobin", label: t("逐请求轮换"), hint: t("每个请求换下一个 Key") },
-            ]}
-            value={mode}
-          />
-        </div>
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("退出 Codex++ 时恢复直连")}</strong>
-            <small>{restoreOnExit
-              ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
-              : t("Agent 一直指着网关：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。")}</small>
-          </div>
-          <span />
-          <Switch disabled={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
-        </div>
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("模型名后带供应商")}</strong>
-            <small>{modelSuffix
-              ? t("多家都有的模型，在 Codex 的模型列表和输入框里显示成「GPT-6 Astra（ChatGPT Pro）」，自动组显示「（自动）」。")
-              : t("只显示模型名「GPT-6 Astra」，看不出是哪一家；Codex 选择器里仍按供应商分组。")}</small>
-          </div>
-          <span />
-          <Switch
-            disabled={busy !== null}
-            label={t("模型名后带供应商")}
-            on={modelSuffix}
-            onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
-          />
-        </div>
-        <div className="gw-setting-row">
-          <div>
-            <strong>{t("发现本机已登录的订阅账号")}</strong>
-            <small>{localDiscovery
-              ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。")
-              : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。")}</small>
-          </div>
-          <span />
-          <Switch
-            disabled={busy !== null}
-            label={t("发现本机已登录的订阅账号")}
-            on={localDiscovery}
-            onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
-          />
-        </div>
-      </div>
+      <CxSection title={t("网关选项")}>
+        <CxCard>
+          <CxRow detail={keyRotationHint} title={t("多 Key 轮换")} tooltip={keyRotationHint}>
+            <AppSelect
+              className="cx-set-select"
+              disabled={busy !== null}
+              label={t("多 Key 轮换")}
+              onChange={(next) => saveOptions(next, restoreOnExit)}
+              options={[
+                { value: "sticky", label: t("会话粘性（推荐）"), hint: t("同一会话固定一个 Key，出错才换") },
+                { value: "roundRobin", label: t("逐请求轮换"), hint: t("每个请求换下一个 Key") },
+              ]}
+              size="sm"
+              value={mode}
+            />
+          </CxRow>
+          <CxRow detail={restoreHint} title={t("退出 Codex++ 时恢复直连")} tooltip={restoreHint}>
+            <Switch disabled={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
+          </CxRow>
+          <CxRow detail={suffixHint} title={t("模型名后带供应商")} tooltip={suffixHint}>
+            <Switch
+              disabled={busy !== null}
+              label={t("模型名后带供应商")}
+              on={modelSuffix}
+              onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+          <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")} tooltip={discoveryHint}>
+            <Switch
+              disabled={busy !== null}
+              label={t("发现本机已登录的订阅账号")}
+              on={localDiscovery}
+              onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+        </CxCard>
+      </CxSection>
     </>
   );
 }

@@ -1,16 +1,20 @@
 /**
- * 会话：Codex、Claude Code、Grok 的本地会话放在一起，可以复制恢复命令或删除。
+ * 会话：Codex、Claude Code（含 Claude Desktop 里的）、Grok 的本地会话放在一起，可以复制恢复命令或删除。
  * 删除前确认；Codex 会话走它自己的删除（带备份），Claude Code / Grok 的会话移进废纸篓，可以找回。
+ * Claude Desktop 的会话由后端按 Desktop 的会话记录合并（标题、归档状态以 Desktop 为准），删除要求 Desktop 已退出。
  */
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Copy, Loader2, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Copy, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { appConfirm } from "./app-dialog";
 import { t, tf } from "./i18n";
 import { agentName, filterSessions, relativeTime, shortPath, type AgentSessionView, type SessionAgent } from "./gateway-model";
 import { AGENT_ICONS, AgentIcon, type Notify } from "./gateway-ui";
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
+import { CxBadge, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxToolbar } from "./cx-layout";
+import { normalizeProjectPath } from "./management-model";
+import { TopbarActions } from "./TopbarActions";
 
 const memo: { sessions: AgentSessionView[] | null; agent: SessionAgent | "all" } = { sessions: null, agent: "all" };
 
@@ -19,6 +23,8 @@ type LocalSession = { id: string; title: string; cwd: string; updatedAtMs: numbe
 /** Codex 的会话按页取（后端每页最多 100 条），最多取 CODEX_SESSION_LIMIT 条。 */
 const CODEX_SESSION_PAGE = 100;
 const CODEX_SESSION_LIMIT = 1000;
+/** 每个项目先显示的会话数；搜索时全部显示。 */
+const SESSION_GROUP_PREVIEW = 5;
 
 async function loadCodexSessions(): Promise<LocalSession[]> {
   const all: LocalSession[] = [];
@@ -89,7 +95,9 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     const confirmed = await appConfirm(
       session.agent === "codex"
         ? tf("删除 Codex 会话「{0}」？删除前会自动备份。", [title])
-        : tf("删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。", [agentName(session.agent), title]),
+        : session.surface === "desktop"
+          ? tf("从 Claude Desktop 删除会话「{0}」？会话记录和对话文件会移到废纸篓。需要先退出 Claude Desktop。", [title])
+          : tf("删除 {0} 会话「{1}」？会话文件会移到废纸篓，需要时可以找回。", [agentName(session.agent), title]),
       { title: t("删除会话"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed) return;
@@ -114,7 +122,8 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     }
   };
   const copyCommand = async (session: AgentSessionView) => {
-    const command = session.agent === "codex" ? `codex resume ${session.id}` : `${session.agent} --resume ${session.id}`;
+    const id = session.resumeId ?? session.id;
+    const command = session.agent === "codex" ? `codex resume ${id}` : `${session.agent} --resume ${id}`;
     const text = session.cwd ? `cd ${JSON.stringify(session.cwd)} && ${command}` : command;
     try {
       await navigator.clipboard.writeText(text);
@@ -130,60 +139,89 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     { id: "claude", label: "Claude Code", count: counts.claude },
     { id: "grok", label: "Grok", count: counts.grok },
   ];
+  // 按项目分节（最近用过的项目在前）；每节先露几条，其余点「再显示」。
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const groups = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; path: string; sessions: AgentSessionView[] }>();
+    for (const session of visible.slice(0, 300)) {
+      const path = normalizeProjectPath(session.cwd);
+      if (!map.has(path)) map.set(path, { key: path, label: path.split("/").at(-1) || t("未知目录"), path, sessions: [] });
+      map.get(path)!.sessions.push(session);
+    }
+    return [...map.values()];
+  }, [visible]);
+  const preview = query.trim() ? Infinity : SESSION_GROUP_PREVIEW;
 
   return (
-    <>
-      <div className="gw-usage-head">
-        {fixedAgent ? <span /> : (
-          <nav className="gw-tabs gw-range-tabs" role="tablist">
-            {filters.map((item) => (
-              <button aria-selected={agent === item.id} data-active={agent === item.id} key={item.id} onClick={() => setAgent(item.id)} role="tab" type="button">
-                {item.id !== "all" ? <img alt="" className="gw-tab-icon" src={AGENT_ICONS[item.id === "codex" ? "codexApp" : item.id]} /> : null}
-                {item.label}
-                <em className="gw-tab-count">{item.count}</em>
-              </button>
-            ))}
-          </nav>
-        )}
-        <label className="gw-sheet-search gw-session-search">
-          <Search className="h-4 w-4" />
-          <input onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索标题或目录")} value={query} />
-        </label>
-        <button aria-label={t("刷新")} className="gw-icon-button" disabled={loading} onClick={() => void refresh()} title={t("刷新")} type="button">
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+    <div className="cx-page cx-sessions">
+      <TopbarActions>
+        <button className="cx-secondary" disabled={loading} onClick={() => void refresh()} type="button">
+          <RefreshCw className={loading ? "animate-spin" : ""} />
+          {t("刷新")}
         </button>
-      </div>
-      <div className="gw-card">
-        {visible.slice(0, 300).map((session) => {
-          const when = relativeTime(session.updatedAtMs, now);
-          return (
-            <div className="gw-session-row" key={`${session.agent}:${session.id}`}>
-              <span className="gw-session-agent-wrap" title={agentName(session.agent)}><AgentIcon agent={session.agent} className="gw-session-agent" /></span>
-              <div className="gw-session-main">
-                <strong title={session.title}>{session.title || t("（没有标题）")}</strong>
-                <small title={session.cwd}>{session.cwd ? shortPath(session.cwd) : t("（没有目录）")}</small>
-              </div>
-              <span className="gw-session-time">{when.args.length ? tf(when.text, when.args) : t(when.text)}</span>
-              <button className="gw-icon-button" onClick={() => void copyCommand(session)} title={t("复制恢复命令")} type="button">
-                <Copy className="h-4 w-4" />
-              </button>
-              <button
-                aria-label={t("删除会话")}
-                className="gw-icon-button gw-session-delete"
-                disabled={deleting !== null}
-                onClick={() => void remove(session)}
-                title={t("删除会话")}
-                type="button"
-              >
-                {deleting === `${session.agent}:${session.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-              </button>
-            </div>
-          );
-        })}
-        {sessions && visible.length === 0 ? <div className="gw-empty">{query ? t("没有匹配的会话") : t("还没有会话")}</div> : null}
-        {!sessions ? <div className="gw-empty">{t("正在读取…")}</div> : null}
-      </div>
-    </>
+      </TopbarActions>
+      <CxToolbar onQuery={setQuery} placeholder={t("搜索标题或目录")} query={query} />
+      {fixedAgent ? null : (
+        <CxFilters
+          items={filters.map((item) => ({ id: item.id, label: item.label, count: item.count, icon: item.id !== "all" ? <img alt="" className="gw-tab-icon" src={AGENT_ICONS[item.id === "codex" ? "codexApp" : item.id]} /> : undefined }))}
+          label={t("按 Agent 查看会话")}
+          onChange={setAgent}
+          value={agent}
+        />
+      )}
+      {groups.map((group) => {
+        const expanded = openGroups.has(group.key);
+        const shown = expanded ? group.sessions : group.sessions.slice(0, preview);
+        const hidden = group.sessions.length - shown.length;
+        return (
+          <CxSection aside={group.path ? <span className="cx-session-path" title={group.path}>{shortPath(group.path)}</span> : null} count={group.sessions.length} key={group.key} title={group.label}>
+            <CxCard>
+              {shown.map((session) => {
+                const when = relativeTime(session.updatedAtMs, now);
+                const key = `${session.agent}:${session.id}`;
+                return (
+                  <CxRow
+                    className="cx-session-row"
+                    icon={<AgentIcon agent={session.agent} className="gw-session-agent" />}
+                    key={key}
+                    title={session.title || t("（没有标题）")}
+                    badges={session.surface === "desktop" || session.archived ? (
+                      <>
+                        {session.surface === "desktop" ? <CxBadge title={t("Claude Desktop 里的会话")}>Desktop</CxBadge> : null}
+                        {session.archived ? <CxBadge>{t("已归档")}</CxBadge> : null}
+                      </>
+                    ) : undefined}
+                    tooltip={`${agentName(session.agent)} · ${session.cwd || t("（没有目录）")}`}
+                  >
+                    <span className="cx-session-time">{when.args.length ? tf(when.text, when.args) : t(when.text)}</span>
+                    <button className="mg-icon-button" onClick={() => void copyCommand(session)} title={t("复制恢复命令")} aria-label={t("复制恢复命令")} type="button">
+                      <Copy size={15} />
+                    </button>
+                    <button
+                      aria-label={t("删除会话")}
+                      className="mg-icon-button cx-session-delete"
+                      disabled={deleting !== null}
+                      onClick={() => void remove(session)}
+                      title={t("删除会话")}
+                      type="button"
+                    >
+                      {deleting === key ? <Loader2 className="animate-spin" size={15} /> : <Trash2 size={15} />}
+                    </button>
+                  </CxRow>
+                );
+              })}
+              {hidden > 0 ? (
+                <button className="cx-session-more" onClick={() => setOpenGroups((old) => new Set(old).add(group.key))} type="button">
+                  {tf("再显示 {0} 个", [hidden])}
+                </button>
+              ) : null}
+            </CxCard>
+          </CxSection>
+        );
+      })}
+      {sessions && visible.length === 0 ? <CxCard><CxEmpty title={query ? t("没有匹配的会话") : t("还没有会话")} /></CxCard> : null}
+      {!sessions ? <CxCard><CxEmpty title={t("正在读取…")} /></CxCard> : null}
+    </div>
   );
 }
 

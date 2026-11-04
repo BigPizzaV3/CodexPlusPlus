@@ -2192,17 +2192,23 @@ pub(crate) async fn handle_helper_connection_on(
     if crate::gateway::is_gateway_path(path) {
         // 本机启动器转来的请求已经跑过拓展的网关中间件：网关这一层不再跑（见 EXTENSIONS_APPLIED_HEADER）。
         let applied = crate::extension_gateway::headers_mark_applied(&request_headers);
+        let passthrough = crate::extension_gateway::claim_response_passthrough(
+            method, path, &request_headers,
+        );
         // 带上查询串：Gemini 客户端把 Key 放在 `?key=` 里；网关取出后自己去掉，不进日志。
-        return crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED
+        return crate::extension_gateway::VERIFIED_RESPONSE_PASSTHROUGH
             .scope(
-                applied,
-                crate::gateway::server::handle(
-                    &mut stream,
-                    method,
-                    raw_path,
-                    &request_headers,
-                    &request.body,
-                    remote_addr_text,
+                passthrough,
+                crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED.scope(
+                    applied,
+                    crate::gateway::server::handle(
+                        &mut stream,
+                        method,
+                        raw_path,
+                        &request_headers,
+                        &request.body,
+                        remote_addr_text,
+                    ),
                 ),
             )
             .await;
@@ -2714,6 +2720,7 @@ pub(crate) struct ProxyRequestLog {
     /// 不进请求日志：Codex 以官方身份接入网关时，本地代理这一跳只是转给网关，
     /// 网关那一跳会记一条带 Agent 与路由的，这里不重复记。
     silent: bool,
+    final_response_eligible: bool,
 }
 
 impl ProxyRequestLog {
@@ -2771,10 +2778,12 @@ impl ProxyRequestLog {
                 stream_outcome: None,
                 usage: None,
                 cache_hit_ratio: None,
+                final_response_evidence: None,
                 agent: None,
             },
             written: false,
             silent,
+            final_response_eligible: false,
         };
         if !silent {
             crate::request_log::start_request(&log.entry);
@@ -2794,6 +2803,8 @@ impl ProxyRequestLog {
         status_code: u16,
         stream: bool,
     ) {
+        self.final_response_eligible = false;
+        self.entry.final_response_evidence = None;
         self.entry.status_code = status_code;
         self.entry.success = (200..300).contains(&status_code);
         self.entry.stream = stream;
@@ -2813,6 +2824,20 @@ impl ProxyRequestLog {
     }
 
     pub(crate) fn record_upstream(&mut self, upstream: &crate::protocol_proxy::UpstreamProxyResponse) {
+        self.entry.final_response_evidence = None;
+        self.final_response_eligible = upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses
+            && !upstream.compaction
+            && !upstream.native_compaction_passthrough
+            && !upstream.exec_adapted
+            && crate::extension_gateway::final_response_path_verified(
+                self.entry.agent.as_deref() == Some("codex"),
+            )
+            && upstream.request_trace.as_ref().is_some_and(|trace| {
+                trace.upstream_model_bound
+                    && !trace.upstream_model.trim().is_empty()
+                    && !trace.relay_id.trim().is_empty()
+                    && trace.relay_id != crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+            });
         self.entry.status_code = upstream.status_code;
         self.entry.success = upstream.is_success();
         self.entry.stream = upstream.is_stream;
@@ -2834,6 +2859,7 @@ impl ProxyRequestLog {
     }
 
     pub(crate) fn record_error(&mut self, status: &str, error: String) {
+        self.entry.final_response_evidence = None;
         self.entry.status_code = status
             .split_whitespace()
             .next()
@@ -2849,6 +2875,21 @@ impl ProxyRequestLog {
         }
     }
 
+    /// 仅在全部响应字节成功写出并正常关闭后调用；usage 必须来自最终终态。
+    fn record_final_response(&mut self, usage: Option<crate::request_log::RequestUsage>) {
+        self.entry.final_response_evidence = None;
+        if self.final_response_eligible
+            && self.entry.success
+            && (200..300).contains(&self.entry.status_code)
+            && self.entry.error.is_none()
+            && usage.is_some()
+            && usage == self.entry.usage
+        {
+            self.entry.final_response_evidence =
+                Some(crate::request_log::FINAL_RESPONSE_EVIDENCE_V1.to_string());
+        }
+    }
+
     pub(crate) fn record_stream(
         &mut self,
         failure: Option<&str>,
@@ -2857,6 +2898,7 @@ impl ProxyRequestLog {
     ) {
         match failure {
             Some(reason) => {
+                self.entry.final_response_evidence = None;
                 self.entry.success = false;
                 self.entry.stream_outcome = Some(reason.to_string());
                 if self.entry.error.is_none() {
@@ -2930,7 +2972,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
     request_body: &str,
     request_user_agent: Option<&str>,
     request_beta_features: Option<&str>,
-    mut session_headers: crate::protocol_proxy::ProxySessionHeaders<'_>,
+    session_headers: crate::protocol_proxy::ProxySessionHeaders<'_>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
@@ -2938,6 +2980,30 @@ pub(crate) async fn handle_protocol_proxy_connection(
 ) -> anyhow::Result<()> {
     let hops_through_gateway =
         matches!(opener, ProxyOpener::Legacy) && crate::gateway::apply::codex_hops_through_gateway();
+    let future = handle_protocol_proxy_connection_inner(
+        stream, request_body, request_user_agent, request_beta_features, session_headers,
+        method, path, remote_addr_text, opener, hops_through_gateway,
+    );
+    if hops_through_gateway {
+        crate::extension_gateway::with_codex_response_plan(future).await
+    } else {
+        future.await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_protocol_proxy_connection_inner(
+    stream: &mut tokio::net::TcpStream,
+    request_body: &str,
+    request_user_agent: Option<&str>,
+    request_beta_features: Option<&str>,
+    mut session_headers: crate::protocol_proxy::ProxySessionHeaders<'_>,
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+    opener: ProxyOpener,
+    hops_through_gateway: bool,
+) -> anyhow::Result<()> {
     // 直连代理只在「本地代理 → 网关」这一跳带 Codex 的身份头，让网关再转给上游（#2783）；
     // 直连普通供应商的代理路径保持原样，不额外透传。
     if matches!(opener, ProxyOpener::Legacy) && !hops_through_gateway {
@@ -3113,6 +3179,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
             let mut out = transformer.push_bytes(&body);
             out.extend(transformer.flush_pending());
             stream.write_all(&out).await?;
+            let final_usage = transformer.final_response_usage();
             let usage = transformer.take_usage();
             let detail = transformer.take_failure_detail();
             let failure = transformer.finish();
@@ -3143,6 +3210,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 );
             }
             stream.shutdown().await?;
+            request_log.record_final_response(final_usage);
             return Ok(());
         }
         if upstream.compaction {
@@ -3260,6 +3328,8 @@ pub(crate) async fn handle_protocol_proxy_connection(
         let stream_prefix = std::mem::take(&mut upstream.stream_prefix);
         // 拓展的网关响应流中间件：在 Codex++ 自己的转换之后、写给 Codex 之前改写事件。
         let mut sink = ExtensionResponseSink::new(stream, path, request_json.as_ref()).await;
+        let response_unmodified = sink.filter.is_none();
+        let mut final_usage = None;
         let (failure, usage, failure_detail, first_output_at_ms) =
             forward_protocol_proxy_stream_for_client_with_live_request(
                 &mut sink,
@@ -3270,9 +3340,13 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 session_headers.thread_id,
                 foreign_client,
                 Some(live_request_id.as_str()),
+                &mut final_usage,
             )
             .await?;
         sink.finish().await?;
+        if !response_unmodified {
+            final_usage = None;
+        }
         if let Some(first_output_at_ms) = first_output_at_ms {
             request_log.mark_first_token_at(first_output_at_ms);
         }
@@ -3303,6 +3377,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
             );
         }
         stream.shutdown().await?;
+        request_log.record_final_response(final_usage);
         return Ok(());
     }
     let upstream_body = match upstream.read_body().await {
@@ -3368,6 +3443,8 @@ pub(crate) async fn handle_protocol_proxy_connection(
             upstream_body
         };
         request_log.record_usage_json(&body);
+        let final_usage = serde_json::from_slice::<Value>(&body).ok()
+            .as_ref().and_then(crate::request_log::final_response_usage);
         write_http_response(
             stream,
             "200 OK",
@@ -3387,6 +3464,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
             remote_addr_text,
         );
         stream.shutdown().await?;
+        request_log.record_final_response(final_usage);
         return Ok(());
     }
     let response_json = non_stream_body_to_responses(
@@ -3407,6 +3485,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
     stream.shutdown().await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "launcher/final_response_tests.rs"]
+mod final_response_gateway_tests;
 /// 非流式的 Chat / Anthropic 上游响应体 → Responses 响应 JSON。
 pub(crate) fn non_stream_body_to_responses(
     wire_api: crate::protocol_proxy::UpstreamWireApi,
@@ -4097,7 +4179,7 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
     Option<u64>,
 )> {
     forward_protocol_proxy_stream_for_client_with_live_request(
-        stream, prefix, response, wire_api, request, thread_id, foreign_client, None,
+        stream, prefix, response, wire_api, request, thread_id, foreign_client, None, &mut None,
     )
     .await
 }
@@ -4112,12 +4194,14 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
     thread_id: Option<&str>,
     foreign_client: bool,
     live_request_id: Option<&str>,
+    final_response_usage: &mut Option<crate::request_log::RequestUsage>,
 ) -> anyhow::Result<(
     Option<String>,
     Option<crate::request_log::RequestUsage>,
     Option<String>,
     Option<u64>,
 )> {
+    *final_response_usage = None;
     let mut chunks = response.bytes_stream();
     let mut first_output_at_ms = None;
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
@@ -4173,6 +4257,7 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
         }
         let usage = transformer.take_usage();
         let detail = transformer.take_failure_detail();
+        *final_response_usage = transformer.final_response_usage();
         return Ok((transformer.finish(), usage, detail, first_output_at_ms));
     }
     if wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
@@ -6610,6 +6695,92 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     #[test]
+    fn final_response_evidence_binds_returned_trace_and_rejects_unverified_paths() {
+        // 不注册 live 日志，不读写正式配置，不启动测试实例。
+        let mut log = ProxyRequestLog {
+            started: std::time::Instant::now(),
+            entry: serde_json::from_value(serde_json::json!({
+                "id":"fixture","timestampMs":0,"startedAtMs":0,"durationMs":0,
+                "method":"POST","path":"/v1/responses","statusCode":0,
+                "success":false,"stream":false,"model":"group/model",
+                "upstreamModel":"","relayId":"","relayName":"","wireApi":"",
+                "attempts":0,"autoRetries":0
+            })).unwrap(),
+            written: true,
+            silent: true,
+            final_response_eligible: false,
+        };
+        let mut trace = crate::request_log::RequestTrace {
+            relay_id: "final-supplier".to_string(),
+            relay_name: "Final supplier".to_string(),
+            attempts: 2,
+            auto_retries: 1,
+            ..Default::default()
+        };
+        trace.bind_upstream_model(&serde_json::json!({"model":"after-middleware"}));
+        let mut upstream = crate::protocol_proxy::UpstreamProxyResponse {
+            status_code: 200,
+            is_stream: true,
+            content_type: "text/event-stream".to_string(),
+            wire_api: crate::protocol_proxy::UpstreamWireApi::Responses,
+            compaction: false,
+            native_compaction_passthrough: false,
+            buffered_body: None,
+            stream_prefix: Vec::new(),
+            request_trace: Some(trace),
+            exec_adapted: false,
+            exec_outcome: None,
+            response: None,
+        };
+        let usage = crate::request_log::final_response_usage(&serde_json::json!({
+            "status":"completed","usage":{"input_tokens":12,"output_tokens":3,
+                "input_tokens_details":{"cached_tokens":0}}
+        })).unwrap();
+        log.record_upstream(&upstream);
+        assert!(log.entry.final_response_evidence.is_none(), "HTTP 200 is insufficient");
+        log.record_stream(None, Some(usage.clone()), None);
+        log.record_final_response(Some(usage.clone()));
+        assert_eq!(log.entry.final_response_evidence.as_deref(), Some("final-response-v1"));
+        assert_eq!(log.entry.relay_id, "final-supplier");
+        assert_eq!(log.entry.upstream_model, "after-middleware");
+        assert_eq!(log.entry.attempts, 2);
+        log.record_stream(Some("incomplete"), Some(usage.clone()), None);
+        log.record_final_response(Some(usage.clone()));
+        assert!(log.entry.final_response_evidence.is_none());
+        log.entry.error = None;
+
+        for case in ["unbound", "missing-model", "missing-relay", "exec", "compaction", "native", "chat", "http-error"] {
+            let saved_trace = upstream.request_trace.clone();
+            match case {
+                "unbound" => upstream.request_trace.as_mut().unwrap().upstream_model_bound = false,
+                "missing-model" => upstream.request_trace.as_mut().unwrap().upstream_model.clear(),
+                "missing-relay" => upstream.request_trace.as_mut().unwrap().relay_id.clear(),
+                "exec" => upstream.exec_adapted = true,
+                "compaction" => upstream.compaction = true,
+                "native" => upstream.native_compaction_passthrough = true,
+                "chat" => upstream.wire_api = crate::protocol_proxy::UpstreamWireApi::ChatCompletions,
+                "http-error" => upstream.status_code = 502,
+                _ => unreachable!(),
+            }
+            log.record_upstream(&upstream);
+            log.record_stream(None, Some(usage.clone()), None);
+            log.record_final_response(Some(usage.clone()));
+            assert!(log.entry.final_response_evidence.is_none(), "{case}");
+            upstream.request_trace = saved_trace;
+            upstream.exec_adapted = false;
+            upstream.compaction = false;
+            upstream.native_compaction_passthrough = false;
+            upstream.wire_api = crate::protocol_proxy::UpstreamWireApi::Responses;
+            upstream.status_code = 200;
+        }
+        log.record_upstream(&upstream);
+        log.record_final_response(None);
+        assert!(log.entry.final_response_evidence.is_none(), "unverified response middleware / counts");
+        log.record_final_response(Some(crate::request_log::RequestUsage { input_tokens: 999, ..usage }));
+        assert!(log.entry.final_response_evidence.is_none(), "counts from a discarded attempt");
+    }
+
+    #[test]
     fn billable_paths_cover_model_image_and_gateway_endpoints() {
         for path in ["/v1/responses", "/v1/chat/completions", "/v1/images/generations", "/v1/images/edits", "/v1/audio/transcriptions", "/gw/claude/v1/messages"] {
             assert!(is_billable_proxy_path(path), "{path}");
@@ -7733,7 +7904,7 @@ mod tests {
             assert_eq!(running.wire_api, "responses");
             assert_eq!(running.state.as_deref(), Some("running"));
             assert!(running.first_token_ms.is_none());
-            let response_body = br#"{"id":"resp_logged","object":"response","usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":100}}}"#;
+            let response_body = br#"{"id":"resp_logged","object":"response","status":"completed","usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":100}}}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 response_body.len()
@@ -7788,6 +7959,7 @@ mod tests {
         assert_eq!(usage.output_tokens, 30);
         assert_eq!(usage.cached_tokens, 100);
         assert_eq!(entry.cache_hit_ratio, Some(100.0 / 120.0));
+        assert_eq!(entry.final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);
         crate::paths::set_settings_path_for_tests(previous_settings_path);
@@ -7839,7 +8011,7 @@ mod tests {
                 "event: response.output_text.delta\n",
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
                 "event: response.completed\n",
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n",
             );
             for body in [overloaded, ok] {
                 let (mut stream, _) = upstream_listener.accept().await.unwrap();
@@ -7905,6 +8077,7 @@ mod tests {
         assert_eq!(entries[0].attempts, 2);
         assert_eq!(entries[0].auto_retries, 1);
         assert_eq!(entries[0].usage.as_ref().map(|u| u.input_tokens), Some(12));
+        assert_eq!(entries[0].final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);
         crate::paths::set_settings_path_for_tests(previous_settings_path);
@@ -8005,6 +8178,7 @@ mod tests {
         let entry = &entries[0];
         assert_eq!(entry.status_code, 200);
         assert!(!entry.success, "流内 error 事件应记为失败");
+        assert!(entry.final_response_evidence.is_none());
         assert_eq!(
             entry.stream_outcome.as_deref(),
             Some("原生 Responses 上游返回 error 事件"),
@@ -8742,8 +8916,9 @@ mod proxy_stream_tests {
             }
             let (sent, observed) = tokio::sync::oneshot::channel();
             let mut sink = NotifyingSink(Some(sent));
+            let mut final_usage = None;
             let forward = super::forward_protocol_proxy_stream_for_client_with_live_request(
-                &mut sink, &[], response, wire, None, None, false, Some(&log.entry.id),
+                &mut sink, &[], response, wire, None, None, false, Some(&log.entry.id), &mut final_usage,
             );
             tokio::pin!(forward);
             send_body.send(()).unwrap();

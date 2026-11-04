@@ -19,7 +19,8 @@
 //!
 //! # 边界
 //!
-//! - 只给 `Target::ClaudeCode` 装：其它客户端有各自的回合语义。
+//! - 只给 `Target::ClaudeCode` 与 `Target::Devin` 装：其它客户端有各自的回合语义。
+//!   Devin 的 hooks 格式与 Claude Code 相同，但事件里没有 `SubagentStop`，只装 `Stop`。
 //! - 幂等：同一条命令已在列表里就不再追加；`uninstall` 只删自己的那条。
 //! - 改动前备份原文件，解析失败不做任何写入。
 
@@ -35,6 +36,11 @@ use serde_json::{Value, json};
 pub const TURN_END_FLAG: &str = "--codex-plus-browser-turn-end";
 /// spool 文件名：每次钩子触发追加一行。
 const SPOOL_FILE: &str = "turn-end.jsonl";
+
+/// Claude Code 要装的钩子事件。
+pub const CLAUDE_EVENTS: [&str; 2] = ["Stop", "SubagentStop"];
+/// Devin 要装的钩子事件：它没有 `SubagentStop`，只装 `Stop`。
+pub const DEVIN_EVENTS: [&str; 1] = ["Stop"];
 
 /// spool 目录：`<state>/browser`。
 pub fn spool_dir() -> PathBuf {
@@ -84,6 +90,12 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// `~/.config/devin/config.json`：Devin 的用户级 hooks 放在这个文件的 `hooks` 键下，
+/// 格式与 Claude Code 的 settings.json 相同。
+pub fn devin_settings_path() -> PathBuf {
+    crate::computer_use::devin_config_dir().join("config.json")
+}
+
 /// 钩子安装结果。
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,17 +117,22 @@ pub fn install() -> anyhow::Result<HookReceipt> {
 
 /// 装进指定的 settings.json：自定义配置目录（`CLAUDE_CONFIG_DIR` 布局）用。
 pub fn install_at(path: &Path) -> anyhow::Result<HookReceipt> {
+    install_events_at(path, &CLAUDE_EVENTS)
+}
+
+/// 把钩子写进指定文件的指定事件：Devin 的 config.json 只装 `DEVIN_EVENTS`。
+pub fn install_events_at(path: &Path, events: &[&str]) -> anyhow::Result<HookReceipt> {
     let path = path.to_path_buf();
     let command = hook_command()?;
     let mut document = read_settings(&path)?;
     let backup = backup_settings(&path)?;
-    let mut events = Vec::new();
+    let mut installed = Vec::new();
     let mut changed = false;
-    for event in ["Stop", "SubagentStop"] {
+    for event in events {
         if upsert_hook(&mut document, event, &command)? {
             changed = true;
         }
-        events.push(event.to_string());
+        installed.push(event.to_string());
     }
     if changed {
         write_settings(&path, &document)?;
@@ -124,7 +141,7 @@ pub fn install_at(path: &Path) -> anyhow::Result<HookReceipt> {
         changed,
         path: path.display().to_string(),
         backup,
-        events,
+        events: installed,
     })
 }
 
@@ -148,7 +165,8 @@ pub fn uninstall_at(path: &Path) -> anyhow::Result<HookReceipt> {
     let mut document = read_settings(&path)?;
     let backup = backup_settings(&path)?;
     let mut changed = false;
-    for event in ["Stop", "SubagentStop"] {
+    // 卸载始终按 Claude 的全集扫一遍：对 Devin 的文件同样适用，没有的事件 remove_hook 直接返回 false。
+    for event in CLAUDE_EVENTS {
         if remove_hook(&mut document, event, &command) {
             changed = true;
         }
@@ -446,6 +464,32 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         assert!(read_settings(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn devin_events_only_install_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{\n  \"permissions\": {\"allow\": []}\n}\n").unwrap();
+
+        let first = install_events_at(&path, &DEVIN_EVENTS).unwrap();
+        assert!(first.changed);
+        assert_eq!(first.events, vec!["Stop"]);
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(document["hooks"]["Stop"].is_array());
+        assert!(document["hooks"].get("SubagentStop").is_none());
+        assert_eq!(document["permissions"]["allow"], json!([]));
+
+        let second = install_events_at(&path, &DEVIN_EVENTS).unwrap();
+        assert!(!second.changed, "重复安装不应该重写文件");
+
+        let removed = uninstall_at(&path).unwrap();
+        assert!(removed.changed);
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(document["hooks"].get("Stop").is_none());
+        assert_eq!(document["permissions"]["allow"], json!([]));
     }
 
     #[test]

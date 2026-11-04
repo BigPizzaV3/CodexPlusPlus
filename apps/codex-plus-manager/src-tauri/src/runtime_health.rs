@@ -19,6 +19,9 @@ pub struct RuntimeHealth {
     pub local_server: ServiceState,
     pub debugger: ServiceState,
     pub protocol_conversion_enabled: Option<bool>,
+    /// Codex 在运行，但不是经 Codex++ 启动的（Dock / Finder 等外部启动，没带调试端口），
+    /// 增强脚本没有挂载。前端据此提示「重启并挂载」。目前只有 macOS 能精确识别。
+    pub codex_unattached: bool,
 }
 
 impl RuntimeHealth {
@@ -33,19 +36,31 @@ impl RuntimeHealth {
             local_server: state.clone(),
             debugger: state,
             protocol_conversion_enabled: None,
+            codex_unattached: false,
         }
     }
 }
 
 /// 仅在读取概览时检查本地端点，不启动服务、不请求供应商，也不创建后台监控线程。
 pub fn inspect(settings: &BackendSettings, latest: Option<&LaunchStatus>) -> RuntimeHealth {
-    inspect_with(
+    let mut health = inspect_with(
         settings,
         latest,
         !codex_plus_core::watcher::find_codex_processes().is_empty(),
         helper_available,
         codex_plus_core::cdp::endpoint_available,
-    )
+    );
+    health.codex_unattached = codex_running_unattached();
+    health
+}
+
+/// 外部启动的主 Codex：macOS 上就是没带任何调试端口的官方 App 主进程。
+/// 其它平台分不清「外部启动」和「只剩多开实例」，不做提示。
+fn codex_running_unattached() -> bool {
+    #[cfg(target_os = "macos")]
+    return !codex_plus_core::watcher::find_macos_codex_processes_without_debug_port().is_empty();
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 fn inspect_with(
@@ -104,6 +119,7 @@ fn inspect_with(
             },
         },
         protocol_conversion_enabled: Some(proxy_port.is_some()),
+        codex_unattached: false,
     }
 }
 

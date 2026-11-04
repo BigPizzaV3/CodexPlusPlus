@@ -186,11 +186,7 @@ async fn initialize_module(
         .context("native module preparation returned no value")?;
     diagnostic(
         "bridge.native_module_patch_prepared",
-        json!({
-            "ok": value["ok"] == true,
-            "reason": value.pointer("/diagnostics/reason").cloned().unwrap_or(Value::Null),
-            "rewriters": value.pointer("/diagnostics/rewriters").cloned().unwrap_or(Value::Null),
-        }),
+        module_preparation_diagnostics(value),
     );
     if value["ok"] != true {
         // Fast 的原因最具体；没有时用整体原因。只取脚本自己产生的原因码，限长。
@@ -377,10 +373,18 @@ fn is_local_asset(url: &str, prefixes: &[&str]) -> bool {
                 .strip_prefix(module)
                 .and_then(|rest| rest.strip_suffix(".js"))
                 .is_some_and(|hash| {
-                    !hash.is_empty()
+                    let legacy = !hash.is_empty()
                         && hash
                             .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                    let rspack = module.is_empty()
+                        && hash.split_once('.').is_some_and(|(id, digest)| {
+                            !id.is_empty()
+                                && id.bytes().all(|c| c.is_ascii_digit())
+                                && !digest.is_empty()
+                                && digest.bytes().all(|c| c.is_ascii_hexdigit())
+                        });
+                    legacy || rspack
                 })
         })
 }
@@ -642,6 +646,29 @@ async fn cleanup(session: &mut Session, generation: &BridgeGeneration, state: &I
     let _ = tokio::time::timeout(CLEANUP_COMMAND_TIMEOUT, session.close()).await;
 }
 
+fn module_preparation_diagnostics(value: &Value) -> Value {
+    let mut matches = serde_json::Map::new();
+    // 只记录已知门控的计数，不把模块源码或任意 renderer 字段写进日志。
+    if let Some(counts) = value.pointer("/diagnostics/matches").and_then(Value::as_object) {
+        for gate in [
+            "ui-access",
+            "request-access",
+            "queue-default-access",
+            "queue-explicit-access",
+        ] {
+            if let Some(count) = counts.get(gate).and_then(Value::as_u64) {
+                matches.insert(gate.to_string(), json!(count));
+            }
+        }
+    }
+    json!({
+        "ok": value["ok"] == true,
+        "reason": value.pointer("/diagnostics/reason").cloned().unwrap_or(Value::Null),
+        "rewriters": value.pointer("/diagnostics/rewriters").cloned().unwrap_or(Value::Null),
+        "matches": matches,
+    })
+}
+
 fn diagnostic(event: &str, details: Value) {
     let _ = crate::diagnostic_log::append_diagnostic_log(event, details);
 }
@@ -654,6 +681,65 @@ mod tests {
     };
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn module_diagnostics_preserve_gate_counts_on_success_and_failure() {
+        for (ok, reason, ui_count) in [
+            (true, "modules-prepared", 1),
+            (false, "incomplete-gates", 0),
+            (false, "ambiguous-gates", 2),
+        ] {
+            let matches = json!({
+                "ui-access": ui_count,
+                "request-access": 1,
+                "queue-default-access": 1,
+                "queue-explicit-access": 1,
+            });
+            let rewriters = json!({ "fast": if ok { "patched" } else { reason } });
+            let value = json!({
+                "ok": ok,
+                "modules": [{ "patchedSource": "private-fixture-source" }],
+                "diagnostics": {
+                    "reason": reason,
+                    "rewriters": rewriters,
+                    "matches": matches,
+                    "source": "private-fixture-source",
+                },
+            });
+            assert_eq!(
+                module_preparation_diagnostics(&value),
+                json!({ "ok": ok, "reason": reason, "rewriters": rewriters, "matches": matches }),
+            );
+        }
+    }
+
+    #[test]
+    fn module_diagnostics_filter_unknown_and_non_integer_match_values() {
+        let value = json!({ "diagnostics": { "matches": {
+            "ui-access": "private-fixture-token",
+            "request-access": -1,
+            "queue-default-access": 1.5,
+            "queue-explicit-access": 2,
+            "unknown-gate": 1,
+            "source": "private-fixture-source",
+        } } });
+        let details = module_preparation_diagnostics(&value);
+        assert_eq!(details["matches"], json!({ "queue-explicit-access": 2 }));
+        assert!(!details.to_string().contains("private-fixture"));
+        for invalid in [Value::Null, json!(true), json!([]), json!({})] {
+            let value = json!({ "diagnostics": { "matches": { "ui-access": invalid } } });
+            assert_eq!(module_preparation_diagnostics(&value)["matches"], json!({}));
+        }
+    }
+
+    #[test]
+    fn module_diagnostics_do_not_invent_counts_when_matches_are_unavailable() {
+        assert_eq!(module_preparation_diagnostics(&json!({}))["matches"], json!({}));
+        for matches in [Value::Null, json!([]), json!("unavailable"), json!(1)] {
+            let value = json!({ "diagnostics": { "matches": matches } });
+            assert_eq!(module_preparation_diagnostics(&value)["matches"], json!({}));
+        }
+    }
 
     fn module_settings(fast: bool, local_api: bool, predictions: bool) -> ModuleSettings {
         ModuleSettings {
@@ -1031,6 +1117,7 @@ mod tests {
         for url in [
             "app://-/assets/app-boot-a1.js",
             "app://-/assets/renamed_entry-B2c.js?v=1",
+            "app://-/assets/348410.ae8bb87271.js",
         ] {
             assert!(is_local_asset(url, ANY_MODULE), "{url}");
         }
@@ -1042,6 +1129,10 @@ mod tests {
             "app://-/assets/a/b.js",
             "app://-/assets/app boot.js",
             "app://-/assets/app-boot.css",
+            "app://-/assets/348410.not-hex.js",
+            "app://-/assets/name.abcdef.js",
+            "app://-/assets/348410..abcdef.js",
+            "app://-/assets/async/348410.abcdef.js",
         ] {
             assert!(!is_local_asset(url, ANY_MODULE), "{url}");
         }

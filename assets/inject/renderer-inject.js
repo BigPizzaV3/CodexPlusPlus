@@ -5,6 +5,11 @@
   if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
   const codexPlusIsWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent || "");
   const codexPlusIsMacPlatform = /\bMacintosh\b/i.test(navigator.userAgent || "");
+  // 每个注入实例的代际。重新注入会带一整套新的闭包，但旧实例留在页面上的定时器、
+  // 订阅循环还活着，且它们只认自己闭包里的标志位——每注入一次就多叠一套轮询
+  // （实测三份叠起来把 /extensions/history 顶到 544 次/分钟）。所有常驻循环都拿它自检。
+  const codexPlusRuntimeGeneration = (window.__codexPlusRuntimeGeneration || 0) + 1;
+  window.__codexPlusRuntimeGeneration = codexPlusRuntimeGeneration;
 
   function codexPlusStatsigClients() {
     const root = window.__STATSIG__ || globalThis.__STATSIG__;
@@ -427,7 +432,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "28";
+  const codexAppServerModelRequestPatchVersion = "33";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -2510,7 +2515,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, offlineAutoReview: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2533,6 +2538,7 @@
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
+    offlineAutoReview: "codexAppOfflineAutoReview",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -2568,6 +2574,7 @@
         conversationView: "conversation-view",
         activityOverlayRight: "activity-overlay-right",
         pasteFix: "paste-fix",
+        offlineAutoReview: "offline-auto-review",
         stepwise: "stepwise",
         answerOutline: "answer-outline",
         petRealMouseLook: "pet-real-mouse",
@@ -2586,6 +2593,7 @@
         markdownExport: false,
         sideChatSave: false,
         pasteFix: false,
+        offlineAutoReview: false,
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
@@ -2698,7 +2706,11 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    // 优先按 `data-app-shell-main-surface` 属性找，和上游梦皮的选择器契约（shell-main）一致；
+    // 属性不受 CSS Modules 哈希格式变化影响（26.1029 把类名改成了 `MainContentSurface-哈希`，属性仍在）。
+    // 属性也没有时，再按类名找，新旧格式都认（#2893）。
+    const modularSurface = document.querySelector("main[data-app-shell-main-surface]")
+      || document.querySelector('main[class*="_MainContentSurface_"], main[class^="MainContentSurface-"], main[class*=" MainContentSurface-"]');
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
@@ -3218,7 +3230,7 @@
         && (
           homeCandidate.querySelector('.group\\/home-suggestions')
           || homeCandidate.querySelector('[class*="home-suggestions"]')
-          || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+          || homeCandidate.querySelector('[class*="_homeUtilityBar_"], [class^="homeUtilityBar-"], [class*=" homeUtilityBar-"]')
         )
       );
       const home = homeHasClassicChrome ? homeCandidate : null;
@@ -3338,6 +3350,8 @@
     return enabled && !paused ? "install" : "cleanup";
   }
 
+  let dreamSkinCleanupRoot = null;
+
   function refreshDreamSkin() {
     const settings = codexPlusSettings();
     const runtimeState = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
@@ -3348,21 +3362,23 @@
       externalRuntime: !!window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__,
       runtimeInstalled: !!runtimeState,
     });
-    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
-    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
-      if (action === "cleanup") {
+    if (action === "cleanup") {
+      const root = document.documentElement;
+      // 首次仍清旧残留；关闭后不再每轮扫描全页，新运行时或根节点出现时重新清理。
+      if (!root || dreamSkinCleanupRoot !== root || runtimeState) {
         cleanupDreamSkin();
-      } else {
-        const state = runtimeState;
-        state?.ensure?.();
-        ensureDreamSkinCompanion(
-          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
-        );
+        dreamSkinCleanupRoot = root;
       }
       return;
     }
-    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
-      cleanupDreamSkin();
+    dreamSkinCleanupRoot = null;
+    if (action === "ensure" || action === "install") ensureDreamSkinMainSurface();
+    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
+      const state = runtimeState;
+      state?.ensure?.();
+      ensureDreamSkinCompanion(
+        window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+      );
       return;
     }
     installDreamSkin(settings);
@@ -4156,11 +4172,12 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
-    // Pure API 恢复旧会话时必须覆盖持久化的 openai；官登会话保留原生恢复语义。
-    if (requestMethod === "thread/resume" && !pureApi) return params;
-    if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
+    const hasModel = Object.prototype.hasOwnProperty.call(params, "model");
+    // 仅无模型/provider 字段的恢复交给原生；显式 provider 仍需沿用供应商路由。
+    if (requestMethod === "thread/resume" && (!pureApi || (!hasModel && !hasModelProvider))) return params;
+    if (requestMethod === "turn/start" && !pureApi) return params;
     if (requestMethod === "turn/start" && !hasModelProvider) return params;
     const targetProvider = codexRemoteSessionTargetProvider();
     if (!targetProvider || targetProvider === "openai") return params;
@@ -4179,6 +4196,127 @@
       to: targetProvider,
     });
     return nextParams;
+  }
+
+  async function prepareCodexPureApiResume(method, params, hostId, refreshFailed = false, sendRequest) {
+    if (hostId !== "local") return params;
+    if ([params?.hostId, params?.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
+      const envelope = () => JSON.stringify([params.hostId, params.host_id, params.method]);
+      const before = envelope();
+      const inner = params.params;
+      const assertEnvelope = () => {
+        if (envelope() !== before || params.params !== inner) throw new Error("会话主机已变化，请重新打开会话");
+      };
+      const nested = await prepareCodexPureApiResume(String(params.method), params.params, hostId, refreshFailed,
+        sendRequest && ((nestedMethod, nestedParams, options) => {
+          assertEnvelope();
+          return sendRequest(method, { ...params, method: nestedMethod, params: nestedParams }, options);
+        }));
+      assertEnvelope();
+      return nested === params.params ? params : { ...params, params: nested };
+    }
+    if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
+        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
+      return params;
+    }
+    const specified = (value) => typeof value === "string" && !!value.trim();
+    const target = codexRemoteSessionTargetProvider();
+    if (target === "openai") return params;
+    const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
+    // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
+    if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
+    if (specified(params.config?.model)) {
+      return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
+    }
+    if (!target) throw new Error("当前纯 API 供应商不可用");
+    const requestSignature = () => JSON.stringify([params.threadId,
+      ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
+      params.config]);
+    const requestBefore = requestSignature();
+    const signature = () => {
+      const profile = codexRemoteSessionActiveProfile();
+      return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
+    };
+    const before = signature();
+    const assertUnchanged = () => {
+      if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+      if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
+    };
+    let metadata;
+    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+    if (!fallbackReason) {
+      try {
+        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+      } catch {
+        fallbackReason = "metadata_unavailable";
+      }
+    }
+    assertUnchanged();
+    if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
+        || typeof metadata.model !== "string" || !metadata.model.trim()
+        || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
+        || (metadata.reasoningEffort !== null
+          && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
+      fallbackReason ||= "metadata_unavailable";
+    }
+    if (sendRequest) {
+      // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
+      let timer;
+      let read;
+      try {
+        read = await Promise.race([
+          sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
+            { timeoutMs: codexAppServerPreparationTimeoutMs }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
+        ]);
+      } catch {
+        fallbackReason = "thread_state_unavailable";
+      } finally { clearTimeout(timer); }
+      assertUnchanged();
+      const status = read?.thread?.status?.type;
+      if (!["idle", "notLoaded", "active"].includes(status)) {
+        fallbackReason = "thread_state_unavailable";
+      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
+        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      }
+    }
+    const config = { ...(params.config || {}) };
+    delete config.model;
+    // 降级时不带入部分历史设置，显式请求档位始终优先。
+    if (!specified(config.model_reasoning_effort)) {
+      delete config.model_reasoning_effort;
+      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+    }
+    const next = { ...params, modelProvider: target, config };
+    if (fallbackReason) {
+      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
+      delete next.model;
+      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+    } else {
+      next.model = metadata.model;
+    }
+    delete next.model_provider;
+    (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
+    return next;
+  }
+
+  function verifyCodexPureApiResumeResult(method, params, result, hostId) {
+    if (hostId !== "local") return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      return verifyCodexPureApiResumeResult(String(params.method), params.params, result, hostId);
+    }
+    if (method !== "thread/resume" || !window.__codexPlusPureApiPreparedResumes?.has(params)) return;
+    const modelMismatch = !!params.model && result?.model !== params.model;
+    const providerMismatch = result?.modelProvider !== params.modelProvider;
+    const reasoningEffortMismatch = Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
+      && result?.reasoningEffort !== params.config.model_reasoning_effort;
+    if (modelMismatch || providerMismatch || reasoningEffortMismatch) {
+      sendCodexPlusDiagnostic("pure_api_resume_result_mismatch",
+        { modelMismatch, providerMismatch, reasoningEffortMismatch });
+    }
   }
 
   function codexManagedSessionConnection() {
@@ -5111,6 +5249,87 @@
     });
     return codexForkReadinessState.installing;
   }
+  /**
+   * 内置拓展「拿不到远程开关时补开『替我审批』」（#2817）。
+   *
+   * Codex 权限菜单里的「替我审批」（agentMode = guardian-approvals）是否出现，看的是 Statsig
+   * 远程开关 `guardian_approval`（闸门 3902016271）。这份数据由 OpenAI 后端预置下发，国内网络下
+   * 拉不到时 Statsig 客户端是 Ready 但没有任何数据（NoValues），所有远程开关都按关处理，入口随之消失。
+   * 审批本身是一次普通的模型请求（固定模型名 codex-auto-review），走当前配置的供应商 / 网关，
+   * 所以补上入口就能用。
+   *
+   * 做法：只在客户端完全没有数据时，往它的数据适配器里补一份只含这一个闸门的最小数据，其余开关
+   * 仍然是「没下发 = 关」，和补之前一样。`setData` 只写内存、不写 localStorage，关掉开关后重启
+   * Codex 即恢复原样；拿到了真实数据（有网络）就完全不碰。
+   */
+  const codexPlusOfflineAutoReviewGate = "3902016271";
+  const codexPlusOfflineAutoReviewRule = "codex-plus:offline-auto-review";
+
+  function codexPlusOfflineAutoReviewEnabled() {
+    return codexPlusBackendSettingsLoaded === true && codexPlusSettings().offlineAutoReview === true;
+  }
+
+  function codexPlusOfflineAutoReviewClients() {
+    const root = window.__STATSIG__ || globalThis.__STATSIG__;
+    if (!root || typeof root !== "object") return [];
+    const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+    if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+    return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+  }
+
+  /** 补一次；真的补了返回 true。客户端还在加载、或已经有数据时什么都不做。 */
+  function codexPlusOfflineAutoReviewPatch(client) {
+    if (!client || client.loadingStatus !== "Ready") return false;
+    let context;
+    try {
+      context = client.getContext();
+    } catch {
+      return false;
+    }
+    if (!context || context.values != null) return false;
+    const adapter = client.dataAdapter;
+    if (typeof adapter?.setData !== "function" || typeof client.updateUserSync !== "function") return false;
+    const values = {
+      feature_gates: {
+        [codexPlusOfflineAutoReviewGate]: {
+          name: codexPlusOfflineAutoReviewGate,
+          value: true,
+          rule_id: codexPlusOfflineAutoReviewRule,
+          secondary_exposures: [],
+          id_type: "userID",
+        },
+      },
+      dynamic_configs: {},
+      layer_configs: {},
+      param_stores: {},
+      time: Date.now(),
+      has_updates: true,
+      hash_used: "none",
+      user: context.user,
+    };
+    adapter.setData(JSON.stringify(values));
+    client.updateUserSync(context.user);
+    return true;
+  }
+
+  function codexPlusOfflineAutoReviewTick() {
+    if (!codexPlusOfflineAutoReviewEnabled()) return;
+    for (const client of codexPlusOfflineAutoReviewClients()) {
+      try {
+        if (codexPlusOfflineAutoReviewPatch(client)) {
+          console.log("[OfflineAutoReview]", "Statsig 没有远程数据，已补开「替我审批」入口");
+        }
+      } catch (error) {
+        console.warn("[OfflineAutoReview]", "补开失败：", error && error.message);
+      }
+    }
+  }
+
+  function codexPlusOfflineAutoReviewExtension(ctx) {
+    codexPlusOfflineAutoReviewTick();
+    // Statsig 可能晚于注入才 Ready，后台刷新失败也可能再次清空数据：低频复查，补过且仍有数据时是空操作。
+    ctx.setInterval(codexPlusOfflineAutoReviewTick, 3000);
+  }
   async function loadBackendSettings() {
     const loaded = await loadBackendSettingsState();
     if (loaded && codexRemoteSessionProviderOverrideEnabled()) {
@@ -5313,6 +5532,8 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
+  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
   // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
@@ -5398,7 +5619,17 @@
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           syncOfficialUsagePolicy();
         }
-        void syncBackendSettingsFromHeartbeat();
+        // 设置没变就不拉 /settings/get：那份 JSON 有 166 KB，五秒一次的编解码本身就够把
+        // 渲染进程主线程切碎。后端在 status 里带上快照版本，这里只比对字符串。
+        // 老后端不带版本（空串）时退回原来的每次全量拉取，行为不变。
+        const revision = typeof nextStatus.settingsRevision === "string" ? nextStatus.settingsRevision : "";
+        const settingsStale = !revision
+          || !codexPlusBackendSettingsLoaded
+          || revision !== codexPlusBackendSettingsRevision;
+        if (settingsStale) {
+          codexPlusBackendSettingsRevision = revision;
+          void syncBackendSettingsFromHeartbeat();
+        }
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {
@@ -6215,9 +6446,10 @@
     // 别改用 main[data-app-shell-main-surface] 的 --app-shell-main-surface-clip-start-radius：
     // 那个元素左边缘在 362（缩在侧边栏后面），左侧还用 inset 负内缩把圆角裁掉，start 恒为 0，
     // 会让人误判左侧不该圆——第一版就是这么写错的，用户反馈「少一个圆角」正是缺了左边两个角。
-    // 类名是 CSS Modules 的哈希名，但 _PageSurface_ 这个片段稳定，且不会命中 _PageSurfaceLayout_
-    //（其后紧跟 L 而非 _）。量到的是视觉值，同样折算成布局坐标。读不到就保持 0，不做猜测。
-    const pageSurface = document.querySelector('[class*="_PageSurface_"]');
+    // 类名是 CSS Modules 的哈希名，但 PageSurface 这个名字稳定，且不会命中 PageSurfaceLayout
+    //（新旧两种哈希格式 `_PageSurface_xx` / `PageSurface-xx` 都认，#2893）。量到的是视觉值，同样折算成布局坐标。
+    // 读不到就保持 0，不做猜测。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"], [class^="PageSurface-"], [class*=" PageSurface-"]');
     const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
     const mainSurfaceStyle = (() => {
       const main = document.querySelector("main[data-app-shell-main-surface]");
@@ -11651,8 +11883,9 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest);
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest);
+        resumeParams, client.hostId, originalSendRequest);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -11665,6 +11898,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
+      verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
@@ -11898,10 +12132,11 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest.bind(client));
       // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
       // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest.bind(client));
+        resumeParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -11914,6 +12149,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
+      verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
@@ -12056,6 +12292,7 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    installCodexThreadGoalForwarding();
     const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
       && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
@@ -12209,6 +12446,8 @@
     providerNames: new Map(),
     /** 默认成员的分组 id（聚合的"默认供应商"），用于打「默认」标志。 */
     defaultGroupId: "",
+    /** 上次从目录算出的默认供应商名：快照暂缺元数据时沿用（#2860）。 */
+    defaultProviderName: "",
     /** 目录快照的单飞标记与冷却时间。 */
     catalogPending: false,
     catalogRetryAt: 0,
@@ -12258,7 +12497,11 @@
           if (typeof key === "string" && typeof value === "string" && key && value) {
             codexPlusModelPickerGroupsState.providerNames.set(key, { name: value, parsed: false });
           } else if (key && typeof value?.name === "string" && value.name) {
-            codexPlusModelPickerGroupsState.providerNames.set(key, { name: value.name, parsed: value.parsed === true });
+            codexPlusModelPickerGroupsState.providerNames.set(key, {
+              name: value.name,
+              parsed: value.parsed === true,
+              groupId: typeof value.groupId === "string" ? value.groupId : "",
+            });
           }
         }
       }
@@ -12287,13 +12530,14 @@
    * `parsed` 表示这条是从行末尾 `（供应商）` 猜出来的；权威来源（目录侧
    * `codex_plus_group` / `description`）可以覆盖它，反过来不行。
    */
-  function codexPlusModelPickerRememberProvider(displayName, provider, parsed) {
+  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "") {
     const key = codexPlusModelPickerNormalize(displayName);
     if (!key || !provider) return;
     const existing = codexPlusModelPickerGroupsState.providerNames.get(key);
     if (existing && !existing.parsed && parsed) return;
-    if (existing && existing.name === provider && existing.parsed === !!parsed) return;
-    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed });
+    const id = groupId || (existing?.name === provider ? existing.groupId || "" : "");
+    if (existing && existing.name === provider && existing.parsed === !!parsed && (existing.groupId || "") === id) return;
+    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed, groupId: id });
     codexPlusModelPickerGroupsState.providerDirty = true;
   }
 
@@ -12349,7 +12593,7 @@
         const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
         if (!groupId) continue;
         const displayName = entry.displayName || entry.display_name || "";
-        codexPlusModelPickerRememberProvider(displayName, providerNameOf(entry), false);
+        codexPlusModelPickerRememberProvider(displayName, providerNameOf(entry), false, groupId);
         if (state.defaultGroupId !== groupId) {
           state.defaultGroupId = groupId;
           state.providerDirty = true;
@@ -12385,19 +12629,34 @@
       // （display:none），仍然连着 —— 那种情况不能当成关闭，否则回来时补丁已经
       // 被拆掉、要等一轮才重建，看上去就是"分组闪一下没了"。
       if (!root.isConnected) continue;
-      if (!root.querySelector('[class*="_ModelList_"]')) continue;
+      if (!codexPlusModelPickerListIn(root)) continue;
       return root;
     }
     return null;
   }
 
+  /**
+   * 面板根里的模型列表。按结构找、不认类名（#2893）：模型行（`role="menuitemradio"`）的共同父节点
+   * 就是列表。实测 26.1029：菜单里 41 个模型行都直接挂在列表下，列表外（含推理强度子面板）没有别的
+   * 模型行；按结构找到的和按类名找到的是同一个节点。`role` 是 Codex 做菜单交互和无障碍要用的，
+   * 比 CSS Modules 的哈希类名稳定——26.1029 就把 `_ModelList_哈希` 改成了 `ModelList-哈希`。
+   *
+   * 还没有模型行时（列表加载中）回落到类名，新旧两种格式都认；新格式按类名开头匹配，不会误中
+   * `ModelListMotion-`。共同父节点退到面板根本身时（行分散在几个面板里）说明结构变了，同样回落。
+   */
+  function codexPlusModelPickerListIn(root) {
+    const rows = [...root.querySelectorAll('[role="menuitemradio"]')];
+    let list = rows[0]?.parentElement || null;
+    while (list && list !== root && !rows.every((row) => list.contains(row))) list = list.parentElement;
+    if (list && list !== root) return list;
+    return root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
+  }
+
   function codexPlusModelPickerList(menu) {
     const root = menu?.matches?.("[data-model-picker-view]") ? menu : menu?.querySelector?.("[data-model-picker-view]");
     if (!root) return null;
-    const list = root.querySelector('[class*="_ModelList_"]');
-    if (!list) return null;
     if (root.getAttribute("data-model-picker-view") === "grid") return null;
-    return list;
+    return codexPlusModelPickerListIn(root);
   }
 
   /**
@@ -12471,10 +12730,19 @@
    */
   function codexPlusModelPickerCatalogProviderMap() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    // 会话内已记下的归属先铺一层：目录快照可能被整体替换（重连 / 重新生成），
-    // 只认当前快照会让默认供应商的分组名在某一刻变空。
-    const map = new Map(codexPlusModelPickerGroupsState.providerNames);
-    if (!modelMetadata || typeof modelMetadata !== "object") return map;
+    const map = new Map();
+    // 记下的归属只补当前快照缺的键：目录快照会被整体替换（重连 / 拉取超时返回空元数据），
+    // 只认当前快照会让裸名模型在某一刻全部失去归属，落进一串空名分组（#2860）。
+    // 缓存里的形状是 `{ name, parsed, groupId }`，这里换成读取方要的 `{ provider, groupId }`；
+    // 从行尾后缀猜的（parsed）不补：那是别家同名模型的归属，套给裸名行会串组。
+    const fillFromMemory = () => {
+      codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
+        if (map.has(key) || !value?.name || value.parsed) return;
+        map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
+      });
+      return map;
+    };
+    if (!modelMetadata || typeof modelMetadata !== "object") return fillFromMemory();
     const slugList = Array.isArray(codexModelCatalog?.models)
       ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
       : [];
@@ -12495,12 +12763,12 @@
         // 权威来源可以覆盖行文本猜出来的；已经有权威值就不动。
         if (!remembered || remembered.parsed) map.set(key, { provider, groupId, parsed: false });
       }
-      codexPlusModelPickerRememberProvider(displayName, provider, false);
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
     };
     const bySlug = new Map(entries);
     for (const slug of slugList) registerEntry(bySlug.get(slug), slug);
     for (const [key, entry] of entries) registerEntry(entry, key);
-    return map;
+    return fillFromMemory();
   }
 
   /**
@@ -12595,6 +12863,8 @@
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
     const defaultGroupId = codexPlusModelPickerDefaultGroupId();
+    // 每轮算一次：逐行调用在目录失效时会退化成「行数 × 目录条目数」。
+    const defaultProviderName = codexPlusModelPickerDefaultProviderName();
     const rows = [];
     const items = list.querySelectorAll('[role="menuitemradio"]');
     items.forEach((row) => {
@@ -12621,7 +12891,7 @@
         || (split.provider ? `provider:${split.provider}` : defaultGroupId);
       // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
-      const provider = exactKnown?.provider || split.provider || known?.provider || codexPlusModelPickerDefaultProviderName();
+      const provider = exactKnown?.provider || split.provider || known?.provider || defaultProviderName;
       const authoritativeGroupId = !!known?.groupId
         || (split.provider ? true : !!defaultGroupId);
       rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
@@ -12638,7 +12908,8 @@
    */
   function codexPlusModelPickerDefaultProviderName() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    if (!modelMetadata || typeof modelMetadata !== "object") return "";
+    // 快照暂时没有元数据（拉取超时 / 重连）时沿用上次算出的名字，裸名行不至于变成无名分组（#2860）。
+    if (!modelMetadata || typeof modelMetadata !== "object") return codexPlusModelPickerGroupsState.defaultProviderName || "";
     // 取"裸名模型里出现最多的那个分组"：聚合的默认成员可能有几百个模型，
     // 偶尔混进一两个别的成员的裸名条目也不该把整组改姓。
     const counts = new Map();
@@ -12656,7 +12927,8 @@
       }
       if (!provider) continue;
       counts.set(provider, (counts.get(provider) || 0) + 1);
-      codexPlusModelPickerRememberProvider(displayName, provider, false);
+      const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
     }
     let best = "";
     let bestCount = 0;
@@ -12666,7 +12938,8 @@
         bestCount = count;
       }
     });
-    return best;
+    if (best) codexPlusModelPickerGroupsState.defaultProviderName = best;
+    return best || codexPlusModelPickerGroupsState.defaultProviderName || "";
   }
 
   /** 权威 groupId 全局合组；无 ID 的旧行只做相邻回退，避免同名误合并。 */
@@ -12674,6 +12947,9 @@
     const groups = [];
     const identified = new Map();
     let legacy = null;
+    // 归属认不出的行（没有后缀、目录也查不到）全部收进同一个「其他供应商」组。
+    // 按相邻切段会被有名分组隔成好几段，几段共用一个 id：只有第一段有标题、点哪段都展开全部（#2860）。
+    let unnamed = null;
     for (const entry of rows) {
       const key = entry.provider || "";
       const id = entry.authoritativeGroupId !== false && typeof entry.groupId === "string" ? entry.groupId.trim() : "";
@@ -12686,6 +12962,13 @@
           identified.set(id, group);
           groups.push(group);
         }
+      } else if (!(entry.provider || defaultProviderName)) {
+        legacy = null;
+        if (!unnamed) {
+          unnamed = { key: "", id: "", name: "", entries: [] };
+          groups.push(unnamed);
+        }
+        group = unnamed;
       } else {
         if (!legacy || legacy.key !== key) {
           legacy = { key, id: `legacy:${groups.length}:${key}`, name: entry.provider || defaultProviderName, entries: [] };
@@ -13066,7 +13349,7 @@
     codexPlusModelPickerRemoveOwnNodes(list);
     groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
     const groupedRows = new Set(rows.map((entry) => entry.row));
-    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"]').forEach((node) => {
+    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]').forEach((node) => {
       node.classList.toggle("codex-plus-model-provider-overview-only", !groupedRows.has(node));
     });
     const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
@@ -13178,11 +13461,17 @@
   function codexPlusModelPickerReportUnrecognized() {
     const state = codexPlusModelPickerGroupsState;
     if (state.unrecognizedReported) return;
+    // #2883：诊断也节流到每 2 秒最多一次——菜单关着时每 250ms 的扫描轮
+    // 都会走到这里，对每个 [role=menu] 读布局是白做工。
+    const now = Date.now();
+    if (state.lastUnrecognizedProbe && now - state.lastUnrecognizedProbe < 2000) return;
+    state.lastUnrecognizedProbe = now;
     let exact = null;
     for (const menu of document.querySelectorAll('[role="menu"]')) {
-      if (!visibleElement(menu) || menu.closest("[data-codex-plus-ext]")) continue;
+      // 先过廉价的 DOM 过滤，通过了才碰 visibleElement 的强制布局。
+      if (menu.closest("[data-codex-plus-ext]")) continue;
       const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
-      if (radios.length < 2) continue;
+      if (radios.length < 2 || !visibleElement(menu)) continue;
       // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
       exact ||= codexPlusModelPickerCatalogExactMap();
       if (!exact.size) return;
@@ -13208,7 +13497,7 @@
           radios: radios.length,
           catalogMatches: known,
           pickerView: document.querySelectorAll("[data-model-picker-view]").length,
-          modelList: count('[class*="_ModelList_"]'),
+          modelList: count('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]'),
           rowContent: count("[data-menu-row-content]"),
           flex1: count("span.flex-1, span[class*='flex-1']"),
           menuData: dataAttributes(menu),
@@ -16351,6 +16640,7 @@
     composerEl: null,
     rafId: 0,
     settleFramesLeft: 0,
+    composing: false,
     mo: null,
     ro: null,
     pollId: 0,
@@ -16779,11 +17069,30 @@
     return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
   }
 
-  function scheduleConversationViewAlign(frames = 16) {
-    conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
-    if (conversationViewState.rafId) return;
+  function onConversationViewCompositionStart(event) {
+    if (!event.target?.closest?.("[data-codex-composer], .ProseMirror, textarea, [contenteditable='true']")) return;
+    conversationViewState.composing = true;
+    if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+    conversationViewState.rafId = 0;
+    conversationViewState.settleFramesLeft = 0;
+  }
+
+  function onConversationViewCompositionEnd() {
+    if (!conversationViewState.composing) return;
+    conversationViewState.composing = false;
+    scheduleConversationViewAlign();
+  }
+
+  function scheduleConversationViewAlign(frames = 2) {
+    if (conversationViewState.composing || conversationViewState.rafId) return;
+    // 合并同一轮请求，避免持续的 DOM 变更把稳定帧预算反复延长。
+    conversationViewState.settleFramesLeft = frames;
     const tick = () => {
       conversationViewState.rafId = 0;
+      if (conversationViewState.composing) {
+        conversationViewState.settleFramesLeft = 0;
+        return;
+      }
       conversationViewAlignNow();
       conversationViewState.settleFramesLeft -= 1;
       if (conversationViewState.settleFramesLeft > 0) {
@@ -16794,6 +17103,9 @@
   }
 
   function cleanupConversationView() {
+    document.removeEventListener("compositionstart", onConversationViewCompositionStart, true);
+    document.removeEventListener("compositionend", onConversationViewCompositionEnd, true);
+    conversationViewState.composing = false;
     if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
     if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
     conversationViewState.rafId = 0;
@@ -16854,6 +17166,9 @@
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",
     "/thread-usage-history",
+    "/usage/history",
+    // Daily 固定 schema 的消费者封存；写入只影响其独立数据库。
+    "/usage/archive",
     "/archived-thread",
     "/export-markdown",
     "/user-scripts/list",
@@ -16892,6 +17207,39 @@
   const codexPlusExtensionCallTimeoutMs = 26000;
 
   /**
+   * 只读轮询路由的合并窗口（毫秒）。
+   *
+   * 拓展面板普遍用 setInterval 轮询这几个只读接口，每个面板各轮一次就是一次独立的桥
+   * 往返，而后端每条请求都要走一遍 JSON 编解码。实测 /request-log/recent 58 次/分钟、
+   * /thread-usage-live 37 次/分钟，几乎全是同一 payload 的重复请求。
+   * 窗口内同参调用复用同一个 Promise：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
+   * 后端与桥的往返次数按窗口长度下降一个量级。
+   */
+  const codexPlusExtensionCoalesceWindowMs = new Map([
+    // 实测这些面板的轮询间隔在 1~1.5 秒，窗口必须比它长才有合并效果；
+    // 对「最近请求 / 实时用量」这类只读展示，两秒的滞后看不出来。
+    ["/request-log/recent", 2000],
+    ["/thread-usage-live", 2000],
+    ["/proxy-status", 2000],
+    ["/backend/status", 2200],
+    ["/thread-usage-history", 3000],
+    ["/settings/public", 5000],
+    ["/model-catalog/public", 30000],
+    ["/cdp/targets", 5000],
+  ]);
+
+  /** route + payload 指纹 → { at, promise }。只在窗口内复用，过期即重发。 */
+  const codexPlusExtensionCallCache = new Map();
+
+  function codexPlusExtensionCallCacheKey(route, payload) {
+    try {
+      return `${route}\u0000${JSON.stringify(payload ?? {})}`;
+    } catch {
+      return "";
+    }
+  }
+
+  /**
    * 调用后端。
    *
    * 直接暴露 __codexSessionDeleteBridge 有三个问题：名字语义错位（它早就不只用于
@@ -16906,6 +17254,24 @@
     if (typeof bridge !== "function") {
       return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
     }
+    const windowMs = codexPlusExtensionCoalesceWindowMs.get(route);
+    const cacheKey = windowMs ? codexPlusExtensionCallCacheKey(route, payload) : "";
+    if (!windowMs || !cacheKey) return codexPlusExtensionCallOnce(route, payload, options, bridge);
+    const now = Date.now();
+    const cached = codexPlusExtensionCallCache.get(cacheKey);
+    if (cached && now - cached.at < windowMs) return cached.promise;
+    const promise = codexPlusExtensionCallOnce(route, payload, options, bridge);
+    const entry = { at: now, promise };
+    codexPlusExtensionCallCache.set(cacheKey, entry);
+    // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
+    promise.catch(() => {
+      if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+    });
+    return promise;
+  }
+
+  /** 真正发起一次桥调用（不做合并）。 */
+  function codexPlusExtensionCallOnce(route, payload, options, bridge) {
     const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
     // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
     const request = bridge(route, payload);
@@ -17266,6 +17632,15 @@
       },
     };
   }
+  // 注入代际（00-prelude 在每个实例启动时写入）。重新注入后旧实例留下的常驻循环
+  // 靠它自检并退出，否则每注入一次就多叠一套轮询。测试片段可能只抽这个文件，
+  // 所以对「变量不存在」做一次兜底。
+  const codexPlusInjectionGeneration = typeof codexPlusRuntimeGeneration === "undefined"
+    ? (window.__codexPlusRuntimeGeneration || 0)
+    : codexPlusRuntimeGeneration;
+  const codexPlusInjectionStillCurrent = () =>
+    (window.__codexPlusRuntimeGeneration || 0) === codexPlusInjectionGeneration;
+
   /**
    * 拓展运行时内核：codexPlus.extension(apply)
    *
@@ -17417,6 +17792,12 @@
         let timer = null;
         const interval = Math.max(500, Number(options.intervalMs) || 2000);
         const tick = async () => {
+          // 重新注入后旧实例的订阅循环必须停：它只认自己闭包里的 stopped，
+          // 没人会替它置位，不停就是每次注入多一条永久轮询。
+          if (!stopped && !codexPlusInjectionStillCurrent()) {
+            stopped = true;
+            clearTimeout(timer);
+          }
           if (stopped) return;
           try {
             if (next === null) {
@@ -17790,19 +18171,37 @@
 
   function codexPlusEnsureSessionWatcher() {
     if (codexPlusSessionWatcher || !codexPlusWantsSessionWatch()) return;
+    // 重新注入会带来一整套新的闭包，而旧的 tick 循环还活着、只认自己闭包里的变量，
+    // 于是每注入一次就多叠一套轮询。用注入代际让旧循环发现「已经被接管」后自己收摊。
+    const stillCurrent = codexPlusInjectionStillCurrent;
     const query = codexPlusSessionQueryService();
     const cursors = new Map();
     // callId → { name, arguments }：tools/result 要带上调用时的工具名与参数。
     const calls = new Map();
     let primed = false;
+    // 会话列表的变化比会话内容慢一个量级：每轮都拉一次 listSessions 等于两秒一次全量，
+    // 实测把 /extensions/history 顶到 137 次/分钟。这里缓存列表，每 4 轮刷新一次。
+    let cachedSessions = null;
+    let round = 0;
     const tick = async () => {
+      if (!stillCurrent()) {
+        clearTimeout(codexPlusSessionWatcher);
+        codexPlusSessionWatcher = null;
+        return;
+      }
       if (!codexPlusWantsSessionWatch()) {
         codexPlusSessionWatcher = null;
         return;
       }
       try {
-        const sessions = await query.listSessions({ limit: 20 });
-        for (const [index, session] of (sessions || []).entries()) {
+        if (!cachedSessions || round % 4 === 0) {
+          cachedSessions = await query.listSessions({ limit: 20 });
+        }
+        round += 1;
+        // 只有正在看的会话需要每轮实时读；其余会话按更新时间变化再读（精度到秒）。
+        // 原来对前 3 个会话无条件读，等于每轮固定 3 次桥往返，是空转的大头。
+        const activeId = codexPlusCurrentSessionId();
+        for (const session of cachedSessions || []) {
           let cursor = cursors.get(session.id);
           if (!cursor) {
             if (primed) codexPlusEmitExtensionEvent("agent/created", [{ agent: codexPlusAgentDescriptor(session.id), source: "startup" }]);
@@ -17815,8 +18214,8 @@
             cursors.set(session.id, cursor);
             if (!primed) continue;
           }
-          // 最近的几个会话每轮都看（更新时间精度只到秒），其余按更新时间变化再读。
-          if (index >= 3 && cursor.updatedAt === session.updatedAt) continue;
+          const isActive = Boolean(activeId) && session.id === activeId;
+          if (!isActive && cursor.updatedAt === session.updatedAt) continue;
           cursor.updatedAt = session.updatedAt;
           const events = await query.readEventsSince({ sessionId: session.id, seq: cursor.next, limit: 200 }).catch(() => []);
           for (const event of events || []) {
@@ -17829,7 +18228,8 @@
         }
         primed = true;
       } catch {}
-      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 5000 : 1500);
+      // 后台标签页里没人看，降到一个量级更低的节拍，别在用户切走之后继续占桥。
+      codexPlusSessionWatcher = setTimeout(tick, document.hidden ? 30000 : 1500);
     };
     codexPlusSessionWatcher = setTimeout(tick, 0);
   }
@@ -20066,6 +20466,8 @@
     "activity.after",
   ];
   const codexPlusUiSlotVersions = new Map();
+  // 只为资源撤销保留挂载记录；渲染位置仍现查 DOM，不复用这些节点。
+  const codexPlusUiSlotCleanups = new Map();
 
   function codexPlusUiSlotAnchors(slot) {
     const visible = (selector) => [...document.querySelectorAll(selector)].filter((node) => visibleElement(node) && !isExtensionUiNode(node));
@@ -20201,12 +20603,46 @@
   function codexPlusRunSlotCleanup(node) {
     const cleanup = node.__codexPlusSlotCleanup;
     node.__codexPlusSlotCleanup = null;
+    codexPlusUiSlotCleanups.delete(node);
+    delete node.dataset.slotVersion;
+    delete node.__codexPlusSlotInfo;
     if (typeof cleanup === "function") runCodexPlusExtensionCallback(node.dataset.scriptKey || "", "slot.cleanup", cleanup);
+  }
+
+  /** 共用主观察器的移除记录；同批移动已重新连接的节点不清理。 */
+  function pruneRemovedCodexPlusUiSlots(mutations) {
+    if (!codexPlusUiSlotsRendered && !codexPlusUiSlotCleanups.size) return false;
+    const repairs = new Map();
+    for (const mutation of mutations || []) {
+      for (const node of mutation.removedNodes || []) {
+        if (node.nodeType !== 1 || node.isConnected) continue;
+        const containers = node.matches?.("[data-codex-plus-slot-item]") ? [node] : [];
+        containers.push(...node.querySelectorAll("[data-codex-plus-slot-item]"));
+        containers.forEach(codexPlusRunSlotCleanup);
+        // 原生只删了插槽、锚点还在时补回；整块页面离开不为旧插槽另排扫描。
+        const parent = mutation.target;
+        if (!parent?.isConnected) continue;
+        const slot = node.getAttribute("data-codex-plus-ui-slot")
+          || (node.matches?.("[data-codex-plus-slot-item]") && parent.getAttribute("data-codex-plus-ui-slot"));
+        if (slot) {
+          if (!repairs.has(slot)) repairs.set(slot, new Set());
+          repairs.get(slot).add(node.hasAttribute("data-codex-plus-ui-slot") ? parent : parent.parentElement);
+        }
+      }
+    }
+    for (const [slot, parents] of repairs) {
+      if (!codexPlusExtensionItems(codexPlusRegistry.slots).some((item) => item.slot === slot)) continue;
+      if (codexPlusUiSlotAnchors(slot).some((anchor) => parents.has(anchor.parent))) return true;
+    }
+    return false;
   }
 
   let codexPlusUiSlotsRendered = false;
 
   function refreshCodexPlusUiSlots() {
+    for (const [node, item] of [...codexPlusUiSlotCleanups]) {
+      if (!node.isConnected || codexPlusRegistry.slots.get(item.id) !== item) codexPlusRunSlotCleanup(node);
+    }
     const items = codexPlusExtensionItems(codexPlusRegistry.slots);
     if (!items.length) {
       if (codexPlusUiSlotsRendered) {
@@ -20284,7 +20720,23 @@
           container.__codexPlusSlotInfo = infoKey;
           placeAfterPrevious(container);
           const result = runCodexPlusExtensionCallback(item.scriptKey, "slot.render", () => item.render({ container, slot, ...(info || {}) }));
-          if (result.ok && typeof result.value === "function") container.__codexPlusSlotCleanup = result.value;
+          if (result.ok && typeof result.value === "function") {
+            // 新注入可经旧节点撤销资源；包装器必须摘掉原闭包的记录，且重入只执行一次。
+            const release = result.value;
+            let cleaned = false;
+            const cleanup = () => {
+              if (cleaned) return;
+              cleaned = true;
+              codexPlusUiSlotCleanups.delete(container);
+              delete container.dataset.slotVersion;
+              delete container.__codexPlusSlotInfo;
+              if (container.__codexPlusSlotCleanup === cleanup) container.__codexPlusSlotCleanup = null;
+              release();
+            };
+            container.__codexPlusSlotCleanup = cleanup;
+            codexPlusUiSlotCleanups.set(container, item);
+            if (!container.isConnected || codexPlusRegistry.slots.get(item.id) !== item) codexPlusRunSlotCleanup(container);
+          }
         }
       }
     }
@@ -21493,6 +21945,8 @@
   } };
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
+    document.addEventListener("compositionstart", onConversationViewCompositionStart, true);
+    document.addEventListener("compositionend", onConversationViewCompositionEnd, true);
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
     conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
     if (document.body && !conversationViewState.moObserved) {
@@ -22224,6 +22678,7 @@
       { id: "conversation-view", name: "对话宽度", apply: codexPlusConversationViewExtension },
       { id: "activity-overlay-right", name: "消息导航条靠右", apply: codexPlusActivityOverlayExtension },
       { id: "paste-fix", name: "粘贴修复", apply: codexPlusPasteFixExtension },
+      { id: "offline-auto-review", name: "拿不到远程开关时补开「替我审批」", apply: codexPlusOfflineAutoReviewExtension },
       { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
       // 悬浮球是独立运行时，自己按停用集合判断；这两项让它在装卸、改设置时重新算一次。
       { id: "stepwise", name: "下一步建议", apply: codexPlusStepwiseExtension },
@@ -23810,12 +24265,13 @@
   }
 
   function scheduleScan(mutations) {
-    // 隐藏页面和已排队的扫描也要清理，不能让孤立菜单等待下一次可见扫描。
+    // 隐藏页面和已排队的扫描也要回收已脱离的菜单、插槽，不能等下次可见扫描。
     const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
+    const slotsNeedScan = pruneRemovedCodexPlusUiSlots(mutations);
     window.__codexSessionDeleteLastMutations = mutations;
     if (window.__codexSessionDeleteScanPending) return;
-    // 原生页面可能只移除带归属标记的按钮组；所属行仍在时需要补回操作入口。
-    if (!sessionActionsNeedScan && !shouldScheduleScan(mutations)) return;
+    // 原生页面可能只移除带归属标记的按钮组或插槽；宿主仍在时需要补回。
+    if (!sessionActionsNeedScan && !slotsNeedScan && !shouldScheduleScan(mutations)) return;
     window.__codexSessionDeleteScanPending = true;
     if (document.hidden) return;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);

@@ -2075,8 +2075,11 @@ pub async fn send_upstream_request_with_header_timeout(
     let mut attempt_timeout = timeout;
     loop {
         let builder = pending.take().expect("upstream request builder missing");
+        let (client, request) = builder.build_split();
+        let mut request = request.context("构造上游请求失败")?;
+        crate::extension_gateway::refresh_response_passthrough(&mut request);
         let attempt_started = Instant::now();
-        match tokio::time::timeout(attempt_timeout, builder.send()).await {
+        match tokio::time::timeout(attempt_timeout, client.execute(request)).await {
             Ok(Ok(response)) => return Ok(response),
             Ok(Err(error)) => {
                 // 上游 client 复用连接（#2761）后，空闲连接可能刚被对端关掉、本地还没察觉：
@@ -3915,14 +3918,6 @@ async fn open_responses_proxy_request_once(
         request_trace.relay_id = relay.id.clone();
         request_trace.relay_name = relay.name.clone();
         request_trace.wire_api = upstream_wire_api_label(wire_api).to_string();
-        request_trace.upstream_model = upstream_body
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if let Some(id) = live_request_id {
-            crate::request_log::update_running_route(id, &request_trace, is_stream);
-        }
         // Codex 托管的网关供应商：这一跳的上游就是本机网关，它自己按候选控制超时。
         let via_gateway = relay.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
         // 别家签发的加密内容（#2777）：只在发往真实上游时处理（网关那一跳由网关自己处理）；
@@ -4018,6 +4013,10 @@ async fn open_responses_proxy_request_once(
         .await
         {
             return Ok(extension_rejected_response(&reason)?);
+        }
+        request_trace.bind_upstream_model(&upstream_body);
+        if let Some(id) = live_request_id {
+            crate::request_log::update_running_route(id, &request_trace, is_stream);
         }
         let mut key = None;
         let mut exec_adapted = forced_adapted;
@@ -4537,6 +4536,8 @@ async fn open_responses_proxy_request_once(
                 .to_string();
         }
 
+        // 内置兼容回退也可能重建请求体；最终返回的 trace 绑定最后一次发送。
+        request_trace.bind_upstream_model(&upstream_body);
         if let Some(id) = live_request_id {
             crate::request_log::update_running_phase(id, "waiting");
         }
@@ -5009,6 +5010,33 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
                 .iter()
                 .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
         })
+}
+
+/// 只处理 Responses `input[].content[]` 与 `function_call_output.output[]`
+/// 里的 `input_image`；其他协议中的图片块保持原样。
+fn strip_input_image_details(body: &mut Value) -> bool {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for item in items {
+        for parts_key in ["content", "output"] {
+            let Some(parts) = item.get_mut(parts_key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) != Some("input_image") {
+                    continue;
+                }
+                let Some(part) = part.as_object_mut() else {
+                    continue;
+                };
+                changed |= part.remove("detail").is_some();
+            }
+        }
+    }
+
+    changed
 }
 
 /// 目录外模型名 → 当前供应商默认模型的映射（#1183 / #1446 / #1457）。
@@ -5825,6 +5853,14 @@ async fn upstream_request_parts(
         request_json.get("model").and_then(Value::as_str).unwrap_or(""),
     ) {
         request_json["model"] = json!(auto_review_model);
+    }
+    // 部分 Responses 上游不认 Codex 的 input_image.detail（#2870），收到会返回
+    // 泛化的 invalid_request。供应商级开关打开后在转发前剥离。
+    if relay.strips_responses_image_detail() && strip_input_image_details(&mut request_json) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.strip_responses_image_detail",
+            json!({ "relayId": relay.id }),
+        );
     }
     let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
     let compatibility_enabled = relay.request_compatibility_enabled();
@@ -7727,8 +7763,21 @@ fn normalize_responses_item_id(item: &mut Value) {
     } else {
         suffix
     };
-    item["id"] = json!(format!("{prefix}{suffix}"));
+    // 压缩条目的 id 可能是上游签发的不透明包装（不带任何已知前缀、长达数百字符），
+    // 它只认原样回传；加前缀会超过 Responses 的 64 字符上限而整单 400（#2891）。
+    if item_type == "compaction" && suffix == id {
+        return;
+    }
+    let normalized = format!("{prefix}{suffix}");
+    // 改写后超过 64 字符的一律不动：上游按长度拒绝比按前缀拒绝更确定。
+    if normalized.len() > RESPONSES_ITEM_ID_MAX_LEN && normalized.len() > id.len() {
+        return;
+    }
+    item["id"] = json!(normalized);
 }
+
+/// Responses 接口对 `input[N].id` 的长度上限。
+const RESPONSES_ITEM_ID_MAX_LEN: usize = 64;
 
 fn append_responses_input(input: &Value, messages: &mut Vec<Value>) -> anyhow::Result<()> {
     // encrypted_content 片段可能携带无法在 Chat 协议里表达的 opaque 内容，报错向上传播（fail loud）。
@@ -12377,6 +12426,8 @@ pub(crate) struct ResponsesSseTransformer {
     apply_patch_declared_as_function: bool,
     /// 从 `response.completed` 里抓到的 usage，供请求日志使用。
     usage: Option<crate::request_log::RequestUsage>,
+    final_response_usage: Option<crate::request_log::RequestUsage>,
+    final_response_invalid: bool,
     /// 终态失败事件里的 code/message 摘要。只进请求日志与诊断日志，
     /// 不拼进 failure 原因（原因会随 SSE 回给客户端，不能泄露上游 payload）。
     failure_detail: Option<String>,
@@ -12651,7 +12702,10 @@ impl ResponsesSseTransformer {
 
     fn observe_event_type(&mut self, event_type: &str) {
         match event_type {
-            "response.completed" => self.completed = true,
+            "response.completed" => {
+                self.completed = true;
+                self.final_response_usage = None;
+            }
             "response.failed" => {
                 self.fail("原生 Responses 上游返回 response.failed".to_string())
             }
@@ -12672,6 +12726,16 @@ impl ResponsesSseTransformer {
     /// 取出 `response.completed` 里捕获的 usage（请求日志用）。
     pub(crate) fn take_usage(&mut self) -> Option<crate::request_log::RequestUsage> {
         self.usage.take()
+    }
+
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::RequestUsage> {
+        (self.completed
+            && !self.failed
+            && !self.final_response_invalid
+            && self.buf.is_empty()
+            && self.passthrough_event.is_none())
+        .then(|| self.final_response_usage.clone())
+        .flatten()
     }
 
     /// 取出终态失败的 code/message 摘要（请求日志/诊断日志用，不发给客户端）。
@@ -12705,7 +12769,10 @@ impl ResponsesSseTransformer {
     fn process_event(&mut self, event_bytes: &[u8]) -> Vec<u8> {
         let event_str = match std::str::from_utf8(event_bytes) {
             Ok(s) => s,
-            Err(_) => return event_bytes.to_vec(),
+            Err(_) => {
+                self.final_response_invalid = true;
+                return event_bytes.to_vec();
+            }
         };
 
         // 先提取 SSE event: 字段作为回退类型名（与 NativeResponsesSseObserver 一致）
@@ -12721,7 +12788,12 @@ impl ResponsesSseTransformer {
         };
         let data_json: Value = match serde_json::from_str(&data_json_str) {
             Ok(v) => v,
-            Err(_) => return event_bytes.to_vec(),
+            Err(_) => {
+                if data_json_str.trim() != "[DONE]" {
+                    self.final_response_invalid = true;
+                }
+                return event_bytes.to_vec();
+            }
         };
 
         // data JSON 的 type 优先，回退到 SSE event: 字段
@@ -12765,6 +12837,7 @@ impl ResponsesSseTransformer {
     ) -> Vec<u8> {
         self.observe_event_type(event_type);
         if event_type == "response.completed" {
+            self.final_response_usage = crate::request_log::final_response_usage(data_json);
             if let Some(usage) = crate::request_log::usage_from_response_json(data_json) {
                 self.usage = Some(usage);
             }
@@ -13371,6 +13444,68 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
     }
 
     #[test]
+    fn final_response_stream_evidence_requires_complete_terminal_payload() {
+        let completed = b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n";
+        let mut final_stream = ResponsesSseTransformer::default();
+        for chunk in completed.chunks(7) {
+            final_stream.push_bytes(chunk);
+        }
+        assert_eq!(
+            final_stream.final_response_usage().unwrap().input_tokens,
+            12
+        );
+        assert!(final_stream.finish().is_none());
+
+        for suffix in [
+            &b"data: {\"type\":\"response.incomplete\"}\n\n"[..],
+            &b"data: {\"type\":\"response.failed\"}\n\n"[..],
+            &b"data: {\"type\":\"error\"}\n\n"[..],
+            &b"data: {\"type\":\"response.completed\"}\n\n"[..],
+            &b"event: response.failed\ndata: {\n\n"[..],
+            &b"event: response.completed\ndata: {\n\n"[..],
+            &b"data: {"[..],
+        ] {
+            let mut invalid = ResponsesSseTransformer::default();
+            invalid.push_bytes(completed);
+            invalid.push_bytes(suffix);
+            assert!(invalid.final_response_usage().is_none(), "{suffix:?}");
+        }
+        let mut done = ResponsesSseTransformer::default();
+        done.push_bytes(completed);
+        done.push_bytes(b"data: [DONE]\n\n");
+        assert_eq!(done.final_response_usage().unwrap().input_tokens, 12);
+        for body in [
+            &completed[..completed.len() - 2],
+            &b"data: [DONE]\n\n"[..],
+            &b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n"[..],
+        ] {
+            let mut invalid = ResponsesSseTransformer::default();
+            invalid.push_bytes(body);
+            assert!(invalid.final_response_usage().is_none());
+        }
+        let mut oversized = ResponsesSseTransformer::default();
+        oversized.push_bytes(completed);
+        oversized.push_bytes(&oversized_event("response.completed", "fixture"));
+        assert!(
+            oversized.final_response_usage().is_none(),
+            "oversized terminal cannot reuse earlier usage"
+        );
+
+        let mut discarded_attempt = ResponsesSseTransformer::default();
+        discarded_attempt.push_bytes(b"data: {\"type\":\"response.failed\",\"response\":{\"usage\":{\"input_tokens\":999,\"output_tokens\":999}}}\n\n");
+        assert!(discarded_attempt.final_response_usage().is_none());
+        let mut returned_attempt = ResponsesSseTransformer::default();
+        returned_attempt.push_bytes(completed);
+        assert_eq!(
+            returned_attempt
+                .final_response_usage()
+                .unwrap()
+                .input_tokens,
+            12
+        );
+    }
+
+    #[test]
     fn error_event_failure_detail_is_kept_out_of_client_facing_reason() {
         let mut t = ResponsesSseTransformer::default();
         t.push_bytes(b"event: error\ndata:{\"type\":\"error\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"}}\n\n");
@@ -13666,6 +13801,110 @@ mod parallel_tool_call_pairing_tests {
         assert_eq!(body["tool_choice"]["tools"], json!([{"type": "function", "name": "exec"}]));
         let mut untouched = json!({"tools": [{"type": "function", "name": "exec"}], "tool_choice": "auto"});
         assert!(!strip_image_generation_tool(&mut untouched));
+    }
+
+    /// #2870：供应商开关打开时剥离 `input_image.detail`；默认关闭保持 OpenAI 语义。
+    #[tokio::test]
+    async fn responses_strips_input_image_detail_only_when_enabled() {
+        let body = || json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "look"},
+                    {"type": "input_image", "image_url": "[image omitted]", "detail": "original"}
+                ]}
+            ]
+        });
+
+        let mut enabled = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        assert!(!enabled.strips_responses_image_detail());
+        let (_, out, _, _) = upstream_request_parts(
+            &enabled,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        assert_eq!(out["input"][0]["content"][1]["detail"], "original");
+
+        enabled.strip_responses_image_detail = true;
+        assert!(enabled.strips_responses_image_detail());
+        let (_, out, _, _) = upstream_request_parts(
+            &enabled,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        let image = &out["input"][0]["content"][1];
+        assert_eq!(image["type"], "input_image");
+        assert!(image.get("detail").is_none(), "{image}");
+    }
+
+    /// 开关打开后，tool 输出里的 `input_image.detail` 也一并剥离；
+    /// `function_call_output.output[]` 与普通消息一起剥离。
+    #[tokio::test]
+    async fn responses_strips_tool_output_image_detail_when_enabled() {
+        let mut relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        relay.strip_responses_image_detail = true;
+        let body = json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "function_call", "call_id": "call_read", "name": "view_image", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_read", "output": [
+                    {"type": "input_text", "text": "screenshot"},
+                    {"type": "input_image", "image_url": "[image omitted]", "detail": "original"}
+                ]}
+            ]
+        });
+        let (_, out, _, _) = upstream_request_parts(
+            &relay,
+            body,
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+
+        assert_eq!(out["input"][1]["type"], "function_call_output");
+        assert_eq!(out["input"][1]["output"][1]["type"], "input_image");
+        assert!(out["input"][1]["output"][1].get("detail").is_none());
+    }
+
+    /// Chat 形态的 `image_url.detail` 不在 Responses `input[].content[]` 路径内，
+    /// 兼容剥离不得碰它。
+    #[test]
+    fn image_detail_stripping_ignores_chat_image_blocks() {
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "[image omitted]", "detail": "high"}}
+                ]}
+            ]
+        });
+        assert!(!strip_input_image_details(&mut body));
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["detail"],
+            "high"
+        );
     }
 
     fn assert_pairing(body: &Value, expected: usize) {

@@ -63,6 +63,16 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm test
 
+      - name: Native Fast regression tests
+        run: >-
+          node --test
+          assets/inject/native-fast-unlock.test.cjs
+          assets/inject/native-fast-module.test.cjs
+          assets/inject/native-fast-settings.test.cjs
+          assets/inject/native-fast-rspack.test.cjs
+          assets/inject/native-predictions.test.cjs
+          scripts/tests/check-native-fast.test.cjs
+
       - name: Check native browser inspector bundle
         run: node scripts/assemble-native-browser-inspector.mjs --check
 
@@ -166,6 +176,16 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm ci
 
+      - name: Native Fast regression tests
+        run: >-
+          node --test
+          assets/inject/native-fast-unlock.test.cjs
+          assets/inject/native-fast-module.test.cjs
+          assets/inject/native-fast-settings.test.cjs
+          assets/inject/native-fast-rspack.test.cjs
+          assets/inject/native-predictions.test.cjs
+          scripts/tests/check-native-fast.test.cjs
+
       - name: Check native browser inspector bundle
         run: node scripts/assemble-native-browser-inspector.mjs --check
 
@@ -244,6 +264,16 @@ jobs:
       - name: Frontend tests
         working-directory: apps/codex-plus-manager
         run: npm test
+
+      - name: Native Fast regression tests
+        run: >-
+          node --test
+          assets/inject/native-fast-unlock.test.cjs
+          assets/inject/native-fast-module.test.cjs
+          assets/inject/native-fast-settings.test.cjs
+          assets/inject/native-fast-rspack.test.cjs
+          assets/inject/native-predictions.test.cjs
+          scripts/tests/check-native-fast.test.cjs
 
       - name: Check native browser inspector bundle
         run: node scripts/assemble-native-browser-inspector.mjs --check

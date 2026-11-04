@@ -18,9 +18,9 @@
 
 Codex++ is a unified manager for AI coding agents, built on an everything-is-an-extension architecture: UI, commands, tools for the model, agent-loop hooks, and the requests and replies sent to models can all be taken over by extensions. No code required: say “turn the send button into a dog” in a Codex chat and the agent writes the extension, hot-reloads it, and confirms with a screenshot.
 
-It also ships a local gateway: Codex, Claude Code, Gemini CLI, OpenCode, Zed, and 50+ other agents share one provider pool, requests are routed by model name, and traffic moves to the next provider automatically when a key cools down or a provider trips. ChatGPT, GitHub Copilot, Cursor, and other subscriptions can be signed in to the pool as well. The original direct mode (official login, official login + API, pure API, aggregate providers) is fully preserved, and you can switch between the two at any time.
+It also ships a local gateway: Codex, Claude Code, Gemini CLI, OpenCode, Zed, and 50+ other agents share one provider pool, requests are routed by model name, and traffic moves to the next provider automatically when a key cools down or a provider trips. ChatGPT, GitHub Copilot, Cursor, and other subscriptions can be signed in to the pool as well. The original direct mode (official login, official login + API, pure API, aggregate providers) is fully preserved, and Codex switches between **Via gateway** and **Direct** with one click.
 
-There is also session management, Codex UI enhancements, an enhanced Claude Desktop copy, Computer Use sharing across agents, and sub-agent collaboration. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
+There is also session management, Codex UI enhancements, an enhanced Claude Desktop copy, Computer Use sharing across agents, and sub-agent collaboration. The manager looks like a desktop app: the sidebar picks the agent and page, tabs along the top switch sub-pages, and the gear opens a settings directory. If you only use Codex, or only want the enhancements, a usage mode hides the pages you don't need. Double-click to open its window and launch each app from there. It never modifies any official app's installation files.
 
 <p align="center">
   <img src="docs/images/readme-preview/extension-chat.png" alt="Real session: in a Codex chat the agent turned the send button into a dog and the context ring into a rainbow progress bar, both live" width="720">
@@ -38,9 +38,9 @@ After installation, one `Codex++` entry is available. Double-click it to open th
 
 1. **Add providers** — open **Gateway → Provider pool** and click **Add provider**: paste an API key, sign in to a ChatGPT / GitHub Copilot / SuperGrok subscription, or import several providers at once from direct mode or OpenCode. Model lists and prices are filled in automatically.
 2. **Connect agents** — open **Gateway → Agent access**, turn on the agents you use, and pick each one's default model. Claude Code and Grok keep working in your terminal as usual.
-3. **Launch Codex** — click **Launch Codex** on the Codex page or the ▶ next to Codex in the sidebar. Settings that rely on injection (most enhancements, Fast unlock) take effect after restarting Codex from Codex++.
+3. **Launch Codex** — click **Launch Codex** on the Codex page or the start button next to Codex in the sidebar. Settings that rely on injection (most enhancements, Fast unlock) take effect after restarting Codex from Codex++.
 
-Prefer not to use the gateway? Direct mode still works: pick a provider under **Codex → Provider configuration (legacy)** and launch. See the full [guide](https://codexpp.cc/guide.html) on the website.
+Prefer not to use the gateway? Direct mode still works: in **Codex → Connection & providers**, set **Connection** to **Direct**, pick a provider, and launch. See the full [guide](https://codexpp.cc/guide.html) on the website.
 
 The Windows installer creates Desktop and Start Menu shortcuts. On macOS, drag `Codex++.app` from the DMG into Applications.
 
@@ -78,13 +78,13 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | Models and context | Per-model context windows, prices, and reasoning levels; `model_catalog_json`; per-provider proxies; image generation models per agent |
 | Computer Use sharing | Expose the Computer Use and Chrome browser control built into the Codex desktop app (ChatGPT.app) over MCP to Claude Code, Claude Desktop, Codex CLI, DeepSeek Harness, ZCode, and WorkBuddy, with a selectable approval policy (macOS) |
 | Claude Desktop | An enhanced Claude.app copy with Chinese UI, composer dictation, and Computer Use; the official app stays untouched |
-| Session management | Codex, Claude Code, and Grok sessions in one list; bulk deletion with undo, Markdown export, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |
+| Session management | Codex, Claude Code, Claude Desktop, and Grok sessions in one list; bulk deletion with undo, Markdown export, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |
 | Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; restart or stop each one individually |
 | Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), or Claude Code and receive results in the same chat; tasks for a busy agent run concurrently up to a limit, then queue |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, dictation with a global hotkey, native composer predictions, conversation width and scroll restore, native Fast unlock, Goals, next-step suggestions, skins, and image overlays |
 | Usage status line | Output throughput, cache hit rate, and context usage below the composer, read from local Codex session records |
 | Tray panel and WeChat | A tray quick panel to switch models and check usage and recent requests; QR login connects personal WeChat to local Codex sessions |
-| Maintenance | MCP and Skills per agent, user scripts, AI agent cache cleanup (Codex, Claude, Codex++), app detection, launch at login, settings export / import, logs, diagnostics, and Release updates |
+| Maintenance | MCP and Skills per agent, user scripts, AI agent cache cleanup (Codex, Claude, Codex++), app detection, launch at login, settings export / import, logs, diagnostics, and Release updates downloaded in the background |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
@@ -174,7 +174,7 @@ Every UI enhancement is independently configurable. Disabling the global enhance
   <img src="docs/images/agent-collaboration.png" alt="Verified DeepSeek example: ask what 1+1 equals and receive 2 through the Codex Plus Collaboration integration" width="100%">
 </p>
 
-**Agent pet:** an optional clickable desktop pet for Codex that squishes with a sound effect when clicked. Pick an image from the built-in gallery (Fluent Emoji, fetched at runtime) or use your own https image URL, and import your own sounds. You can also pick the “Big fat fish (DeepSeek whale)” pet type, the original usage widget with balance, price and usage statistics, bubble editor and sounds. Turn it on from the manager's “Agent pet” page; see the [Agent pet guide](docs/agent-pet.md) and the [whale widget guide](docs/whale-widget.md).
+**Agent pet:** an optional clickable desktop pet for Codex that squishes with a sound effect when clicked. Pick an image from the built-in gallery (Fluent Emoji, fetched at runtime) or use your own https image URL, and import your own sounds. You can also pick the “Big fat fish (DeepSeek whale)” pet type, the original usage widget with balance, price and usage statistics, bubble editor and sounds. Turn it on with **Settings** on its row under **Everything is an extension → Local extensions**; see the [Agent pet guide](docs/agent-pet.md) and the [whale widget guide](docs/whale-widget.md).
 
 **Whale widget source and credits:** The original features, complete UI engine, character, built-in sounds and animations come from [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget), adapted here as a built-in Codex++ feature. The Codex desktop architecture also references [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public). The upstream [LICENSE](assets/inject/upstream/whale-widget/LICENSE) and [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md) are preserved; the media assets are not claimed as original work by this project.
 
@@ -188,7 +188,9 @@ Every UI enhancement is independently configurable. Disabling the global enhance
 | `deepseek/deepseek-v4-pro` | Only that provider |
 | `group/coding` | A group you created, using the group's routing mode |
 
-Context windows are set per model in the provider details (one click fills them from public model data); a request longer than a provider's window is tried there last. To fall back to direct connections after quitting Codex++, turn on **Restore direct connections when Codex++ exits** in **Gateway settings** (off by default). Codex++ always switches back to direct mode before installing an update.
+Context windows are set per model in the provider details (one click fills them from public model data); a request longer than a provider's window is tried there last. To fall back to direct connections after quitting Codex++, turn on **Restore direct connections when Codex++ exits** under **Settings → Gateway** (off by default). Codex++ always switches back to direct mode before installing an update.
+
+Codex picks one or the other under **Codex → Connection & providers → Connection**; direct providers can also be added to the gateway pool with one click.
 
 **Direct mode** keeps the original Codex provider setup. Official login, mixed API, and pure API are stored and switched separately:
 
@@ -206,7 +208,7 @@ Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++
 With model aggregation, the native model picker folds models into one group per provider.
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)" width="560">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker grouped by provider: each provider with its model count, the current one marked; click in to pick a model" width="420">
 </p>
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
@@ -228,8 +230,8 @@ Settings that depend on renderer injection generally require saving and restarti
 
 **Force unlock native Fast** gives pure API-key setups access to Codex's native **Standard / ⚡ Fast** controls for supported models, using the existing model and reasoning-effort menus.
 
-1. Open **Codex → Enhance → Common enhancements** and enable both the enhancement master switch and **Force unlock native Fast** (disabled by default).
-2. Make sure the model declares a Fast service tier. In direct mode, open that model's settings in **Codex → Provider configuration (legacy)**, set **Fast (priority) support**, and save the model and provider. In gateway mode, a model group supports Fast when every member does.
+1. Open **Codex → Built-in extensions** and enable both the **Enable built-in extensions** master switch at the top and **Force unlock native Fast** (disabled by default).
+2. Make sure the model declares a Fast service tier. In direct mode, open that model's settings in **Codex → Connection & providers**, set **Fast (priority) support**, and save the model and provider. In gateway mode, a model group supports Fast when every member does.
 3. Save the enhancement settings and restart Codex from Codex++. Open the model or reasoning-effort menu and select **⚡ Fast**, or select **Standard** to switch back.
 
 Availability, speed improvements, and pricing depend on the provider. Enabling this feature does not automatically speed up every model. Disable the option and restart Codex to restore its original authentication checks.
@@ -238,7 +240,7 @@ Availability, speed improvements, and pricing depend on the provider. Enabling t
 
 Codex++ publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds one universal DMG for Intel and Apple Silicon Macs. Each package contains one application executable.
 
-The About page can check and start updates. Older macOS two-app versions require the manual migration described above.
+When a new version is found, Codex++ downloads the installer in the background and shows its progress in a card at the bottom of the sidebar; nothing is installed until you click **Install**. You can also check for updates under **Settings → Version & updates**. Older macOS two-app versions require the manual migration described above.
 
 ## Data Locations
 
@@ -258,7 +260,7 @@ Featured and official extensions are reviewed by Codex++ and install the exact r
 
 ### The Codex++ menu does not appear
 
-Open `Codex++` and click **Launch Codex** to start the official app. Check the detected app path, launch status, and diagnostic logs under **Codex → Settings** (maintenance is at the bottom) and the About page. On macOS you can also turn on **Auto-takeover of the official app** in **Codex → Settings** so Codex++ takes over when you open the official app yourself.
+Enhancements are only attached to an official app launched from `Codex++`. If you opened Codex yourself from the Dock or Start menu, the Codex row in the sidebar says it is not attached and its button becomes **Restart & attach**; click it. If the menu is still missing, check the detected app path, launch status, and diagnostic logs under **Settings → Codex** (which includes install & maintenance) and **Settings → Logs & Diagnostics**. On macOS you can also turn on **Auto-takeover of the official app** in **Settings → Codex** so Codex++ takes over when you open the official app yourself.
 
 ### Requests fail after switching providers
 
@@ -266,7 +268,7 @@ In gateway mode, click **Test** in the provider details: it sends a short reques
 
 ### Agents cannot connect after I quit Codex++
 
-Agents connected to the gateway keep pointing at the local gateway, which only runs while Codex++ is open; reopening Codex++ restores them. To fall back to direct connections on exit, turn on **Restore direct connections when Codex++ exits** in **Gateway settings**.
+Agents connected to the gateway keep pointing at the local gateway, which only runs while Codex++ is open; reopening Codex++ restores them. To fall back to direct connections on exit, turn on **Restore direct connections when Codex++ exits** under **Settings → Gateway**.
 
 ### Does it support Intel Macs?
 
@@ -274,7 +276,7 @@ Yes. The `macos-universal.dmg` package runs on both Intel and Apple Silicon Macs
 
 ### Computer Use tools do not appear in my client
 
-Restart the client after connecting. Fully quit Claude Desktop before connecting, because it rewrites its own config on exit. If the tools are still missing, check the config directory the client actually reads under **Config paths and custom directories** (「配置路径与自定义目录」) on the Computer Use page, and make sure ChatGPT has Accessibility and Screen Recording permissions.
+Restart the client after connecting. Fully quit Claude Desktop before connecting, because it rewrites its own config on exit. If the tools are still missing, check the config directory the client actually reads in the **Advanced** card on the Computer Use page, and make sure ChatGPT has Accessibility and Screen Recording permissions.
 
 ## Development
 

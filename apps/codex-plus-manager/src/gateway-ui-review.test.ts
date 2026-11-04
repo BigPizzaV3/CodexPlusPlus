@@ -65,7 +65,7 @@ test("界面上显示供应商名的地方都打码（含悬停提示、无障�
   assert.match(providers, /<strong>\{maskAccountName\(item\.name\)\}<\/strong>/);
   assert.doesNotMatch(providers, /<strong>\{item\.name\}<\/strong>/);
   const usage = read("GatewayUsage.tsx");
-  assert.match(usage, /<strong>\{maskAccountName\(balance\.provider\)\}<\/strong>/);
+  assert.match(usage, /title=\{maskAccountName\(balance\.provider\)\}/);
   assert.doesNotMatch(usage, /title=\{group\.label\}/);
   // 提示（toast）里的后端文案统一过 maskAccountText。
   assert.match(read("gateway-ui.tsx"), /notify\(title, maskAccountText\(result\.message\), "ok"\)/);
@@ -186,6 +186,21 @@ test("订阅登录不占全局 busy，可取消：关掉验证码弹窗即取消
   }
 });
 
+test("本机订阅导入读取具名 start，再将原始登录状态交给完成命令", () => {
+  const providers = read("GatewayProviders.tsx");
+  const login = providers.slice(providers.indexOf("const loginSubscription = async"), providers.indexOf("/** 登录订阅账号："));
+  assert.match(login, /"start_gateway_subscription_login", \{ kind: item\.id, method, input \}/);
+  assert.match(login, /if \(result\.status !== "ok"\)/);
+  assert.match(login, /if \(!result\.start\)/);
+  assert.match(login, /start = result\.start;/);
+  assert.doesNotMatch(login, /result\.payload/, "CommandResult 把结果摊平，不能再从 payload 取登录状态");
+  assert.match(login, /"finish_gateway_subscription_login", \{ kind: item\.id, start, skipAgents: skip \}/);
+  const preview = read("../web-preview/tauri-web-shim.ts");
+  const shimStart = preview.slice(preview.indexOf('case "start_gateway_subscription_login":'), preview.indexOf('case "finish_gateway_subscription_login":'));
+  assert.match(shimStart, /return ok\(\{ start: \{/);
+  assert.doesNotMatch(shimStart, /payload:/);
+});
+
 test("「挑选」弹层挂在 body 上，紧凑规则用 .gw-portal 前缀", () => {
   assert.match(read("GatewayPage.css"), /\.gw-portal \.gw-select-item \{/);
   assert.doesNotMatch(read("styles.css"), /\.shell \.gw-select-item/);
@@ -203,13 +218,13 @@ test("上下文窗口按模型在供应商池里填，Agent 页只留兜底的�
   assert.match(providers, /"save_gateway_provider_windows", \{ id: entry\.id, windows: modelWindows, fallback \}/);
   const dialog = read("ProviderWindowsDialog.tsx");
   assert.match(dialog, /next\[model\] = windowText\(match\.context\)/, "按公开资料填写用 models.dev 的 limit.context");
-  assert.match(read("GatewayAgents.tsx"), /<span>\{t\("默认窗口"\)\}<\/span>/);
+  assert.match(read("GatewayAgents.tsx"), /title=\{t\("默认窗口"\)\}/);
 });
 
 test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思考等级，存的是和直连模式同格式的模型资料", () => {
   const agents = read("GatewayAgents.tsx");
   assert.match(agents, /"save_gateway_image_model", \{ agent, model: next \}/);
-  assert.match(agents, /"save_gateway_image_inline", \{ agent, enabled: event\.currentTarget\.checked \}/, "生图链接转数据可以按 Agent 关掉");
+  assert.match(agents, /"save_gateway_image_inline", \{ agent, enabled: !inlineUrls \}/, "生图链接转数据可以按 Agent 关掉");
   assert.match(agents, /\{ value: "off", label: t\("关闭"\)/);
   assert.match(agents, /agent\.agent === "codex" \? <ImageModelRow/, "目前只有 Codex 会发生图请求");
   assert.doesNotMatch(read("GatewayPage.tsx"), /save_gateway_image_model/, "网关设置里不再有全局的生图模型");
@@ -223,7 +238,7 @@ test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思
 test("用量与请求日志并成一页：两个页签各是一条路由，统计表点一行跳到请求并筛选", () => {
   const app = read("App.tsx");
   assert.match(app, /route === "gatewayUsage" \|\| route === "requestLog" \? <UsageTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);
-  assert.match(app, /const selected = route === item\.id \|\| navAliasRoute\[route\] === item\.id;/, "在请求页签时侧栏「用量」也是选中");
+  assert.match(app, /match: \["gatewayUsage", "requestLog"\]/, "在请求页签时侧栏「用量」也是选中");
   assert.match(app, /useEffect\(\(\) => onOpenRequestLog\(\(focus\) => \{/);
   assert.match(read("GatewayUsage.tsx"), /onClick=\{\(\) => openRequestLog\(split === "agent"/);
   assert.match(read("GatewayUsage.tsx"), /\{ relayId: group\.key, relayLabel: maskAccountName\(group\.label\), range \}/, "按供应商 id 精确筛，时间段跟着统计页");
@@ -233,10 +248,10 @@ test("用量与请求日志并成一页：两个页签各是一条路由，统�
   assert.match(read("GatewayPage.tsx"), /<TopbarActions>\{tab === "usage" \? null : refreshButton\}<\/TopbarActions>/, "用量页签只留一个刷新");
 });
 
-test("启动落在网关「总览」，不落在上次那个 Agent 的概览", () => {
+test("启动落在首页（赞助商推荐），不落在上次那个 Agent 的概览", () => {
   const app = read("App.tsx");
   const body = app.slice(app.indexOf("function loadInitialRoute(): Route {"), app.indexOf("function initialTourOpen"));
-  assert.match(body, /return "hub";\r?\n\}/);
+  assert.match(body, /return "home";\r?\n\}/);
   assert.doesNotMatch(body, /return "overview"/);
 });
 

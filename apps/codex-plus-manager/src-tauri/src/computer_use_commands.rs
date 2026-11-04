@@ -54,14 +54,22 @@ impl TargetRef {
         }
     }
 
-    /// Claude Code 回合钩子要写的 settings.json；不是 Claude Code 时为 `None`。
-    fn hooks_path(&self) -> Option<std::path::PathBuf> {
+    /// 回合钩子要写的配置文件与事件列表；没有回合钩子的目标为 `None`。
+    /// Claude Code 装 `CLAUDE_EVENTS` 全集，Devin 只装 `Stop`（它没有 SubagentStop）。
+    fn hooks_target(&self) -> Option<(std::path::PathBuf, &'static [&'static str])> {
         match self {
-            Self::Builtin(codex_plus_core::computer_use::Target::ClaudeCode) => {
-                Some(codex_plus_core::claude_hooks::claude_settings_path())
-            }
+            Self::Builtin(codex_plus_core::computer_use::Target::ClaudeCode) => Some((
+                codex_plus_core::claude_hooks::claude_settings_path(),
+                &codex_plus_core::claude_hooks::CLAUDE_EVENTS,
+            )),
+            Self::Builtin(codex_plus_core::computer_use::Target::Devin) => Some((
+                codex_plus_core::claude_hooks::devin_settings_path(),
+                &codex_plus_core::claude_hooks::DEVIN_EVENTS,
+            )),
             Self::Builtin(_) => None,
-            Self::Custom(custom) => custom.claude_settings_path(),
+            Self::Custom(custom) => custom
+                .claude_settings_path()
+                .map(|path| (path, &codex_plus_core::claude_hooks::CLAUDE_EVENTS[..])),
         }
     }
 }
@@ -72,7 +80,7 @@ pub async fn computer_use_install(target: String) -> CommandResult<Value> {
         Ok(target) => target,
         Err(error) => return failed(&error.to_string(), json!({})),
     };
-    let hooks_path = parsed.hooks_path();
+    let hooks_target = parsed.hooks_target();
     let outcome = match parsed {
         TargetRef::Builtin(builtin) => {
             run_blocking(move || codex_plus_core::computer_use::install(builtin)).await
@@ -83,10 +91,11 @@ pub async fn computer_use_install(target: String) -> CommandResult<Value> {
     };
     match outcome {
         Ok(receipt) => {
-            // 只有 Claude Code 有 hooks。装完 MCP 顺手挂上回合结束钩子，
+            // Claude Code 与 Devin 有 hooks。装完 MCP 顺手挂上回合结束钩子，
             // 否则浏览器标签不会在回合结束时清理（见 claude_hooks 模块注释）。
-            let hooks =
-                hooks_path.and_then(|path| codex_plus_core::claude_hooks::install_at(&path).ok());
+            let hooks = hooks_target.and_then(|(path, events)| {
+                codex_plus_core::claude_hooks::install_events_at(&path, events).ok()
+            });
             let message = if receipt.changed {
                 "已接入；重启对应客户端后生效。"
             } else {
@@ -110,7 +119,7 @@ pub async fn computer_use_uninstall(target: String) -> CommandResult<Value> {
         Ok(target) => target,
         Err(error) => return failed(&error.to_string(), json!({})),
     };
-    let hooks_path = parsed.hooks_path();
+    let hooks_target = parsed.hooks_target();
     let outcome = match parsed {
         TargetRef::Builtin(builtin) => {
             run_blocking(move || codex_plus_core::computer_use::uninstall(builtin)).await
@@ -122,8 +131,8 @@ pub async fn computer_use_uninstall(target: String) -> CommandResult<Value> {
     match outcome {
         Ok(receipt) => {
             // 撤掉接入时同步摘掉回合结束钩子，别在用户不用的客户端里留一条空命令。
-            let hooks =
-                hooks_path.and_then(|path| codex_plus_core::claude_hooks::uninstall_at(&path).ok());
+            let hooks = hooks_target
+                .and_then(|(path, _)| codex_plus_core::claude_hooks::uninstall_at(&path).ok());
             let message = if receipt.changed {
                 "已移除接入；原配置已备份。"
             } else {

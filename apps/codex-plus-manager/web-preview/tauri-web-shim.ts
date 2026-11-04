@@ -17,6 +17,7 @@ const previewEnglish = (() => {
 const L = (zh: string, en: string) => (previewEnglish ? en : zh);
 
 const demoSettings = {
+  claudeAppExtensions: false,
   revision: "web-preview",
   codexAppPath: "/Applications/Codex.app",
   codexAppAutoTakeover: false,
@@ -264,7 +265,7 @@ const overview = ok({
     debugger: { status: "disconnected", address: null, message: "等待 Codex 连接" },
     protocol_conversion_enabled: true,
   },
-  current_version: "2.2.0",
+  current_version: "2.3.0",
   update_status: "up_to_date",
   settings_path: "演示模式",
   logs_path: "演示模式",
@@ -378,6 +379,9 @@ const gateway = ok({
     { id: "hj", name: "哈基米 国模", protocol: "responses", baseUrl: "https://api.biuapi.com" },
     { id: "kimi", name: "Kimi 官方", protocol: "responses", baseUrl: "https://api.moonshot.cn" },
     { id: "deepseek", name: "DeepSeek", protocol: "responses", baseUrl: "https://api.deepseek.com" },
+    // 和演示设置里的直连供应商同 id：「Codex 连接」页据此显示「加入供应商池」。
+    { id: "default", name: "默认中转", protocol: "responses", baseUrl: "https://api.deepseek.com/v1" },
+    { id: "sub2api-demo", name: "sub2api 中转（演示）", protocol: "responses", baseUrl: "https://sub2api.example.com/v1" },
   ],
   claudeProviders: [{ id: "official", name: "Claude Official" }],
   grokProfiles: [],
@@ -524,13 +528,16 @@ const agentCacheReport = {
   ],
 };
 
-// 推荐内容演示数据：中性名称，横幅用内联 SVG，不请求外部图片。
+// 推荐内容演示数据：中性名称，横幅用内联 SVG（尺寸和真实广告图一样大），不请求外部图片。
 const demoBanner = (label: string, hue: number) =>
-  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="200"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="640" height="200" fill="url(#g)"/><text x="40" y="118" font-family="Helvetica" font-size="44" font-weight="700" fill="white">${label}</text></svg>`)}`;
+  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="1600" height="640" fill="url(#g)"/><text x="400" y="360" font-family="Helvetica" font-size="120" font-weight="700" fill="white">${label}</text></svg>`)}`;
 const demoAds = [
   { id: "demo-a", type: "sponsor", title: "示例中转站 A", description: "稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: ["价格划算", "稳定接入", "高缓存命中"] },
   { id: "demo-b", type: "sponsor", title: "示例聚合平台 B", description: "一个 Key 访问多家模型，兼容 Claude Code 等工具。", url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: ["多模型", "兼容 Claude Code"] },
   { id: "demo-c", type: "sponsor", title: "示例服务 C", description: "开放、稳定、高性价比的模型中转。", url: "https://example.com/c", image: demoBanner("Service C", 20), highlights: ["按量计费"] },
+  { id: "demo-e", type: "sponsor", title: "示例云 E", description: "150+ 主流模型，企业级 MaaS，按需选用，适合团队统一采购和管理。这一句故意写得很长，用来检查一行说明超出宽度时会不会把页面撑宽。", url: "https://example.com/e", image: demoBanner("Cloud E", 200), highlights: ["150+ 模型", "企业级"] },
+  { id: "demo-f", type: "sponsor", title: "示例站 F", description: "兼容 OpenAI / Anthropic 协议。", url: "https://example.com/f", highlights: ["支持开票"] },
+  { id: "demo-g", type: "sponsor", title: "示例平台 G", description: "国内直连，低延迟。", url: "https://example.com/g", image: demoBanner("G", 120), highlights: [] },
   { id: "demo-d", type: "normal", title: "示例教程", description: "如何把多个 Agent 接到同一个供应商池。", url: "https://example.com/d", highlights: [] },
 ];
 
@@ -588,6 +595,7 @@ const demoComputerUseTargets = () => ({
   dsh: demoComputerUseTarget("dsh", "DeepSeek Harness", "~/.dsh/config.toml", true),
   zcode: demoComputerUseTarget("zcode", "ZCode", "~/.zcode/mcp.json", false),
   workBuddy: demoComputerUseTarget("workBuddy", "WorkBuddy AI", "~/.workbuddy/mcp.json", false),
+  devin: demoComputerUseTarget("devin", "Devin", "~/.config/devin/mcp_config.json", false),
 });
 const demoClaudeEnhance = {
   supported: true,
@@ -604,6 +612,7 @@ const demoClaudeEnhance = {
   catalogEntries: 2864,
   voiceInput: false,
   localization: true,
+  extensions: false,
   computerUse: true,
   computerUseSupported: true,
   bashTimeout: { enabled: false, defaultEnabled: false, defaultSeconds: 120, maxEnabled: false, maxSeconds: 600 },
@@ -619,7 +628,7 @@ const demoBuiltins = [
   ["dream-skin", "梦皮主题", true, null], ["plugin-market-unlock", "插件市场解锁", true, null],
   ["instance-identity", "多开身份提示", true, null], ["session-title-hook", "会话标题中间件", true, null],
 ].map(([id, name, enabled, replacedBy]) => ({ id, key: `builtin:${id}`, name, description: "", enabled, replacedBy }));
-const demoUserScripts = { enabled: true, skip_next_start: false, builtins: demoBuiltins, scripts: [
+const demoUserScripts = { enabled: true, claude_enabled: false, skip_next_start: false, builtins: demoBuiltins, scripts: [
   { key: "user:copy-title.js", name: "copy-title.js", source: "user", kind: "script", package: null, enabled: true, status: "loaded", error: "" },
   { key: "user:pomodoro_timer", name: "番茄钟", source: "user", kind: "package", enabled: true, status: "loaded", error: "",
     package: { id: "pomodoro_timer", version: "0.1.0", description: "在左侧图标栏提供可持久化的 25 分钟番茄钟", engine: 1, routes: [],
@@ -640,6 +649,10 @@ const demoUserScripts = { enabled: true, skip_next_start: false, builtins: demoB
       config: { minutes: 25, sound: true, theme: "red", note: "休息一下\n喝口水", tags: ["工作"], webhook: { url: "", retry: 1 } } } },
   { key: "user:future-ext", name: "未来拓展", source: "user", kind: "package", enabled: true, status: "failed",
     error: "需要拓展 API v2，当前 Codex++ 提供 v1，请升级 Codex++", package: { id: "future-ext", version: "1.0.0", description: "", engine: 2, routes: [] } },
+  { key: "user:claude-extension-demo", name: "Claude 连通测试", source: "user", kind: "package",
+    enabled: false, claude_enabled: true, status: "disabled", error: "",
+    package: { id: "claude-extension-demo", version: "0.1.0", description: "按钮、后台工具与会话事件", engine: 1, routes: [], backend: true,
+      claudeDesktop: { buttons: [{ id: "status", label: "Status", method: "status" }] } } },
 ] };
 const settingsResult = () => ok({ revision: "web-preview", settings: demoSettings, settings_path: "演示模式", user_scripts: demoUserScripts });
 
@@ -647,6 +660,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
   switch (command) {
     case "list_tools": return tools as T;
     case "load_gateway": return gateway as T;
+    case "start_gateway_subscription_login": return ok({ start: { message: "", state: {} } }) as T;
     case "scan_agent_cache": return ok({ report: agentCacheReport }) as T;
     case "fetch_provider_models": return ok({ models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"], endpoint: "https://api.anthropic.com/v1/models" }) as T;
     case "agent_pet_catalog": return [
@@ -680,19 +694,64 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { agent: "grok", id: "g1", title: L("解释这段正则", "Explain this regex"), cwd: "/Users/demo/Projects/data-tools", updatedAtMs: Date.now() - 5 * 3_600_000 },
     ] : [] }) as T;
     case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
+    // 「版本与更新」演示：有新版本，后台下载 1 秒后完成（只下载不安装）。
+    case "check_update": if (!new URLSearchParams(window.location.search).has("showUpdate")) return ok({ currentVersion: "2.3.0", latestVersion: "2.3.0", releaseSummary: "", assetName: null, assetUrl: null, updateAvailable: false, progress: 0 }) as T;
+      return ok({ currentVersion: "2.3.0", latestVersion: "2.3.0", releaseSummary: "### 新增\n- 界面整体重做", assetName: "Codex++-2.3.0.dmg", assetUrl: "https://example.test/Codex++-2.3.0.dmg", updateAvailable: true, downloaded: false, progress: 0 }) as T;
+    case "download_update": await new Promise((resolve) => setTimeout(resolve, 1000)); return ok({ downloaded: true, latestVersion: "2.3.0" }) as T;
+    // 「日志与诊断」演示：几条诊断日志（含出错和重试）和一份诊断报告。
+    case "read_latest_logs": {
+      const now = Date.now();
+      const line = (offset: number, event: string, detail: unknown) => JSON.stringify({ timestamp_ms: now - offset, pid: 17040, event, detail });
+      const text = [
+        'ount":0,"models":[]}',
+        line(3_600_000, "manager.start", { version: "2.3.0", platform: "macos" }),
+        line(1_800_000, "gateway.helper_started", { port: 63130, agents: 2 }),
+        line(900_000, "manager.save_settings", { activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "default", modelCount: 2 }, { id: "sub2api-demo", modelCount: 3 }] }),
+        line(600_000, "gateway.retry", { provider: "zhipu", status: 429, attempt: 2 }),
+        line(300_000, "manager.navigation_failed", { error: "route not found: legacy", route: "legacy" }),
+        line(60_000, "codex.launch", { status: "ok", pid: 31877, cdp: 9229 }),
+      ].join("\n");
+      return ok({ path: "~/Library/Application Support/Codex++/codex-plus.log", text, lines: 7, truncated: true, fileSize: 2_400_000 }) as T;
+    }
+    case "copy_diagnostics": return ok({ report: JSON.stringify({ generatedAtMs: Date.now(), version: "2.3.0", overview: { codex_app: { status: "found", path: "/Applications/ChatGPT.app" }, codex_version: "26.1027.61615", silent_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, management_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, latest_launch: { status: "stopped", phase: "user_stopped" } } }, null, 2) }) as T;
     case "load_request_flow": return ok({ entries: demoRequestFlow(Number(args.limit) || 30) }) as T;
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;
     case "load_overview": return overview as T;
-    case "load_ads": return ok({ version: 1, ads: demoAds, topAds: [] }) as T;
+    // 置顶赞助位默认空；?showAds 放两条，?showAds=N 放 N 条（看首页横幅几个时怎么排）。
+    case "load_ads": {
+      const param = new URLSearchParams(location.search).get("showAds");
+      const count = param === null ? 0 : Number(param) > 1 ? Number(param) : 2;
+      return ok({ version: 1, ads: demoAds, topAds: demoAds.filter((ad) => ad.type === "sponsor").slice(0, count) }) as T;
+    }
     case "load_settings":
     case "save_settings":
     case "reset_settings":
     case "set_settings_path":
     case "reset_settings_path":
     case "refresh_user_script_inventory":
-      if (command === "save_settings" && args.settings) return ok({ revision: "web-preview", settings: args.settings, settings_path: "演示模式", user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
+      if (command === "save_settings" && args.settings) {
+        Object.assign(demoSettings, args.settings);
+        tools.activeTool = demoSettings.activeTool;
+      }
       return settingsResult() as T;
+    case "set_user_scripts_enabled":
+      if (args.host === "claude") {
+        demoUserScripts.claude_enabled = Boolean(args.enabled);
+        demoSettings.claudeAppExtensions = Boolean(args.enabled);
+        demoClaudeEnhance.extensions = Boolean(args.enabled);
+      } else {
+        demoUserScripts.enabled = Boolean(args.enabled);
+      }
+      return settingsResult() as T;
+    case "set_user_script_enabled": {
+      const script = demoUserScripts.scripts.find((item) => item.key === args.key);
+      if (script) {
+        if (args.host === "claude") script.claude_enabled = Boolean(args.enabled);
+        else script.enabled = Boolean(args.enabled);
+      }
+      return settingsResult() as T;
+    }
     case "relay_status": return ok({ authenticated: true, authSource: "演示", accountLabel: "Web preview", configPath: "演示模式", configured: true, requiresOpenaiAuth: false, hasBearerToken: true, backupPath: null }) as T;
     case "read_relay_files": return ok({ configPath: "演示模式", authPath: "演示模式", configContents: "[model_providers.custom]", authContents: "{}" }) as T;
     case "check_env_conflicts": return ok({ conflicts: [] }) as T;
@@ -709,7 +768,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "load_pending_dream_skin_community": return ok({ versionId: "" }) as T;
     case "load_watcher_state": return ok({ enabled: false, running: false, status: "disabled", message: "演示模式" }) as T;
     case "load_auto_takeover_state": return ok({ running: false, enabled: false, message: "演示模式" }) as T;
-    case "update_check": return ok({ currentVersion: "2.2.0", latestVersion: "2.2.0", updateAvailable: false }) as T;
+    case "update_check": return ok({ currentVersion: "2.3.0", latestVersion: "2.3.0", updateAvailable: false }) as T;
     case "refresh_script_market": return ok({ market: { status: "ok", message: "演示模式", updatedAt: "2026-10-26T12:51:00Z", scripts: [
       { id: "relay-balance", name: "Codex Relay Balance", description: "通用中转站余额与模型用量监控，支持自动读取或手动填写接口、日期范围、Token 明细和实际扣费倍率。", version: "0.3.7", author: "Codex++ Community", tags: ["codex", "relay", "balance", "usage", "quota"], homepage: "https://github.com/demo/relay-balance", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
       { id: "model-matrix", name: "Codex Model Matrix", description: "紧凑且适配主题的 Codex 模型选择器，配备可拖动吸附的推理强度滑块。", version: "1.0.0", author: "lx", tags: ["codex", "models", "reasoning"], homepage: "https://github.com/demo/model-matrix", script_url: "", installed: true, installedVersion: "1.0.0", updateAvailable: false },
@@ -717,7 +776,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     ], packages: [
       { kind: "package", id: "session-search", name: L("会话搜索", "Session search"), description: L("在侧边栏搜索全部历史会话，回车跳到命中的那一轮。", "Search all past sessions from the sidebar and jump to the matching turn."), version: "1.0.0", author: "Codex++", tags: ["history"], homepage: "", icon: "", updatedAt: "2026-10-30", repo: "BigPizzaV3/codexpp-session-search", tag: "v1.0.0", sha: "9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a", official: true, channel: "official", installed: false, installedVersion: "", installedSha: "", updateAvailable: false },
       { kind: "package", id: "word-guard", name: L("命令守卫", "Command guard"), description: L("拦截危险的 shell 命令，并给出更安全的替代写法。", "Block dangerous shell commands and suggest safer alternatives."), version: "1.2.0", author: "alice", tags: ["hooks"], homepage: "", icon: "", updatedAt: "2026-10-28", repo: "alice/codexpp-word-guard", tag: "v1.2.0", sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", official: false, channel: "curated", installed: true, installedVersion: "1.1.0", installedSha: "0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a9c1e", updateAvailable: true },
-    ], blockedInstalled: [] }, user_scripts: { enabled: true, skip_next_start: false, scripts: [] } }) as T;
+    ], blockedInstalled: [] }, user_scripts: demoUserScripts }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
     case "load_local_sessions":
@@ -734,6 +793,12 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.3.1", at: Date.now() - 120_000 } }) as T;
     // Claude 增强演示数据：增强版已制作，开了界面汉化与 Computer Use。
     case "claude_localization_status": return ok(demoClaudeEnhance) as T;
+    case "claude_localization_set_extensions": {
+      demoClaudeEnhance.extensions = Boolean(args.enabled);
+      demoSettings.claudeAppExtensions = Boolean(args.enabled);
+      demoUserScripts.claude_enabled = Boolean(args.enabled);
+      return ok(demoClaudeEnhance) as T;
+    }
     case "load_relay_environment":
     case "check_relay_environment": return ok({ clashVergeTun: { enabled: false, configPath: null }, proxyEnvironment: { variables: [] }, codexEnvFile: { exists: false, path: "" } }) as T;
     // 中转站识别：演示供应商按地址返回 sub2api（倍率 + 钱包余额）或 new-api（分组倍率 + Key 额度），其余识别不出。
@@ -829,6 +894,26 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       toolchain: { node: "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node", npm: "/usr/local/bin/npm", git: "/usr/bin/git" },
       pluginDir: "",
     } as T;
+    // Agent 协作演示数据（settings 组追加）：协作页没有快照时整页只剩报错。
+    case "agent_collaboration_request": return (args.action === "mcp_config"
+      ? { codexToml: "[mcp_servers.codex-plus-agents]\ncommand = \"codex-plus\"", claudeJson: "{\n  \"mcpServers\": {}\n}", command: "codex-plus", args: ["agents-mcp"] }
+      : {
+        config: { enabled: true, defaultAgentId: "deepseek", maxRuntimeMinutes: 10, agents: [
+          { id: "codex", name: "Codex", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
+          { id: "deepseek", name: "DeepSeek Harness", executable: "", enabled: true, model: "deepseek-account/deepseek-flash", reuseSavedAuth: true, maxConcurrentTasks: 1 },
+          { id: "claude", name: "Claude Code", executable: "/usr/local/bin/claude", enabled: true, model: "", reuseSavedAuth: false, maxConcurrentTasks: 2 },
+        ] },
+        tasks: [
+          { id: "task-1", agentId: "claude", prompt: "审核这次改动，重点看并发与错误处理", cwd: "/Users/demo/project", status: "completed", answer: "未发现阻塞问题；建议给重试加上上限。", error: "", sessionId: "s-1", createdAtMs: Date.now() - 3_600_000, updatedAtMs: Date.now() - 3_300_000, cancelRequested: false, progress: "" },
+        ],
+        availability: [
+          { id: "codex", available: true, path: "/Applications/Codex.app/Contents/Resources/codex" },
+          { id: "deepseek", available: true, path: "/Users/demo/.dsh/bin/dsh" },
+          { id: "claude", available: true, path: "/usr/local/bin/claude" },
+        ],
+        integration: { status: "connected", message: "已登记到 ~/.codex/config.toml", home: "~/.codex" },
+        capabilities: { maxQueuedPerAgent: 8, maxConcurrentTasksLimit: 4 },
+      }) as T;
     default: return ok() as T;
   }
 }

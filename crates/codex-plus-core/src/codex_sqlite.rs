@@ -4,6 +4,43 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+/// 读取已打开 SQLite 文件的稳定身份。
+/// 采集期间源文件可能被替换或轮转，路径和创建时间不足以区分，优先使用系统文件身份。
+pub fn opened_file_identity(file: &fs::File) -> std::io::Result<(u64, u64)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        unsafe {
+            GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)
+                .map_err(|_| std::io::Error::last_os_error())?;
+        }
+        Ok((
+            u64::from(info.dwVolumeSerialNumber),
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        ))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = file;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "opened file identity is unavailable on this platform",
+        ))
+    }
+}
+
 pub fn default_codex_home_dir() -> PathBuf {
     crate::codex_home::default_codex_home_dir()
 }
@@ -27,7 +64,7 @@ pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
     codex_session_db_paths_in_home(&sqlite_home)
 }
 
-fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
+pub(crate) fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = codex_sqlite_dir_session_dbs(home);
     let legacy = legacy_state_db_path(home);
     if !paths.iter().any(|path| path == &legacy) {
@@ -68,7 +105,7 @@ fn resolve_sqlite_home_from_env() -> Option<PathBuf> {
     resolve_sqlite_home(std::env::var_os("CODEX_SQLITE_HOME"))
 }
 
-fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
+pub(crate) fn resolve_sqlite_home_home_or_default(home: &Path) -> PathBuf {
     resolve_sqlite_home_from_env().unwrap_or_else(|| home.to_path_buf())
 }
 
@@ -175,6 +212,74 @@ fn connection_has_column(db: &Connection, table: &str, column: &str) -> bool {
     .is_ok()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadResumeModelMetadata {
+    pub thread_id: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+}
+
+/// 一次只读查询取得原生恢复所用的模型设置；不读取或改写会话正文。
+pub fn thread_resume_model_metadata(
+    home: &Path,
+    thread_id: &str,
+) -> anyhow::Result<Option<ThreadResumeModelMetadata>> {
+    use rusqlite::OptionalExtension;
+    anyhow::ensure!(
+        !thread_id.is_empty() && thread_id.len() <= 128 && thread_id.trim() == thread_id,
+        "Invalid thread ID"
+    );
+    let mut snapshot = None;
+    for db_path in codex_session_db_paths_from_home(home) {
+        if !db_path.exists() {
+            continue;
+        }
+        let db = Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        db.busy_timeout(std::time::Duration::from_millis(50))?;
+        if !connection_has_table(&db, "threads") {
+            continue;
+        }
+        if !connection_has_column(&db, "threads", "model")
+            || !connection_has_column(&db, "threads", "reasoning_effort")
+        {
+            let contains_thread: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1)", [thread_id], |row| row.get(0),
+            )?;
+            anyhow::ensure!(!contains_thread, "Saved thread model settings are unavailable");
+            continue;
+        }
+        let row = db.query_row(
+            "SELECT model, reasoning_effort FROM threads WHERE id = ?1",
+            [thread_id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+        ).optional()?;
+        let Some((model, reasoning_effort)) = row else {
+            continue;
+        };
+        let model = model.filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Saved thread model is missing"))?;
+        anyhow::ensure!(
+            reasoning_effort.as_ref().is_none_or(|value| !value.trim().is_empty()),
+            "Saved thread reasoning effort is invalid"
+        );
+        let current = ThreadResumeModelMetadata {
+            thread_id: thread_id.to_string(),
+            model,
+            reasoning_effort,
+        };
+        anyhow::ensure!(
+            snapshot.as_ref().is_none_or(|previous| previous == &current),
+            "Conflicting saved thread model settings"
+        );
+        snapshot = Some(current);
+    }
+    Ok(snapshot)
+}
+
 /// 读出「未归档目标模式任务」对应 thread 的持久化模型（取 updated_at 最新一条）。
 /// 用于重启后把 config.toml 的默认 model 对齐到长线目标任务实际使用的模型，
 /// 防止恢复任务静默回落到 model_list 第一条（issue #2264）。
@@ -184,10 +289,9 @@ pub fn latest_unarchived_goal_thread_model(home: &Path) -> Option<String> {
         if !db_path.exists() {
             continue;
         }
-        let Ok(db) = Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) else {
+        let Ok(db) =
+            Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             continue;
         };
         if !connection_has_table(&db, "automation_runs") || !connection_has_table(&db, "threads") {

@@ -32,6 +32,8 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod diagnostics;
+pub mod disconnect_preview;
 pub mod drift;
 pub mod gemini_inbound;
 pub mod gemini_outbound;
@@ -50,6 +52,7 @@ pub mod server;
 pub mod sessions;
 pub mod speed;
 pub mod store;
+mod subagent_models;
 pub mod subscriptions;
 pub mod usage;
 

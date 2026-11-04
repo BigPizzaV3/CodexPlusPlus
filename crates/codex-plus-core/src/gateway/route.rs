@@ -579,9 +579,20 @@ pub fn effective_model(
     default_model: &str,
     requested: &str,
 ) -> String {
+    effective_model_detailed(gateway, binding, default_model, requested).0
+}
+
+/// 同 [`effective_model`]，另外返回是否按「未知模型 → 默认模型」策略改写过（#2874）。
+/// 这种改写会把请求整个换到默认模型所在的供应商，用户在 Codex 里看不出来，要记日志。
+fn effective_model_detailed(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    default_model: &str,
+    requested: &str,
+) -> (String, bool) {
     let requested = requested.trim();
     if requested.is_empty() {
-        return default_model.to_string();
+        return (default_model.to_string(), false);
     }
     // Claude Desktop 选的非 Claude 模型带的是数字别名，先还原成真实名字再走下面的规则。
     let aliased = claude_alias_target(gateway, binding, requested);
@@ -592,7 +603,7 @@ pub fn effective_model(
         let (review, _) = crate::model_suffix::parse_model_suffix(binding.auto_review_model.trim());
         let review = review.trim();
         if !review.is_empty() {
-            return review.to_string();
+            return (review.to_string(), false);
         }
     }
     let (requested_slug, _) = crate::model_suffix::parse_model_suffix(requested);
@@ -602,12 +613,34 @@ pub fn effective_model(
         .any(|model| model.eq_ignore_ascii_case(&requested_slug))
         || model_is_routable(gateway, binding, &requested_slug)
     {
-        return requested_slug;
+        return (requested_slug, false);
     }
     match binding.unknown_model {
-        UnknownModelPolicy::MapToDefault if !default_model.is_empty() => default_model.to_string(),
-        _ => requested_slug,
+        UnknownModelPolicy::MapToDefault if !default_model.is_empty() => {
+            let mapped = !default_model.eq_ignore_ascii_case(&requested_slug);
+            (default_model.to_string(), mapped)
+        }
+        _ => (requested_slug, false),
     }
+}
+
+/// 同一个 Agent 的同一个模型名，改写日志 60 秒最多记一次：未知模型的每个请求都会走到这里。
+fn should_log_model_rewrite(agent: &str, requested: &str) -> bool {
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    let key = format!("{agent}\u{0}{requested}");
+    let now = Instant::now();
+    let Ok(mut last) = LAST.get_or_init(|| Mutex::new(HashMap::new())).lock() else {
+        return false;
+    };
+    if last
+        .get(&key)
+        .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(60))
+    {
+        return false;
+    }
+    last.retain(|_, at| now.duration_since(*at) < Duration::from_secs(600));
+    last.insert(key, now);
+    true
 }
 
 /// `<供应商 id>/<模型>` → (供应商, 模型)。供应商必须是这个 Agent 能用的。
@@ -620,6 +653,49 @@ fn qualified_provider<'a>(
     model: &str,
 ) -> Option<(&'a RelayProfile, String)> {
     qualified_in(&binding_pool_relays(gateway, binding), model)
+}
+
+pub(super) fn has_explicit_model_identity(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> bool {
+    let (model, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    if group_by_model(gateway, &model).is_some() {
+        return true;
+    }
+    let relays = binding_pool_relays(gateway, binding);
+    if declared_by_any(&relays, &model) {
+        return false;
+    }
+    if model
+        .strip_prefix(GROUP_MODEL_PREFIX)
+        .is_some_and(|id| !id.is_empty())
+    {
+        return true;
+    }
+    let Some((provider, name)) = model.split_once('/') else {
+        return false;
+    };
+    !name.trim().is_empty()
+        && gateway
+            .providers
+            .iter()
+            .any(|entry| entry.relay.id.eq_ignore_ascii_case(provider))
+}
+
+pub(super) fn model_identity_kind(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> &'static str {
+    if group_by_model(gateway, model).is_some() {
+        "group"
+    } else if qualified_provider(gateway, binding, model).is_some() {
+        "provider"
+    } else {
+        "bare"
+    }
 }
 
 /// [`qualified_provider`] 的规则，作用在给定的供应商列表上。
@@ -705,11 +781,32 @@ fn expand_model(
     if let Some((relay, upstream)) = qualified_provider(gateway, binding, model) {
         return vec![(relay.clone(), upstream)];
     }
-    binding_pool_relays(gateway, binding)
-        .into_iter()
+    let pool = binding_pool_relays(gateway, binding);
+    let serving: Vec<(RelayProfile, String)> = pool
+        .iter()
         .filter(|relay| serves(relay, model))
-        .map(|relay| (relay.clone(), model.to_string()))
-        .collect()
+        .map(|relay| ((*relay).clone(), model.to_string()))
+        .collect();
+    if !serving.is_empty() {
+        return serving;
+    }
+    // `<供应商 id>/<模型>` 指向的供应商已经不在池里（删了 / 关了 / 被挑选排除），又没人把整串当
+    // 模型名声明：前缀只是 Codex++ 的供应商 id，原样发给别家上游必然报「无权访问模型」（#2897）。
+    // 池里有别家提供去掉前缀的同名模型时，改由它们回答。只对 Agent 直接请求的模型（depth 0）这样做：
+    // 路由组成员钉在某家上，那家关了就该跳过，不能换成别家。
+    if depth == 0
+        && let Some((_, rest)) = model.split_once('/')
+        && !model.starts_with(GROUP_MODEL_PREFIX)
+        && !rest.trim().is_empty()
+    {
+        let rest = rest.trim();
+        return pool
+            .into_iter()
+            .filter(|relay| serves(relay, rest))
+            .map(|relay| (relay.clone(), rest.to_string()))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// 成员是不是通配符。
@@ -1053,7 +1150,8 @@ fn resolve_plan_with(
         bail!("网关的供应商池是空的或都已关闭：请在网关的「供应商」里添加或打开供应商");
     }
     let default_model = binding_default_model(gateway, binding);
-    let model = effective_model(gateway, binding, &default_model, requested_model);
+    let (model, mapped_to_default) =
+        effective_model_detailed(gateway, binding, &default_model, requested_model);
     let conversation = conversation
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1094,6 +1192,20 @@ fn resolve_plan_with(
     }
     if relays.is_empty() {
         bail!("网关的供应商池里没有供应商提供模型 {model}");
+    }
+    if mapped_to_default && advance && should_log_model_rewrite(agent.as_str(), requested_model.trim()) {
+        // 请求的模型池里没人提供，按「未知模型」策略整个改发到默认模型的供应商（#2874）。
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "gateway.model_mapped_to_default",
+            serde_json::json!({
+                "agent": agent.as_str(),
+                "requestedModel": requested_model.trim(),
+                "model": model,
+                "provider": relays.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
+                "providerId": relays.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
+                "hint": "请求的模型不在网关供应商池里（或所在供应商已关闭），已按「未知模型」策略改发到默认模型；可在网关的 Agent 接入设置里改成原样转发",
+            }),
+        );
     }
 
     let now = Instant::now();
@@ -1560,6 +1672,57 @@ mod tests {
             .filter(|id| id == "ds")
             .count();
         assert_eq!(ds_first, 6, "权重 3:1，8 次里 6 次先试 ds");
+    }
+
+    /// #2874：只有「池里没人提供 → 改写成默认模型」才算改写，要能被认出来记日志。
+    #[test]
+    fn mapping_unknown_model_to_default_is_reported() {
+        let gateway = gateway("kimi-k3");
+        let binding = gateway.active_binding(&ToolId::Claude).unwrap();
+        assert_eq!(
+            effective_model_detailed(&gateway, binding, "kimi-k3", "gpt-unknown"),
+            ("kimi-k3".to_string(), true)
+        );
+        assert_eq!(
+            effective_model_detailed(&gateway, binding, "kimi-k3", "kimi-k3"),
+            ("kimi-k3".to_string(), false),
+            "池里有的模型不算改写"
+        );
+        assert_eq!(
+            effective_model_detailed(&gateway, binding, "kimi-k3", ""),
+            ("kimi-k3".to_string(), false),
+            "客户端没给模型名不算改写"
+        );
+        assert!(should_log_model_rewrite("claude", "gpt-unknown-throttle"));
+        assert!(
+            !should_log_model_rewrite("claude", "gpt-unknown-throttle"),
+            "同一个模型 60 秒内只记一次"
+        );
+    }
+
+    /// #2897：`<已删除的供应商>/<模型>` 不能带着前缀发给别家，池里有人提供同名模型时去掉前缀交给它。
+    #[test]
+    fn qualified_model_of_a_removed_provider_drops_the_prefix() {
+        let mut gateway = gateway("kimi-k3");
+        // 绑定里还声明着删掉的供应商的模型（删除前留下的）。
+        gateway.bindings.get_mut("claude").unwrap().extra_models =
+            vec!["gone/deepseek-v4-flash".to_string()];
+        assert_eq!(
+            routed(&gateway, "gone/deepseek-v4-flash"),
+            vec![pair("ds", "deepseek-v4-flash")]
+        );
+        // 关掉的供应商同理。
+        assert_eq!(
+            routed(&gateway, "off/kimi-k3"),
+            vec![pair("kimi", "kimi-k3")]
+        );
+        // 没人提供去掉前缀的模型时不乱发：落回原来的「未知模型」处理。
+        assert!(
+            routed(&gateway, "gone/nobody-serves-this")
+                .iter()
+                .all(|(_, model)| !model.starts_with("gone/")),
+            "前缀不能原样发给上游"
+        );
     }
 
     #[test]

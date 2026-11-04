@@ -285,10 +285,17 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     modelPrices: null,
     proxy: "",
     stripImageGenerationTool: false,
+    stripResponsesImageDetail: false,
+    disableToolSearch: false,
   });
   // #228：「移除托管生图工具」从池条目读回、原样提交。
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripImageGenerationTool: true }).stripImageGenerationTool, true);
   assert.equal(providerInput({ ...editing, stripImageGenerationTool: true }).stripImageGenerationTool, true);
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripResponsesImageDetail: true }).stripResponsesImageDetail, true);
+  assert.equal(providerInput({ ...editing, stripResponsesImageDetail: true }).stripResponsesImageDetail, true);
+  // #2868：「不发送 tool_search」从池条目读回、原样提交。
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], disableToolSearch: true }).disableToolSearch, true);
+  assert.equal(providerInput({ ...editing, disableToolSearch: true }).disableToolSearch, true);
   assert.equal(validateProviderDraft({ ...editing, proxy: "127.0.0.1:7890" }, true), "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）");
   assert.equal(validateProviderDraft({ ...editing, proxy: "socks5://127.0.0.1:1080" }, true), null);
   assert.deepEqual(providerInput({ ...editing, priceInput: "2", priceCached: "0.5", priceOutput: "abc" }).price, { currency: "CNY", input: 2, cachedInput: 0.5, output: 0 });
@@ -519,14 +526,17 @@ test("Agent 自带的模型：单独一组、标出直连对象，按名字或�
   assert.equal(ownPickerSection(null, "", (name) => name), null);
 });
 
-test("模型下拉：自带模型走「直连」命令，接入着时先确认；托盘面板同样列出", () => {
+test("模型下拉：接入着选自带模型先预览还原，主窗口和托盘确认后才带token切换", () => {
   const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   assert.match(agents, /"use_gateway_own_model"/);
-  assert.match(agents, /t\("直连，不经 Codex\+\+"\)/);
-  assert.match(agents, /if \(connected\) \{\s*const ok = await appConfirm/);
+  assert.match(agents, /if \(connected \|\| agent\.requiresDisconnectPreview\) \{\s*setDisconnectTarget\(item\)/);
+  assert.match(agents, /<AgentDisconnectDialog/);
+  assert.match(agents, /model: disconnectTarget\.model, previewToken/);
   const tray = readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8");
   assert.match(tray, /onPickOwn=\{/);
   assert.match(tray, /"use_gateway_own_model"/);
+  assert.match(tray, /if \(agent\.enabled \|\| agent\.requiresDisconnectPreview\) setDisconnectTarget\(item\)/);
+  assert.match(tray, /model: disconnectTarget\.model, previewToken/);
 });
 
 test("自带模型开关：关掉后只留 Agent 现在用着的那一个，没用着就整组不列", () => {

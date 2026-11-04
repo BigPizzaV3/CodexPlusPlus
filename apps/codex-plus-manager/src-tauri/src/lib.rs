@@ -124,14 +124,14 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
         "install" => {
             let id = target.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy"
+                    "install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy / devin"
                 )
             })?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::install(parsed)?)?
         }
         "uninstall" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy（codex：移除旧版本留在 Codex 里的条目）"))?;
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy / devin（codex：移除旧版本留在 Codex 里的条目）"))?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::uninstall(parsed)?)?
         }
@@ -348,6 +348,7 @@ pub fn run() {
             commands::claude_localization_bash_timeout_status,
             commands::claude_localization_action,
             commands::claude_localization_set_voice_input,
+            commands::claude_localization_set_extensions,
             commands::claude_localization_set_localization,
             commands::claude_localization_set_computer_use,
             commands::claude_localization_set_bash_timeout,
@@ -385,7 +386,9 @@ pub fn run() {
             agent_mcp_commands::save_agent_mcp,
             gateway_commands::load_gateway,
             gateway_commands::save_gateway_binding,
+            gateway_commands::preview_gateway_disconnect,
             gateway_commands::disable_gateway_binding,
+            gateway_commands::disable_gateway_binding_full_switch,
             gateway_commands::use_gateway_own_model,
             gateway_commands::save_gateway_own_models_shown,
             gateway_commands::rotate_gateway_token,
@@ -541,6 +544,7 @@ pub fn run() {
             commands::check_update,
             commands::skip_update_version,
             commands::perform_update,
+            commands::download_update,
             commands::load_watcher_state,
             commands::set_watcher_enabled,
             commands::set_watcher_start_minimized,
@@ -778,9 +782,9 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        // 使用项目原有云朵图标；系统按 18pt 显示，不加标题占据菜单栏空间。
-        // 禁用模板模式以保留品牌渐变颜色。
-        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(false);
+        // 系统按 18pt 显示，不加标题占据菜单栏空间。
+        // 模板模式：跟其他菜单栏图标统一着色，深浅色菜单栏自动适配。
+        tray_builder = tray_builder.icon(macos_tray_icon()).icon_as_template(true);
     }
     #[cfg(not(target_os = "macos"))]
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -817,7 +821,21 @@ fn tray_event_shows_main_window(event: &TrayIconEvent) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 fn macos_tray_icon() -> tauri::image::Image<'static> {
-    tauri::include_image!("icons/icon.png")
+    // 模板图标只看透明度。品牌 logo 的白十字和灰阴影本身不透明，直接用会糊成
+    // 两块实心方块，所以按「偏橙程度」（R - B）重算 alpha：橙色块保留，
+    // 白十字/阴影抠空，过渡带线性渐变保留抗锯齿边缘。
+    let brand = tauri::include_image!("icons/icon.png");
+    let rgba = brand
+        .rgba()
+        .chunks_exact(4)
+        .flat_map(|pixel| {
+            let warmth = pixel[0].saturating_sub(pixel[2]) as u32;
+            let coverage = warmth.saturating_sub(40).min(60) * 255 / 60;
+            let alpha = (coverage * pixel[3] as u32 / 255) as u8;
+            [0, 0, 0, alpha]
+        })
+        .collect();
+    tauri::image::Image::new_owned(rgba, brand.width(), brand.height())
 }
 
 #[cfg(test)]
@@ -826,16 +844,18 @@ mod tray_tests {
     use tauri::{PhysicalPosition, Rect};
 
     #[test]
-    fn macos_tray_preserves_the_brand_icons_colour_and_transparency() {
+    fn macos_tray_template_keeps_the_blocks_and_hollows_out_the_crosses() {
         let icon = super::macos_tray_icon();
         assert_eq!(icon.width(), icon.height());
-        assert!(icon.width() > 0);
-        assert!(
-            icon.rgba()
-                .chunks_exact(4)
-                .any(|pixel| pixel[3] > 0 && pixel[2] > pixel[0])
-        );
-        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+        let size = icon.width() as usize;
+        let alpha_at = |x: usize, y: usize| icon.rgba()[(y * size + x) * 4 + 3];
+        // 坐标按 512px 品牌图取比例：前方块正面左侧为橙色，前方十字中心为白色。
+        let at = |fraction: f32| (fraction * size as f32) as usize;
+        assert_eq!(alpha_at(at(0.15), at(0.5)), 255, "橙色方块应不透明");
+        assert_eq!(alpha_at(at(0.37), at(0.64)), 0, "白十字应抠空");
+        assert_eq!(alpha_at(0, 0), 0, "背景应透明");
+        // 模板图标只用 alpha，颜色通道统一为黑。
+        assert!(icon.rgba().chunks_exact(4).all(|pixel| pixel[..3] == [0, 0, 0]));
     }
 
     fn click(button: MouseButton, button_state: MouseButtonState) -> TrayIconEvent {
@@ -919,6 +939,15 @@ fn build_main_window<R: tauri::Runtime>(
     .focused(visible)
     .inner_size(1180.0, 820.0)
     .min_inner_size(960.0, 720.0);
+    // macOS 去掉系统标题栏：红黄绿按钮浮在侧栏左上角（系统默认位置，中心约在顶部 14px），页面标题占据标题栏那一行。
+    // 不用 traffic_light_position：实测首次显示时不生效，缩放后又可能跳回，按钮和标题会对不齐。
+    // 前端据此给 <html> 加 mac-titlebar（见 mac-titlebar.ts），留出按钮位置并把标题行做成拖动区域。
+    #[cfg(target_os = "macos")]
+    {
+        main_window_builder = main_window_builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
     if let Some(icon) = app.default_window_icon().cloned() {
         main_window_builder = main_window_builder.icon(icon)?;
     }

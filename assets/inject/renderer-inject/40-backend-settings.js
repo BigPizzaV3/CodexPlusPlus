@@ -200,6 +200,8 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
+  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
   // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
@@ -285,7 +287,17 @@
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           syncOfficialUsagePolicy();
         }
-        void syncBackendSettingsFromHeartbeat();
+        // 设置没变就不拉 /settings/get：那份 JSON 有 166 KB，五秒一次的编解码本身就够把
+        // 渲染进程主线程切碎。后端在 status 里带上快照版本，这里只比对字符串。
+        // 老后端不带版本（空串）时退回原来的每次全量拉取，行为不变。
+        const revision = typeof nextStatus.settingsRevision === "string" ? nextStatus.settingsRevision : "";
+        const settingsStale = !revision
+          || !codexPlusBackendSettingsLoaded
+          || revision !== codexPlusBackendSettingsRevision;
+        if (settingsStale) {
+          codexPlusBackendSettingsRevision = revision;
+          void syncBackendSettingsFromHeartbeat();
+        }
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {
@@ -1102,9 +1114,10 @@
     // 别改用 main[data-app-shell-main-surface] 的 --app-shell-main-surface-clip-start-radius：
     // 那个元素左边缘在 362（缩在侧边栏后面），左侧还用 inset 负内缩把圆角裁掉，start 恒为 0，
     // 会让人误判左侧不该圆——第一版就是这么写错的，用户反馈「少一个圆角」正是缺了左边两个角。
-    // 类名是 CSS Modules 的哈希名，但 _PageSurface_ 这个片段稳定，且不会命中 _PageSurfaceLayout_
-    //（其后紧跟 L 而非 _）。量到的是视觉值，同样折算成布局坐标。读不到就保持 0，不做猜测。
-    const pageSurface = document.querySelector('[class*="_PageSurface_"]');
+    // 类名是 CSS Modules 的哈希名，但 PageSurface 这个名字稳定，且不会命中 PageSurfaceLayout
+    //（新旧两种哈希格式 `_PageSurface_xx` / `PageSurface-xx` 都认，#2893）。量到的是视觉值，同样折算成布局坐标。
+    // 读不到就保持 0，不做猜测。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"], [class^="PageSurface-"], [class*=" PageSurface-"]');
     const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
     const mainSurfaceStyle = (() => {
       const main = document.querySelector("main[data-app-shell-main-surface]");

@@ -122,6 +122,158 @@ pub fn builtin_replaced(segment: &str) -> bool {
 
 /// Codex++ 自己的启动器把请求转给本机网关时带上的请求头：说明拓展中间件已在外层跑过。
 pub const EXTENSIONS_APPLIED_HEADER: &str = "x-codex-plus-extensions";
+const RESPONSE_PASSTHROUGH_HEADER: &str = "x-codex-plus-response-passthrough";
+
+tokio::task_local! {
+    static CODEX_RESPONSE_PLAN: CodexResponsePlan;
+    pub(crate) static VERIFIED_RESPONSE_PASSTHROUGH: bool;
+}
+
+struct CodexResponsePlan {
+    middlewares: Option<MiddlewareList>,
+    token: std::cell::RefCell<Option<String>>,
+    port: u16,
+}
+
+static RESPONSE_PASSTHROUGH_GRANTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
+
+fn response_passthrough_grants() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    RESPONSE_PASSTHROUGH_GRANTS.get_or_init(Default::default)
+}
+
+impl CodexResponsePlan {
+    fn new(middlewares: Option<MiddlewareList>) -> Self {
+        Self {
+            middlewares, token: std::cell::RefCell::new(None),
+            port: crate::protocol_proxy::protocol_proxy_port(),
+        }
+    }
+
+    fn forwarding_token(&self) -> Option<String> {
+        self.middlewares.as_ref().filter(|list| list.is_empty())?;
+        let mut grants = response_passthrough_grants().lock().ok()?;
+        let mut current = self.token.borrow_mut();
+        if let Some(token) = current.as_ref().filter(|token| grants.contains(*token)) {
+            return Some(token.clone());
+        }
+        if grants.len() >= 1024 {
+            return None;
+        }
+        // 内层消费后，外层的下一次发送取得新凭据；同一凭据不能授权两个内层请求。
+        let token = uuid::Uuid::new_v4().to_string();
+        grants.insert(token.clone());
+        *current = Some(token.clone());
+        Some(token)
+    }
+}
+
+impl Drop for CodexResponsePlan {
+    fn drop(&mut self) {
+        if let Some(token) = self.token.get_mut().as_ref()
+            && let Ok(mut grants) = response_passthrough_grants().lock()
+        {
+            grants.remove(token);
+        }
+    }
+}
+
+/// 只给启动器转 Codex 网关的这一跳签发凭据；快照同时约束外层实际执行的响应链。
+pub(crate) async fn with_codex_response_plan<F: std::future::Future>(future: F) -> F::Output {
+    let manager = crate::user_scripts::default_user_script_manager();
+    let middlewares = checked_response_middlewares(&manager).ok();
+    CODEX_RESPONSE_PLAN.scope(CodexResponsePlan::new(middlewares), future).await
+}
+
+#[cfg(test)]
+pub(crate) async fn with_codex_response_plan_for_tests<F: std::future::Future>(
+    middlewares: Option<MiddlewareList>,
+    future: F,
+) -> F::Output {
+    CODEX_RESPONSE_PLAN.scope(CodexResponsePlan::new(middlewares), future).await
+}
+
+#[cfg(test)]
+async fn with_codex_response_plan_on<F: std::future::Future>(
+    middlewares: Option<MiddlewareList>, port: u16, future: F,
+) -> F::Output {
+    let mut plan = CodexResponsePlan::new(middlewares);
+    plan.port = port;
+    CODEX_RESPONSE_PLAN.scope(plan, future).await
+}
+
+/// 每次实际发送前核对目的地址，并为已消费的透明重试重新签发凭据。
+pub(crate) fn refresh_response_passthrough(request: &mut reqwest::Request) {
+    request.headers_mut().remove(RESPONSE_PASSTHROUGH_HEADER);
+    let _ = CODEX_RESPONSE_PLAN.try_with(|plan| {
+        let url = request.url();
+        if request.method() != reqwest::Method::POST
+            || url.scheme() != "http"
+            || url.port() != Some(plan.port)
+            || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1" | "[::1]"))
+            || !crate::gateway::server::split_gateway_path(url.path()).is_some_and(|(agent, tail)| {
+                agent == crate::tools::ToolId::Codex && tail == "/responses"
+            })
+            || request.headers().get(EXTENSIONS_APPLIED_HEADER).and_then(|value| value.to_str().ok()) != Some("1")
+        {
+            return;
+        }
+        if let Some(token) = plan.forwarding_token()
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(&token)
+        {
+            request.headers_mut().insert(RESPONSE_PASSTHROUGH_HEADER, value);
+        }
+    });
+}
+
+fn response_config_stamp(manager: &UserScriptManager) -> anyhow::Result<Option<Vec<u8>>> {
+    match std::fs::read(manager.config_path()) {
+        Ok(bytes) => {
+            // load_config 会吞掉读取/解析失败；强证据不能把这些情况当作默认空配置。
+            let value: Value = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(value.is_object(), "invalid response middleware configuration");
+            Ok(Some(bytes))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn checked_response_middlewares(manager: &UserScriptManager) -> anyhow::Result<MiddlewareList> {
+    let before = response_config_stamp(manager)?;
+    let middlewares = manager.enabled_gateway_response_middlewares()?;
+    anyhow::ensure!(
+        before == response_config_stamp(manager)?,
+        "response middleware configuration changed while reading"
+    );
+    Ok(middlewares)
+}
+
+/// 请求头本身不构成证明：必须是当前进程尚未消费、外层请求仍持有的随机凭据。
+pub(crate) fn claim_response_passthrough(method: &str, path: &str, headers: &str) -> bool {
+    if method != "POST" || !headers_mark_applied(headers)
+        || !crate::gateway::server::split_gateway_path(path).is_some_and(|(agent, tail)| {
+            agent == crate::tools::ToolId::Codex && tail == "/responses"
+        })
+    {
+        return false;
+    }
+    let mut values = headers.lines().skip(1).filter_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim().eq_ignore_ascii_case(RESPONSE_PASSTHROUGH_HEADER).then_some(value.trim())
+    });
+    let Some(token) = values.next() else { return false };
+    if values.next().is_some() {
+        return false;
+    }
+    response_passthrough_grants().lock().is_ok_and(|mut grants| grants.remove(token))
+}
+
+pub(crate) fn final_response_path_verified(codex: bool) -> bool {
+    !already_applied()
+        || (codex && VERIFIED_RESPONSE_PASSTHROUGH.try_with(|verified| *verified).unwrap_or(false))
+}
 
 tokio::task_local! {
     /// 当前请求的拓展中间件已在上一跳（启动器）跑过：本层的请求、响应中间件都跳过，避免同一条流改写两遍。
@@ -153,7 +305,10 @@ fn request_session() -> String {
 
 /// 当前请求上拓展加的请求头。
 pub fn extension_headers() -> Vec<(String, String)> {
-    EXTENSION_HEADERS.try_with(|headers| headers.borrow().clone()).unwrap_or_default()
+    let mut headers = EXTENSION_HEADERS.try_with(|headers| headers.borrow().clone()).unwrap_or_default();
+    // 普通拓展头不能携带内部凭据；签发必须等待实际发送地址确定。
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case(RESPONSE_PASSTHROUGH_HEADER));
+    headers
 }
 
 fn set_extension_headers(headers: Vec<(String, String)>) {
@@ -175,7 +330,8 @@ pub fn allowed_headers(raw: &Value) -> Vec<(String, String)> {
                 _ => return None,
             };
             let valid = !name.is_empty() && name.len() <= 64 && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') && value.len() <= 4096 && !value.contains(['\r', '\n']);
-            (valid && !BLOCKED.contains(&name.as_str()) && name != EXTENSIONS_APPLIED_HEADER).then_some((name, value))
+            (valid && !BLOCKED.contains(&name.as_str()) && name != EXTENSIONS_APPLIED_HEADER
+                && name != RESPONSE_PASSTHROUGH_HEADER).then_some((name, value))
         })
         .take(32)
         .collect()
@@ -192,7 +348,8 @@ pub fn allowed_auth_headers(raw: &Value) -> Vec<(String, String)> {
             let name = name.trim().to_ascii_lowercase();
             let value = value.as_str()?.to_string();
             let valid = !name.is_empty() && name.len() <= 64 && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') && value.len() <= 8192 && !value.contains(['\r', '\n']);
-            (valid && !BLOCKED.contains(&name.as_str()) && name != EXTENSIONS_APPLIED_HEADER).then_some((name, value))
+            (valid && !BLOCKED.contains(&name.as_str()) && name != EXTENSIONS_APPLIED_HEADER
+                && name != RESPONSE_PASSTHROUGH_HEADER).then_some((name, value))
         })
         .take(32)
         .collect()
@@ -889,11 +1046,24 @@ async function start(message) {
 }
 "#;
 
+/// 常驻的响应流工作进程。进程与读回复的线程都不挂在任何 tokio 运行时上：
+/// 工作进程是全进程共用的，第一次用到它的运行时可能先结束（测试的每个用例、临时运行时）。
+/// 挂在那个运行时上时，Windows 的管道读取在阻塞线程池里永远等不到 EOF，运行时关停会一直
+/// 卡住；Unix 上读回复的任务随运行时消失，之后的请求只会超时。
 struct ResponseWorker {
-    stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
-    pending: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
+    stdin: std::sync::Arc<std::sync::Mutex<std::process::ChildStdin>>,
+    pending: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    _child: tokio::sync::Mutex<tokio::process::Child>,
+    child: std::sync::Mutex<std::process::Child>,
+}
+
+impl Drop for ResponseWorker {
+    fn drop(&mut self) {
+        // 换掉旧工作进程（中间件变了）时结束它；读线程随之读到 EOF 退出。
+        let mut child = self.child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 static RESPONSE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -932,49 +1102,56 @@ fn response_fingerprint(middlewares: &[(String, ExtensionGatewayMiddleware)]) ->
 }
 
 async fn spawn_response_worker() -> anyhow::Result<ResponseWorker> {
-    use tokio::io::AsyncBufReadExt;
+    use std::io::BufRead;
     let node = crate::extension_node::require_node()?;
-    let mut command = tokio::process::Command::new(node);
+    let mut command = std::process::Command::new(node);
     command
         .args(["--input-type=module", "-e", RESPONSE_RUNNER])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    crate::extension_backend::set_host_exe_env(&mut command);
+        .stderr(std::process::Stdio::null());
+    if let Ok(exe) = std::env::current_exe() {
+        command.env(crate::extension_backend::HOST_EXE_ENV, exe);
+    }
     #[cfg(windows)]
-    command.creation_flags(crate::windows_create_no_window());
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
     let mut child = command.spawn()?;
     let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("响应流工作进程没有 stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("响应流工作进程没有 stdout"))?;
-    let pending: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Default::default();
+    let pending: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Default::default();
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     {
         let pending = pending.clone();
         let alive = alive.clone();
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if let Some(id) = message.get("id").and_then(Value::as_u64) {
-                    if let Some(sender) = pending.lock().await.remove(&id) {
-                        let _ = sender.send(message);
+        std::thread::Builder::new()
+            .name("codex-plus-response-worker".into())
+            .spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                        let sender = pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
+                        if let Some(sender) = sender {
+                            let _ = sender.send(message);
+                        }
                     }
                 }
-            }
-            alive.store(false, std::sync::atomic::Ordering::SeqCst);
-            for (_, sender) in pending.lock().await.drain() {
-                let _ = sender.send(json!({ "error": "响应流工作进程已退出" }));
-            }
-        });
+                alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                for (_, sender) in pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain() {
+                    let _ = sender.send(json!({ "error": "响应流工作进程已退出" }));
+                }
+            })?;
     }
     Ok(ResponseWorker {
-        stdin: tokio::sync::Mutex::new(stdin),
+        stdin: std::sync::Arc::new(std::sync::Mutex::new(stdin)),
         pending,
         alive,
-        _child: tokio::sync::Mutex::new(child),
+        child: std::sync::Mutex::new(child),
     })
 }
 
@@ -992,10 +1169,16 @@ async fn response_worker(fingerprint: &str) -> anyhow::Result<std::sync::Arc<Res
 
 impl ResponseWorker {
     async fn send(&self, message: Value) -> anyhow::Result<()> {
-        use tokio::io::AsyncWriteExt;
-        let mut stdin = self.stdin.lock().await;
-        stdin.write_all(format!("{message}\n").as_bytes()).await?;
-        stdin.flush().await?;
+        use std::io::Write;
+        // 写管道可能在对方读得慢时阻塞：放到阻塞线程里写，写完即返回（不会长时间占着线程）。
+        let stdin = self.stdin.clone();
+        let line = format!("{message}\n");
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            stdin.write_all(line.as_bytes())?;
+            stdin.flush()
+        })
+        .await??;
         Ok(())
     }
 
@@ -1003,9 +1186,9 @@ impl ResponseWorker {
         let id = RESPONSE_IDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         message["id"] = json!(id);
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.pending.lock().await.insert(id, sender);
+        self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, sender);
         if let Err(error) = self.send(message).await {
-            self.pending.lock().await.remove(&id);
+            self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
             return Err(error);
         }
         match tokio::time::timeout(timeout, receiver).await {
@@ -1015,7 +1198,7 @@ impl ResponseWorker {
             },
             Ok(Err(_)) => anyhow::bail!("响应流工作进程没有回应"),
             Err(_) => {
-                self.pending.lock().await.remove(&id);
+                self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
                 anyhow::bail!("响应流中间件超时（{} 秒）", timeout.as_secs())
             }
         }
@@ -1098,7 +1281,11 @@ impl ResponseFilter {
         if already_applied() {
             return None;
         }
-        let middlewares = cached_response_middlewares();
+        let middlewares = CODEX_RESPONSE_PLAN
+            .try_with(|plan| plan.middlewares.clone())
+            .ok()
+            .flatten()
+            .unwrap_or_else(cached_response_middlewares);
         if middlewares.is_empty() {
             return None;
         }
@@ -1280,3 +1467,7 @@ fn log_response_failure(stage: &str, error: &anyhow::Error) {
         json!({ "stage": stage, "error": format!("{error:#}") }),
     );
 }
+
+#[cfg(test)]
+#[path = "extension_gateway/final_response_tests.rs"]
+mod final_response_tests;

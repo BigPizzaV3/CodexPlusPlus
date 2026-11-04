@@ -192,7 +192,7 @@ it("兼容旧身份缓存，但忽略其中的展开状态和导航状态", asyn
   assert.equal(state.activeGroupId, "", "打开菜单仍从供应商入口开始");
   assert.equal(state.defaultGroupId, "provider-a");
   assert.deepEqual(state.providerNames.get("first"), { name: "供应商 A", parsed: false });
-  assert.deepEqual(state.providerNames.get("second"), { name: "供应商 B", parsed: true });
+  assert.deepEqual(state.providerNames.get("second"), { name: "供应商 B", parsed: true, groupId: "" });
   assert.equal(Object.hasOwn(state, "collapsed"), false);
   assert.equal(Object.hasOwn(state, "touched"), false);
 });
@@ -602,4 +602,103 @@ it("菜单认不出时记一次结构诊断：只在真有目录里的模型时�
 
   assert.equal(run([menu], new Map()).length, 0, "目录里没有对应模型（例如别的单选菜单）时不记");
   assert.equal(run([element({ role: "menu" }, "", radios.slice(0, 1))], catalog).length, 0, "只有一个选项的菜单不记");
+});
+
+it("认不出归属的行收进同一个「其他供应商」组，不被有名分组切成多段（#2860）", async () => {
+  const source = await readShard();
+  const groupsOf = new Function(
+    `${functionSource(source, "codexPlusModelPickerGroups")}\nreturn codexPlusModelPickerGroups;`,
+  )() as (rows: unknown[], defaultProviderName?: string) => Array<{ name: string; entries: unknown[] }>;
+  const row = (name: string, provider = "", groupId = "") => ({
+    name, provider, groupId, authoritativeGroupId: Boolean(groupId),
+  });
+  const groups = groupsOf([
+    row("a1"),
+    row("b1", "供应商 B", "provider-b"),
+    row("a2"),
+    row("c1", "供应商 C", "provider-c"),
+    row("a3"),
+  ]);
+  const unnamed = groups.filter((group) => !group.name);
+  assert.equal(unnamed.length, 1, "无名的行只能有一个分组");
+  assert.equal(unnamed[0].entries.length, 3);
+  assert.equal(groups.length, 3);
+});
+
+it("目录快照缺元数据时用记下的权威归属兜底，后缀猜出来的不套给裸名行（#2860）", async () => {
+  const source = await readShard();
+  const state = {
+    providerNames: new Map<string, { name: string; parsed: boolean; groupId?: string }>([
+      ["bare-model", { name: "默认供应商", parsed: false, groupId: "provider-default" }],
+      ["shared-model", { name: "别家", parsed: true, groupId: "provider:别家" }],
+    ]),
+  };
+  const build = (catalog: unknown) => new Function(
+    "codexModelCatalog", "codexPlusModelPickerGroupsState", "providerNameOf",
+    "codexPlusModelPickerCatalogAliases", "codexPlusModelPickerRememberProvider",
+    `${functionSource(source, "codexPlusModelPickerCatalogProviderMap")}\nreturn codexPlusModelPickerCatalogProviderMap;`,
+  )(
+    catalog,
+    state,
+    (entry: { codex_plus_group?: string }) => entry.codex_plus_group || "",
+    (displayName: string) => [displayName],
+    () => undefined,
+  ) as () => Map<string, { provider?: string; groupId?: string }>;
+
+  // 拉取失败：快照里没有元数据。
+  const fallback = build({ models: [] })();
+  assert.deepEqual(fallback.get("bare-model"), { provider: "默认供应商", groupId: "provider-default", parsed: false });
+  assert.equal(fallback.has("shared-model"), false, "从后缀猜的归属不能兜底给裸名行");
+
+  // 快照正常：目录里的权威值优先于记下的旧值。
+  const fresh = build({
+    models: ["bare-model"],
+    modelMetadata: {
+      "bare-model": { displayName: "bare-model", codex_plus_group: "新供应商", codex_plus_group_id: "provider-new" },
+    },
+  })();
+  assert.equal(fresh.get("bare-model")?.provider, "新供应商");
+  assert.equal(fresh.get("bare-model")?.groupId, "provider-new");
+});
+
+it("模型列表按结构定位（模型行的共同父节点），类名只在没有模型行时兜底（#2893）", async () => {
+  const source = await readShard();
+  const listIn = new Function(`${functionSource(source, "codexPlusModelPickerListIn")}\nreturn codexPlusModelPickerListIn;`)() as (root: unknown) => unknown;
+  type Node = { parentElement: Node | null; contains(other: Node): boolean; querySelectorAll(selector: string): Node[]; querySelector(selector: string): Node | null; name: string };
+  const node = (name: string, parent: Node | null): Node => {
+    const self: Node = {
+      name,
+      parentElement: parent,
+      contains(other) { for (let n: Node | null = other; n; n = n.parentElement) if (n === self) return true; return false; },
+      querySelectorAll: () => [],
+      querySelector: () => null,
+    };
+    return self;
+  };
+  // 根 → 动画容器 → 列表（类名换成什么都行）→ 三个模型行
+  const root = node("root", null);
+  const motion = node("motion", root);
+  const list = node("list-with-any-class", motion);
+  const rows = [node("row1", list), node("row2", list), node("row3", list)];
+  root.querySelectorAll = (selector) => (selector.includes("menuitemradio") ? rows : []);
+  assert.equal(listIn(root), list, "不看类名，取模型行的共同父节点");
+
+  // 还没有模型行：回落到类名，新旧格式都认，且不误中 ModelListMotion-。
+  const fallback = node("class-list", root);
+  root.querySelectorAll = () => [];
+  let asked = "";
+  root.querySelector = (selector) => { asked = selector; return fallback; };
+  assert.equal(listIn(root), fallback);
+  assert.match(asked, /\[class\*="_ModelList_"\]/);
+  assert.match(asked, /\[class\^="ModelList-"\], \[class\*=" ModelList-"\]/);
+
+  // 行分散到面板根下的不同分支（共同父节点退到根）：结构变了，也回落到类名。
+  const a = node("a", root);
+  const b = node("b", root);
+  root.querySelectorAll = (selector) => (selector.includes("menuitemradio") ? [node("r1", a), node("r2", b)] : []);
+  assert.equal(listIn(root), fallback);
+
+  const matchesNew = (className: string) => className.startsWith("ModelList-") || className.includes(" ModelList-");
+  assert.equal(matchesNew("ModelList-I4a0SH"), true);
+  assert.equal(matchesNew("ModelListMotion-iyH7rX"), false);
 });

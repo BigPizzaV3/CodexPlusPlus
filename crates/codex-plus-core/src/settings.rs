@@ -176,6 +176,18 @@ pub struct RelayProfile {
     /// Codex App 会固定带上这个工具，不支持生图的第三方 Responses 上游会整条请求报 403（#228）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_image_generation_tool: bool,
+    /// 转发前移除 Responses `input_image.detail`。部分 Responses 上游不认这个
+    /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_responses_image_detail: bool,
+    /// 不向该上游发送 `tool_search` 托管工具：部分第三方 Responses 上游不认识
+    /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disable_tool_search: bool,
+    /// 纯 API 下让 Codex 注册原生生图工具（`image_gen`），生图请求经本地代理发给本供应商的
+    /// `/images/generations`、`/images/edits`（#1433）。默认关闭。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pure_api_image_generation: bool,
     /// Codex「替我审批」固定请求 `codex-auto-review`，第三方上游通常不认识这个模型；
     /// 填写后协议代理把它改写成这里的模型（#1446）。留空则原样转发。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -394,6 +406,9 @@ impl Default for RelayProfile {
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
+            strip_responses_image_detail: false,
+            disable_tool_search: false,
+            pure_api_image_generation: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -440,6 +455,20 @@ impl RelayProfile {
     /// Chat / Anthropic 上游在协议转换时本来就不会带托管工具。
     pub fn strips_image_generation_tool(&self) -> bool {
         self.strip_image_generation_tool
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否让纯 API 会话注册 Codex 原生生图工具；只对纯 API 供应商生效，且要走本地代理。
+    pub fn enables_pure_api_image_generation(&self) -> bool {
+        self.pure_api_image_generation && self.relay_mode == RelayMode::PureApi
+    }
+
+    /// 是否在转发前移除 Responses 图片 `detail` 字段；只对经本地代理转发的
+    /// 第三方 Responses 上游生效。
+    pub fn strips_responses_image_detail(&self) -> bool {
+        self.strip_responses_image_detail
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -1060,6 +1089,13 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    /// 「启动前修复会话索引」：扫描 rollout 补 `thread_items` 投影，纯增量、不改 provider。
+    /// 此前由 providerSyncEnabled 顺带门控（#2846）；默认开，历史「修复历史会话」用户不受影响。
+    #[serde(
+        rename = "sessionIndexRepairEnabled",
+        default = "default_session_index_repair_enabled"
+    )]
+    pub session_index_repair_enabled: bool,
     /// 切换供应商/默认模型后，下次启动前把仍停在旧默认模型的会话迁到新默认（#2081）。
     /// 默认关闭；用户手动改过模型的会话不受影响。
     #[serde(rename = "threadModelFollowSwitchEnabled", default)]
@@ -1082,6 +1118,9 @@ pub struct BackendSettings {
     /// 关闭后只在用户手动点「检查更新」时联网检查。
     #[serde(rename = "updateAutoCheck", default = "default_true")]
     pub update_auto_check: bool,
+    /// 检查到新版本时在后台把安装包下好，但不安装；用户点「安装」才安装。默认开。
+    #[serde(rename = "updateAutoDownload", default = "default_true")]
+    pub update_auto_download: bool,
     /// 用户在更新提示里选择「跳过此版本」的版本号（#1272）。只压制该版本及更低版本的自动提示，
     /// 出现更高版本时重新提示；手动检查不受影响。空串表示没有跳过。
     #[serde(rename = "updateSkippedVersion", default)]
@@ -1107,6 +1146,9 @@ pub struct BackendSettings {
     // 默认开启：纯展示层状态栏，不改变 Codex 的请求内容与本地数据，误开没有副作用。
     #[serde(rename = "codexAppUsageStatusLine", default = "default_true")]
     pub codex_app_usage_status_line: bool,
+    /// 本机用量历史默认关闭，仅显式开启后允许只读查询。
+    #[serde(rename = "usageHistoryEnabled", default)]
+    pub usage_history_enabled: bool,
     // 默认开启：输入框上方的请求状态条（#2824），纯展示层；关掉后注入层停止轮询 /proxy-status。
     #[serde(rename = "codexAppProxyRequestStatus", default = "default_true")]
     pub codex_app_proxy_request_status: bool,
@@ -1118,6 +1160,9 @@ pub struct BackendSettings {
     // 与「准备副本」这件事互不影响——副本只是所有增强共同的前置条件。
     #[serde(rename = "claudeAppLocalization", default = "default_true")]
     pub claude_app_localization: bool,
+    /// 默认关闭：只在受管 Claude 副本启动时加载声明适配 Claude Code 的拓展。
+    #[serde(rename = "claudeAppExtensions", default)]
+    pub claude_app_extensions: bool,
     // 默认关闭：Computer Use 需要改写副本的 app.asar 并关掉 Electron 的 asar 完整性校验，
     // 功能本身还受订阅与组织策略约束；误开没有收益，显式勾选才做。
     #[serde(rename = "claudeAppComputerUse", default)]
@@ -1178,6 +1223,10 @@ pub struct BackendSettings {
     /// 第三方模型回答完自动折叠过程（#2659）：本地代理给没带阶段标记的助手消息补 `phase`。默认关。
     #[serde(rename = "codexAppThirdPartyReasoningCollapse", default)]
     pub codex_app_third_party_reasoning_collapse: bool,
+    /// 拿不到远程功能开关时补开「替我审批」（#2817）：国内网络下 Codex 的 Statsig 数据为空，
+    /// 自动审批入口被隐藏；审批请求本身走当前供应商。默认关。
+    #[serde(rename = "codexAppOfflineAutoReview", default)]
+    pub codex_app_offline_auto_review: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
     pub codex_app_pet_real_mouse_look: bool,
     #[serde(rename = "codexAppActivityOverlayRight", default)]
@@ -1438,6 +1487,7 @@ impl Default for BackendSettings {
             codex_app_auto_takeover_when_active: default_auto_takeover_when_active(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
@@ -1447,6 +1497,7 @@ impl Default for BackendSettings {
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             update_auto_check: true,
+            update_auto_download: true,
             update_skipped_version: String::new(),
             codex_app_standalone_quota_unlock: false,
             codex_app_disable_work_view: false,
@@ -1457,9 +1508,11 @@ impl Default for BackendSettings {
             codex_app_side_chat_save: false,
             codex_app_markdown_export: true,
             codex_app_usage_status_line: true,
+            usage_history_enabled: false,
             codex_app_proxy_request_status: true,
             claude_app_voice_input: true,
             claude_app_localization: true,
+            claude_app_extensions: false,
             claude_app_computer_use: false,
             claude_app_bash_timeout: ClaudeBashTimeoutSettings::default(),
             computer_use_approval: default_computer_use_approval(),
@@ -1477,6 +1530,7 @@ impl Default for BackendSettings {
             codex_app_native_fast_unlock: false,
             codex_app_native_predictions: false,
             codex_app_third_party_reasoning_collapse: false,
+            codex_app_offline_auto_review: false,
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
@@ -1612,6 +1666,9 @@ impl BackendSettings {
                 trust_upstream_catalog_lite: false,
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
+                strip_responses_image_detail: false,
+                disable_tool_search: false,
+                pure_api_image_generation: false,
                 auto_review_model: String::new(),
                 multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
@@ -1683,6 +1740,9 @@ impl BackendSettings {
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
+            strip_responses_image_detail: false,
+            disable_tool_search: false,
+            pure_api_image_generation: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -1752,6 +1812,7 @@ impl BackendSettings {
             || self.active_relay_profile().request_compatibility_enabled()
             || self.active_relay_profile().rewrites_auto_review_model()
             || self.active_relay_profile().strips_image_generation_tool()
+            || self.active_relay_profile().enables_pure_api_image_generation()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -1954,6 +2015,13 @@ pub fn clamp_stepwise_timeout_ms(value: u64) -> u64 {
 }
 
 pub fn default_true() -> bool {
+    true
+}
+
+/// 「启动前修复会话索引」默认开：纯增量补投影，不修配置、不动 provider。
+/// 只有用户显式关掉才停（issue #2846 把「修复历史会话」和「供应商同步」拆开后，
+/// 关掉 provider sync 不该连索引修复也一起停）。
+fn default_session_index_repair_enabled() -> bool {
     true
 }
 
@@ -2737,6 +2805,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         }
         target.insert("dictation".to_string(), Value::Object(dictation));
     }
+    merge_bool_setting(target, source, "claudeAppExtensions");
     merge_bool_setting(target, source, "relayPreserveNonproviderSettings");
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
@@ -2778,6 +2847,14 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
     }
+    // issue #2846：新拆出的「启动前修复会话索引」也要进 /settings/set 白名单，
+    // 否则从 Codex 设置页改这个开关会被静默丢弃。
+    if let Some(value) = source
+        .get("sessionIndexRepairEnabled")
+        .and_then(Value::as_bool)
+    {
+        target.insert("sessionIndexRepairEnabled".to_string(), Value::Bool(value));
+    }
     if let Some(value) = source
         .get("threadModelFollowSwitchEnabled")
         .and_then(Value::as_bool)
@@ -2797,6 +2874,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     // 保证任何走 /settings/set 的调用都不会被静默丢弃。
     // Codex++ 更新提醒偏好（#1272）：「跳过此版本」由管理器单独写入，必须在白名单里。
     merge_bool_setting(target, source, "updateAutoCheck");
+    merge_bool_setting(target, source, "updateAutoDownload");
     if let Some(value) = source.get("updateSkippedVersion").and_then(Value::as_str) {
         target.insert(
             "updateSkippedVersion".to_string(),
@@ -2875,6 +2953,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSideChatSave");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppUsageStatusLine");
+    merge_bool_setting(target, source, "usageHistoryEnabled");
     merge_bool_setting(target, source, "codexAppProxyRequestStatus");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
@@ -2895,6 +2974,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeFastUnlock");
     merge_bool_setting(target, source, "codexAppNativePredictions");
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
+    merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
@@ -3948,6 +4028,38 @@ mod tests {
     }
 
     #[test]
+    fn claude_extensions_default_off_and_respect_explicit_choice() {
+        assert!(!BackendSettings::default().claude_app_extensions);
+        let mut value = serde_json::to_value(BackendSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("claudeAppExtensions");
+        let legacy: BackendSettings = serde_json::from_value(value.clone()).unwrap();
+        assert!(!legacy.claude_app_extensions, "旧配置不能自动加载 Claude 拓展");
+
+        for enabled in [true, false] {
+            value["claudeAppExtensions"] = json!(enabled);
+            let parsed: BackendSettings = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(parsed.claude_app_extensions, enabled);
+            assert_eq!(serde_json::to_value(parsed).unwrap()["claudeAppExtensions"], enabled);
+        }
+    }
+
+    #[test]
+    fn claude_extensions_partial_updates_persist_explicit_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(!store.load().unwrap().claude_app_extensions);
+
+        for enabled in [true, false] {
+            let updated = store.update(json!({"claudeAppExtensions": enabled})).unwrap();
+            assert_eq!(updated.claude_app_extensions, enabled);
+            assert_eq!(store.load().unwrap().claude_app_extensions, enabled);
+            let raw: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(raw["claudeAppExtensions"], json!(enabled));
+        }
+    }
+
+    #[test]
     fn claude_bash_timeout_defaults_off_and_normalizes_seconds() {
         let settings = BackendSettings::default();
         assert!(!settings.claude_app_bash_timeout.enabled);
@@ -4010,6 +4122,7 @@ mod tests {
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
+        assert!(settings.session_index_repair_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
@@ -4101,6 +4214,23 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(invalid.codex_app_stepwise_generation_mode, "auto");
+    }
+
+    /// issue #2846：老 settings.json 没有 sessionIndexRepairEnabled 字段，
+    /// 反序列化时必须补成 true（修复索引默认开），不能因为缺字段跟着 provider sync 一起被关。
+    #[test]
+    fn session_index_repair_enabled_defaults_on_missing_field() {
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"providerSyncEnabled":false}"#).unwrap();
+        assert!(!settings.provider_sync_enabled);
+        assert!(settings.session_index_repair_enabled);
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"providerSyncEnabled":true}"#).unwrap();
+        assert!(settings.provider_sync_enabled);
+        assert!(settings.session_index_repair_enabled);
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"sessionIndexRepairEnabled":false}"#).unwrap();
+        assert!(!settings.session_index_repair_enabled);
     }
 
     #[test]
@@ -4261,6 +4391,20 @@ mod tests {
         let saved = serde_json::to_value(profile).unwrap();
         assert_eq!(saved["modelRoutes"][0]["targetRelayId"], "relay-b");
         assert_eq!(saved["modelRoutes"][0]["targetModel"], "provider-luna");
+    }
+
+    #[test]
+    fn relay_profile_disable_tool_search_roundtrips_in_camel_case() {
+        // #2868：手动关闭 tool_search 的开关按 disableToolSearch 往返。
+        let profile: RelayProfile =
+            serde_json::from_str(r#"{"id":"relay-a","name":"A","disableToolSearch":true}"#).unwrap();
+        assert!(profile.disable_tool_search);
+        let saved = serde_json::to_value(&profile).unwrap();
+        assert_eq!(saved["disableToolSearch"], true);
+        // 默认 false 不序列化。
+        let default: RelayProfile = serde_json::from_str(r#"{"id":"relay-a","name":"A"}"#).unwrap();
+        assert!(!default.disable_tool_search);
+        assert!(serde_json::to_value(&default).unwrap()["disableToolSearch"].is_null());
     }
 
     /// 旧版按供应商勾选上下文条目的 `contextSelection` / `contextSelectionInitialized`
@@ -4994,6 +5138,23 @@ experimental_bearer_token = "sk-existing""#
             settings.active_relay_session_provider(),
             RelaySessionProvider::Custom
         );
+    }
+
+    #[test]
+    fn settings_store_update_persists_offline_auto_review_flag() {
+        // #2817：默认关；不在合并白名单里时，管理器 / Codex 里的开关永远存不下来。
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        store.save(&BackendSettings::default()).unwrap();
+        assert!(!store.load().unwrap().codex_app_offline_auto_review);
+
+        let updated = store.update(json!({ "codexAppOfflineAutoReview": true })).unwrap();
+
+        assert!(updated.codex_app_offline_auto_review);
+        assert!(store.load().unwrap().codex_app_offline_auto_review);
+        let parsed: BackendSettings =
+            serde_json::from_value(json!({ "enhancementsEnabled": true })).unwrap();
+        assert!(!parsed.codex_app_offline_auto_review, "旧设置文件没有这个键时按关处理");
     }
 
     #[test]
@@ -5784,6 +5945,36 @@ experimental_bearer_token = "sk-existing""#
             assert_eq!(profile.web_search_history_compat_enabled(), expected);
         }
     }
+    #[test]
+    fn pure_api_image_generation_is_default_off_and_only_for_pure_api() {
+        let legacy = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(legacy.get("pureApiImageGeneration").is_none());
+        let enabled = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            pure_api_image_generation: true,
+            ..RelayProfile::default()
+        };
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["pureApiImageGeneration"], json!(true));
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.enables_pure_api_image_generation());
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile { id: "on".to_string(), ..enabled }],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        for mode in [RelayMode::Official, RelayMode::Aggregate] {
+            let profile = RelayProfile {
+                relay_mode: mode,
+                official_mix_api_key: true,
+                pure_api_image_generation: true,
+                ..RelayProfile::default()
+            };
+            assert!(!profile.enables_pure_api_image_generation());
+        }
+    }
+
     #[test]
     fn strip_image_generation_tool_is_default_off_and_only_for_api_responses() {
         let legacy = serde_json::to_value(RelayProfile::default()).unwrap();

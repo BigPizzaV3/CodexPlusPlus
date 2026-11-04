@@ -156,10 +156,10 @@ test("group updates queue eligible Skills across collapsed groups and distinguis
     assert.equal(await groupZ.locator(".mg-matrix-row").filter({ hasText: "alpha" }).getByRole("button", { name: "更新中" }).count(), 0);
     await groupA.locator(".mg-group-head").click();
     assert.equal(await groupA.locator(".mg-matrix-row").count(), 0);
-    await groupA.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（2）/ }).click();
-    await groupZ.getByRole("button", { name: /z\/repo · 更新组内可更新 Skill（1）/ }).click();
-    assert.equal(await groupA.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（0）/ }).isDisabled(), true);
-    assert.equal(await groupZ.getByRole("button", { name: /z\/repo · 更新组内可更新 Skill（0）/ }).isDisabled(), true);
+    await groupA.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（3）/ }).click();
+    assert.match((await page.evaluate(() => (window as any).notice))[1], /跳过 1 个已在操作中的 Skill/);
+    await groupZ.getByRole("button", { name: /z\/repo · 更新组内可更新 Skill（2）/ }).click();
+    assert.match((await page.evaluate(() => (window as any).notice))[1], /跳过 1 个已在操作中的 Skill/);
     for (let i = 0; i < 4; i++) {
       await page.waitForFunction(() => (window as any).fixture.pending.length === 1);
       await page.evaluate(() => (window as any).fixture.pending.shift()());
@@ -168,6 +168,32 @@ test("group updates queue eligible Skills across collapsed groups and distinguis
     assert.deepEqual(await page.evaluate(() => (window as any).fixture.calls.filter((call: any) => call.command === "update_skill").map((call: any) => [call.args.repoKey, call.args.id])), [["a/repo@main", "alpha"], ["a/repo@main", "beta"], ["a/repo@main", "gamma"], ["z/repo@main", "zeta"]]);
     await page.waitForFunction(() => (window as any).notice?.[2] === "failed");
     assert.match((await page.evaluate(() => (window as any).notice))[1], /beta.*fixture update failure/);
+    assert.deepEqual(errors, []);
+    await page.evaluate(() => (window as any).unmountPage());
+  } finally { await browser.close(); }
+});
+
+test("failure summary distinguishes duplicate IDs by repository and updates a retry", { skip: !esbuild || !playwright || !browserExecutable }, async () => {
+  const make = (repoKey: string) => ({ id: "alpha", name: "alpha", description: "", repoKey, installed: true, enabled: false, bundled: false, updateAvailable: true, agents: [], managed: true });
+  const browser = await playwright.chromium.launch({ executablePath: browserExecutable, headless: true });
+  try {
+    const { page, errors } = await fixture(browser, [make("a/repo@main"), make("z/repo@main")]);
+    await page.evaluate(() => { (window as any).fixture.failIds = ["alpha"]; });
+    for (const repo of ["a/repo", "z/repo", "a/repo"]) {
+      const group = page.locator(".mg-skill-group").filter({ has: page.getByLabel(`${repo} · Codex · 全选`) });
+      await page.evaluate((message: string) => { (window as any).fixture.failureMessage = message; }, repo === "a/repo" ? "a failure" : "z failure");
+      if (repo === "a/repo" && await page.getByRole("region", { name: "Skill 操作失败摘要" }).count()) await page.evaluate(() => { (window as any).fixture.failureMessage = "latest failure"; });
+      await group.getByRole("button", { name: /更新组内可更新 Skill/ }).click();
+      await page.waitForFunction(() => (window as any).fixture.pending.length === 1);
+      await page.evaluate(() => (window as any).fixture.pending.shift()());
+      await page.waitForFunction(() => (window as any).fixture.pending.length === 0);
+      await page.getByRole("region", { name: "Skill 操作失败摘要" }).getByText(`${repo === "a/repo" ? "a/repo@main" : "z/repo@main"}`, { exact: true }).waitFor();
+    }
+    const summary = page.getByRole("region", { name: "Skill 操作失败摘要" });
+    await summary.getByText("3 次 Skill 操作失败").waitFor();
+    assert.equal(await summary.locator("li").count(), 2);
+    assert.match(await summary.locator("li").filter({ hasText: "a/repo@main" }).innerText(), /alpha：latest failure/);
+    assert.match(await summary.locator("li").filter({ hasText: "z/repo@main" }).innerText(), /alpha：z failure/);
     assert.deepEqual(errors, []);
     await page.evaluate(() => (window as any).unmountPage());
   } finally { await browser.close(); }
@@ -211,7 +237,8 @@ test("queued uninstall blocks updates after remount while other Skills remain us
     await page.getByRole("button", { name: "全部展开", exact: true }).click();
     await row("beta").getByRole("button", { name: "卸载排队中" }).waitFor();
     assert.equal(await row("beta").getByRole("button", { name: "更新", exact: true }).count(), 0);
-    await page.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（1）/ }).click();
+    await page.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（3）/ }).click();
+    assert.match((await page.evaluate(() => (window as any).notice))[1], /跳过 2 个已在操作中的 Skill/);
     assert.equal(await row("gamma").getByRole("button", { name: "排队中" }).isDisabled(), true);
     for (let i = 0; i < 3; i++) {
       await page.waitForFunction(() => (window as any).fixture.pending.length === 1);
@@ -264,7 +291,7 @@ test("persistent bounded failure summary survives uninstall success and remount 
     for (const id of ids) {
       const item = summary.locator("li").filter({ has: page.getByText(id, { exact: true }) });
       assert.equal(await item.count(), 1);
-      assert.ok((await item.innerText()).length <= id.length + 241);
+      assert.ok((await item.innerText()).length <= "a/repo@main · ".length + id.length + 241);
     }
     const list = summary.getByRole("list", { name: "失败的 Skill 列表" });
     assert.equal(await list.evaluate((el: HTMLElement) => el.scrollHeight > el.clientHeight && getComputedStyle(el).overflowY === "auto"), true);
@@ -279,7 +306,7 @@ test("persistent bounded failure summary survives uninstall success and remount 
     await page.evaluate(() => (window as any).fixture.pending.shift()());
     await summary.getByText("6 次 Skill 操作失败").waitFor();
     assert.equal(await summary.locator("li").count(), 5);
-    assert.match(await summary.locator("li").filter({ has: page.getByText("beta", { exact: true }) }).innerText(), /^beta：latest error$/);
+    assert.match(await summary.locator("li").filter({ has: page.getByText("beta", { exact: true }) }).innerText(), /^a\/repo@main · beta：latest error$/);
     await page.evaluate(() => { (window as any).fixture.failIds = []; });
     await beta.getByRole("button", { name: "更新", exact: true }).click();
     await page.waitForFunction(() => (window as any).fixture.pending.length === 1);
@@ -303,7 +330,8 @@ test("single failure followed by group success shares the final notice", { skip:
     await page.getByRole("button", { name: "全部展开", exact: true }).click();
     await page.locator(".mg-matrix-row").filter({ hasText: "beta" }).getByRole("button", { name: "更新", exact: true }).click();
     await page.waitForFunction(() => (window as any).fixture.pending.length === 1);
-    await page.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（1）/ }).click();
+    await page.getByRole("button", { name: /a\/repo · 更新组内可更新 Skill（2）/ }).click();
+    assert.match((await page.evaluate(() => (window as any).notice))[1], /跳过 1 个已在操作中的 Skill/);
     for (let i = 0; i < 2; i++) { await page.waitForFunction(() => (window as any).fixture.pending.length === 1); await page.evaluate(() => (window as any).fixture.pending.shift()()); }
     await page.waitForFunction(() => (window as any).notice?.[2] === "failed");
     assert.match((await page.evaluate(() => (window as any).notice))[1], /beta.*fixture update failure/);

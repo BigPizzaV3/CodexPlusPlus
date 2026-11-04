@@ -47,7 +47,7 @@
       <a href="index.html#community">社区</a>
     </nav>
     <div class="nav-actions">
-      <span class="nav-version mono" data-site-version>v2.1.4</span>
+      <span class="nav-version mono" data-site-version>v2.2.0</span>
       <button class="icon-btn" type="button" data-theme-toggle aria-label="切换明暗主题">
         <svg class="i-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
         <svg class="i-moon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
@@ -130,10 +130,10 @@
         <div class="g-card">
           <span class="tag">兼容旧版</span>
           <h4>直连模式</h4>
-          <p>只管 Codex：在「旧版供应商配置」里切换官方登录、官方 + API、纯 API 或聚合供应商，Codex 直接连上游。1.x 的老用户升级后什么都不用改。</p>
+          <p>只管 Codex：在「Codex → 连接与供应商」里切换官方登录、官方 + API、纯 API 或聚合供应商，Codex 直接连上游。1.x 的老用户升级后什么都不用改。</p>
         </div>
       </div>
-      <p style="margin-top:16px">两种模式互不影响，可以随时切换。本教程以网关模式为主线，直连模式放在 <a href="#direct">后面单独介绍</a>。</p>
+      <p style="margin-top:16px">两种模式互不影响，Codex 在「连接与供应商」顶部的「连接方式」里一键切换。本教程以网关模式为主线，直连模式放在 <a href="#direct">后面单独介绍</a>。</p>
     </section>
 
     <!-- 安装 -->
@@ -153,7 +153,7 @@
           </div>
         </li>
         <li><b>安装</b>Windows 双击 <code>setup.exe</code> 按提示安装；macOS 打开 DMG，把 <b>Codex++.app</b> 拖进「应用程序」。</li>
-        <li><b>打开 Codex++</b>首次打开会弹出半分钟的界面引导，带你认识网关、供应商池、Agent 接入等入口。跳过了也没关系，之后可以在「设置」里重新打开。</li>
+        <li><b>打开 Codex++</b>首次打开会先问你的使用模式：只管理 Codex、只用增强功能，还是全部功能，用不到的页面会藏起来。侧栏底部随后出现一张「入门清单」进度卡，跟着它添加供应商、接入 Agent、启动 Codex。关掉了也没关系，之后可以在「设置 → 通用」里修改使用模式、重新打开引导。</li>
       </ol>
       <div class="g-note">
         <p><b>双击 Codex++ 永远打开的是管理界面</b>，不会直接拉起 Codex。官方应用要从管理界面里启动，增强功能才会注入，见 <a href="#launch">第三步</a>。</p>
@@ -167,26 +167,25 @@
     <section id="tour">
       <p class="kicker">02 · TOUR</p>
       <h2>认识界面</h2>
-      <p>左侧栏按用途分成几组，左上角始终显示网关是否在运行、监听哪个端口：</p>
+      <p>左侧栏从上到下分成几块，最上面的搜索框（<kbd>⌘</kbd> <kbd>K</kbd> / <kbd>Ctrl</kbd> <kbd>K</kbd>）随时能跳到任意页面：</p>
       <div class="g-table">
         <table>
-          <thead><tr><th>分组</th><th>里面有什么</th></tr></thead>
+          <thead><tr><th>位置</th><th>里面有什么</th></tr></thead>
           <tbody>
-            <tr><td>网关</td><td><span class="ui">总览</span> <span class="ui">供应商池</span> <span class="ui">Agent 接入</span> <span class="ui">路由</span> <span class="ui">网关设置</span>——「任意 Agent 接任意供应商」的全部配置。</td></tr>
-            <tr><td>Agent</td><td>Codex、Claude Code、Grok 各占一行，绿点表示已接入网关。点进去是它自己的增强、皮肤、插件、设置等页签；Codex 行的 ▶ 可以直接启动或停止 Codex。</td></tr>
-            <tr><td>全局管理</td><td><span class="ui">用量</span>（统计 + 请求日志）<span class="ui">会话</span> <span class="ui">MCP</span> <span class="ui">Skills</span>，一次覆盖所有 Agent。</td></tr>
-            <tr><td>工具</td><td><span class="ui">Computer Use</span> <span class="ui">Agent 桌宠</span> <span class="ui">Agent 协作</span> <span class="ui">AI Agent 缓存清理</span> 等与供应商无关的功能。</td></tr>
-            <tr><td>底部</td><td>版本号、整体设置（主题、配置备份、更新、日志）、界面语言与明暗切换。</td></tr>
+            <tr><td>常用入口</td><td><span class="ui">首页</span>（状态、常用入口与赞助商推荐）<span class="ui">万物皆拓展</span> <span class="ui">MCP 与 Skills</span> <span class="ui">会话</span>，一次覆盖所有 Agent。</td></tr>
+            <tr><td>聚合网关</td><td><span class="ui">总览</span> <span class="ui">供应商池</span> <span class="ui">Agent 接入</span> <span class="ui">路由</span> <span class="ui">用量</span>（统计 + 请求日志）——「任意 Agent 接任意供应商」的全部配置。</td></tr>
+            <tr><td>Agent 增强</td><td>Codex、Claude 各占一行，状态点表示接入方式（绿色为经网关）。点开 Codex，它的页面缩进列在下面：<span class="ui">概览</span> <span class="ui">连接与供应商</span> <span class="ui">内置拓展</span> <span class="ui">皮肤管理</span> <span class="ui">插件市场</span> <span class="ui">微信连接</span> <span class="ui">多开</span>。Codex 行右侧的按钮直接启动或停止 Codex。</td></tr>
+            <tr><td>底部</td><td>入门清单、新版本下载进度或网关状态卡；版本号旁的齿轮进入<b>设置目录</b>：通用、配置文件、版本与更新、日志与诊断、关于、Codex、网关、缓存清理，以及 Beta 里的 Computer Use 与 Agent 协作。</td></tr>
           </tbody>
         </table>
       </div>
       <figure class="g-shot">
-        <a href="assets/guide/hub.webp" target="_blank" rel="noopener"><img src="assets/guide/hub.webp" width="1800" height="1025" loading="lazy" alt="网关总览：左侧是接入的 Agent，中间是 Codex++ 网关，右侧是供应商池，下方是路由动态与今日用量"></a>
+        <a href="assets/guide/hub.webp" target="_blank" rel="noopener"><img src="assets/guide/hub.webp" width="1800" height="1346" loading="lazy" alt="网关总览：上方是今日调用、成功率、Tokens 与费用，中间左侧是接入的 Agent、中间是 Codex++ 网关、右侧是供应商池，下方是最近请求"></a>
         <figcaption>网关总览：谁在用、走哪家、是否健康，一屏看全。</figcaption>
       </figure>
       <h3>两个省事的入口</h3>
       <ul>
-        <li><b>快速跳转</b>：随时按 <kbd>⌘</kbd> <kbd>K</kbd>（Windows 为 <kbd>Ctrl</kbd> <kbd>K</kbd>）搜索页面和常用操作。</li>
+        <li><b>快速跳转</b>：随时按 <kbd>⌘</kbd> <kbd>K</kbd>（Windows 为 <kbd>Ctrl</kbd> <kbd>K</kbd>）搜索页面和常用操作；设置目录顶部也有自己的搜索框。</li>
         <li><b>托盘快捷面板</b>：左键点系统托盘 / 菜单栏里的 Codex++ 图标，不打开主窗口也能给各 Agent 换模型、看最近请求。</li>
       </ul>
     </section>
@@ -201,7 +200,7 @@
           <ul>
             <li><b>API Key</b>：模型厂商的 API，或支持 Codex++ 的服务商，填 Key 即可；</li>
             <li><b>登录订阅</b>：ChatGPT 订阅、GitHub Copilot、SuperGrok 等，在浏览器里登录，无需密钥，和 Codex 自己的登录互不影响；</li>
-            <li><b>导入</b>：从直连模式（旧版供应商配置）或 OpenCode 里已保存的 Key 一次导入多家。</li>
+            <li><b>导入</b>：从直连模式（Codex → 连接与供应商）或 OpenCode 里已保存的 Key 一次导入多家。</li>
           </ul>
         </li>
         <li><b>确认模型和用途</b>添加时会自动拉取上游模型列表，并按公开价格表填好价格。还可以勾选「添加后给这些 Agent 用」；都不勾也能添加，之后再在 Agent 里挑选。</li>
@@ -216,7 +215,7 @@
         </li>
       </ol>
       <figure class="g-shot">
-        <a href="assets/guide/gatewayProviders.webp" target="_blank" rel="noopener"><img src="assets/guide/gatewayProviders.webp" width="1600" height="420" loading="lazy" alt="供应商池：DeepSeek、Kimi、智谱 GLM 三家供应商，显示协议、地址、模型数与 Key 状态"></a>
+        <a href="assets/guide/gatewayProviders.webp" target="_blank" rel="noopener"><img src="assets/guide/gatewayProviders.webp" width="1600" height="625" loading="lazy" alt="供应商池：ChatGPT 订阅、DeepSeek、Kimi、智谱 GLM 与两个中转站，显示协议、地址、模型数、额度与限流状态"></a>
         <figcaption>供应商池：每家显示协议、模型数，以及「被限流 · 42s 后恢复」这类实时状态。</figcaption>
       </figure>
       <div class="g-note warn">
@@ -230,7 +229,7 @@
       <h2>第二步：接入 Agent</h2>
       <p>打开「网关 → Agent 接入」。每个 Agent 一行：<b>右侧开关决定它是否经网关接入，下拉框给它选默认模型。</b></p>
       <figure class="g-shot">
-        <a href="assets/guide/gateway.webp" target="_blank" rel="noopener"><img src="assets/guide/gateway.webp" width="1600" height="351" loading="lazy" alt="Agent 接入页：Claude Code 已接入，默认模型 deepseek-v4-pro；Grok 未接入"></a>
+        <a href="assets/guide/gateway.webp" target="_blank" rel="noopener"><img src="assets/guide/gateway.webp" width="1600" height="439" loading="lazy" alt="Agent 接入页：Codex 用「主力编程」组、Claude Code 用 DeepSeek-V4-Pro 已接入；Grok 收在未接入里"></a>
         <figcaption>打开开关后，供应商池里的模型会以「Codex++」供应商的身份出现在 Agent 自己的模型列表里。</figcaption>
       </figure>
       <h3>各 Agent 的差别</h3>
@@ -256,11 +255,11 @@
       <p>Claude Code、Grok 是命令行工具，接入后照常在终端里用即可。<b>Codex 桌面版需要从 Codex++ 启动</b>，增强功能才会注入：</p>
       <ul>
         <li>点 Codex 页面右上角的 <span class="ui">启动 Codex</span>（已在运行时显示为「重启 Codex」）；</li>
-        <li>或者点侧栏 Codex 行的绿色 ▶。</li>
+        <li>或者点侧栏 Codex 行右侧的启动按钮。Codex 若是你自己打开的、还没挂载增强，这个按钮会变成「重启并挂载」，点一下即可。</li>
       </ul>
       <p>依赖注入的设置（大部分增强、Fast 解锁等）改完后需要通过 Codex++ <b>重启 Codex</b> 才生效。</p>
       <div class="g-note">
-        <p><b>习惯从程序坞 / 开始菜单打开 Codex？</b>macOS 上可以在「Codex → 设置」里打开「自动接管官方 App」：你自己双击启动官方 App 时，Codex++ 会自动接管并注入增强。</p>
+        <p><b>习惯从程序坞 / 开始菜单打开 Codex？</b>macOS 上可以在「设置 → Codex」里打开「自动接管官方 App」：你自己双击启动官方 App 时，Codex++ 会自动接管并注入增强。</p>
       </div>
       <div class="g-note ok">
         <p>到这里就完成了最基础的配置。下面的章节都是进阶用法，按需阅读。</p>
@@ -283,8 +282,8 @@
         </table>
       </div>
       <figure class="g-shot">
-        <a href="assets/guide/gatewayRouting.webp" target="_blank" rel="noopener"><img src="assets/guide/gatewayRouting.webp" width="1600" height="955" loading="lazy" alt="路由页：Claude Code 请求经 Codex++ 网关按模型路由到 DeepSeek，并显示上一个请求的路由过程"></a>
-        <figcaption>路由页实时展示网关的实际决策，以及上一个请求是怎么路由的。</figcaption>
+        <a href="assets/guide/gatewayRouting.webp" target="_blank" rel="noopener"><img src="assets/guide/gatewayRouting.webp" width="1600" height="850" loading="lazy" alt="路由页：自建的「主力编程」依次组与「便宜轮换」轮换组，成员显示额度、最近使用与首字耗时"></a>
+        <figcaption>路由页：每个组一张卡，选分配策略和会话固定方式，成员的额度、最近使用与首字耗时一目了然。</figcaption>
       </figure>
       <h3>新建模型组</h3>
       <p>在「网关 → 路由」点「新建路由组」，把几个模型编成一组，Agent 就能把它当作一个模型来选。每个组可以选择分配策略：</p>
@@ -302,13 +301,13 @@
     <section id="usage">
       <p class="kicker">07 · USAGE</p>
       <h2>用量与请求日志</h2>
-      <p>「全局管理 → 用量」有两个页签：</p>
+      <p>「聚合网关 → 用量」有两个页签：</p>
       <ul>
         <li><b>统计</b>：余额、费用、token、缓存命中、推理与生图次数，按天的柱状图和各 Agent 占比。点明细里的一行，会跳到请求页签并自动筛好。</li>
         <li><b>请求</b>：每条请求的状态、实际走的供应商和模型、重试、token、缓存、估算费用与耗时。失败的请求直接显示错误原因，可以按 Agent、状态、会话和时间段筛选。</li>
       </ul>
       <figure class="g-shot">
-        <a href="assets/guide/requestLog.webp" target="_blank" rel="noopener"><img src="assets/guide/requestLog.webp" width="1600" height="682" loading="lazy" alt="请求日志：每条请求的时间、状态、来源、模型映射、自动重试、输入输出与缓存 token、耗时"></a>
+        <a href="assets/guide/requestLog.webp" target="_blank" rel="noopener"><img src="assets/guide/requestLog.webp" width="1600" height="824" loading="lazy" alt="请求日志：每条请求的时间、状态、来源、模型映射、自动重试、输入输出与缓存 token、耗时"></a>
         <figcaption>请求日志：<code>claude-sonnet-4-5 → deepseek-v4-pro</code> 这样的映射、自动重试和首字耗时都看得见。</figcaption>
       </figure>
     </section>
@@ -317,6 +316,7 @@
     <section id="gateway-settings">
       <p class="kicker">08 · GATEWAY SETTINGS</p>
       <h2>网关设置</h2>
+      <p>在「设置 → 网关」里：</p>
       <ul>
         <li><b>只监听本机</b>：网关地址形如 <code>127.0.0.1:&lt;端口&gt;</code>，各 Agent 用自己的路径和本地 token 接入。觉得 token 泄露了，点「更换 token」，旧 token 立即失效。</li>
         <li><b>多 Key 轮换</b>：默认「同一会话固定一个 Key，出错才换」，能保住上游的提示词缓存；也可以改成「每个请求换下一个 Key」，用量更平均但缓存命中会变低。</li>
@@ -332,10 +332,10 @@
     <section id="codex-enhance">
       <p class="kicker">09 · CODEX</p>
       <h2>Codex 增强</h2>
-      <p>点侧栏的 <b>Codex</b>，顶部页签里的 <span class="ui">增强</span> 汇集了二十多项官方没有的功能。每项都能单独开关；关掉「启用 Codex 增强」总开关后，供应商与启动管理照常可用。</p>
+      <p>点侧栏的 <b>Codex</b>，它下面的 <span class="ui">内置拓展</span> 汇集了二十多项官方没有的功能。每项都能单独开关；关掉顶部的「启用内置拓展」总开关后，供应商与启动管理照常可用。</p>
       <figure class="g-shot">
-        <a href="assets/guide/enhance.webp" target="_blank" rel="noopener"><img src="assets/guide/enhance.webp" width="1600" height="682" loading="lazy" alt="Codex 增强页：左侧分类目录，右侧插件市场解锁、模型白名单解锁、原生 Fast 强制解锁、会话删除等开关"></a>
-        <figcaption>增强页按「插件与模型 / 对话与输入 / 桌宠与活动 / 独立模式」分类，改动自动保存。</figcaption>
+        <a href="assets/guide/enhance.webp" target="_blank" rel="noopener"><img src="assets/guide/enhance.webp" width="1600" height="824" loading="lazy" alt="内置拓展页：顶部是内置拓展、语音输入、下一步建议三个页签与搜索，下面是插件市场解锁、模型白名单解锁、原生 Fast 强制解锁等开关"></a>
+        <figcaption>内置拓展页按「插件与模型」「对话与输入」等分节排列、可搜索，改动自动保存；标着「需重启」的项从 Codex++ 重启 Codex 后生效。</figcaption>
       </figure>
       <h3>常用的几项</h3>
       <ul>
@@ -346,24 +346,25 @@
       </ul>
       <h3>纯 API Key 也想用原生 Fast</h3>
       <ol class="g-steps">
-        <li>在「Codex → 增强 → 常用增强」打开总开关和「原生 Fast 强制解锁」（默认关闭）。</li>
-        <li>直连模式下，在「旧版供应商配置」里为该模型设置「Fast（priority）支持」并保存。经网关接入时，Codex 的模型目录会带上 Fast 信息；模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。</li>
+        <li>在「Codex → 内置拓展」打开顶部的「启用内置拓展」总开关和「原生 Fast 强制解锁」（默认关闭）。</li>
+        <li>直连模式下，在「Codex → 连接与供应商」里为该模型设置「Fast（priority）支持」并保存。经网关接入时，Codex 的模型目录会带上 Fast 信息；模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。</li>
         <li>从 Codex++ 重启 Codex，在模型菜单里选择 <b>⚡ Fast</b>。实际可用性与计费以供应商为准。</li>
       </ol>
-      <h3>同一行的其他页签</h3>
+      <h3>Codex 下面的其他页面</h3>
       <ul>
         <li><b>皮肤管理</b>：社区主题与自定义图片；</li>
-        <li><b>脚本</b> / <b>插件市场</b>：安装社区脚本和 Codex 插件，支持卸载；</li>
+        <li><b>插件市场</b>：安装和卸载 Codex 插件；社区拓展与脚本在侧栏的「万物皆拓展」里；</li>
         <li><b>微信连接</b>：扫码连接本机 Codex，出门也能派活；</li>
-        <li><b>设置</b>：Codex 应用路径、启动参数、图片覆盖层、自动接管与安装维护。</li>
+        <li><b>多开</b>：见 <a href="#direct">直连模式与多开</a>。</li>
       </ul>
+      <p>Codex 应用路径、启动参数、图片覆盖层、自动接管与安装维护在「设置 → Codex」里。</p>
     </section>
 
     <!-- 直连模式 -->
     <section id="direct">
       <p class="kicker">10 · DIRECT MODE</p>
       <h2>Codex 直连模式与多开</h2>
-      <p>不想经过网关、只给 Codex 换供应商时，使用「Codex → 旧版供应商配置」。四种接法独立配置、一键切换：</p>
+      <p>不想经过网关、只给 Codex 换供应商时，打开「Codex → 连接与供应商」，把顶部的「连接方式」切到「直连」。四种接法独立配置、一键切换；直连供应商也能一键加进网关的供应商池：</p>
       <div class="g-table">
         <table>
           <thead><tr><th>模式</th><th>适用场景</th></tr></thead>
@@ -382,7 +383,7 @@ deepseek-v4-pro<span class="h">[1M]</span>
 your-model<span class="h">[200K]</span>
 another-model<span class="h">[128000]</span></code></pre>
       <h3>多开</h3>
-      <p>「Codex → 多开」可以为每个供应商身份启动一个隔离的 Codex 实例，互不干扰。多开只使用「旧版供应商配置」里的供应商和 Key；实例已在运行时，改配置后需要重启该实例才生效。</p>
+      <p>「Codex → 多开」可以为每个供应商身份启动一个隔离的 Codex 实例，互不干扰。多开只使用「连接与供应商」里的直连供应商和 Key；实例已在运行时，改配置后需要重启该实例才生效。</p>
       <div class="g-note warn">
         <p>纯 API 和官方登录 + API 使用不同的认证位置，<b>不要手工在两种模式之间复制 <code>auth.json</code></b>。</p>
       </div>
@@ -399,11 +400,11 @@ another-model<span class="h">[128000]</span></code></pre>
         <li><b>启动增强版</b>点右上角「启动增强版」。之后改动增强开关，需要重启副本才会应用。</li>
       </ol>
       <figure class="g-shot">
-        <a href="assets/guide/claude.webp" target="_blank" rel="noopener"><img src="assets/guide/claude.webp" width="1600" height="890" loading="lazy" alt="Claude 受管增强版：制作增强版、启动增强版、开启需要的增强三步，以及界面汉化、语音输入、Computer Use 三个开关"></a>
+        <a href="assets/guide/claude.webp" target="_blank" rel="noopener"><img src="assets/guide/claude.webp" width="1600" height="625" loading="lazy" alt="Claude 受管增强版已准备，可开关界面汉化、语音输入、Computer Use 与解锁 Bash 时间限制"></a>
         <figcaption>Claude 增强：三步完成，官方应用原样不动。</figcaption>
       </figure>
       <div class="g-note">
-        <p>增强版里的电脑控制和「工具 → Computer Use」给 Claude Desktop 接入的 <code>codex-plus-cu</code> 是两套独立实现，<b>同一个 Claude Desktop 里二选一即可</b>，不要同时开。</p>
+        <p>增强版里的电脑控制和「设置 → Computer Use」给 Claude Desktop 接入的 <code>codex-plus-cu</code> 是两套独立实现，<b>同一个 Claude Desktop 里二选一即可</b>，不要同时开。</p>
       </div>
     </section>
 
@@ -414,11 +415,11 @@ another-model<span class="h">[128000]</span></code></pre>
       <p>Codex++ 把 ChatGPT.app 里现成的 Computer Use 与 Chrome 扩展，通过 MCP 转给其他 AI 客户端：Claude Code、Claude Desktop、DeepSeek Harness 等都能操作桌面应用和浏览器。<b>目前仅支持 macOS。</b></p>
       <ol class="g-steps">
         <li><b>授予系统权限</b>在「系统设置 → 隐私与安全性」里给 ChatGPT 授予<b>辅助功能</b>和<b>屏幕录制</b>权限。</li>
-        <li><b>点「接入」</b>打开「工具 → Computer Use」，在左侧客户端列表里给需要的客户端点「接入」。找不到的客户端可以「添加自定义配置目录」。</li>
+        <li><b>点「接入」</b>打开「设置 → Computer Use」，给需要的客户端点「接入」。找不到的客户端可以在「高级」里添加自定义配置目录。</li>
         <li><b>重启客户端</b>接入后重启对应客户端才会加载工具。Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。</li>
       </ol>
       <figure class="g-shot">
-        <a href="assets/guide/computerUse.webp" target="_blank" rel="noopener"><img src="assets/guide/computerUse.webp" width="1600" height="632" loading="lazy" alt="Computer Use 工作原理：AI 客户端经 Codex++ MCP 服务调用本机桌面应用与 Chrome 标签页"></a>
+        <a href="assets/guide/computerUse.webp" target="_blank" rel="noopener"><img src="assets/guide/computerUse.webp" width="1600" height="1090" loading="lazy" alt="Computer Use 工作原理：AI 客户端经 Codex++ MCP 服务调用本机桌面应用与 Chrome 标签页"></a>
         <figcaption>左边是你的 AI 客户端，中间是 Codex++ MCP 服务，右边是被操作的桌面应用与 Chrome 标签页。</figcaption>
       </figure>
       <p>操作方式、审批（自动放行或逐次确认）与悬浮预览，在图下方的设置区调整。</p>
@@ -430,7 +431,7 @@ another-model<span class="h">[128000]</span></code></pre>
       <h2>子 Agent 协作</h2>
       <p>在 Codex 对话里，直接让 DeepSeek、Claude Code 或另一个 Codex 帮你干活，结果回到同一个对话。</p>
       <ol class="g-steps">
-        <li><b>打开「工具 → Agent 协作」</b>在「子 Agent 设置」里启用协作和需要的 Agent，选一个默认 Agent，保存。CLI 路径留空会自动发现；模型留空则沿用各 CLI 的默认模型。</li>
+        <li><b>打开「设置 → Agent 协作」</b>在「子 Agent 设置」里启用协作和需要的 Agent，选一个默认 Agent，保存。CLI 路径留空会自动发现；模型留空则沿用各 CLI 的默认模型。</li>
         <li><b>点「一键接入并刷新」</b>Codex++ 会把协作服务写进 Codex 的 MCP 配置并刷新工具列表。如果提示缺少连接，先用 Codex++ 启动 Codex 再点「刷新 Codex 工具」。</li>
         <li><b>在 Codex 里直接说</b>例如：
           <ul>
@@ -450,12 +451,12 @@ another-model<span class="h">[128000]</span></code></pre>
       <p class="kicker">14 · MANAGE</p>
       <h2>会话、MCP 与 Skills</h2>
       <ul>
-        <li><b>会话</b>：Codex、Claude Code、Grok 的本地会话放在一起，可以查看和删除。</li>
-        <li><b>MCP</b>：统一管理 MCP 服务，按 Agent 分别启用，不用分别改各家的配置文件。</li>
+        <li><b>会话</b>：Codex、Claude Code、Claude Desktop、Grok 的本地会话放在一起，可以查看和删除。</li>
+        <li><b>MCP</b>（侧栏「MCP 与 Skills」）：统一管理 MCP 服务，按 Agent 分别启用，不用分别改各家的配置文件。</li>
         <li><b>Skills</b>：浏览、安装和启用 Skill，支持从本地文件夹导入，同样按 Agent 启用。</li>
       </ul>
       <figure class="g-shot">
-        <a href="assets/guide/sessions.webp" target="_blank" rel="noopener"><img src="assets/guide/sessions.webp" width="1600" height="455" loading="lazy" alt="会话页：Codex、Claude Code、Grok 的本地会话集中显示"></a>
+        <a href="assets/guide/sessions.webp" target="_blank" rel="noopener"><img src="assets/guide/sessions.webp" width="1600" height="744" loading="lazy" alt="会话页：Codex、Claude Code、Grok 的本地会话集中显示"></a>
         <figcaption>会话页：所有 Agent 的本地会话集中管理。</figcaption>
       </figure>
     </section>
@@ -465,10 +466,11 @@ another-model<span class="h">[128000]</span></code></pre>
       <p class="kicker">15 · MORE</p>
       <h2>更多小工具</h2>
       <ul>
-        <li><b>Agent 桌宠</b>：在 Codex 里放一只可拖动的桌宠，点一下会压扁并播放音效。图片可以从内置图库挑，也可以填自己的 https 图片地址，音效支持导入自定义音频。</li>
-        <li><b>AI Agent 缓存清理</b>：扫描 Codex、Claude 与 Codex++ 的缓存，按项查看大小后再清理。</li>
-        <li><b>配置备份与迁移</b>：在「整体设置」里备份、迁移 Codex++ 自己的设置文件。</li>
-        <li><b>关窗轻量模式</b>（默认关闭）：关闭主窗口时释放界面占用的内存，网关、托盘和快捷面板照常运行。</li>
+        <li><b>Agent 桌宠</b>：在 Codex 里放一只可拖动的桌宠，点一下会压扁并播放音效。图片可以从内置图库挑，也可以填自己的 https 图片地址，音效支持导入自定义音频。在「万物皆拓展 → 本地拓展」里桌宠那一行点「设置」开启。</li>
+        <li><b>AI Agent 缓存清理</b>（「设置 → 缓存清理」）：扫描 Codex、Claude 与 Codex++ 的缓存，按项查看大小后再清理。</li>
+        <li><b>配置备份与迁移</b>：在「设置 → 配置文件」里备份、迁移 Codex++ 自己的设置文件。</li>
+        <li><b>关窗轻量模式</b>（「设置 → 通用」，默认关闭）：关闭主窗口时释放界面占用的内存，网关、托盘和快捷面板照常运行。</li>
+        <li><b>后台更新</b>：发现新版本时先在后台下好安装包，侧栏底部显示下载进度和「已下载 · 点击安装」，点了才安装；也可以在「设置 → 版本与更新」里手动检查。</li>
       </ul>
     </section>
 
@@ -479,11 +481,11 @@ another-model<span class="h">[128000]</span></code></pre>
       <div class="faq-list">
         <details class="faq-item">
           <summary>Agent 接入网关后连不上 / 请求全部失败？<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>先确认 Codex++ 正在运行，左上角显示「网关运行中」。网关只在 Codex++ 运行时可用；退出后想让 Agent 直连，在「网关设置」打开「退出 Codex++ 时恢复直连」。然后到「用量 → 请求」看失败请求的错误原因，常见的是 Key 无效（401）、限流（429）或模型名在这家不存在。</p></div>
+          <div class="faq-a"><p>先确认 Codex++ 正在运行，侧栏底部的状态卡显示「网关运行中」。网关只在 Codex++ 运行时可用；退出后想让 Agent 直连，在「设置 → 网关」打开「退出 Codex++ 时恢复直连」。然后到「用量 → 请求」看失败请求的错误原因，常见的是 Key 无效（401）、限流（429）或模型名在这家不存在。</p></div>
         </details>
         <details class="faq-item">
           <summary>启动后，为什么 Codex 里没有 Codex++ 的增强？<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>确认是在 Codex++ 里点「启动 Codex」打开的官方应用，或者在 macOS 上打开了「自动接管官方 App」。仍然没有时，到「Codex → 设置」检查应用路径、启动状态和诊断日志。</p></div>
+          <div class="faq-a"><p>增强只挂载到从 Codex++ 启动的官方应用上。自己打开的 Codex，侧栏 Codex 行的按钮会变成「重启并挂载」，点一下即可；macOS 上也可以打开「自动接管官方 App」。仍然没有时，到「设置 → Codex」和「设置 → 日志与诊断」检查应用路径、启动状态和诊断日志。</p></div>
         </details>
         <details class="faq-item">
           <summary>直连模式切换供应商后，请求为什么失败？<span class="faq-x" aria-hidden="true"></span></summary>
@@ -495,7 +497,7 @@ another-model<span class="h">[128000]</span></code></pre>
         </details>
         <details class="faq-item">
           <summary>Computer Use 接入后，客户端里为什么没有工具？<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>接入后需要重启对应客户端；Claude Desktop 建议先完全退出再接入。仍然没有时，在「Computer Use」页的「配置路径与自定义目录」核对客户端实际读取的目录，并确认已给 ChatGPT 授予辅助功能与屏幕录制权限。</p></div>
+          <div class="faq-a"><p>接入后需要重启对应客户端；Claude Desktop 建议先完全退出再接入。仍然没有时，在「Computer Use」页的「高级」卡里核对客户端实际读取的目录，并确认已给 ChatGPT 授予辅助功能与屏幕录制权限。</p></div>
         </details>
         <details class="faq-item">
           <summary>官方应用更新后，增强还能用吗？<span class="faq-x" aria-hidden="true"></span></summary>
@@ -527,7 +529,7 @@ another-model<span class="h">[128000]</span></code></pre>
       <h2>获取帮助</h2>
       <p>遇到问题，请到 <a href="https://github.com/BigPizzaV3/CodexPlusPlus/issues" target="_blank" rel="noopener">GitHub Issues</a> 反馈，附上系统、Codex++ 版本、复现步骤与<b>已脱敏</b>的日志。也欢迎来 <a href="https://qm.qq.com/q/5h3pxpxg7S" target="_blank" rel="noopener">QQ 交流 4 群（1127858981）</a>、<a href="https://t.me/CodexPlusPlus" target="_blank" rel="noopener">Telegram 频道</a> 交流使用经验。</p>
       <div class="g-next" style="margin-top:22px">
-        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载最新版 <span data-site-version>v2.1.2</span></a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载最新版 <span data-site-version>v2.2.0</span></a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/blob/main/CHANGELOG.md" target="_blank" rel="noopener">查看更新日志</a>
       </div>
     </section>

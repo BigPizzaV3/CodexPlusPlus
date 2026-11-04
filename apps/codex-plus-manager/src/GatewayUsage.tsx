@@ -31,6 +31,8 @@ import { TopbarActions } from "./TopbarActions";
 import { cachedProviderBalances, loadProviderBalances, subscribeProviderBalances } from "./provider-balances";
 import { singleAgent } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
+import { CxCard, CxEmpty, CxRow, CxSection, CxStats } from "./cx-layout";
+import { Menu, MenuItem } from "./ManagementPages";
 
 const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d", summary: null };
 
@@ -103,159 +105,168 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
   const tokenTotal = Math.max(1, groups.reduce((sum, group) => sum + group.inputTokens + group.outputTokens, 0));
   const anyCost = groups.some((group) => costText(group.costs));
 
+  // 参照 Cursor 的设置页：时间段在标题行、数字一排、图表一张卡、明细一张表；余额放最后。
   return (
-    <>
-      <div className="gw-usage-head">
-        <nav className="gw-tabs gw-range-tabs" role="tablist">
+    <div className="gw-usage cx-page">
+      {/* 时间段和刷新都放进标题行右侧：页内只剩「统计 / 请求」一排胶囊，不再上下两排。 */}
+      <TopbarActions>
+        <div aria-label={t("时间段")} className="mg-segmented gw-usage-range" role="radiogroup">
           {ranges.map((item) => (
-            <button aria-selected={range === item.id} data-active={range === item.id} key={item.id} onClick={() => setRange(item.id)} role="tab" type="button">
+            <button aria-checked={item.id === range} data-active={item.id === range} key={item.id} onClick={() => setRange(item.id)} role="radio" type="button">
               {item.label}
             </button>
           ))}
-        </nav>
-      </div>
-      {/* 刷新放进外壳顶栏（网关页在用量页签不再放它自己的刷新），页面里不再重复一个。 */}
-      <TopbarActions>
+        </div>
         <button aria-label={t("刷新")} className="gw-icon-button gw-usage-refresh" onClick={() => { void load(range); void loadBalances(true); }} title={t("刷新")} type="button">
           <RefreshCw className={`h-4 w-4 ${loadingBalances ? "animate-spin" : ""}`} />
         </button>
       </TopbarActions>
 
-      {balances && balances.length ? (
-        <div className="gw-balance-grid">
-          {balances.map((balance) => (
-            <div className="gw-card gw-balance-card" key={balance.providerId}>
-              <div className="gw-balance-name">
-                <Avatar baseUrl={balance.baseUrl} name={balance.provider} size="sm" />
-                <strong>{maskAccountName(balance.provider)}</strong>
-              </div>
-              <div className="gw-balance-row">
-                <span>{t("余额")}</span>
-                {balance.amount !== null && balance.amount !== undefined ? <strong>{formatMoney(balance.amount, balance.currency)}</strong> : <small title={balance.error ?? (balance.note ? t(balance.note) : "")}>{balance.error ? t(balance.error) : balance.note ? "—" : t("查不到")}</small>}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <CxStats
+        items={[
+          {
+            label: t("估算费用"),
+            value: cost ? `≈${cost}` : "—",
+            hint: <span title={cost ? t("按供应商里填写的价格") : undefined}>{cost ? t("按供应商价格估算") : t("在供应商里填上价格后估算")}</span>,
+          },
+          {
+            label: t("Tokens"),
+            value: formatTokens((totals?.inputTokens ?? 0) + (totals?.outputTokens ?? 0)),
+            hint: (
+              <span title={totals?.reasoningTokens ? tf("推理 {0}", [formatTokens(totals.reasoningTokens)]) : undefined}>
+                {tf("{0} 输入 · {1} 输出", [formatTokens(totals?.inputTokens ?? 0), formatTokens(totals?.outputTokens ?? 0)])}
+              </span>
+            ),
+          },
+          {
+            label: t("缓存命中"),
+            value: hit === null ? "—" : `${Math.round(hit * 100)}%`,
+            hint: hit === null ? t("没有输入") : tf("读取 {0}", [formatTokens(totals?.cachedTokens ?? 0)]),
+          },
+          {
+            label: t("调用"),
+            value: totals?.calls ?? 0,
+            hint: (
+              <span data-tone={totals?.errors ? "err" : undefined}>
+                {rate === null ? t("还没有请求") : totals?.errors ? tf("成功率 {0}% · {1} 次出错", [(rate * 100).toFixed(1), totals.errors]) : t("全部成功")}
+                {totals?.images ? ` · ${tf("生图 {0} 次", [totals.images])}` : ""}
+              </span>
+            ),
+          },
+          {
+            label: t("平均耗时"),
+            value: average === null ? "—" : formatElapsed(average),
+            hint: average === null ? t("新请求开始记录") : tf("{0} 次请求计时", [totals?.timedCalls ?? 0]),
+          },
+        ]}
+      />
 
-      <div className="gw-card gw-usage-stats">
-        <div className="gw-usage-stat" data-kind="cost">
-          <span>{t("估算费用")}</span>
-          <strong>{cost ? `≈${cost}` : "—"}</strong>
-          <small>{cost ? t("按供应商里填写的价格") : t("在供应商里填上价格后估算")}</small>
-        </div>
-        <div className="gw-usage-stat">
-          <span>{t("Tokens")}</span>
-          <strong>{formatTokens((totals?.inputTokens ?? 0) + (totals?.outputTokens ?? 0))}</strong>
-          <small>
-            {tf("{0} 输入 · {1} 输出", [formatTokens(totals?.inputTokens ?? 0), formatTokens(totals?.outputTokens ?? 0)])}
-            {totals?.reasoningTokens ? ` · ${tf("推理 {0}", [formatTokens(totals.reasoningTokens)])}` : ""}
-          </small>
-        </div>
-        <div className="gw-usage-stat">
-          <span>{t("缓存命中")}</span>
-          <strong>{hit === null ? "—" : `${Math.round(hit * 100)}%`}</strong>
-          <small>{hit === null ? t("没有输入") : tf("读取 {0}", [formatTokens(totals?.cachedTokens ?? 0)])}</small>
-          <i className="gw-usage-meter" aria-hidden><b style={{ width: `${Math.round((hit ?? 0) * 100)}%` }} /></i>
-        </div>
-        <div className="gw-usage-stat">
-          <span>{t("调用")}</span>
-          <strong>{totals?.calls ?? 0}</strong>
-          <small data-tone={totals?.errors ? "err" : undefined}>
-            {rate === null ? t("还没有请求") : totals?.errors ? tf("成功率 {0}% · {1} 次出错", [(rate * 100).toFixed(1), totals.errors]) : t("全部成功")}
-            {totals?.images ? ` · ${tf("生图 {0} 次", [totals.images])}` : ""}
-          </small>
-        </div>
-        <div className="gw-usage-stat">
-          <span>{t("平均耗时")}</span>
-          <strong>{average === null ? "—" : formatElapsed(average)}</strong>
-          <small>{average === null ? t("新请求开始记录") : tf("{0} 次请求计时", [totals?.timedCalls ?? 0])}</small>
-        </div>
-      </div>
-
-      <div className="gw-card gw-chart-card">
+      <CxCard className="gw-chart-card">
         <UsageChart summary={summary} />
         {!codexOnly && summary && summary.byAgent.length > 0 ? <AgentShare groups={summary.byAgent} /> : null}
-      </div>
+      </CxCard>
 
-      <div className="gw-section-label">
-        <span>{t("明细")}</span>
-        <div className="gw-section-aside">
-          <nav className="gw-tabs gw-split-tabs" role="tablist">
-            {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).filter(([id]) => !codexOnly || id !== "agent").map(([id, label]) => (
-              <button aria-selected={split === id} data-active={split === id} key={id} onClick={() => setSplit(id)} role="tab" type="button">{label}</button>
-            ))}
-          </nav>
-          <button
-            className="gw-text-button"
-            disabled={busy !== null}
-            onClick={() => void (async () => {
-              if (await appConfirm(t("清空全部用量统计？请求日志不受影响。"), { title: t("清空统计"), confirmText: t("清空"), danger: true })) {
-                if (await run("usage:clear", "clear_gateway_usage", undefined, t("清空统计"))) void load(range);
-              }
-            })()}
-            type="button"
-          >
-            {t("清空统计")}
-          </button>
-        </div>
-      </div>
-      <div className="gw-card gw-usage-table" data-cost={anyCost}>
-        {groups.length ? (
-          <div className="gw-usage-row gw-usage-row-head">
-            <span>{split === "provider" ? t("供应商") : split === "model" ? t("模型") : t("Agent")}</span>
-            <span>{t("占比")}</span>
-            <span>{t("调用")}</span>
-            <span>{t("Tokens")}</span>
-            <span>{t("缓存命中")}</span>
-            <span>{t("出错")}</span>
-            <span>{t("费用")}</span>
-          </div>
-        ) : null}
-        {groups.map((group) => {
-          const total = group.inputTokens + group.outputTokens;
-          const share = total / tokenTotal;
-          const groupHit = cacheHitRate(group);
-          const providerEntry = payload?.pool.find((entry) => entry.id === group.key);
-          const name = split === "agent" ? agentName(group.key) : split === "model" ? prettyModelName(group.label) : maskAccountName(group.label);
-          return (
-            <div
-              className="gw-usage-row gw-usage-row-link"
-              key={group.key || "-"}
-              // 点一行看这一项的每条请求：按 Agent、供应商 id 或模型名筛，时间段跟着这里选的。
-              onClick={() => openRequestLog(split === "agent"
-                ? { agent: group.key === "claude" || group.key === "grok" ? group.key : "codex", range }
-                : split === "provider"
-                  ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
-                  : { model: group.key, range })}
-              onKeyDown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLElement).click(); }}
-              role="button"
-              tabIndex={0}
-              title={t("查看这些请求")}
-            >
-              <span className="gw-usage-name">
-                {split === "agent" ? (
-                  AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />
-                ) : (
-                  <Avatar baseUrl={providerEntry?.baseUrl} name={group.label || "?"} size="sm" />
-                )}
-                <strong title={split === "provider" ? maskAccountName(group.label) : group.label}>{name || t("未知")}</strong>
-              </span>
-              <span className="gw-usage-share">
-                <span className="gw-usage-bar"><i style={{ width: `${Math.max(2, share * 100)}%` }} /></span>
-                <em>{share >= 0.995 ? "100%" : `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%`}</em>
-              </span>
-              <span className="gw-usage-num">{group.calls}</span>
-              <span className="gw-usage-num" title={tf("{0} 输入 · {1} 输出", [formatTokens(group.inputTokens), formatTokens(group.outputTokens)])}>{formatTokens(total)}</span>
-              <span className="gw-usage-num">{groupHit === null ? "—" : `${Math.round(groupHit * 100)}%`}</span>
-              <span className="gw-usage-num" data-tone={group.errors ? "err" : undefined}>{group.errors || "—"}</span>
-              <span className="gw-usage-num">{costText(group.costs) || "—"}</span>
+      <CxSection
+        aside={
+          <>
+            <nav aria-label={t("明细")} className="tp-tabs cx-pills gw-split-pills" role="tablist">
+              {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).filter(([id]) => !codexOnly || id !== "agent").map(([id, label]) => (
+                <button aria-selected={split === id} data-active={split === id} key={id} onClick={() => setSplit(id)} role="tab" type="button">{label}</button>
+              ))}
+            </nav>
+            {/* 清空是少用的破坏性操作：收进三点菜单，确认框保留。 */}
+            <Menu>
+              <MenuItem
+                danger
+                disabled={busy !== null}
+                onClick={() => void (async () => {
+                  if (await appConfirm(t("清空全部用量统计？请求日志不受影响。"), { title: t("清空统计"), confirmText: t("清空"), danger: true })) {
+                    if (await run("usage:clear", "clear_gateway_usage", undefined, t("清空统计"))) void load(range);
+                  }
+                })()}
+              >
+                {t("清空统计")}
+              </MenuItem>
+            </Menu>
+          </>
+        }
+        title={t("明细")}
+      >
+        <div className="cx-card gw-usage-table" data-cost={anyCost}>
+          {groups.length ? (
+            <div className="gw-usage-row gw-usage-row-head">
+              <span>{split === "provider" ? t("供应商") : split === "model" ? t("模型") : t("Agent")}</span>
+              <span>{t("占比")}</span>
+              <span>{t("调用")}</span>
+              <span>{t("Tokens")}</span>
+              <span>{t("缓存命中")}</span>
+              <span>{t("出错")}</span>
+              <span>{t("费用")}</span>
             </div>
-          );
-        })}
-        {summary && groups.length === 0 ? <div className="gw-empty">{t("这段时间还没有请求。")}</div> : null}
-      </div>
-    </>
+          ) : null}
+          {groups.map((group) => {
+            const total = group.inputTokens + group.outputTokens;
+            const share = total / tokenTotal;
+            const groupHit = cacheHitRate(group);
+            const providerEntry = payload?.pool.find((entry) => entry.id === group.key);
+            const name = split === "agent" ? agentName(group.key) : split === "model" ? prettyModelName(group.label) : maskAccountName(group.label);
+            return (
+              <div
+                className="gw-usage-row gw-usage-row-link"
+                key={group.key || "-"}
+                // 点一行看这一项的每条请求：按 Agent、供应商 id 或模型名筛，时间段跟着这里选的。
+                onClick={() => openRequestLog(split === "agent"
+                  ? { agent: group.key === "claude" || group.key === "grok" ? group.key : "codex", range }
+                  : split === "provider"
+                    ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
+                    : { model: group.key, range })}
+                onKeyDown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLElement).click(); }}
+                role="button"
+                tabIndex={0}
+                title={t("查看这些请求")}
+              >
+                <span className="gw-usage-name">
+                  {split === "agent" ? (
+                    AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />
+                  ) : (
+                    <Avatar baseUrl={providerEntry?.baseUrl} name={group.label || "?"} size="sm" />
+                  )}
+                  <strong title={split === "provider" ? maskAccountName(group.label) : group.label}>{name || t("未知")}</strong>
+                </span>
+                <span className="gw-usage-share">
+                  <span className="gw-usage-bar"><i style={{ width: `${Math.max(2, share * 100)}%` }} /></span>
+                  <em>{share >= 0.995 ? "100%" : `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%`}</em>
+                </span>
+                <span className="gw-usage-num">{group.calls}</span>
+                <span className="gw-usage-num" title={tf("{0} 输入 · {1} 输出", [formatTokens(group.inputTokens), formatTokens(group.outputTokens)])}>{formatTokens(total)}</span>
+                <span className="gw-usage-num">{groupHit === null ? "—" : `${Math.round(groupHit * 100)}%`}</span>
+                <span className="gw-usage-num" data-tone={group.errors ? "err" : undefined}>{group.errors || "—"}</span>
+                <span className="gw-usage-num">{costText(group.costs) || "—"}</span>
+              </div>
+            );
+          })}
+          {summary && groups.length === 0 ? <CxEmpty title={t("这段时间还没有请求。")} /> : null}
+        </div>
+      </CxSection>
+
+      {balances && balances.length ? (
+        <CxSection count={balances.length} title={t("余额")}>
+          <CxCard>
+            {balances.map((balance) => (
+              <CxRow
+                icon={<Avatar baseUrl={balance.baseUrl} name={balance.provider} size="sm" />}
+                key={balance.providerId}
+                title={maskAccountName(balance.provider)}
+              >
+                {balance.amount !== null && balance.amount !== undefined
+                  ? <strong className="gw-usage-balance">{formatMoney(balance.amount, balance.currency)}</strong>
+                  : <small className="gw-usage-balance-missing" title={balance.error ?? (balance.note ? t(balance.note) : "")}>{balance.error ? t(balance.error) : balance.note ? "—" : t("查不到")}</small>}
+              </CxRow>
+            ))}
+          </CxCard>
+        </CxSection>
+      ) : null}
+    </div>
   );
 }
 
