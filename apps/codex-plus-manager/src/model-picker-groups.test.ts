@@ -77,10 +77,11 @@ it("隐藏原生标签时同步退出无障碍树，避免读屏念两遍", asyn
   assert.match(source, /native\.removeAttribute\("aria-hidden"\)/);
 });
 
-it("只有一个供应商时不接管原生列表", async () => {
+it("只有一个供应商时图标模式保留原生列表，仍提供视图切换", async () => {
   const source = await readShard();
-  assert.match(source, /if \(groups\.length < 2\) \{/);
-  // 单组时要能退回原始状态。
+  assert.match(source, /const grouped = mode === "list" \|\| groups\.length >= 2/);
+  assert.match(source, /if \(!grouped\)/);
+  assert.match(source, /codexPlusModelPickerViewControls\(list\)/);
   assert.match(source, /codexPlusModelPickerClear\(list\)/);
   assert.match(source, /list\.removeAttribute\("data-codex-plus-model-groups"\)/);
 });
@@ -130,9 +131,38 @@ it("入口使用独立供应商图标，并通过导航显示模型列表", asyn
   assert.match(source, /codex-plus-model-provider-icon/);
   assert.match(source, /function codexPlusModelPickerNavigate\(list, groupId\)/);
   assert.match(source, /function codexPlusModelPickerSyncNavigation\(list, groups\)/);
-  assert.doesNotMatch(source, /全部展开|全部折叠/);
+  const controls = functionSource(source, "codexPlusModelPickerViewControls");
+  assert.match(controls, /state\.viewMode === "list"/);
+  assert.match(controls, /\[\["list", text\.listView\]\]/);
   // 入口的无障碍名称仍要包含供应商、模型数和默认身份。
   assert.match(source, /groupAria/);
+});
+
+it("默认模型名称只使用后端有效配置身份，缺失时明确显示未获取状态", async () => {
+  const source = await readShard();
+  const resolveName = (catalog: unknown) => new Function(
+    "codexModelCatalog", "codexPlusModelPickerText",
+    `${functionSource(source, "codexPlusModelPickerDefaultModelName")}\nreturn codexPlusModelPickerDefaultModelName();`,
+  )(catalog, () => ({ defaultUnavailable: "未获取到默认模型" }));
+  const catalog = {
+    effective_config_model: "provider-b/model-b",
+    default_model: "provider-a/model-a",
+    model: "provider-a/model-a",
+    models: ["provider-a/model-a"],
+    modelMetadata: {
+      "provider-a/model-a": { displayName: "Model A" },
+      "provider-b/model-b": { displayName: "Model B（供应商 B）" },
+    },
+  };
+  assert.equal(resolveName(catalog), "Model B（供应商 B）");
+  assert.equal(resolveName({ ...catalog, effective_config_model: "group/123" }), "group/123");
+  assert.equal(resolveName({ ...catalog, effective_config_model: "" }), "未获取到默认模型");
+  assert.equal(resolveName({ ...catalog, effective_config_model: null }), "未获取到默认模型");
+  assert.equal(resolveName({ models: catalog.models, modelMetadata: catalog.modelMetadata }), "未获取到默认模型");
+  assert.equal(resolveName({
+    effective_config_model: "route/auto",
+    model_metadata: { "route/auto": { display_name: "自动路由" } },
+  }), "自动路由");
 });
 
 it("只持久化供应商身份，不把当前列表或旧折叠状态带到下一次打开", async () => {

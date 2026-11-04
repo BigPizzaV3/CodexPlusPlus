@@ -1,5 +1,5 @@
   /**
-   * 模型选择器按供应商图标导航。
+   * 模型选择器：保留供应商图标导航，并提供可切换的折叠列表。
    *
    * 背景：按模型聚合（`RelayMode::Aggregate`）后，一份 catalog 里会混进多个成员
    * 供应商的模型。原生选择器是一维列表，聚合目录只能用 `display_name` 尾部的
@@ -17,7 +17,7 @@
    *   3. 行没有被搬动，React 的 child 对账不受影响；折叠用 CSS 类隐藏，
    *      不增删原生节点，所以不会把原生列表搞崩。
    *
-   * 只在"确实有多个供应商分组"时接管；单供应商（直连供应商）时完全不动原生列表。
+   * 图标模式仅在多供应商时接管导航；单供应商保留原生列表，也能切换视图。
    * 分组标题带 `data-codex-plus-ext`，扫描调度器会把它排除在自喂循环之外
    * （issue #1960）。供应商归属存 localStorage，导航状态只在本次菜单内保留。
    */
@@ -25,10 +25,13 @@
   // 重注入时先与上一个实例交接：停掉它的轮询与观察器，但**不**让它清理 DOM 补丁。
   // 旧实例的清理会先把标题/标签拆掉、再等自己下一轮扫描重建，而它已经被 dispose，
   // 结果是"标题一闪一闪"。DOM 由下面这个新实例在同一个 list 上重建，幂等。
+  const codexPlusModelPickerDomState = window.__codexPlusModelPickerGroupsRuntime?.domState?.() || new WeakMap();
+  const codexPlusModelPickerPreviousView = window.__codexPlusModelPickerGroupsRuntime?.viewState?.();
   window.__codexPlusModelPickerGroupsRuntime?.dispose?.();
 
   /** 沿用旧键中的供应商归属缓存，不再读取旧折叠状态。 */
   const codexPlusModelPickerGroupsStoreKey = "codexPlus.modelPicker.collapsedGroups.v1";
+  const codexPlusModelPickerViewStoreKey = "codexPlus.modelPicker.viewMode.v1";
   /** 分组标题与工具条节点上的归属标记。 */
   const codexPlusModelPickerGroupsExtMark = "builtin-model-picker-groups";
   /** 样式表节点 id。 */
@@ -71,6 +74,9 @@
     observer: null,
     /** 空串表示供应商网格；每次重新打开菜单都从网格开始。 */
     activeGroupId: "",
+    viewMode: codexPlusModelPickerPreviousView?.mode === "list" ? "list" : "icons",
+    viewLoaded: false,
+    collapsed: new Set(codexPlusModelPickerPreviousView?.collapsed || []),
     /** 会话内累积的"归一化模型名 -> 供应商"。目录快照会被整体替换，这里做加法不丢已知归属。 */
     providerNames: new Map(),
     /** 默认成员的分组 id（聚合的"默认供应商"），用于打「默认」标志。 */
@@ -97,6 +103,11 @@
           groupAria: (name, count, current, isDefault) => `${name}${isDefault ? "（默认供应商）" : ""}，${count} 个模型${current ? "，当前使用" : ""}`,
           groupTitle: (name, count) => `${name} · ${count}`,
           favorite: "已收藏（在 Codex++ 里收藏的模型）",
+          listView: "切换为列表视图",
+          iconsView: "切换为图标视图",
+          expandAll: "全部展开",
+          collapseAll: "全部折叠",
+          defaultUnavailable: "未获取到默认模型",
         }
       : {
           defaultBadge: "Default",
@@ -109,6 +120,11 @@
           groupAria: (name, count, current, isDefault) => `${name}${isDefault ? " (default provider)" : ""}, ${count} models${current ? ", currently selected" : ""}`,
           groupTitle: (name, count) => `${name} · ${count}`,
           favorite: "Favorite (starred in Codex++)",
+          listView: "Switch to list view",
+          iconsView: "Switch to icon view",
+          expandAll: "Expand all",
+          collapseAll: "Collapse all",
+          defaultUnavailable: "Default model unavailable",
         };
   }
 
@@ -151,6 +167,226 @@
         }),
       );
     } catch {}
+  }
+
+  function codexPlusModelPickerLoadView() {
+    const state = codexPlusModelPickerGroupsState;
+    if (state.viewLoaded) return;
+    state.viewLoaded = true;
+    try {
+      const mode = window.localStorage?.getItem(codexPlusModelPickerViewStoreKey);
+      if (mode === "icons" || mode === "list") state.viewMode = mode;
+    } catch {}
+  }
+
+  /** 只保存自己覆盖的属性；WeakMap 随重注入交接，不保留已关闭菜单。 */
+  function codexPlusModelPickerRememberAttribute(node, name, value) {
+    let saved = codexPlusModelPickerDomState.get(node);
+    if (!saved) {
+      saved = new Map();
+      codexPlusModelPickerDomState.set(node, saved);
+    }
+    if (!saved.has(name)) saved.set(name, node.getAttribute(name));
+    if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+  }
+
+  function codexPlusModelPickerRestoreAttribute(node, name) {
+    const saved = codexPlusModelPickerDomState.get(node);
+    if (!saved?.has(name)) return;
+    const value = saved.get(name);
+    if (value === null) node.removeAttribute(name);
+    else node.setAttribute(name, value);
+    saved.delete(name);
+  }
+
+  /** 完整默认身份只读有效配置字段；缺失时不按供应商或目录顺序猜测。 */
+  function codexPlusModelPickerDefaultModelName() {
+    const model = typeof codexModelCatalog?.effective_config_model === "string"
+      ? codexModelCatalog.effective_config_model.trim() : "";
+    if (!model) return codexPlusModelPickerText().defaultUnavailable;
+    const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    const entry = metadata?.[model];
+    const display = entry?.displayName || entry?.display_name;
+    return typeof display === "string" && display.trim() ? display.trim() : model;
+  }
+
+  function codexPlusModelPickerDefaultRows(list) {
+    return [...list.querySelectorAll('[role="menuitemradio"]')].filter((row) => {
+      const identity = codexPlusModelPickerRowIdentity(row);
+      return identity?.spanCount > 1 && /^(默认|default)$/iu.test(identity.text);
+    });
+  }
+
+  function codexPlusModelPickerSyncDefaultRow(list) {
+    const name = codexPlusModelPickerDefaultModelName();
+    codexPlusModelPickerDefaultRows(list).forEach((row) => {
+      const identity = codexPlusModelPickerRowIdentity(row);
+      const inner = identity?.inner;
+      if (!inner) return;
+      row.setAttribute("data-codex-plus-model-default-row", "true");
+      inner.setAttribute("data-codex-plus-model-default-content", "true");
+      [...inner.children].forEach((node) => {
+        if (node === identity.labelElement || node.getAttribute("data-codex-plus-ext") === codexPlusModelPickerGroupsExtMark) return;
+        node.setAttribute("data-codex-plus-model-default-note", "true");
+        codexPlusModelPickerRememberAttribute(node, "aria-hidden", "true");
+      });
+      let label = inner.querySelector(".codex-plus-model-default-name");
+      if (!label) {
+        label = codexPlusModelPickerElement("span", "codex-plus-model-default-name");
+        inner.appendChild(label);
+      }
+      if (label.textContent !== name) label.textContent = name;
+      label.title = name;
+    });
+  }
+
+  function codexPlusModelPickerRestoreDefaultRow(list) {
+    list.querySelectorAll(".codex-plus-model-default-name").forEach((node) => node.remove());
+    list.querySelectorAll("[data-codex-plus-model-default-note]").forEach((node) => {
+      codexPlusModelPickerRestoreAttribute(node, "aria-hidden");
+      node.removeAttribute("data-codex-plus-model-default-note");
+    });
+    list.querySelectorAll("[data-codex-plus-model-default-content]").forEach((node) => node.removeAttribute("data-codex-plus-model-default-content"));
+    list.querySelectorAll("[data-codex-plus-model-default-row]").forEach((node) => node.removeAttribute("data-codex-plus-model-default-row"));
+  }
+
+  function codexPlusModelPickerHeading(list) {
+    return [...list.querySelectorAll('[data-menu-section-label], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]')]
+      .find((node) => !node.closest('[role="menuitemradio"], [data-codex-plus-ext]')) || null;
+  }
+
+  /** Lucide 的标准路径；注入环境没有模块加载器，不额外下载图标包。 */
+  function codexPlusModelPickerActionIcon(action) {
+    const paths = {
+      list: ["M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01"],
+      icons: ["M3 3h7v7H3z", "M14 3h7v7h-7z", "M3 14h7v7H3z", "M14 14h7v7h-7z"],
+      expand: ["m7 10 5-5 5 5", "m7 14 5 5 5-5"],
+      collapse: ["m7 5 5 5 5-5", "m7 19 5-5 5 5"],
+      chevron: ["m9 6 6 6-6 6"],
+    };
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.75");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("data-codex-plus-ext", codexPlusModelPickerGroupsExtMark);
+    for (const value of paths[action] || []) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", value);
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+
+  function codexPlusModelPickerViewAction(list, action) {
+    const state = codexPlusModelPickerGroupsState;
+    if (!list?.isConnected) return;
+    if (action === "list" || action === "icons") {
+      state.viewMode = action;
+      try { window.localStorage?.setItem(codexPlusModelPickerViewStoreKey, action); } catch {}
+      codexPlusModelPickerClear(list);
+    } else {
+      const groups = codexPlusModelPickerUniqueGroupIds(
+        codexPlusModelPickerGroups(codexPlusModelPickerRows(list), codexPlusModelPickerDefaultProviderName()),
+      );
+      groups.forEach((group) => {
+        if (action === "collapse") state.collapsed.add(group.id);
+        else state.collapsed.delete(group.id);
+      });
+    }
+    codexPlusModelPickerPatch(list);
+    list.querySelector(`[data-codex-plus-model-action="${action === "list" ? "icons" : action === "icons" ? "list" : action}"]`)?.focus({ preventScroll: true });
+  }
+
+  function codexPlusModelPickerViewControls(list) {
+    const heading = codexPlusModelPickerHeading(list);
+    if (!heading) return;
+    const state = codexPlusModelPickerGroupsState;
+    const text = codexPlusModelPickerText();
+    heading.setAttribute("data-codex-plus-model-heading", "true");
+    const controls = codexPlusModelPickerElement("span", "codex-plus-model-view-controls");
+    const actions = state.viewMode === "list"
+      ? [["expand", text.expandAll], ["collapse", text.collapseAll], ["icons", text.iconsView]]
+      : [["list", text.listView]];
+    for (const [action, label] of actions) {
+      const button = codexPlusModelPickerElement("button", "codex-plus-model-view-button");
+      button.type = "button";
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.setAttribute("data-codex-plus-model-action", action);
+      button.appendChild(codexPlusModelPickerActionIcon(action));
+      button.addEventListener("pointerdown", (event) => event.stopPropagation());
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+      });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        codexPlusModelPickerViewAction(event.currentTarget.closest("[data-codex-plus-model-groups]"), action);
+      });
+      controls.appendChild(button);
+    }
+    heading.appendChild(controls);
+  }
+
+  /** 所有直接子项共享连续顺序；只写 CSS，不搬动 React 管理的行。 */
+  function codexPlusModelPickerOrderPlan(list, groups) {
+    const members = new Set(groups.flatMap((group) => group.entries.map((entry) => entry.row)));
+    const plan = [...list.children].filter((node) => !members.has(node)
+      && node.getAttribute("data-codex-plus-ext") !== codexPlusModelPickerGroupsExtMark);
+    for (const group of groups) {
+      const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
+      if (header) plan.push(header);
+      group.entries.forEach((entry) => plan.push(entry.row));
+    }
+    return plan;
+  }
+
+  function codexPlusModelPickerApplyOrder(list, groups) {
+    list.setAttribute("data-codex-plus-model-ordering", "true");
+    codexPlusModelPickerOrderPlan(list, groups).forEach((node, index) => {
+      let saved = codexPlusModelPickerDomState.get(node);
+      if (!saved) {
+        saved = new Map();
+        codexPlusModelPickerDomState.set(node, saved);
+      }
+      const property = "--codex-plus-model-order";
+      if (!saved.has(property)) saved.set(property, {
+        value: node.style.getPropertyValue(property),
+        priority: node.style.getPropertyPriority(property),
+        hadStyle: node.hasAttribute("style"),
+      });
+      const order = String(index + 1);
+      node.setAttribute("data-codex-plus-model-order", order);
+      if (node.style.getPropertyValue(property) !== order) node.style.setProperty(property, order);
+    });
+  }
+
+  function codexPlusModelPickerRestoreOrder(list) {
+    list.querySelectorAll('[data-codex-plus-model-order], [style*="--codex-plus-model-order"]').forEach((node) => {
+      const saved = codexPlusModelPickerDomState.get(node);
+      const property = "--codex-plus-model-order";
+      const original = saved?.get(property);
+      if (original) {
+        if (original.value) node.style.setProperty(property, original.value, original.priority);
+        else node.style.removeProperty(property);
+        if (!original.hadStyle && !node.getAttribute("style")) node.removeAttribute("style");
+        saved.delete(property);
+      }
+      node.removeAttribute("data-codex-plus-model-order");
+    });
+    list.removeAttribute("data-codex-plus-model-ordering");
+  }
+
+  function codexPlusModelPickerSyncList(list, groups) {
+    codexPlusModelPickerApplyOrder(list, groups);
+    groups.forEach((group) => codexPlusModelPickerSyncGroup(list, group));
+    codexPlusModelPickerSyncDefaultRow(list);
   }
 
   /**
@@ -686,13 +922,15 @@
 
   function codexPlusModelPickerSyncGroup(list, group) {
     const text = codexPlusModelPickerText();
-    const expanded = codexPlusModelPickerGroupsState.activeGroupId === group.id;
+    const state = codexPlusModelPickerGroupsState;
+    const expanded = state.viewMode === "list" ? !state.collapsed.has(group.id) : state.activeGroupId === group.id;
     const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
     group.entries.forEach((entry) => {
       entry.row.setAttribute(codexPlusModelPickerGroupAttr, group.id);
       entry.row.classList.toggle("codex-plus-model-group-collapsed", !expanded);
     });
     if (header) {
+      if (state.viewMode === "list") header.setAttribute("aria-expanded", String(expanded));
       const current = !!codexPlusModelPickerSelectedRow(group);
       header.setAttribute("data-current", current ? "true" : "false");
       const label = header.querySelector(".codex-plus-model-group-title");
@@ -811,6 +1049,10 @@
         codexPlusModelPickerSyncDefaultBadge(toolbar, active, text);
       }
     }
+    const controls = list.querySelector(".codex-plus-model-view-controls");
+    const heading = list.querySelector("[data-codex-plus-model-heading]");
+    const controlsParent = active ? toolbar : heading;
+    if (controls && controlsParent && controls.parentElement !== controlsParent) controlsParent.appendChild(controls);
     groups.forEach((group) => codexPlusModelPickerSyncGroup(list, group));
     if (lostGroup) grid?.querySelector("button")?.focus({ preventScroll: true });
   }
@@ -818,6 +1060,34 @@
   function codexPlusModelPickerNavigationKeydown(event) {
     const list = event.currentTarget;
     if (event.isComposing) return;
+    if (codexPlusModelPickerGroupsState.viewMode === "list") {
+      const header = event.target.closest?.(".codex-plus-model-group-header");
+      if (header && (event.key === "Enter" || event.key === " ")) {
+        event.stopPropagation();
+        return;
+      }
+      if (header && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault();
+        event.stopPropagation();
+        const id = header.getAttribute(codexPlusModelPickerGroupIdAttr);
+        if (event.key === "ArrowLeft") codexPlusModelPickerGroupsState.collapsed.add(id);
+        else codexPlusModelPickerGroupsState.collapsed.delete(id);
+        codexPlusModelPickerPatch(list);
+        return;
+      }
+      const target = event.target.closest?.('[role="menuitemradio"], .codex-plus-model-group-header');
+      if (!target || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      const items = [...list.querySelectorAll('[role="menuitemradio"], .codex-plus-model-group-header')]
+        .filter((node) => node.getClientRects().length && !node.classList.contains("codex-plus-model-group-collapsed"))
+        .sort((a, b) => Number(a.getAttribute("data-codex-plus-model-order")) - Number(b.getAttribute("data-codex-plus-model-order")));
+      const index = items.indexOf(target);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : Math.max(0, Math.min(items.length - 1, index + (event.key === "ArrowUp" ? -1 : 1)));
+      event.preventDefault();
+      event.stopPropagation();
+      items[next]?.focus({ preventScroll: true });
+      return;
+    }
     if (codexPlusModelPickerGroupsState.activeGroupId) {
       if (event.key === "ArrowLeft" || event.key === "Escape") {
         event.preventDefault();
@@ -867,10 +1137,23 @@
     const count = codexPlusModelPickerElement("span", "codex-plus-model-group-count");
     header.append(icon, title, count);
     const groupId = group.id;
+    if (codexPlusModelPickerGroupsState.viewMode === "list") {
+      const chevron = codexPlusModelPickerElement("span", "codex-plus-model-group-chevron");
+      chevron.appendChild(codexPlusModelPickerActionIcon("chevron"));
+      header.insertBefore(chevron, icon);
+    }
     header.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      codexPlusModelPickerNavigate(event.currentTarget.closest("[data-codex-plus-model-groups]"), groupId);
+      const currentList = event.currentTarget.closest("[data-codex-plus-model-groups]");
+      if (codexPlusModelPickerGroupsState.viewMode === "list") {
+        const collapsed = codexPlusModelPickerGroupsState.collapsed;
+        if (collapsed.has(groupId)) collapsed.delete(groupId);
+        else collapsed.add(groupId);
+        codexPlusModelPickerPatch(currentList);
+      } else {
+        codexPlusModelPickerNavigate(currentList, groupId);
+      }
     });
     header.addEventListener("pointerdown", (event) => {
       // 别让指针事件冒到菜单外，否则菜单会被关掉。
@@ -914,6 +1197,8 @@
 
   function codexPlusModelPickerClear(list) {
     if (!list) return;
+    codexPlusModelPickerRestoreOrder(list);
+    codexPlusModelPickerRestoreDefaultRow(list);
     codexPlusModelPickerRemoveOwnNodes(list);
     list.querySelectorAll('[role="menuitemradio"]').forEach((row) => codexPlusModelPickerRestoreLabel(row));
     list.querySelectorAll(".codex-plus-model-provider-overview-only").forEach((node) => node.classList.remove("codex-plus-model-provider-overview-only"));
@@ -921,6 +1206,8 @@
     window.removeEventListener("keydown", codexPlusModelPickerEscapeKeydown, true);
     list.removeAttribute("data-codex-plus-model-groups");
     list.removeAttribute("data-codex-plus-model-provider-view");
+    list.removeAttribute("data-codex-plus-model-view-mode");
+    list.querySelectorAll("[data-codex-plus-model-heading]").forEach((node) => node.removeAttribute("data-codex-plus-model-heading"));
     codexPlusModelPickerGroupsState.activeGroupId = "";
     codexPlusModelPickerGroupsState.signature = "";
     codexPlusModelPickerGroupsState.patchedLists.delete(list);
@@ -933,9 +1220,37 @@
    * 此时指纹没变、但标题已经没了，只靠指纹判等会留下一个"点了没用"的死状态。
    */
   function codexPlusModelPickerHeadersIntact(list, groups) {
+    const mode = codexPlusModelPickerGroupsState.viewMode;
+    if (list.getAttribute("data-codex-plus-model-view-mode") !== mode) return false;
+    const heading = codexPlusModelPickerHeading(list);
+    const controls = list.querySelector(".codex-plus-model-view-controls");
+    const actions = mode === "list" ? ["expand", "collapse", "icons"] : ["list"];
+    if (heading) {
+      if (!heading.hasAttribute("data-codex-plus-model-heading") || !controls || controls.children.length !== actions.length) return false;
+      if (!actions.every((action, index) => {
+        const button = controls.children[index];
+        return button.getAttribute("data-codex-plus-model-action") === action
+          && button.hasAttribute("aria-label") && button.hasAttribute("title") && !!button.querySelector("svg");
+      })) return false;
+    }
+    if (mode === "list") {
+      if (controls && controls.parentElement !== heading) return false;
+      if (list.getAttribute("data-codex-plus-model-ordering") !== "true") return false;
+      if (!groups.every((group) => {
+        const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
+        return header?.parentElement === list && header.hasAttribute("aria-expanded") && !!header.querySelector(".codex-plus-model-group-chevron");
+      })) return false;
+      return codexPlusModelPickerOrderPlan(list, groups).every((node, index) => {
+        const order = String(index + 1);
+        return node.getAttribute("data-codex-plus-model-order") === order
+          && node.style.getPropertyValue("--codex-plus-model-order") === order;
+      });
+    }
+    if (groups.length < 2) return !list.querySelector(".codex-plus-model-provider-grid, .codex-plus-model-group-header");
     const toolbar = list.querySelector(".codex-plus-model-group-toolbar");
     const grid = list.querySelector(".codex-plus-model-provider-grid");
     if (!toolbar || !grid || grid.children.length !== groups.length) return false;
+    if (controls && controls.parentElement !== (codexPlusModelPickerGroupsState.activeGroupId ? toolbar : heading)) return false;
     return groups.every((group) => {
       const header = list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(group.id)}"]`);
       return !!header && header.parentElement === grid;
@@ -948,17 +1263,19 @@
   function codexPlusModelPickerPatch(list) {
     if (codexPlusModelPickerGroupsState.disposed) return false;
     codexPlusModelPickerStore();
+    codexPlusModelPickerLoadView();
     const rows = codexPlusModelPickerRows(list);
     const groups = codexPlusModelPickerUniqueGroupIds(
       codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
     );
-    // 只有一个供应商时直接选模型，省去没有选择意义的供应商层。
-    if (groups.length < 2) {
+    if (!groups.length) {
       if (codexPlusModelPickerGroupsState.patchedLists.has(list) || list.hasAttribute("data-codex-plus-model-groups")) codexPlusModelPickerClear(list);
       else codexPlusModelPickerRemoveOwnNodes(list);
       return false;
     }
-    const signature = codexPlusModelPickerFingerprint(groups);
+    const mode = codexPlusModelPickerGroupsState.viewMode;
+    const grouped = mode === "list" || groups.length >= 2;
+    const signature = `${mode}:${codexPlusModelPickerFingerprint(groups)}`;
     const patched = codexPlusModelPickerGroupsState.patchedLists.has(list);
     if (
       patched
@@ -966,33 +1283,52 @@
       && list.isConnected
       && codexPlusModelPickerHeadersIntact(list, groups)
     ) {
-      groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
-      codexPlusModelPickerSyncNavigation(list, groups);
+      if (grouped) groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
+      if (mode === "list") codexPlusModelPickerSyncList(list, groups);
+      else if (grouped) codexPlusModelPickerSyncNavigation(list, groups);
       return false;
     }
     codexPlusModelPickerGroupsState.patchedLists.add(list);
     codexPlusModelPickerGroupsState.signature = signature;
     list.setAttribute("data-codex-plus-model-groups", "true");
+    list.setAttribute("data-codex-plus-model-view-mode", mode);
     const focusedGroupId = document.activeElement?.closest?.(`[${codexPlusModelPickerGroupIdAttr}]`)?.getAttribute(codexPlusModelPickerGroupIdAttr)
       || groups.find((group) => group.entries.some((entry) => entry.row.contains(document.activeElement)))?.id;
+    codexPlusModelPickerRestoreOrder(list);
     codexPlusModelPickerRemoveOwnNodes(list);
-    groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
+    if (!grouped) {
+      list.querySelectorAll('[role="menuitemradio"]').forEach((row) => codexPlusModelPickerRestoreLabel(row));
+      list.removeAttribute("data-codex-plus-model-provider-view");
+      codexPlusModelPickerGroupsState.activeGroupId = "";
+    }
+    if (mode === "icons") codexPlusModelPickerRestoreDefaultRow(list);
+    if (grouped) groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
+    codexPlusModelPickerViewControls(list);
     const groupedRows = new Set(rows.map((entry) => entry.row));
     list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]').forEach((node) => {
-      node.classList.toggle("codex-plus-model-provider-overview-only", !groupedRows.has(node));
+      node.classList.toggle("codex-plus-model-provider-overview-only", mode === "icons" && grouped && !groupedRows.has(node));
     });
-    const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
-    grid.setAttribute("role", "group");
-    grid.setAttribute("aria-label", codexPlusModelPickerText().providers);
-    groups.forEach((group) => grid.appendChild(codexPlusModelPickerGroupHeader(list, group)));
-    const anchor = groups[0]?.entries[0]?.row;
-    if (anchor?.parentElement) anchor.parentElement.insertBefore(grid, anchor);
-    list.insertBefore(codexPlusModelPickerToolbar(), list.firstChild);
+    if (mode === "list") {
+      list.removeAttribute("data-codex-plus-model-provider-view");
+      groups.forEach((group) => {
+        const anchor = group.entries[0]?.row;
+        anchor?.parentElement?.insertBefore(codexPlusModelPickerGroupHeader(list, group), anchor);
+      });
+      codexPlusModelPickerSyncList(list, groups);
+    } else if (grouped) {
+      const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
+      grid.setAttribute("role", "group");
+      grid.setAttribute("aria-label", codexPlusModelPickerText().providers);
+      groups.forEach((group) => grid.appendChild(codexPlusModelPickerGroupHeader(list, group)));
+      const anchor = groups[0]?.entries[0]?.row;
+      if (anchor?.parentElement) anchor.parentElement.insertBefore(grid, anchor);
+      list.insertBefore(codexPlusModelPickerToolbar(), list.firstChild);
+      codexPlusModelPickerSyncNavigation(list, groups);
+    }
     list.addEventListener("keydown", codexPlusModelPickerNavigationKeydown, true);
     window.addEventListener("keydown", codexPlusModelPickerEscapeKeydown, true);
-    codexPlusModelPickerSyncNavigation(list, groups);
-    if (focusedGroupId && !codexPlusModelPickerGroupsState.activeGroupId) {
-      grid.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(focusedGroupId)}"]`)?.focus({ preventScroll: true });
+    if (focusedGroupId && (mode === "list" || !codexPlusModelPickerGroupsState.activeGroupId)) {
+      list.querySelector(`[${codexPlusModelPickerGroupIdAttr}="${cssEscapeValue(focusedGroupId)}"]`)?.focus({ preventScroll: true });
     }
     if (codexPlusModelPickerGroupsState.providerDirty) {
       codexPlusModelPickerGroupsState.providerDirty = false;
@@ -1034,12 +1370,32 @@
       .${codexPlusModelPickerNativeLabelClass}{display:none!important}
       .${codexPlusModelPickerOwnLabelClass}{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .${codexPlusModelPickerFavoriteClass}{flex:none;margin-left:6px;color:#f5b94a;font-size:12px;line-height:1}
+      [data-codex-plus-model-heading]{position:relative;padding-inline-end:40px!important}
+      [data-codex-plus-model-view-mode="list"] [data-codex-plus-model-heading]{padding-inline-end:100px!important}
+      .codex-plus-model-view-controls{position:absolute;inset-inline-end:4px;top:50%;transform:translateY(-50%);display:flex;align-items:center;gap:2px}
+      .codex-plus-model-view-button{display:grid;place-items:center;flex:none;width:28px;height:28px;box-sizing:border-box;border:0;border-radius:5px;background:none;padding:0;color:var(--color-token-text-secondary,#aaa);cursor:pointer;appearance:none}
+      .codex-plus-model-view-button:hover{background:var(--color-token-bg-secondary,rgba(255,255,255,.04));color:var(--color-token-text-primary,#dfdfdf)}
+      .codex-plus-model-view-button:focus-visible{outline:1px solid currentColor;outline-offset:1px}
+      .codex-plus-model-group-toolbar:has(>.codex-plus-model-view-controls){position:relative;padding-inline-end:40px}
+      [data-codex-plus-model-ordering="true"]{display:flex!important;flex-direction:column!important}
+      [data-codex-plus-model-ordering="true"]>[data-codex-plus-model-order]{order:var(--codex-plus-model-order)!important;flex-shrink:0}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header{flex-direction:row;align-items:center;justify-content:flex-start;gap:6px;padding:8px;border:0;border-radius:4px;font-size:12px;line-height:18px;text-align:start}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-provider-icon{display:none}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header::after{display:none}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header .codex-plus-model-group-default{position:static;transform:none;background:none}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-item{padding-inline-start:28px!important}
+      .codex-plus-model-group-chevron{display:grid;place-items:center;flex:none;width:14px;height:16px;color:var(--color-token-text-secondary,#aaa)}
+      .codex-plus-model-group-header[aria-expanded="true"] .codex-plus-model-group-chevron{transform:rotate(90deg)}
+      [data-codex-plus-model-default-content]{display:flex!important;flex-direction:row!important;align-items:center!important;gap:8px;width:100%;min-width:0}
+      [data-codex-plus-model-default-note]{display:none!important}
+      .codex-plus-model-default-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:end;color:var(--color-token-text-secondary,#aaa);font-size:12px}
     `;
     if (!style.isConnected) document.head?.appendChild(style);
   }
 
   function codexPlusModelPickerNeedsRescan(records) {
     const changed = records.some((record) => {
+      if (record.type === "attributes") return true;
       const nodes = [...record.addedNodes, ...record.removedNodes];
       return nodes.some((node) => node.nodeType === 1 && !node.closest?.(`[data-codex-plus-ext="${codexPlusModelPickerGroupsExtMark}"]`));
     });
@@ -1050,8 +1406,9 @@
     const groups = codexPlusModelPickerUniqueGroupIds(
       codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
     );
-    if (groups.length < 2) return codexPlusModelPickerGroupsState.patchedLists.has(list);
-    return codexPlusModelPickerFingerprint(groups) !== codexPlusModelPickerGroupsState.signature;
+    if (!groups.length) return codexPlusModelPickerGroupsState.patchedLists.has(list);
+    return `${codexPlusModelPickerGroupsState.viewMode}:${codexPlusModelPickerFingerprint(groups)}` !== codexPlusModelPickerGroupsState.signature
+      || !codexPlusModelPickerHeadersIntact(list, groups);
   }
 
   function codexPlusModelPickerScheduleRescan() {
@@ -1065,7 +1422,10 @@
   function codexPlusModelPickerObserveList(list) {
     const state = codexPlusModelPickerGroupsState;
     if (state.activeList === list) return;
-    if (state.activeList) codexPlusModelPickerClear(state.activeList);
+    if (state.activeList) {
+      codexPlusModelPickerClear(state.activeList);
+      state.collapsed?.clear();
+    }
     state.activeGroupId = "";
     state.activeList = list;
     state.observer?.disconnect();
@@ -1073,7 +1433,11 @@
       if (!codexPlusModelPickerNeedsRescan(records)) return;
       codexPlusModelPickerScheduleRescan();
     });
-    state.observer.observe(list, { childList: true, subtree: true });
+    state.observer.observe(list, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ["style", "class", "data-codex-plus-model-ordering", "data-codex-plus-model-order",
+        "data-codex-plus-model-view-mode", "data-codex-plus-model-heading", "aria-checked", "data-state"],
+    });
   }
 
   /**
@@ -1157,6 +1521,7 @@
       return;
     }
     codexPlusModelPickerEnsureCatalog();
+    if (!document.getElementById(codexPlusModelPickerGroupsStyleId)) codexPlusModelPickerInstallStyle();
     codexPlusModelPickerObserveList(list);
     // 列表被隐藏（用户在推理强度子面板里）时不动结构，只让轮询继续跑；
     // 回到列表立即是分组后的样子。
@@ -1178,7 +1543,12 @@
   codexPlusModelPickerInstallStyle();
   // 轮询由内置拓展「模型分组」装上时启动（96-builtin-extensions.js），这里不再自启。
   window.__codexPlusModelPickerGroupsRuntime = {
-    version: 2,
+    version: 3,
+    domState: () => codexPlusModelPickerDomState,
+    viewState: () => ({
+      mode: codexPlusModelPickerGroupsState.viewMode,
+      collapsed: [...codexPlusModelPickerGroupsState.collapsed],
+    }),
     sync: () => codexPlusModelPickerSchedule(0),
     scan: () => codexPlusModelPickerScan(),
     /** 测试与调试用：不打开菜单也能验证分组解析。 */
@@ -1188,6 +1558,7 @@
       signature: codexPlusModelPickerGroupsState.signature,
       hasActiveList: !!codexPlusModelPickerGroupsState.activeList,
       activeGroupId: codexPlusModelPickerGroupsState.activeGroupId,
+      viewMode: codexPlusModelPickerGroupsState.viewMode,
       disposed: codexPlusModelPickerGroupsState.disposed,
     }),
     /** 测试与调试用：默认身份解析结果（徽标取决于它）。 */
@@ -1238,6 +1609,7 @@
     releaseDom() {
       const state = codexPlusModelPickerGroupsState;
       if (state.activeList) codexPlusModelPickerClear(state.activeList);
+      document.querySelectorAll("[data-codex-plus-model-groups]").forEach((list) => codexPlusModelPickerClear(list));
       state.activeList = null;
       document.getElementById(codexPlusModelPickerGroupsStyleId)?.remove();
     },

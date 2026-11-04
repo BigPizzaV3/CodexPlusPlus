@@ -72,6 +72,45 @@ fn catalog_hides_codex_auto_review_from_the_picker() {
 }
 
 #[tokio::test]
+async fn model_catalog_default_identity_never_guesses_the_first_model() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("models.json"),
+        json!({"models": [{"slug": "candidate"}]}).to_string(),
+    )
+    .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for (config, expected) in [
+        ("", ""),
+        ("default_model = 'candidate'\n", ""),
+        ("model = 'root'\n", "root"),
+        (
+            "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 'profile'\n",
+            "profile",
+        ),
+        (
+            "model = 'root'\nprofile = 'work'\n[profiles.work]\nother = true\n",
+            "root",
+        ),
+        ("model = 'root'\nprofile = 'missing'\n", ""),
+        (
+            "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 5\n",
+            "",
+        ),
+        ("model = [invalid\n", ""),
+    ] {
+        write_config(
+            temp.path(),
+            &format!("model_catalog_json = 'models.json'\n{config}"),
+        );
+        let result =
+            read_codex_model_catalog_from_home(temp.path(), &HashMap::new(), client.clone()).await;
+        assert_eq!(result["effective_config_model"], expected, "{config}");
+        assert_eq!(result["models"], json!(["candidate"]));
+    }
+}
+
+#[tokio::test]
 async fn model_catalog_fetches_models_from_codex_config_provider() {
     let temp = tempfile::tempdir().unwrap();
     let server = spawn_models_server(json!({

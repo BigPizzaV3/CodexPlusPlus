@@ -38,6 +38,7 @@ struct CodexConfig {
     root: HashMap<String, String>,
     profiles: HashMap<String, HashMap<String, String>>,
     model_providers: HashMap<String, HashMap<String, String>>,
+    effective_model: String,
 }
 
 pub async fn read_codex_model_catalog() -> Value {
@@ -76,6 +77,7 @@ pub async fn read_codex_model_catalog() -> Value {
                 "message": error.to_string(),
                 "service_tier": config_service_tier_value(&home),
                 "model": "",
+                "effective_config_model": "",
                 "model_provider": "",
                 "provider_name": "",
                 "default_model": "",
@@ -92,6 +94,7 @@ pub async fn read_codex_model_catalog() -> Value {
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
     let models = relay_profile_model_ids(profile);
     let model = profile.model.trim().to_string();
+    let (live_config, _, _) = load_codex_config(&home.join("config.toml"));
     let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
     let configured_model = crate::relay_config::relay_profile_model(profile);
     let default_model = if models.iter().any(|item| item == &configured_model) {
@@ -111,6 +114,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         "path": home.join("config.toml").to_string_lossy(),
         "service_tier": config_service_tier_value(home),
         "model": model,
+        "effective_config_model": live_config.effective_model,
         "model_provider": profile.id.trim(),
         "codex_model_provider": codex_model_provider,
         "provider_name": provider_name,
@@ -130,6 +134,40 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         ],
         "responses_api": responses_api_status("unknown", "", "")
     })
+}
+
+/// 只报告实际配置中显式声明的模型，并考虑当前启用的 profile。
+pub(crate) fn effective_config_model(contents: &str) -> String {
+    let Ok(config) = contents.parse::<toml::Value>() else {
+        return String::new();
+    };
+    let Some(root) = config.as_table() else {
+        return String::new();
+    };
+    let profile = match root.get("profile") {
+        Some(profile) => {
+            let Some(profile) = profile.as_str() else {
+                return String::new();
+            };
+            let Some(profile) = root
+                .get("profiles")
+                .and_then(toml::Value::as_table)
+                .and_then(|profiles| profiles.get(profile))
+                .and_then(toml::Value::as_table)
+            else {
+                return String::new();
+            };
+            Some(profile)
+        }
+        None => None,
+    };
+    profile
+        .and_then(|profile| profile.get("model"))
+        .or_else(|| root.get("model"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn codex_model_provider_for_relay_profile(home: &Path, profile: &RelayProfile) -> String {
@@ -335,6 +373,7 @@ pub async fn read_codex_model_catalog_from_home(
             "message": error,
             "service_tier": service_tier_value(&effective),
             "model": model,
+            "effective_config_model": config.effective_model,
             "model_provider": model_provider,
             "provider_name": provider_name,
             "default_model": "",
@@ -401,6 +440,7 @@ pub async fn read_codex_model_catalog_from_home(
         "path": config_path.to_string_lossy(),
         "service_tier": service_tier_value(&effective),
         "model": model,
+        "effective_config_model": config.effective_model,
         "model_provider": model_provider,
         "provider_name": provider_name,
         "default_model": default_model,
@@ -459,7 +499,10 @@ fn load_codex_config(path: &Path) -> (CodexConfig, HashMap<String, String>, Opti
 }
 
 fn parse_codex_config(contents: &str) -> CodexConfig {
-    let mut config = CodexConfig::default();
+    let mut config = CodexConfig {
+        effective_model: effective_config_model(contents),
+        ..CodexConfig::default()
+    };
     let mut section = ConfigSection::Root;
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -1342,6 +1385,55 @@ mod model_fetch_tests {
         let catalog = relay_profile_model_catalog_value(home.path(), &profile);
 
         assert_eq!(catalog["default_model"], "qwen3-coder");
+    }
+
+    #[test]
+    fn effective_config_model_requires_valid_explicit_config_and_profile() {
+        for (config, expected) in [
+            ("", ""),
+            ("default_model = 'fallback'\n", ""),
+            ("model = ' root '\n", "root"),
+            (
+                "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 'profile'\n",
+                "profile",
+            ),
+            (
+                "model = 'root'\nprofile = 'work'\n[profiles.work]\nother = true\n",
+                "root",
+            ),
+            ("model = 'root'\nprofile = 'missing'\n", ""),
+            ("model = 'root'\nprofile = 5\n", ""),
+            (
+                "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 5\n",
+                "",
+            ),
+            ("model = 'root'\nmodel = 'duplicate'\n", ""),
+            ("model = [invalid\n", ""),
+        ] {
+            assert_eq!(effective_config_model(config), expected, "{config}");
+        }
+    }
+
+    #[test]
+    fn relay_profile_catalog_default_identity_comes_from_live_config() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = RelayProfile {
+            model: "candidate".into(),
+            model_list: "candidate\nother".into(),
+            config_contents: "model = 'snapshot'\n".into(),
+            ..RelayProfile::default()
+        };
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+        assert_eq!(catalog["default_model"], "candidate");
+        assert_eq!(catalog["effective_config_model"], "");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 'live'\n",
+        )
+        .unwrap();
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+        assert_eq!(catalog["effective_config_model"], "live");
+        assert!(!catalog["models"].as_array().unwrap().contains(&json!("live")));
     }
 
     #[test]
