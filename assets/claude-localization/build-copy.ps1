@@ -26,6 +26,8 @@ function Find-Ion([string]$root) {
   foreach ($candidate in @((Join-Path $root 'resources\ion-dist'), (Join-Path $root 'ion-dist'))) {
     if (Test-Path (Join-Path $candidate 'index.html')) { return $candidate }
   }
+  # 新版 Claude 把本地界面打包成 ion-dist.asar（#2884）：词表注入与校验由 Codex++ 完成。
+  if (Test-Path -LiteralPath (Join-Path $root 'resources\ion-dist.asar') -PathType Leaf) { return $null }
   throw "找不到 Claude 本地界面 ion-dist"
 }
 
@@ -64,7 +66,7 @@ if ($args -contains '--check') {
   $sourceAsar = Join-Path $sourceRoot 'resources\app.asar'; $copyAsar = Join-Path $copyRoot 'resources\app.asar'
   if ((Get-Sha256Hex $sourceAsar) -ne (Get-Sha256Hex $copyAsar)) { throw 'app.asar 已被改动' }
   $ion = Find-Ion $copyRoot
-  if (-not (Test-Path (Join-Path $ion 'i18n\zh-Hans.json'))) { throw '中文词表缺失' }
+  if ($ion -and -not (Test-Path (Join-Path $ion 'i18n\zh-Hans.json'))) { throw '中文词表缺失' }
   Write-Output 'Windows Claude 副本、中文词表与 app.asar 一致性检查通过'; exit 0
 }
 
@@ -75,5 +77,6 @@ if ($LASTEXITCODE -gt 7) {
   $hint = $(if ($sourceRoot -match '\\WindowsApps\\') { '；商店版（MSIX）Claude 位于受保护的 WindowsApps 目录，请用安装 Claude 的同一账户运行 Codex++，不要以管理员或其他用户身份运行' } else { '' })
   throw "复制 Windows Claude 副本失败（robocopy 退出码：$LASTEXITCODE），可能没有读取 $sourceRoot 的权限或磁盘空间不足$hint"
 }
-Copy-Catalogs (Find-Ion $copyRoot)
+$ion = Find-Ion $copyRoot
+if ($ion) { Copy-Catalogs $ion } else { Write-Output 'ion-dist.asar 由 Codex++ 处理' }
 Write-Output 'Windows Claude 副本已创建，官方 app.asar 未修改'

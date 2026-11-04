@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """在宿主指定的全新暂存目录构建副本；不删除旧副本，不写官方包或用户档案。"""
+import hashlib
 import json
 import os
 import pathlib
@@ -75,6 +76,126 @@ def ion_for(app):
     root = root_for(app)
     candidates = [root / "Contents/Resources/ion-dist", root / "resources/ion-dist", root / "ion-dist"]
     return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
+def ion_asar_for(app):
+    """新版 Claude 把本地界面打包成 ion-dist.asar（#2884）；只在没有 ion-dist 目录时返回它。"""
+    root = root_for(app)
+    if any((path / "index.html").is_file() for path in (root / "Contents/Resources/ion-dist", root / "resources/ion-dist", root / "ion-dist")):
+        return None
+    for path in (root / "Contents/Resources/ion-dist.asar", root / "resources/ion-dist.asar"):
+        if path.is_file():
+            return path
+    return None
+
+
+LANG_OLD = '["en-US","de-DE","fr-FR","ko-KR","ja-JP","es-419","es-ES","it-IT","hi-IN","pt-BR","id-ID"]'
+LANG_NEW = LANG_OLD[:-1] + ',"zh-Hans"]'
+ASAR_BLOCK = 4 * 1024 * 1024
+
+
+def _asar_integrity(blob):
+    blocks = [hashlib.sha256(blob[i:i + ASAR_BLOCK]).hexdigest() for i in range(0, len(blob), ASAR_BLOCK)]
+    return {"algorithm": "SHA256", "hash": hashlib.sha256(blob).hexdigest(), "blockSize": ASAR_BLOCK, "blocks": blocks}
+
+
+def _read_asar(path):
+    data = path.read_bytes()
+    _, hdr_size, _, json_str_size = struct.unpack("<IIII", data[:16])
+    return json.loads(data[16:16 + json_str_size].decode()), data, 8 + hdr_size
+
+
+def _asar_node(header, path, create=False):
+    node = header
+    for name in path.split("/"):
+        files = node.setdefault("files", {}) if create else node.get("files", {})
+        if name not in files:
+            if not create:
+                return None
+            files[name] = {}
+        node = files[name]
+    return node
+
+
+def _asar_blob(data, start, meta):
+    if meta.get("unpacked"):
+        raise RuntimeError("暂不支持带 unpacked 文件的 ion-dist.asar")
+    off = start + int(meta["offset"])
+    return data[off:off + int(meta["size"])]
+
+
+def _catalog_meta(html, langs):
+    meta = '<meta name="i18n-catalogs" data-i18n-catalogs="' + ",".join(l + ":1.1.1" for l in langs) + '">'
+    if re.search(r'<meta\b[^>]*name=[\"\x27]i18n-catalogs[\"\x27][^>]*>', html):
+        return re.sub(r'<meta\b[^>]*name=[\"\x27]i18n-catalogs[\"\x27][^>]*>', lambda _: meta, html)
+    if "</head>" in html:
+        return html.replace("</head>", meta + "</head>", 1)
+    raise RuntimeError("本地界面的 HTML 格式已变化")
+
+
+def localize_ion_asar(path, catalogs_dir):
+    """就地改写副本里的 ion-dist.asar：装中文词表、放开语言白名单、登记 i18n-catalogs。
+    与目录形态做同样的变换；未改动的文件沿用原 integrity，先写临时文件再替换。"""
+    header, data, start = _read_asar(path)
+    original = json.loads(json.dumps(header))
+    replaced = {}
+    matches = 0
+    for name, meta in list(_walk_asar(header)):
+        name = name.lstrip("/")
+        if not (name.startswith("assets/") and name.endswith(".js")):
+            continue
+        blob = _asar_blob(data, start, meta)
+        if LANG_OLD.encode() in blob:
+            replaced[name] = blob.replace(LANG_OLD.encode(), LANG_NEW.encode())
+            matches += 1
+        elif LANG_NEW.encode() in blob:
+            matches += 1
+    if not matches:
+        raise RuntimeError("本地界面的语言协商格式已变化，旧副本已保留")
+    for rel in ("zh-Hans.json", "dynamic/zh-Hans.json", "zh-Hans.overrides.json"):
+        replaced["i18n/" + rel] = (catalogs_dir / rel).read_bytes()
+        _asar_node(header, "i18n/" + rel, create=True)
+    i18n = _asar_node(header, "i18n") or {}
+    langs = sorted(n[:-5] for n, child in i18n.get("files", {}).items()
+                   if "files" not in child and n.endswith(".json") and "." not in n[:-5])
+    index = _asar_node(original, "index.html")
+    if index is None:
+        raise RuntimeError("ion-dist.asar 里缺少 index.html")
+    html = _asar_blob(data, start, index).decode("utf-8")
+    replaced["index.html"] = _catalog_meta(html, langs).encode("utf-8")
+
+    chunks = []
+    offset = 0
+    for name, meta in _walk_asar(header):
+        name = name.lstrip("/")
+        if name in replaced:
+            blob = replaced[name]
+            meta["integrity"] = _asar_integrity(blob)
+        else:
+            blob = _asar_blob(data, start, _asar_node(original, name))
+        meta["size"] = len(blob)
+        meta["offset"] = str(offset)
+        offset += len(blob)
+        chunks.append(blob)
+    text = json.dumps(header, separators=(",", ":"), ensure_ascii=False).encode()
+    pad = (-len(text)) % 4
+    json_size = len(text) + pad + 4
+    tmp = path.with_name(path.name + ".codex-plus-tmp")
+    with tmp.open("wb") as f:
+        f.write(struct.pack("<IIII", 4, json_size + 4, json_size, len(text)))
+        f.write(text + b"\0" * pad)
+        for blob in chunks:
+            f.write(blob)
+    os.replace(tmp, path)
+
+
+def verify_ion_asar(path):
+    header, data, start = _read_asar(path)
+    if _asar_node(header, "i18n/zh-Hans.json") is None or _asar_node(header, "i18n/dynamic/zh-Hans.json") is None:
+        raise RuntimeError("中文词表缺失")
+    index = _asar_node(header, "index.html")
+    if index is None or b"zh-Hans:" not in _asar_blob(data, start, index):
+        raise RuntimeError("本地界面未注册中文词表")
 
 
 def app_asar(root):
@@ -259,11 +380,17 @@ def check(source, copy):
             )
             if result.returncode:
                 raise RuntimeError("app.asar 与官方不一致，请重新准备副本")
-    ion = ion_for(copy)
-    if not (ion / "i18n/zh-Hans.json").is_file() or not (ion / "i18n/dynamic/zh-Hans.json").is_file():
-        raise RuntimeError("中文词表缺失")
-    if "zh-Hans:" not in (ion / "index.html").read_text():
-        raise RuntimeError("本地界面未注册中文词表")
+    packed = ion_asar_for(copy)
+    if packed:
+        verify_ion_asar(packed)
+        if flags[4] != ord("0"):
+            raise RuntimeError("副本改写了 ion-dist.asar，但 asar 完整性校验仍打开，请重新制作增强版")
+    else:
+        ion = ion_for(copy)
+        if not (ion / "i18n/zh-Hans.json").is_file() or not (ion / "i18n/dynamic/zh-Hans.json").is_file():
+            raise RuntimeError("中文词表缺失")
+        if "zh-Hans:" not in (ion / "index.html").read_text():
+            raise RuntimeError("本地界面未注册中文词表")
     print("副本签名、注入开关、中文词表与 app.asar 一致性检查通过", flush=True)
 
 
@@ -323,7 +450,7 @@ def ensure_signing_identity():
 def build(source, copy):
     if copy.exists() or copy.is_symlink() or source.resolve() == copy.resolve():
         raise RuntimeError("构建目标必须是新的暂存目录")
-    if not ion_for(source).joinpath("index.html").is_file():
+    if not ion_for(source).joinpath("index.html").is_file() and not ion_asar_for(source):
         raise RuntimeError("此版本缺少 ion-dist 本地界面，暂不支持此版本汉化")
     if os.name != "nt":
         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(source)])
@@ -345,18 +472,43 @@ def build(source, copy):
     flags = fuse_sites[0][2]
     if flags[3] not in (ord("0"), ord("1")):
         raise RuntimeError("此版本禁用了 Electron inspect fuse，无法汉化")
+    packed = ion_asar_for(copy)
     if COMPUTER_USE and flags[4] not in (ord("0"), ord("1")):
         raise RuntimeError("此版本缺少 asar 完整性 fuse，无法做 CU 增强")
+    if packed and flags[4] not in (ord("0"), ord("1")):
+        raise RuntimeError("此版本缺少 asar 完整性 fuse，无法汉化")
     # universal binary 每个架构各带一份 fuse，全部改掉，避免只改到不生效的那份。
     for binary, offset, _flags in fuse_sites:
         with binary.open("r+b") as f:
             f.seek(offset + 3)
             f.write(b"1")   # EnableNodeCliInspectArguments：启动注入需要
-            if COMPUTER_USE:
+            if COMPUTER_USE or packed:
                 f.seek(offset + 4)
                 f.write(b"0")   # EnableEmbeddedAsarIntegrityValidation：要改 asar 就必须关掉校验
 
-    ion = ion_for(copy)
+    if packed:
+        # #2884：新版本地界面是 ion-dist.asar，在重签之前改写它。
+        localize_ion_asar(packed, HERE / "catalogs")
+    else:
+        install_ion_dir(ion_for(copy))
+    report(35, "克隆完成")
+    if COMPUTER_USE:
+        report(45, "改写 Computer Use 门禁")
+        patch_asar(copy)
+    else:
+        print("未勾选 Computer Use：副本 asar 保持与官方一致", flush=True)
+    report(65, "安装中文词表")
+    print("安装中文词表并重签副本…", flush=True)
+    report(80, "重签增强版")
+    ensure_signing_identity()
+    if os.name != "nt":
+        run([sys.executable, str(HERE / "sign-copy.py"), str(source), str(copy)])
+    report(95, "校验增强版")
+    check(source, copy)
+    report(100, "完成")
+
+
+def install_ion_dir(ion):
     for rel in ("zh-Hans.json", "dynamic/zh-Hans.json", "zh-Hans.overrides.json"):
         target = ion / "i18n" / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -387,21 +539,6 @@ def build(source, copy):
     else:
         raise RuntimeError("本地界面的 HTML 格式已变化")
     index.write_text(html, encoding="utf-8")
-    report(35, "克隆完成")
-    if COMPUTER_USE:
-        report(45, "改写 Computer Use 门禁")
-        patch_asar(copy)
-    else:
-        print("未勾选 Computer Use：副本 asar 保持与官方一致", flush=True)
-    report(65, "安装中文词表")
-    print("安装中文词表并重签副本…", flush=True)
-    report(80, "重签增强版")
-    ensure_signing_identity()
-    if os.name != "nt":
-        run([sys.executable, str(HERE / "sign-copy.py"), str(source), str(copy)])
-    report(95, "校验增强版")
-    check(source, copy)
-    report(100, "完成")
 
 
 if __name__ == "__main__":
