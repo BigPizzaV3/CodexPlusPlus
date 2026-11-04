@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 908
+      "lines": 1030
     },
     {
       "name": "31-config-read-deadline.js",
@@ -68,7 +68,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1220
+      "lines": 1224
     },
     {
       "name": "71-model-picker-groups.js",

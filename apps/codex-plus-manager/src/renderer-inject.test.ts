@@ -3581,7 +3581,7 @@ describe("拓展运行时内核", () => {
     };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage", "document",
       `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices, sessionItem: codexPlusSessionItem, sessionsCall: codexPlusSessionsCall };`,
     )(
       window,
@@ -3613,6 +3613,7 @@ describe("拓展运行时内核", () => {
       (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
       (message: string) => toasts.push(message),
       localStorage,
+      { documentElement: { lang: "en-US" } },
     ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
       bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
       services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void;
@@ -4440,7 +4441,7 @@ describe("拓展运行时内核", () => {
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
     const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
     const ctx = k.create(() => {});
-    // 测试环境的语言是 Node 的 navigator.language（en-US）：zh 词条不会被选中。
+    // 测试页面固定为 en-US，不依赖宿主 Node 的系统语言。
     assert.match(ctx.locale.current, /^en/);
     assert.equal(ctx.locale.t("hi", { name: "Ada" }), "Hello Ada", "包内 locale 登记在拓展 id 命名空间");
     assert.equal(ctx.locale.t("meta.title"), "Greeter", "点号路径取嵌套词条");
