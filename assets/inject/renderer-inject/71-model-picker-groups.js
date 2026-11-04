@@ -1044,11 +1044,17 @@
   function codexPlusModelPickerReportUnrecognized() {
     const state = codexPlusModelPickerGroupsState;
     if (state.unrecognizedReported) return;
+    // #2883：诊断也节流到每 2 秒最多一次——菜单关着时每 250ms 的扫描轮
+    // 都会走到这里，对每个 [role=menu] 读布局是白做工。
+    const now = Date.now();
+    if (state.lastUnrecognizedProbe && now - state.lastUnrecognizedProbe < 2000) return;
+    state.lastUnrecognizedProbe = now;
     let exact = null;
     for (const menu of document.querySelectorAll('[role="menu"]')) {
-      if (!visibleElement(menu) || menu.closest("[data-codex-plus-ext]")) continue;
+      // 先过廉价的 DOM 过滤，通过了才碰 visibleElement 的强制布局。
+      if (menu.closest("[data-codex-plus-ext]")) continue;
       const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
-      if (radios.length < 2) continue;
+      if (radios.length < 2 || !visibleElement(menu)) continue;
       // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
       exact ||= codexPlusModelPickerCatalogExactMap();
       if (!exact.size) return;
