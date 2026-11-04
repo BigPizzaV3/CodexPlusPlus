@@ -52,6 +52,7 @@ pub mod server;
 pub mod sessions;
 pub mod speed;
 pub mod store;
+mod subagent_models;
 pub mod subscriptions;
 pub mod usage;
 
