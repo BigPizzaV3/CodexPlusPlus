@@ -4989,6 +4989,71 @@ enabled = true
 }
 
 #[test]
+fn sync_live_config_context_entries_keeps_live_when_managed_mcp_entry_lacks_transport() {
+    // #2887：前端把 [mcp_servers.<id>.env] 压平后，managed 里只剩 env 键、
+    // 没有 command/url；此时 live 里的完整条目不能被覆盖或删除。
+    let live = r#"model = "gpt-5"
+
+[mcp_servers.vivado]
+command = "python"
+args = ["-m", "vivado_mcp"]
+
+[mcp_servers.vivado.env]
+VIVADO_PATH = "/opt/vivado"
+
+[mcp_servers.other]
+command = "other"
+"#;
+    // managed 侧同 id 条目残缺（只有 env 子表的内容被压平进来）。
+    let context = r#"[mcp_servers.vivado]
+VIVADO_PATH = "/opt/vivado"
+"#;
+
+    let updated = sync_live_config_context_entries(live, context).unwrap();
+
+    assert!(updated.contains("[mcp_servers.vivado]"), "{updated}");
+    assert!(updated.contains(r#"command = "python""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.vivado.env]"), "{updated}");
+    assert!(updated.contains(r#"VIVADO_PATH = "/opt/vivado""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.other]"), "{updated}");
+}
+
+#[test]
+fn upsert_context_entry_rejects_mcp_body_without_transport() {
+    // #2887：残缺 mcp 条目写进 common config 会让 Codex 拒载整份 config.toml。
+    let error = upsert_context_entry_in_common_config(
+        "",
+        "mcp",
+        "vivado",
+        r#"VIVADO_PATH = "/opt/vivado""#,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("command"), "{error}");
+}
+
+#[test]
+fn upsert_context_entry_keeps_env_subtable_in_mcp_body() {
+    let updated = upsert_context_entry_in_common_config(
+        "",
+        "mcp",
+        "vivado",
+        r#"command = "python"
+args = ["-m", "vivado_mcp"]
+
+[env]
+VIVADO_PATH = "/opt/vivado"
+"#,
+    )
+    .unwrap();
+
+    assert!(updated.contains("[mcp_servers.vivado]"), "{updated}");
+    assert!(updated.contains(r#"command = "python""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.vivado.env]"), "{updated}");
+    assert!(updated.contains(r#"VIVADO_PATH = "/opt/vivado""#), "{updated}");
+}
+
+#[test]
 fn apply_relay_profile_to_home_with_switch_rules_writes_provider_even_when_auth_has_no_api_key() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {

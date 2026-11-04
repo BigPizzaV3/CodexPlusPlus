@@ -9042,6 +9042,16 @@ pub fn sync_live_context_entries(
             );
         }
     };
+    // 写盘前先整体校验：合成结果不是合法 TOML 时拒绝落盘（#2887），
+    // 避免把 live config.toml 写成 Codex 直接拒载的坏文件。
+    if let Err(error) = updated_config.parse::<toml_edit::DocumentMut>() {
+        return failed(
+            &format!("同步结果不是合法 TOML，已拒绝写入 live config.toml：{error}"),
+            LiveContextEntriesPayload {
+                entries: empty_context_entries(),
+            },
+        );
+    }
     if let Some(parent) = config_path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
             return failed(
@@ -9051,6 +9061,22 @@ pub fn sync_live_context_entries(
                 },
             );
         }
+    }
+    // 覆盖前给现有 live 文件留一份备份，出问题可手工恢复。
+    if let Err(error) = codex_plus_core::relay_config::create_live_backup(
+        &home,
+        Some(current_config.as_bytes()),
+        read_optional_text_file(&home.join("auth.json"))
+            .ok()
+            .map(|text| text.into_bytes())
+            .as_deref(),
+    ) {
+        return failed(
+            &format!("备份 live 配置失败：{error}"),
+            LiveContextEntriesPayload {
+                entries: empty_context_entries(),
+            },
+        );
     }
     // 必须原子替换：`fs::write` 先截断再写，Codex 若在这一瞬间读 config.toml
     // 会拿到空文件或半截内容，对话中报「无法加载 config.toml」（#2621）。

@@ -2409,6 +2409,10 @@ pub fn upsert_context_entry_in_common_config(
     }
     let table_name = context_table_name(kind)?;
     let body_doc = parse_toml_document(toml_body)?;
+    // #2887：残缺 mcp 条目（没有 command/url）写进去会让 Codex 拒载整份 config.toml。
+    if table_name == "mcp_servers" && !mcp_server_entry_has_transport(body_doc.as_table()) {
+        anyhow::bail!("MCP 条目缺少 command 或 url，已拒绝保存（这会让 Codex 拒载整份 config.toml）");
+    }
     let normalized = normalize_duplicate_toml_text(common_config);
     let mut doc = parse_toml_document(&normalized)?;
     if !doc.as_table().contains_key(table_name) {
@@ -2462,12 +2466,56 @@ pub fn sync_live_config_context_entries(
     if normalized_context.trim().is_empty() {
         return Ok(normalize_optional_toml(live_doc));
     }
-    let managed_doc = parse_toml_document(&normalized_context)?;
+    let mut managed_doc = parse_toml_document(&normalized_context)?;
+    // #2887：managed 侧 mcp 条目被前端压扁成残缺（没有 command/url）时，
+    // live 里同 id 的完整条目不能被它覆盖或删掉，否则整条 MCP 丢失甚至被
+    // repair_merged_mcp_servers 清掉。这样的 id 直接从 managed 侧拿掉，
+    // 后面的 remove/merge 自然不会碰 live 原条目。
+    let kept_live = drop_incomplete_managed_mcp_entries(live_doc.as_table(), managed_doc.as_table_mut());
+    if !kept_live.is_empty() {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "relay_config.mcp_context_entry_kept_live",
+            serde_json::json!({ "ids": kept_live }),
+        );
+    }
     remove_managed_context_entries(live_doc.as_table_mut(), managed_doc.as_table());
     let mut context_doc = managed_doc;
     remove_disabled_context_tables(context_doc.as_table_mut());
     merge_managed_context_tables(live_doc.as_table_mut(), context_doc.as_table());
     Ok(normalize_optional_toml(live_doc))
+}
+
+/// 从 managed 文档里摘掉残缺 mcp 条目：它没有 transport 而 live 里同 id
+/// 的条目有 transport 时，managed 版本整条丢弃（live 原样保留）。
+/// 返回被保留的 id 列表，供诊断日志记录。
+fn drop_incomplete_managed_mcp_entries(
+    live: &toml_edit::Table,
+    managed: &mut toml_edit::Table,
+) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let Some(live_servers) = live.get("mcp_servers").and_then(Item::as_table_like) else {
+        return kept;
+    };
+    let Some(managed_servers) = managed.get_mut("mcp_servers").and_then(Item::as_table_like_mut)
+    else {
+        return kept;
+    };
+    let incomplete: Vec<String> = managed_servers
+        .iter()
+        .filter(|(_, item)| !item.as_table_like().is_some_and(mcp_server_entry_has_transport))
+        .filter(|(id, _)| {
+            live_servers
+                .get(id)
+                .and_then(Item::as_table_like)
+                .is_some_and(mcp_server_entry_has_transport)
+        })
+        .map(|(id, _)| id.to_string())
+        .collect();
+    for id in incomplete {
+        managed_servers.remove(id.as_str());
+        kept.push(id);
+    }
+    kept
 }
 
 fn preserve_unmanaged_live_context_entries(
@@ -6796,7 +6844,7 @@ pub fn backup_live_files(home: &Path) -> anyhow::Result<Option<String>> {
     create_live_backup(home, config.as_deref(), auth.as_deref())
 }
 
-fn create_live_backup(
+pub fn create_live_backup(
     home: &Path,
     config: Option<&[u8]>,
     auth: Option<&[u8]>,
