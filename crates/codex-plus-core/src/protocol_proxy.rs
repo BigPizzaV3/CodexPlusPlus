@@ -7762,8 +7762,21 @@ fn normalize_responses_item_id(item: &mut Value) {
     } else {
         suffix
     };
-    item["id"] = json!(format!("{prefix}{suffix}"));
+    // 压缩条目的 id 可能是上游签发的不透明包装（不带任何已知前缀、长达数百字符），
+    // 它只认原样回传；加前缀会超过 Responses 的 64 字符上限而整单 400（#2891）。
+    if item_type == "compaction" && suffix == id {
+        return;
+    }
+    let normalized = format!("{prefix}{suffix}");
+    // 改写后超过 64 字符的一律不动：上游按长度拒绝比按前缀拒绝更确定。
+    if normalized.len() > RESPONSES_ITEM_ID_MAX_LEN && normalized.len() > id.len() {
+        return;
+    }
+    item["id"] = json!(normalized);
 }
+
+/// Responses 接口对 `input[N].id` 的长度上限。
+const RESPONSES_ITEM_ID_MAX_LEN: usize = 64;
 
 fn append_responses_input(input: &Value, messages: &mut Vec<Value>) -> anyhow::Result<()> {
     // encrypted_content 片段可能携带无法在 Chat 协议里表达的 opaque 内容，报错向上传播（fail loud）。

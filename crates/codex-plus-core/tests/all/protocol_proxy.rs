@@ -8821,3 +8821,25 @@ data: [DONE]
         assert!(response["output"][0].get("phase").is_none());
     });
 }
+
+/// #2891：上游签发的不透明压缩 id（不带已知前缀、几百字符）必须原样回传，
+/// 加前缀会超过 Responses 的 64 字符上限而整单 400；改写后超长的 id 也不动。
+#[test]
+fn responses_item_id_normalization_keeps_opaque_compaction_and_long_ids() {
+    use codex_plus_core::protocol_proxy::normalize_responses_item_ids_for_test;
+
+    let opaque = "x".repeat(389);
+    let long_message = "m".repeat(62);
+    let mut body = json!({
+        "model": "gpt-5.6-sol",
+        "input": [
+            { "type": "compaction", "id": opaque, "encrypted_content": "summary" },
+            { "type": "message", "id": long_message, "role": "user", "content": "hi" },
+            { "type": "compaction", "id": "cp_resp_compact_1", "encrypted_content": "summary" }
+        ]
+    });
+    normalize_responses_item_ids_for_test(&mut body);
+    assert_eq!(body["input"][0]["id"].as_str().unwrap().len(), 389, "不透明压缩 id 原样保留");
+    assert_eq!(body["input"][1]["id"], json!(long_message), "改写后超过 64 字符时不改写");
+    assert_eq!(body["input"][2]["id"], "cmp_resp_compact_1", "旧 cp_ 前缀仍然修复");
+}
