@@ -4729,9 +4729,12 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         relay.no_auth = true;
         relay.api_key.clear();
     }
+    settings.relay_profiles[0].auto_review_model = "first-upstream-model".to_string();
+    settings.relay_profiles[1].auto_review_model = "final-upstream-model".to_string();
+    settings.protocol_proxy_map_unlisted_models = false;
 
     let mut result = open_responses_proxy_request_with_settings(
-        r#"{"model":"gpt-5-mini","input":"hi","stream":false}"#,
+        r#"{"model":"codex-auto-review","input":"hi","stream":false}"#,
         settings,
     )
     .await
@@ -4745,8 +4748,15 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
         String::from_utf8_lossy(&body)
     );
     assert_eq!(body.as_slice(), br#"{"id":"resp_1","object":"response"}"#);
+    let trace = result.request_trace.as_ref().expect("final response trace");
+    assert_eq!(trace.relay_id, "proxy-failover-b");
+    assert_eq!(trace.upstream_model, "final-upstream-model");
+    assert!(trace.upstream_model_bound);
+    assert_eq!(trace.attempts, 2);
     let first_request = first_server.await.unwrap();
     let second_request = second_server.await.unwrap();
+    assert!(first_request.contains("first-upstream-model"));
+    assert!(second_request.contains("final-upstream-model"));
     assert!(
         !first_request
             .to_ascii_lowercase()

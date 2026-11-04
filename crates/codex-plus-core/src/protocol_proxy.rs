@@ -2075,8 +2075,11 @@ pub async fn send_upstream_request_with_header_timeout(
     let mut attempt_timeout = timeout;
     loop {
         let builder = pending.take().expect("upstream request builder missing");
+        let (client, request) = builder.build_split();
+        let mut request = request.context("构造上游请求失败")?;
+        crate::extension_gateway::refresh_response_passthrough(&mut request);
         let attempt_started = Instant::now();
-        match tokio::time::timeout(attempt_timeout, builder.send()).await {
+        match tokio::time::timeout(attempt_timeout, client.execute(request)).await {
             Ok(Ok(response)) => return Ok(response),
             Ok(Err(error)) => {
                 // 上游 client 复用连接（#2761）后，空闲连接可能刚被对端关掉、本地还没察觉：
@@ -3915,14 +3918,6 @@ async fn open_responses_proxy_request_once(
         request_trace.relay_id = relay.id.clone();
         request_trace.relay_name = relay.name.clone();
         request_trace.wire_api = upstream_wire_api_label(wire_api).to_string();
-        request_trace.upstream_model = upstream_body
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        if let Some(id) = live_request_id {
-            crate::request_log::update_running_route(id, &request_trace, is_stream);
-        }
         // Codex 托管的网关供应商：这一跳的上游就是本机网关，它自己按候选控制超时。
         let via_gateway = relay.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
         // 别家签发的加密内容（#2777）：只在发往真实上游时处理（网关那一跳由网关自己处理）；
@@ -4018,6 +4013,10 @@ async fn open_responses_proxy_request_once(
         .await
         {
             return Ok(extension_rejected_response(&reason)?);
+        }
+        request_trace.bind_upstream_model(&upstream_body);
+        if let Some(id) = live_request_id {
+            crate::request_log::update_running_route(id, &request_trace, is_stream);
         }
         let mut key = None;
         let mut exec_adapted = forced_adapted;
@@ -4537,6 +4536,8 @@ async fn open_responses_proxy_request_once(
                 .to_string();
         }
 
+        // 内置兼容回退也可能重建请求体；最终返回的 trace 绑定最后一次发送。
+        request_trace.bind_upstream_model(&upstream_body);
         if let Some(id) = live_request_id {
             crate::request_log::update_running_phase(id, "waiting");
         }
@@ -12425,6 +12426,8 @@ pub(crate) struct ResponsesSseTransformer {
     apply_patch_declared_as_function: bool,
     /// 从 `response.completed` 里抓到的 usage，供请求日志使用。
     usage: Option<crate::request_log::RequestUsage>,
+    final_response_usage: Option<crate::request_log::RequestUsage>,
+    final_response_invalid: bool,
     /// 终态失败事件里的 code/message 摘要。只进请求日志与诊断日志，
     /// 不拼进 failure 原因（原因会随 SSE 回给客户端，不能泄露上游 payload）。
     failure_detail: Option<String>,
@@ -12699,7 +12702,10 @@ impl ResponsesSseTransformer {
 
     fn observe_event_type(&mut self, event_type: &str) {
         match event_type {
-            "response.completed" => self.completed = true,
+            "response.completed" => {
+                self.completed = true;
+                self.final_response_usage = None;
+            }
             "response.failed" => {
                 self.fail("原生 Responses 上游返回 response.failed".to_string())
             }
@@ -12720,6 +12726,16 @@ impl ResponsesSseTransformer {
     /// 取出 `response.completed` 里捕获的 usage（请求日志用）。
     pub(crate) fn take_usage(&mut self) -> Option<crate::request_log::RequestUsage> {
         self.usage.take()
+    }
+
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::RequestUsage> {
+        (self.completed
+            && !self.failed
+            && !self.final_response_invalid
+            && self.buf.is_empty()
+            && self.passthrough_event.is_none())
+        .then(|| self.final_response_usage.clone())
+        .flatten()
     }
 
     /// 取出终态失败的 code/message 摘要（请求日志/诊断日志用，不发给客户端）。
@@ -12753,7 +12769,10 @@ impl ResponsesSseTransformer {
     fn process_event(&mut self, event_bytes: &[u8]) -> Vec<u8> {
         let event_str = match std::str::from_utf8(event_bytes) {
             Ok(s) => s,
-            Err(_) => return event_bytes.to_vec(),
+            Err(_) => {
+                self.final_response_invalid = true;
+                return event_bytes.to_vec();
+            }
         };
 
         // 先提取 SSE event: 字段作为回退类型名（与 NativeResponsesSseObserver 一致）
@@ -12769,7 +12788,12 @@ impl ResponsesSseTransformer {
         };
         let data_json: Value = match serde_json::from_str(&data_json_str) {
             Ok(v) => v,
-            Err(_) => return event_bytes.to_vec(),
+            Err(_) => {
+                if data_json_str.trim() != "[DONE]" {
+                    self.final_response_invalid = true;
+                }
+                return event_bytes.to_vec();
+            }
         };
 
         // data JSON 的 type 优先，回退到 SSE event: 字段
@@ -12813,6 +12837,7 @@ impl ResponsesSseTransformer {
     ) -> Vec<u8> {
         self.observe_event_type(event_type);
         if event_type == "response.completed" {
+            self.final_response_usage = crate::request_log::final_response_usage(data_json);
             if let Some(usage) = crate::request_log::usage_from_response_json(data_json) {
                 self.usage = Some(usage);
             }
@@ -13416,6 +13441,68 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
         assert_eq!(usage.reasoning_tokens, 9);
         assert!(t.take_usage().is_none(), "usage 只取一次");
         assert!(t.finish().is_none());
+    }
+
+    #[test]
+    fn final_response_stream_evidence_requires_complete_terminal_payload() {
+        let completed = b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n";
+        let mut final_stream = ResponsesSseTransformer::default();
+        for chunk in completed.chunks(7) {
+            final_stream.push_bytes(chunk);
+        }
+        assert_eq!(
+            final_stream.final_response_usage().unwrap().input_tokens,
+            12
+        );
+        assert!(final_stream.finish().is_none());
+
+        for suffix in [
+            &b"data: {\"type\":\"response.incomplete\"}\n\n"[..],
+            &b"data: {\"type\":\"response.failed\"}\n\n"[..],
+            &b"data: {\"type\":\"error\"}\n\n"[..],
+            &b"data: {\"type\":\"response.completed\"}\n\n"[..],
+            &b"event: response.failed\ndata: {\n\n"[..],
+            &b"event: response.completed\ndata: {\n\n"[..],
+            &b"data: {"[..],
+        ] {
+            let mut invalid = ResponsesSseTransformer::default();
+            invalid.push_bytes(completed);
+            invalid.push_bytes(suffix);
+            assert!(invalid.final_response_usage().is_none(), "{suffix:?}");
+        }
+        let mut done = ResponsesSseTransformer::default();
+        done.push_bytes(completed);
+        done.push_bytes(b"data: [DONE]\n\n");
+        assert_eq!(done.final_response_usage().unwrap().input_tokens, 12);
+        for body in [
+            &completed[..completed.len() - 2],
+            &b"data: [DONE]\n\n"[..],
+            &b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n"[..],
+        ] {
+            let mut invalid = ResponsesSseTransformer::default();
+            invalid.push_bytes(body);
+            assert!(invalid.final_response_usage().is_none());
+        }
+        let mut oversized = ResponsesSseTransformer::default();
+        oversized.push_bytes(completed);
+        oversized.push_bytes(&oversized_event("response.completed", "fixture"));
+        assert!(
+            oversized.final_response_usage().is_none(),
+            "oversized terminal cannot reuse earlier usage"
+        );
+
+        let mut discarded_attempt = ResponsesSseTransformer::default();
+        discarded_attempt.push_bytes(b"data: {\"type\":\"response.failed\",\"response\":{\"usage\":{\"input_tokens\":999,\"output_tokens\":999}}}\n\n");
+        assert!(discarded_attempt.final_response_usage().is_none());
+        let mut returned_attempt = ResponsesSseTransformer::default();
+        returned_attempt.push_bytes(completed);
+        assert_eq!(
+            returned_attempt
+                .final_response_usage()
+                .unwrap()
+                .input_tokens,
+            12
+        );
     }
 
     #[test]

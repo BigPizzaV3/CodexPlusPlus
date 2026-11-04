@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const REQUEST_LOG_FILE: &str = "request-log.jsonl";
+pub const FINAL_RESPONSE_EVIDENCE_V1: &str = "final-response-v1";
 /// 日志文件达到该大小后裁剪到约一半，避免无限增长。
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const KEEP_LOG_BYTES: u64 = 1024 * 1024;
@@ -65,6 +66,9 @@ pub struct RequestTrace {
     pub model: String,
     /// 真正发给上游的模型名。
     pub upstream_model: String,
+    /// 仅由当前内置发送链绑定；反序列化的旧 trace 不能取得此资格。
+    #[serde(skip)]
+    pub upstream_model_bound: bool,
     pub wire_api: String,
     /// 上游请求总次数（含失败切换与自动重试）。
     pub attempts: u32,
@@ -128,9 +132,21 @@ pub struct RequestLogEntry {
     pub usage: Option<RequestUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_hit_ratio: Option<f64>,
+    /// `final-response-v1`：内置原生 Responses 链路已写出完整成功响应，
+    /// input/output/cached 均显式存在，路由与模型绑定最后一次 middleware 后发送。
+    /// 未验证的响应改写、转换/压缩链路不发此标记；不证明失败尝试的计费。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_response_evidence: Option<String>,
     /// 网关模式下发起请求的 Agent（claude / grok）；Codex 直连代理的旧记录为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+}
+
+impl RequestTrace {
+    pub(crate) fn bind_upstream_model(&mut self, body: &Value) {
+        self.upstream_model = body.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        self.upstream_model_bound = !self.upstream_model.trim().is_empty();
+    }
 }
 
 impl RequestLogEntry {
@@ -557,6 +573,22 @@ pub fn clear_request_logs_at(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// 强证据不使用旧解析器的 cached=0 回退，也不把 HTTP 200 当作完成。
+pub(crate) fn final_response_usage(value: &Value) -> Option<RequestUsage> {
+    let response = value.get("response").unwrap_or(value);
+    if response.get("status").and_then(Value::as_str) != Some("completed")
+        || response.get("error").is_some_and(|error| !error.is_null())
+        || response.get("incomplete_details").is_some_and(|details| !details.is_null())
+    {
+        return None;
+    }
+    let usage = response.get("usage")?;
+    let cached = usage.pointer("/input_tokens_details/cached_tokens")?.as_u64()?;
+    let parsed = usage_from_responses_usage(usage)?;
+    (cached <= parsed.input_tokens && parsed.reasoning_tokens <= parsed.output_tokens)
+        .then_some(parsed)
+}
+
 /// 从非流式 Responses JSON（或 `response.completed` 的 data）里提取 usage。
 pub fn usage_from_response_json(value: &Value) -> Option<RequestUsage> {
     let usage = value
@@ -666,8 +698,73 @@ mod tests {
                 reasoning_tokens: 50,
             }),
             cache_hit_ratio: None,
+            final_response_evidence: None,
             agent: None,
         }
+    }
+
+    #[test]
+    fn final_response_evidence_round_trip_and_legacy_absence() {
+        let legacy = serde_json::to_value(entry("legacy")).unwrap();
+        assert!(legacy.get("finalResponseEvidence").is_none());
+        let mut row: RequestLogEntry = serde_json::from_value(legacy).unwrap();
+        assert!(row.final_response_evidence.is_none());
+        row.final_response_evidence = Some(FINAL_RESPONSE_EVIDENCE_V1.to_string());
+        let raw = serde_json::to_value(row).unwrap();
+        assert_eq!(raw["finalResponseEvidence"], "final-response-v1");
+        let parsed: RequestLogEntry = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed.final_response_evidence.as_deref(), Some("final-response-v1"));
+    }
+
+    #[test]
+    fn final_response_usage_requires_explicit_complete_counts_and_success() {
+        let complete = json!({"status":"completed","usage":{
+            "input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":0}
+        }});
+        assert_eq!(final_response_usage(&complete).unwrap().cached_tokens, 0);
+        for pointer in [
+            "/status", "/usage/input_tokens", "/usage/output_tokens",
+            "/usage/input_tokens_details/cached_tokens",
+        ] {
+            let mut missing = complete.clone();
+            *missing.pointer_mut(pointer).unwrap() = Value::Null;
+            assert!(final_response_usage(&missing).is_none(), "{pointer}");
+        }
+        for status in ["in_progress", "incomplete", "failed"] {
+            let mut failed = complete.clone();
+            failed["status"] = json!(status);
+            assert!(final_response_usage(&failed).is_none());
+        }
+        for (pointer, invalid) in [
+            ("/usage/input_tokens_details/cached_tokens", json!(13)),
+            ("/usage/input_tokens", json!(-1)),
+            ("/usage/output_tokens", json!("3")),
+        ] {
+            let mut failed = complete.clone();
+            *failed.pointer_mut(pointer).unwrap() = invalid;
+            assert!(final_response_usage(&failed).is_none());
+        }
+        let mut failed = complete;
+        failed["error"] = json!({"code":"server_error"});
+        assert!(final_response_usage(&failed).is_none());
+    }
+
+    #[test]
+    fn upstream_model_binding_uses_mutated_body_and_is_not_deserialized() {
+        let mut trace = RequestTrace::default();
+        let mut body = json!({"model":"before-middleware"});
+        body["model"] = json!("after-middleware");
+        trace.bind_upstream_model(&body);
+        assert_eq!(trace.upstream_model, "after-middleware");
+        assert!(trace.upstream_model_bound);
+        let mut raw = serde_json::to_value(&trace).unwrap();
+        assert!(raw.get("upstreamModelBound").is_none());
+        raw["upstreamModelBound"] = json!(true);
+        let restored: RequestTrace = serde_json::from_value(raw).unwrap();
+        assert!(!restored.upstream_model_bound);
+        trace.bind_upstream_model(&json!({}));
+        assert!(!trace.upstream_model_bound);
+        assert!(trace.upstream_model.is_empty());
     }
 
     #[test]
