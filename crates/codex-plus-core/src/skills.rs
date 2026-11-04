@@ -1478,28 +1478,118 @@ fn raw_file_url(repo: &SkillRepo, path: &str) -> String {
     )
 }
 
+fn github_https_proxy_from_env(
+    get_env: &mut impl FnMut(&str) -> Option<String>,
+    linux: bool,
+) -> Option<String> {
+    let keys = if linux {
+        ["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]
+    } else {
+        ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+    };
+    keys.into_iter().find_map(|key| {
+        get_env(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn build_github_client(
+    agent: &str,
+    mut get_env: impl FnMut(&str) -> Option<String>,
+    linux: bool,
+    mut system_proxy: impl FnMut(Option<&str>) -> Option<String>,
+    builder: reqwest::ClientBuilder,
+) -> anyhow::Result<reqwest::Client> {
+    let environment_proxy = github_https_proxy_from_env(&mut get_env, linux);
+    let http_proxy = ["http_proxy", "HTTP_PROXY"].into_iter().find_map(|key| {
+        get_env(key)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    });
+    let no_proxy = get_env("NO_PROXY").or_else(|| get_env("no_proxy"));
+    let builder = builder.user_agent(agent);
+    if environment_proxy.is_some() || http_proxy.is_some() {
+        let proxy = if linux {
+            environment_proxy
+        } else {
+            system_proxy(None).or(environment_proxy)
+        };
+        let bypass = || {
+            no_proxy
+                .as_deref()
+                .and_then(reqwest::NoProxy::from_string)
+                .or_else(|| reqwest::NoProxy::from_string("localhost,127.0.0.1,::1"))
+        };
+        let builder = if let Some(proxy) = proxy {
+            builder.proxy(reqwest::Proxy::all(&proxy)?.no_proxy(bypass()))
+        } else if linux {
+            // HTTP 代理不能用于 HTTPS，也不能在降级重定向时明文发送凭据。
+            builder.no_proxy().https_only(true)
+        } else {
+            builder
+        };
+        return Ok(crate::http_client::apply_configured_ca_certificate(builder)?.build()?);
+    }
+
+    let builder = builder
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(90));
+    let mut proxies = BTreeMap::new();
+    for host in [
+        "api.github.com",
+        "codeload.github.com",
+        "raw.githubusercontent.com",
+    ] {
+        // Linux 的系统代理检测本身读取环境变量，不能让 HTTP-only 设置回流到 HTTPS。
+        if !linux && let Some(proxy) = system_proxy(Some(&format!("https://{host}/"))) {
+            proxies.insert(host.to_string(), proxy);
+        }
+    }
+    let builder = builder.proxy(reqwest::Proxy::custom(move |url| {
+        url.host_str().and_then(|host| proxies.get(host).cloned())
+    }));
+    Ok(builder.build()?)
+}
+
+fn github_system_proxy(url: Option<&str>) -> Option<String> {
+    match url {
+        Some(url) => crate::proxy::detect_system_proxy_for_url(url),
+        None => crate::proxy::detect_system_proxy(),
+    }
+}
+
 async fn github_client() -> anyhow::Result<reqwest::Client> {
     tokio::task::spawn_blocking(|| {
         let agent = format!("Codex++/{}", crate::version::VERSION);
-        if ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
-            .iter().any(|key| std::env::var(key).is_ok_and(|v| !v.trim().is_empty()))
+        if !cfg!(target_os = "linux")
+            && [
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+            ]
+            .iter()
+            .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
         {
             return crate::http_client::proxied_client(&agent);
         }
-        let mut proxies = BTreeMap::new();
-        for host in ["api.github.com", "codeload.github.com", "raw.githubusercontent.com"] {
-            if let Some(proxy) = crate::proxy::detect_system_proxy_for_url(&format!("https://{host}/")) {
-                proxies.insert(host.to_string(), proxy);
-            }
-        }
-        Ok(reqwest::Client::builder().user_agent(agent)
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(90))
-            .proxy(reqwest::Proxy::custom(move |url| {
-                url.host_str().and_then(|host| proxies.get(host).cloned())
-            })).build()?)
-    }).await?
+        build_github_client(
+            &agent,
+            |key| std::env::var(key).ok(),
+            cfg!(target_os = "linux"),
+            github_system_proxy,
+            reqwest::Client::builder(),
+        )
+    })
+    .await?
 }
+
+#[cfg(test)]
+#[path = "skills_github_proxy_tests.rs"]
+mod github_proxy_tests;
 
 pub async fn resolve_repo_skills(
     repo: SkillRepo,
