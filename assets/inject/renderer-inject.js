@@ -12626,21 +12626,34 @@
       // （display:none），仍然连着 —— 那种情况不能当成关闭，否则回来时补丁已经
       // 被拆掉、要等一轮才重建，看上去就是"分组闪一下没了"。
       if (!root.isConnected) continue;
-      // 列表的 CSS Modules 类名新旧格式都认（#2893）：26.1027 及以前 `_ModelList_哈希`，26.1029 起 `ModelList-哈希`；
-      // 新格式按类名开头匹配，不会误中 `ModelListMotion-`。函数会被测试单独切片执行，所以写成字面量。
-      if (!root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]')) continue;
+      if (!codexPlusModelPickerListIn(root)) continue;
       return root;
     }
     return null;
   }
 
+  /**
+   * 面板根里的模型列表。按结构找、不认类名（#2893）：模型行（`role="menuitemradio"`）的共同父节点
+   * 就是列表。实测 26.1029：菜单里 41 个模型行都直接挂在列表下，列表外（含推理强度子面板）没有别的
+   * 模型行；按结构找到的和按类名找到的是同一个节点。`role` 是 Codex 做菜单交互和无障碍要用的，
+   * 比 CSS Modules 的哈希类名稳定——26.1029 就把 `_ModelList_哈希` 改成了 `ModelList-哈希`。
+   *
+   * 还没有模型行时（列表加载中）回落到类名，新旧两种格式都认；新格式按类名开头匹配，不会误中
+   * `ModelListMotion-`。共同父节点退到面板根本身时（行分散在几个面板里）说明结构变了，同样回落。
+   */
+  function codexPlusModelPickerListIn(root) {
+    const rows = [...root.querySelectorAll('[role="menuitemradio"]')];
+    let list = rows[0]?.parentElement || null;
+    while (list && list !== root && !rows.every((row) => list.contains(row))) list = list.parentElement;
+    if (list && list !== root) return list;
+    return root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
+  }
+
   function codexPlusModelPickerList(menu) {
     const root = menu?.matches?.("[data-model-picker-view]") ? menu : menu?.querySelector?.("[data-model-picker-view]");
     if (!root) return null;
-    const list = root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
-    if (!list) return null;
     if (root.getAttribute("data-model-picker-view") === "grid") return null;
-    return list;
+    return codexPlusModelPickerListIn(root);
   }
 
   /**

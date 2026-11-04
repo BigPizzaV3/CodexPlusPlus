@@ -661,16 +661,43 @@ it("目录快照缺元数据时用记下的权威归属兜底，后缀猜出来�
   assert.equal(fresh.get("bare-model")?.groupId, "provider-new");
 });
 
-it("模型列表的 CSS Modules 类名新旧两种格式都认（#2893：Codex 26.1029 改成 `ModelList-哈希`）", async () => {
+it("模型列表按结构定位（模型行的共同父节点），类名只在没有模型行时兜底（#2893）", async () => {
   const source = await readShard();
-  const menu = functionSource(source, "codexPlusModelPickerMenu");
-  const list = functionSource(source, "codexPlusModelPickerList");
-  for (const body of [menu, list]) {
-    assert.match(body, /\[class\*="_ModelList_"\]/, "旧格式 `_ModelList_哈希` 仍要认");
-    assert.match(body, /\[class\^="ModelList-"\], \[class\*=" ModelList-"\]/, "新格式按类名开头匹配，避免误中 ModelListMotion-");
-  }
-  assert.match(source, /\[class\^="sectionLabel-"\]/, "分节标题同样要认新格式");
-  // 用真实 26.1029 的类名验证：只命中 ModelList-，不命中 ModelListMotion-。
+  const listIn = new Function(`${functionSource(source, "codexPlusModelPickerListIn")}\nreturn codexPlusModelPickerListIn;`)() as (root: unknown) => unknown;
+  type Node = { parentElement: Node | null; contains(other: Node): boolean; querySelectorAll(selector: string): Node[]; querySelector(selector: string): Node | null; name: string };
+  const node = (name: string, parent: Node | null): Node => {
+    const self: Node = {
+      name,
+      parentElement: parent,
+      contains(other) { for (let n: Node | null = other; n; n = n.parentElement) if (n === self) return true; return false; },
+      querySelectorAll: () => [],
+      querySelector: () => null,
+    };
+    return self;
+  };
+  // 根 → 动画容器 → 列表（类名换成什么都行）→ 三个模型行
+  const root = node("root", null);
+  const motion = node("motion", root);
+  const list = node("list-with-any-class", motion);
+  const rows = [node("row1", list), node("row2", list), node("row3", list)];
+  root.querySelectorAll = (selector) => (selector.includes("menuitemradio") ? rows : []);
+  assert.equal(listIn(root), list, "不看类名，取模型行的共同父节点");
+
+  // 还没有模型行：回落到类名，新旧格式都认，且不误中 ModelListMotion-。
+  const fallback = node("class-list", root);
+  root.querySelectorAll = () => [];
+  let asked = "";
+  root.querySelector = (selector) => { asked = selector; return fallback; };
+  assert.equal(listIn(root), fallback);
+  assert.match(asked, /\[class\*="_ModelList_"\]/);
+  assert.match(asked, /\[class\^="ModelList-"\], \[class\*=" ModelList-"\]/);
+
+  // 行分散到面板根下的不同分支（共同父节点退到根）：结构变了，也回落到类名。
+  const a = node("a", root);
+  const b = node("b", root);
+  root.querySelectorAll = (selector) => (selector.includes("menuitemradio") ? [node("r1", a), node("r2", b)] : []);
+  assert.equal(listIn(root), fallback);
+
   const matchesNew = (className: string) => className.startsWith("ModelList-") || className.includes(" ModelList-");
   assert.equal(matchesNew("ModelList-I4a0SH"), true);
   assert.equal(matchesNew("ModelListMotion-iyH7rX"), false);
