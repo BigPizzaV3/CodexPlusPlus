@@ -311,7 +311,7 @@
       "group": "standalone",
       "control": "bool",
       "title": "官方额度解锁",
-      "description": "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。",
+      "description": "官方订阅额度耗尽后仍可发送，不区分供应商模式；纯官方登录发出的请求仍可能被官方拒绝。只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。",
       "descriptionWhenEnhancementsOn": "增强开启时此能力已自动生效；此开关只在关闭增强后生效。",
       "masterGated": false,
       "surfaces": ["manager", "codex"],

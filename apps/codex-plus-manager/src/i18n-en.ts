@@ -2341,7 +2341,7 @@ export const EN_PLAIN: Record<string, string> = {
   "官方额度解锁": "Official quota unlock",
   "增强开启时此能力已自动生效；此开关只在关闭增强后生效。":
     "This capability is already active while enhancements are on; the switch only applies after enhancements are turned off.",
-  "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Official login + API providers can still send after the official subscription quota runs out. Only the client send state changes; real usage and billing are untouched. Restart Codex to apply.",
+  "官方订阅额度耗尽后仍可发送，不区分供应商模式；纯官方登录发出的请求仍可能被官方拒绝。只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Keeps sending after the official subscription quota runs out, regardless of provider mode; requests from plain official login may still be rejected by OpenAI. Only changes the client send state, not real usage or billing. Takes effect after restarting Codex.",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "包含上下文大小与压缩阈值；留空即沿用全局默认值。":
