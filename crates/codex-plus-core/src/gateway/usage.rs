@@ -451,6 +451,7 @@ mod tests {
                 reasoning_tokens: 1,
             }),
             cache_hit_ratio: None,
+            final_response_evidence: None,
             agent: agent.map(str::to_string),
         }
     }
