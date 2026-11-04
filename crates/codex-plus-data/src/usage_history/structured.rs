@@ -18,6 +18,7 @@ mod oversized;
 mod provider_cache;
 mod provider_capture;
 mod segments;
+mod supplier_evidence;
 mod tool_receipts;
 
 const RETENTION_DAYS: i64 = 365;
@@ -1306,6 +1307,7 @@ struct FileState {
 
 #[derive(Default)]
 struct Index {
+    supplier_evidence: supplier_evidence::Cache,
     collision_families: HashSet<[u8; 32]>,
     settings_path: Option<PathBuf>,
     storage_dir: Option<PathBuf>,
@@ -1324,6 +1326,7 @@ struct Index {
 
 #[derive(Default)]
 struct Snapshot {
+    supplier_evidence: Value,
     live_requests: Vec<RequestEvidence>,
     events: Vec<UsageEvent>,
     tools: Vec<ToolRecord>,
@@ -2371,6 +2374,7 @@ impl Index {
             scan_complete && snapshot.count_cache_available,
         );
         self.supplement_legacy_evidence(&settings, &mut snapshot);
+        self.supplier_evidence.supplement(&settings, &mut snapshot);
         let writes = self
             .provider_cache
             .save(&self.request_evidence.verified, &current_aliases);
@@ -3592,6 +3596,7 @@ impl Snapshot {
             "sessionInfo":self.session_info,"providerNames":self.provider_names,
             "providerRecovery":self.provider_recovery,
             "providerEvidence":self.provider_evidence,
+            "supplierEvidence":self.supplier_evidence,
             "sessionIds":self.sessions.iter().collect::<Vec<_>>(),"sessionAliases":self.aliases,
             "activityRecords":tools,"activityTruncated":self.activity_truncated,
             "activityPagination":{"page":activity_page,"pages":selected_tools.len().div_ceil(page_size).max(1),
