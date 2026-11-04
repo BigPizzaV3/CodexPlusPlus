@@ -2748,6 +2748,7 @@ describe("拓展接口层", () => {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");
+    assert.ok(routes.includes("/usage/archive"), "固定 schema 的独立消费者封存应开放给拓展");
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
@@ -2758,6 +2759,21 @@ describe("拓展接口层", () => {
     // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
     for (const forbidden of ["/codex-model-catalog", "/codex-config-model"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应开放给拓展`);
+    }
+  });
+
+  it("用量路由的公开类型与运行时白名单保持一致", async () => {
+    const routes = await readRouteWhitelist();
+    const declarations = await readFile(
+      new URL("../../../types/codex-plus-extensions.d.ts", import.meta.url),
+      "utf8",
+    );
+    const routeType = declarations.match(/type CodexPlusExtensionRoute\s*=([\s\S]*?);/);
+    assert.ok(routeType, "找不到公开路由类型");
+    const declared = Array.from(routeType[1].matchAll(/"([^"]+)"/g), ([, route]) => route);
+    for (const route of ["/usage/history", "/usage/archive"]) {
+      assert.ok(routes.includes(route), `${route} 未开放`);
+      assert.ok(declared.includes(route), `${route} 缺少公开类型`);
     }
   });
 

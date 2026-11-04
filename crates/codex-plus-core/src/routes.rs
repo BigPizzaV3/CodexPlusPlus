@@ -277,6 +277,10 @@ pub trait BridgeDataService: Send + Sync {
             "message": "结构化用量历史服务未接入",
         }))
     }
+    /// 独立消费者封存，不是原生账单或归属验证，不参与 usage_history。
+    async fn usage_archive(&self, _request: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","code":"archive-unavailable"}))
+    }
     /// 关闭查询时释放本进程的只读缓存，默认实现兼容其他数据服务。
     async fn clear_usage_history(&self) {}
     async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
@@ -552,6 +556,12 @@ pub async fn handle_bridge_request(
                 .thread_usage_live(session_from_payload(&payload))
                 .await
         }
+        "/usage/archive" => match ctx.settings.get_settings().await {
+            Ok(settings) if settings.usage_history_enabled => {
+                ctx.data.usage_archive(payload.clone()).await
+            }
+            _ => Ok(json!({"status":"unavailable","enabled":false})),
+        },
         "/usage/history" => match ctx.settings.get_settings().await {
             Ok(settings) if settings.usage_history_enabled => {
                 ctx.data.usage_history(payload.clone()).await

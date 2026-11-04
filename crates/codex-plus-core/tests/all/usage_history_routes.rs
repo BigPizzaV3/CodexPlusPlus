@@ -71,6 +71,7 @@ impl BridgeRuntimeService for UnusedRuntime {
 #[derive(Default)]
 struct MockData {
     queries: Mutex<Vec<Value>>,
+    archive_queries: Mutex<Vec<Value>>,
     clears: AtomicUsize,
 }
 
@@ -79,6 +80,10 @@ impl BridgeDataService for MockData {
     async fn usage_history(&self, payload: Value) -> anyhow::Result<Value> {
         self.queries.lock().unwrap().push(payload.clone());
         Ok(json!({"status":"ok","complete":true,"echo":payload}))
+    }
+    async fn usage_archive(&self, payload: Value) -> anyhow::Result<Value> {
+        self.archive_queries.lock().unwrap().push(payload.clone());
+        Ok(json!({"status":"ok","echo":payload}))
     }
     async fn clear_usage_history(&self) {
         self.clears.fetch_add(1, Ordering::SeqCst);
@@ -149,6 +154,44 @@ async fn enabled_usage_history_forwards_original_payload_without_clearing() {
     );
     assert_eq!(*data.queries.lock().unwrap(), vec![payload]);
     assert_eq!(data.clears.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn archive_rejects_disabled_and_failed_settings_without_touching_data() {
+    let _state = crate::common::IsolatedTestState::new();
+    for enabled in [Some(false), None] {
+        for operation in ["list", "read", "put"] {
+            let (ctx, data) = context(enabled);
+            let result = handle_bridge_request(
+                ctx,
+                "/usage/archive",
+                json!({"operation":operation,"entry":{"detail":"must not be stored"}}),
+            )
+            .await;
+            assert_eq!(result["status"], "unavailable");
+            assert_eq!(result["enabled"], false);
+            assert!(data.archive_queries.lock().unwrap().is_empty());
+            assert!(data.queries.lock().unwrap().is_empty());
+            assert_eq!(data.clears.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn archive_forwards_to_independent_service_only_when_enabled() {
+    let _state = crate::common::IsolatedTestState::new();
+    for payload in [
+        json!({"operation":"list"}),
+        json!({"operation":"read","date":"2026-11-03"}),
+        json!({"operation":"put","expectedRevision":null,"entry":{"version":1}}),
+    ] {
+        let (ctx, data) = context(Some(true));
+        let result = handle_bridge_request(ctx, "/usage/archive", payload.clone()).await;
+        assert_eq!(result, json!({"status":"ok","echo":payload}));
+        assert_eq!(*data.archive_queries.lock().unwrap(), vec![payload]);
+        assert!(data.queries.lock().unwrap().is_empty());
+        assert_eq!(data.clears.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

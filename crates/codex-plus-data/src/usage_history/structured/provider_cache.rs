@@ -3,14 +3,7 @@ use super::*;
 use rusqlite::{Connection, params};
 
 pub(super) fn storage_dir(home: &Path, settings_path: &Path) -> PathBuf {
-    // 规范化同一主目录的路径别名，使用稳定短摘要隔离各主目录的供应商证据。
-    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
-    let id = format!("{:x}", Sha256::digest(home.as_os_str().as_encoded_bytes()));
-    settings_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("usage-history")
-        .join(&id[..16])
+    super::super::storage_dir(home, settings_path)
 }
 
 pub(super) fn database_path(storage: &Path) -> io::Result<PathBuf> {
