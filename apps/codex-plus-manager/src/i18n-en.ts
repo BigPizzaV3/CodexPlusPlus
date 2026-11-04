@@ -913,6 +913,10 @@ export const EN_PLAIN: Record<string, string> = {
   "严格 Responses 推理历史兼容": "Strict Responses reasoning history",
   "仅当目标上游接受当前账号的加密历史时启用。混合推理只发送可识别的加密信封；占位或无效密文会明确报错。本地记录不变。": "Enable only when the upstream accepts encrypted history for this account. Mixed reasoning sends only recognized encrypted envelopes; placeholders fail explicitly. Local history is unchanged.",
   "移除请求里的托管生图工具（image_generation）": "Remove the hosted image tool (image_generation) from requests",
+  "不发送 tool_search（上游不支持时开启）": "Do not send tool_search (enable when the upstream does not support it)",
+  "部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。": "Some third-party Responses upstreams do not recognize Codex's hosted tool_search tool; the provider test passes but real chats return 400 (tool type \"tool_search\" is not supported). When enabled, the model catalog sets supports_search_tool to false and Codex lists MCP tools directly. Kimi official addresses are handled automatically. Takes effect after restarting Codex. Off by default.",
+  "不发送 tool_search": "Do not send tool_search",
+  "上游不认 Codex 的 tool_search 工具（实际聊天会返回 400）时开启：模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。默认关闭。": "Enable when the upstream does not recognize Codex's tool_search tool (real chats return 400): the model catalog sets supports_search_tool to false and Codex lists MCP tools directly. Off by default.",
   "Codex App 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发前从 tools 里去掉它（及指向它的 tool_choice），请求改走本地代理；Codex 里将无法调用内置生图。默认关闭。": "The Codex app attaches the hosted image generation tool to every request, and relays without image support reject the whole request with 403 or an error. When enabled, it is removed from tools (along with any tool_choice pointing at it) before forwarding, and requests go through the local proxy; built-in image generation will be unavailable in Codex. Off by default.",
   "Codex 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发给这个供应商前从 tools 里去掉它（及指向它的 tool_choice）。默认关闭。": "Codex attaches the hosted image generation tool to every request, and relays without image support reject the whole request with 403 or an error. When enabled, it is removed from tools (along with any tool_choice pointing at it) before forwarding to this provider. Off by default.",
   "正在检查…": "Checking…",
@@ -2341,7 +2345,7 @@ export const EN_PLAIN: Record<string, string> = {
   "官方额度解锁": "Official quota unlock",
   "增强开启时此能力已自动生效；此开关只在关闭增强后生效。":
     "This capability is already active while enhancements are on; the switch only applies after enhancements are turned off.",
-  "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Official login + API providers can still send after the official subscription quota runs out. Only the client send state changes; real usage and billing are untouched. Restart Codex to apply.",
+  "官方订阅额度耗尽后仍可发送，不区分供应商模式；纯官方登录发出的请求仍可能被官方拒绝。只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Keeps sending after the official subscription quota runs out, regardless of provider mode; requests from plain official login may still be rejected by OpenAI. Only changes the client send state, not real usage or billing. Takes effect after restarting Codex.",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "包含上下文大小与压缩阈值；留空即沿用全局默认值。":
@@ -3962,6 +3966,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "更新中": "Updating",
   "卸载排队中": "Uninstall queued",
   "Skill 已卸载或来源已变更，已跳过更新": "Skill was uninstalled or its source changed; update skipped",
+  "跳过 {0} 个已在操作中的 Skill": "Skipped {0} Skill(s) already in progress",
   "已更新 {0} 个 Skill": "Updated {0} Skills",
   "已完成 {0} 个 Skill 操作": "Completed {0} Skill operations",
   "Skill 操作失败摘要": "Skill operation failure summary",

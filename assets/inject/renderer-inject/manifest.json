@@ -68,12 +68,12 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1224
+      "lines": 1225
     },
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器供应商图标入口与模型列表导航（聚合供应商场景）",
-      "lines": 1192
+      "lines": 1198
     },
     {
       "name": "80-session-share.js",

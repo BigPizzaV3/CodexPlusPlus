@@ -7,7 +7,8 @@ function runNativeQuotaTests(createGate) {
     relayProfilesEnabled: true, activeRelayId: "mix",
     relayProfiles: [{ id: "mix", relayMode: "official", officialMixApiKey: true }],
   };
-  const official = { ...mixed, relayProfiles: [{ ...mixed.relayProfiles[0], officialMixApiKey: false }] };
+  // 「关闭」只由开关表达；供应商模式不再参与判断。
+  const official = { ...mixed, codexAppStandaloneQuotaUnlock: false };
   const raw = {
     plan_type: "plus", rate_limit: { allowed: false, limit_reached: true, used_percent: 100 },
     rate_limit_reached_type: { type: "rate_limit_reached", details: "default" },
@@ -79,12 +80,18 @@ function runNativeQuotaTests(createGate) {
 
   runtime.update({ ...mixed, relayProfilesEnabled: false });
   main.setData(raw);
-  equal(main.state.data.rate_limit.allowed, false, "disabled relay must not unlock new publication");
+  equal(main.state.data.rate_limit.allowed, true, "开关打开即解锁，不再看 relayProfilesEnabled");
   runtime.update({ ...mixed, relayProfiles: [{ ...mixed.relayProfiles[0], relayMode: "pureApi" }] });
-  equal(main.state.data.rate_limit.allowed, false, "pure API must not use official-mix bypass");
+  equal(main.state.data.rate_limit.allowed, true, "pure API must unlock when the standalone switch is on");
   runtime.update({ ...mixed, activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "codex-plus-gateway", relayMode: "pureApi", officialMixApiKey: false }] });
   equal(main.state.data.rate_limit.allowed, true, "gateway profile must unlock send");
-  runtime.update(mixed);
+  // 纯官登（不混入 Key）同样放行：唯一判据是开关本身，不是供应商模式。
+  runtime.update({ ...mixed, relayProfiles: [{ id: "mix", relayMode: "official", officialMixApiKey: false }] });
+  equal(main.state.data.rate_limit.allowed, true, "plain official login must unlock when the standalone switch is on");
+  runtime.update({ ...mixed, relayProfiles: [], activeRelayId: "missing" });
+  equal(main.state.data.rate_limit.allowed, true, "unresolved profile must still unlock: the switch alone decides");
+  // 独立开关打开时是唯一判据：上面已覆盖 relayProfilesEnabled 关、pureApi、网关、纯官登、
+  // 供应商解析不到这五种情形都必须放行，不再等上游先拒绝、也不再按模式挑条件。
   main.setData({ usage: updated, envelope: "preserve" });
   equal(main.state.data.usage.rate_limit.allowed, true, "wrapped usage response must unlock");
   equal(main.state.data.envelope, "preserve", "response envelope must survive");

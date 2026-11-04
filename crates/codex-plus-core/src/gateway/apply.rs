@@ -429,8 +429,13 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             };
             // 组的推理档位取第一个成员的；Fast 要每个成员都支持才开（#2740）：
             // 请求轮到不支持的那家会被拒。成员一个都对不上时退回按组名生成的通用条目。
+            let members = route::model_entry_members(gateway, binding, &model);
+            // 组里任何一家上游不认 tool_search 时都关掉（#2871）。
+            let group_rejects_search = members
+                .iter()
+                .any(|(relay, _)| crate::relay_config::upstream_rejects_tool_search(relay));
             let mut member_fields = Vec::new();
-            for (relay, upstream) in route::model_entry_members(gateway, binding, &model) {
+            for (relay, upstream) in members {
                 let Some(index) = relays.iter().position(|candidate| candidate.id == relay.id)
                 else {
                     continue;
@@ -474,6 +479,9 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             if codex_favorite(gateway, &relays, &model) {
                 fields.insert("codex_plus_favorite".into(), json!(true));
             }
+            if group_rejects_search {
+                fields.insert("supports_search_tool".into(), json!(false));
+            }
             metadata.insert(model, Value::Object(fields));
             continue;
         }
@@ -512,6 +520,18 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             if codex_favorite(gateway, &relays, &model) {
                 fields.insert("codex_plus_favorite".into(), json!(true));
             }
+            // 自动组任何一家不认 tool_search 都关掉（#2871）。
+            let rejects = relays
+                .iter()
+                .filter(|candidate| {
+                    route::relay_models(*candidate)
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(&upstream))
+                })
+                .any(|candidate| crate::relay_config::upstream_rejects_tool_search(*candidate));
+            if rejects {
+                fields.insert("supports_search_tool".into(), json!(false));
+            }
             metadata.insert(model, Value::Object(fields));
             continue;
         }
@@ -541,6 +561,10 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
         fields.insert("codex_plus_group_id".into(), json!(relay.id));
         if codex_favorite(gateway, &relays, &model) {
             fields.insert("codex_plus_favorite".into(), json!(true));
+        }
+        // 属主上游不认 tool_search 时关掉（#2871）。
+        if crate::relay_config::upstream_rejects_tool_search(relay) {
+            fields.insert("supports_search_tool".into(), json!(false));
         }
         metadata.insert(model, Value::Object(fields));
     }
@@ -2238,6 +2262,7 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         proxy: None,
         strip_image_generation_tool: None,
         strip_responses_image_detail: None,
+        disable_tool_search: None,
     })?;
     if bearer {
         profile.anthropic_auth_header =
@@ -2293,6 +2318,7 @@ pub fn copy_grok_profile(
         proxy: None,
         strip_image_generation_tool: None,
         strip_responses_image_detail: None,
+        disable_tool_search: None,
     })?;
     if !windows.is_empty() {
         relay.model_windows = serde_json::to_string(&windows)?;
@@ -2619,6 +2645,9 @@ pub struct ProviderInput {
     /// 转发前移除 Responses 图片 `detail`（#2870）；不传表示不改（编辑时保留原来的）。
     #[serde(default)]
     pub strip_responses_image_detail: Option<bool>,
+    /// 不向该上游发送 `tool_search` 托管工具（#2868）；不传表示不改。
+    #[serde(default)]
+    pub disable_tool_search: Option<bool>,
 }
 
 /// 代理地址只接受 http / https / socks5，空串表示不单独走代理。
@@ -2671,6 +2700,7 @@ fn build_relay(input: &ProviderInput) -> anyhow::Result<RelayProfile> {
     relay.relay_mode = RelayMode::PureApi;
     relay.strip_image_generation_tool = input.strip_image_generation_tool.unwrap_or(false);
     relay.strip_responses_image_detail = input.strip_responses_image_detail.unwrap_or(false);
+    relay.disable_tool_search = input.disable_tool_search.unwrap_or(false);
     if keys.len() > 1 {
         relay.api_keys = keys
             .iter()
@@ -2859,6 +2889,10 @@ fn update_provider_in(
     // 没传「移除图片 detail」时沿用原来的选择。
     if input.strip_responses_image_detail.is_none() {
         relay.strip_responses_image_detail = provider.relay.strip_responses_image_detail;
+    }
+    // 没传「不发 tool_search」时沿用原来的选择。
+    if input.disable_tool_search.is_none() {
+        relay.disable_tool_search = provider.relay.disable_tool_search;
     }
     // 地址换到别的站点时丢掉 new-api 访问令牌，免得把它发给新站点（#2793）。
     if newapi_access_origin(&relay) != newapi_access_origin(&provider.relay) {
@@ -3546,6 +3580,7 @@ mod tests {
                 proxy: None,
                 strip_image_generation_tool: None,
                 strip_responses_image_detail: None,
+                disable_tool_search: None,
             },
             "",
             None,
@@ -3591,6 +3626,7 @@ mod tests {
                 proxy: None,
                 strip_image_generation_tool: None,
                 strip_responses_image_detail: None,
+                disable_tool_search: None,
             },
             "",
             None,

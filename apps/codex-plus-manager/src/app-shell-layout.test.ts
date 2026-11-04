@@ -672,3 +672,14 @@ test("拓展是侧栏一级入口，不再藏在 Codex 页签里；Grok 不在�
   assert.match(text, /setActiveTool\(visibleActiveTool\(result\.activeTool\)\);/);
   assert.match(text, /setActiveTool\(visibleActiveTool\(normalized\.activeTool\)\);/);
 });
+
+test("供应商详情页不再 absolute 盖住吸顶标题：打开时 .screen 改纵向 flex 不滚动（#2888）", () => {
+  const css = readSource("./styles.css");
+  // .screen 让出滚动：详情页在文档流里占满剩余高度，内部由 .relay-detail-body 滚。
+  assert.match(css, /\.screen:has\(\.relay-detail-page\) \{\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;/);
+  // 详情页本身不再是覆盖 .screen 的 absolute 层。
+  const rule = css.match(/\.screen \.relay-detail-page \{[^}]*\}/)?.[0] ?? "";
+  assert.match(rule, /position: relative;/);
+  assert.match(rule, /inset: auto;/);
+  assert.match(rule, /flex: 1 1 auto;/);
+});

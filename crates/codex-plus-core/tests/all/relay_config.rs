@@ -4989,6 +4989,71 @@ enabled = true
 }
 
 #[test]
+fn sync_live_config_context_entries_keeps_live_when_managed_mcp_entry_lacks_transport() {
+    // #2887：前端把 [mcp_servers.<id>.env] 压平后，managed 里只剩 env 键、
+    // 没有 command/url；此时 live 里的完整条目不能被覆盖或删除。
+    let live = r#"model = "gpt-5"
+
+[mcp_servers.vivado]
+command = "python"
+args = ["-m", "vivado_mcp"]
+
+[mcp_servers.vivado.env]
+VIVADO_PATH = "/opt/vivado"
+
+[mcp_servers.other]
+command = "other"
+"#;
+    // managed 侧同 id 条目残缺（只有 env 子表的内容被压平进来）。
+    let context = r#"[mcp_servers.vivado]
+VIVADO_PATH = "/opt/vivado"
+"#;
+
+    let updated = sync_live_config_context_entries(live, context).unwrap();
+
+    assert!(updated.contains("[mcp_servers.vivado]"), "{updated}");
+    assert!(updated.contains(r#"command = "python""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.vivado.env]"), "{updated}");
+    assert!(updated.contains(r#"VIVADO_PATH = "/opt/vivado""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.other]"), "{updated}");
+}
+
+#[test]
+fn upsert_context_entry_rejects_mcp_body_without_transport() {
+    // #2887：残缺 mcp 条目写进 common config 会让 Codex 拒载整份 config.toml。
+    let error = upsert_context_entry_in_common_config(
+        "",
+        "mcp",
+        "vivado",
+        r#"VIVADO_PATH = "/opt/vivado""#,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("command"), "{error}");
+}
+
+#[test]
+fn upsert_context_entry_keeps_env_subtable_in_mcp_body() {
+    let updated = upsert_context_entry_in_common_config(
+        "",
+        "mcp",
+        "vivado",
+        r#"command = "python"
+args = ["-m", "vivado_mcp"]
+
+[env]
+VIVADO_PATH = "/opt/vivado"
+"#,
+    )
+    .unwrap();
+
+    assert!(updated.contains("[mcp_servers.vivado]"), "{updated}");
+    assert!(updated.contains(r#"command = "python""#), "{updated}");
+    assert!(updated.contains("[mcp_servers.vivado.env]"), "{updated}");
+    assert!(updated.contains(r#"VIVADO_PATH = "/opt/vivado""#), "{updated}");
+}
+
+#[test]
 fn apply_relay_profile_to_home_with_switch_rules_writes_provider_even_when_auth_has_no_api_key() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
@@ -7792,6 +7857,54 @@ base_url = "https://api.moonshot.cn/v1"
         .find(|model| model["slug"] == "kimi-k3")
         .unwrap();
     assert_eq!(k3["supports_search_tool"], false);
+}
+
+/// #2868：非 Kimi 的 Responses 中转手动开 `disableToolSearch` 后同样落 catalog 并关掉
+/// `supports_search_tool`；关闭时不变。
+#[test]
+fn apply_disable_tool_search_disables_search_tool_in_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "agent-space".to_string(),
+        name: "AgentSpace".to_string(),
+        model: "gpt-5.5".to_string(),
+        upstream_base_url: "https://api.agent.space/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        disable_tool_search: true,
+        config_contents: r#"model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+base_url = "https://api.agent.space/v1"
+"#
+        .to_string(),
+        model_list: "gpt-5.5".to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    let catalog_path = temp.path().join("model-catalogs").join("agent-space.json");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["supports_search_tool"], false, "{}", model["slug"]);
+    }
+
+    // 关掉开关后不再关 supports_search_tool。
+    let off = RelayProfile {
+        disable_tool_search: false,
+        ..profile
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &off, "").unwrap();
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for model in catalog["models"].as_array().unwrap() {
+        assert_eq!(model["supports_search_tool"], true, "{}", model["slug"]);
+    }
 }
 
 /// 其他 Responses 上游不受影响：没有窗口/元数据时仍保持「不落 catalog」。

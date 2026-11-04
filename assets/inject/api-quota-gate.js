@@ -1,32 +1,9 @@
 (() => {
-  // 本机官登只要勾了混入 Key，或接入了网关、或当前聚合里既有官登又有 API 成员，就解除官方订阅额度的发送锁。不看上游地址。
+  // 独立模式的「官方额度解锁」开关就是唯一判据：开关打开就解除官方订阅额度的发送锁，
+  // 不再等上游先拒绝、也不再按供应商模式（官登混入 / 网关 / 聚合）挑条件。
   function permitsExternalApi(settings, hostId) {
-    if (hostId !== "local" || settings?.relayProfilesEnabled !== true) return false;
-    if (!Array.isArray(settings.relayProfiles)) return false;
-    const profile = settings.relayProfiles.find((item) => item?.id === settings.activeRelayId);
-    if (!profile) return false;
-    if (profile.id === "codex-plus-gateway") return true;
-    if (profile.relayMode === "aggregate") return aggregateMixed(settings, profile);
-    return profile.relayMode === "official" && profile.officialMixApiKey === true;
-  }
-
-  // 与增强模式（95-conversation-view 的 officialUsageAggregateMixed）同一标准：
-  // 当前生效的聚合里同时有官方登录成员和走 API Key 的成员才放行；读不到成员时不放行。
-  function aggregateMixed(settings, profile) {
-    const activeId = String(profile.id || "");
-    const aggregateId = String(settings.activeAggregateRelayId || "").trim() || activeId;
-    if (!aggregateId || aggregateId !== activeId) return false;
-    const aggregates = Array.isArray(settings.aggregateRelayProfiles) ? settings.aggregateRelayProfiles : [];
-    const aggregate = aggregates.find((item) => String(item?.id || "") === aggregateId);
-    if (!aggregate || !Array.isArray(aggregate.members)) return false;
-    const members = aggregate.members
-      .map((member) => settings.relayProfiles.find((item) => String(item?.id || "") === String(member?.relayId || "")))
-      .filter((member) => member && String(member.relayMode || "") !== "aggregate");
-    const hasOfficialLogin = members.some((member) => String(member.relayMode || "") === "official");
-    // 官登混入 Key 的成员本身也带 API Key；其余非官方成员都走 API Key。
-    const hasApiKey = members.some((member) => String(member.relayMode || "") !== "official"
-      || member.officialMixApiKey === true);
-    return hasOfficialLogin && hasApiKey;
+    if (hostId !== "local") return false;
+    return settings?.codexAppStandaloneQuotaUnlock === true;
   }
 
   function locate(text, url) {
@@ -109,8 +86,8 @@
       rawPayloads: new WeakMap(), pendingPublications: new WeakMap(), rewriteDepth: 0,
     };
     function officialUsagePolicy() {
-      const enabled = currentSettings?.codexAppStandaloneQuotaUnlock === true
-        && permitsExternalApi(currentSettings, "local");
+      // 与增强模式同一条判据：独立模式的开关打开就解除发送锁，与当前供应商是什么模式无关。
+      const enabled = currentSettings?.codexAppStandaloneQuotaUnlock === true;
       return { official: true, hideAlerts: false, unlockSend: enabled };
     }
     function officialUsagePolicyKey() {

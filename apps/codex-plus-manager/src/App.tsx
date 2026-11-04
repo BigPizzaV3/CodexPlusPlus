@@ -116,6 +116,18 @@ import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
 import { rebaseSettingsEdits } from "./settings-rebase";
+import {
+  contextEntriesByKind,
+  dedupeContextEntryList,
+  parseContextEntries,
+  selectedContextConfigToml,
+  setContextEntryEnabled,
+  splitContextConfigText,
+  stripContextEntriesFromConfig,
+  type CodexContextEntries,
+  type CodexContextEntry,
+  type ContextKind,
+} from "./context-config-text";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
@@ -322,10 +334,13 @@ import {
   type ThemePreference,
 } from "./theme-mode";
 import {
+  multiLaunchInstanceCanRestart,
+  multiLaunchInstanceCanStop,
   multiLaunchInstanceFailure,
   multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
+  multiLaunchInstanceVisible,
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model";
@@ -633,6 +648,8 @@ export type RelayProfile = {
   stripImageGenerationTool?: boolean;
   /** #2870：转发前移除 Responses 图片 `detail`，默认关闭。 */
   stripResponsesImageDetail?: boolean;
+  /** #2868：不向上游发送 tool_search，默认关闭。 */
+  disableToolSearch?: boolean;
   /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
   anthropicAuthHeader?: string;
   /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192；填了则优先于请求值。 */
@@ -692,23 +709,6 @@ type RelayContextSelection = {
   mcpServers: string[];
   skills: string[];
   plugins: string[];
-};
-
-type ContextKind = "mcp" | "skill" | "plugin";
-
-type CodexContextEntry = {
-  id: string;
-  kind: ContextKind;
-  title: string;
-  summary: string;
-  tomlBody: string;
-  enabled: boolean;
-};
-
-type CodexContextEntries = {
-  mcpServers: CodexContextEntry[];
-  skills: CodexContextEntry[];
-  plugins: CodexContextEntry[];
 };
 
 type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
@@ -3006,7 +3006,7 @@ export function App() {
         // 界面要给出「启动失败 + 原因」，只留运行中的会让它彻底消失。
         setMultiLaunchInstances(
           Array.isArray(result.instances)
-            ? result.instances.filter((instance) => multiLaunchInstanceRunning(instance) || Boolean(multiLaunchInstanceFailure(instance)))
+            ? result.instances.filter(multiLaunchInstanceVisible)
             : [],
         );
         if (!silent && !isSuccessStatus(result.status)) showNotice(t("当前运行实例"), result.message, result.status);
@@ -8225,6 +8225,7 @@ function CodexMultiLaunchScreen({
           {instances.length ? instances.map((instance) => {
             const status = multiLaunchInstanceStatus(instance);
             const running = multiLaunchInstanceRunning(instance);
+            const canStop = multiLaunchInstanceCanStop(instance);
             const pending = actions.multiLaunchActionPending === instance.instanceId;
             const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
             // 启动失败的原因必须让用户看得见：Windows 上多开曾经完全不吭声。
@@ -8234,7 +8235,7 @@ function CodexMultiLaunchScreen({
               typeof instance.pid === "number" ? `PID ${instance.pid}` : "",
               typeof instance.debugPort === "number" ? `CDP ${instance.debugPort}` : "",
               typeof instance.helperPort === "number" ? `API ${instance.helperPort}` : "",
-              failure ? `${t("启动失败")}：${failure}` : "",
+              failure ? `${instance.launchResult?.status === "cleanup_failed" ? t("失败") : t("启动失败")}：${failure}` : "",
             ].filter(Boolean).join(" · ");
             const tone = statusClass(status);
             return (
@@ -8247,7 +8248,7 @@ function CodexMultiLaunchScreen({
                 >
                   <button
                     className="cx-secondary"
-                    disabled={pending}
+                    disabled={!multiLaunchInstanceCanRestart(instance) || pending}
                     onClick={() => void actions.restartMultiLaunchInstance(instance)}
                     title={t("重启此 Codex 实例；修改供应商或 Key 后重启才会生效")}
                     type="button"
@@ -8259,9 +8260,9 @@ function CodexMultiLaunchScreen({
                   <button
                     aria-label={t("结束此 Codex 实例")}
                     className="cx-secondary"
-                    disabled={!running || pending}
+                    disabled={!canStop || pending}
                     onClick={() => void actions.stopMultiLaunchInstance(instance)}
-                    title={running ? t("结束此 Codex 实例") : t("实例当前未运行")}
+                    title={canStop ? t("结束此 Codex 实例") : t("实例当前未运行")}
                     type="button"
                   >
                     <PowerOff />
@@ -12646,6 +12647,7 @@ function RelayProfileEditor({
     profile.strictResponsesReasoning === true,
     profile.stripImageGenerationTool === true,
     profile.stripResponsesImageDetail === true,
+    profile.disableToolSearch === true,
   ].filter(Boolean).length;
   const [stabilizePromptPrefixBusy, setStabilizePromptPrefixBusy] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
@@ -14235,6 +14237,10 @@ function RelayProfileEditor({
                   <label className="switch-row compact relay-switch-row relay-field-strip-responses-image-detail">
                     <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
                     <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
+                  </label>
+                  <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
+                    <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />
+                    <span><strong>{t("不发送 tool_search（上游不支持时开启）")}</strong><small>{t("部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                 </> : null}
                 </div>
@@ -17671,14 +17677,6 @@ function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfi
   return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
 }
 
-function contextEntriesFromConfig(configContents: string): CodexContextEntries {
-  return {
-    mcpServers: parseContextEntries(configContents, "mcp", "mcp_servers"),
-    skills: parseContextEntries(configContents, "skill", "skills"),
-    plugins: parseContextEntries(configContents, "plugin", "plugins"),
-  };
-}
-
 function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
   return {
     mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
@@ -17691,146 +17689,8 @@ function mergeContextEntryList(primary: CodexContextEntry[], secondary: CodexCon
   return dedupeContextEntryList([...primary, ...secondary]);
 }
 
-function dedupeContextEntryList(entries: CodexContextEntry[]): CodexContextEntry[] {
-  const byId = new Map<string, CodexContextEntry>();
-  for (const entry of entries) {
-    byId.set(entry.id, entry);
-  }
-  return Array.from(byId.values());
-}
-
-function parseContextEntries(commonConfig: string, kind: ContextKind, tableName: string): CodexContextEntry[] {
-  const anyHeaderPattern = /^\s*\[[^\]]+\]\s*$/;
-  const entries = new Map<string, CodexContextEntry>();
-  let currentId: string | null = null;
-  let body: string[] = [];
-
-  const flush = () => {
-    if (!currentId) return;
-    const tomlBody = ensureTrailingNewline(body.join("\n").trimEnd());
-    entries.set(currentId, {
-      id: currentId,
-      kind,
-      title: currentId,
-      summary: contextEntrySummary(tomlBody),
-      tomlBody,
-      enabled: contextEntryEnabled(tomlBody),
-    });
-  };
-
-  for (const line of commonConfig.split(/\r?\n/)) {
-    const path = tomlTablePathFromLine(line);
-    if (path?.[0] === tableName && path.length >= 2) {
-      const id = path[1];
-      if (currentId === id && path.length > 2) {
-        body.push(`[${path.slice(2).map(tomlKey).join(".")}]`);
-        continue;
-      }
-      flush();
-      currentId = id;
-      body = [];
-      continue;
-    }
-    if (currentId && anyHeaderPattern.test(line)) {
-      flush();
-      currentId = null;
-      body = [];
-      continue;
-    }
-    if (currentId) body.push(line);
-  }
-  flush();
-
-  return Array.from(entries.values());
-}
-
-function tomlTablePathFromLine(line: string): string[] | null {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  if (!match) return null;
-  return parseTomlDottedPath(match[1].trim());
-}
-
-function parseTomlDottedPath(path: string): string[] | null {
-  const parts: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let escaping = false;
-
-  for (const char of path) {
-    if (quote) {
-      if (quote === '"' && escaping) {
-        current += char;
-        escaping = false;
-      } else if (quote === '"' && char === "\\") {
-        escaping = true;
-      } else if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === ".") {
-      if (!current.trim()) return null;
-      parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-
-  if (quote || escaping || !current.trim()) return null;
-  parts.push(current.trim());
-  return parts;
-}
-
-function contextEntrySummary(tomlBody: string) {
-  return tomlBody
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line && !line.startsWith("#") && !/^enabled\s*=/.test(line))
-    ?.slice(0, 96) ?? "";
-}
-
-function contextEntryEnabled(tomlBody: string) {
-  return !tomlBody.split(/\r?\n/).some((line) => /^\s*enabled\s*=\s*false\s*(#.*)?$/i.test(line));
-}
-
-function setContextEntryEnabled(tomlBody: string, enabled: boolean) {
-  const lines = tomlBody.trimEnd().split(/\r?\n/);
-  const nextValue = `enabled = ${enabled ? "true" : "false"}`;
-  let replaced = false;
-  const next = lines.map((line) => {
-    if (/^\s*enabled\s*=/.test(line)) {
-      replaced = true;
-      return nextValue;
-    }
-    return line;
-  });
-  if (!replaced) next.unshift(nextValue);
-  return ensureTrailingNewline(next.join("\n").trimEnd());
-}
-
 function ensureTrailingNewline(value: string) {
   return value.trim() ? `${value}\n` : "";
-}
-
-function unquoteTomlKey(key: string) {
-  if (key.length >= 2 && ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))) {
-    return key.slice(1, -1);
-  }
-  return key;
-}
-
-function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): CodexContextEntry[] {
-  if (kind === "mcp") return dedupeContextEntryList(entries.mcpServers);
-  if (kind === "skill") return dedupeContextEntryList(entries.skills);
-  return dedupeContextEntryList(entries.plugins);
 }
 
 function filterContextEntriesBySelection(entries: CodexContextEntries, selection: RelayContextSelection): CodexContextEntries {
@@ -17902,45 +17762,6 @@ function tomlAssignmentKeys(contents: string): string[] {
   return contents.split(/\r?\n/).map(tomlAssignmentKey).filter((key): key is string => Boolean(key));
 }
 
-function selectedContextConfigToml(entries: CodexContextEntries): string {
-  const sections: string[] = [];
-  for (const option of contextKindOptions) {
-    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
-      if (!entry.enabled) continue;
-      sections.push(contextEntryToTomlSection(option.tableName, entry));
-    }
-  }
-  return ensureTrailingNewline(sections.join("\n\n"));
-}
-
-function allContextConfigToml(entries: CodexContextEntries): string {
-  const sections: string[] = [];
-  for (const option of contextKindOptions) {
-    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
-      sections.push(contextEntryToTomlSection(option.tableName, entry));
-    }
-  }
-  return ensureTrailingNewline(sections.join("\n\n"));
-}
-
-function contextEntryToTomlSection(tableName: string, entry: CodexContextEntry): string {
-  const parentHeader = `[${tableName}.${tomlKey(entry.id)}]`;
-  const body = entry.tomlBody
-    .trimEnd()
-    .split(/\r?\n/)
-    .map((line) => relativeContextSubtableToAbsolute(line, tableName, entry.id))
-    .join("\n");
-  return `${parentHeader}\n${body}`;
-}
-
-function relativeContextSubtableToAbsolute(line: string, tableName: string, id: string): string {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  if (!match) return line;
-  const subtable = match[1].trim();
-  if (!subtable || subtable.includes(".")) return line;
-  return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
-}
-
 function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
   const entries = contextEntriesFromSettings(settings);
   const withoutManaged = stripContextEntriesFromConfig(liveConfigContents, entries);
@@ -17949,37 +17770,6 @@ function syncLiveConfigContextState(liveConfigContents: string, settings: Backen
 
 function relayCombinedCommonConfig(settings: BackendSettings): string {
   return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
-}
-
-function splitContextConfigText(configContents: string): { common: string; context: string } {
-  const entries = contextEntriesFromConfig(configContents);
-  return {
-    common: stripContextEntriesFromConfig(configContents, entries),
-    context: allContextConfigToml(entries),
-  };
-}
-
-function stripContextEntriesFromConfig(configContents: string, entries: CodexContextEntries): string {
-  const knownIds: Record<ContextKind, Set<string>> = {
-    mcp: new Set(entries.mcpServers.map((entry) => entry.id)),
-    skill: new Set(entries.skills.map((entry) => entry.id)),
-    plugin: new Set(entries.plugins.map((entry) => entry.id)),
-  };
-  const lines = configContents.split(/\r?\n/);
-  const kept: string[] = [];
-  let skipping = false;
-
-  for (const line of lines) {
-    const contextHeader = contextHeaderFromLine(line);
-    if (contextHeader) {
-      skipping = knownIds[contextHeader.kind].has(contextHeader.id);
-    } else if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
-      skipping = false;
-    }
-    if (!skipping) kept.push(line);
-  }
-
-  return ensureTrailingNewline(kept.join("\n").trimEnd());
 }
 
 function stripCommonConfigTextFallback(configContents: string, commonConfig: string): string {
@@ -18031,13 +17821,6 @@ function tomlRootKeyFromLine(line: string): string | null {
   if (index < 0) return null;
   const key = line.slice(0, index).trim();
   return key || null;
-}
-
-function contextHeaderFromLine(line: string): { kind: ContextKind; id: string } | null {
-  const path = tomlTablePathFromLine(line);
-  if (!path || path.length !== 2) return null;
-  const option = contextKindOptions.find((item) => item.tableName === path[0]);
-  return option ? { kind: option.kind, id: path[1] } : null;
 }
 
 function applyContextLimitPreview(configContents: string, profile: RelayProfile): string {
@@ -18153,10 +17936,6 @@ function splitTomlRootAndTables(section: string): { root: string; tables: string
     root: lines.slice(0, firstTable).join("\n"),
     tables: lines.slice(firstTable).join("\n"),
   };
-}
-
-function tomlKey(key: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
 }
 
 function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
@@ -18554,6 +18333,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     strictResponsesReasoning: profile.strictResponsesReasoning === true,
     stripImageGenerationTool: profile.stripImageGenerationTool === true,
     stripResponsesImageDetail: profile.stripResponsesImageDetail === true,
+    disableToolSearch: profile.disableToolSearch === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
     anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
     anthropicPromptCache: profile.anthropicPromptCache !== false,

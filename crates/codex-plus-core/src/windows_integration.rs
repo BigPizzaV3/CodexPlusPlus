@@ -29,7 +29,8 @@ use windows::Win32::System::Registry::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE,
     PROCESS_TERMINATE, PROCESS_VM_READ, QueryFullProcessImageNameW, TerminateProcess,
     WaitForSingleObject,
 };
@@ -414,6 +415,46 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
 }
 
 #[cfg(windows)]
+pub(crate) fn process_lifetime(process_id: u32) -> anyhow::Result<Option<(u64, bool)>> {
+    process_lifetime_with(process_id, |access, pid| unsafe {
+        OpenProcess(access, false, pid)
+    })
+}
+
+#[cfg(windows)]
+fn process_lifetime_with(
+    process_id: u32,
+    open: impl FnOnce(
+        windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS,
+        u32,
+    ) -> windows::core::Result<HANDLE>,
+) -> anyhow::Result<Option<(u64, bool)>> {
+    let handle = match open(PROCESS_QUERY_LIMITED_INFORMATION, process_id) {
+        Ok(handle) => handle,
+        Err(error) if error.code().0 as u32 == 0x80070057 => return Ok(None),
+        Err(error) => {
+            return Err(std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+                .context("无法查询进程创建身份");
+        }
+    };
+    let _guard = HandleGuard(handle);
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+        .context("无法读取进程创建身份")?;
+    let birth = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+    anyhow::ensure!(birth != 0, "进程创建身份无效");
+    let mut exit_code = 0_u32;
+    unsafe { GetExitCodeProcess(handle, &mut exit_code) }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+        .context("无法确认进程退出状态")?;
+    Ok(Some((birth, exit_code != 259)))
+}
+
+#[cfg(windows)]
 fn process_birth_id_from_handle(handle: HANDLE) -> Option<u64> {
     let mut creation_time = FILETIME::default();
     let mut exit_time = FILETIME::default();
@@ -594,7 +635,7 @@ impl VerifiedStopProcess {
     pub fn capture(process_id: u32, terminate: bool) -> anyhow::Result<Option<Self>> {
         use std::os::windows::io::FromRawHandle;
         anyhow::ensure!(
-            process_id != 0 && process_id != std::process::id(),
+            process_id != 0 && (!terminate || process_id != std::process::id()),
             "拒绝捕获无效进程或当前 worker"
         );
         let rights = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_VM_READ;
@@ -1035,22 +1076,21 @@ fn tcp_listener_table(family: u32) -> anyhow::Result<Vec<u8>> {
 #[cfg(windows)]
 pub(crate) fn loopback_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32>> {
     let mut ids = Vec::new();
-    let mut errors = Vec::new();
     for (family, ipv6) in [(2, false), (23, true)] {
         match tcp_listener_table(family)
             .and_then(|bytes| parse_listener_process_ids(&bytes, ipv6, port))
         {
             Ok(found) => ids.extend(found),
-            Err(error) => errors.push(format!("{error:#}")),
+            Err(error)
+                if ipv6
+                    && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        matches!(error.raw_os_error(), Some(50 | 10047 | 10049))
+                    }) => {}
+            Err(error) => return Err(error),
         }
     }
     ids.sort_unstable();
     ids.dedup();
-    anyhow::ensure!(
-        !ids.is_empty() || errors.is_empty(),
-        "{}",
-        errors.join("; ")
-    );
     Ok(ids)
 }
 
@@ -1126,6 +1166,37 @@ fn parse_listener_process_ids(bytes: &[u8], ipv6: bool, port: u16) -> anyhow::Re
 #[cfg(test)]
 mod listener_owner_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn minimum_query_survives_vm_read_denial_but_keeps_query_denial_uncertain() {
+        use windows::core::{Error, HRESULT};
+        let denied = || Error::from_hresult(HRESULT(0x80070005_u32 as i32));
+        let open = |access: windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS, pid| {
+            if access.0 & PROCESS_VM_READ.0 != 0 {
+                return Err(denied());
+            }
+            assert_eq!(access, PROCESS_QUERY_LIMITED_INFORMATION);
+            unsafe { OpenProcess(access, false, pid) }
+        };
+        let pid = std::process::id();
+        assert!(open(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, pid).is_err());
+        let (birth, exited) = process_lifetime_with(pid, open).unwrap().unwrap();
+        assert_eq!(Some(birth), process_birth_id(pid));
+        assert!(!exited);
+        let result = process_lifetime_with(pid, |access, _| {
+            assert_eq!(access, PROCESS_QUERY_LIMITED_INFORMATION);
+            Err(denied())
+        });
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
 
     fn table(ipv6: bool, rows: &[(u32, u16, bool, u32)]) -> Vec<u8> {
         let mut bytes = (rows.len() as u32).to_ne_bytes().to_vec();

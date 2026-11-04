@@ -292,6 +292,17 @@ export function ProviderFormDialog({
                   <small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail。默认关闭。")}</small>
                 </span>
               </label>
+              <label className="pf-switch">
+                <input
+                  checked={draft.disableToolSearch === true}
+                  onChange={(event) => update({ disableToolSearch: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("不发送 tool_search")}</strong>
+                  <small>{t("上游不认 Codex 的 tool_search 工具（实际聊天会返回 400）时开启：模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。默认关闭。")}</small>
+                </span>
+              </label>
             </section>
           ) : null}
 

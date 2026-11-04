@@ -1210,6 +1210,24 @@ body {
   animation: relay-detail-enter 280ms var(--motion-ease) both;
 }
 
+/* #2888：详情页开着时外层 .screen 改成不滚动的纵向 flex，
+   详情页回到文档流占满剩余高度，内部仍由 .relay-detail-body 滚动。
+   否则 absolute inset:0 的详情页会被吸顶的 .cx-page-head 压在下面，
+   自己的标题栏（返回 / 保存供应商）看不见。 */
+.screen:has(.relay-detail-page) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.screen .relay-detail-page {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  width: 100%;
+  margin: 0;
+}
+
 .relay-detail-header {
   display: flex;
   flex-shrink: 0;
