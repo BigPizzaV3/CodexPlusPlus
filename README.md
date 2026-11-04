@@ -284,7 +284,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 </p>
 
 <p align="center">
-  <img src="docs/images/readme-preview/request-status-auto-retry.png" alt="请求状态与自动重试：模型繁忙后自动等待、重试成功并继续生成" width="100%">
+  <img src="docs/images/readme-preview/request-status-auto-retry.png" alt="请求状态条：输入框上方显示正在重试第 2 次、模型 gpt-6.1-sol、已用 18 秒、第 3 次尝试，以及上次失败原因 server_is_overloaded" width="100%">
 </p>
 
 ### Computer Use：把 Codex 的桌面控制借给其他 Agent
@@ -333,7 +333,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 ### 模型选择器按供应商分组
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）" width="560">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组：先列出各家供应商和各自的模型数，当前用的那家带标记，点进去再选模型" width="420">
 </p>
 
 ### Codex 里的拓展页

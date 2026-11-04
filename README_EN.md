@@ -208,7 +208,7 @@ Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++
 With model aggregation, the native model picker folds models into one group per provider.
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker folded by provider: Provider 4 group (Default, 7 models) and DeepSeek group (2 models)" width="560">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker grouped by provider: each provider with its model count, the current one marked; click in to pick a model" width="420">
 </p>
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
