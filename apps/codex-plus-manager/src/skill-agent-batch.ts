@@ -3,14 +3,14 @@ export type SkillBatchOperation = { groupKey: string; agent: string; enabled: bo
 export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; owner: symbol };
 
 export class SkillBatchRegistry {
-  private failures: { count: number; details: { id: string; message: string }[] } | null = null;
+  private failures: { count: number; details: { repoKey: string; id: string; message: string }[] } | null = null;
   private failureListeners = new Set<() => void>();
   subscribeFailures = (listener: () => void) => { this.failureListeners.add(listener); return () => { this.failureListeners.delete(listener); }; };
   getFailures = () => this.failures;
   clearFailures = () => { this.failures = null; for (const listener of this.failureListeners) listener(); };
   private updateSummary = { completed: 0, failed: 0, details: [] as string[] };
   private reportUpdateSummary?: (summary: { completed: number; failed: number; details: string[] }) => void;
-  recordUpdateOutcome(id: string, outcome: { success: boolean; message: string }, report: (summary: { completed: number; failed: number; details: string[] }) => void) {
+  recordUpdateOutcome(id: string, outcome: { success: boolean; message: string }, report: (summary: { completed: number; failed: number; details: string[] }) => void, repoKey = "") {
     this.reportUpdateSummary = report;
     if (outcome.success) { this.updateSummary.completed++; return; }
     this.updateSummary.failed++;
@@ -19,8 +19,8 @@ export class SkillBatchRegistry {
     const message = outcome.message.length > 240 ? `${outcome.message.slice(0, 239).replace(/[\uD800-\uDBFF]$/, "")}…` : outcome.message;
     const previous = this.failures;
     const details = previous?.details ?? [];
-    this.failures = { count: (previous?.count ?? 0) + 1, details: details.some((item) => item.id === id)
-      ? details.map((item) => item.id === id ? { id, message } : item) : [...details, { id, message }] };
+    this.failures = { count: (previous?.count ?? 0) + 1, details: details.some((item) => item.id === id && item.repoKey === repoKey)
+      ? details.map((item) => item.id === id && item.repoKey === repoKey ? { repoKey, id, message } : item) : [...details, { repoKey, id, message }] };
     for (const listener of this.failureListeners) listener();
     if (this.updateSummary.details.length < 3) {
       this.updateSummary.details.push(bounded);
