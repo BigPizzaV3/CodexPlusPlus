@@ -68,7 +68,13 @@ async fn mcp_handshake_lists_tools_and_ignores_notifications() {
     .await
     .unwrap();
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
-    assert!(init["result"]["instructions"].as_str().unwrap().contains("codexpp_extension_write"));
+    let instructions = init["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("codexpp_extension_write"));
+    // Codex 只给模型看说明的前 ~240 字（工具折叠为 deferred namespace），关键提示必须落在这一段里。
+    let head: String = instructions.chars().take(240).collect();
+    for key in ["tool_search", "codex_plus_extensions", "CodexPlusPlus 源码仓库", "codexpp_extension_guide"] {
+        assert!(head.contains(key), "说明前 240 字缺少「{key}」：{head}");
+    }
     assert!(
         handle_request(&creator, json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .await

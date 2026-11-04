@@ -48,7 +48,9 @@ const SCREENSHOT_MAX_WIDTH: f64 = 1400.0;
 const EXTENSION_API_SOURCE: &str =
     include_str!("../../../assets/inject/renderer-inject/91-extension-api.js");
 
-const INSTRUCTIONS: &str = "用户想给 Codex 加功能、改界面、做个小工具，或说「做个插件 / 做个拓展」时，用这些工具在对话里直接做出 Codex++ 拓展（注意：这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管）：先调用 codexpp_extension_guide 读创作指南（只需一次）；要改 Codex 原生界面时先用 codexpp_extension_inspect 查清页面结构，不要猜选择器；再用 codexpp_extension_write 写入，写完用 codexpp_extension_screenshot 截图确认效果，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。同一个对话默认继续修改已关联的拓展，保留已有功能；先 codexpp_extension_read 读取当前代码，read/write 省略 id 即使用本对话关联。只有用户明确说新建另一个拓展才传 newExtension: true；不要因新增需求或遇到错误而自行新建。用户明确要修改另一个已有拓展时，read 传 id 和 select: true 切换本对话目标。关联按工具调用携带的 threadId 隔离并持久保存，不得猜测对话 ID 或借用其他对话的目标。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
+/// Codex 把 MCP 工具折叠成「Deferred tool namespaces」，只给模型看说明的前 ~240 字，
+/// 工具要模型先调 `tool_search` 才加载。所以触发条件、加载方式和「别改仓库源码」必须放在最前面。
+const INSTRUCTIONS: &str = "用户要做或改 Codex++ 拓展（加功能、改界面、做小工具，或说「做个插件 / 做个拓展」）时，一律用本服务的工具在对话里完成；工具还没出现就先用 tool_search 搜 codex_plus_extensions 加载。即使当前工作区就是 CodexPlusPlus 源码仓库，也不要改仓库文件、不要做成内置拓展。第一步调用 codexpp_extension_guide。（这不是 Codex 自带的插件，Codex 插件是 skills/MCP 包，不归这里管。）创作指南只需读一次；要改 Codex 原生界面时先用 codexpp_extension_inspect 查清页面结构，不要猜选择器；再用 codexpp_extension_write 写入，写完用 codexpp_extension_screenshot 截图确认效果，根据返回的加载状态和报错迭代到能用为止，最后告诉用户在哪里使用。同一个对话默认继续修改已关联的拓展，保留已有功能；先 codexpp_extension_read 读取当前代码，read/write 省略 id 即使用本对话关联。只有用户明确说新建另一个拓展才传 newExtension: true；不要因新增需求或遇到错误而自行新建。用户明确要修改另一个已有拓展时，read 传 id 和 select: true 切换本对话目标。关联按工具调用携带的 threadId 隔离并持久保存，不得猜测对话 ID 或借用其他对话的目标。拓展在用户自己的 Codex 页面里运行，写入前确认需求，不要做用户没要求的事。跟用户交流时称它为「拓展」。";
 
 /// 服务依赖：拓展目录与 Codex 页面调试端口。端口为空时只写文件、不热重载。
 pub struct ExtensionCreator {
