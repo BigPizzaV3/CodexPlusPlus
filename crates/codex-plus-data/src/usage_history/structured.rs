@@ -16,6 +16,7 @@ mod live_receipts;
 mod native_endpoints;
 mod oversized;
 mod provider_cache;
+mod provider_capture;
 mod segments;
 mod tool_receipts;
 
@@ -1356,6 +1357,7 @@ struct Cache {
     active: bool,
     refreshed: Option<Instant>,
     touched: Instant,
+    _collector: Option<provider_capture::ProviderCollector>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -1367,11 +1369,12 @@ fn homes() -> &'static HistoryCaches {
 }
 
 fn stop_cache(cache: Arc<Mutex<Cache>>) {
-    let worker = cache
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .worker
-        .take();
+    let (collector, worker) = {
+        let mut state = cache.lock().unwrap_or_else(|error| error.into_inner());
+        (state._collector.take(), state.worker.take())
+    };
+    // 不持有索引锁等待退出；其他强引用不能延迟后台任务的收尾。
+    drop(collector);
     if let Some(worker) = worker {
         let _ = worker.join();
     }
@@ -1516,6 +1519,7 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             active: false,
             refreshed: None,
             touched: Instant::now(),
+            _collector: None,
             worker: None,
         }));
         let weak = Arc::downgrade(&cache);
@@ -1540,6 +1544,19 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
         return query_with_settings(home, options, request, settings);
     }
     state.touched = Instant::now();
+    if state._collector.is_none() {
+        let sqlite_home = std::env::var_os("CODEX_SQLITE_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.to_owned());
+        // 启动失败不影响只读查询；下一次请求会重试，而非永久静默停采。
+        state._collector = provider_capture::start_provider_collector(
+            home.to_owned(),
+            sqlite_home,
+            state.settings_path.clone(),
+        )
+        .ok();
+    }
     if !state.active
         && state
             .refreshed

@@ -18,10 +18,16 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, Query) {
 }
 
 fn settled(home: &Path, settings: &Path, options: &Query) -> Value {
-    for _ in 0..200 {
+    for _ in 0..1000 {
         let response = query_with_settings(home, options, &json!({}), settings.to_owned());
         if response["scan"]["processing"] == false {
-            return response;
+            if response["complete"] == true {
+                return response;
+            }
+            // 采集器并发写缓存时允许本轮 partial，等待重试后的完整快照。
+            if let Some(cache) = homes().lock().unwrap().get(home) {
+                cache.lock().unwrap().refreshed = None;
+            }
         }
         std::thread::sleep(Duration::from_millis(5));
     }
