@@ -1223,6 +1223,10 @@ pub struct BackendSettings {
     /// 第三方模型回答完自动折叠过程（#2659）：本地代理给没带阶段标记的助手消息补 `phase`。默认关。
     #[serde(rename = "codexAppThirdPartyReasoningCollapse", default)]
     pub codex_app_third_party_reasoning_collapse: bool,
+    /// 拿不到远程功能开关时补开「替我审批」（#2817）：国内网络下 Codex 的 Statsig 数据为空，
+    /// 自动审批入口被隐藏；审批请求本身走当前供应商。默认关。
+    #[serde(rename = "codexAppOfflineAutoReview", default)]
+    pub codex_app_offline_auto_review: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
     pub codex_app_pet_real_mouse_look: bool,
     #[serde(rename = "codexAppActivityOverlayRight", default)]
@@ -1526,6 +1530,7 @@ impl Default for BackendSettings {
             codex_app_native_fast_unlock: false,
             codex_app_native_predictions: false,
             codex_app_third_party_reasoning_collapse: false,
+            codex_app_offline_auto_review: false,
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
@@ -2969,6 +2974,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeFastUnlock");
     merge_bool_setting(target, source, "codexAppNativePredictions");
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
+    merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
@@ -5132,6 +5138,23 @@ experimental_bearer_token = "sk-existing""#
             settings.active_relay_session_provider(),
             RelaySessionProvider::Custom
         );
+    }
+
+    #[test]
+    fn settings_store_update_persists_offline_auto_review_flag() {
+        // #2817：默认关；不在合并白名单里时，管理器 / Codex 里的开关永远存不下来。
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        store.save(&BackendSettings::default()).unwrap();
+        assert!(!store.load().unwrap().codex_app_offline_auto_review);
+
+        let updated = store.update(json!({ "codexAppOfflineAutoReview": true })).unwrap();
+
+        assert!(updated.codex_app_offline_auto_review);
+        assert!(store.load().unwrap().codex_app_offline_auto_review);
+        let parsed: BackendSettings =
+            serde_json::from_value(json!({ "enhancementsEnabled": true })).unwrap();
+        assert!(!parsed.codex_app_offline_auto_review, "旧设置文件没有这个键时按关处理");
     }
 
     #[test]

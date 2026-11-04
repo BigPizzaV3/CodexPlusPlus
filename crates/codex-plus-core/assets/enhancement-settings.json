@@ -130,6 +130,15 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "codexAppOfflineAutoReview",
+      "builtin": "offline-auto-review",
+      "group": "plugins",
+      "control": "bool",
+      "title": "拿不到远程开关时补开「替我审批」",
+      "description": "国内网络下 Codex 拉不到 OpenAI 的远程功能开关，权限菜单里的「替我审批」会消失。开启后只在远程开关完全为空时补开这一项，审批请求走当前供应商；能正常拿到远程开关时不做任何改动。关闭后重新启动 Codex 生效。",
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "codexAppSessionDelete",
       "builtin": "session-delete",
       "group": "chat",

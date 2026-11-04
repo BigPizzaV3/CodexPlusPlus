@@ -509,6 +509,8 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppNativePredictions: boolean;
   /** 第三方模型回答完自动折叠过程（本地代理补阶段标记），默认关。 */
   codexAppThirdPartyReasoningCollapse: boolean;
+  /** 拿不到远程功能开关（国内网络）时补开「替我审批」入口（#2817），默认关。 */
+  codexAppOfflineAutoReview: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
@@ -1588,6 +1590,7 @@ const defaultSettings: BackendSettings = {
   codexAppNativeFastUnlock: false,
   codexAppNativePredictions: false,
   codexAppThirdPartyReasoningCollapse: false,
+  codexAppOfflineAutoReview: false,
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
