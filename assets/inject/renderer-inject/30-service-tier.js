@@ -140,11 +140,18 @@
       assertEnvelope();
       return nested === params.params ? params : { ...params, params: nested };
     }
+    const specified = (value) => typeof value === "string" && !!value.trim();
+    const pending = window.__codexPlusPureApiResumePreparations?.get(params?.threadId);
+    if (pending && (method === "turn/start" || (method === "thread/resume"
+        && [params?.model, params?.config?.model, params?.config?.model_reasoning_effort].some(specified)))) {
+      // 仅取消尚在读取的历史恢复，不记录或重放用户选择。
+      for (const preparation of pending) preparation.superseded = true;
+      window.__codexPlusPureApiResumePreparations.delete(params.threadId);
+    }
     if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
         || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
       return params;
     }
-    const specified = (value) => typeof value === "string" && !!value.trim();
     const target = codexRemoteSessionTargetProvider();
     if (target === "openai") return params;
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
@@ -155,7 +162,8 @@
     }
     if (!target) throw new Error("当前纯 API 供应商不可用");
     const requestSignature = () => JSON.stringify([params.threadId,
-      ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
+      ...["model", "modelProvider", "model_provider", "hostId", "host_id"]
+        .map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
       params.config]);
     const requestBefore = requestSignature();
     const signature = () => {
@@ -163,67 +171,82 @@
       return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
     };
     const before = signature();
+    const preparations = window.__codexPlusPureApiResumePreparations ||= new Map();
+    const active = preparations.get(params.threadId) || new Set();
+    const preparation = { superseded: false };
+    active.add(preparation);
+    preparations.set(params.threadId, active);
+    const threadId = params.threadId;
     const assertUnchanged = () => {
       if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
-      if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
+      if (preparation.superseded || requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
     };
-    let metadata;
-    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
-    if (!fallbackReason) {
-      try {
-        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
-          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
-      } catch {
-        fallbackReason = "metadata_unavailable";
+    try {
+      let metadata;
+      let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+      if (!fallbackReason) {
+        try {
+          metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+            { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+        } catch {
+          fallbackReason = "metadata_unavailable";
+        }
       }
-    }
-    assertUnchanged();
-    if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
-        || typeof metadata.model !== "string" || !metadata.model.trim()
-        || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
-        || (metadata.reasoningEffort !== null
-          && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
-      fallbackReason ||= "metadata_unavailable";
-    }
-    if (sendRequest) {
-      // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
-      let timer;
-      let read;
-      try {
-        read = await Promise.race([
-          sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
-            { timeoutMs: codexAppServerPreparationTimeoutMs }),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
-        ]);
-      } catch {
-        fallbackReason = "thread_state_unavailable";
-      } finally { clearTimeout(timer); }
       assertUnchanged();
-      const status = read?.thread?.status?.type;
-      if (!["idle", "notLoaded", "active"].includes(status)) {
-        fallbackReason = "thread_state_unavailable";
-      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
-        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
+          || typeof metadata.model !== "string" || !metadata.model.trim()
+          || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
+          || (metadata.reasoningEffort !== null
+            && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
+        fallbackReason ||= "metadata_unavailable";
       }
+      if (sendRequest) {
+        // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
+        let timer;
+        let read;
+        try {
+          read = await Promise.race([
+            sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
+              { timeoutMs: codexAppServerPreparationTimeoutMs }),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
+          ]);
+        } catch {
+          fallbackReason = "thread_state_unavailable";
+        } finally { clearTimeout(timer); }
+        assertUnchanged();
+        const status = read?.thread?.status?.type;
+        if (!["idle", "notLoaded", "active"].includes(status)) {
+          fallbackReason = "thread_state_unavailable";
+        } else if (status !== "notLoaded") {
+          if (read.thread.modelProvider !== target) {
+            throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+          }
+          // 运行中选择比持久化快照新，切回已加载会话时沿用原生状态。
+          return params;
+        }
+      }
+      const config = { ...(params.config || {}) };
+      delete config.model;
+      // 降级时不带入部分历史设置，显式请求档位始终优先。
+      if (!specified(config.model_reasoning_effort)) {
+        delete config.model_reasoning_effort;
+        if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+      }
+      const next = { ...params, modelProvider: target, config };
+      if (fallbackReason) {
+        // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
+        delete next.model;
+        sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+      } else {
+        next.model = metadata.model;
+      }
+      delete next.model_provider;
+      (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
+      return next;
+    } finally {
+      active.delete(preparation);
+      if (!active.size && preparations.get(threadId) === active) preparations.delete(threadId);
     }
-    const config = { ...(params.config || {}) };
-    delete config.model;
-    // 降级时不带入部分历史设置，显式请求档位始终优先。
-    if (!specified(config.model_reasoning_effort)) {
-      delete config.model_reasoning_effort;
-      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
-    }
-    const next = { ...params, modelProvider: target, config };
-    if (fallbackReason) {
-      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
-      delete next.model;
-      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
-    } else {
-      next.model = metadata.model;
-    }
-    delete next.model_provider;
-    (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
-    return next;
   }
 
   function verifyCodexPureApiResumeResult(method, params, result, hostId) {
@@ -1006,8 +1029,12 @@
       if (seq !== codexPlusBackendSettingsSeq) {
         return false;
       }
+      const previousSettings = codexPlusBackendSettings;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof refreshCodexModelCatalogForSettings === "function") {
+        refreshCodexModelCatalogForSettings(previousSettings, codexPlusBackendSettings);
+      }
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,

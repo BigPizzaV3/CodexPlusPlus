@@ -522,7 +522,10 @@ it("目录条目按别名匹配，且只用它补分组 id、不用它决定显�
   // 网关把同名模型的后几家写成 `名字（供应商 id）`，标题要显示打过码的完整账号名；别名命中仍不决定归属。
   assert.match(source, /const provider = exactKnown\?\.provider \|\| split\.provider \|\| known\?\.provider/);
   // 先按原文比（网关关掉「模型名后带供应商」时同名几份只差零宽字符），再按宽松归一化比。
-  assert.match(source, /const exactKnown = exact\.get\(`raw\\u0000\$\{identity\.text\}`\)\s*\|\| exact\.get\(codexPlusModelPickerNormalizeLoose\(identity\.text\)\)/);
+  const rows = functionSource(source, "codexPlusModelPickerRows");
+  assert.match(rows, /exact\.get\(`model\\u0000\$\{model\}`\)/);
+  assert.match(rows, /exact\.get\(`raw\\u0000\$\{identity\.text\}`\)/);
+  assert.match(rows, /codexPlusModelPickerNativeLabelKey\(identity\.text\)/);
   assert.match(source, /const rawKey = `raw\\u0000\$\{String\(displayName\)/);
   // 组内任意一行命中默认分组即认定该组是默认（裸名行的 id 可能来自目录）。
   assert.match(source, /group\.entries\.some\(\(entry\) => entry\.groupId === defaultGroupId/);

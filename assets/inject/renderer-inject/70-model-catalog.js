@@ -20,9 +20,25 @@
     return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0)));
   }
 
-  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-  let codexModelCatalogLoadedAt = 0;
+  const previousCodexModelCatalogRuntime = window.__codexPlusModelCatalogRuntime;
+  let codexModelCatalog = previousCodexModelCatalogRuntime?.catalog || { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+  let codexModelCatalogLoadedAt = previousCodexModelCatalogRuntime?.loadedAt || 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogRevision = 0;
+  // 仅交接数据与函数，不交接 DOM；旧闭包的迟到请求不能重新发布目录。
+  const codexModelCatalogRuntime = {
+    catalog: codexModelCatalog,
+    loadedAt: codexModelCatalogLoadedAt,
+    source: previousCodexModelCatalogRuntime?.source || "",
+    settingsKey: previousCodexModelCatalogRuntime?.settingsKey || "",
+    retryAt: previousCodexModelCatalogRuntime?.retryAt || 0,
+    failure: previousCodexModelCatalogRuntime?.failure || null,
+    patchJson: patchModelJsonResponse,
+    patchStatsig: patchStatsigModelDynamicConfig,
+    recordRequest: recordModelListRequest,
+    patchMcp: patchMcpModelResponseData,
+  };
+  window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
@@ -61,6 +77,8 @@
           ...catalog,
         };
         codexModelCatalogLoadedAt = Date.now();
+        codexModelCatalogRuntime.catalog = codexModelCatalog;
+        codexModelCatalogRuntime.loadedAt = codexModelCatalogLoadedAt;
         codexModelCatalogPromise = null;
       },
       loadModelCatalog: (force = false) => loadCodexModelCatalog(force),
@@ -103,13 +121,86 @@
     ]);
   }
 
+  function codexModelSettingsSource(settings) {
+    return JSON.stringify([settings?.relayProfilesEnabled, settings?.activeRelayId,
+      settings?.activeAggregateRelayId, settings?.activeRelayCodexProvider]);
+  }
+
+  function codexModelSettingsKey(settings) {
+    // 新后端已经提供不含凭据的目录指纹；旧后端只比较与目录相关的公开字段。
+    if (settings?.modelCatalogFingerprint) return String(settings.modelCatalogFingerprint);
+    const profiles = Array.isArray(settings?.relayProfiles) ? settings.relayProfiles : [];
+    const profile = profiles.find((entry) => entry?.id === settings?.activeRelayId);
+    const aggregates = Array.isArray(settings?.aggregateRelayProfiles) ? settings.aggregateRelayProfiles : [];
+    const aggregate = aggregates.find((entry) => entry?.id === (settings?.activeAggregateRelayId || profile?.id));
+    const fields = (entry) => entry && [entry.id, entry.name, entry.relayMode, entry.model,
+      entry.modelList, entry.modelMetadata, entry.modelWindows, entry.modelAutoCompact,
+      entry.contextWindow, entry.autoCompactLimit];
+    return JSON.stringify([fields(profile), aggregate,
+      (aggregate?.members || []).map((member) => fields(profiles.find((entry) => entry?.id === member.relayId)))]);
+  }
+
+  function refreshCodexModelCatalogForSettings(previous, next) {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    const source = codexModelSettingsSource(next);
+    const key = codexModelSettingsKey(next);
+    const sourceChanged = !!codexModelCatalogRuntime.source && source !== codexModelCatalogRuntime.source;
+    const previousKey = codexModelCatalogRuntime.settingsKey || (previous ? codexModelSettingsKey(previous) : "");
+    const unknownSourceCoolingDown = !codexModelCatalogRuntime.source && Date.now() < codexModelCatalogRuntime.retryAt;
+    const changed = !unknownSourceCoolingDown && (sourceChanged || key !== previousKey);
+    codexModelCatalogRuntime.source = source;
+    codexModelCatalogRuntime.settingsKey = key;
+    if (!changed) {
+      if (!codexModelCatalogLoadedAt && !codexModelCatalogPromise) void loadCodexModelCatalog();
+      return;
+    }
+    // 同一来源的短暂错误保留成功快照；换供应商时绝不沿用另一家的目录。
+    if (sourceChanged) {
+      codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
+      codexModelCatalogRuntime.catalog = codexModelCatalog;
+      if (typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+    }
+    codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
+    codexModelCatalogRuntime.retryAt = 0;
+    codexModelCatalogRuntime.failure = null;
+    void loadCodexModelCatalog(true);
+  }
+
+  function refreshCodexNativeModelQueries() {
+    const client = typeof findCodexQueryClient === "function" ? findCodexQueryClient() : null;
+    if (typeof client?.invalidateQueries !== "function") return;
+    for (const query of client.getQueryCache?.()?.getAll?.() || []) {
+      const key = query.queryKey;
+      if (!Array.isArray(key) || !key.some((part) => typeof part === "string"
+          && /^(models|model-list|list-models-for-host|available-models)$/u.test(part))) continue;
+      if (!key.some((part) => part === "local" || part?.hostId === "local")) continue;
+      try { Promise.resolve(client.invalidateQueries({ queryKey: key, exact: true })).catch(() => {}); }
+      catch {}
+    }
+  }
+
   async function loadCodexModelCatalog(force = false) {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return codexModelCatalog;
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
+    if (!force && Date.now() < codexModelCatalogRuntime.retryAt) return codexModelCatalogRuntime.failure || codexModelCatalog;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
-    codexModelCatalogPromise = readCodexAppServerPreparation("/codex-model-catalog", {})
+    const revision = ++codexModelCatalogRevision;
+    const current = () => revision === codexModelCatalogRevision
+      && window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime;
+    if (codexPlusBackendSettingsLoaded) {
+      codexModelCatalogRuntime.source = codexModelSettingsSource(codexPlusBackendSettings);
+      codexModelCatalogRuntime.settingsKey = codexModelSettingsKey(codexPlusBackendSettings);
+    }
+    let failedCatalog = null;
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
       .then(async (result) => {
-        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+        if (!current()) return codexModelCatalog;
+        const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
+        if (!["ok", "not_applied", "not_configured"].includes(nextCatalog.status) || !Array.isArray(nextCatalog.models)) {
+          failedCatalog = nextCatalog;
+          throw new Error(nextCatalog.message || "Model catalog is temporarily unavailable");
+        }
+        if (!nextCatalog.models.length && nextCatalog.status === "not_configured") {
           try {
             const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
@@ -118,8 +209,8 @@
               if (profile && profile.modelList) {
                 const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
                 if (extraModels.length > 0) {
-                  codexModelCatalog.models = extraModels;
-                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  nextCatalog.models = extraModels;
+                  nextCatalog.default_model = nextCatalog.default_model || extraModels[0];
                   sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
                 }
               }
@@ -128,19 +219,36 @@
             sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
           }
         }
-        codexModelCatalogLoadedAt = Date.now();
+        if (!current()) return codexModelCatalog;
+        const changed = JSON.stringify(codexModelCatalog) !== JSON.stringify(nextCatalog);
+        codexModelCatalog = codexModelCatalogRuntime.catalog = nextCatalog;
+        codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
+        codexModelCatalogRuntime.retryAt = 0;
+        codexModelCatalogRuntime.failure = null;
+        if (changed && typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+        if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
-        codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        codexModelCatalogLoadedAt = Date.now();
-        return codexModelCatalog;
+        if (!current()) return codexModelCatalog;
+        const failure = { status: "failed", message: String(error?.message || error),
+          model: typeof failedCatalog?.model === "string" ? failedCatalog.model : "",
+          default_model: typeof failedCatalog?.default_model === "string" ? failedCatalog.default_model : "",
+          models: [], sources: [] };
+        if (!["ok", "not_applied"].includes(codexModelCatalog.status)) {
+          codexModelCatalog = codexModelCatalogRuntime.catalog = failure;
+        }
+        codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
+        codexModelCatalogRuntime.retryAt = Date.now() + 10000;
+        codexModelCatalogRuntime.failure = failure;
+        return failure;
       })
       .finally(() => {
-        codexModelCatalogPromise = null;
+        if (codexModelCatalogPromise === request) codexModelCatalogPromise = null;
       });
+    codexModelCatalogPromise = request;
     return codexModelCatalogPromise;
   }
 
@@ -202,8 +310,8 @@
       slug: modelName,
       name: modelName,
       displayName: metadata?.displayName || modelName,
-      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
-      hidden: false,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || modelName,
+      hidden: metadata?.hidden === true,
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
@@ -222,7 +330,7 @@
 
   function patchModelNameArray(models, hostId) {
     if (!stringArrayLooksPatchable(models)) return false;
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const allowed = codexModelAllowedSet(hostId);
     let changed = prepareModelCollection(models, allowed);
     const customModels = codexPlusModelNames();
     if (!customModels.length) return changed;
@@ -339,9 +447,24 @@
     return belongsToProfile && names.length ? new Set(names) : null;
   }
 
+  function codexAggregateAllowedModelSet(hostId) {
+    if (hostId !== "local" || !codexPlusBackendSettingsLoaded
+        || !codexPlusModelUnlockEnabled() || codexModelCatalog.status !== "ok") return null;
+    const profile = codexRemoteSessionActiveProfile();
+    if (profile?.relayMode !== "aggregate") return null;
+    const belongsToProfile = Array.isArray(codexModelCatalog.sources)
+      && codexModelCatalog.sources.some((source) => source?.id === `aggregate:${profile.id}`
+        && ["aggregate_model_catalog", "aggregate_pool_catalog"].includes(source?.type));
+    return belongsToProfile ? new Set(codexPlusModelNames()) : null;
+  }
+
+  function codexModelAllowedSet(hostId) {
+    return codexPureApiAllowedModelSet(hostId) || codexAggregateAllowedModelSet(hostId);
+  }
+
   function patchModelArray(models, allowEmpty = false, hostId) {
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const allowed = codexModelAllowedSet(hostId);
     let changed = prepareModelCollection(models, allowed);
     const customModels = codexPlusModelNames();
     if (!customModels.length) return changed;
@@ -355,8 +478,9 @@
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
       if (customModels.includes(item.model)) {
-        if (item.hidden !== false) {
-          item.hidden = false;
+        const hidden = codexPlusModelMetadata(item.model)?.hidden === true;
+        if (["ok", "not_applied"].includes(codexModelCatalog.status) && item.hidden !== hidden) {
+          item.hidden = hidden;
           changed = true;
         }
         if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
@@ -386,7 +510,7 @@
     if (patchModelArray(value.message?.result?.data, false, hostId)) changed = true;
     if (patchModelArray(value.message?.result?.models, false, hostId)) changed = true;
     const names = codexPlusModelNames();
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const allowed = codexModelAllowedSet(hostId);
     if (value.availableModels instanceof Set) {
       if (prepareModelCollection(value.availableModels, allowed)) changed = true;
       if (allowed) for (const name of value.availableModels) {
@@ -419,14 +543,14 @@
     if (Array.isArray(value.available_models)) {
       if (patchModelNameArray(value.available_models, hostId)) changed = true;
     }
-    if (Array.isArray(value.hiddenModels)) {
+    if (["ok", "not_applied"].includes(codexModelCatalog.status) && Array.isArray(value.hiddenModels)) {
       const before = value.hiddenModels.length;
-      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name));
+      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name) || codexPlusModelMetadata(name)?.hidden === true);
       if (value.hiddenModels.length !== before) changed = true;
     }
-    if (Array.isArray(value.hidden_models)) {
+    if (["ok", "not_applied"].includes(codexModelCatalog.status) && Array.isArray(value.hidden_models)) {
       const before = value.hidden_models.length;
-      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
+      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name) || codexPlusModelMetadata(name)?.hidden === true);
       if (value.hidden_models.length !== before) changed = true;
     }
     if (patchModelDefaults(value, allowed)) changed = true;
@@ -472,15 +596,16 @@
   }
 
   function installModelJsonResponsePatch() {
-    if (window.__codexPlusModelJsonResponsePatchInstalled === "3") return;
-    window.__codexPlusModelJsonResponsePatchInstalled = "3";
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    if (window.__codexPlusModelJsonResponsePatchInstalled === "4") return;
+    window.__codexPlusModelJsonResponsePatchInstalled = "4";
     window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
     const originals = window.__codexPlusModelJsonResponseOriginals;
     originals.responseJson = originals.responseJson || Response.prototype.json;
     if (typeof originals.responseJson !== "function") return;
     Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
       const payload = await originals.responseJson.apply(this, args);
-      return await patchModelJsonResponse(payload);
+      return await window.__codexPlusModelCatalogRuntime.patchJson(payload);
     };
   }
 
@@ -495,7 +620,7 @@
     if (defaultSnapshot) codexPlusModelDefaultSnapshots.set(nextValue, { ...defaultSnapshot, fields: { ...defaultSnapshot.fields } });
     hostId = modelResponseHostId(hostId, value);
     const listChanged = patchModelNameArray(availableModels, hostId);
-    const defaultsChanged = patchModelDefaults(nextValue, codexPureApiAllowedModelSet(hostId));
+    const defaultsChanged = patchModelDefaults(nextValue, codexModelAllowedSet(hostId));
     if (!listChanged && !defaultsChanged) return config;
     try {
       config.value = nextValue;
@@ -514,15 +639,17 @@
   }
 
   function patchStatsigModelWhitelist() {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
     statsigClients().forEach((client) => {
       if (typeof client.getDynamicConfig !== "function") return;
-      if (client.__codexPlusModelWhitelistPatched !== "3") {
-        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+      if (client.__codexPlusModelWhitelistPatched !== "4") {
+        const originalGetDynamicConfig = (client.__codexPlusModelWhitelistOriginalGet || client.getDynamicConfig).bind(client);
+        client.__codexPlusModelWhitelistOriginalGet = originalGetDynamicConfig;
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
-          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
+          return String(name) === "107580212" ? window.__codexPlusModelCatalogRuntime.patchStatsig(result) : result;
         };
-        client.__codexPlusModelWhitelistPatched = "3";
+        client.__codexPlusModelWhitelistPatched = "4";
       }
       try {
         patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
@@ -532,8 +659,9 @@
   }
 
   function patchAppServerModelMessages() {
-    if (window.__codexPlusModelMessagePatchInstalled === "3") return;
-    window.__codexPlusModelMessagePatchInstalled = "3";
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    if (window.__codexPlusModelMessagePatchInstalled === "4") return;
+    window.__codexPlusModelMessagePatchInstalled = "4";
     window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
@@ -542,7 +670,7 @@
           request.params = { ...(request.params || {}), includeHidden: true };
           if (request.id != null) {
             const requestId = String(request.id);
-            recordModelListRequest(requestId, modelResponseHostId(detail, request, request.params));
+            window.__codexPlusModelCatalogRuntime.recordRequest(requestId, modelResponseHostId(detail, request, request.params));
           }
         }
       } catch (error) {
@@ -553,7 +681,7 @@
 
     window.addEventListener("message", (event) => {
       try {
-        patchMcpModelResponseData(event?.data);
+        window.__codexPlusModelCatalogRuntime.patchMcp(event?.data);
       } catch (error) {
         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));

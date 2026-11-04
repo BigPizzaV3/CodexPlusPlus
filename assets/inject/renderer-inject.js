@@ -432,7 +432,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "33";
+  const codexAppServerModelRequestPatchVersion = "34";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -4217,11 +4217,18 @@
       assertEnvelope();
       return nested === params.params ? params : { ...params, params: nested };
     }
+    const specified = (value) => typeof value === "string" && !!value.trim();
+    const pending = window.__codexPlusPureApiResumePreparations?.get(params?.threadId);
+    if (pending && (method === "turn/start" || (method === "thread/resume"
+        && [params?.model, params?.config?.model, params?.config?.model_reasoning_effort].some(specified)))) {
+      // 仅取消尚在读取的历史恢复，不记录或重放用户选择。
+      for (const preparation of pending) preparation.superseded = true;
+      window.__codexPlusPureApiResumePreparations.delete(params.threadId);
+    }
     if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
         || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
       return params;
     }
-    const specified = (value) => typeof value === "string" && !!value.trim();
     const target = codexRemoteSessionTargetProvider();
     if (target === "openai") return params;
     const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
@@ -4232,7 +4239,8 @@
     }
     if (!target) throw new Error("当前纯 API 供应商不可用");
     const requestSignature = () => JSON.stringify([params.threadId,
-      ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
+      ...["model", "modelProvider", "model_provider", "hostId", "host_id"]
+        .map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
       params.config]);
     const requestBefore = requestSignature();
     const signature = () => {
@@ -4240,67 +4248,82 @@
       return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
     };
     const before = signature();
+    const preparations = window.__codexPlusPureApiResumePreparations ||= new Map();
+    const active = preparations.get(params.threadId) || new Set();
+    const preparation = { superseded: false };
+    active.add(preparation);
+    preparations.set(params.threadId, active);
+    const threadId = params.threadId;
     const assertUnchanged = () => {
       if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
-      if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
+      if (preparation.superseded || requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
     };
-    let metadata;
-    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
-    if (!fallbackReason) {
-      try {
-        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
-          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
-      } catch {
-        fallbackReason = "metadata_unavailable";
+    try {
+      let metadata;
+      let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+      if (!fallbackReason) {
+        try {
+          metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+            { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+        } catch {
+          fallbackReason = "metadata_unavailable";
+        }
       }
-    }
-    assertUnchanged();
-    if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
-        || typeof metadata.model !== "string" || !metadata.model.trim()
-        || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
-        || (metadata.reasoningEffort !== null
-          && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
-      fallbackReason ||= "metadata_unavailable";
-    }
-    if (sendRequest) {
-      // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
-      let timer;
-      let read;
-      try {
-        read = await Promise.race([
-          sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
-            { timeoutMs: codexAppServerPreparationTimeoutMs }),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
-        ]);
-      } catch {
-        fallbackReason = "thread_state_unavailable";
-      } finally { clearTimeout(timer); }
       assertUnchanged();
-      const status = read?.thread?.status?.type;
-      if (!["idle", "notLoaded", "active"].includes(status)) {
-        fallbackReason = "thread_state_unavailable";
-      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
-        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
+          || typeof metadata.model !== "string" || !metadata.model.trim()
+          || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
+          || (metadata.reasoningEffort !== null
+            && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
+        fallbackReason ||= "metadata_unavailable";
       }
+      if (sendRequest) {
+        // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
+        let timer;
+        let read;
+        try {
+          read = await Promise.race([
+            sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
+              { timeoutMs: codexAppServerPreparationTimeoutMs }),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
+          ]);
+        } catch {
+          fallbackReason = "thread_state_unavailable";
+        } finally { clearTimeout(timer); }
+        assertUnchanged();
+        const status = read?.thread?.status?.type;
+        if (!["idle", "notLoaded", "active"].includes(status)) {
+          fallbackReason = "thread_state_unavailable";
+        } else if (status !== "notLoaded") {
+          if (read.thread.modelProvider !== target) {
+            throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+          }
+          // 运行中选择比持久化快照新，切回已加载会话时沿用原生状态。
+          return params;
+        }
+      }
+      const config = { ...(params.config || {}) };
+      delete config.model;
+      // 降级时不带入部分历史设置，显式请求档位始终优先。
+      if (!specified(config.model_reasoning_effort)) {
+        delete config.model_reasoning_effort;
+        if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+      }
+      const next = { ...params, modelProvider: target, config };
+      if (fallbackReason) {
+        // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
+        delete next.model;
+        sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+      } else {
+        next.model = metadata.model;
+      }
+      delete next.model_provider;
+      (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
+      return next;
+    } finally {
+      active.delete(preparation);
+      if (!active.size && preparations.get(threadId) === active) preparations.delete(threadId);
     }
-    const config = { ...(params.config || {}) };
-    delete config.model;
-    // 降级时不带入部分历史设置，显式请求档位始终优先。
-    if (!specified(config.model_reasoning_effort)) {
-      delete config.model_reasoning_effort;
-      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
-    }
-    const next = { ...params, modelProvider: target, config };
-    if (fallbackReason) {
-      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
-      delete next.model;
-      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
-    } else {
-      next.model = metadata.model;
-    }
-    delete next.model_provider;
-    (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
-    return next;
   }
 
   function verifyCodexPureApiResumeResult(method, params, result, hostId) {
@@ -5083,8 +5106,12 @@
       if (seq !== codexPlusBackendSettingsSeq) {
         return false;
       }
+      const previousSettings = codexPlusBackendSettings;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof refreshCodexModelCatalogForSettings === "function") {
+        refreshCodexModelCatalogForSettings(previousSettings, codexPlusBackendSettings);
+      }
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,
@@ -11166,9 +11193,25 @@
     return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0)));
   }
 
-  let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-  let codexModelCatalogLoadedAt = 0;
+  const previousCodexModelCatalogRuntime = window.__codexPlusModelCatalogRuntime;
+  let codexModelCatalog = previousCodexModelCatalogRuntime?.catalog || { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+  let codexModelCatalogLoadedAt = previousCodexModelCatalogRuntime?.loadedAt || 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogRevision = 0;
+  // 仅交接数据与函数，不交接 DOM；旧闭包的迟到请求不能重新发布目录。
+  const codexModelCatalogRuntime = {
+    catalog: codexModelCatalog,
+    loadedAt: codexModelCatalogLoadedAt,
+    source: previousCodexModelCatalogRuntime?.source || "",
+    settingsKey: previousCodexModelCatalogRuntime?.settingsKey || "",
+    retryAt: previousCodexModelCatalogRuntime?.retryAt || 0,
+    failure: previousCodexModelCatalogRuntime?.failure || null,
+    patchJson: patchModelJsonResponse,
+    patchStatsig: patchStatsigModelDynamicConfig,
+    recordRequest: recordModelListRequest,
+    patchMcp: patchMcpModelResponseData,
+  };
+  window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
@@ -11207,6 +11250,8 @@
           ...catalog,
         };
         codexModelCatalogLoadedAt = Date.now();
+        codexModelCatalogRuntime.catalog = codexModelCatalog;
+        codexModelCatalogRuntime.loadedAt = codexModelCatalogLoadedAt;
         codexModelCatalogPromise = null;
       },
       loadModelCatalog: (force = false) => loadCodexModelCatalog(force),
@@ -11249,13 +11294,86 @@
     ]);
   }
 
+  function codexModelSettingsSource(settings) {
+    return JSON.stringify([settings?.relayProfilesEnabled, settings?.activeRelayId,
+      settings?.activeAggregateRelayId, settings?.activeRelayCodexProvider]);
+  }
+
+  function codexModelSettingsKey(settings) {
+    // 新后端已经提供不含凭据的目录指纹；旧后端只比较与目录相关的公开字段。
+    if (settings?.modelCatalogFingerprint) return String(settings.modelCatalogFingerprint);
+    const profiles = Array.isArray(settings?.relayProfiles) ? settings.relayProfiles : [];
+    const profile = profiles.find((entry) => entry?.id === settings?.activeRelayId);
+    const aggregates = Array.isArray(settings?.aggregateRelayProfiles) ? settings.aggregateRelayProfiles : [];
+    const aggregate = aggregates.find((entry) => entry?.id === (settings?.activeAggregateRelayId || profile?.id));
+    const fields = (entry) => entry && [entry.id, entry.name, entry.relayMode, entry.model,
+      entry.modelList, entry.modelMetadata, entry.modelWindows, entry.modelAutoCompact,
+      entry.contextWindow, entry.autoCompactLimit];
+    return JSON.stringify([fields(profile), aggregate,
+      (aggregate?.members || []).map((member) => fields(profiles.find((entry) => entry?.id === member.relayId)))]);
+  }
+
+  function refreshCodexModelCatalogForSettings(previous, next) {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    const source = codexModelSettingsSource(next);
+    const key = codexModelSettingsKey(next);
+    const sourceChanged = !!codexModelCatalogRuntime.source && source !== codexModelCatalogRuntime.source;
+    const previousKey = codexModelCatalogRuntime.settingsKey || (previous ? codexModelSettingsKey(previous) : "");
+    const unknownSourceCoolingDown = !codexModelCatalogRuntime.source && Date.now() < codexModelCatalogRuntime.retryAt;
+    const changed = !unknownSourceCoolingDown && (sourceChanged || key !== previousKey);
+    codexModelCatalogRuntime.source = source;
+    codexModelCatalogRuntime.settingsKey = key;
+    if (!changed) {
+      if (!codexModelCatalogLoadedAt && !codexModelCatalogPromise) void loadCodexModelCatalog();
+      return;
+    }
+    // 同一来源的短暂错误保留成功快照；换供应商时绝不沿用另一家的目录。
+    if (sourceChanged) {
+      codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
+      codexModelCatalogRuntime.catalog = codexModelCatalog;
+      if (typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+    }
+    codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
+    codexModelCatalogRuntime.retryAt = 0;
+    codexModelCatalogRuntime.failure = null;
+    void loadCodexModelCatalog(true);
+  }
+
+  function refreshCodexNativeModelQueries() {
+    const client = typeof findCodexQueryClient === "function" ? findCodexQueryClient() : null;
+    if (typeof client?.invalidateQueries !== "function") return;
+    for (const query of client.getQueryCache?.()?.getAll?.() || []) {
+      const key = query.queryKey;
+      if (!Array.isArray(key) || !key.some((part) => typeof part === "string"
+          && /^(models|model-list|list-models-for-host|available-models)$/u.test(part))) continue;
+      if (!key.some((part) => part === "local" || part?.hostId === "local")) continue;
+      try { Promise.resolve(client.invalidateQueries({ queryKey: key, exact: true })).catch(() => {}); }
+      catch {}
+    }
+  }
+
   async function loadCodexModelCatalog(force = false) {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return codexModelCatalog;
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
+    if (!force && Date.now() < codexModelCatalogRuntime.retryAt) return codexModelCatalogRuntime.failure || codexModelCatalog;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
-    codexModelCatalogPromise = readCodexAppServerPreparation("/codex-model-catalog", {})
+    const revision = ++codexModelCatalogRevision;
+    const current = () => revision === codexModelCatalogRevision
+      && window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime;
+    if (codexPlusBackendSettingsLoaded) {
+      codexModelCatalogRuntime.source = codexModelSettingsSource(codexPlusBackendSettings);
+      codexModelCatalogRuntime.settingsKey = codexModelSettingsKey(codexPlusBackendSettings);
+    }
+    let failedCatalog = null;
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
       .then(async (result) => {
-        codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+        if (!current()) return codexModelCatalog;
+        const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
+        if (!["ok", "not_applied", "not_configured"].includes(nextCatalog.status) || !Array.isArray(nextCatalog.models)) {
+          failedCatalog = nextCatalog;
+          throw new Error(nextCatalog.message || "Model catalog is temporarily unavailable");
+        }
+        if (!nextCatalog.models.length && nextCatalog.status === "not_configured") {
           try {
             const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
@@ -11264,8 +11382,8 @@
               if (profile && profile.modelList) {
                 const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
                 if (extraModels.length > 0) {
-                  codexModelCatalog.models = extraModels;
-                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  nextCatalog.models = extraModels;
+                  nextCatalog.default_model = nextCatalog.default_model || extraModels[0];
                   sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
                 }
               }
@@ -11274,19 +11392,36 @@
             sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
           }
         }
-        codexModelCatalogLoadedAt = Date.now();
+        if (!current()) return codexModelCatalog;
+        const changed = JSON.stringify(codexModelCatalog) !== JSON.stringify(nextCatalog);
+        codexModelCatalog = codexModelCatalogRuntime.catalog = nextCatalog;
+        codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
+        codexModelCatalogRuntime.retryAt = 0;
+        codexModelCatalogRuntime.failure = null;
+        if (changed && typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+        if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
         return codexModelCatalog;
       })
       .catch((error) => {
-        codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        codexModelCatalogLoadedAt = Date.now();
-        return codexModelCatalog;
+        if (!current()) return codexModelCatalog;
+        const failure = { status: "failed", message: String(error?.message || error),
+          model: typeof failedCatalog?.model === "string" ? failedCatalog.model : "",
+          default_model: typeof failedCatalog?.default_model === "string" ? failedCatalog.default_model : "",
+          models: [], sources: [] };
+        if (!["ok", "not_applied"].includes(codexModelCatalog.status)) {
+          codexModelCatalog = codexModelCatalogRuntime.catalog = failure;
+        }
+        codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
+        codexModelCatalogRuntime.retryAt = Date.now() + 10000;
+        codexModelCatalogRuntime.failure = failure;
+        return failure;
       })
       .finally(() => {
-        codexModelCatalogPromise = null;
+        if (codexModelCatalogPromise === request) codexModelCatalogPromise = null;
       });
+    codexModelCatalogPromise = request;
     return codexModelCatalogPromise;
   }
 
@@ -11348,8 +11483,8 @@
       slug: modelName,
       name: modelName,
       displayName: metadata?.displayName || modelName,
-      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
-      hidden: false,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || modelName,
+      hidden: metadata?.hidden === true,
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
@@ -11368,7 +11503,7 @@
 
   function patchModelNameArray(models, hostId) {
     if (!stringArrayLooksPatchable(models)) return false;
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const allowed = codexModelAllowedSet(hostId);
     let changed = prepareModelCollection(models, allowed);
     const customModels = codexPlusModelNames();
     if (!customModels.length) return changed;
@@ -11485,9 +11620,24 @@
     return belongsToProfile && names.length ? new Set(names) : null;
   }
 
+  function codexAggregateAllowedModelSet(hostId) {
+    if (hostId !== "local" || !codexPlusBackendSettingsLoaded
+        || !codexPlusModelUnlockEnabled() || codexModelCatalog.status !== "ok") return null;
+    const profile = codexRemoteSessionActiveProfile();
+    if (profile?.relayMode !== "aggregate") return null;
+    const belongsToProfile = Array.isArray(codexModelCatalog.sources)
+      && codexModelCatalog.sources.some((source) => source?.id === `aggregate:${profile.id}`
+        && ["aggregate_model_catalog", "aggregate_pool_catalog"].includes(source?.type));
+    return belongsToProfile ? new Set(codexPlusModelNames()) : null;
+  }
+
+  function codexModelAllowedSet(hostId) {
+    return codexPureApiAllowedModelSet(hostId) || codexAggregateAllowedModelSet(hostId);
+  }
+
   function patchModelArray(models, allowEmpty = false, hostId) {
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const allowed = codexModelAllowedSet(hostId);
     let changed = prepareModelCollection(models, allowed);
     const customModels = codexPlusModelNames();
     if (!customModels.length) return changed;
@@ -11501,8 +11651,9 @@
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
       if (customModels.includes(item.model)) {
-        if (item.hidden !== false) {
-          item.hidden = false;
+        const hidden = codexPlusModelMetadata(item.model)?.hidden === true;
+        if (["ok", "not_applied"].includes(codexModelCatalog.status) && item.hidden !== hidden) {
+          item.hidden = hidden;
           changed = true;
         }
         if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
@@ -11532,7 +11683,7 @@
     if (patchModelArray(value.message?.result?.data, false, hostId)) changed = true;
     if (patchModelArray(value.message?.result?.models, false, hostId)) changed = true;
     const names = codexPlusModelNames();
-    const allowed = codexPureApiAllowedModelSet(hostId);
+    const allowed = codexModelAllowedSet(hostId);
     if (value.availableModels instanceof Set) {
       if (prepareModelCollection(value.availableModels, allowed)) changed = true;
       if (allowed) for (const name of value.availableModels) {
@@ -11565,14 +11716,14 @@
     if (Array.isArray(value.available_models)) {
       if (patchModelNameArray(value.available_models, hostId)) changed = true;
     }
-    if (Array.isArray(value.hiddenModels)) {
+    if (["ok", "not_applied"].includes(codexModelCatalog.status) && Array.isArray(value.hiddenModels)) {
       const before = value.hiddenModels.length;
-      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name));
+      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name) || codexPlusModelMetadata(name)?.hidden === true);
       if (value.hiddenModels.length !== before) changed = true;
     }
-    if (Array.isArray(value.hidden_models)) {
+    if (["ok", "not_applied"].includes(codexModelCatalog.status) && Array.isArray(value.hidden_models)) {
       const before = value.hidden_models.length;
-      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
+      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name) || codexPlusModelMetadata(name)?.hidden === true);
       if (value.hidden_models.length !== before) changed = true;
     }
     if (patchModelDefaults(value, allowed)) changed = true;
@@ -11618,15 +11769,16 @@
   }
 
   function installModelJsonResponsePatch() {
-    if (window.__codexPlusModelJsonResponsePatchInstalled === "3") return;
-    window.__codexPlusModelJsonResponsePatchInstalled = "3";
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    if (window.__codexPlusModelJsonResponsePatchInstalled === "4") return;
+    window.__codexPlusModelJsonResponsePatchInstalled = "4";
     window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
     const originals = window.__codexPlusModelJsonResponseOriginals;
     originals.responseJson = originals.responseJson || Response.prototype.json;
     if (typeof originals.responseJson !== "function") return;
     Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
       const payload = await originals.responseJson.apply(this, args);
-      return await patchModelJsonResponse(payload);
+      return await window.__codexPlusModelCatalogRuntime.patchJson(payload);
     };
   }
 
@@ -11641,7 +11793,7 @@
     if (defaultSnapshot) codexPlusModelDefaultSnapshots.set(nextValue, { ...defaultSnapshot, fields: { ...defaultSnapshot.fields } });
     hostId = modelResponseHostId(hostId, value);
     const listChanged = patchModelNameArray(availableModels, hostId);
-    const defaultsChanged = patchModelDefaults(nextValue, codexPureApiAllowedModelSet(hostId));
+    const defaultsChanged = patchModelDefaults(nextValue, codexModelAllowedSet(hostId));
     if (!listChanged && !defaultsChanged) return config;
     try {
       config.value = nextValue;
@@ -11660,15 +11812,17 @@
   }
 
   function patchStatsigModelWhitelist() {
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
     statsigClients().forEach((client) => {
       if (typeof client.getDynamicConfig !== "function") return;
-      if (client.__codexPlusModelWhitelistPatched !== "3") {
-        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+      if (client.__codexPlusModelWhitelistPatched !== "4") {
+        const originalGetDynamicConfig = (client.__codexPlusModelWhitelistOriginalGet || client.getDynamicConfig).bind(client);
+        client.__codexPlusModelWhitelistOriginalGet = originalGetDynamicConfig;
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
-          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
+          return String(name) === "107580212" ? window.__codexPlusModelCatalogRuntime.patchStatsig(result) : result;
         };
-        client.__codexPlusModelWhitelistPatched = "3";
+        client.__codexPlusModelWhitelistPatched = "4";
       }
       try {
         patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
@@ -11678,8 +11832,9 @@
   }
 
   function patchAppServerModelMessages() {
-    if (window.__codexPlusModelMessagePatchInstalled === "3") return;
-    window.__codexPlusModelMessagePatchInstalled = "3";
+    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
+    if (window.__codexPlusModelMessagePatchInstalled === "4") return;
+    window.__codexPlusModelMessagePatchInstalled = "4";
     window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
@@ -11688,7 +11843,7 @@
           request.params = { ...(request.params || {}), includeHidden: true };
           if (request.id != null) {
             const requestId = String(request.id);
-            recordModelListRequest(requestId, modelResponseHostId(detail, request, request.params));
+            window.__codexPlusModelCatalogRuntime.recordRequest(requestId, modelResponseHostId(detail, request, request.params));
           }
         }
       } catch (error) {
@@ -11699,7 +11854,7 @@
 
     window.addEventListener("message", (event) => {
       try {
-        patchMcpModelResponseData(event?.data);
+        window.__codexPlusModelCatalogRuntime.patchMcp(event?.data);
       } catch (error) {
         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -12454,6 +12609,15 @@
     stored: false,
   };
 
+  function codexPlusModelPickerCatalogChanged() {
+    const state = codexPlusModelPickerGroupsState;
+    state.defaultGroupId = "";
+    state.defaultProviderName = "";
+    state.signature = "";
+    state.catalogRetryAt = 0;
+    if (!state.disposed) codexPlusModelPickerSchedule(0);
+  }
+
   function codexPlusModelPickerText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")
@@ -12501,6 +12665,7 @@
               name: value.name,
               parsed: value.parsed === true,
               groupId: typeof value.groupId === "string" ? value.groupId : "",
+              ...(typeof value.slug === "string" && value.slug ? { slug: value.slug } : {}),
             });
           }
         }
@@ -12530,14 +12695,15 @@
    * `parsed` 表示这条是从行末尾 `（供应商）` 猜出来的；权威来源（目录侧
    * `codex_plus_group` / `description`）可以覆盖它，反过来不行。
    */
-  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "") {
+  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "", slug = "") {
     const key = codexPlusModelPickerNormalize(displayName);
     if (!key || !provider) return;
     const existing = codexPlusModelPickerGroupsState.providerNames.get(key);
     if (existing && !existing.parsed && parsed) return;
     const id = groupId || (existing?.name === provider ? existing.groupId || "" : "");
-    if (existing && existing.name === provider && existing.parsed === !!parsed && (existing.groupId || "") === id) return;
-    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed, groupId: id });
+    const model = slug || existing?.slug || "";
+    if (existing && existing.name === provider && existing.parsed === !!parsed && (existing.groupId || "") === id && (existing.slug || "") === model) return;
+    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed, groupId: id, slug: model });
     codexPlusModelPickerGroupsState.providerDirty = true;
   }
 
@@ -12550,14 +12716,13 @@
    */
   function codexPlusModelPickerEnsureCatalog() {
     const state = codexPlusModelPickerGroupsState;
-    if (state.defaultGroupId) return;
     if (state.catalogPending) return;
     if (Date.now() < state.catalogRetryAt) return;
     const loaded = !!(codexModelCatalog?.models?.length || codexModelCatalog?.modelMetadata);
     if (loaded && typeof loadCodexModelCatalog !== "function") return;
     if (typeof loadCodexModelCatalog !== "function") return;
     state.catalogPending = true;
-    state.catalogRetryAt = Date.now() + 5000;
+    state.catalogRetryAt = Date.now() + 10000;
     Promise.resolve()
       .then(() => loadCodexModelCatalog(false))
       .catch(() => {})
@@ -12697,6 +12862,19 @@
       .replace(/[^\p{L}\p{N}]+/gu, "");
   }
 
+  function codexPlusModelPickerNativeLabelKey(value) {
+    return `label\u0000${String(value || "").toLowerCase().replace(/^gpt[\s_-]*/u, "")
+      .replace(/[^\p{L}\p{N}\u200b-\u200d\u2060-\u206f]+/gu, "")}`;
+  }
+
+  function codexPlusModelPickerCatalogEntries() {
+    const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    if (!metadata || typeof metadata !== "object") return [];
+    return Array.isArray(codexModelCatalog?.models)
+      ? codexModelCatalog.models.map((slug) => [slug, metadata[slug]])
+      : Object.entries(metadata);
+  }
+
   /**
    * 目录里的键和选择器里的名字不一定逐字相同。
    *
@@ -12736,8 +12914,14 @@
     // 缓存里的形状是 `{ name, parsed, groupId }`，这里换成读取方要的 `{ provider, groupId }`；
     // 从行尾后缀猜的（parsed）不补：那是别家同名模型的归属，套给裸名行会串组。
     const fillFromMemory = () => {
+      const complete = codexModelCatalog?.status === "ok" && modelMetadata
+        && Array.isArray(codexModelCatalog?.models)
+        && codexModelCatalog.models.every((slug) => modelMetadata?.[slug]);
+      if (complete) return map;
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
         if (map.has(key) || !value?.name || value.parsed) return;
+        if (Array.isArray(codexModelCatalog?.models) && value.slug
+            && !codexModelCatalog.models.includes(value.slug)) return;
         map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
       });
       return map;
@@ -12761,13 +12945,16 @@
       for (const key of codexPlusModelPickerCatalogAliases(displayName, entry, slug)) {
         const remembered = map.get(key);
         // 权威来源可以覆盖行文本猜出来的；已经有权威值就不动。
-        if (!remembered || remembered.parsed) map.set(key, { provider, groupId, parsed: false });
+        if (!map.has(key) || remembered?.groupId === groupId) map.set(key, { provider, groupId, parsed: false });
+        else map.set(key, null);
       }
-      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId, slug);
     };
     const bySlug = new Map(entries);
     for (const slug of slugList) registerEntry(bySlug.get(slug), slug);
-    for (const [key, entry] of entries) registerEntry(entry, key);
+    if (!Array.isArray(codexModelCatalog?.models)) {
+      for (const [key, entry] of entries) registerEntry(entry, key);
+    }
     return fillFromMemory();
   }
 
@@ -12783,7 +12970,12 @@
     const map = new Map();
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
     if (!modelMetadata || typeof modelMetadata !== "object") return map;
-    const register = (entry) => {
+    const setUnique = (key, value) => {
+      if (!key) return;
+      if (!map.has(key)) map.set(key, value);
+      else if (map.get(key)?.slug !== value.slug) map.set(key, null);
+    };
+    const register = (entry, slug) => {
       if (!entry || typeof entry !== "object") return;
       const displayName = entry.displayName || entry.display_name;
       if (typeof displayName !== "string" || !displayName) return;
@@ -12792,25 +12984,22 @@
         typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
       if (!provider || !groupId) return;
       // 在 Codex++ 里收藏过的模型（网关写的 `codex_plus_favorite`）：行尾画星标。
-      const value = { provider, groupId, favorite: entry.codex_plus_favorite === true };
+      const value = { slug, provider, groupId, favorite: entry.codex_plus_favorite === true };
+      map.set(`model\u0000${slug}`, value);
       // 原文键：网关关掉「模型名后带供应商」时，同名的几份只差末尾看不见的零宽字符，
       // 宽松归一化会把它们抹掉，必须先按原文比对。
       const rawKey = `raw\u0000${String(displayName).replace(/\s+/g, " ").trim()}`;
-      if (!map.has(rawKey)) map.set(rawKey, value);
+      setUnique(rawKey, value);
+      setUnique(codexPlusModelPickerNativeLabelKey(displayName), value);
       const fullKey = codexPlusModelPickerNormalizeLoose(displayName);
-      if (fullKey && !map.has(fullKey)) map.set(fullKey, value);
+      setUnique(fullKey, value);
       const split = codexPlusModelPickerSplitLabel(displayName);
       if (split.name && split.provider) {
         const pairKey = `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`;
-        if (!map.has(pairKey)) map.set(pairKey, value);
+        setUnique(pairKey, value);
       }
     };
-    const slugList = Array.isArray(codexModelCatalog?.models)
-      ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
-      : [];
-    const bySlug = new Map(Object.entries(modelMetadata));
-    for (const slug of slugList) register(bySlug.get(slug));
-    for (const entry of Object.values(modelMetadata)) register(entry);
+    for (const [slug, entry] of codexPlusModelPickerCatalogEntries()) register(entry, slug);
     return map;
   }
 
@@ -12855,6 +13044,19 @@
     return codexPlusModelPickerRowIdentity(row)?.text || "";
   }
 
+  function codexPlusModelPickerRowModel(row) {
+    const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata || {};
+    const key = Object.keys(row).find((name) => name.startsWith("__reactFiber$"));
+    for (let fiber = key && row[key], depth = 0; fiber && depth < 16; depth++, fiber = fiber.return) {
+      const props = fiber.memoizedProps || {};
+      if (typeof props.onSelectModel === "function" && Array.isArray(props.models)) break;
+      for (const value of [fiber.key, props.model, props.model?.model, props.model?.id, props.value, props.item?.model]) {
+        if (typeof value === "string" && Object.hasOwn(metadata, value)) return value;
+      }
+    }
+    return "";
+  }
+
   /**
    * 把行切成 `{ row, label, name, provider, groupId }`。
    * 已打过补丁的行直接读我们留下的标记，避免反复解析。
@@ -12862,6 +13064,7 @@
   function codexPlusModelPickerRows(list) {
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
+    const providerIds = new Map([...exact.values()].filter(Boolean).map((entry) => [entry.provider, entry.groupId]));
     const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     // 每轮算一次：逐行调用在目录失效时会退化成「行数 × 目录条目数」。
     const defaultProviderName = codexPlusModelPickerDefaultProviderName();
@@ -12870,7 +13073,12 @@
     items.forEach((row) => {
       const identity = codexPlusModelPickerRowIdentity(row);
       if (!identity?.groupable) return;
-      const split = codexPlusModelPickerSplitLabel(identity.text);
+      let split = codexPlusModelPickerSplitLabel(identity.text);
+      if (split.provider && !providerIds.has(split.provider)
+          && ![...codexPlusModelPickerGroupsState.providerNames.values()]
+            .some((value) => !value.parsed && value.name === split.provider)) {
+        split = { name: identity.text, provider: "" };
+      }
       if (split.provider) codexPlusModelPickerRememberProvider(split.name, split.provider, true);
       // 分组键：优先用「完整展示名」或「模型名 + 后缀供应商」做精确匹配。
       // 有后缀的行成员归属由后缀决定，不能再拿裸模型名去查目录——三家都发布
@@ -12879,7 +13087,10 @@
       const pairKey = split.provider
         ? `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`
         : "";
-      const exactKnown = exact.get(`raw\u0000${identity.text}`)
+      const model = codexPlusModelPickerRowModel(row);
+      const exactKnown = (model ? exact.get(`model\u0000${model}`) : null)
+        || exact.get(`raw\u0000${identity.text}`)
+        || exact.get(codexPlusModelPickerNativeLabelKey(identity.text))
         || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
         || (pairKey ? exact.get(pairKey) : null);
       const known = exactKnown
@@ -12888,12 +13099,12 @@
             || providers.get(codexPlusModelPickerNormalize(split.name))
           : null);
       const groupId = known?.groupId
-        || (split.provider ? `provider:${split.provider}` : defaultGroupId);
+        || (split.provider ? providerIds.get(split.provider) || `provider:${split.provider}` : "");
       // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
-      const provider = exactKnown?.provider || split.provider || known?.provider || defaultProviderName;
+      const provider = exactKnown?.provider || split.provider || known?.provider || "";
       const authoritativeGroupId = !!known?.groupId
-        || (split.provider ? true : !!defaultGroupId);
+        || !!split.provider;
       rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
     });
     return rows;
@@ -12913,7 +13124,7 @@
     // 取"裸名模型里出现最多的那个分组"：聚合的默认成员可能有几百个模型，
     // 偶尔混进一两个别的成员的裸名条目也不该把整组改姓。
     const counts = new Map();
-    for (const entry of Object.values(modelMetadata)) {
+    for (const [, entry] of codexPlusModelPickerCatalogEntries()) {
       if (!entry || typeof entry !== "object") continue;
       const displayName = entry.displayName || entry.display_name;
       if (typeof displayName !== "string" || !displayName) continue;
@@ -13146,7 +13357,7 @@
     const previous = state.activeGroupId;
     // React 可能刚换过行，点击时必须重新读取，不能使用创建按钮时的 DOM 快照。
     const groups = codexPlusModelPickerUniqueGroupIds(
-      codexPlusModelPickerGroups(codexPlusModelPickerRows(list), codexPlusModelPickerDefaultProviderName()),
+      codexPlusModelPickerGroups(codexPlusModelPickerRows(list)),
     );
     const group = groups.find((item) => item.id === groupId);
     state.activeGroupId = group?.id || "";
@@ -13321,7 +13532,7 @@
     codexPlusModelPickerStore();
     const rows = codexPlusModelPickerRows(list);
     const groups = codexPlusModelPickerUniqueGroupIds(
-      codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
+      codexPlusModelPickerGroups(rows),
     );
     // 只有一个供应商时直接选模型，省去没有选择意义的供应商层。
     if (groups.length < 2) {
@@ -13419,7 +13630,7 @@
     if (!list) return false;
     const rows = codexPlusModelPickerRows(list);
     const groups = codexPlusModelPickerUniqueGroupIds(
-      codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
+      codexPlusModelPickerGroups(rows),
     );
     if (groups.length < 2) return codexPlusModelPickerGroupsState.patchedLists.has(list);
     return codexPlusModelPickerFingerprint(groups) !== codexPlusModelPickerGroupsState.signature;
@@ -13588,7 +13799,7 @@
       const list = codexPlusModelPickerList(container.querySelector?.('[data-model-picker-view]') ? container : codexPlusModelPickerMenu() || container);
       if (!list) return [];
       return codexPlusModelPickerUniqueGroupIds(
-        codexPlusModelPickerGroups(codexPlusModelPickerRows(list), codexPlusModelPickerDefaultProviderName()),
+        codexPlusModelPickerGroups(codexPlusModelPickerRows(list)),
       ).map((group) => ({ id: group.id, name: group.name, count: group.entries.length, isDefault: !!group.isDefault, entryGroupIds: [...new Set(group.entries.map((entry) => entry.groupId))].slice(0, 2) }));
     },
     dispose() {
