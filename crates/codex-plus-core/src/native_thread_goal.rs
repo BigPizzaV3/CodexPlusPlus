@@ -120,7 +120,7 @@ async fn evaluate_with_timeout(
 ) -> anyhow::Result<Value> {
     let script = evaluation_script(method, payload)?;
     // 底层 CDP 错误可能包含 URL、调用栈及异常原文，不能送到原生界面。
-    let response = crate::bridge::evaluate_script_with_timeout(websocket, &script, true, timeout)
+    let response = crate::bridge::evaluate_script_with_await_promise_timeout(websocket, &script, true, timeout)
         .await.map_err(|_| GoalForwardError::ForwardFailed)?;
     let text = response.pointer("/result/result/value").and_then(Value::as_str)
         .ok_or(GoalForwardError::ForwardFailed)?;
