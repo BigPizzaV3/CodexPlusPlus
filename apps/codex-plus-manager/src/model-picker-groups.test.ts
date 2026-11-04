@@ -660,3 +660,18 @@ it("目录快照缺元数据时用记下的权威归属兜底，后缀猜出来�
   assert.equal(fresh.get("bare-model")?.provider, "新供应商");
   assert.equal(fresh.get("bare-model")?.groupId, "provider-new");
 });
+
+it("模型列表的 CSS Modules 类名新旧两种格式都认（#2893：Codex 26.1029 改成 `ModelList-哈希`）", async () => {
+  const source = await readShard();
+  const menu = functionSource(source, "codexPlusModelPickerMenu");
+  const list = functionSource(source, "codexPlusModelPickerList");
+  for (const body of [menu, list]) {
+    assert.match(body, /\[class\*="_ModelList_"\]/, "旧格式 `_ModelList_哈希` 仍要认");
+    assert.match(body, /\[class\^="ModelList-"\], \[class\*=" ModelList-"\]/, "新格式按类名开头匹配，避免误中 ModelListMotion-");
+  }
+  assert.match(source, /\[class\^="sectionLabel-"\]/, "分节标题同样要认新格式");
+  // 用真实 26.1029 的类名验证：只命中 ModelList-，不命中 ModelListMotion-。
+  const matchesNew = (className: string) => className.startsWith("ModelList-") || className.includes(" ModelList-");
+  assert.equal(matchesNew("ModelList-I4a0SH"), true);
+  assert.equal(matchesNew("ModelListMotion-iyH7rX"), false);
+});

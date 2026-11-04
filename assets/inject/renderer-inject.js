@@ -2706,7 +2706,8 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    // `main` 的 CSS Modules 类名新旧格式都认（#2893）：`_MainContentSurface_哈希` / `MainContentSurface-哈希`。
+    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"], main[class^="MainContentSurface-"], main[class*=" MainContentSurface-"]');
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
@@ -3226,7 +3227,7 @@
         && (
           homeCandidate.querySelector('.group\\/home-suggestions')
           || homeCandidate.querySelector('[class*="home-suggestions"]')
-          || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+          || homeCandidate.querySelector('[class*="_homeUtilityBar_"], [class^="homeUtilityBar-"], [class*=" homeUtilityBar-"]')
         )
       );
       const home = homeHasClassicChrome ? homeCandidate : null;
@@ -6442,9 +6443,10 @@
     // 别改用 main[data-app-shell-main-surface] 的 --app-shell-main-surface-clip-start-radius：
     // 那个元素左边缘在 362（缩在侧边栏后面），左侧还用 inset 负内缩把圆角裁掉，start 恒为 0，
     // 会让人误判左侧不该圆——第一版就是这么写错的，用户反馈「少一个圆角」正是缺了左边两个角。
-    // 类名是 CSS Modules 的哈希名，但 _PageSurface_ 这个片段稳定，且不会命中 _PageSurfaceLayout_
-    //（其后紧跟 L 而非 _）。量到的是视觉值，同样折算成布局坐标。读不到就保持 0，不做猜测。
-    const pageSurface = document.querySelector('[class*="_PageSurface_"]');
+    // 类名是 CSS Modules 的哈希名，但 PageSurface 这个名字稳定，且不会命中 PageSurfaceLayout
+    //（新旧两种哈希格式 `_PageSurface_xx` / `PageSurface-xx` 都认，#2893）。量到的是视觉值，同样折算成布局坐标。
+    // 读不到就保持 0，不做猜测。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"], [class^="PageSurface-"], [class*=" PageSurface-"]');
     const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
     const mainSurfaceStyle = (() => {
       const main = document.querySelector("main[data-app-shell-main-surface]");
@@ -12624,7 +12626,9 @@
       // （display:none），仍然连着 —— 那种情况不能当成关闭，否则回来时补丁已经
       // 被拆掉、要等一轮才重建，看上去就是"分组闪一下没了"。
       if (!root.isConnected) continue;
-      if (!root.querySelector('[class*="_ModelList_"]')) continue;
+      // 列表的 CSS Modules 类名新旧格式都认（#2893）：26.1027 及以前 `_ModelList_哈希`，26.1029 起 `ModelList-哈希`；
+      // 新格式按类名开头匹配，不会误中 `ModelListMotion-`。函数会被测试单独切片执行，所以写成字面量。
+      if (!root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]')) continue;
       return root;
     }
     return null;
@@ -12633,7 +12637,7 @@
   function codexPlusModelPickerList(menu) {
     const root = menu?.matches?.("[data-model-picker-view]") ? menu : menu?.querySelector?.("[data-model-picker-view]");
     if (!root) return null;
-    const list = root.querySelector('[class*="_ModelList_"]');
+    const list = root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
     if (!list) return null;
     if (root.getAttribute("data-model-picker-view") === "grid") return null;
     return list;
@@ -13329,7 +13333,7 @@
     codexPlusModelPickerRemoveOwnNodes(list);
     groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
     const groupedRows = new Set(rows.map((entry) => entry.row));
-    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"]').forEach((node) => {
+    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]').forEach((node) => {
       node.classList.toggle("codex-plus-model-provider-overview-only", !groupedRows.has(node));
     });
     const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
@@ -13477,7 +13481,7 @@
           radios: radios.length,
           catalogMatches: known,
           pickerView: document.querySelectorAll("[data-model-picker-view]").length,
-          modelList: count('[class*="_ModelList_"]'),
+          modelList: count('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]'),
           rowContent: count("[data-menu-row-content]"),
           flex1: count("span.flex-1, span[class*='flex-1']"),
           menuData: dataAttributes(menu),

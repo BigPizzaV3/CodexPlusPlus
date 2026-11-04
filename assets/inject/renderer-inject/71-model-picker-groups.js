@@ -258,7 +258,9 @@
       // （display:none），仍然连着 —— 那种情况不能当成关闭，否则回来时补丁已经
       // 被拆掉、要等一轮才重建，看上去就是"分组闪一下没了"。
       if (!root.isConnected) continue;
-      if (!root.querySelector('[class*="_ModelList_"]')) continue;
+      // 列表的 CSS Modules 类名新旧格式都认（#2893）：26.1027 及以前 `_ModelList_哈希`，26.1029 起 `ModelList-哈希`；
+      // 新格式按类名开头匹配，不会误中 `ModelListMotion-`。函数会被测试单独切片执行，所以写成字面量。
+      if (!root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]')) continue;
       return root;
     }
     return null;
@@ -267,7 +269,7 @@
   function codexPlusModelPickerList(menu) {
     const root = menu?.matches?.("[data-model-picker-view]") ? menu : menu?.querySelector?.("[data-model-picker-view]");
     if (!root) return null;
-    const list = root.querySelector('[class*="_ModelList_"]');
+    const list = root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
     if (!list) return null;
     if (root.getAttribute("data-model-picker-view") === "grid") return null;
     return list;
@@ -963,7 +965,7 @@
     codexPlusModelPickerRemoveOwnNodes(list);
     groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
     const groupedRows = new Set(rows.map((entry) => entry.row));
-    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"]').forEach((node) => {
+    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]').forEach((node) => {
       node.classList.toggle("codex-plus-model-provider-overview-only", !groupedRows.has(node));
     });
     const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
@@ -1111,7 +1113,7 @@
           radios: radios.length,
           catalogMatches: known,
           pickerView: document.querySelectorAll("[data-model-picker-view]").length,
-          modelList: count('[class*="_ModelList_"]'),
+          modelList: count('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]'),
           rowContent: count("[data-menu-row-content]"),
           flex1: count("span.flex-1, span[class*='flex-1']"),
           menuData: dataAttributes(menu),

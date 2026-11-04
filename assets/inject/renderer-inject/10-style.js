@@ -2033,7 +2033,8 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    // `main` 的 CSS Modules 类名新旧格式都认（#2893）：`_MainContentSurface_哈希` / `MainContentSurface-哈希`。
+    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"], main[class^="MainContentSurface-"], main[class*=" MainContentSurface-"]');
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
@@ -2553,7 +2554,7 @@
         && (
           homeCandidate.querySelector('.group\\/home-suggestions')
           || homeCandidate.querySelector('[class*="home-suggestions"]')
-          || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+          || homeCandidate.querySelector('[class*="_homeUtilityBar_"], [class^="homeUtilityBar-"], [class*=" homeUtilityBar-"]')
         )
       );
       const home = homeHasClassicChrome ? homeCandidate : null;
