@@ -1,6 +1,6 @@
 import { flowProviderSlot } from "./flow-provider-colors";
 import "./flow-provider-colors.css";
-/** 网关总览：任意 Agent → Codex++ → 任意供应商。左列 Agent、中间网关、右列供应商池，下方是最近请求与今日用量。 */
+/** 网关总览：今日数字一排；任意 Agent → Codex++ → 任意供应商的三列拓扑；最近请求列表。 */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowUpRight, ChevronDown, Plus } from "lucide-react";
@@ -26,18 +26,20 @@ import { agentVisible, singleAgent } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { ProviderAdder } from "./GatewayProviders";
 import "./HubOverview.css";
+import { CxCard, CxEmpty, CxSection, CxStats } from "./cx-layout";
 
 const LIVE_REFRESH_MS = 3000;
 /** 拓扑图光点和「最近请求」跟着真实请求走，读得勤一些（只读日志末尾，开销很小）。 */
 const FLOW_REFRESH_MS = 1500;
-/** 「最近请求」列出的条数。 */
-const FEED_LIMIT = 20;
+/** 「最近请求」列出的条数；更多的去请求日志看。 */
+const FEED_LIMIT = 10;
 const USAGE_REFRESH_MS = 30_000;
 
 /** 侧栏状态卡、总览、网关页共用的网关数据在 gateway-store 里；这里转出 hook，保持原来的引用路径。 */
 export { useGatewayPayload };
 
-function useTodayUsage(): UsageSummary | null {
+/** 今日用量（总览统计、首页网关一行共用），定时刷新。 */
+export function useTodayUsage(): UsageSummary | null {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -110,20 +112,18 @@ export function HubOverview({
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
   const poolState = hubPoolState(payload);
 
+  // 参照 Cursor 的 Customize：顶部一排今日数字，中间一张拓扑卡（Codex++ 的卖点：任意 Agent → 网关 → 多家供应商），
+  // 下面「最近请求」一个列表。现状说明不再单独写一段，拓扑图自己就说明了。
   return (
-    <div className="hub-page">
-      {/* 页面标题已在外壳顶栏，这里只留一句现状说明。 */}
-      <header className="hub-intro">
-        <p>
-          {!payload
-            ? t("正在读取网关状态…")
-            : solo
-              ? tf("{0} 通过 Codex++ 使用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [agentName(solo), providers.length])
-              : tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])}
-        </p>
-      </header>
+    <div className="hub-page cx-page">
+      <CxSection
+        aside={<button className="hub-link" onClick={() => onNavigate("gatewayUsage")} type="button">{t("用量明细")}<ArrowUpRight className="h-3.5 w-3.5" /></button>}
+        title={t("今日")}
+      >
+        <UsageStats showAgents={!solo} usage={usage} />
+      </CxSection>
 
-      <section className="hub-card">
+      <CxCard className="hub-topology-card">
         <HubTopology className="hub-topology-compact" flow={flow} links={links}>
           <div className="hub-col">
             <div className="hub-col-head"><span>{t("Agent")}</span><span>{t("请求")}</span></div>
@@ -149,8 +149,15 @@ export function HubOverview({
                 </span>
               </span>
             </div>
-            {/* 能力说明压成一行小字，不再一枚枚画标签。 */}
-            <p className="hub-caps">
+            {/* 能力说明压成一行小字；完整说明放在悬停提示里，不在页面上再写一段。 */}
+            <p
+              className="hub-caps"
+              title={!payload
+                ? t("正在读取网关状态…")
+                : solo
+                  ? tf("{0} 通过 Codex++ 使用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [agentName(solo), providers.length])
+                  : tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])}
+            >
               {[
                 t("按模型名路由"),
                 t("协议互转"),
@@ -198,30 +205,22 @@ export function HubOverview({
             </button>
           </div>
         </HubTopology>
-      </section>
+      </CxCard>
 
-      <div className="hub-grid">
-        <section className="hub-card">
-          <div className="hub-card-head">
-            <h3>{t("最近请求")}</h3>
-            <button className="hub-link" onClick={() => onNavigate("requestLog")} type="button">{t("请求日志")}<ArrowUpRight className="h-3.5 w-3.5" /></button>
-          </div>
+      <CxSection
+        aside={<button className="hub-link" onClick={() => onNavigate("requestLog")} type="button">{t("请求日志")}<ArrowUpRight className="h-3.5 w-3.5" /></button>}
+        title={t("最近请求")}
+      >
+        <CxCard>
           {!requestFlow.loaded ? (
-            <p className="hub-empty">{t("读取中…")}</p>
+            <CxEmpty title={t("读取中…")} />
           ) : feed.length === 0 ? (
-            <p className="hub-empty">{t("还没有请求经过网关。在已接入的 Agent 里发一条消息试试。")}</p>
+            <CxEmpty title={t("还没有请求经过网关")} detail={t("在已接入的 Agent 里发一条消息试试。")} />
           ) : (
             <ul className="hub-flow-list">{feed.map((entry) => <FeedRow entry={entry} key={entry.id} payload={payload} record={routeRecords.get(entry.id) ?? null} />)}</ul>
           )}
-        </section>
-        <section className="hub-card">
-          <div className="hub-card-head">
-            <h3>{t("今日用量")}</h3>
-            <button className="hub-link" onClick={() => onNavigate("gatewayUsage")} type="button">{t("明细")}<ArrowUpRight className="h-3.5 w-3.5" /></button>
-          </div>
-          <UsageStats showAgents={!solo} usage={usage} />
-        </section>
-      </div>
+        </CxCard>
+      </CxSection>
 
       {adding === "agent" ? (
         <AgentConnectDialog
@@ -281,44 +280,35 @@ function FeedRow({ entry, record, payload }: { entry: FlowEntry; record: RouteRe
   );
 }
 
+/** 今日数字一排（CxStats）：调用、成功率、Tokens、估算费用。读取中或还没请求时照样占位，版面不跳。 */
 function UsageStats({ usage, showAgents }: { usage: UsageSummary | null; showAgents: boolean }) {
-  if (!usage) return <p className="hub-empty">{t("读取中…")}</p>;
-  const totals = usage.totals;
-  if (totals.calls === 0) return <p className="hub-empty">{t("今天还没有经过网关的请求。")}</p>;
-  const rate = successRate(totals);
-  const cache = cacheHitRate(totals);
-  const cost = usage.costs.filter((item) => item.amount > 0).map((item) => formatMoney(item.amount, item.currency)).join(" + ");
+  const totals = usage?.totals;
+  const rate = totals ? successRate(totals) : null;
+  const cache = totals ? cacheHitRate(totals) : null;
+  const cost = (usage?.costs ?? []).filter((item) => item.amount > 0).map((item) => formatMoney(item.amount, item.currency)).join(" + ");
+  const empty = !usage ? t("读取中…") : totals?.calls === 0 ? t("今天还没有经过网关的请求。") : null;
   return (
-    <>
-      <dl className="hub-stats">
-        <div><dt>{t("调用")}</dt><dd>{totals.calls}</dd></div>
-        <div><dt>{t("成功率")}</dt><dd data-tone="ok">{rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}</dd></div>
-        <div><dt>Tokens</dt><dd>{formatTokens(totals.inputTokens + totals.outputTokens)}</dd></div>
-        <div><dt>{t("缓存命中")}</dt><dd>{cache === null ? "—" : `${Math.round(cache * 100)}%`}</dd></div>
-        {cost ? <div className="hub-stats-wide"><dt>{t("估算费用")}</dt><dd>{cost}</dd></div> : null}
-      </dl>
-      {showAgents ? <AgentSplit usage={usage} /> : null}
-    </>
+    <CxStats
+      items={[
+        { label: t("调用"), value: totals ? totals.calls : "—", hint: empty ?? (showAgents && usage ? <AgentSplit usage={usage} /> : null) },
+        { label: t("成功率"), value: rate === null ? "—" : `${(rate * 100).toFixed(1)}%`, hint: totals?.errors ? tf("{0} 次出错", [totals.errors]) : null },
+        { label: "Tokens", value: totals?.calls ? formatTokens(totals.inputTokens + totals.outputTokens) : "—", hint: cache === null ? null : tf("缓存命中 {0}%", [Math.round(cache * 100)]) },
+        { label: t("估算费用"), value: cost || "—", hint: cost ? null : t("在供应商里填上价格后估算") },
+      ]}
+    />
   );
 }
 
-/** 今日调用按 Agent 拆分的占比条；单 Agent 模式下没有意义，不画。 */
+/** 今日调用按 Agent 拆分，一行文字（「Codex 56% · Claude Code 44%」）；单 Agent 模式下没有意义，不画。 */
 function AgentSplit({ usage }: { usage: UsageSummary }) {
   const focus = useAgentFocus();
   const groups = usage.byAgent.filter((group) => agentVisible(focus, group.key));
   const agentTotal = groups.reduce((sum, group) => sum + group.calls, 0) || 1;
   if (!groups.length) return null;
   return (
-    <>
-      <div className="hub-split" aria-label={t("按 Agent 拆分")}>
-        {groups.map((group) => <i data-agent={group.key} key={group.key} style={{ flex: group.calls }} title={`${agentName(group.key)} · ${group.calls}`} />)}
-      </div>
-      <div className="hub-legend">
-        {groups.map((group) => (
-          <span key={group.key}><i data-agent={group.key} />{agentName(group.key)} {Math.round((group.calls / agentTotal) * 100)}%</span>
-        ))}
-      </div>
-    </>
+    <span aria-label={t("按 Agent 拆分")} className="hub-split-text">
+      {groups.map((group) => `${agentName(group.key)} ${Math.round((group.calls / agentTotal) * 100)}%`).join(" · ")}
+    </span>
   );
 }
 

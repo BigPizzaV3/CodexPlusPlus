@@ -52,7 +52,7 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
       if (!previous || deps.some((value, i) => value !== previous[i])) { slots[index] = deps; effects.push(callback); }
     },
     formatProgressPercent: (value: number) => String(value),
-    Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
+    Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", SettingRow: "SettingRow", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
     RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", SettingsAutoSave: "SettingsAutoSave", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
     providerSyncItem: enhancementItem("providerSyncEnabled"),
   });

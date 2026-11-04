@@ -234,8 +234,11 @@ pub async fn perform_update_with_progress<F>(
 where
     F: FnMut(UpdateProgress) + Send,
 {
-    let (installer_path, downloaded_bytes, total_bytes) =
-        download_release_asset_with_progress(release, download_dir, &mut on_progress).await?;
+    // 后台已经下好（「有可用更新时自动下载」）就直接用，不再下载一遍。
+    let (installer_path, downloaded_bytes, total_bytes) = match downloaded_installer(release, download_dir) {
+        Some((path, bytes)) => (path, bytes, Some(bytes)),
+        None => download_release_asset_with_progress(release, download_dir, &mut on_progress).await?,
+    };
 
     let launch_started = Instant::now();
     on_progress(UpdateProgress {
@@ -282,6 +285,40 @@ where
         installer_path,
         launched: true,
     })
+}
+
+/// 只下载、不安装：「有可用更新时自动下载」在后台调用，用户点「安装」时 [perform_update_with_progress]
+/// 直接用下好的安装包。已经下好的不再下载。返回安装包路径。
+pub async fn download_update_with_progress<F>(
+    release: &Release,
+    download_dir: &Path,
+    mut on_progress: F,
+) -> anyhow::Result<PathBuf>
+where
+    F: FnMut(UpdateProgress) + Send,
+{
+    if let Some((path, _)) = downloaded_installer(release, download_dir) {
+        return Ok(path);
+    }
+    let (path, _, _) = download_release_asset_with_progress(release, download_dir, &mut on_progress).await?;
+    Ok(path)
+}
+
+/// 下载完成的标记文件：安装包旁边的 `<安装包>.complete`，内容是安装包字节数。
+/// 只有标记在、且字节数和安装包一致，才算下好了（下到一半退出、或文件被改过都不算）。
+fn completion_marker(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    name.push(".complete");
+    path.with_file_name(name)
+}
+
+/// 这个版本的安装包是否已经完整下载：返回路径和字节数。
+pub fn downloaded_installer(release: &Release, download_dir: &Path) -> Option<(PathBuf, u64)> {
+    let name = release.asset_name.as_ref()?;
+    let path = download_dir.join(safe_asset_name(name).ok()?);
+    let expected: u64 = std::fs::read_to_string(completion_marker(&path)).ok()?.trim().parse().ok()?;
+    let actual = std::fs::metadata(&path).ok()?.len();
+    (expected > 0 && expected == actual).then_some((path, actual))
 }
 
 async fn download_release_asset_with_progress<F>(
@@ -458,7 +495,15 @@ pub fn download_asset_to(
     let safe = safe_asset_name(name)?;
     std::fs::create_dir_all(download_dir)?;
     let path = download_dir.join(safe);
-    std::fs::write(&path, bytes)?;
+    // 先写临时文件再改名，最后写完成标记：中途退出不会留下一个看着完整的半截安装包。
+    let marker = completion_marker(&path);
+    let _ = std::fs::remove_file(&marker);
+    let mut partial_name = path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    partial_name.push(".part");
+    let partial = path.with_file_name(partial_name);
+    std::fs::write(&partial, bytes)?;
+    std::fs::rename(&partial, &path)?;
+    std::fs::write(&marker, bytes.len().to_string())?;
     // 历史安装包会一直留在 updates/ 里占磁盘（#2544）：每次下载成功后只保留
     // 最近 `UPDATE_KEEP_INSTALLERS` 个安装包（含本次），其余删除。清理失败
     // 不影响本次更新。
@@ -489,6 +534,7 @@ fn prune_old_installers(download_dir: &Path, current: &Path) {
         .into_iter()
         .skip(UPDATE_KEEP_INSTALLERS.saturating_sub(1))
     {
+        let _ = std::fs::remove_file(completion_marker(&stale));
         let _ = std::fs::remove_file(stale);
     }
 }

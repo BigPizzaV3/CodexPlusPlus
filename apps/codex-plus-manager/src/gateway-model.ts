@@ -178,6 +178,8 @@ export type GatewayDisconnectPreview = {
   files: GatewayDisconnectFile[];
   warnings: string[];
   canDisconnect: boolean;
+  /** 没法逐项预览时（Codex 接入前没留下实时存档等）：断开会完整切换到这个直连供应商，确认后走「完整切换并断开」。 */
+  fullSwitch?: { relayId: string; name: string } | null;
 };
 
 export type GatewayAgentView = {

@@ -406,7 +406,8 @@ pub fn parse_source(input: &str) -> anyhow::Result<PluginSource> {
             path: home.join(rest).to_string_lossy().into_owned(),
         });
     }
-    if Path::new(text).is_absolute() {
+    // Windows 上 `/x`、`\x` 不算绝对路径，但 npm 包名不会以它们开头：也当本地目录。
+    if Path::new(text).is_absolute() || text.starts_with('/') || text.starts_with('\\') {
         return Ok(PluginSource::Local {
             path: text.to_string(),
         });
@@ -1269,8 +1270,8 @@ fn fetch_git(
     if !package.join("package.json").is_file() {
         bail!("仓库{}里没有 package.json", subdir.map(|sub| format!("的 {sub} 目录")).unwrap_or_default());
     }
-    let package = package.canonicalize()?;
-    if !package.starts_with(checkout.canonicalize()?) {
+    let package = canonical_dir(&package)?;
+    if !package.starts_with(canonical_dir(&checkout)?) {
         bail!("git 子目录指向仓库以外");
     }
     reject_links_outside(&package)?;
@@ -1278,6 +1279,12 @@ fn fetch_git(
     let cleaned = staging.join("package");
     copy_dir_filtered(&package, &cleaned)?;
     Ok(cleaned)
+}
+
+/// 规范化路径并去掉 Windows 的 `\\?\` 前缀：这些路径要交给 Node 宿主，Node 的 `pathToFileURL` /
+/// `import()` 会把 `\\?\D:\x` 变成无效的 `file:////?/D:/x`，插件代码就加载不了。
+fn canonical_dir(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(strip_verbatim_prefix(&path.canonicalize()?))
 }
 
 /// 包里的符号链接不能指向包外：宿主会从包目录加载代码与 SKILL.md。

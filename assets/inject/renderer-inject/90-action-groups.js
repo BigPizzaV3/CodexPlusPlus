@@ -627,6 +627,7 @@
     composerEl: null,
     rafId: 0,
     settleFramesLeft: 0,
+    composing: false,
     mo: null,
     ro: null,
     pollId: 0,
@@ -1055,11 +1056,30 @@
     return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
   }
 
-  function scheduleConversationViewAlign(frames = 16) {
-    conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
-    if (conversationViewState.rafId) return;
+  function onConversationViewCompositionStart(event) {
+    if (!event.target?.closest?.("[data-codex-composer], .ProseMirror, textarea, [contenteditable='true']")) return;
+    conversationViewState.composing = true;
+    if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+    conversationViewState.rafId = 0;
+    conversationViewState.settleFramesLeft = 0;
+  }
+
+  function onConversationViewCompositionEnd() {
+    if (!conversationViewState.composing) return;
+    conversationViewState.composing = false;
+    scheduleConversationViewAlign();
+  }
+
+  function scheduleConversationViewAlign(frames = 2) {
+    if (conversationViewState.composing || conversationViewState.rafId) return;
+    // 合并同一轮请求，避免持续的 DOM 变更把稳定帧预算反复延长。
+    conversationViewState.settleFramesLeft = frames;
     const tick = () => {
       conversationViewState.rafId = 0;
+      if (conversationViewState.composing) {
+        conversationViewState.settleFramesLeft = 0;
+        return;
+      }
       conversationViewAlignNow();
       conversationViewState.settleFramesLeft -= 1;
       if (conversationViewState.settleFramesLeft > 0) {
@@ -1070,6 +1090,9 @@
   }
 
   function cleanupConversationView() {
+    document.removeEventListener("compositionstart", onConversationViewCompositionStart, true);
+    document.removeEventListener("compositionend", onConversationViewCompositionEnd, true);
+    conversationViewState.composing = false;
     if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
     if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
     conversationViewState.rafId = 0;

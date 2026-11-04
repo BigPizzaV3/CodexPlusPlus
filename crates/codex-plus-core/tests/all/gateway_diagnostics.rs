@@ -78,7 +78,10 @@ fn write(path: &Path, text: &str) {
 }
 
 fn set_age(path: &Path, age_ms: u64) {
-    std::fs::File::open(path)
+    // 改修改时间要写权限：Windows 上用只读打开的句柄 set_modified 会报「拒绝访问」。
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
         .unwrap()
         .set_modified(SystemTime::now() - Duration::from_millis(age_ms))
         .unwrap();

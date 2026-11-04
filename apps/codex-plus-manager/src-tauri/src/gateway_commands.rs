@@ -492,6 +492,8 @@ struct DisconnectPreviewGrant {
     agent: String,
     fingerprint: String,
     expires_at: Instant,
+    /// 这份预览没法逐项列出改动，只能「完整切换并断开」（见 `DisconnectPreview::full_switch`）。
+    full_switch: bool,
 }
 
 static DISCONNECT_PREVIEWS: OnceLock<Mutex<HashMap<String, DisconnectPreviewGrant>>> =
@@ -535,7 +537,7 @@ fn preview_gateway_disconnect_blocking(
             &settings,
             &agent,
         )?;
-        if preview.can_disconnect {
+        if preview.can_disconnect || preview.full_switch.is_some() {
             let token = new_client_token(&agent);
             preview.preview_token = token.clone();
             let mut grants = disconnect_previews()
@@ -556,6 +558,7 @@ fn preview_gateway_disconnect_blocking(
                     agent: agent.as_str().to_string(),
                     fingerprint: preview.fingerprint.clone(),
                     expires_at: Instant::now() + Duration::from_secs(300),
+                    full_switch: !preview.can_disconnect,
                 },
             );
         }
@@ -613,11 +616,44 @@ fn validate_disconnect_preview(
         agent,
     )?;
     anyhow::ensure!(
-        current.can_disconnect && current.fingerprint == grant.fingerprint,
+        !grant.full_switch && current.can_disconnect && current.fingerprint == grant.fingerprint,
         "配置在预览后发生变化，请重新获取预览"
     );
     // 还原复用同一份已校验设置和路径，避免校验后再次读取引入不同的恢复目标。
     Ok((ctx, settings))
+}
+
+/// 没法逐项预览时的断开（Codex 接入前没留下实时存档，或要切回的是聚合供应商）：用户在预览里确认过
+/// 要完整切换到哪个直连供应商后调用。和普通断开走同一个 `disable_binding`（收回借出的登录、按直连模式
+/// 的正常流程切换并先备份），只是不要求逐项预览；同样要拿预览发的 token，配置在预览后变过就拒绝。
+#[tauri::command]
+pub fn disable_gateway_binding_full_switch(
+    agent: String,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = parse_agent(&agent)?;
+        let grant = {
+            let mut grants = disconnect_previews()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("断开预览状态不可用"))?;
+            take_disconnect_preview(&mut grants, &agent, preview_token.as_deref(), Instant::now())?
+        };
+        let settings = SettingsStore::default().load()?;
+        let ctx = context();
+        let current = codex_plus_core::gateway::disconnect_preview::preview(&ctx, &settings, &agent)?;
+        anyhow::ensure!(
+            grant.full_switch && current.full_switch.is_some() && current.fingerprint == grant.fingerprint,
+            "配置在预览后发生变化，请重新获取预览"
+        );
+        apply::disable_binding(&ctx, &settings, &agent)
+    })();
+    let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
+    respond(
+        &format!("{name} 已断开并切回直连，新开的会话生效。"),
+        "断开失败",
+        result,
+    )
 }
 
 /// 开启或更新一个 Agent 的网关接入：改写它的配置指向网关，并确保常驻 helper 在跑。
@@ -2582,6 +2618,7 @@ mod disconnect_preview_tests {
             agent: "claude".to_string(),
             fingerprint: "state-fingerprint".to_string(),
             expires_at,
+            full_switch: false,
         }
     }
 

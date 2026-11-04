@@ -30,7 +30,10 @@ test("overview lists the local server and protocol conversion separately and kee
   assert.match(items, /当前供应商直连 Responses/);
   assert.match(items, /"off"/);
   assert.doesNotMatch(items, /后台服务状态|代理服务器状态|proxy_server/);
-  assert.match(screen, /overview-health-grid/);
+  // 健康检查收成一张卡的行列表：有问题的项排前面，正常的收成一行，点开再看全部。
+  assert.match(screen, /className="overview-health-list"/);
+  assert.ok(screen.indexOf("{healthProblems.map(healthRow)}") < screen.indexOf("healthFine.map(healthRow)"));
+  assert.match(screen, /onClick=\{\(\) => setHealthExpanded\(true\)\}/);
   assert.doesNotMatch(screen, /最近启动|LatestLaunch/);
   const entry = functionSource("App");
   // 顶栏不再放 Codex 状态与启动 / 重启按钮：启动、停止在侧栏 Codex 行的播放键上。
@@ -41,9 +44,6 @@ test("overview lists the local server and protocol conversion separately and kee
   assert.match(screen, /overview-health-header-actions/);
   assert.match(screen, /aria-label=\{t\("刷新状态"\)\}/);
   assert.match(screen, /actions\.refreshCurrent/);
-  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  // 五项按卡片最小宽度自动排列：窄窗口两列、宽窗口三列。
-  assert.match(css, /\.overview-health-grid\s*\{\s*grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(320px,\s*1fr\)\)/);
 });
 
 test("maintenance retains application entrypoint checks and repairs", () => {

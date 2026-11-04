@@ -30,8 +30,19 @@ pub struct DisconnectPreview {
     pub files: Vec<DisconnectFile>,
     pub warnings: Vec<String>,
     pub can_disconnect: bool,
+    /// Codex 没法逐项预览（接入前没有实时存档，或要切回的是聚合供应商）时：断开等于把 Codex
+    /// 完整切换到这个直连供应商（和在供应商列表里切换一样，切换前备份当前配置、收回借出的登录）。
+    /// 这时 `can_disconnect` 仍为 false（普通断开不放行），由用户确认后走「完整切换并断开」。
+    pub full_switch: Option<FullSwitchTarget>,
     #[serde(skip)]
     pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FullSwitchTarget {
+    pub relay_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +185,7 @@ pub fn preview(
                 .into(),
         ],
         can_disconnect: true,
+        full_switch: None,
         fingerprint: String::new(),
     };
     let mut sources = Sources::default();
@@ -427,9 +439,17 @@ fn native_preview(
         Ok(Some(files)) => files,
         Ok(None) => {
             result.can_disconnect = false;
-            result.warnings.push(
-                "此次 Codex 断开需要完整供应商切换（无实时恢复存档或涉及聚合）；暂不能生成精确预览，请先在 Codex 供应商页切回直连。".into(),
-            );
+            match codex_full_switch_target(settings, binding) {
+                Some(target) => {
+                    result.warnings.push(
+                        "接入前没有留下实时存档（或要切回的是聚合供应商），没法逐项预览改动；断开会把 Codex 完整切换到下面这个直连供应商，切换前会备份当前配置。".into(),
+                    );
+                    result.full_switch = Some(target);
+                }
+                None => result.warnings.push(
+                    "Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。".into(),
+                ),
+            }
             return Ok(());
         }
         Err(_) => {
@@ -450,6 +470,32 @@ fn native_preview(
         result.warnings.push("Codex 配置按实时恢复存档计算；正式断开仍需成功切换直连供应商，并更新模型目录、应用状态和备份。供应商校验或写入失败时会中止断开。".into());
     }
     Ok(())
+}
+
+/// 完整切换时切到哪个直连供应商：与真正断开（`restore_codex`）同一个选法——接入前那一个还在就用它，
+/// 不在了就用列表里第一个普通供应商。
+fn codex_full_switch_target(settings: &BackendSettings, binding: &AgentBinding) -> Option<FullSwitchTarget> {
+    let managed = apply::CODEX_GATEWAY_RELAY_ID;
+    let previous = binding.restore.codex_previous_relay_id.trim();
+    let named = |id: &str| -> Option<String> {
+        if id.is_empty() || id == managed {
+            return None;
+        }
+        settings
+            .aggregate_relay_profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| profile.name.clone())
+            .or_else(|| settings.relay_profiles.iter().find(|profile| profile.id == id).map(|profile| profile.name.clone()))
+    };
+    if let Some(name) = named(previous) {
+        return Some(FullSwitchTarget { relay_id: previous.to_string(), name });
+    }
+    settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id != managed)
+        .map(|profile| FullSwitchTarget { relay_id: profile.id.clone(), name: profile.name.clone() })
 }
 
 fn add_file(
@@ -1166,11 +1212,18 @@ mod tests {
         let fixture = fixture();
         codex_direct(&fixture.ctx);
         enable_binding(&fixture.ctx, &ToolId::Codex, binding()).unwrap();
+        // 没有实时存档（旧版接入、或存档丢了）：不给不准的逐项预览。
+        std::fs::remove_file(fixture.ctx.backup_root.join("codex-before-gateway.json")).ok();
         let settings = fixture.ctx.settings.load().unwrap();
         let before = snapshot(fixture.temp.path());
         let result = preview(&fixture.ctx, &settings, &ToolId::Codex).unwrap();
         assert!(!result.can_disconnect);
         assert!(result.files.is_empty());
+        // 但说清楚会完整切换到哪个直连供应商，由用户确认后走完整切换。
+        assert_eq!(
+            result.full_switch,
+            Some(FullSwitchTarget { relay_id: "direct".into(), name: "Direct".into() })
+        );
         assert_eq!(snapshot(fixture.temp.path()), before);
     }
 
