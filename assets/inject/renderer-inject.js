@@ -13063,8 +13063,9 @@
     if (!content) return null;
     const native = content.querySelector(`.${codexPlusModelPickerNativeLabelClass}`);
     const own = content.querySelector(`.${codexPlusModelPickerOwnLabelClass}`);
-    const outer = content.querySelector("span.flex-1, span[class*='flex-1']");
-    const inner = outer?.firstElementChild;
+    const outer = content.querySelector("span.flex-1, span[class*='flex-1'], div.flex-1, div[class*='flex-1']");
+    // 原生副标题行使用 div.flex-1，普通单行及旧版骨架使用 span.flex-1。
+    const inner = outer?.tagName === "DIV" ? outer : outer?.firstElementChild;
     // 原始标签优先；没打过补丁时就是 inner 里的第一个 span。
     const labelElement = native || own || inner?.firstElementChild || inner;
     const text = (labelElement?.textContent || "").replace(/\s+/g, " ").trim();

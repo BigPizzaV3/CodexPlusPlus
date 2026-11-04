@@ -354,6 +354,35 @@ export const pickerViewScenarios: Array<{
     },
   },
   {
+    name: "native div-based subtitle rows hide the recommendation and restore their original structure",
+    async run({ page, inject }) {
+      await page.locator("#native-default-row").evaluate((row: HTMLElement) => {
+        row.innerHTML = '<div data-menu-row-content><div class="flex min-w-0 flex-1 flex-col" style="display:flex;flex-direction:column"><span class="min-w-0 truncate">默认</span><span class="min-w-0 text-xs native-recommendation" aria-hidden="false"><span class="_DefaultDescription_native">推荐模型集</span></span></div><svg class="native-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg></div>';
+      });
+      const original = await page.locator("#native-default-row").innerHTML();
+      await inject();
+      await switchToList(page);
+      const row = page.locator("#native-default-row");
+      assert.equal(await row.getByText("推荐模型集", { exact: true }).isVisible(), false);
+      assert.equal(await row.locator(".codex-plus-model-default-name").innerText(), "GPT-6.1-Terra（寒鹤）");
+      assert.equal(await row.locator("svg.native-check").count(), 1);
+      assert.equal(await row.locator("[data-codex-plus-model-default-content]").evaluate((node: Element) =>
+        getComputedStyle(node).flexDirection), "row");
+      await row.click();
+      assert.deepEqual((await assertNativeRowsUntouched(page)).clicks, ["default"]);
+      await page.getByRole("button", { name: VIEW_LABELS.icons, exact: true }).click();
+      assert.equal(await row.innerHTML(), original);
+      assert.equal(await row.getByText("推荐模型集", { exact: true }).isVisible(), true);
+      await switchToList(page);
+      await inject();
+      await page.evaluate(() => {
+        const runtime = (window as any).__codexPlusModelPickerGroupsRuntime;
+        runtime.dispose(); runtime.releaseDom();
+      });
+      assert.equal(await row.innerHTML(), original);
+    },
+  },
+  {
     name: "interleaved native rows form continuous indented groups using consecutive CSS order",
     async run({ page }) {
       await switchToList(page);
