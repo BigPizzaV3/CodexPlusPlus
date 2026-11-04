@@ -2,6 +2,7 @@
 // 检查本机安装的 Codex 能否打上原生 Fast 补丁：直接读 app.asar（只读），
 // 按运行时同样的流程从 index.html 的入口发现模块、匹配四个门控，报告每个门控用的是严格结构还是核心结构。
 // Codex 每次更新后跑一次，就能提前知道 Fast 是否还适配。
+// Rspack 依赖运行中的模块工厂；静态检查返回 2 表示无法判定，不代表运行时不支持。
 //
 // 用法：node scripts/check-native-fast.cjs [app.asar 路径]
 //   默认 macOS：/Applications/ChatGPT.app/Contents/Resources/app.asar
@@ -48,10 +49,19 @@ async function main() {
   }
   const asar = openAsar(asarPath);
   const html = asar.read("webview/index.html") ?? "";
-  const entries = [...html.matchAll(/<script[^>]+src="\.?\/?(assets\/index-[\w-]+\.js)"/g)].map((match) => `app://-/${match[1]}`);
+  const entries = [...html.matchAll(/<script[^>]+src="\.?\/?(assets\/(?:index-[\w-]+|\d+\.[a-f\d]+)\.js)"/g)].map((match) => `app://-/${match[1]}`);
   if (!entries.length) {
-    console.error("webview/index.html 里没有找到 assets/index-*.js 入口。");
+    console.error("webview/index.html 里没有找到可识别的模块入口。");
     process.exit(1);
+  }
+
+  const rspack = require(path.join(__dirname, "../assets/inject/native-fast-rspack.js"));
+  if (entries.some(url => /\/\d+\.[a-f\d]+\.js$/.test(url)
+    && rspack.isRuntime(asar.read(`webview${new URL(url).pathname}`)))) {
+    console.log(`入口：${entries.join(", ")}`);
+    console.log("结果：无法静态判定（rspack-runtime-check-required）。");
+    console.log("检测到 Rspack 入口，需要运行中的模块工厂。请通过 Codex++ 启动 Codex 并查看原生 Fast 状态；此结果不代表 Fast 不支持。");
+    process.exit(2);
   }
 
   const api = require(path.join(__dirname, "../assets/inject/native-fast-unlock.js"));

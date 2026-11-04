@@ -817,11 +817,35 @@
         const parsed = new URL(src);
         // app:// 是 Electron 注册的标准协议；按协议 + 主机比较，不依赖非特殊协议的 origin 序列化。
         return parsed.protocol === location.protocol && parsed.host === location.host
-          && /^\/assets\/index-[\w-]+\.js$/.test(parsed.pathname);
+          && /^\/assets\/(?:index-[\w-]+|\d+\.[a-f\d]+)\.js$/.test(parsed.pathname);
       } catch {
         return false;
       }
     }).slice(0, 4);
+    const rspack = root.__codexPlusNativeFastRspack;
+    if (runtime.status().enabled && rspack) {
+      const candidates = [];
+      for (const url of entries.filter(url => /\/\d+\.[a-f\d]+\.js$/.test(url))) {
+        let source;
+        try { source = await (options.fetchText ?? defaultFetchText)(url); } catch { continue; }
+        if (typeof source === "string" && source.length <= moduleSourceLimit && rspack.isRuntime(source)) candidates.push({ url, source });
+      }
+      if (candidates.length > 1) return { ok: false, modules: [], diagnostics: { reason: "ambiguous-rspack-runtime", rewriters: { fast: "ambiguous-rspack-runtime" } } };
+      if (candidates.length === 1) {
+        const { url, source } = candidates[0];
+        try {
+          const factories = await (options.readRspackFactories ?? rspack.readFactories)(url);
+          const chunkUrl = rspack.registrationChunk(source, url);
+          if (!chunkUrl) return { ok: false, modules: [], diagnostics: { reason: "unsupported-rspack-register", rewriters: { fast: "unsupported-rspack-register" } } };
+          const chunk = await (options.fetchText ?? defaultFetchText)(chunkUrl);
+          const prepared = rspack.prepare(chunk, chunkUrl, factories, rewriteModuleBase, entryModuleSource);
+          for (const rewriter of active.filter(item => item.id !== "fast")) prepared.diagnostics.rewriters[rewriter.id] = "unsupported-rspack";
+          return prepared;
+        } catch {
+          return { ok: false, modules: [], diagnostics: { reason: "rspack-modules-unavailable", rewriters: { fast: "rspack-modules-unavailable" } } };
+        }
+      }
+    }
     const discovered = await discoverModules(entries, active, options.fetchText);
     return prepareModules(discovered);
   }
