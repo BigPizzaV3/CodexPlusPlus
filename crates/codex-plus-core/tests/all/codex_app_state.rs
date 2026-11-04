@@ -288,6 +288,86 @@ fn prune_stale_recent_models_drops_unavailable_entries_and_keeps_the_rest() {
     assert!(backups >= 1);
 }
 
+/// issue #2876 / #2707：新版 Codex 的项目键（local-projects / thread-project-* 等）
+/// 必须进快照并在 merge 时带回，否则读到半截 state 再 merge 写回会把项目归属截掉。
+#[test]
+fn app_state_sync_passes_through_new_codex_project_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let state_path = home.join(".codex-global-state.json");
+    std::fs::write(
+        &state_path,
+        json!({
+            "local-projects": {"proj-1": {"name": "App", "root": "C:/work/app"}},
+            "selected-project": {"id": "proj-1"},
+            "app-server-projects-migration-by-host": {"local": {"proj-1": "srv-1"}},
+            "thread-project-membership-host-ids": {"thread-1": "local"},
+            "thread-project-assignments": {"thread-1": "proj-1"},
+            "sidebar-project-thread-orders": {"proj-1": ["thread-1"]},
+            "project-appearances": {"proj-1": {"icon": "🚀"}},
+            "thread-workspace-root-hints": {"thread-1": "C:/work/app"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let snapshot_path = capture_app_state_snapshot(home).unwrap().expect("snapshot");
+    assert!(snapshot_path.is_file());
+    let snapshot: Value = serde_json::from_str(&std::fs::read_to_string(&snapshot_path).unwrap()).unwrap();
+    // 快照必须原样带出新版项目键，否则 merge 时无从恢复。
+    for key in [
+        "local-projects",
+        "selected-project",
+        "app-server-projects-migration-by-host",
+        "thread-project-membership-host-ids",
+        "thread-project-assignments",
+        "sidebar-project-thread-orders",
+        "project-appearances",
+    ] {
+        assert!(
+            snapshot["state"].get(key).is_some(),
+            "snapshot is missing {key}"
+        );
+    }
+
+    // 模拟读到一份半截 state（项目键缺了），merge 后应该被快照恢复。
+    std::fs::write(
+        &state_path,
+        json!({
+            "thread-workspace-root-hints": {"thread-1": "C:/work/app"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let result = sync_app_state_after_provider_switch(home).unwrap();
+    assert!(result.changed);
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(state["local-projects"]["proj-1"]["name"], "App");
+    assert_eq!(state["thread-project-membership-host-ids"]["thread-1"], "local");
+    assert_eq!(state["project-appearances"]["proj-1"]["icon"], "🚀");
+}
+
+/// issue #2876 / #2707：读到「有 thread-project-* 数据但所有顶层项目键都缺」的
+/// 半截 state 时拒绝 merge——继续写回会把项目归属永久截掉。
+#[test]
+fn app_state_sync_refuses_to_merge_truncated_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let state_path = home.join(".codex-global-state.json");
+    std::fs::write(
+        &state_path,
+        json!({
+            "thread-project-membership-host-ids": {"thread-1": "local"},
+            "thread-project-assignments": {"thread-1": "proj-1"},
+            "thread-workspace-root-hints": {"thread-1": "C:/work/app"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let error = sync_app_state_after_provider_switch(home).unwrap_err();
+    assert!(error.to_string().contains("partially-written"), "{error}");
+}
+
 /// 目录算不出来（空集合）时绝不改文件：宁可留着残留，也不能误删用户的选择。
 #[test]
 fn prune_stale_recent_models_skips_when_no_published_models() {

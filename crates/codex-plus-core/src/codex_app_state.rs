@@ -32,6 +32,23 @@ const SAFE_TOP_LEVEL_KEYS: &[&str] = &[
     "electron-main-window-bounds",
 ];
 
+/// 新版 Codex（26.10xx+）的项目列表/会话归属键：结构由 Codex 拥有，
+/// Codex++ 不解析、不归一，但快照和 merge 时要原样带过——
+/// 否则半截状态（Codex 写入中途被读到）再 merge 写回，
+/// 这些键就永远从 state 里消失，对应 #2876 / #2707 的「项目消失」。
+const PASS_THROUGH_STATE_KEYS: &[&str] = &[
+    "local-projects",
+    "selected-project",
+    "app-server-project-id-by-legacy-project-id-by-host",
+    "app-server-projects-migration-by-host",
+    "project-appearances",
+    "project-order",
+    "sidebar-project-thread-orders",
+    "thread-project-assignments",
+    "thread-project-membership-host-ids",
+    "remote-project-connection-backfill-completed",
+];
+
 /// Codex 输入框模型选择器的「最近使用」（持久化在 atom state 里，只留最近 3 条）。
 const COMPOSER_RECENT_MODELS_KEY: &str = "composer-recent-model-configurations-v1";
 
@@ -105,6 +122,14 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
             snapshot_path: None,
         });
     };
+    // 读到疑似 Codex 写入中途的半截 state 时拒绝 merge 写回，
+    // 避免把缺的项目键永久截掉（#2876 / #2707）。
+    if looks_like_truncated_state(&state) {
+        return Err(anyhow::anyhow!(
+            "{} looks like a partially-written state (thread-* keys present but project keys missing); refusing to merge",
+            state_path(home).display()
+        ));
+    }
     let original = Value::Object(state.clone());
     let mut changed_keys = BTreeSet::new();
 
@@ -265,6 +290,24 @@ fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> 
         .ok_or_else(|| anyhow::anyhow!("{} must be a JSON object", path.display()))
 }
 
+/// 检测疑似「Codex 新版（26.10xx+）写入中途被读到」的 state：
+/// 新版项目归属用 `thread-project-*` / `local-projects` / `app-server-projects-*`，
+/// 这些键在写入时一起出现。如果 state 有 `thread-project-*` 数据但所有顶层项目键
+/// （`local-projects`、`selected-project`、`app-server-projects-migration-by-host`）都缺，
+/// 说明读到的是写了一半的文件，继续 merge 写回会把项目归属永久截掉（#2876 / #2707）。
+/// 旧版 Codex（electron-saved-workspace-roots）没有这些键是正常状态，不拦。
+fn looks_like_truncated_state(state: &Map<String, Value>) -> bool {
+    let has_new_thread_keys = state.keys().any(|key| {
+        key.starts_with("thread-project-") || key.starts_with("sidebar-project-")
+    });
+    if !has_new_thread_keys {
+        return false;
+    }
+    !state.contains_key("local-projects")
+        && !state.contains_key("selected-project")
+        && !state.contains_key("app-server-projects-migration-by-host")
+}
+
 fn load_snapshot(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
     let path = snapshot_path(home);
     if !path.exists() {
@@ -321,6 +364,11 @@ fn safe_snapshot_from_state(state: &Map<String, Value>) -> Value {
         }
     }
     for key in SAFE_TOP_LEVEL_KEYS {
+        if let Some(value) = state.get(*key) {
+            safe.insert((*key).to_string(), value.clone());
+        }
+    }
+    for key in PASS_THROUGH_STATE_KEYS {
         if let Some(value) = state.get(*key) {
             safe.insert((*key).to_string(), value.clone());
         }
@@ -453,6 +501,13 @@ fn merge_safe_snapshot(
         }
     }
     for key in SAFE_TOP_LEVEL_KEYS {
+        if let Some(value) = snapshot.get(*key) {
+            replace_if_changed(target, key, value.clone(), changed);
+        }
+    }
+    // 新版 Codex 的项目键：快照里有就带回来。当前 state 缺或比快照旧就用快照那份，
+    // 半截状态被 merge 时这些键不至于凭空消失（#2876 / #2707）。
+    for key in PASS_THROUGH_STATE_KEYS {
         if let Some(value) = snapshot.get(*key) {
             replace_if_changed(target, key, value.clone(), changed);
         }
