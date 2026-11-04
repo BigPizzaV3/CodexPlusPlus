@@ -449,6 +449,8 @@ fn native_quota_bootstrap_script() -> String {
   let sequence = 0;
   let timer = null;
   let disposed = false;
+  // 已有策略时绝不清空：拿不到设置就沿用上一份，避免冷启动 / 重启窗口里被写回官方额度锁。
+  let received = false;
   const request = () => state.request();
   const visible = () => {
     if (document.visibilityState === "visible") state.request();
@@ -459,20 +461,22 @@ fn native_quota_bootstrap_script() -> String {
       const seq = ++sequence;
       clearTimeout(timer);
       timer = setTimeout(() => {
-        if (seq === sequence) window.__codexPlusApiQuotaGate.installNative(null);
+        if (seq === sequence && !received) window.__codexPlusApiQuotaGate.installNative(null);
       }, 5000);
       try {
         window.codexPlusNativeQuotaSettings(JSON.stringify({ sequence: seq }));
       } catch {
         clearTimeout(timer);
-        window.__codexPlusApiQuotaGate.installNative(null);
+        if (!received) window.__codexPlusApiQuotaGate.installNative(null);
       }
     },
     accept(seq, settings) {
       if (disposed || seq !== sequence) return;
       clearTimeout(timer);
+      received = true;
       window.__codexPlusApiQuotaGate.installNative(settings);
     },
+    // 只由管理器显式停止时调用；连接闪断不再触发这里，页面策略不会被打回官方额度锁。
     dispose() {
       disposed = true;
       sequence += 1;
@@ -592,9 +596,10 @@ async fn install_isolated_api_quota_gate_target_url(
             serve_native_quota_settings(&mut session).await
         } => result,
     };
-    // 取消只终止工作 future，随后有界清理同一条 CDP 连接，不再探测或绑定新实例。
+    // 会话结束（取消 / 页面重建 / 重连）只回收本会话登记的脚本与 binding，不再向页面下发
+    // dispose()：一次闪断就把已解锁的发送键打回官方额度锁，正是「装好能用、用一会儿又锁住」的来源。
+    // 页面里的策略会随新会话的注入重新握手覆盖，最坏情况也只是沿用上一份（见 bootstrap 的 received）。
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
-        // 取消可能发生在注册已送达、但返回标识尚未收到时；先回收这份回复。
         if let Some(id) = pending_registration {
             if let Ok(Ok(reply)) = tokio::time::timeout(
                 Duration::from_millis(500),
@@ -610,15 +615,6 @@ async fn install_isolated_api_quota_gate_target_url(
             }
         }
         session.remove_registered_scripts(&registered_scripts).await;
-        if !registered_scripts.is_empty() {
-            let _ = session
-                .send_command_without_wait(
-                    next_message_id(),
-                    "Runtime.evaluate",
-                    runtime_evaluate_params("window.__codexPlusNativeQuotaBootstrap?.dispose()"),
-                )
-                .await;
-        }
         if binding_added {
             let _ = session
                 .send_command_without_wait(
@@ -1982,6 +1978,8 @@ mod native_quota_lifecycle_tests {
     #[tokio::test]
     async fn native_quota_cancellation_removes_registered_script_and_binding() {
         let commands = cancelled_session("Runtime.evaluate").await;
+        // 取消（页面重建 / 重连）只回收本会话登记的脚本与 binding，
+        // 不再向页面下发 dispose()：一次闪断不能把已解锁的发送键打回官方额度锁。
         assert_eq!(
             commands,
             [
@@ -1990,10 +1988,25 @@ mod native_quota_lifecycle_tests {
                 "Page.addScriptToEvaluateOnNewDocument",
                 "Runtime.evaluate",
                 "Page.removeScriptToEvaluateOnNewDocument",
-                "Runtime.evaluate",
                 "Runtime.removeBinding",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn native_quota_cancellation_never_disposes_the_page_policy() {
+        for cancel_at in ["Runtime.enable", "Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate", "serving"] {
+            let commands = cancelled_session(cancel_at).await;
+            let evaluates = commands
+                .iter()
+                .filter(|method| method.as_str() == "Runtime.evaluate")
+                .count();
+            // 初始化那一次 Runtime.evaluate 是安装；之后不允许再出现任何页面脚本调用。
+            assert!(
+                evaluates <= 1,
+                "cancel at {cancel_at} must not evaluate page cleanup, got {commands:?}"
+            );
+        }
     }
 
     #[tokio::test]
