@@ -2,12 +2,14 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const { permitsExternalApi, locate, condition } = require("./api-quota-gate.js");
 
+// 独立模式的「官方额度解锁」开关是唯一判据：打开就放行，不再按供应商模式挑条件。
 const profile = { id: "api", relayMode: "official", officialMixApiKey: true, upstreamBaseUrl: "https://proxy.example/v1" };
-const settings = { relayProfilesEnabled: true, activeRelayId: "api", relayProfiles: [profile], activeRelaySessionProvider: "openai" };
-assert.equal(permitsExternalApi(settings, "local"), true, "API transport may keep openai session identity");
-for (const host of ["remote", "durable", "", null]) assert.equal(permitsExternalApi(settings, host), false);
-for (const patch of [{relayProfilesEnabled:false}, {activeRelayId:"missing"}, {relayProfiles:null}, {relayProfiles:{}}]) {
-  assert.equal(permitsExternalApi({...settings,...patch}, "local"), false);
+const settings = { codexAppStandaloneQuotaUnlock: true, relayProfilesEnabled: true, activeRelayId: "api", relayProfiles: [profile], activeRelaySessionProvider: "openai" };
+assert.equal(permitsExternalApi(settings, "local"), true, "开关打开即放行");
+for (const host of ["remote", "durable", "", null]) assert.equal(permitsExternalApi(settings, host), false, "只对本机生效");
+// 供应商怎么配都与判断无关：开关才是唯一判据。
+for (const patch of [{ relayProfilesEnabled: false }, { activeRelayId: "missing" }, { relayProfiles: null }, { relayProfiles: {} }]) {
+  assert.equal(permitsExternalApi({ ...settings, ...patch }, "local"), true, `开关打开时 ${JSON.stringify(patch)} 不影响放行`);
 }
 for (const upstreamBaseUrl of [
   "https://api.openai.com/v1",
@@ -16,35 +18,20 @@ for (const upstreamBaseUrl of [
   "https://proxy.example/v1",
   "file:///tmp",
   "",
-]) assert.equal(permitsExternalApi({...settings,relayProfiles:[{...profile,upstreamBaseUrl}]}, "local"), true);
-for (const patch of [
-  {officialMixApiKey:false}, {relayMode:"pureApi"},
-]) assert.equal(permitsExternalApi({...settings,relayProfiles:[{...profile,...patch}]}, "local"), false);
-// 聚合：和增强模式同一标准，当前聚合里既有官登又有 API 成员才放行（#2743）。
-{
-  const login = { id: "login", relayMode: "official", officialMixApiKey: false };
-  const api = { id: "api", relayMode: "pureApi", officialMixApiKey: false };
-  const aggregate = { id: "agg", relayMode: "aggregate", officialMixApiKey: false };
-  const withMembers = (members, extra = {}) => ({
-    relayProfilesEnabled: true,
-    activeRelayId: "agg",
-    relayProfiles: [aggregate, login, api, { id: "login2", relayMode: "official", officialMixApiKey: false }],
-    aggregateRelayProfiles: [{ id: "agg", members: members.map((relayId) => ({ relayId })) }],
-    ...extra,
-  });
-  assert.equal(permitsExternalApi(withMembers(["login", "api"]), "local"), true, "官登 + API 成员放行");
-  assert.equal(permitsExternalApi(withMembers(["login", "login2"]), "local"), false, "只有官登成员不放行");
-  assert.equal(permitsExternalApi(withMembers(["api"]), "local"), false, "只有 API 成员不放行");
-  assert.equal(permitsExternalApi(withMembers(["login", "api"], { aggregateRelayProfiles: [] }), "local"), false, "读不到成员不放行");
-  assert.equal(permitsExternalApi(withMembers(["login", "api"], { activeAggregateRelayId: "other" }), "local"), false, "生效的不是这个聚合");
-  assert.equal(permitsExternalApi(withMembers(["login", "api"]), "remote"), false);
-  assert.equal(
-    permitsExternalApi({ relayProfilesEnabled: true, activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "codex-plus-gateway", relayMode: "pureApi" }] }, "local"),
-    true,
-    "网关放行",
-  );
+]) assert.equal(permitsExternalApi({ ...settings, relayProfiles: [{ ...profile, upstreamBaseUrl }] }, "local"), true, "不看上游地址");
+for (const patch of [{ officialMixApiKey: false }, { relayMode: "pureApi" }]) {
+  assert.equal(permitsExternalApi({ ...settings, relayProfiles: [{ ...profile, ...patch }] }, "local"), true, "不看供应商模式");
 }
-console.log("external relay official-mix policy passed");
+// 关掉开关就恢复官方判断，缺字段也按关闭处理。
+for (const off of [{ ...settings, codexAppStandaloneQuotaUnlock: false }, (() => { const copy = { ...settings }; delete copy.codexAppStandaloneQuotaUnlock; return copy; })()]) {
+  assert.equal(permitsExternalApi(off, "local"), false, "开关关闭必须恢复官方额度判断");
+}
+// 网关与聚合也不再需要单独放行条件（#2704 并入统一判据）。
+for (const key of ["codex-plus-gateway", "agg"]) {
+  assert.equal(permitsExternalApi({ ...settings, activeRelayId: key, relayProfiles: [{ id: key, relayMode: "pureApi" }] }, "local"), true, `${key} 在开关打开时放行`);
+  assert.equal(permitsExternalApi({ ...settings, codexAppStandaloneQuotaUnlock: false, activeRelayId: key, relayProfiles: [{ id: key, relayMode: "pureApi" }] }, "local"), false, `${key} 在开关关闭时锁住`);
+}
+console.log("standalone quota unlock switch is the only gate");
 
 const fixture = [
   "var Q;function init(){Q=derived(root,({get:g})=>{let a=g(auth),r=g(rate).data;if(a.authMethod!==`chatgpt`||r.rate_limit?.allowed!==!1)return!1;return true})}",
