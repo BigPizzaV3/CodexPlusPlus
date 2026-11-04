@@ -833,10 +833,12 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<
         Option<codex_plus_data::SessionIndexRepairReport>,
     > {
+        // 索引修复只补 thread_items 投影，不改 provider；由独立的
+        // sessionIndexRepairEnabled 门控，与 provider sync 的批量改写分开（#2846）。
         if check_setting
             && !codex_plus_core::settings::SettingsStore::default()
                 .load()?
-                .provider_sync_enabled
+                .session_index_repair_enabled
         {
             return Ok(None);
         }
@@ -873,39 +875,40 @@ async fn repair_session_index_automatically(check_setting: bool, debug_port: Opt
     }
 }
 
-/// 「激活已有实例」路径上的供应商同步。
+/// 「激活已有实例」路径上的供应商同步与会话索引修复。
 ///
-/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
-/// 前后各取一次 app state 快照；此路径没有启动后 monitor，因此在这里修复索引。
-/// 同步失败只记日志——用户这次点击
-/// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
+/// 两件事由独立开关控制（#2846）：
+/// - providerSyncEnabled：启动/激活时做供应商同步（批量改写会话 model_provider），
+///   前后各取一次 app state 快照；
+/// - sessionIndexRepairEnabled：激活路径没有启动后 monitor，在这里补跑索引修复。
+/// 同步失败只记日志——用户这次点击的诉求是把已有窗口拉到前台，不能因同步失败而中止。
 async fn run_activation_provider_sync(
     hooks: &LauncherHooks,
     settings: &codex_plus_core::settings::BackendSettings,
 ) {
-    if !settings.provider_sync_enabled {
-        return;
-    }
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
-        &home,
-        "launcher.activate_existing.before",
-    );
-    if let Err(error) = hooks.run_provider_sync().await {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.activate_existing_provider_sync.failed",
-            json!({ "message": error.to_string() }),
+    if settings.provider_sync_enabled {
+        let home = codex_plus_core::relay_config::default_codex_home_dir();
+        codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+            &home,
+            "launcher.activate_existing.before",
+        );
+        if let Err(error) = hooks.run_provider_sync().await {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "launcher.activate_existing_provider_sync.failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+        codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+            &home,
+            "launcher.activate_existing.after_provider_sync",
         );
     }
+    // 索引修复走自己的开关；不开 provider sync 的用户也会想修历史会话。
     repair_session_index_automatically(
         hooks.index_repair_checks_setting(),
         session_snapshot().debug_port,
     )
     .await;
-    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
-        &home,
-        "launcher.activate_existing.after_provider_sync",
-    );
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -2793,11 +2796,24 @@ mod tests {
             .expect("next function after the helper");
         let body = &source[start..end];
 
-        // 只在设置启用时同步，与完整启动流程一致。
-        assert!(body.contains("if !settings.provider_sync_enabled"));
+        // provider sync 只在设置启用时做，与完整启动流程一致（#2846 拆开后仍由 providerSyncEnabled 门控）。
+        assert!(body.contains("if settings.provider_sync_enabled"));
         // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
         assert!(!body.contains("hooks.run_provider_sync().await?"));
         assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
+        // 索引修复由独立开关控制，即使 provider sync 关着也要照常跑：
+        // 断言 repair_session_index_automatically 本体的开关读的是 sessionIndexRepairEnabled。
+        let repair_body_start = source
+            .find("async fn repair_session_index_automatically")
+            .expect("repair helper");
+        let repair_body_end = source[repair_body_start..]
+            .find("\n}\n\n/// 「激活已有实例」")
+            .map(|offset| repair_body_start + offset + 3)
+            .expect("end of repair helper");
+        let repair_body = &source[repair_body_start..repair_body_end];
+        assert!(repair_body.contains("session_index_repair_enabled"));
+        // 且 repair 不再被 providerSyncEnabled 顺带门控。
+        assert!(!repair_body.contains("provider_sync_enabled"));
         let compact = body.split_whitespace().collect::<String>();
         assert!(compact.contains(
             "repair_session_index_automatically(hooks.index_repair_checks_setting(),session_snapshot().debug_port,).await"

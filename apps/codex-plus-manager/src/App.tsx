@@ -352,8 +352,9 @@ import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函�
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
 const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
-/// 会话维护页的「启动前自动修复历史会话」与 Codex 设置页共用清单里的同一条文案。
+/// 会话维护页的两条开关与 Codex 设置页共用清单里的文案（#2846 拆开后分别显示）。
 const providerSyncItem = enhancementItem("providerSyncEnabled");
+const sessionIndexRepairItem = enhancementItem("sessionIndexRepairEnabled");
 
 /// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
 const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
@@ -469,6 +470,8 @@ type BackendSettings = WhaleBalanceSettings & {
   codexExtraArgs: string[];
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
+  /** 「启动前修复会话索引」与 providerSyncEnabled 分开（#2846）：只补投影、不改会话归属。 */
+  sessionIndexRepairEnabled?: boolean;
   threadModelFollowSwitchEnabled?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -1552,6 +1555,7 @@ const defaultSettings: BackendSettings = {
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
+  sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
@@ -10635,8 +10639,8 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
     <summary className="session-maintenance-summary">
       <Wrench aria-hidden="true" className="h-4 w-4" />
       <strong>{t("修复与维护")}</strong>
-      <span className="session-maintenance-auto-state" data-enabled={form.providerSyncEnabled}>
-        {form.providerSyncEnabled ? t("自动修复已开启") : t("自动修复已关闭")}
+      <span className="session-maintenance-auto-state" data-enabled={form.sessionIndexRepairEnabled ?? true}>
+        {(form.sessionIndexRepairEnabled ?? true) ? t("自动修复已开启") : t("自动修复已关闭")}
       </span>
       <span className="session-maintenance-status" data-error={maintenanceHasError} role="status" aria-live="polite">
         {providerSyncProgress.active
@@ -10650,6 +10654,17 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
     <div className="session-maintenance-content">
           {/* 和设置页同一种行：左边标题 + 一行说明，右边控件；开关即改即存（SettingsAutoSave）。 */}
           <div className="session-repair-rows">
+            <SettingRow title={t(sessionIndexRepairItem.title)} description={t(sessionIndexRepairItem.description)}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t(sessionIndexRepairItem.title)}
+                  checked={form.sessionIndexRepairEnabled ?? true}
+                  onChange={(event) => onFormChange({ ...form, sessionIndexRepairEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
             <SettingRow title={t(providerSyncItem.title)} description={t(providerSyncItem.description)}>
               <label className="relay-bare-switch">
                 <input

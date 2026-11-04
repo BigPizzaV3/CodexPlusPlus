@@ -1089,6 +1089,13 @@ pub struct BackendSettings {
     pub codex_extra_args: Vec<String>,
     #[serde(rename = "providerSyncEnabled", default)]
     pub provider_sync_enabled: bool,
+    /// 「启动前修复会话索引」：扫描 rollout 补 `thread_items` 投影，纯增量、不改 provider。
+    /// 此前由 providerSyncEnabled 顺带门控（#2846）；默认开，历史「修复历史会话」用户不受影响。
+    #[serde(
+        rename = "sessionIndexRepairEnabled",
+        default = "default_session_index_repair_enabled"
+    )]
+    pub session_index_repair_enabled: bool,
     /// 切换供应商/默认模型后，下次启动前把仍停在旧默认模型的会话迁到新默认（#2081）。
     /// 默认关闭；用户手动改过模型的会话不受影响。
     #[serde(rename = "threadModelFollowSwitchEnabled", default)]
@@ -1476,6 +1483,7 @@ impl Default for BackendSettings {
             codex_app_auto_takeover_when_active: default_auto_takeover_when_active(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
+            session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
@@ -2002,6 +2010,13 @@ pub fn clamp_stepwise_timeout_ms(value: u64) -> u64 {
 }
 
 pub fn default_true() -> bool {
+    true
+}
+
+/// 「启动前修复会话索引」默认开：纯增量补投影，不修配置、不动 provider。
+/// 只有用户显式关掉才停（issue #2846 把「修复历史会话」和「供应商同步」拆开后，
+/// 关掉 provider sync 不该连索引修复也一起停）。
+fn default_session_index_repair_enabled() -> bool {
     true
 }
 
@@ -2826,6 +2841,14 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     if let Some(value) = source.get("providerSyncEnabled").and_then(Value::as_bool) {
         target.insert("providerSyncEnabled".to_string(), Value::Bool(value));
+    }
+    // issue #2846：新拆出的「启动前修复会话索引」也要进 /settings/set 白名单，
+    // 否则从 Codex 设置页改这个开关会被静默丢弃。
+    if let Some(value) = source
+        .get("sessionIndexRepairEnabled")
+        .and_then(Value::as_bool)
+    {
+        target.insert("sessionIndexRepairEnabled".to_string(), Value::Bool(value));
     }
     if let Some(value) = source
         .get("threadModelFollowSwitchEnabled")
@@ -4093,6 +4116,7 @@ mod tests {
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
+        assert!(settings.session_index_repair_enabled);
         assert!(settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
@@ -4184,6 +4208,23 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(invalid.codex_app_stepwise_generation_mode, "auto");
+    }
+
+    /// issue #2846：老 settings.json 没有 sessionIndexRepairEnabled 字段，
+    /// 反序列化时必须补成 true（修复索引默认开），不能因为缺字段跟着 provider sync 一起被关。
+    #[test]
+    fn session_index_repair_enabled_defaults_on_missing_field() {
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"providerSyncEnabled":false}"#).unwrap();
+        assert!(!settings.provider_sync_enabled);
+        assert!(settings.session_index_repair_enabled);
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"providerSyncEnabled":true}"#).unwrap();
+        assert!(settings.provider_sync_enabled);
+        assert!(settings.session_index_repair_enabled);
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"sessionIndexRepairEnabled":false}"#).unwrap();
+        assert!(!settings.session_index_repair_enabled);
     }
 
     #[test]

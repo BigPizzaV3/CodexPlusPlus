@@ -2322,7 +2322,12 @@ export const EN_PLAIN: Record<string, string> = {
     "Appended after the default CDP arguments when launching the Codex app. Leave empty to keep default launch behavior.",
   "启动 Codex": "Launch Codex",
   "启动任务": "Launch task",
-  "启动前自动修复历史会话": "Auto-repair historical sessions before launch",
+  "启动前修复会话索引": "Repair session index before launch",
+  "启动前检查会话数据库中缺失的消息投影并补齐；只增不改，不会改写会话归属。运行期间每 30 分钟复查索引。保存设置后生效。":
+    "Scans the session database before launch and backfills missing message projections; append-only and never rewrites thread ownership. Re-checks the index every 30 minutes while running. Applies after saving settings.",
+  "切换供应商时同步会话归属": "Sync thread ownership when switching providers",
+  "启动前把历史会话的供应商归属批量改写到当前供应商，让不同供应商名下的会话归入当前列表。只改写归属，不删除会话。保存设置后生效。":
+    "Rewrites the provider ownership of historical threads to the current provider before launch, so threads from other providers appear in the current list. Ownership only; no threads are deleted. Applies after saving settings.",
   "纯 API 模式禁用 Work 视图": "Disable Work view in Pure API mode",
   "Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。": "Work view requires a ChatGPT account identity; with a Pure API key, sending a message fails with \"Work browser access requires an authenticated account\". When enabled, the detail mode is switched back to Codex before each launch. Restart Codex to apply.",
   "自动审批模型": "Auto-review model",

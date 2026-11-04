@@ -54,11 +54,20 @@
       "surfaces": ["manager", "codex"]
     },
     {
+      "key": "sessionIndexRepairEnabled",
+      "group": "core",
+      "control": "bool",
+      "title": "启动前修复会话索引",
+      "description": "启动前检查会话数据库中缺失的消息投影并补齐；只增不改，不会改写会话归属。运行期间每 30 分钟复查索引。保存设置后生效。",
+      "masterGated": false,
+      "surfaces": ["manager", "codex"]
+    },
+    {
       "key": "providerSyncEnabled",
       "group": "core",
       "control": "bool",
-      "title": "启动前自动修复历史会话",
-      "description": "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。",
+      "title": "切换供应商时同步会话归属",
+      "description": "启动前把历史会话的供应商归属批量改写到当前供应商，让不同供应商名下的会话归入当前列表。只改写归属，不删除会话。保存设置后生效。",
       "masterGated": false,
       "surfaces": ["manager", "codex"]
     },

@@ -55,6 +55,7 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
     Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", SettingRow: "SettingRow", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
     RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", SettingsAutoSave: "SettingsAutoSave", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
     providerSyncItem: enhancementItem("providerSyncEnabled"),
+    sessionIndexRepairItem: enhancementItem("sessionIndexRepairEnabled"),
   });
   vm.runInContext(ts.transpileModule(fn.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
   let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;
@@ -90,7 +91,12 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
   nodes.find((node) => node.type === "AppSelect").props.onChange("another-target");
   nodes.find((node) => node.type === "input" && node.props.type === "checkbox").props.onChange({ currentTarget: { checked: true } });
   assert.equal(synced, 1); assert.equal(repaired, 1); assert.equal(saved, 0);
-  assert.deepEqual(targets, ["another-target"]); assert.equal(drafts[0].providerSyncEnabled, true);
+  assert.deepEqual(targets, ["another-target"]); assert.equal(drafts[0].sessionIndexRepairEnabled, true);
+  // providerSync 开关也点一下，确认两条开关独立写回（#2846 拆分后各管各的）。
+  const providerToggle = nodes.find((node) => node.type === "input" && node.props.type === "checkbox" && node.props["aria-label"] === "切换供应商时同步会话归属");
+  assert.ok(providerToggle, "provider sync toggle is rendered by its catalog title");
+  providerToggle.props.onChange({ currentTarget: { checked: true } });
+  assert.equal(drafts[1].providerSyncEnabled, true);
   tree.props.onToggle({ currentTarget: { open: false } });
   assert.equal(render(props).props.open, false);
   tree = render({ ...props, providerSyncProgress: { active: true, percent: 25 } });

@@ -131,7 +131,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   assert.equal(settingControls(component("StepwiseSettingsPanel")).length, 0);
   for (const item of enhancementCatalog.items) {
     const standalone = enhancementGroup(item.group).standalone === true;
-    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled"].includes(item.key);
+    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled"].includes(item.key);
     assert.equal(item.masterGated !== false, !standalone && !unmanaged, `${item.key} master gating`);
   }
 
@@ -192,6 +192,7 @@ test("every manager-visible catalog item has exactly one place in the manager", 
       ...cards.flatMap((card) => [...(card.item ? [card.item.key] : []), ...card.params.map((param) => param.key)]),
       "enhancementsEnabled",
       "providerSyncEnabled",
+      "sessionIndexRepairEnabled",
     ];
     const expected = enhancementCatalog.items
       .filter((item) => item.surfaces.includes("manager") && (!item.platforms || item.platforms.includes(platform)))
