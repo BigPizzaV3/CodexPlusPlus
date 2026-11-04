@@ -17,6 +17,7 @@ export type RelayModelRouteProfile = {
   localCompactionPromptAtEnd?: boolean;
   strictResponsesReasoning?: boolean;
   stripImageGenerationTool?: boolean;
+  stripResponsesImageDetail?: boolean;
   modelMetadata?: string;
   modelRoutes?: RelayModelRoute[];
 };
@@ -114,6 +115,16 @@ export function stripImageGenerationToolEnabled(
   profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "stripImageGenerationTool">,
 ): boolean {
   return profile.stripImageGenerationTool === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+}
+
+/** #2870：转发前移除 Responses 图片 `detail`，只对第三方 Responses 上游生效，且要走本地代理。 */
+export function stripResponsesImageDetailEnabled(
+  profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "stripResponsesImageDetail">,
+): boolean {
+  return profile.stripResponsesImageDetail === true
     && profile.protocol === "responses"
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);

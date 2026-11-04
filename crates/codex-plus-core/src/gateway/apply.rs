@@ -2237,6 +2237,7 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        strip_responses_image_detail: None,
     })?;
     if bearer {
         profile.anthropic_auth_header =
@@ -2291,6 +2292,7 @@ pub fn copy_grok_profile(
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        strip_responses_image_detail: None,
     })?;
     if !windows.is_empty() {
         relay.model_windows = serde_json::to_string(&windows)?;
@@ -2614,6 +2616,9 @@ pub struct ProviderInput {
     /// 转发前移除托管生图工具（#228）；不传表示不改（编辑时保留原来的）。
     #[serde(default)]
     pub strip_image_generation_tool: Option<bool>,
+    /// 转发前移除 Responses 图片 `detail`（#2870）；不传表示不改（编辑时保留原来的）。
+    #[serde(default)]
+    pub strip_responses_image_detail: Option<bool>,
 }
 
 /// 代理地址只接受 http / https / socks5，空串表示不单独走代理。
@@ -2665,6 +2670,7 @@ fn build_relay(input: &ProviderInput) -> anyhow::Result<RelayProfile> {
     )?;
     relay.relay_mode = RelayMode::PureApi;
     relay.strip_image_generation_tool = input.strip_image_generation_tool.unwrap_or(false);
+    relay.strip_responses_image_detail = input.strip_responses_image_detail.unwrap_or(false);
     if keys.len() > 1 {
         relay.api_keys = keys
             .iter()
@@ -2849,6 +2855,10 @@ fn update_provider_in(
     // 没传「移除托管生图工具」时沿用原来的选择。
     if input.strip_image_generation_tool.is_none() {
         relay.strip_image_generation_tool = provider.relay.strip_image_generation_tool;
+    }
+    // 没传「移除图片 detail」时沿用原来的选择。
+    if input.strip_responses_image_detail.is_none() {
+        relay.strip_responses_image_detail = provider.relay.strip_responses_image_detail;
     }
     // 地址换到别的站点时丢掉 new-api 访问令牌，免得把它发给新站点（#2793）。
     if newapi_access_origin(&relay) != newapi_access_origin(&provider.relay) {
@@ -3535,6 +3545,7 @@ mod tests {
                 model_prices: None,
                 proxy: None,
                 strip_image_generation_tool: None,
+                strip_responses_image_detail: None,
             },
             "",
             None,
@@ -3579,6 +3590,7 @@ mod tests {
                 model_prices: None,
                 proxy: None,
                 strip_image_generation_tool: None,
+                strip_responses_image_detail: None,
             },
             "",
             None,

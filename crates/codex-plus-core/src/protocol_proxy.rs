@@ -5011,6 +5011,33 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
         })
 }
 
+/// 只处理 Responses `input[].content[]` 与 `function_call_output.output[]`
+/// 里的 `input_image`；其他协议中的图片块保持原样。
+fn strip_input_image_details(body: &mut Value) -> bool {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for item in items {
+        for parts_key in ["content", "output"] {
+            let Some(parts) = item.get_mut(parts_key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) != Some("input_image") {
+                    continue;
+                }
+                let Some(part) = part.as_object_mut() else {
+                    continue;
+                };
+                changed |= part.remove("detail").is_some();
+            }
+        }
+    }
+
+    changed
+}
+
 /// 目录外模型名 → 当前供应商默认模型的映射（#1183 / #1446 / #1457）。
 ///
 /// Codex 客户端的自动审查（`codex-auto-review`）、标题/摘要、子代理等后台任务
@@ -5825,6 +5852,14 @@ async fn upstream_request_parts(
         request_json.get("model").and_then(Value::as_str).unwrap_or(""),
     ) {
         request_json["model"] = json!(auto_review_model);
+    }
+    // 部分 Responses 上游不认 Codex 的 input_image.detail（#2870），收到会返回
+    // 泛化的 invalid_request。供应商级开关打开后在转发前剥离。
+    if relay.strips_responses_image_detail() && strip_input_image_details(&mut request_json) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.strip_responses_image_detail",
+            json!({ "relayId": relay.id }),
+        );
     }
     let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
     let compatibility_enabled = relay.request_compatibility_enabled();
@@ -13666,6 +13701,110 @@ mod parallel_tool_call_pairing_tests {
         assert_eq!(body["tool_choice"]["tools"], json!([{"type": "function", "name": "exec"}]));
         let mut untouched = json!({"tools": [{"type": "function", "name": "exec"}], "tool_choice": "auto"});
         assert!(!strip_image_generation_tool(&mut untouched));
+    }
+
+    /// #2870：供应商开关打开时剥离 `input_image.detail`；默认关闭保持 OpenAI 语义。
+    #[tokio::test]
+    async fn responses_strips_input_image_detail_only_when_enabled() {
+        let body = || json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "look"},
+                    {"type": "input_image", "image_url": "[image omitted]", "detail": "original"}
+                ]}
+            ]
+        });
+
+        let mut enabled = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        assert!(!enabled.strips_responses_image_detail());
+        let (_, out, _, _) = upstream_request_parts(
+            &enabled,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        assert_eq!(out["input"][0]["content"][1]["detail"], "original");
+
+        enabled.strip_responses_image_detail = true;
+        assert!(enabled.strips_responses_image_detail());
+        let (_, out, _, _) = upstream_request_parts(
+            &enabled,
+            body(),
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+        let image = &out["input"][0]["content"][1];
+        assert_eq!(image["type"], "input_image");
+        assert!(image.get("detail").is_none(), "{image}");
+    }
+
+    /// 开关打开后，tool 输出里的 `input_image.detail` 也一并剥离；
+    /// `function_call_output.output[]` 与普通消息一起剥离。
+    #[tokio::test]
+    async fn responses_strips_tool_output_image_detail_when_enabled() {
+        let mut relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://open.bigmodel.cn/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        relay.strip_responses_image_detail = true;
+        let body = json!({
+            "model": "glm-5.3-flash",
+            "input": [
+                {"type": "function_call", "call_id": "call_read", "name": "view_image", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_read", "output": [
+                    {"type": "input_text", "text": "screenshot"},
+                    {"type": "input_image", "image_url": "[image omitted]", "detail": "original"}
+                ]}
+            ]
+        });
+        let (_, out, _, _) = upstream_request_parts(
+            &relay,
+            body,
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        ).await.unwrap();
+
+        assert_eq!(out["input"][1]["type"], "function_call_output");
+        assert_eq!(out["input"][1]["output"][1]["type"], "input_image");
+        assert!(out["input"][1]["output"][1].get("detail").is_none());
+    }
+
+    /// Chat 形态的 `image_url.detail` 不在 Responses `input[].content[]` 路径内，
+    /// 兼容剥离不得碰它。
+    #[test]
+    fn image_detail_stripping_ignores_chat_image_blocks() {
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": "[image omitted]", "detail": "high"}}
+                ]}
+            ]
+        });
+        assert!(!strip_input_image_details(&mut body));
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["detail"],
+            "high"
+        );
     }
 
     fn assert_pairing(body: &Value, expected: usize) {

@@ -8,6 +8,7 @@ import {
   setIndependentProxyConfigured,
   requestCompatibilityEnabled,
   stripImageGenerationToolEnabled,
+  stripResponsesImageDetailEnabled,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
   PROTOCOL_PROXY_BASE_URL,
@@ -59,7 +60,7 @@ test("experimental search history compatibility is per-provider and starts the h
 
 test("checkbox draft and generated config route to proxy and restore the real upstream on disable", () => {
   const context = vm.createContext({
-    requestCompatibilityEnabled, stripImageGenerationToolEnabled, independentProxyEnabled, PROTOCOL_PROXY_BASE_URL, webSearchHistoryCompatEnabled, normalizeRelayModelRoutes,
+    requestCompatibilityEnabled, stripImageGenerationToolEnabled, stripResponsesImageDetailEnabled, independentProxyEnabled, PROTOCOL_PROXY_BASE_URL, webSearchHistoryCompatEnabled, normalizeRelayModelRoutes,
     relaySessionProvider: () => "custom",
     sessionProviderForProtocol: (provider: string) => provider,
     isAggregateRelayProfile: () => false,

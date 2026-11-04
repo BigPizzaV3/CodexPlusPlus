@@ -176,6 +176,10 @@ pub struct RelayProfile {
     /// Codex App 会固定带上这个工具，不支持生图的第三方 Responses 上游会整条请求报 403（#228）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_image_generation_tool: bool,
+    /// 转发前移除 Responses `input_image.detail`。部分 Responses 上游不认这个
+    /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_responses_image_detail: bool,
     /// Codex「替我审批」固定请求 `codex-auto-review`，第三方上游通常不认识这个模型；
     /// 填写后协议代理把它改写成这里的模型（#1446）。留空则原样转发。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -394,6 +398,7 @@ impl Default for RelayProfile {
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
+            strip_responses_image_detail: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -440,6 +445,15 @@ impl RelayProfile {
     /// Chat / Anthropic 上游在协议转换时本来就不会带托管工具。
     pub fn strips_image_generation_tool(&self) -> bool {
         self.strip_image_generation_tool
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否在转发前移除 Responses 图片 `detail` 字段；只对经本地代理转发的
+    /// 第三方 Responses 上游生效。
+    pub fn strips_responses_image_detail(&self) -> bool {
+        self.strip_responses_image_detail
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -1620,6 +1634,7 @@ impl BackendSettings {
                 trust_upstream_catalog_lite: false,
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
+                strip_responses_image_detail: false,
                 auto_review_model: String::new(),
                 multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
@@ -1691,6 +1706,7 @@ impl BackendSettings {
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
+            strip_responses_image_detail: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),

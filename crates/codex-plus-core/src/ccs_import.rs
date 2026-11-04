@@ -314,6 +314,7 @@ pub fn relay_profile_from_ccs(
         trust_upstream_catalog_lite: false,
         strict_responses_reasoning: false,
         strip_image_generation_tool: false,
+        strip_responses_image_detail: false,
         auto_review_model: String::new(),
         multi_agent: String::new(),
         anthropic_auth_header: String::new(),
