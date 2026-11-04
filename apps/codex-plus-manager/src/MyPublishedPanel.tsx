@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArchiveRestore, Check, Copy, EyeOff, Loader2, RefreshCw, Star, Trash2 } from "lucide-react";
+import { ArchiveRestore, Check, Copy, EyeOff, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, tf } from "./i18n";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
-import { appConfirm } from "./app-dialog";
+import { CxBadge, CxCard, CxEmpty, CxSection } from "./cx-layout";
+import { MenuItem } from "./ManagementPages";
 import { useEscapeLayer } from "./use-escape-layer";
 import { errorText } from "./CommunityExtensionsPanel";
 import "./CommunityExtensionsPanel.css";
@@ -31,7 +32,7 @@ function request<T>(action: string, payload?: unknown): Promise<T> {
 }
 
 /** 「我发布的」：当前 gh 账号名下的拓展仓库，可下架（去掉 topic）、重新上架、删除仓库。 */
-export function MyPublishedPanel({ onOpenUrl }: { onOpenUrl: (url: string) => void }) {
+export function MyPublishedPanel({ onOpenUrl, search = "" }: { onOpenUrl: (url: string) => void; search?: string }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
@@ -69,89 +70,78 @@ export function MyPublishedPanel({ onOpenUrl }: { onOpenUrl: (url: string) => vo
     }
   };
 
-  const unlist = async (entry: PublishedEntry) => {
-    const ok = await appConfirm(
-      tf("下架后 {0} 不再出现在社区拓展里，已安装的用户不受影响；仓库和 release 都保留，之后可以重新上架。", [entry.repo]),
-      { title: t("下架拓展"), confirmText: t("下架") },
-    );
-    if (ok) await run(entry, "unlist", tf("已下架 {0}", [entry.repo]));
-  };
+  // 下架可以随时重新上架，不再弹确认；说明放在按钮悬停里。删除仓库仍要输入仓库名确认。
+  const unlist = (entry: PublishedEntry) => run(entry, "unlist", tf("已下架 {0}", [entry.repo]));
 
   const [deleting, setDeleting] = useState<PublishedEntry | null>(null);
 
-  const entries = listing?.entries ?? [];
+  const query = search.trim().toLocaleLowerCase();
+  const entries = (listing?.entries ?? []).filter((entry) => !query || [entry.repo, entry.id ?? "", entry.description].join(" ").toLocaleLowerCase().includes(query));
+  const row = (entry: PublishedEntry) => {
+    const pending = busy === entry.repo;
+    const facts = [
+      entry.repo,
+      tf("★ {0}", [entry.stars]),
+      entry.version ? tf("本机发布 v{0}", [entry.version]) : "",
+      entry.pushedAt ? tf("更新于 {0}", [entry.pushedAt.slice(0, 10)]) : "",
+    ].filter(Boolean).join(" · ");
+    return (
+      <ExtensionCard
+        badges={
+          <>
+            <CxBadge tone={entry.listed ? "ok" : "neutral"}>{entry.listed ? t("已上架") : t("已下架")}</CxBadge>
+            {entry.visibility && entry.visibility !== "PUBLIC" ? <CxBadge>{t("私有")}</CxBadge> : null}
+            {entry.archived ? <CxBadge>{t("已归档")}</CxBadge> : null}
+          </>
+        }
+        description={entry.description}
+        dimmed={!entry.listed}
+        icon={githubAvatar(entry.repo)}
+        key={entry.repo}
+        link={{ url: entry.url, text: entry.repo }}
+        menu={
+          <MenuItem danger disabled={busy !== ""} onClick={() => setDeleting(entry)}>
+            <span className="ext-row-menu-item"><Trash2 size={14} />{t("删除仓库")}</span>
+          </MenuItem>
+        }
+        meta={facts}
+        name={entry.id || entry.repo.split("/")[1]}
+        onOpenUrl={onOpenUrl}
+        primary={
+          entry.listed ? (
+            <button className="cx-secondary" disabled={busy !== ""} onClick={() => void unlist(entry)} title={tf("下架后 {0} 不再出现在社区拓展里，已安装的用户不受影响；仓库和 release 都保留，之后可以重新上架。", [entry.repo])} type="button">
+              {pending ? <Loader2 className="animate-spin" /> : <EyeOff />}
+              {t("下架")}
+            </button>
+          ) : (
+            <button className="cx-secondary" disabled={busy !== ""} onClick={() => void run(entry, "relist", tf("已重新上架 {0}，社区列表刷新后可见", [entry.repo]))} type="button">
+              {pending ? <Loader2 className="animate-spin" /> : <ArchiveRestore />}
+              {t("重新上架")}
+            </button>
+          )
+        }
+      />
+    );
+  };
   return (
-    <div className="community-ext">
-      <div className="community-ext-intro">
-        <div className="community-ext-intro-head">
-          <strong>{listing?.account ? tf("GitHub 账号 {0} 发布的拓展", [listing.account]) : t("我发布的拓展")}</strong>
-        </div>
-        <p>{t("列出当前 gh 账号名下带 codexpp-extension 标签的仓库，以及从本机发布、已下架的仓库。下架只是去掉标签，仓库保留；删除仓库不可恢复。")}</p>
-      </div>
+    <>
       {error ? <div className="community-ext-notice is-error">{error}</div> : null}
       {notice ? <div className="community-ext-notice">{notice}</div> : null}
-      <div className="community-ext-meta">
-        {listing ? tf("{0} 个仓库", [entries.length]) : null}
-        <Button disabled={loading || busy !== ""} onClick={() => void load()} size="sm" variant="ghost">
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          {t("刷新")}
-        </Button>
-      </div>
-      {entries.length ? (
-        <div className="community-ext-list">
-          {entries.map((entry) => {
-            const pending = busy === entry.repo;
-            return (
-              <ExtensionCard
-                badges={
-                  <>
-                    <span className={`community-ext-badge${entry.listed ? " is-listed" : ""}`}>{entry.listed ? t("已上架") : t("已下架")}</span>
-                    {entry.visibility && entry.visibility !== "PUBLIC" ? <span className="community-ext-badge">{t("私有")}</span> : null}
-                    {entry.archived ? <span className="community-ext-badge">{t("已归档")}</span> : null}
-                  </>
-                }
-                description={entry.description}
-                dimmed={!entry.listed}
-                facts={
-                  <>
-                    <span className="community-ext-stars"><Star className="h-3 w-3" />{entry.stars}</span>
-                    {entry.version ? <span>{tf("本机发布 v{0}", [entry.version])}</span> : null}
-                    {entry.pushedAt ? <span>{tf("更新于 {0}", [entry.pushedAt.slice(0, 10)])}</span> : null}
-                  </>
-                }
-                icon={githubAvatar(entry.repo)}
-                key={entry.repo}
-                link={{ url: entry.url, text: entry.repo, button: entry.repo }}
-                meta={entry.repo}
-                name={entry.id || entry.repo.split("/")[1]}
-                onOpenUrl={onOpenUrl}
-                primary={
-                  entry.listed ? (
-                    <Button disabled={busy !== ""} onClick={() => void unlist(entry)} size="sm" variant="secondary">
-                      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <EyeOff className="h-4 w-4" />}
-                      {t("下架")}
-                    </Button>
-                  ) : (
-                    <Button disabled={busy !== ""} onClick={() => void run(entry, "relist", tf("已重新上架 {0}，社区列表刷新后可见", [entry.repo]))} size="sm" variant="secondary">
-                      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArchiveRestore className="h-4 w-4" />}
-                      {t("重新上架")}
-                    </Button>
-                  )
-                }
-                secondary={
-                  <Button className="my-published-delete" disabled={busy !== ""} onClick={() => setDeleting(entry)} size="sm" title={t("永久删除 GitHub 仓库")} variant="ghost">
-                    <Trash2 className="h-4 w-4" />
-                    {t("删除仓库")}
-                  </Button>
-                }
-                view="list"
-              />
-            );
-          })}
-        </div>
-      ) : (
-        <div className="empty">{loading ? t("正在读取…") : listing ? t("还没有发布过拓展。在「本地拓展」里点拓展包的「…」→「发布到 GitHub」。") : null}</div>
-      )}
+      <CxSection
+        aside={
+          <button aria-label={t("刷新")} className="mg-icon-button" disabled={loading || busy !== ""} onClick={() => void load()} title={t("刷新")} type="button">
+            {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+          </button>
+        }
+        count={listing ? entries.length : undefined}
+        title={<span title={t("列出当前 gh 账号名下带 codexpp-extension 标签的仓库，以及从本机发布、已下架的仓库。下架只是去掉标签，仓库保留；删除仓库不可恢复。")}>{listing?.account ? tf("GitHub 账号 {0} 发布的拓展", [listing.account]) : t("我发布的拓展")}</span>}
+      >
+        <CxCard>
+          {entries.length ? entries.map(row) : (
+            <CxEmpty title={loading ? t("正在读取…") : listing?.entries?.length ? t("没有匹配的拓展。") : t("还没有发布过拓展。")} detail={!loading && !listing?.entries?.length ? t("在「本地」里点拓展包的「…」→「发布到 GitHub」。") : undefined} />
+          )}
+        </CxCard>
+      </CxSection>
       {deleting ? (
         <DeleteRepoDialog
           onCancel={() => setDeleting(null)}
@@ -163,7 +153,7 @@ export function MyPublishedPanel({ onOpenUrl }: { onOpenUrl: (url: string) => vo
           repo={deleting.repo}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 

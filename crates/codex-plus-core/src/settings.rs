@@ -1082,6 +1082,9 @@ pub struct BackendSettings {
     /// 关闭后只在用户手动点「检查更新」时联网检查。
     #[serde(rename = "updateAutoCheck", default = "default_true")]
     pub update_auto_check: bool,
+    /// 检查到新版本时在后台把安装包下好，但不安装；用户点「安装」才安装。默认开。
+    #[serde(rename = "updateAutoDownload", default = "default_true")]
+    pub update_auto_download: bool,
     /// 用户在更新提示里选择「跳过此版本」的版本号（#1272）。只压制该版本及更低版本的自动提示，
     /// 出现更高版本时重新提示；手动检查不受影响。空串表示没有跳过。
     #[serde(rename = "updateSkippedVersion", default)]
@@ -1453,6 +1456,7 @@ impl Default for BackendSettings {
             relay_profiles_enabled: true,
             enhancements_enabled: true,
             update_auto_check: true,
+            update_auto_download: true,
             update_skipped_version: String::new(),
             codex_app_standalone_quota_unlock: false,
             codex_app_disable_work_view: false,
@@ -2806,6 +2810,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     // 保证任何走 /settings/set 的调用都不会被静默丢弃。
     // Codex++ 更新提醒偏好（#1272）：「跳过此版本」由管理器单独写入，必须在白名单里。
     merge_bool_setting(target, source, "updateAutoCheck");
+    merge_bool_setting(target, source, "updateAutoDownload");
     if let Some(value) = source.get("updateSkippedVersion").and_then(Value::as_str) {
         target.insert(
             "updateSkippedVersion".to_string(),

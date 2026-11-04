@@ -938,6 +938,7 @@ fn request() -> RequestEvidence {
         started_at_ms: 99_000,
         attempts: Some(1),
         auto_retries: Some(0),
+        final_response_evidence: None,
         usage: Some(RequestEvidenceUsage {
             input_tokens: Some(100),
             output_tokens: Some(10),

@@ -948,6 +948,7 @@ function PanelAgentRow({
           onApply={(previewToken) => disconnectTarget === "disconnect"
             ? onRun("disable_gateway_binding", { agent: agent.agent, previewToken })
             : onRun("use_gateway_own_model", { agent: agent.agent, model: disconnectTarget.model, previewToken })}
+          onFullSwitch={(previewToken) => onRun("disable_gateway_binding_full_switch", { agent: agent.agent, previewToken })}
           onClose={() => setDisconnectTarget(null)}
           ownModel={disconnectTarget === "disconnect" ? null : disconnectTarget}
         />

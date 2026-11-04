@@ -5,6 +5,14 @@ const MAX_RECEIPTS: usize = 128;
 const MAX_MERGED: usize = 8;
 const COMPLETION_LAG_MS: i64 = 1_000;
 
+fn final_response_eligible(record: &RequestEvidence) -> bool {
+    match record.final_response_evidence.as_deref() {
+        Some("final-response-v1") => record.valid_request_counts(),
+        None => record.attempts == Some(1) && record.auto_retries == Some(0),
+        Some(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod captured_tests;
 
@@ -256,8 +264,7 @@ pub(super) fn match_receipts(
         .filter(|record| {
             !conflicts.contains(record.id.as_str())
                 && !record.keys().is_empty()
-                && record.attempts == Some(1)
-                && record.auto_retries == Some(0)
+                && final_response_eligible(record)
         })
         .map(|record| record.id.as_str())
         .collect();
@@ -303,8 +310,7 @@ pub(super) fn match_receipts(
             if let Some(record) = ids.get(id.as_str()) {
                 if conflicts.contains(id.as_str())
                     || record.keys().is_empty()
-                    || record.attempts != Some(1)
-                    || record.auto_retries != Some(0)
+                    || !final_response_eligible(record)
                     || aliases.resolve(&record.thread_id).as_deref() != Some(session.as_str())
                     || record.actual_model().is_none_or(|model| {
                         !receipt_model_matches(&receipt.model, model, &record.relay_id)
@@ -367,14 +373,17 @@ pub(super) fn match_receipts(
             continue;
         };
         let first_end = records.partition_point(|record| {
-            record.timestamp_ms < receipt.timestamp.saturating_sub(REQUEST_MATCH_WINDOW_MS)
+            record.timestamp_ms
+                < receipt
+                    .timestamp
+                    .saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
         });
         let last_end = records.partition_point(|record| {
             record.timestamp_ms <= receipt.timestamp.saturating_add(COMPLETION_LAG_MS)
         });
         for end in first_end..last_end {
             let last = records[end];
-            if !within_receipt_window(last, receipt.timestamp, REQUEST_MATCH_WINDOW_MS) {
+            if !within_receipt_window(last, receipt.timestamp, DELAYED_REQUEST_MATCH_WINDOW_MS) {
                 continue;
             }
             let mut sum = Counts {
@@ -430,6 +439,14 @@ pub(super) fn match_receipts(
                 if sum == delta {
                     for id in &request_ids {
                         claim(&mut owners, id, index);
+                    }
+                    // 延迟组合仍须占用竞争证据，仅单个已验证最终响应可以补认。
+                    if !within_receipt_window(last, receipt.timestamp, REQUEST_MATCH_WINDOW_MS)
+                        && (request_ids.len() != 1
+                            || last.final_response_evidence.as_deref() != Some("final-response-v1"))
+                    {
+                        rejected.insert(index);
+                        continue;
                     }
                     // 已知模型与请求不一致也保留占用，不能把证据转给另一个回执。
                     if (unknown_model(&receipt.model)
@@ -624,6 +641,229 @@ mod completion_lag_tests {
             &[a, b],
             &BTreeMap::new(),
             &json!([row])
+        )));
+    }
+
+    #[test]
+    fn versioned_final_response_accepts_retry_and_revalidates_the_same_evidence() {
+        let at = 100_000;
+        let mut retried = request("retry", at, -20, 10, 2, 3);
+        retried.attempts = Some(2);
+        retried.auto_retries = Some(1);
+        let mut row = receipt("one", at, 10, 2, 3);
+        assert!(!positive(&match_receipts(
+            &[retried.clone()],
+            &BTreeMap::new(),
+            &json!([row.clone()])
+        )));
+        retried.final_response_evidence = Some("final-response-v1".into());
+        let proof = match_receipts(&[retried.clone()], &BTreeMap::new(), &json!([row.clone()]));
+        assert!(positive(&proof), "{proof}");
+        for key in ["model", "provider", "requestIds", "requestSignatures"] {
+            row[key] = proof[0][key].clone();
+        }
+        assert!(positive(&match_receipts(
+            &[retried.clone()],
+            &BTreeMap::new(),
+            &json!([row.clone()])
+        )));
+        for marker in [None, Some("unknown-contract".into())] {
+            let mut changed = retried.clone();
+            changed.final_response_evidence = marker;
+            assert!(!positive(&match_receipts(
+                &[changed],
+                &BTreeMap::new(),
+                &json!([row.clone()])
+            )));
+        }
+    }
+
+    #[test]
+    fn delayed_final_response_requires_versioned_single_request_and_revalidates_proof() {
+        for (lag, accepted) in [
+            (-30_001, true),
+            (-63_925, true),
+            (-120_000, true),
+            (-120_001, false),
+        ] {
+            let mut record = request("delayed", 200_000, lag, 172115, 179, 171904);
+            let mut row = receipt("one", 200_000, 172115, 179, 171904);
+            assert!(!positive(&match_receipts(
+                &[record.clone()],
+                &BTreeMap::new(),
+                &json!([row.clone()])
+            )));
+            record.final_response_evidence = Some("final-response-v1".into());
+            let proof = match_receipts(&[record.clone()], &BTreeMap::new(), &json!([row.clone()]));
+            assert_eq!(positive(&proof), accepted, "lag {lag}: {proof}");
+            if !accepted {
+                continue;
+            }
+            for key in ["model", "provider", "requestIds", "requestSignatures"] {
+                row[key] = proof[0][key].clone();
+            }
+            assert!(positive(&match_receipts(
+                &[record.clone()],
+                &BTreeMap::new(),
+                &json!([row.clone()])
+            )));
+            record.final_response_evidence = None;
+            row["requestSignatures"] = json!({record.id.clone(): request_signature(&record)});
+            assert!(!positive(&match_receipts(
+                &[record],
+                &BTreeMap::new(),
+                &json!([row])
+            )));
+        }
+    }
+
+    #[test]
+    fn delayed_candidates_reserve_competition_on_both_sides_of_strict_window() {
+        let mut delayed = request("delayed", 200_000, -63_925, 10, 2, 3);
+        delayed.final_response_evidence = Some("final-response-v1".into());
+        let row = receipt("one", 200_000, 10, 2, 3);
+        for lag in [-100_000, -63_925, -10, 97] {
+            let competing = request("competing", 200_000, lag, 10, 2, 3);
+            let proof = match_receipts(
+                &[delayed.clone(), competing],
+                &BTreeMap::new(),
+                &json!([row.clone()]),
+            );
+            assert!(!positive(&proof), "competing lag {lag}: {proof}");
+        }
+        for marker in [None, Some("final-response-v1".into())] {
+            delayed.final_response_evidence = marker;
+            let proof = match_receipts(
+                &[delayed.clone()],
+                &BTreeMap::new(),
+                &json!([row.clone(), receipt("earlier", 140_000, 10, 2, 3)]),
+            );
+            assert_eq!(proof.as_array().unwrap().len(), 2);
+            assert!(proof
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["rejected"] == true));
+        }
+        let strict = request("strict", 200_000, -10, 10, 2, 3);
+        let mut saved = row;
+        let proof = match_receipts(&[strict.clone()], &BTreeMap::new(), &json!([saved.clone()]));
+        for key in ["model", "provider", "requestIds", "requestSignatures"] {
+            saved[key] = proof[0][key].clone();
+        }
+        for marker in [None, Some("final-response-v1".into())] {
+            delayed.final_response_evidence = marker;
+            let proof = match_receipts(
+                &[strict.clone(), delayed.clone()],
+                &BTreeMap::new(),
+                &json!([saved.clone()]),
+            );
+            assert_eq!(proof[0]["rejected"], true);
+        }
+    }
+
+    #[test]
+    fn delayed_matching_rejects_merged_counts_future_starts_and_incomplete_success() {
+        let mut first = request("first", 200_000, -80_000, 10, 2, 3);
+        first.final_response_evidence = Some("final-response-v1".into());
+        let mut second = request("second", 200_000, -63_925, 20, 4, 6);
+        second.final_response_evidence = Some("final-response-v1".into());
+        second.started_at_ms = first.timestamp_ms + 1;
+        let merged = receipt("merged", 200_000, 30, 6, 9);
+        let proof = match_receipts(
+            &[first.clone(), second.clone()],
+            &BTreeMap::new(),
+            &json!([merged.clone(), receipt("shared", 140_000, 20, 4, 6)]),
+        );
+        assert_eq!(proof.as_array().unwrap().len(), 2);
+        assert!(proof
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["rejected"] == true));
+        second.timestamp_ms = 199_000;
+        let proof = match_receipts(
+            &[first.clone(), second.clone()],
+            &BTreeMap::new(),
+            &json!([merged]),
+        );
+        assert!(
+            positive(&proof),
+            "Existing strict-ending merge remains valid: {proof}"
+        );
+        for variation in 0..5 {
+            let mut invalid = first.clone();
+            match variation {
+                0 => invalid.started_at_ms = 200_001,
+                1 => invalid.success = false,
+                2 => invalid.usage.as_mut().unwrap().cached_tokens = None,
+                3 => invalid.final_response_evidence = Some("unknown-contract".into()),
+                _ => invalid.auto_retries = Some(2),
+            }
+            assert!(!positive(&match_receipts(
+                &[invalid],
+                &BTreeMap::new(),
+                &json!([receipt("one", 200_000, 10, 2, 3)])
+            )));
+        }
+    }
+
+    #[test]
+    fn final_response_retry_participates_in_competition_and_requires_complete_success() {
+        let mut retried = request("retry", 100_000, -10, 10, 2, 3);
+        retried.attempts = Some(2);
+        retried.final_response_evidence = Some("final-response-v1".into());
+        let row = receipt("one", 100_000, 10, 2, 3);
+        let ordinary = request("ordinary", 100_000, 0, 10, 2, 3);
+        assert!(!positive(&match_receipts(
+            &[retried.clone(), ordinary],
+            &BTreeMap::new(),
+            &json!([row.clone()])
+        )));
+        for variation in 0..5 {
+            let mut incomplete = retried.clone();
+            match variation {
+                0 => incomplete.success = false,
+                1 => incomplete.state = "generating".into(),
+                2 => incomplete.usage.as_mut().unwrap().cached_tokens = None,
+                3 => incomplete.attempts = Some(0),
+                _ => incomplete.auto_retries = Some(2),
+            }
+            assert!(!positive(&match_receipts(
+                &[incomplete],
+                &BTreeMap::new(),
+                &json!([row.clone()])
+            )));
+        }
+        assert!(!positive(&match_receipts(
+            &[retried],
+            &BTreeMap::new(),
+            &json!([row, receipt("two", 100_000, 10, 2, 3)])
+        )));
+    }
+
+    #[test]
+    fn absent_final_response_contract_preserves_legacy_serialization() {
+        let legacy = request("legacy", 100_000, 0, 10, 2, 3);
+        let original_json = r#"{"id":"legacy","threadId":"session","model":"gpt-6.1-sol","upstreamModel":"gpt-6.1-sol","relayId":"supplier","relayName":"Supplier","success":true,"state":"success","statusCode":200,"timestampMs":100000,"startedAtMs":80000,"attempts":1,"autoRetries":0,"usage":{"inputTokens":10,"outputTokens":2,"cachedTokens":3}}"#;
+        assert_eq!(serde_json::to_string(&legacy).unwrap(), original_json);
+        let value = serde_json::to_value(&legacy).unwrap();
+        assert!(value.get("finalResponseEvidence").is_none());
+        assert_eq!(
+            request_signature(&legacy),
+            request_signature(&serde_json::from_value(value).unwrap())
+        );
+        let mut saved = receipt("one", 100_000, 10, 2, 3);
+        saved["model"] = json!("gpt-6.1-sol");
+        saved["provider"] = json!("supplier");
+        saved["requestIds"] = json!(["legacy"]);
+        saved["requestSignatures"] = json!({
+            "legacy": format!("{:x}", Sha256::digest(original_json.as_bytes()))
+        });
+        assert!(positive(&match_receipts(
+            &[legacy],
+            &BTreeMap::new(),
+            &json!([saved])
         )));
     }
 }

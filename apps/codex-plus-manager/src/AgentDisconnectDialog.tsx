@@ -5,7 +5,7 @@ import { FileDiff, Loader2, RefreshCw, ShieldCheck, Unplug, X } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { t, tf } from "./i18n";
 import type { GatewayAgentView, GatewayDisconnectPreview, PickerItem } from "./gateway-model";
-import { disconnectFileLabel, disconnectPreviewReady } from "./gateway-agent-safety";
+import { disconnectFileLabel, disconnectPreviewReady, fullSwitchReady } from "./gateway-agent-safety";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalFocus } from "./use-modal-focus";
 
@@ -17,12 +17,15 @@ export function AgentDisconnectDialog({
   ownModel,
   busy,
   onApply,
+  onFullSwitch,
   onClose,
 }: {
   agent: Pick<GatewayAgentView, "agent" | "name">;
   ownModel?: PickerItem | null;
   busy: boolean;
   onApply: (previewToken: string) => Promise<boolean>;
+  /** 没法逐项预览时的「完整切换并断开」（disable_gateway_binding_full_switch）；不传就不提供这条路。 */
+  onFullSwitch?: (previewToken: string) => Promise<boolean>;
   onClose: () => void;
 }) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
@@ -60,13 +63,16 @@ export function AgentDisconnectDialog({
 
   const preview = loaded.state === "ready" ? loaded.preview : null;
   const blocked = busy || applying;
+  // 只在不是「改用自带模型」、且调用方提供了完整切换时才给这条路。
+  const fullSwitch = !ownModel && onFullSwitch && fullSwitchReady(preview, agent.agent) ? preview : null;
+  const ready = disconnectPreviewReady(preview, agent.agent) || Boolean(fullSwitch);
   const apply = async () => {
-    if (busy || applyingRef.current || !disconnectPreviewReady(preview, agent.agent)) return;
+    if (busy || applyingRef.current || !preview || !ready) return;
     applyingRef.current = true;
     setApplying(true);
     const current = ++latest.current;
     try {
-      const done = await onApply(preview.previewToken);
+      const done = fullSwitch && onFullSwitch ? await onFullSwitch(preview.previewToken) : await onApply(preview.previewToken);
       if (current !== latest.current) return;
       if (done) onClose();
       else setLoaded({ state: "error", message: t("操作未完成，请重新获取预览后再确认。") });
@@ -117,7 +123,12 @@ export function AgentDisconnectDialog({
                 </section>
               ))}
               {preview.canDisconnect && !preview.files.length ? <p className="gw-disconnect-note">{t("没有需要改写的配置文件。")}</p> : null}
-              {!preview.canDisconnect ? <p className="gw-disconnect-error" role="alert">{t("当前无法安全还原，请先处理上面的文件问题。")}</p> : null}
+              {fullSwitch?.fullSwitch ? (
+                <p className="gw-disconnect-switch" role="status">
+                  <Unplug aria-hidden="true" className="h-4 w-4" />
+                  <span>{tf("确认后 {0} 会完整切换到直连供应商「{1}」：和在供应商列表里切换一样，先备份当前配置、收回借给 {0} 的登录，再写入。", [agent.name, fullSwitch.fullSwitch.name])}</span>
+                </p>
+              ) : !preview.canDisconnect ? <p className="gw-disconnect-error" role="alert">{t("当前无法安全还原，请先处理上面的文件问题。")}</p> : null}
             </>
           ) : null}
         </div>
@@ -125,9 +136,9 @@ export function AgentDisconnectDialog({
           {loaded.state !== "loading" ? <Button disabled={blocked} onClick={() => void load()} size="sm" type="button" variant="ghost"><RefreshCw className="h-3.5 w-3.5" />{t("重新获取预览")}</Button> : null}
           <span className="gw-disconnect-foot-space" />
           <Button data-autofocus disabled={blocked} onClick={close} size="sm" type="button" variant="ghost">{t("取消")}</Button>
-          <Button className="gw-disconnect-confirm" disabled={blocked || !disconnectPreviewReady(preview, agent.agent)} onClick={() => void apply()} size="sm" type="button">
+          <Button className="gw-disconnect-confirm" disabled={blocked || !ready} onClick={() => void apply()} size="sm" type="button">
             {applying ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" /> : <Unplug aria-hidden="true" className="h-3.5 w-3.5" />}
-            {applying ? t("正在还原…") : ownModel ? t("断开并直连") : t("断开并还原")}
+            {applying ? t("正在还原…") : ownModel ? t("断开并直连") : fullSwitch ? t("完整切换并断开") : t("断开并还原")}
           </Button>
         </footer>
       </div>

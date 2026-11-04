@@ -379,6 +379,9 @@ const gateway = ok({
     { id: "hj", name: "哈基米 国模", protocol: "responses", baseUrl: "https://api.biuapi.com" },
     { id: "kimi", name: "Kimi 官方", protocol: "responses", baseUrl: "https://api.moonshot.cn" },
     { id: "deepseek", name: "DeepSeek", protocol: "responses", baseUrl: "https://api.deepseek.com" },
+    // 和演示设置里的直连供应商同 id：「Codex 连接」页据此显示「加入供应商池」。
+    { id: "default", name: "默认中转", protocol: "responses", baseUrl: "https://api.deepseek.com/v1" },
+    { id: "sub2api-demo", name: "sub2api 中转（演示）", protocol: "responses", baseUrl: "https://sub2api.example.com/v1" },
   ],
   claudeProviders: [{ id: "official", name: "Claude Official" }],
   grokProfiles: [],
@@ -525,13 +528,16 @@ const agentCacheReport = {
   ],
 };
 
-// 推荐内容演示数据：中性名称，横幅用内联 SVG，不请求外部图片。
+// 推荐内容演示数据：中性名称，横幅用内联 SVG（尺寸和真实广告图一样大），不请求外部图片。
 const demoBanner = (label: string, hue: number) =>
-  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="200"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="640" height="200" fill="url(#g)"/><text x="40" y="118" font-family="Helvetica" font-size="44" font-weight="700" fill="white">${label}</text></svg>`)}`;
+  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="1600" height="640" fill="url(#g)"/><text x="400" y="360" font-family="Helvetica" font-size="120" font-weight="700" fill="white">${label}</text></svg>`)}`;
 const demoAds = [
   { id: "demo-a", type: "sponsor", title: "示例中转站 A", description: "稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: ["价格划算", "稳定接入", "高缓存命中"] },
   { id: "demo-b", type: "sponsor", title: "示例聚合平台 B", description: "一个 Key 访问多家模型，兼容 Claude Code 等工具。", url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: ["多模型", "兼容 Claude Code"] },
   { id: "demo-c", type: "sponsor", title: "示例服务 C", description: "开放、稳定、高性价比的模型中转。", url: "https://example.com/c", image: demoBanner("Service C", 20), highlights: ["按量计费"] },
+  { id: "demo-e", type: "sponsor", title: "示例云 E", description: "150+ 主流模型，企业级 MaaS，按需选用，适合团队统一采购和管理。这一句故意写得很长，用来检查一行说明超出宽度时会不会把页面撑宽。", url: "https://example.com/e", image: demoBanner("Cloud E", 200), highlights: ["150+ 模型", "企业级"] },
+  { id: "demo-f", type: "sponsor", title: "示例站 F", description: "兼容 OpenAI / Anthropic 协议。", url: "https://example.com/f", highlights: ["支持开票"] },
+  { id: "demo-g", type: "sponsor", title: "示例平台 G", description: "国内直连，低延迟。", url: "https://example.com/g", image: demoBanner("G", 120), highlights: [] },
   { id: "demo-d", type: "normal", title: "示例教程", description: "如何把多个 Agent 接到同一个供应商池。", url: "https://example.com/d", highlights: [] },
 ];
 
@@ -687,11 +693,36 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { agent: "grok", id: "g1", title: L("解释这段正则", "Explain this regex"), cwd: "/Users/demo/Projects/data-tools", updatedAtMs: Date.now() - 5 * 3_600_000 },
     ] : [] }) as T;
     case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
+    // 「版本与更新」演示：有新版本，后台下载 1 秒后完成（只下载不安装）。
+    case "check_update": if (!new URLSearchParams(window.location.search).has("showUpdate")) return ok({ currentVersion: "2.2.0", latestVersion: "2.2.0", releaseSummary: "", assetName: null, assetUrl: null, updateAvailable: false, progress: 0 }) as T;
+      return ok({ currentVersion: "2.2.0", latestVersion: "2.3.0", releaseSummary: "### 新增\n- 界面整体重做", assetName: "Codex++-2.3.0.dmg", assetUrl: "https://example.test/Codex++-2.3.0.dmg", updateAvailable: true, downloaded: false, progress: 0 }) as T;
+    case "download_update": await new Promise((resolve) => setTimeout(resolve, 1000)); return ok({ downloaded: true, latestVersion: "2.3.0" }) as T;
+    // 「日志与诊断」演示：几条诊断日志（含出错和重试）和一份诊断报告。
+    case "read_latest_logs": {
+      const now = Date.now();
+      const line = (offset: number, event: string, detail: unknown) => JSON.stringify({ timestamp_ms: now - offset, pid: 17040, event, detail });
+      const text = [
+        'ount":0,"models":[]}',
+        line(3_600_000, "manager.start", { version: "2.2.0", platform: "macos" }),
+        line(1_800_000, "gateway.helper_started", { port: 63130, agents: 2 }),
+        line(900_000, "manager.save_settings", { activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "default", modelCount: 2 }, { id: "sub2api-demo", modelCount: 3 }] }),
+        line(600_000, "gateway.retry", { provider: "zhipu", status: 429, attempt: 2 }),
+        line(300_000, "manager.navigation_failed", { error: "route not found: legacy", route: "legacy" }),
+        line(60_000, "codex.launch", { status: "ok", pid: 31877, cdp: 9229 }),
+      ].join("\n");
+      return ok({ path: "~/Library/Application Support/Codex++/codex-plus.log", text, lines: 7, truncated: true, fileSize: 2_400_000 }) as T;
+    }
+    case "copy_diagnostics": return ok({ report: JSON.stringify({ generatedAtMs: Date.now(), version: "2.2.0", overview: { codex_app: { status: "found", path: "/Applications/ChatGPT.app" }, codex_version: "26.1027.61615", silent_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, management_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, latest_launch: { status: "stopped", phase: "user_stopped" } } }, null, 2) }) as T;
     case "load_request_flow": return ok({ entries: demoRequestFlow(Number(args.limit) || 30) }) as T;
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;
     case "load_overview": return overview as T;
-    case "load_ads": return ok({ version: 1, ads: demoAds, topAds: [] }) as T;
+    // 置顶赞助位默认空；?showAds 放两条，?showAds=N 放 N 条（看首页横幅几个时怎么排）。
+    case "load_ads": {
+      const param = new URLSearchParams(location.search).get("showAds");
+      const count = param === null ? 0 : Number(param) > 1 ? Number(param) : 2;
+      return ok({ version: 1, ads: demoAds, topAds: demoAds.filter((ad) => ad.type === "sponsor").slice(0, count) }) as T;
+    }
     case "load_settings":
     case "save_settings":
     case "reset_settings":
@@ -862,6 +893,26 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       toolchain: { node: "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node", npm: "/usr/local/bin/npm", git: "/usr/bin/git" },
       pluginDir: "",
     } as T;
+    // Agent 协作演示数据（settings 组追加）：协作页没有快照时整页只剩报错。
+    case "agent_collaboration_request": return (args.action === "mcp_config"
+      ? { codexToml: "[mcp_servers.codex-plus-agents]\ncommand = \"codex-plus\"", claudeJson: "{\n  \"mcpServers\": {}\n}", command: "codex-plus", args: ["agents-mcp"] }
+      : {
+        config: { enabled: true, defaultAgentId: "deepseek", maxRuntimeMinutes: 10, agents: [
+          { id: "codex", name: "Codex", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
+          { id: "deepseek", name: "DeepSeek Harness", executable: "", enabled: true, model: "deepseek-account/deepseek-flash", reuseSavedAuth: true, maxConcurrentTasks: 1 },
+          { id: "claude", name: "Claude Code", executable: "/usr/local/bin/claude", enabled: true, model: "", reuseSavedAuth: false, maxConcurrentTasks: 2 },
+        ] },
+        tasks: [
+          { id: "task-1", agentId: "claude", prompt: "审核这次改动，重点看并发与错误处理", cwd: "/Users/demo/project", status: "completed", answer: "未发现阻塞问题；建议给重试加上上限。", error: "", sessionId: "s-1", createdAtMs: Date.now() - 3_600_000, updatedAtMs: Date.now() - 3_300_000, cancelRequested: false, progress: "" },
+        ],
+        availability: [
+          { id: "codex", available: true, path: "/Applications/Codex.app/Contents/Resources/codex" },
+          { id: "deepseek", available: true, path: "/Users/demo/.dsh/bin/dsh" },
+          { id: "claude", available: true, path: "/usr/local/bin/claude" },
+        ],
+        integration: { status: "connected", message: "已登记到 ~/.codex/config.toml", home: "~/.codex" },
+        capabilities: { maxQueuedPerAgent: 8, maxConcurrentTasksLimit: 4 },
+      }) as T;
     default: return ok() as T;
   }
 }

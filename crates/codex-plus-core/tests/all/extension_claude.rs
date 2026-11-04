@@ -284,7 +284,8 @@ export default (ctx) => {
         assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 3);
         let place = extension_claude::call(&manager, &claude("inspect")).await.unwrap();
         assert_eq!(place["host"], "claudeDesktop");
-        assert_eq!(place["dataDir"], temp.path().join("claude-extension-data/shared").display().to_string());
+        // 用 join 拼：Windows 上分隔符是 \\，手写 "/" 对不上。
+        assert_eq!(place["dataDir"], temp.path().join("claude-extension-data").join("shared").display().to_string());
         assert!(place["hostError"].as_str().unwrap().contains("未开放 Codex 宿主调用"));
         manager.set_script_enabled("user:shared", false).unwrap();
         assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 4);

@@ -45,11 +45,11 @@ export type ModelWindowRowsValidationIssue = {
 
 /// 按拖动结果移动模型行，保留行内的窗口、压缩和图片处理配置。
 /// 索引无效或指向同一行时返回原数组引用，避免无意义的状态更新。
-export function reorderModelWindowRows(
-  rows: ModelWindowRow[],
+export function reorderModelWindowRows<T extends ModelWindowRow>(
+  rows: T[],
   activeIndex: number,
   overIndex: number,
-): ModelWindowRow[] {
+): T[] {
   if (
     activeIndex < 0
     || activeIndex >= rows.length

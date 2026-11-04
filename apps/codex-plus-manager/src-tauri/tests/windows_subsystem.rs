@@ -133,7 +133,7 @@ fn manager_keeps_a_visible_brand_tray_and_click_menu_when_hiding_the_macos_dock_
     assert!(lib_rs.contains("set_manager_activation_policy(&close_event_app, false)"));
     assert!(lib_rs.contains("set_manager_activation_policy(app_handle, true)"));
     assert!(lib_rs.contains("set_manager_activation_policy(&app_handle, false)"));
-    assert!(lib_rs.contains(".icon_as_template(false)"));
+    assert!(lib_rs.contains(".icon_as_template(true)"));
     assert!(lib_rs.contains("tauri::include_image!(\"icons/icon.png\")"));
     assert!(lib_rs.contains(".show_menu_on_left_click(true)"));
     assert!(lib_rs.contains(".tooltip(\"Codex++\")"));
@@ -535,7 +535,9 @@ fn manager_update_install_keeps_visible_progress_bar() {
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
 
-    assert!(app_tsx.contains("下载并运行安装包"));
+    // 有可用更新时后台先下好安装包：按钮按是否下好写「安装 / 下载并安装」，弹窗里写「立即安装 / 立即更新」。
+    assert!(app_tsx.contains("t(\"下载并安装\")"));
+    assert!(app_tsx.contains("t(\"立即安装\")"));
     assert!(app_tsx.contains("updateInstallProgress"));
     assert!(app_tsx.contains("安装包更新进度"));
     assert!(app_tsx.contains("completedTitle={t(\"上次更新结果\")}"));

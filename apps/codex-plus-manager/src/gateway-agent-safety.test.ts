@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady } from "./gateway-agent-safety.ts";
+import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady, fullSwitchReady } from "./gateway-agent-safety.ts";
 import type { GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
 
 const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
@@ -45,7 +45,7 @@ test("供应商配置总开关关闭时只阻止 Codex 重新接入，旧 payloa
   assert.match(agents, /reconnectAllowed \? \([\s\S]*?重新接入[\s\S]*?: \([\s\S]*?供应商配置切换已关闭[\s\S]*?onOpenCodexProviderSettings/);
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   assert.match(app, /onOpenCodexProviderSettings=\{\(\) => \{ void switchTool\("codex", "relay"\); \}\}/);
-  assert.match(app, /!takenOverByGateway \|\| !normalized\.relayProfilesEnabled/);
+  assert.match(app, /takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(/);
 });
 
 test("预览授权绑定Agent与非空token；文件状态和未知诊断证据不被误标成功", () => {
@@ -408,4 +408,19 @@ test("展开详情才展示配置证据；无证据不声称配置已验证，�
   assert.match(text(tree), /opencode.jsoncprovider与网关配置一致/);
   assert.match(text(tree), /认证已失效 · HTTP 401/);
   assert.doesNotMatch(text(tree), /endpoint_match|auth_invalid/);
+});
+
+test("没法逐项预览的 Codex 断开：只在后端给了完整切换目标和 token 时才给「完整切换并断开」，普通断开仍不放行", () => {
+  const blocked = { ...preview(), agent: "codex", canDisconnect: false, fullSwitch: { relayId: "direct", name: "Direct" } };
+  assert.equal(fullSwitchReady(blocked, "codex"), true);
+  assert.equal(disconnectPreviewReady(blocked, "codex"), false, "普通断开不放行");
+  assert.equal(fullSwitchReady({ ...blocked, fullSwitch: null }, "codex"), false);
+  assert.equal(fullSwitchReady({ ...blocked, previewToken: " " }, "codex"), false);
+  assert.equal(fullSwitchReady(blocked, "claude"), false);
+  assert.equal(fullSwitchReady({ ...blocked, canDisconnect: true }, "codex"), false, "能逐项预览时走普通断开");
+  const dialog = readFileSync(new URL("./AgentDisconnectDialog.tsx", import.meta.url), "utf8");
+  // 改用自带模型时不走完整切换；调用方没给 onFullSwitch 时也不给这条路。
+  assert.match(dialog, /const fullSwitch = !ownModel && onFullSwitch && fullSwitchReady\(preview, agent\.agent\) \? preview : null;/);
+  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding_full_switch", \{ agent: "codex", previewToken \}\)/);
 });
