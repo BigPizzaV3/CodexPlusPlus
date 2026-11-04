@@ -8217,6 +8217,47 @@ fn auto_review_model_routes_responses_profile_through_local_proxy() {
 /// issue #228：托管生图工具的剥离发生在本地协议代理里，打开「移除托管生图工具」的
 /// Responses 供应商必须改走本地代理；关闭时保持上游直连。
 #[test]
+fn pure_api_image_generation_writes_actor_header_and_routes_through_local_proxy() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = responses_profile_with_model("gpt-5.6-sol");
+
+    profile.pure_api_image_generation = true;
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let enabled = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let doc: toml::Value = toml::from_str(&enabled).unwrap();
+    let provider = &doc["model_providers"]["custom"];
+    assert_eq!(
+        provider["base_url"].as_str(),
+        Some("http://127.0.0.1:57321/v1"),
+        "{enabled}"
+    );
+    assert_eq!(
+        provider["requires_openai_auth"].as_bool(),
+        Some(false),
+        "{enabled}"
+    );
+    assert_eq!(
+        provider["http_headers"]["x-openai-actor-authorization"].as_str(),
+        Some("codex-plus-pure-api-image-generation"),
+        "{enabled}"
+    );
+
+    profile.pure_api_image_generation = false;
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 57321)
+        .unwrap();
+    let disabled = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        !disabled.contains("x-openai-actor-authorization"),
+        "{disabled}"
+    );
+    assert!(
+        disabled.contains("https://responses.example.test/v1"),
+        "{disabled}"
+    );
+}
+
+#[test]
 fn strip_image_generation_tool_routes_responses_profile_through_local_proxy() {
     let temp = tempfile::tempdir().unwrap();
     let mut profile = responses_profile_with_model("gpt-5.6-sol");

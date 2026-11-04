@@ -184,6 +184,10 @@ pub struct RelayProfile {
     /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
     #[serde(default, skip_serializing_if = "is_false")]
     pub disable_tool_search: bool,
+    /// 纯 API 下让 Codex 注册原生生图工具（`image_gen`），生图请求经本地代理发给本供应商的
+    /// `/images/generations`、`/images/edits`（#1433）。默认关闭。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pure_api_image_generation: bool,
     /// Codex「替我审批」固定请求 `codex-auto-review`，第三方上游通常不认识这个模型；
     /// 填写后协议代理把它改写成这里的模型（#1446）。留空则原样转发。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -404,6 +408,7 @@ impl Default for RelayProfile {
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
             disable_tool_search: false,
+            pure_api_image_generation: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -453,6 +458,11 @@ impl RelayProfile {
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否让纯 API 会话注册 Codex 原生生图工具；只对纯 API 供应商生效，且要走本地代理。
+    pub fn enables_pure_api_image_generation(&self) -> bool {
+        self.pure_api_image_generation && self.relay_mode == RelayMode::PureApi
     }
 
     /// 是否在转发前移除 Responses 图片 `detail` 字段；只对经本地代理转发的
@@ -1645,6 +1655,7 @@ impl BackendSettings {
                 strip_image_generation_tool: false,
                 strip_responses_image_detail: false,
                 disable_tool_search: false,
+                pure_api_image_generation: false,
                 auto_review_model: String::new(),
                 multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
@@ -1718,6 +1729,7 @@ impl BackendSettings {
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
             disable_tool_search: false,
+            pure_api_image_generation: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -1787,6 +1799,7 @@ impl BackendSettings {
             || self.active_relay_profile().request_compatibility_enabled()
             || self.active_relay_profile().rewrites_auto_review_model()
             || self.active_relay_profile().strips_image_generation_tool()
+            || self.active_relay_profile().enables_pure_api_image_generation()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -5868,6 +5881,36 @@ experimental_bearer_token = "sk-existing""#
             assert_eq!(profile.web_search_history_compat_enabled(), expected);
         }
     }
+    #[test]
+    fn pure_api_image_generation_is_default_off_and_only_for_pure_api() {
+        let legacy = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(legacy.get("pureApiImageGeneration").is_none());
+        let enabled = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            pure_api_image_generation: true,
+            ..RelayProfile::default()
+        };
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["pureApiImageGeneration"], json!(true));
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.enables_pure_api_image_generation());
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile { id: "on".to_string(), ..enabled }],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        for mode in [RelayMode::Official, RelayMode::Aggregate] {
+            let profile = RelayProfile {
+                relay_mode: mode,
+                official_mix_api_key: true,
+                pure_api_image_generation: true,
+                ..RelayProfile::default()
+            };
+            assert!(!profile.enables_pure_api_image_generation());
+        }
+    }
+
     #[test]
     fn strip_image_generation_tool_is_default_off_and_only_for_api_responses() {
         let legacy = serde_json::to_value(RelayProfile::default()).unwrap();

@@ -18,6 +18,7 @@ export type RelayModelRouteProfile = {
   strictResponsesReasoning?: boolean;
   stripImageGenerationTool?: boolean;
   stripResponsesImageDetail?: boolean;
+  pureApiImageGeneration?: boolean;
   modelMetadata?: string;
   modelRoutes?: RelayModelRoute[];
 };
@@ -130,6 +131,13 @@ export function stripResponsesImageDetailEnabled(
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
 }
 
+/** #1433：纯 API 下让 Codex 注册原生生图工具，生图请求要经本地代理转给供应商。 */
+export function pureApiImageGenerationEnabled(
+  profile: Pick<RelayModelRouteProfile, "relayMode" | "pureApiImageGeneration">,
+): boolean {
+  return profile.pureApiImageGeneration === true && profile.relayMode === "pureApi";
+}
+
 export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): boolean {
   if (settings.enhancementsEnabled) return true;
   const active = settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId)
@@ -144,6 +152,7 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
     || localCompactionPromptAtEndEnabled(active)
     || requestCompatibilityEnabled(active)
     || stripImageGenerationToolEnabled(active)
+    || pureApiImageGenerationEnabled(active)
     || normalizeRelayModelRoutes(active.modelRoutes).some(
       (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
     );
