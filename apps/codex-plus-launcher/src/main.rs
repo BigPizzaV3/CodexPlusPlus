@@ -1554,6 +1554,16 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("structured usage history task failed: {error}"))
     }
 
+    async fn usage_archive(&self, request: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let settings = codex_plus_core::paths::default_settings_path();
+        Ok(tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_archive::query_archive(&home, &settings, &request)
+        })
+        .await
+        .unwrap_or_else(|_| json!({"status":"failed","code":"archive-task-failed"})))
+    }
+
     async fn clear_usage_history(&self) {
         let _ = tokio::task::spawn_blocking(clear_usage_history).await;
     }

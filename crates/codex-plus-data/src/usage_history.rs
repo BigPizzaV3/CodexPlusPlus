@@ -3,10 +3,21 @@
 use chrono::{Datelike, Duration as Days, Local, NaiveDate};
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::fs::{self, Metadata};
 use std::path::Path;
 
 mod structured;
+
+pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathBuf {
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let id = format!("{:x}", Sha256::digest(home.as_os_str().as_encoded_bytes()));
+    settings_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("usage-history")
+        .join(&id[..16])
+}
 
 pub(crate) fn normalize_session_id(id: &str) -> Option<String> {
     let id = id.strip_prefix("local:").unwrap_or(id);

@@ -123,7 +123,7 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 506
+      "lines": 508
     },
     {
       "name": "91-extension-runtime.js",
