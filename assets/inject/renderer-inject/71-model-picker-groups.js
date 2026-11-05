@@ -412,6 +412,8 @@
    */
   function codexPlusModelPickerCatalogProviderMap() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    const models = ["ok", "not_applied", "not_configured"].includes(codexModelCatalog?.status)
+      && Array.isArray(codexModelCatalog?.models) ? codexModelCatalog.models : null;
     const map = new Map();
     // 记下的归属只补当前快照缺的键：目录快照会被整体替换（重连 / 拉取超时返回空元数据），
     // 只认当前快照会让裸名模型在某一刻全部失去归属，落进一串空名分组（#2860）。
@@ -425,7 +427,7 @@
       const rememberedAliases = new Map();
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
         if (!key.startsWith("model\u0000") || !value?.displayName || !value.groupId || value.parsed) return;
-        if (Array.isArray(codexModelCatalog?.models) && !codexModelCatalog.models.includes(value.slug)) return;
+        if (models && !models.includes(value.slug)) return;
         for (const alias of codexPlusModelPickerCatalogAliases(value.displayName, {}, value.slug)) {
           if (!rememberedAliases.has(alias)) rememberedAliases.set(alias, value);
           else if (rememberedAliases.get(alias)?.groupId !== value.groupId) rememberedAliases.set(alias, null);
@@ -437,8 +439,7 @@
       });
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
         if (key.startsWith("model\u0000") || map.has(key) || !value?.name || value.parsed) return;
-        if (Array.isArray(codexModelCatalog?.models) && value.slug
-            && !codexModelCatalog.models.includes(value.slug)) return;
+        if (models && value.slug && !models.includes(value.slug)) return;
         const current = value.slug && codexPlusModelPickerGroupsState.providerNames.get(`model\u0000${value.slug}`);
         if (current?.displayName && !codexPlusModelPickerCatalogAliases(current.displayName, {}, value.slug).has(key)) return;
         map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
@@ -489,6 +490,8 @@
     const map = new Map();
     const candidate = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
     const modelMetadata = candidate && typeof candidate === "object" ? candidate : {};
+    const models = ["ok", "not_applied", "not_configured"].includes(codexModelCatalog?.status)
+      && Array.isArray(codexModelCatalog?.models) ? codexModelCatalog.models : null;
     const setUnique = (key, value) => {
       if (!key) return;
       if (!map.has(key)) map.set(key, value);
@@ -521,7 +524,7 @@
     for (const [slug, entry] of codexPlusModelPickerCatalogEntries()) register(entry, slug);
     codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
       if (!key.startsWith("model\u0000") || !value?.slug || !value.groupId || value.parsed) return;
-      if (Array.isArray(codexModelCatalog?.models) && !codexModelCatalog.models.includes(value.slug)) return;
+      if (models && !models.includes(value.slug)) return;
       if (modelMetadata[value.slug]) return;
       register({ displayName: value.displayName, codex_plus_group: value.name, codex_plus_group_id: value.groupId }, value.slug);
     });
@@ -577,7 +580,9 @@
       const props = fiber.memoizedProps || {};
       if (typeof props.onSelectModel === "function" && Array.isArray(props.models)) break;
       for (const value of [fiber.key, props.model, props.model?.model, props.model?.id, props.value, props.item?.model]) {
-        if (typeof value === "string" && (Object.hasOwn(metadata, value) || (Array.isArray(models) && models.includes(value)))) return value;
+        if (typeof value === "string" && (Object.hasOwn(metadata, value)
+            || (Array.isArray(models) && models.includes(value))
+            || codexPlusModelPickerGroupsState.providerNames.has(`model\u0000${value}`))) return value;
       }
     }
     return "";
@@ -621,13 +626,13 @@
         ? `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`
         : "";
       const model = codexPlusModelPickerRowModel(row);
-      const exactKnown = (model ? exact.get(`model\u0000${model}`) : null)
-        || exact.get(`raw\u0000${identity.text}`)
-        || exact.get(codexPlusModelPickerNativeLabelKey(identity.text))
-        || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
-        || (pairKey ? exact.get(pairKey) : null);
+      const exactKnown = model ? exact.get(`model\u0000${model}`)
+        : exact.get(`raw\u0000${identity.text}`)
+          || exact.get(codexPlusModelPickerNativeLabelKey(identity.text))
+          || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
+          || (pairKey ? exact.get(pairKey) : null);
       const known = exactKnown
-        || (!split.provider
+        || (!model && !split.provider
           ? providers.get(codexPlusModelPickerNormalizeStrict(split.name))
             || providers.get(codexPlusModelPickerNormalize(split.name))
           : null);

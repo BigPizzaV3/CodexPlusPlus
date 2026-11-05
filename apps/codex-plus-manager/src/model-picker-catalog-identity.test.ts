@@ -107,6 +107,39 @@ it("temporary missing metadata retains known provider grouping without publishin
   assert.equal(entries[0].provider, "Provider A");
 });
 
+it("restores same-source ownership after a cold catalog failure without treating failure as an empty directory", () => {
+  const metadata = {
+    "a/sol": entry("Sol", "a"),
+    "b/sol": entry("Sol", "b"),
+    "group/one": { displayName: "Group One", codex_plus_group: "模型组", codex_plus_group_id: "groups" },
+    "a/terra": entry("Terra", "a"),
+  };
+  const previous = runtime({ status: "ok", models: Object.keys(metadata), modelMetadata: metadata });
+  previous.api.rows({ querySelectorAll: () => Object.entries(metadata).map(([model, value]) => row(value.displayName, model)) });
+  const r = runtime({ status: "loading", models: [] });
+  for (const [key, value] of previous.state.providerNames) {
+    r.state.providerNames.set(key, value);
+  }
+  const menu = () => r.api.rows({ querySelectorAll: () => [
+    row("Sol", "a/sol"), row("Group One", "group/one"), row("Sol", "b/sol"), row("Terra", "a/terra"),
+  ] });
+  for (const status of ["loading", "failed"]) {
+    r.update({ status, models: [] });
+    const entries = menu();
+    assert.deepEqual([...entries].map((value: any) => value.groupId), ["provider:a", "groups", "provider:b", "provider:a"], status);
+    assert.deepEqual([...r.api.groups(entries)].map((group: any) => [group.name, group.entries.length]), [
+      ["Provider A", 2], ["模型组", 1], ["Provider B", 1],
+    ], status);
+    const unidentified = r.api.rows({ querySelectorAll: () => [row("Sol")] });
+    assert.equal(unidentified[0].groupId, "", "same-label rows without model IDs remain ambiguous");
+  }
+  r.update({ status: "ok", models: ["a/sol"], modelMetadata: { "a/sol": metadata["a/sol"] } });
+  const afterRemoval = menu();
+  assert.equal(afterRemoval[1].groupId, "", "successful catalog removal must exclude remembered group");
+  assert.equal(afterRemoval[2].groupId, "", "successful catalog removal must exclude remembered supplier");
+  assert.equal(afterRemoval[3].groupId, "", "successful catalog removal must exclude remembered model");
+});
+
 it("missing metadata preserves only known model ownership and leaves unknown bare models unassigned", () => {
   const r = runtime({ status: "ok", models: ["a/sol", "b/terra"],
     modelMetadata: { "a/sol": entry("Sol", "a"), "b/terra": entry("Terra", "b") } });
