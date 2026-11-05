@@ -41,6 +41,48 @@ const row = (label: string, model?: string) => ({
   },
 });
 
+it("keeps five interleaved models per group together through transient metadata loss", () => {
+  const sources = [
+    { prefix: "group", name: "模型组", id: "groups" },
+    { prefix: "hanhe", name: "寒鹤", id: "provider:hanhe" },
+    { prefix: "fusheng", name: "浮生", id: "provider:fusheng" },
+  ];
+  const metadata: Record<string, any> = {};
+  const rows: ReturnType<typeof row>[] = [];
+  for (let index = 1; index <= 5; index++) {
+    for (const source of sources) {
+      const model = `${source.prefix}/${index}`;
+      const label = `${source.prefix} ${index}`;
+      metadata[model] = { displayName: label, codex_plus_group: source.name, codex_plus_group_id: source.id };
+      rows.push(row(label, model));
+    }
+  }
+  const models = Object.keys(metadata);
+  const r = runtime({ status: "ok", models, modelMetadata: metadata });
+  const assertGroups = (phase: string) => {
+    const entries = r.api.rows({ querySelectorAll: () => rows });
+    const groups = [...r.api.groups(entries)];
+    assert.deepEqual(groups.map((group: any) => [group.id, group.entries.length]),
+      sources.map(source => [source.id, 5]), phase);
+    for (const group of groups) {
+      assert.equal(new Set(group.entries.map((entry: any) => entry.row)).size, 5, phase);
+      const source = sources.find(value => value.id === group.id)!;
+      assert.deepEqual(Array.from(group.entries, (entry: any) => entry.row.label),
+        Array.from({ length: 5 }, (_, index) => `${source.prefix} ${index + 1}`), phase);
+    }
+  };
+
+  assertGroups("complete metadata");
+  r.update({ status: "ok", models, modelMetadata: Object.fromEntries(
+    models.map(model => [model, { displayName: metadata[model].displayName }]),
+  ) });
+  assertGroups("grouping metadata temporarily missing");
+  r.update({ status: "failed", models: [] });
+  assertGroups("catalog temporarily unavailable");
+  r.update({ status: "ok", models, modelMetadata: metadata });
+  assertGroups("metadata recovered");
+});
+
 it("clears the remembered default only when a successful catalog explicitly removes it", () => {
   const definition = source.match(/^  function codexPlusModelPickerDefaultGroupId\([^]*?^  \}/m)?.[0];
   assert.ok(definition);
