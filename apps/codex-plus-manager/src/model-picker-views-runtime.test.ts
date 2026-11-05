@@ -443,6 +443,30 @@ export const pickerViewScenarios: Array<{
     },
   },
   {
+    name: "the model groups builtin disables and restores both views",
+    async run({ page }) {
+      for (const mode of ["icons", "list"]) {
+        if (mode === "list") await switchToList(page);
+        await page.evaluate(() => {
+          (window as any).__codexPlusBuiltinInactive.add("model-picker-groups");
+          (window as any).__codexPlusModelPickerGroupsRuntime.sync();
+        });
+        await page.waitForFunction(() => !document.querySelector('.ModelList-fixture [data-codex-plus-ext="builtin-model-picker-groups"]'));
+        assert.equal(await page.locator("[data-fixture-model]:visible").count(), 10);
+        assert.equal(await page.locator(".native-recommendation").isVisible(), true);
+        assert.equal(await page.getByRole("button", { name: VIEW_LABELS.list, exact: true }).count(), 0);
+        assert.equal(await page.getByRole("button", { name: VIEW_LABELS.icons, exact: true }).count(), 0);
+        await page.evaluate(() => {
+          (window as any).__codexPlusBuiltinInactive.delete("model-picker-groups");
+          (window as any).__codexPlusModelPickerGroupsRuntime.sync();
+        });
+        const expected = mode === "list" ? VIEW_LABELS.icons : VIEW_LABELS.list;
+        await page.getByRole("button", { name: expected, exact: true }).waitFor({ state: "visible" });
+        await assertNativeRowsUntouched(page);
+      }
+    },
+  },
+  {
     name: "list group toggles, expand all and collapse all do not change a selected model",
     async run({ page }) {
       await switchToList(page);
