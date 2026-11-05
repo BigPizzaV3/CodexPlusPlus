@@ -160,6 +160,18 @@ it("a new supplier does not inherit a previous supplier's successful snapshot on
   assert.equal(r.api.catalog().status, "failed");
 });
 
+it("catalog changes notify the installed picker without requiring it during initialization", async () => {
+  const r = runtime();
+  await load(r, ["a/sol"]);
+  let notifications = 0;
+  r.window.__codexPlusModelPickerGroupsRuntime = { catalogChanged: () => { notifications++; } };
+  r.update({ ...r.settings(), activeRelayId: "other", modelCatalogFingerprint: "other-catalog" });
+  assert.equal(notifications, 1, "clearing the previous supplier notifies the picker");
+  r.pending.shift()!.resolve(catalog(["b/terra"]));
+  await settle();
+  assert.equal(notifications, 2, "publishing the new catalog notifies the picker");
+});
+
 it("catalog patches respect hidden entries and never alter selected model or reasoning fields", async () => {
   const r = runtime();
   const first = r.api.load();

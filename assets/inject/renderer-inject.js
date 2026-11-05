@@ -11331,7 +11331,7 @@
     if (sourceChanged) {
       codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
       codexModelCatalogRuntime.catalog = codexModelCatalog;
-      if (typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+      window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
     }
     codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
     codexModelCatalogRuntime.retryAt = 0;
@@ -11398,7 +11398,7 @@
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
-        if (changed && typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+        if (changed) window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
         if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
@@ -13786,6 +13786,7 @@
   // 轮询由内置拓展「模型分组」装上时启动（96-builtin-extensions.js），这里不再自启。
   window.__codexPlusModelPickerGroupsRuntime = {
     version: 2,
+    catalogChanged: codexPlusModelPickerCatalogChanged,
     sync: () => codexPlusModelPickerSchedule(0),
     scan: () => codexPlusModelPickerScan(),
     /** 测试与调试用：不打开菜单也能验证分组解析。 */

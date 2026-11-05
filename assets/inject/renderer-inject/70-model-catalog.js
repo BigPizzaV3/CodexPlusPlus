@@ -158,7 +158,7 @@
     if (sourceChanged) {
       codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
       codexModelCatalogRuntime.catalog = codexModelCatalog;
-      if (typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+      window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
     }
     codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
     codexModelCatalogRuntime.retryAt = 0;
@@ -225,7 +225,7 @@
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
-        if (changed && typeof codexPlusModelPickerCatalogChanged === "function") codexPlusModelPickerCatalogChanged();
+        if (changed) window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
         if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
