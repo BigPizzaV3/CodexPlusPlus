@@ -763,9 +763,9 @@
   }
 
   function modelResponseIsComplete(result, params) {
+    if (!params || typeof params !== "object") return false;
     if (modelRequestCursor(params) !== null) return false;
     if (!modelResponseHasPagination(result)) return true;
-    if (!params || typeof params !== "object") return false;
     if ("nextCursor" in result && result.nextCursor !== null) return false;
     if ("next_cursor" in result && result.next_cursor !== null) return false;
     return true;
@@ -974,7 +974,7 @@
       }
       if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client), nextParams || {});
+      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client), nextParams);
     };
     if (typeof client.prewarmThreadStart === "function") {
       const originalPrewarmThreadStart = (client.__codexPlusServiceTierOriginalPrewarmThreadStart
@@ -1225,7 +1225,7 @@
       }
       if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client), nextParams || {});
+      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client), nextParams);
     };
     // 所有请求最终都经 createRequest(method, params, options) 组装：拓展的 codex/request 中间件挂在这里。
     // createRequest 是同步的，与 codex/request 的契约一致（中间件同步返回，返回 Promise 视为出错并放行）。

@@ -512,6 +512,19 @@ it("does not treat an unknown request cursor as the first page", async () => {
   }
 });
 
+it("does not patch unpaginated responses when request parameters are unavailable", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  const appResult = { data: [{ model: "native" }] };
+  r.api.patchAppResult("model/list", appResult, "local");
+  assert.equal(appResult.data[0].model, "native");
+  r.api.record("unknown-params", "local");
+  const mcp = { type: "mcp-response", message: { id: "unknown-params",
+    result: { data: [{ model: "native" }] } } };
+  assert.equal(r.api.patchMcp(mcp), false);
+  assert.equal(mcp.message.result.data[0].model, "native");
+});
+
 it("in-flight model/list requests retain their host and are consumed once after reinjection", async () => {
   const r = runtime();
   await load(r, ["a/old"]);
@@ -534,10 +547,10 @@ it("an old request timeout cannot expire a reused ID after reinjection", async (
   for (const reinject of [false, true]) {
     const r = runtime();
     await load(r, ["a/current"]);
-    r.api.record("reused", "local");
+    r.api.record("reused", "local", {});
     assert.equal(r.api.patchMcp({ type: "mcp-response", message: { id: "reused", result: { data: [] } } }), true);
     const next = reinject ? runtime(r.window, r.settings()) : r;
-    next.api.record("reused", "local");
+    next.api.record("reused", "local", {});
     r.timers[0]();
     const response = { type: "mcp-response", message: { id: "reused", result: { data: [{ model: "native" }] } } };
     assert.equal(next.api.patchMcp(response), true);
