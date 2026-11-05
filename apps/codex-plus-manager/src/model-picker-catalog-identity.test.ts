@@ -78,6 +78,24 @@ it("temporary missing metadata retains known provider grouping without publishin
   assert.equal(entries[0].provider, "Provider A");
 });
 
+it("missing metadata preserves only known model ownership and leaves unknown bare models unassigned", () => {
+  const r = runtime({ status: "ok", models: ["a/sol", "b/terra"],
+    modelMetadata: { "a/sol": entry("Sol", "a"), "b/terra": entry("Terra", "b") } });
+  r.api.providers();
+  r.update({ status: "ok", models: ["a/sol", "b/terra", "unknown"], modelMetadata: {} });
+  const entries = r.api.rows({ querySelectorAll: () => [row("Sol"), row("Terra"), row("Unknown")] });
+  assert.deepEqual([...entries].map(value => [value.name, value.provider, value.groupId]), [
+    ["Sol", "Provider A", "provider:a"],
+    ["Terra", "Provider B", "provider:b"],
+    ["Unknown", "", ""],
+  ]);
+  assert.equal(entries[2].authoritativeGroupId, false);
+  const coldStart = runtime({ status: "failed", models: [], modelMetadata: {} });
+  const unknown = coldStart.api.rows({ querySelectorAll: () => [row("Unseen")] });
+  assert.equal(unknown[0].provider, "");
+  assert.equal(unknown[0].groupId, "");
+});
+
 it("a parenthesized model variant is preserved unless the catalog confirms a supplier suffix", () => {
   const r = runtime({ status: "ok", models: ["a/variant"],
     modelMetadata: { "a/variant": entry("GPT-6.1 (Sol)", "a") } });
