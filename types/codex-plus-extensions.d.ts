@@ -23,11 +23,22 @@ type CodexPlusExtensionRoute =
   | "/user-scripts/list"
   | "/cdp/targets"
   | "/cdp/evaluate"
+  | "/system/cursor-position"
+  | "/request-log/recent"
   | "/proxy-status"
   | "/thread-usage-live"
   | "/backend/status"
   | "/settings/public"
-  | "/model-catalog/public";
+  | "/model-catalog/public"
+  | "/agent-pet/catalog"
+  | "/agent-pet/image"
+  | "/agent-pet/sound"
+  | "/agent-pet/import-sound"
+  | "/whale/media"
+  | "/whale/full"
+  | "/whale/history"
+  | "/whale/session"
+  | "/image-overlay/image";
 
 interface CodexPlusToastOptions {
   type?: CodexPlusToastType;
@@ -105,6 +116,30 @@ interface CodexPlusNavEntryDefinition {
   onActivate?(): void;
 }
 
+interface CodexPlusMenuItemDefinition extends Record<string, unknown> {
+  /** 留空时显示注册项 id。 */
+  label?: string;
+  description?: string;
+  /** 菜单内的排序，第三方项排在内置项之后。 */
+  order?: number;
+  /** 开关形态：给 onChange；菜单重新打开时从 toggleValue 读取当前值。 */
+  toggleValue?(): boolean;
+  onChange?(next: boolean): void;
+  /** 按钮形态：给 onActivate，按钮文字默认「打开」。 */
+  buttonLabel?: string;
+  onActivate?(context: { close(): void }): void;
+}
+
+/** 当前打开的会话快照；没有会话时 id 为空串。 */
+interface CodexPlusCurrentSession {
+  readonly id: string;
+  readonly title: string;
+  /** 会话所在的主机，本机为 "local"。 */
+  readonly hostId: string;
+  /** 是否为远程 / SSH 会话。 */
+  readonly remote: boolean;
+}
+
 /** 注册项的注销函数。调用后该 UI 项从所有宿主移除。 */
 type CodexPlusDispose = () => void;
 
@@ -129,6 +164,8 @@ interface CodexPlusExtensionApi {
   services(): Array<{ name: string; owner: string }>;
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
+  /** 当前打开的会话及所属主机；返回冻结的快照。 */
+  currentSession(): CodexPlusCurrentSession;
   /** 内置拓展的现状：Codex++ 自带功能也挂在拓展内核上，可停用、可被 replaces 顶替。 */
   builtins(): Array<{ id: string; name: string; active: boolean; disabled: boolean; replacedBy: string | null }>;
 
@@ -183,6 +220,8 @@ interface CodexPlusExtensionApi {
   registerFloatingTab(definition: CodexPlusFloatingTabDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerToolView(definition: CodexPlusToolViewDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
   registerSettingsSection(definition: CodexPlusSettingsSectionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  /** 「拓展」详情页的设置面板，每个拓展一个。 */
+  registerSettingsPanel(definition: CodexPlusSettingsPanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
 
   /** 在会话行「更多操作」里加一项。 */
   registerRowAction(
@@ -195,6 +234,9 @@ interface CodexPlusExtensionApi {
     definition: CodexPlusNavEntryDefinition,
     options?: CodexPlusRegisterOptions,
   ): CodexPlusDispose;
+
+  /** 在 Codex++ 菜单的「主页」面板里加一行开关或按钮。 */
+  registerMenuItem(definition: CodexPlusMenuItemDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
 
   /** 注册一个整页视图，并自动配一个图标栏入口。 */
   registerPage(
@@ -225,6 +267,8 @@ interface CodexPlusCommandDefinition {
   description?: string;
   run(args: string, context: {
     editor: HTMLElement;
+    /** 当前打开的会话 id；首页、新对话还没有 id 时为空串。 */
+    sessionId: string;
     insertText(text: string): boolean;
     /** 用 text 替换输入框内容。 */
     setText(text: string): boolean;
@@ -343,6 +387,16 @@ interface CodexPlusSettingsSectionDefinition {
   icon?: string;
   order?: number;
   render(context: { container: HTMLElement; close: () => void }): void | (() => void);
+}
+
+interface CodexPlusSettingsPanelDefinition {
+  /** 每次打开详情时调用；可返回清理函数，面板卸载时调用。 */
+  render(context: {
+    container: HTMLElement;
+    config: Record<string, unknown>;
+    /** 只保存清单 config 中声明过的项，返回生效配置。 */
+    saveConfig(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+  }): void | (() => void);
 }
 
 /** 撤销函数，另带 refresh()：强制所有位置重画该项。 */
@@ -610,13 +664,13 @@ interface CodexPlusExtensionContext {
   /** 子作用域：deps 齐全时以子 ctx 调用 apply；服务消失时卸载、回来时重新应用。 */
   inject(deps: CodexPlusInject, apply: (ctx: CodexPlusExtensionContext) => void | Promise<void>): CodexPlusExtensionFiber;
 
-  /** 立即执行 fn；它返回的函数在卸载时调用。返回值可提前撤销。 */
-  effect(fn: () => void | (() => void)): CodexPlusDispose;
+  /** 立即执行 fn；支持异步返回清理函数，实例已卸载时拿到清理函数就立即调用。返回值可提前撤销。 */
+  effect(fn: () => void | CodexPlusDispose | Promise<void | CodexPlusDispose>): CodexPlusDispose;
 
   registerRowAction(definition: CodexPlusRowActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerNavEntry(definition: CodexPlusNavEntryDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   /** 定义形态同 codexPlus.registerMenuItem：开关给 onChange，按钮给 onActivate。 */
-  registerMenuItem(definition: Record<string, unknown>, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerMenuItem(definition: CodexPlusMenuItemDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerPage(definition: CodexPlusPageDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerComposerAction(definition: CodexPlusComposerActionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerCommand(definition: CodexPlusCommandDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
@@ -633,6 +687,7 @@ interface CodexPlusExtensionContext {
   registerFloatingTab(definition: CodexPlusFloatingTabDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   registerToolView(definition: CodexPlusToolViewDefinition, options?: CodexPlusRegisterOptions): CodexPlusSlotHandle;
   registerSettingsSection(definition: CodexPlusSettingsSectionDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
+  registerSettingsPanel(definition: CodexPlusSettingsPanelDefinition, options?: CodexPlusRegisterOptions): CodexPlusDispose;
   /** 当前打开的 Codex 会话 id；首页、新对话还没有 id 时为空串。 */
   currentSessionId(): string;
 
