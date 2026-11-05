@@ -1984,6 +1984,87 @@ fn gateway_catalog_refresh_follows_model_sync_and_pool_changes() {
 }
 
 #[test]
+fn gateway_catalog_refresh_keeps_provider_models_when_group_hides_shared_member() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57387);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let first = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let (_, second) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Mirror".into(),
+            model_list: "deepseek-v4-pro\nmirror-only".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: "deepseek-v4-flash".into(),
+            ..binding()
+        },
+    )
+    .unwrap();
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Shared".into(),
+            members: vec![GroupMember {
+                model: "deepseek-v4-pro".into(),
+                weight: 1,
+            }],
+            hide_members: true,
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    for provider in [&first, &second] {
+        let slug = format!("{provider}/deepseek-v4-pro");
+        let entry = entries.iter().find(|entry| entry["slug"] == slug).unwrap();
+        assert_eq!(entry["codex_plus_group_id"], provider.as_str());
+    }
+    assert!(!entries.iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    assert!(entries.iter().any(|entry| entry["slug"] == format!("group/{group}")));
+
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: group.clone(),
+            name: "Shared".into(),
+            members: vec![GroupMember {
+                model: "deepseek-v4-pro".into(),
+                weight: 1,
+            }],
+            hide_members: false,
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    assert!(entries.iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    for provider in [&first, &second] {
+        let slug = format!("{provider}/deepseek-v4-pro");
+        assert!(entries.iter().any(|entry| entry["slug"] == slug));
+    }
+}
+
+#[test]
 fn context_windows_follow_each_model_in_the_pool() {
     let fixture = fixture(57396);
     let ctx = &fixture.ctx;
