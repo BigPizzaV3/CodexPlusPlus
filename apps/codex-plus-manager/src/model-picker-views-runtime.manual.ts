@@ -307,6 +307,51 @@ export const pickerViewScenarios: Array<{
   name: string; baseline?: boolean; run: (fixture: any, browser: any) => Promise<void>;
 }> = [
   {
+    name: "interleaved model groups and suppliers remain single groups in both views",
+    async run({ page, inject }) {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.__codexPlusModelPickerGroupsRuntime.releaseDom();
+        const additions = [
+          { slug: "group/2", label: "模型组 2", full: "模型组 2", provider: "模型组", group: "codex-plus-gateway-groups" },
+          { slug: "hanhe/extra-1", label: "Extra 1（寒鹤）", full: "Extra 1（寒鹤）", provider: "寒鹤", group: "provider-hanhe" },
+          { slug: "group/3", label: "模型组 3", full: "模型组 3", provider: "模型组", group: "codex-plus-gateway-groups" },
+          { slug: "hanhe/extra-2", label: "Extra 2（寒鹤）", full: "Extra 2（寒鹤）", provider: "寒鹤", group: "provider-hanhe" },
+          { slug: "group/4", label: "模型组 4", full: "模型组 4", provider: "模型组", group: "codex-plus-gateway-groups" },
+          { slug: "group/5", label: "模型组 5", full: "模型组 5", provider: "模型组", group: "codex-plus-gateway-groups" },
+          { slug: "auto/2", label: "自动 2", full: "自动 2", provider: "自动路由", group: "codex-plus-gateway-auto" },
+          { slug: "auto/3", label: "自动 3", full: "自动 3", provider: "自动路由", group: "codex-plus-gateway-auto" },
+          { slug: "auto/4", label: "自动 4", full: "自动 4", provider: "自动路由", group: "codex-plus-gateway-auto" },
+          { slug: "auto/5", label: "自动 5", full: "自动 5", provider: "自动路由", group: "codex-plus-gateway-auto" },
+        ];
+        for (const item of additions) {
+          w.fixtureModels.push(item);
+          w.codexModelCatalog.models.push(item.slug);
+          w.codexModelCatalog.modelMetadata[item.slug] = {
+            displayName: item.full, codex_plus_group: item.provider, codex_plus_group_id: item.group,
+          };
+        }
+        const ids = ["codex-plus-gateway-groups", "codex-plus-gateway-auto", "provider-hanhe", "provider-fusheng"];
+        const byGroup = ids.map(id => w.fixtureModels.filter((item: any) => item.group === id));
+        w.fixtureModels = Array.from({ length: 5 }, (_, index) => byGroup.map(items => items[index])).flat();
+        w.fixtureMountMenu();
+      });
+      await inject();
+      for (const [id, count] of [["codex-plus-gateway-groups", 5], ["codex-plus-gateway-auto", 5], ["provider-hanhe", 5], ["provider-fusheng", 5]] as const) {
+        const group = page.locator(`[data-codex-plus-model-group-id="${id}"]`);
+        assert.equal(await group.count(), 1);
+        assert.match(await group.innerText(), new RegExp(`${count} 个模型`));
+      }
+      await switchToList(page);
+      await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).click();
+      for (const [id, count] of [["codex-plus-gateway-groups", 5], ["codex-plus-gateway-auto", 5], ["provider-hanhe", 5], ["provider-fusheng", 5]] as const) {
+        assert.equal(await page.locator(`[data-codex-plus-model-group-id="${id}"]`).count(), 1);
+        assert.equal(await page.locator(`[data-codex-plus-model-group="${id}"]:visible`).count(), count);
+      }
+      await assertNativeRowsUntouched(page);
+    },
+  },
+  {
     name: "main icon navigation retains native row identities, callbacks and Escape behavior",
     baseline: true,
     async run({ page }) {
