@@ -344,7 +344,7 @@
     if (!stringArrayLooksPatchable(models)) return false;
     if (hostId && hostId !== "local") return prepareModelCollection(models, null);
     const allowed = codexModelAllowedSet(hostId);
-    let changed = prepareModelCollection(models, allowed);
+    let changed = prepareModelCollection(models, allowed, hostId);
     const customModels = codexPlusModelNames();
     if (!customModels.length) return changed;
     if (allowed) {
@@ -390,8 +390,9 @@
     return !!right && left.length === right.length && left.every((item, index) => item === right[index]);
   }
 
-  function prepareModelCollection(collection, allowed) {
-    const policy = modelFilterPolicy(allowed);
+  function prepareModelCollection(collection, allowed, hostId) {
+    const policy = modelFilterPolicy(allowed) || (hostId === "local" && codexPlusModelNames().length
+      ? `local:${JSON.stringify([codexPlusModelNames(), codexModelCatalog.modelMetadata])}` : "");
     const previous = codexPlusModelCollectionSnapshots.get(collection);
     let current = [...collection];
     let changed = false;
@@ -403,7 +404,7 @@
         changed = true;
       }
     }
-    if (!allowed) codexPlusModelCollectionSnapshots.delete(collection);
+    if (!policy) codexPlusModelCollectionSnapshots.delete(collection);
     else if (!previous || previous.policy !== policy || !sameModelCollection(current, previous.patched)) {
       codexPlusModelCollectionSnapshots.set(collection, { policy, original: current, patched: null });
     }
@@ -493,7 +494,7 @@
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
     if (hostId && hostId !== "local") return prepareModelCollection(models, null);
     const allowed = codexModelAllowedSet(hostId);
-    let changed = prepareModelCollection(models, allowed);
+    let changed = prepareModelCollection(models, allowed, hostId);
     const customModels = codexPlusModelNames();
     if (!customModels.length) return changed;
     if (allowed) {
@@ -547,7 +548,7 @@
     const names = remote ? [] : codexPlusModelNames();
     const allowed = codexModelAllowedSet(hostId);
     if (value.availableModels instanceof Set) {
-      if (prepareModelCollection(value.availableModels, allowed)) changed = true;
+      if (prepareModelCollection(value.availableModels, allowed, hostId)) changed = true;
       if (allowed) for (const name of value.availableModels) {
         if (!allowed.has(name)) { value.availableModels.delete(name); changed = true; }
       }
@@ -560,7 +561,7 @@
       finishModelCollection(value.availableModels);
     }
     if (value.available_models instanceof Set) {
-      if (prepareModelCollection(value.available_models, allowed)) changed = true;
+      if (prepareModelCollection(value.available_models, allowed, hostId)) changed = true;
       if (allowed) for (const name of value.available_models) {
         if (!allowed.has(name)) { value.available_models.delete(name); changed = true; }
       }

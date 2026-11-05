@@ -406,6 +406,48 @@ it("restores unchanged shared local snapshots for unknown hosts without replacin
   assert.deepEqual(models, [{ model: "new-native" }]);
 });
 
+it("does not leak additions from an unfiltered local list to another host", async () => {
+  const settings = {
+    relayProfilesEnabled: true, activeRelayId: "gateway", modelCatalogFingerprint: "catalog-1",
+    relayProfiles: [{ id: "gateway", relayMode: "official" }],
+  };
+  const r = runtime({}, settings);
+  await load(r, ["a/custom"]);
+  const models = [{ model: "native" }];
+  r.api.patchAppResult("model/list", { data: models, nextCursor: null }, "local", { cursor: null });
+  assert.deepEqual(models.map(entry => entry.model), ["native", "a/custom"]);
+  r.api.patchAppResult("model/list", { data: models, nextCursor: null }, "ssh:remote", { cursor: null });
+  assert.deepEqual(models, [{ model: "native" }]);
+});
+
+it("refreshes and restores unfiltered local names, metadata and sets", async () => {
+  const settings = {
+    relayProfilesEnabled: true, activeRelayId: "gateway", modelCatalogFingerprint: "catalog-1",
+    relayProfiles: [{ id: "gateway", relayMode: "official" }],
+  };
+  const r = runtime({}, settings);
+  await load(r, ["a/old"], { "a/old": { displayName: "Local name" } });
+  const native = { model: "a/old", displayName: "Native name" };
+  const container = { models: [native], availableModels: ["native"], available_models: new Set(["native"]) };
+  r.api.patch(container, "local");
+  assert.equal(container.models[0].displayName, "Local name");
+  assert.deepEqual(container.availableModels, ["native", "a/old"]);
+  assert.deepEqual([...container.available_models], ["native", "a/old"]);
+
+  r.update({ ...settings, modelCatalogFingerprint: "catalog-2" });
+  r.pending.shift()!.resolve(catalog(["a/new"]));
+  await settle();
+  r.api.patch(container, "local");
+  assert.equal(container.models[0], native);
+  assert.deepEqual(container.models.map(entry => entry.model), ["a/old", "a/new"]);
+  assert.deepEqual(container.availableModels, ["native", "a/new"]);
+  assert.deepEqual([...container.available_models], ["native", "a/new"]);
+  r.api.patch(container, "ssh:remote");
+  assert.deepEqual(container.models, [native]);
+  assert.deepEqual(container.availableModels, ["native"]);
+  assert.deepEqual([...container.available_models], ["native"]);
+});
+
 it("patches only complete MCP and app-server model responses", async () => {
   const r = runtime();
   await load(r, ["a/custom"]);
