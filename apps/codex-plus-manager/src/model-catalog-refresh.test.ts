@@ -525,6 +525,21 @@ it("does not patch unpaginated responses when request parameters are unavailable
   assert.equal(mcp.message.result.data[0].model, "native");
 });
 
+it("retains missing MCP request parameters when recording pagination context", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  r.api.installMessages();
+  for (const params of [undefined, null]) {
+    const request = { id: `missing-${params}`, method: "model/list", hostId: "local", params };
+    r.emit("codex-message-from-view", { detail: { type: "mcp-request", request } });
+    assert.equal((request.params as any).includeHidden, true);
+    const response = { type: "mcp-response", message: { id: request.id,
+      result: { data: [{ model: "native" }], nextCursor: null } } };
+    assert.equal(r.api.patchMcp(response), false);
+    assert.equal(response.message.result.data[0].model, "native");
+  }
+});
+
 it("in-flight model/list requests retain their host and are consumed once after reinjection", async () => {
   const r = runtime();
   await load(r, ["a/old"]);

@@ -11903,11 +11903,12 @@
         const detail = event?.detail;
         const request = detail?.request;
         if (detail?.type === "mcp-request" && request?.method === "model/list") {
+          const originalParams = request.params;
           request.params = { ...(request.params || {}), includeHidden: true };
           if (request.id != null) {
             const requestId = String(request.id);
             window.__codexPlusModelCatalogRuntime.recordRequest(
-              requestId, modelResponseHostId(detail, request, request.params), request.params);
+              requestId, modelResponseHostId(detail, request, request.params), originalParams);
           }
         }
       } catch (error) {
