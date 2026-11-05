@@ -1221,25 +1221,46 @@ fn public_active_relay_profile(settings: &BackendSettings) -> Value {
 fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
     use std::hash::{Hash, Hasher};
     let profile = settings.active_relay_profile();
-    let aggregate = settings
-        .active_aggregate_relay_profile()
-        .and_then(|aggregate| serde_json::to_string(&aggregate).ok())
-        .unwrap_or_default();
+    let aggregate = settings.active_aggregate_relay_profile();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (
-        settings.relay_profiles_enabled,
-        profile.id.as_str(),
-        profile.name.as_str(),
-        crate::relay_config::relay_profile_model(&profile),
-        profile.model_list.as_str(),
-        profile.model_windows.as_str(),
-        profile.model_auto_compact.as_str(),
-        profile.model_metadata.as_str(),
-        profile.context_window.as_str(),
-        profile.auto_compact_limit.as_str(),
-        aggregate,
-    )
+    let hash_profile = |profile: &crate::settings::RelayProfile,
+                        hasher: &mut std::collections::hash_map::DefaultHasher| {
+        (
+            profile.id.as_str(),
+            profile.name.as_str(),
+            profile.model.as_str(),
+            crate::relay_config::relay_profile_model(profile),
+            profile.model_list.as_str(),
+            profile.model_windows.as_str(),
+            profile.model_auto_compact.as_str(),
+            profile.model_metadata.as_str(),
+            profile.context_window.as_str(),
+            profile.auto_compact_limit.as_str(),
+            crate::official_login::is_official_login_profile(profile),
+            crate::relay_config::upstream_rejects_tool_search(profile),
+        )
+            .hash(&mut *hasher);
+        crate::relay_rotation::member_relay_ready(profile).hash(hasher);
+    };
+    settings.relay_profiles_enabled.hash(&mut hasher);
+    hash_profile(&profile, &mut hasher);
+    aggregate
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
         .hash(&mut hasher);
+    if let Some(aggregate) = aggregate {
+        for member in &aggregate.members {
+            member.relay_id.hash(&mut hasher);
+            let member_profile = settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == member.relay_id);
+            member_profile.is_some().hash(&mut hasher);
+            if let Some(member_profile) = member_profile {
+                hash_profile(member_profile, &mut hasher);
+            }
+        }
+    }
     format!("{:016x}", hasher.finish())
 }
 
