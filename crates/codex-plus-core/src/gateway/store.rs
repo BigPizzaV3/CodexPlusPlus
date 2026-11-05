@@ -819,8 +819,21 @@ const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const DISCOVERY_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 const DISCOVERY_LEASE: std::time::Duration = std::time::Duration::from_secs(30);
 
+fn extension_discovery_key(provider: &crate::user_scripts::ExtensionProvider) -> String {
+    use std::hash::{BuildHasher, Hash, Hasher};
+
+    static HASHER: std::sync::LazyLock<std::collections::hash_map::RandomState> =
+        std::sync::LazyLock::new(Default::default);
+    let mut hasher = HASHER.build_hasher();
+    provider.id.hash(&mut hasher);
+    provider.base_url.hash(&mut hasher);
+    provider.protocol.hash(&mut hasher);
+    provider.api_key.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider) -> Vec<String> {
-    let key = format!("{}|{}", provider.id, provider.base_url);
+    let key = extension_discovery_key(provider);
     let handle = tokio::runtime::Handle::try_current().ok();
     let (models, generation) = {
         let mut cache = DISCOVERED_MODELS
@@ -1136,6 +1149,37 @@ mod tests {
     }
 
     #[test]
+    fn extension_discovery_identity_changes_with_protocol_and_credentials() {
+        let mut provider = crate::user_scripts::ExtensionProvider {
+            id: "provider".to_string(),
+            name: "Provider".to_string(),
+            protocol: "responses".to_string(),
+            base_url: "http://127.0.0.1:1234/v1".to_string(),
+            api_key: "first-secret".to_string(),
+            api_key_config: None,
+            models: Vec::new(),
+            discover_models: true,
+            override_existing: false,
+        };
+        let initial = extension_discovery_key(&provider);
+        let mut cache = DiscoveredModels::default();
+        let now = std::time::Instant::now();
+        let (_, old_attempt) = cache.begin(&initial, now, true);
+        provider.protocol = "chat".to_string();
+        assert_ne!(initial, extension_discovery_key(&provider));
+        provider.protocol = "responses".to_string();
+        provider.api_key = "second-secret".to_string();
+        let changed = extension_discovery_key(&provider);
+        assert_ne!(initial, changed);
+        assert_eq!(cache.begin(&changed, now, true), (vec![], Some(1)));
+        cache.finish(&initial, old_attempt.unwrap(), now, Some(vec!["old-model".to_string()]));
+        assert_eq!(cache.begin(&changed, now, true), (vec![], None));
+        provider.api_key = "first-secret".to_string();
+        provider.name = "Renamed".to_string();
+        assert_eq!(initial, extension_discovery_key(&provider));
+    }
+
+    #[test]
     fn extension_discovery_entrypoint_without_runtime_leaves_request_eligible() {
         let id = format!("test-{}", uuid::Uuid::new_v4());
         let provider = crate::user_scripts::ExtensionProvider {
@@ -1151,7 +1195,7 @@ mod tests {
         };
         assert!(tokio::runtime::Handle::try_current().is_err());
         assert!(discovered_extension_models(&provider).is_empty());
-        let key = format!("{}|{}", id, provider.base_url);
+        let key = extension_discovery_key(&provider);
         let mut cache = DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(cache.begin(&key, std::time::Instant::now(), true).1, Some(1));
         cache.0.remove(&key);
@@ -1214,7 +1258,7 @@ mod tests {
             }).await
         });
         let served = server.join().unwrap();
-        let key = format!("{}|{}", id, provider.base_url);
+        let key = extension_discovery_key(&provider);
         DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0.remove(&key);
         assert!(served, "mock server did not receive a request");
         assert_eq!(found.unwrap(), vec!["test-discovered-model"]);
