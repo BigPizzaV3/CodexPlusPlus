@@ -66,13 +66,18 @@ fn redirect_uri() -> String {
     format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}")
 }
 
+/// ChatGPT 登录申请的权限，和 Codex 自带 CLI 的登录一致（26.1029 的 codex 二进制里就是这一串）。
+/// 少了 `api.connectors.*` 时，桌面端拿到借出的 token 仍判定未登录、启动即弹登录页（#2908）。
+const CHATGPT_SCOPES: &str =
+    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+
 /// 浏览器要打开的登录地址。
 pub fn chatgpt_authorize_url(challenge: &str, state: &str) -> String {
     let params = [
         ("response_type", "code".to_string()),
         ("client_id", OFFICIAL_OAUTH_CLIENT_ID.to_string()),
         ("redirect_uri", redirect_uri()),
-        ("scope", "openid profile email offline_access".to_string()),
+        ("scope", CHATGPT_SCOPES.to_string()),
         ("code_challenge", challenge.to_string()),
         ("code_challenge_method", "S256".to_string()),
         ("id_token_add_organizations", "true".to_string()),
@@ -2214,7 +2219,9 @@ mod tests {
         let url = chatgpt_authorize_url(&challenge, "st");
         assert!(url.starts_with("https://auth.openai.com/oauth/authorize?response_type=code"));
         assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"));
-        assert!(url.contains("scope=openid%20profile%20email%20offline_access"));
+        assert!(url.contains(
+            "scope=openid%20profile%20email%20offline_access%20api.connectors.read%20api.connectors.invoke"
+        ), "scope 要和 Codex 自带 CLI 一致，少了 api.connectors.* 桌面端会弹登录页（#2908）：{url}");
         assert!(url.contains(&format!("code_challenge={challenge}")));
     }
 

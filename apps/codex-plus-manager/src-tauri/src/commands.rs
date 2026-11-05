@@ -1837,12 +1837,27 @@ fn multi_manifest_identity_matches(
 }
 
 fn load_multi_instance_manifest(root: &Path) -> anyhow::Result<CodexMultiInstance> {
-    load_multi_instance_manifest_with_absence(root, stale_multi_instance_is_absent)
+    load_multi_instance_manifest_with_probes(
+        root,
+        stale_multi_instance_is_absent,
+        orphaned_multi_instance_is_absent,
+    )
 }
 
+#[cfg(test)]
 fn load_multi_instance_manifest_with_absence(
     root: &Path,
     absent: impl Fn(&CodexMultiInstance) -> anyhow::Result<bool>,
+) -> anyhow::Result<CodexMultiInstance> {
+    load_multi_instance_manifest_with_probes(root, absent, |_| Ok(false))
+}
+
+/// `absent` 核验身份与清单一致的实例；`orphan_absent` 只用于身份已对不上清单的
+/// 过期记录（#2904），两者分开注入，测试里可以各自替换。
+fn load_multi_instance_manifest_with_probes(
+    root: &Path,
+    absent: impl Fn(&CodexMultiInstance) -> anyhow::Result<bool>,
+    orphan_absent: impl Fn(&CodexMultiInstance) -> anyhow::Result<bool>,
 ) -> anyhow::Result<CodexMultiInstance> {
     let _lifecycle = codex_plus_core::multi_worker::lock_instance_lifecycle(root)?;
     let manifest_bytes = std::fs::read(multi_instance_manifest_path(root))?;
@@ -1901,7 +1916,28 @@ fn load_multi_instance_manifest_with_absence(
         ) && multi_instance_stopped_receipt_matches(&instance, &stopped);
         instance.launch_result = Some(result);
     }
-    if instance.status != "stopped"
+    // 记录的进程身份已对不上当前清单（例如 Codex 更新后旧安装目录消失，或重启电脑后
+    // 进程早已不在、PID 还可能被别的程序复用）：正常的核验路径会因身份不一致一直判
+    // 「未知」，停止也会拒绝写回执，用户就被卡住（#2904）。这里只按记录里的 PID +
+    // 创建身份确认那一代进程确已退出、worker 已退出、数据目录与端口无人使用（两次），
+    // 才把这条过期记录标为已停止并丢弃失效身份；任何一步不确定都保持原样，不结束任何进程。
+    let orphaned = instance.status != "stopped"
+        && !multi_instance_orphaned_identities(&instance).is_empty()
+        && orphan_absent(&instance).unwrap_or(false)
+        && orphan_absent(&instance).unwrap_or(false);
+    if orphaned {
+        instance.identity = None;
+        instance.pid = None;
+        instance.worker_birth_id = None;
+        let mut receipt = multi_instance_cleanup_result(&instance, &Ok(()));
+        receipt.message =
+            "Codex 多开实例进程已不存在（例如重启过电脑），已清理过期的运行记录。".into();
+        instance.launch_result = Some(receipt);
+        instance.status = "stopped".into();
+        instance.running = false;
+        receipt_changed = true;
+        manifest_changed = true;
+    } else if instance.status != "stopped"
         && !instance.is_main
         && instance.instance_id != "main"
         && !instance.instance_id.is_empty()
@@ -1935,8 +1971,88 @@ fn load_multi_instance_manifest_with_absence(
             )?;
         }
         save_multi_instance_manifest(root, &instance)?;
+        if orphaned {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.multi_instance_stale_record_cleared",
+                json!({ "instance_id": instance.instance_id, "generation": instance.generation }),
+            );
+        }
     }
     Ok(instance)
+}
+
+/// 清单或同代回执里记录了进程身份，但它已对不上当前清单时，返回需要核验退出的身份。
+///
+/// 身份与清单一致时返回空，交给原有核验路径；身份不属于本实例本代、缺少 PID 或
+/// 创建身份时同样返回空——没有可靠依据就不清理。
+fn multi_instance_orphaned_identities(
+    instance: &CodexMultiInstance,
+) -> Vec<&codex_plus_core::multi_worker::CodexInstanceIdentity> {
+    if instance.is_main
+        || instance.instance_id == "main"
+        || instance.instance_id.is_empty()
+        || instance.generation == 0
+        || instance.status == "stopped"
+        || instance
+            .identity
+            .as_ref()
+            .is_some_and(|identity| multi_manifest_identity_matches(instance, identity))
+    {
+        return Vec::new();
+    }
+    let identities: Vec<_> = instance
+        .identity
+        .iter()
+        .chain(
+            instance
+                .launch_result
+                .as_ref()
+                .filter(|result| {
+                    result.instance_id == instance.instance_id
+                        && result.generation == instance.generation
+                })
+                .and_then(|result| result.identity.as_ref()),
+        )
+        .collect();
+    if identities.iter().all(|identity| {
+        identity.instance_id == instance.instance_id
+            && identity.generation == instance.generation
+            && identity.process_id != 0
+            && identity.process_birth_id != 0
+    }) {
+        identities
+    } else {
+        Vec::new()
+    }
+}
+
+/// 过期记录的退出核验：记录里每个身份对应的那一代进程都已退出（PID 不在或已被
+/// 其他进程复用，按创建身份区分），再沿用无身份清单的 worker / 数据目录 / 端口核验。
+/// 不依赖安装路径，所以 Codex 更新换了目录也能确认；只读查询，不结束任何进程。
+fn orphaned_multi_instance_is_absent(instance: &CodexMultiInstance) -> anyhow::Result<bool> {
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    {
+        let identities = multi_instance_orphaned_identities(instance);
+        if identities.is_empty() {
+            return Ok(false);
+        }
+        for identity in identities {
+            if !codex_plus_core::multi_worker::codex_process_generation_exited(
+                identity.process_id,
+                Some(identity.process_birth_id),
+            )? {
+                return Ok(false);
+            }
+        }
+        let mut detached = instance.clone();
+        detached.identity = None;
+        stale_multi_instance_is_absent(&detached)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        let _ = instance;
+        Ok(false)
+    }
 }
 
 fn read_multi_launch_result_bytes(root: &Path) -> std::io::Result<Option<Vec<u8>>> {
@@ -6779,6 +6895,19 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
             &format!("本地拓展整体开关设置失败：{error}"),
             fallback_settings_payload(),
         ),
+    }
+}
+
+/// 记下管理器的使用模式（#2902）：页面本地存储之外再存进设置文件，本地存储丢了也能补回。
+#[tauri::command]
+pub fn set_manager_agent_focus(mode: String) -> CommandResult<SettingsPayload> {
+    let mode = mode.trim();
+    if !matches!(mode, "codex" | "enhance" | "all") {
+        return failed(&format!("未知的使用模式：{mode}"), fallback_settings_payload());
+    }
+    match SettingsStore::default().update(serde_json::json!({ "managerAgentFocus": mode })) {
+        Ok(_) => settings_payload("已记下使用模式。", "记下使用模式失败"),
+        Err(error) => failed(&format!("记下使用模式失败：{error}"), fallback_settings_payload()),
     }
 }
 
@@ -14217,6 +14346,183 @@ model_reasoning_effort = "high"
             assert_eq!(current.status, "starting");
             assert_eq!(current.pid, original.pid);
         }
+    }
+
+    /// 模拟 #2904：重启电脑后（Codex 期间被商店更新），清单里的安装路径已不存在，
+    /// 记录的进程身份因此对不上清单。
+    fn orphaned_multi_instance_fixture(root: &Path) -> CodexMultiInstance {
+        let mut instance = ready_multi_instance_fixture(root);
+        instance.app_path = Some(
+            root.join("Codex-removed-version.app")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        save_multi_instance_manifest(root, &instance).unwrap();
+        instance
+    }
+
+    #[test]
+    fn orphaned_identities_only_cover_mismatched_records_of_this_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let ready = ready_multi_instance_fixture(temp.path());
+        // 身份与清单一致：交给原有核验路径。
+        assert!(multi_instance_orphaned_identities(&ready).is_empty());
+
+        let orphan = orphaned_multi_instance_fixture(temp.path());
+        assert_eq!(multi_instance_orphaned_identities(&orphan).len(), 2);
+        // 修复前的表现：身份对不上就一直是「未知」。
+        assert_eq!(multi_instance_snapshot_status(&orphan, false), "unknown");
+
+        let mut stopped = orphan.clone();
+        stopped.status = "stopped".into();
+        assert!(multi_instance_orphaned_identities(&stopped).is_empty());
+
+        let mut main = orphan.clone();
+        main.is_main = true;
+        assert!(multi_instance_orphaned_identities(&main).is_empty());
+
+        let mut foreign = orphan.clone();
+        foreign.identity.as_mut().unwrap().instance_id = "neighbor".into();
+        assert!(multi_instance_orphaned_identities(&foreign).is_empty());
+
+        let mut older = orphan.clone();
+        let receipt = older.launch_result.as_mut().unwrap();
+        receipt.identity.as_mut().unwrap().generation += 1;
+        assert!(multi_instance_orphaned_identities(&older).is_empty());
+
+        let mut no_birth = orphan.clone();
+        no_birth.identity.as_mut().unwrap().process_birth_id = 0;
+        assert!(multi_instance_orphaned_identities(&no_birth).is_empty());
+
+        // 清单还没写入身份、只有同代回执带身份时同样可核验。
+        let mut receipt_only = orphan.clone();
+        receipt_only.identity = None;
+        assert_eq!(multi_instance_orphaned_identities(&receipt_only).len(), 1);
+
+        let mut legacy = orphan;
+        legacy.identity = None;
+        legacy.launch_result = None;
+        assert!(multi_instance_orphaned_identities(&legacy).is_empty());
+    }
+
+    #[test]
+    fn orphaned_record_is_cleared_once_exit_is_confirmed_and_stop_can_finish() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = orphaned_multi_instance_fixture(temp.path());
+        let probes = std::cell::Cell::new(0);
+        let current = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("mismatched identity must not use the regular probe"),
+            |instance| {
+                assert_eq!(instance.identity, original.identity);
+                assert_eq!(instance.pid, original.pid);
+                probes.set(probes.get() + 1);
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(probes.get(), 2);
+        assert_eq!(current.status, "stopped");
+        assert!(!current.running);
+        assert_eq!(current.identity, None);
+        assert_eq!(current.pid, None);
+        assert_eq!(current.worker_birth_id, None);
+        assert_eq!(multi_instance_snapshot_status(&current, false), "stopped");
+        assert!(!multi_instance_is_running(&current));
+
+        let receipt = load_multi_launch_result(temp.path()).unwrap();
+        assert_eq!(receipt.status, "stopped");
+        assert!(receipt.identity.is_none() && receipt.pid.is_none());
+        assert!(multi_instance_stopped_receipt_matches(&current, &receipt));
+        let persisted: CodexMultiInstance = serde_json::from_slice(
+            &std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted.status, "stopped");
+        assert_eq!(persisted.identity, None);
+
+        // 幂等：再次读取不再探测、不再改写。
+        let bytes = std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap();
+        let again = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("already synchronized"),
+            |_| panic!("already synchronized"),
+        )
+        .unwrap();
+        assert_eq!(again.status, "stopped");
+        assert_eq!(
+            std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap(),
+            bytes
+        );
+        // 停止流程最后写回执的一步不再报「实例身份改变，未覆盖回执」。
+        finish_multi_instance_cleanup(temp.path(), &again, Ok(()), |_| Ok(true)).unwrap();
+        // 旧记录不再挡住同一身份重新启动。
+        assert!(multi_instance_relaunch_is_safe_with(&again, |_| {
+            panic!("identity was dropped after confirmed exit")
+        }));
+    }
+
+    #[test]
+    fn orphaned_record_stays_untouched_while_exit_is_uncertain() {
+        for failed_probe in [0, 1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let original = orphaned_multi_instance_fixture(temp.path());
+            let manifest = std::fs::read(multi_instance_manifest_path(temp.path())).unwrap();
+            let receipt = std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap();
+            let probes = std::cell::Cell::new(0);
+            let current = load_multi_instance_manifest_with_probes(
+                temp.path(),
+                |_| Ok(true),
+                |_| {
+                    probes.set(probes.get() + 1);
+                    if failed_probe == 0 {
+                        anyhow::bail!("query denied");
+                    }
+                    // 进程仍在（或 PID 复用后创建身份仍一致）、数据目录或端口仍被占用。
+                    Ok(probes.get() != failed_probe)
+                },
+            )
+            .unwrap();
+            assert_ne!(current.status, "stopped");
+            assert_eq!(current.identity, original.identity);
+            assert_eq!(current.pid, original.pid);
+            assert_eq!(multi_instance_snapshot_status(&current, false), "unknown");
+            assert_eq!(
+                std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+                manifest
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap(),
+                receipt
+            );
+        }
+    }
+
+    #[test]
+    fn orphaned_record_is_not_overwritten_when_files_change_during_probe() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = orphaned_multi_instance_fixture(temp.path());
+        let probes = std::cell::Cell::new(0);
+        let loaded = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| Ok(true),
+            |_| {
+                probes.set(probes.get() + 1);
+                if probes.get() == 2 {
+                    let mut next = original.clone();
+                    next.generation += 1;
+                    save_multi_instance_manifest(temp.path(), &next)?;
+                }
+                Ok(true)
+            },
+        );
+        assert!(loaded.is_err());
+        let saved: CodexMultiInstance = serde_json::from_slice(
+            &std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.generation, original.generation + 1);
+        assert_ne!(saved.status, "stopped");
     }
 
     #[test]

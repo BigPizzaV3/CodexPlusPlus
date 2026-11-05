@@ -1386,10 +1386,25 @@ function SubscriptionLoginDialog({
 
 /** 浏览器登录进行中的提示条：不挡操作（固定在窗口底部），可随时取消。 */
 function LoginPendingBar({ label, onCancel }: { label: string; onCancel: () => void }) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  // 复制登录链接（#2823）：想用无痕窗口或别的浏览器登录时，不用抢在默认浏览器打开的瞬间去地址栏复制。
+  const copyLink = async () => {
+    try {
+      const result = await invoke<{ status: string; url?: string | null }>("gateway_login_url");
+      if (!result.url) throw new Error("no url");
+      await navigator.clipboard.writeText(result.url);
+      setCopied("copied");
+    } catch {
+      setCopied("failed");
+    }
+  };
   return createPortal(
     <div aria-live="polite" className="gw-portal gw-login-pending" role="status">
       <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
       <span>{tf("正在等待 {0} 登录，在浏览器里完成后会自动继续", [label])}</span>
+      <button className="gw-text-button" onClick={() => void copyLink()} title={t("复制后可以在无痕窗口或其他浏览器里打开")} type="button">
+        {copied === "copied" ? t("已复制") : copied === "failed" ? t("复制失败") : t("复制登录链接")}
+      </button>
       <button className="gw-text-button strong" onClick={onCancel} type="button">{t("取消登录")}</button>
     </div>,
     document.body,

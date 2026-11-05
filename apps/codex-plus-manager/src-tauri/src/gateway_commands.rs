@@ -2110,9 +2110,28 @@ pub fn resume_agent_session(
     }
 }
 
+/// 最近一次打开的登录页地址：登录提示条上「复制登录链接」读它，方便用无痕窗口或别的浏览器打开（#2823）。
+static LAST_LOGIN_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginUrlPayload {
+    pub url: Option<String>,
+}
+
+/// 当前登录要打开的地址（没有进行中的浏览器登录时为空）。
+#[tauri::command]
+pub fn gateway_login_url() -> CommandResult<LoginUrlPayload> {
+    let url = LAST_LOGIN_URL.lock().map(|slot| slot.clone()).unwrap_or_default();
+    ok(if url.is_some() { "ok" } else { "没有进行中的浏览器登录。" }, LoginUrlPayload { url })
+}
+
 /// 用系统默认浏览器打开登录页。
 /// Windows 不能用 `cmd /c start`：授权地址里的 `&` 会被 cmd 当成命令分隔符，参数全丢。
 fn open_in_browser(url: &str) {
+    if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+        *slot = Some(url.to_string());
+    }
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
@@ -2205,6 +2224,9 @@ fn login_response(outcome: LoginOutcome<String>) -> CommandResult<Option<Gateway
 #[tauri::command]
 pub fn cancel_gateway_login() -> CommandResult<()> {
     let cancelled = login_slot().take().map(|(_, abort)| abort()).is_some();
+    if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+        *slot = None;
+    }
     ok(
         if cancelled {
             LOGIN_CANCELLED

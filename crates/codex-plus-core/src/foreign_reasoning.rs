@@ -16,6 +16,14 @@
 //! 推理项（推理已在前一次重发或按记忆提前去掉，或本来就没有）却仍以同类报错被拒——这时被拒的只可能是
 //! 压缩结果，不去掉对话就无法继续。去掉 compaction 会丢掉压缩前的对话内容，调用方要在请求日志里
 //! 用 [`COMPACTION_DROPPED_REASON`] 标出来并记诊断日志，不能悄悄发生。
+//!
+//! 另一类同源的拒收（#2917）：DeepSeek / GLM 等经 Codex++ 转换回来的 reasoning 项带着明文
+//! `content`（`reasoning_text` 片段）和一个占位的 `encrypted_content`。同一对话换到 OpenAI 风格的
+//! Responses 上游后，它要求 reasoning 的 `content` 必须为空，整条请求 400：
+//! 「Invalid 'input[26].content': array too long. Expected an array with maximum length 0 …」
+//! （`array_above_max_length`）。只有上游明确这样报、且点名的 `input[N]` 确实是带明文的推理项时，
+//! 才把所有推理项的 `content` 清空（`summary`、`encrypted_content` 保留）后重发一次，
+//! 并按「上游（[`memory_scope`]）+ 模型」记住，同一对话后面的请求发往这一家这个模型时提前清空。
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -39,6 +47,9 @@ pub const RETRY_REASON: &str = "invalid_encrypted_content";
 /// 请求日志里的标记：这次请求去掉了别家签发的压缩上下文（compaction / compaction_summary），
 /// 较早的对话内容上游已经看不到。它只是说明，不算一次重试。
 pub const COMPACTION_DROPPED_REASON: &str = "foreign_compaction_dropped";
+
+/// 请求日志里这次重试的原因：上游不收 reasoning 项的明文 `content`（#2917）。
+pub const CONTENT_RETRY_REASON: &str = "reasoning_content_not_allowed";
 
 /// 识别报错措辞时，两个关键短语之间最多隔多少个字符（例如中间夹着项 id、"provided" 等）。
 const PHRASE_GAP_LIMIT: usize = 160;
@@ -85,19 +96,27 @@ enum Batch {
 
 const BATCH_ORDER: [Batch; 2] = [Batch::Reasoning, Batch::Compaction];
 
-/// 被拒项的记忆：值是最近一次用到的时刻，按时间过期、按数量淘汰最久没用到的。
-#[derive(Default)]
-struct Memory {
-    entries: HashMap<MemoryKey, Instant>,
+/// 被拒的记忆：值是最近一次用到的时刻，按时间过期、按数量淘汰最久没用到的。
+/// 加密项按「作用域 + 内容摘要」记；推理明文被拒（#2917）按「作用域 + 模型」记。
+struct Memory<K = MemoryKey> {
+    entries: HashMap<K, Instant>,
 }
 
-impl Memory {
+impl<K> Default for Memory<K> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone> Memory<K> {
     fn forget_expired(&mut self, now: Instant) {
         self.entries
             .retain(|_, last_used| now.saturating_duration_since(*last_used) < MEMORY_TTL);
     }
 
-    fn remember(&mut self, key: MemoryKey, now: Instant) {
+    fn remember(&mut self, key: K, now: Instant) {
         self.entries.insert(key, now);
         while self.entries.len() > MEMORY_LIMIT {
             let Some(oldest) = self
@@ -113,7 +132,7 @@ impl Memory {
     }
 
     /// 命中时顺带刷新「最近用到」，正在进行的对话不会因为过期又先失败一次。
-    fn touch(&mut self, key: &MemoryKey, now: Instant) -> bool {
+    fn touch(&mut self, key: &K, now: Instant) -> bool {
         match self.entries.get_mut(key) {
             Some(last_used) => {
                 *last_used = now;
@@ -303,6 +322,168 @@ fn strip_remembered_at(
         _ => true,
     });
     stripped
+}
+
+/// 推理明文被拒的记忆键：作用域（见 [`memory_scope`]）+ 发出去的模型名。
+type ContentMemoryKey = (String, String);
+
+fn content_memory() -> &'static Mutex<Memory<ContentMemoryKey>> {
+    static MEMORY: OnceLock<Mutex<Memory<ContentMemoryKey>>> = OnceLock::new();
+    MEMORY.get_or_init(|| Mutex::new(Memory::default()))
+}
+
+/// 推理项带着非空的明文 `content` 数组。
+fn has_plain_reasoning_content(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("reasoning")
+        && item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| !parts.is_empty())
+}
+
+/// 请求里有没有带明文 `content` 的推理项：没有时上游的错误与 #2917 无关，不必预读错误体。
+pub fn has_reasoning_content(body: &Value) -> bool {
+    input_items(body).iter().any(has_plain_reasoning_content)
+}
+
+/// 报错里点名的 `input[N].content` 的所有 N（只认正好指到 `content` 本身的，
+/// `input[N].content[0].text` 这类指向内部字段的不算）。
+fn named_content_indexes(text: &str) -> Vec<usize> {
+    const LEAD: &str = "input[";
+    const TAIL: &str = "].content";
+    let mut indexes = Vec::new();
+    for start in positions(text, LEAD) {
+        let rest = &text[start + LEAD.len()..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 || !rest[digits..].starts_with(TAIL) {
+            continue;
+        }
+        let mut after = rest[digits + TAIL.len()..].chars();
+        let continues_path = match after.next() {
+            None => false,
+            Some('[') => true,
+            Some('.') => after
+                .next()
+                .is_some_and(|next| next.is_ascii_alphanumeric() || next == '_'),
+            Some(next) => next.is_ascii_alphanumeric() || next == '_',
+        };
+        if continues_path {
+            continue;
+        }
+        if let Ok(index) = rest[..digits].parse() {
+            indexes.push(index);
+        }
+    }
+    indexes
+}
+
+/// 报错文字是不是「推理项的 `content` 必须为空」（#2917）。大小写不敏感，要同时满足：
+/// - 提到 `array_above_max_length` 或「expected an array with maximum length 0」；
+/// - 点名了 `input[N].content`，且 `body`（这次实际发出的请求）里 `input[N]` 是带明文 `content` 的推理项。
+pub fn mentions_reasoning_content_not_allowed(text: &str, body: &Value) -> bool {
+    let text = text.to_ascii_lowercase();
+    if !text.contains("array_above_max_length")
+        && !text.contains("expected an array with maximum length 0")
+    {
+        return false;
+    }
+    let items = input_items(body);
+    named_content_indexes(&text)
+        .into_iter()
+        .any(|index| items.get(index).is_some_and(has_plain_reasoning_content))
+}
+
+/// 上游的 4xx 错误体是不是「推理项的 `content` 必须为空」；5xx 一律不算。
+pub fn is_reasoning_content_rejection(status: u16, error_body: &[u8], body: &Value) -> bool {
+    (400..500).contains(&status)
+        && mentions_reasoning_content_not_allowed(&String::from_utf8_lossy(error_body), body)
+}
+
+/// 流里的 `response.failed` / `error` 事件是不是「推理项的 `content` 必须为空」。
+/// 错误码与 message 可能分开放（码里是 `array_above_max_length`，message 里点名位置），合起来看。
+pub fn is_reasoning_content_stream_failure(
+    code: Option<&str>,
+    message: Option<&str>,
+    body: &Value,
+) -> bool {
+    let text = [code, message]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    mentions_reasoning_content_not_allowed(&text, body)
+}
+
+/// 清空所有推理项的明文 `content`（`summary`、`encrypted_content` 等其余字段不动），返回清空了几项。
+fn empty_reasoning_content(body: &mut Value) -> usize {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut emptied = 0;
+    for item in items
+        .iter_mut()
+        .filter(|item| has_plain_reasoning_content(item))
+    {
+        item["content"] = Value::Array(Vec::new());
+        emptied += 1;
+    }
+    emptied
+}
+
+fn content_memory_key(scope: &str, body: &Value) -> ContentMemoryKey {
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    (scope.to_string(), model.to_string())
+}
+
+/// 上游拒收推理明文后清空所有推理项的 `content`，并记住 `scope`（见 [`memory_scope`]）的这个模型不收。
+/// 返回清空了几项；0 表示请求里没有可清的，错误照常交回。
+pub fn strip_rejected_reasoning_content(scope: &str, body: &mut Value) -> usize {
+    strip_rejected_reasoning_content_at(content_memory(), scope, body, Instant::now())
+}
+
+fn strip_rejected_reasoning_content_at(
+    memory: &Mutex<Memory<ContentMemoryKey>>,
+    scope: &str,
+    body: &mut Value,
+    now: Instant,
+) -> usize {
+    let emptied = empty_reasoning_content(body);
+    if emptied > 0 {
+        let mut memory = memory.lock().unwrap_or_else(|error| error.into_inner());
+        memory.forget_expired(now);
+        memory.remember(content_memory_key(scope, body), now);
+    }
+    emptied
+}
+
+/// `scope`（见 [`memory_scope`]）的这个模型之前拒收过推理明文：提前清空，返回清空了几项。
+pub fn strip_remembered_reasoning_content(scope: &str, body: &mut Value) -> usize {
+    strip_remembered_reasoning_content_at(content_memory(), scope, body, Instant::now())
+}
+
+fn strip_remembered_reasoning_content_at(
+    memory: &Mutex<Memory<ContentMemoryKey>>,
+    scope: &str,
+    body: &mut Value,
+    now: Instant,
+) -> usize {
+    if !has_reasoning_content(body) {
+        return 0;
+    }
+    let mut memory = memory.lock().unwrap_or_else(|error| error.into_inner());
+    if memory.entries.is_empty() {
+        return 0;
+    }
+    memory.forget_expired(now);
+    if !memory.touch(&content_memory_key(scope, body), now) {
+        return 0;
+    }
+    drop(memory);
+    empty_reasoning_content(body)
 }
 
 #[cfg(test)]
@@ -616,5 +797,178 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
+    }
+
+    /// DeepSeek / GLM 经 Codex++ 转换回来的推理项：明文 content + 占位 encrypted_content。
+    fn plain_reasoning(text: &str) -> Value {
+        json!({"type": "reasoning", "summary": [{"type": "summary_text", "text": "s"}],
+               "content": [{"type": "reasoning_text", "text": text}],
+               "encrypted_content": "placeholder"})
+    }
+
+    /// 第 2 项是带明文的推理项。
+    fn plain_reasoning_body() -> Value {
+        json!({"model": "gpt-5.5", "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"type": "reasoning", "summary": [], "content": [], "encrypted_content": "gAAA"},
+            plain_reasoning("deepseek thinking"),
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+        ]})
+    }
+
+    const OPENAI_CONTENT_REJECTION: &str = r#"{"error":{"message":"[ArrayParam] [input[2].content] [array_above_max_length] Invalid 'input[2].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.","type":"invalid_request_error","param":"input[2].content","code":"array_above_max_length"}}"#;
+
+    #[test]
+    fn recognizes_reasoning_content_rejection_naming_a_plain_reasoning_item() {
+        let body = plain_reasoning_body();
+        assert!(has_reasoning_content(&body));
+        assert!(is_reasoning_content_rejection(
+            400,
+            OPENAI_CONTENT_REJECTION.as_bytes(),
+            &body
+        ));
+        assert!(is_reasoning_content_rejection(
+            422,
+            OPENAI_CONTENT_REJECTION.as_bytes(),
+            &body
+        ));
+        assert!(!is_reasoning_content_rejection(
+            500,
+            OPENAI_CONTENT_REJECTION.as_bytes(),
+            &body
+        ));
+        // 只有其中一种说法也认；大小写不敏感。
+        for text in [
+            "Invalid 'input[2].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.",
+            "INVALID 'INPUT[2].CONTENT': ARRAY_ABOVE_MAX_LENGTH",
+            "Nebula upstream error: [input[2].content] [array_above_max_length]",
+        ] {
+            assert!(
+                mentions_reasoning_content_not_allowed(text, &body),
+                "{text}"
+            );
+        }
+        // 流内失败：码与 message 分开放也认。
+        assert!(is_reasoning_content_stream_failure(
+            Some("array_above_max_length"),
+            Some("Invalid 'input[2].content': array too long."),
+            &body
+        ));
+    }
+
+    #[test]
+    fn does_not_mistake_other_array_errors_for_reasoning_content() {
+        let body = plain_reasoning_body();
+        for text in [
+            // 点名的不是推理项 / 是已经为空的推理项 / 越界。
+            "Invalid 'input[0].content': array too long. Expected an array with maximum length 0",
+            "[input[1].content] [array_above_max_length]",
+            "[input[9].content] [array_above_max_length]",
+            // 指向内部字段。
+            "[input[2].content[0].text] [array_above_max_length]",
+            "[input[2].contents] [array_above_max_length]",
+            // 没说数组超长。
+            "Invalid 'input[2].content': expected a string",
+            "Invalid type for 'input[2].content'",
+            // 别的数组超长。
+            "Invalid 'tools': array too long. Expected an array with maximum length 128 (array_above_max_length)",
+            "The encrypted content for item rs_1 could not be verified.",
+            "",
+        ] {
+            assert!(
+                !mentions_reasoning_content_not_allowed(text, &body),
+                "{text}"
+            );
+            assert!(
+                !is_reasoning_content_rejection(400, text.as_bytes(), &body),
+                "{text}"
+            );
+        }
+        // 请求里没有带明文的推理项：同样的报错不算。
+        let mut emptied = body.clone();
+        empty_reasoning_content(&mut emptied);
+        assert!(!has_reasoning_content(&emptied));
+        assert!(!is_reasoning_content_rejection(
+            400,
+            OPENAI_CONTENT_REJECTION.as_bytes(),
+            &emptied
+        ));
+        assert!(!is_reasoning_content_stream_failure(None, None, &body));
+        assert!(!mentions_unverifiable_encrypted_content(
+            OPENAI_CONTENT_REJECTION
+        ));
+    }
+
+    #[test]
+    fn empties_only_non_empty_reasoning_content_and_keeps_other_fields() {
+        let memory = Mutex::new(Memory::default());
+        let now = Instant::now();
+        let mut body = json!({"model": "gpt-5.5", "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            plain_reasoning("first"),
+            {"type": "reasoning", "summary": [], "content": [], "encrypted_content": "gAAA"},
+            {"type": "reasoning", "summary": [], "encrypted_content": "gBBB"},
+            plain_reasoning("second"),
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+        ]});
+        let mut expected = body.clone();
+        expected["input"][1]["content"] = json!([]);
+        expected["input"][4]["content"] = json!([]);
+
+        assert_eq!(
+            strip_rejected_reasoning_content_at(&memory, "r", &mut body, now),
+            2
+        );
+        assert_eq!(body, expected, "消息、summary、encrypted_content 原样保留");
+        assert_eq!(body["input"][1]["summary"][0]["text"], "s");
+        assert_eq!(body["input"][1]["encrypted_content"], "placeholder");
+        // 已经没有可清的：返回 0，调用方把错误照常交回。
+        assert_eq!(
+            strip_rejected_reasoning_content_at(&memory, "r", &mut body, now),
+            0
+        );
+    }
+
+    #[test]
+    fn remembered_reasoning_content_rejection_is_scoped_by_upstream_and_model() {
+        let memory = Mutex::new(Memory::default());
+        let now = Instant::now();
+        let mut body = plain_reasoning_body();
+        strip_rejected_reasoning_content_at(&memory, "nebula#a", &mut body, now);
+
+        // 同一上游同一模型：提前清空。
+        let mut next = plain_reasoning_body();
+        assert_eq!(
+            strip_remembered_reasoning_content_at(&memory, "nebula#a", &mut next, now),
+            1
+        );
+        assert!(!has_reasoning_content(&next));
+        // 别的上游、或同一上游换成别的模型（例如回到 DeepSeek，它需要回传思考内容）：原样保留。
+        let mut elsewhere = plain_reasoning_body();
+        assert_eq!(
+            strip_remembered_reasoning_content_at(&memory, "other", &mut elsewhere, now),
+            0
+        );
+        let mut other_model = plain_reasoning_body();
+        other_model["model"] = json!("deepseek-v4-pro");
+        assert_eq!(
+            strip_remembered_reasoning_content_at(&memory, "nebula#a", &mut other_model, now),
+            0
+        );
+        assert_eq!(
+            other_model["input"][2]["content"][0]["text"],
+            "deepseek thinking"
+        );
+        // 一整天没用到就忘掉。
+        let mut expired = plain_reasoning_body();
+        assert_eq!(
+            strip_remembered_reasoning_content_at(
+                &memory,
+                "nebula#a",
+                &mut expired,
+                now + MEMORY_TTL + MEMORY_TTL
+            ),
+            0
+        );
     }
 }

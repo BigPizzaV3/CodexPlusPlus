@@ -3746,6 +3746,8 @@ async fn open_responses_proxy_request_once(
     let mut foreign_retries = 0_u32;
     // 这次请求去掉过别家签发的压缩上下文（#2777）：请求日志里单独标出来，较早的对话内容上游已看不到。
     let mut foreign_compaction_dropped = false;
+    // 上游不收推理项的明文 content、已清空后重发过（#2917）：每个请求只重发这一次，不占上面两项的预算。
+    let mut reasoning_content_retried = false;
     let mut request_trace = crate::request_log::RequestTrace {
         model: source_model.clone(),
         ..Default::default()
@@ -3954,6 +3956,24 @@ async fn open_responses_proxy_request_once(
         }
         // 按这次实际发出的请求算：换到别的候选、压缩项没被去掉时不再标出。
         foreign_compaction_dropped = compaction_dropped_now;
+        // #2917：这家（供应商 + Key / 账号）的这个模型拒收过推理项的明文 content，提前清空。
+        // 拒收重发时请求从头重建，也是靠这里清空。
+        if foreign_reasoning_handled {
+            let emptied = crate::foreign_reasoning::strip_remembered_reasoning_content(
+                &foreign_scope,
+                &mut upstream_body,
+            );
+            if emptied > 0 {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.reasoning_content_skipped",
+                    json!({
+                        "relayId": relay.id,
+                        "relayName": relay.name,
+                        "emptied": emptied
+                    }),
+                );
+            }
+        }
         let header_timeout =
             responses_request_header_timeout(is_stream, is_compaction_request, via_gateway);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -4171,37 +4191,68 @@ async fn open_responses_proxy_request_once(
         // #2777：上游明确说历史里的加密内容校验不过（多半是同一对话里上一家签发的），
         // 去掉一批加密项（先推理、后压缩结果）后对同一候选重发；没报这个错的请求不预读、不改动。
         // 各家拒收的状态码不一，4xx 都看，但只认错误体里的措辞。
+        // #2917：上游说推理项的 content 必须为空（别家转换回来的明文思考），清空后对同一候选重发一次。
+        let foreign_rejection_possible = foreign_retries < crate::foreign_reasoning::MAX_RETRIES
+            && crate::foreign_reasoning::has_encrypted_items(&upstream_body);
+        let content_rejection_possible = !reasoning_content_retried
+            && crate::foreign_reasoning::has_reasoning_content(&upstream_body);
         if foreign_reasoning_handled
             && (400..500).contains(&status_code)
-            && foreign_retries < crate::foreign_reasoning::MAX_RETRIES
-            && crate::foreign_reasoning::has_encrypted_items(&upstream_body)
+            && (foreign_rejection_possible || content_rejection_possible)
         {
             let mut error_text = String::new();
+            let mut rejection = None;
+            let sent_body = &upstream_body;
             let inspected = crate::responses_exec_transport::inspect_error_body(
                 upstream,
                 |status, _, body| {
-                    let rejected =
-                        crate::foreign_reasoning::is_unverifiable_reasoning_rejection(status, body);
-                    if rejected {
+                    if content_rejection_possible
+                        && crate::foreign_reasoning::is_reasoning_content_rejection(
+                            status, body, sent_body,
+                        )
+                    {
+                        rejection = Some(HistoryRejection::ReasoningContent);
+                    } else if foreign_rejection_possible
+                        && crate::foreign_reasoning::is_unverifiable_reasoning_rejection(status, body)
+                    {
+                        rejection = Some(HistoryRejection::EncryptedContent);
+                    }
+                    if rejection.is_some() {
                         error_text = String::from_utf8_lossy(body).into_owned();
                     }
-                    rejected
+                    rejection.is_some()
                 },
             )
             .await;
             match inspected {
                 Ok((_, true))
-                    if prepare_foreign_reasoning_retry(
-                        &relay,
-                        &mut upstream_body,
-                        &error_text,
-                        "http_status",
-                        is_stream,
-                        &mut foreign_retries,
-                        &mut retry_reasons,
-                        &foreign_scope,
-                        &mut foreign_compaction_dropped,
-                    ) =>
+                    if match rejection {
+                        Some(HistoryRejection::ReasoningContent) => {
+                            prepare_reasoning_content_retry(
+                                &relay,
+                                &mut upstream_body,
+                                "http_status",
+                                is_stream,
+                                &mut reasoning_content_retried,
+                                &mut retry_reasons,
+                                &foreign_scope,
+                            )
+                        }
+                        Some(HistoryRejection::EncryptedContent) => {
+                            prepare_foreign_reasoning_retry(
+                                &relay,
+                                &mut upstream_body,
+                                &error_text,
+                                "http_status",
+                                is_stream,
+                                &mut foreign_retries,
+                                &mut retry_reasons,
+                                &foreign_scope,
+                                &mut foreign_compaction_dropped,
+                            )
+                        }
+                        None => false,
+                    } =>
                 {
                     candidate_index = attempt;
                     continue 'request_attempts;
@@ -4673,6 +4724,28 @@ async fn open_responses_proxy_request_once(
                     if let Some(first_output_at_ms) = first_output_at_ms {
                         request_trace.first_output_at_ms = Some(first_output_at_ms);
                     }
+                    // 整段缓冲：还没向 Codex 写出任何字节，流内拒收推理明文（#2917）可以清空后重发。
+                    if foreign_reasoning_handled
+                        && !reasoning_content_retried
+                        && let Some((code, message)) = terminal_failure.as_ref()
+                        && crate::foreign_reasoning::is_reasoning_content_stream_failure(
+                            code.as_deref(),
+                            message.as_deref(),
+                            &upstream_body,
+                        )
+                        && prepare_reasoning_content_retry(
+                            &relay,
+                            &mut upstream_body,
+                            "buffered_stream",
+                            is_stream,
+                            &mut reasoning_content_retried,
+                            &mut retry_reasons,
+                            &foreign_scope,
+                        )
+                    {
+                        candidate_index = attempt;
+                        continue 'request_attempts;
+                    }
                     // 整段缓冲：还没向 Codex 写出任何字节，流内拒收加密内容可以重发。
                     if foreign_stream_watch
                         && let Some((code, message)) = terminal_failure.as_ref()
@@ -4795,6 +4868,27 @@ async fn open_responses_proxy_request_once(
                     message,
                     first_output_at_ms,
                 } => {
+                    // 预读还没提交给 Codex：流内拒收推理明文（#2917）就清空后对同一候选重发。
+                    if foreign_reasoning_handled
+                        && !reasoning_content_retried
+                        && crate::foreign_reasoning::is_reasoning_content_stream_failure(
+                            code.as_deref(),
+                            message.as_deref(),
+                            &upstream_body,
+                        )
+                        && prepare_reasoning_content_retry(
+                            &relay,
+                            &mut upstream_body,
+                            "stream",
+                            is_stream,
+                            &mut reasoning_content_retried,
+                            &mut retry_reasons,
+                            &foreign_scope,
+                        )
+                    {
+                        candidate_index = attempt;
+                        continue 'request_attempts;
+                    }
                     // 预读还没提交给 Codex：流内拒收加密内容就去掉一批后对同一候选重发。
                     if foreign_stream_watch
                         && crate::foreign_reasoning::is_unverifiable_stream_failure(
@@ -4996,6 +5090,48 @@ fn prepare_foreign_reasoning_retry(
         log_foreign_compaction_dropped(relay, removed.compaction, stage);
     }
     retry_reasons.push(crate::foreign_reasoning::RETRY_REASON.to_string());
+    true
+}
+
+/// 上游拒收历史里的推理内容属于哪一类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryRejection {
+    /// 别家签发的加密内容校验不过（#2777）。
+    EncryptedContent,
+    /// 推理项不许带明文 content（#2917）。
+    ReasoningContent,
+}
+
+/// 上游不收推理项的明文 `content`（#2917，DeepSeek / GLM 转换回来的思考过程）：清空所有推理项的
+/// `content` 并记住这家（`scope`，见 [`foreign_reasoning_scope`]）的这个模型不收，调用方随后对同一候选
+/// 重发——重发时请求从头重建，[`crate::foreign_reasoning::strip_remembered_reasoning_content`] 会再清空。
+/// 返回 `false` 表示已经没有可清的，错误照常交回。
+fn prepare_reasoning_content_retry(
+    relay: &crate::settings::RelayProfile,
+    upstream_body: &mut Value,
+    stage: &str,
+    is_stream: bool,
+    reasoning_content_retried: &mut bool,
+    retry_reasons: &mut Vec<String>,
+    scope: &str,
+) -> bool {
+    let emptied = crate::foreign_reasoning::strip_rejected_reasoning_content(scope, upstream_body);
+    if emptied == 0 {
+        return false;
+    }
+    *reasoning_content_retried = true;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.reasoning_content_retry",
+        json!({
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "model": upstream_body.get("model").and_then(Value::as_str).unwrap_or(""),
+            "emptied": emptied,
+            "stage": stage,
+            "stream": is_stream
+        }),
+    );
+    retry_reasons.push(crate::foreign_reasoning::CONTENT_RETRY_REASON.to_string());
     true
 }
 

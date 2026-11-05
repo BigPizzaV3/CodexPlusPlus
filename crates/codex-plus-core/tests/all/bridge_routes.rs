@@ -1287,6 +1287,28 @@ async fn user_script_inventory_merges_renderer_runtime_status() {
     assert_eq!(failed["error"], "boom");
 }
 
+/// #2919：拓展包是文件夹，卸载时整个移进废纸篓（可找回），不做递归删除；配置里的记录一并去掉。
+#[test]
+fn deleting_an_extension_package_moves_the_folder_to_trash() {
+    let temp = tempfile::tempdir().unwrap();
+    let builtin_dir = temp.path().join("builtin");
+    let user_dir = temp.path().join("user");
+    let trash = temp.path().join("trash");
+    std::fs::create_dir_all(&builtin_dir).unwrap();
+    std::fs::create_dir_all(user_dir.join("my-pack")).unwrap();
+    std::fs::write(user_dir.join("my-pack").join("main.js"), "window.pack = true;").unwrap();
+    let manager = UserScriptManager::new(builtin_dir, user_dir.clone(), temp.path().join("user_scripts.json"));
+    manager.set_script_enabled("user:my-pack", true).unwrap();
+
+    let config = manager.delete_user_script_with_trash("user:my-pack", &trash).unwrap();
+
+    assert!(!user_dir.join("my-pack").exists(), "拓展包从用户目录里移走");
+    assert!(trash.join("my-pack").join("main.js").exists(), "整个文件夹在废纸篓里，可以找回");
+    assert!(!config.scripts.contains_key("user:my-pack"), "配置里的启用记录一并去掉");
+    // 不能借路径跳出用户目录。
+    assert!(manager.delete_user_script_with_trash("user:../builtin", &trash).is_err());
+}
+
 #[tokio::test]
 async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_delete() {
     let temp = tempfile::tempdir().unwrap();

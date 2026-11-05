@@ -5,6 +5,9 @@ Use NODE_PATH for an existing external dependency directory. The shared fixture
 accepts CODEX_TEST_BROWSER_PATH or CODEX_TEST_BROWSER (default: msedge).
 
 - node scripts/test-image-overlay.cjs: shared lifecycle, pixel and interaction cases.
+- node scripts/test-image-native-surfaces.cjs: current semantic composer attributes,
+  legacy/home layouts and browser toolbar capsules with opaque native gradients;
+  native media, hover/focus, cleanup and transformed surface alignment.
 - node scripts/test-image-native-media.cjs: transparent images, fit/zoom, backdrop
   composition, frozen-JavaScript scrolling and native view-transition snapshots.
 - node scripts/test-image-composite.cjs: whole-frame comparison against the original
@@ -34,6 +37,16 @@ Codex++ full-page shells retain their own native layer and wallpaper background.
 Each shared case checks JavaScript errors, reversibility, released observers and
 unchanged native animation APIs. Pixel tolerance remains one channel value.
 These browser fixtures verify rendering contracts and work counts, not real App FPS.
+
+The native-surface cases reproduce Codex 26.1029's composer attributes and toolbar
+materials. They compare empty material pixels against a single fixed wallpaper layer,
+while comparing attachments and icons against their untinted native pixels. The
+transform cases exercise the native footer and toolbar themselves.
+Toolbar lifecycle cases also cover late host designation, nested capsule promotion,
+and adding/removing an inline transform without a resize event. A non-identity
+transform on an additional shared ancestor that keeps the entire subtree below the
+global wallpaper is a pre-existing stacking limitation, not covered as a passing
+alignment guarantee by these tests.
 
 Navigation regressions model both native browser hosts and hidden/visible reparenting,
 with guest pixels and application header controls checked after each navigation.
