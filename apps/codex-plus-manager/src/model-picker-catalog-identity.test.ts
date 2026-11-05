@@ -8,7 +8,7 @@ function runtime(catalog: any) {
   const names = ["codexPlusModelPickerNormalize", "codexPlusModelPickerNormalizeStrict",
     "codexPlusModelPickerNormalizeLoose", "codexPlusModelPickerNativeLabelKey",
     "codexPlusModelPickerSplitLabel", "providerNameOf", "codexPlusModelPickerCatalogEntries",
-    "codexPlusModelPickerCatalogAliases", "codexPlusModelPickerCatalogProviderMap",
+    "codexPlusModelPickerCatalogAliases", "codexPlusModelPickerCanRestoreProvider", "codexPlusModelPickerCatalogProviderMap",
     "codexPlusModelPickerCatalogExactMap", "codexPlusModelPickerRowModel",
     "codexPlusModelPickerRememberProvider", "codexPlusModelPickerRows", "codexPlusModelPickerGroups"];
   const functions = names.map(name => {
@@ -105,6 +105,59 @@ it("temporary missing metadata retains known provider grouping without publishin
   const entries = r.api.rows({ querySelectorAll: () => [row("Sol")] });
   assert.equal(entries[0].groupId, "provider:a");
   assert.equal(entries[0].provider, "Provider A");
+});
+
+it("retains same-source identities when successful metadata omits grouping fields", () => {
+  const metadata = {
+    "a/sol": entry("Sol", "a"),
+    "b/terra": entry("Terra", "b"),
+    "a/luna": entry("Luna", "a"),
+  };
+  const r = runtime({ status: "ok", models: Object.keys(metadata), modelMetadata: metadata });
+  r.api.rows({ querySelectorAll: () => Object.entries(metadata).map(([id, value]) => row(value.displayName, id)) });
+  r.update({ status: "ok", models: Object.keys(metadata), modelMetadata: {
+    "a/sol": { displayName: "Sol" },
+    "b/terra": { displayName: "Terra" },
+    "a/luna": { displayName: "Luna" },
+  } });
+  const entries = r.api.rows({ querySelectorAll: () => [
+    row("Sol", "a/sol"), row("Terra", "b/terra"), row("Luna", "a/luna"),
+  ] });
+  assert.deepEqual([...entries].map((value: any) => value.groupId), ["provider:a", "provider:b", "provider:a"]);
+  assert.deepEqual([...r.api.groups(entries)].map((group: any) => [group.name, group.entries.length]), [
+    ["Provider A", 2], ["Provider B", 1],
+  ]);
+});
+
+it("does not restore an identity when partial metadata explicitly changes its grouping or name", () => {
+  for (const replacement of [
+    { displayName: "Sol", codex_plus_group_id: "" },
+    { displayName: "Sol", codex_plus_group: "" },
+    { displayName: "Renamed" },
+    { displayName: "Sol", description: "Upstream · Provider B" },
+  ]) {
+    const r = runtime({ status: "ok", models: ["a/sol"], modelMetadata: { "a/sol": entry("Sol", "a") } });
+    r.api.rows({ querySelectorAll: () => [row("Sol", "a/sol")] });
+    r.update({ status: "ok", models: ["a/sol"], modelMetadata: { "a/sol": replacement } });
+    const current = r.api.rows({ querySelectorAll: () => [row(replacement.displayName, "a/sol")] });
+    assert.equal(current[0].groupId, "", JSON.stringify(replacement));
+  }
+});
+
+it("keeps same-label identities distinct with partial metadata and forgets removed models", () => {
+  const metadata = { "a/sol": entry("Sol", "a"), "b/sol": entry("Sol", "b") };
+  const r = runtime({ status: "ok", models: Object.keys(metadata), modelMetadata: metadata });
+  r.api.rows({ querySelectorAll: () => [row("Sol", "a/sol"), row("Sol", "b/sol")] });
+  r.update({ status: "ok", models: Object.keys(metadata), modelMetadata: {
+    "a/sol": { displayName: "Sol" }, "b/sol": { displayName: "Sol" },
+  } });
+  const current = r.api.rows({ querySelectorAll: () => [
+    row("Sol", "a/sol"), row("Sol", "b/sol"), row("Sol"),
+  ] });
+  assert.deepEqual([...current].map((value: any) => value.groupId), ["provider:a", "provider:b", ""]);
+  r.update({ status: "ok", models: ["a/sol"], modelMetadata: { "a/sol": { displayName: "Sol" } } });
+  assert.equal(r.api.exact().has("model\u0000b/sol"), false);
+  assert.equal(r.api.rows({ querySelectorAll: () => [row("Sol", "a/sol")] })[0].groupId, "provider:a");
 });
 
 it("restores same-source ownership after a cold catalog failure without treating failure as an empty directory", () => {

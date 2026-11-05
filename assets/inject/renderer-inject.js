@@ -13044,6 +13044,15 @@
     return aliases;
   }
 
+  function codexPlusModelPickerCanRestoreProvider(entry, remembered) {
+    if (!entry || typeof entry !== "object") return true;
+    if (Object.hasOwn(entry, "codex_plus_group_id") || Object.hasOwn(entry, "codex_plus_group")) return false;
+    const displayName = entry.displayName || entry.display_name;
+    const provider = providerNameOf(entry);
+    return !!remembered?.displayName && displayName === remembered.displayName
+      && (!provider || provider === remembered.name);
+  }
+
   /**
    * 权威归属：聚合目录里每个模型的 `description` 是 `上游 · 供应商`。
    * 命中后可以拿到聚合成员的真名（而不是从展示名尾部猜出来的供应商名）。
@@ -13060,12 +13069,15 @@
     const fillFromMemory = () => {
       const complete = codexModelCatalog?.status === "ok" && modelMetadata
         && Array.isArray(codexModelCatalog?.models)
-        && codexModelCatalog.models.every((slug) => modelMetadata?.[slug]);
+        && codexModelCatalog.models.every((slug) => modelMetadata?.[slug]
+          && (Object.hasOwn(modelMetadata[slug], "codex_plus_group_id")
+            || Object.hasOwn(modelMetadata[slug], "codex_plus_group")));
       if (complete) return map;
       const rememberedAliases = new Map();
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
         if (!key.startsWith("model\u0000") || !value?.displayName || !value.groupId || value.parsed) return;
         if (models && !models.includes(value.slug)) return;
+        if (!codexPlusModelPickerCanRestoreProvider(modelMetadata?.[value.slug], value)) return;
         for (const alias of codexPlusModelPickerCatalogAliases(value.displayName, {}, value.slug)) {
           if (!rememberedAliases.has(alias)) rememberedAliases.set(alias, value);
           else if (rememberedAliases.get(alias)?.groupId !== value.groupId) rememberedAliases.set(alias, null);
@@ -13079,6 +13091,7 @@
         if (key.startsWith("model\u0000") || map.has(key) || !value?.name || value.parsed) return;
         if (models && value.slug && !models.includes(value.slug)) return;
         const current = value.slug && codexPlusModelPickerGroupsState.providerNames.get(`model\u0000${value.slug}`);
+        if (value.slug && !codexPlusModelPickerCanRestoreProvider(modelMetadata?.[value.slug], current)) return;
         if (current?.displayName && !codexPlusModelPickerCatalogAliases(current.displayName, {}, value.slug).has(key)) return;
         map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
       });
@@ -13163,7 +13176,7 @@
     codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
       if (!key.startsWith("model\u0000") || !value?.slug || !value.groupId || value.parsed) return;
       if (models && !models.includes(value.slug)) return;
-      if (modelMetadata[value.slug]) return;
+      if (!codexPlusModelPickerCanRestoreProvider(modelMetadata[value.slug], value)) return;
       register({ displayName: value.displayName, codex_plus_group: value.name, codex_plus_group_id: value.groupId }, value.slug);
     });
     return map;
