@@ -6782,6 +6782,19 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
     }
 }
 
+/// 记下管理器的使用模式（#2902）：页面本地存储之外再存进设置文件，本地存储丢了也能补回。
+#[tauri::command]
+pub fn set_manager_agent_focus(mode: String) -> CommandResult<SettingsPayload> {
+    let mode = mode.trim();
+    if !matches!(mode, "codex" | "enhance" | "all") {
+        return failed(&format!("未知的使用模式：{mode}"), fallback_settings_payload());
+    }
+    match SettingsStore::default().update(serde_json::json!({ "managerAgentFocus": mode })) {
+        Ok(_) => settings_payload("已记下使用模式。", "记下使用模式失败"),
+        Err(error) => failed(&format!("记下使用模式失败：{error}"), fallback_settings_payload()),
+    }
+}
+
 #[tauri::command]
 pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPayload> {
     let manager = default_user_script_manager();

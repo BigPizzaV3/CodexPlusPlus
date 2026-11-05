@@ -162,7 +162,7 @@ import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldSho
 import { AgentFocusDialog } from "./AgentFocusDialog";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
-import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
+import { backupAgentFocus, needAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
@@ -472,6 +472,8 @@ type BackendSettings = WhaleBalanceSettings & {
   providerSyncEnabled: boolean;
   /** 「启动前修复会话索引」与 providerSyncEnabled 分开（#2846）：只补投影、不改会话归属。 */
   sessionIndexRepairEnabled?: boolean;
+  /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
+  managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -1770,6 +1772,18 @@ export function App() {
     setAgentFocusOpen(false);
     if (!agentFocus) setSetupOpen(false);
   }, [agentFocus]);
+  // 本地存储丢了使用模式、设置文件里还记着时补回来，问卷不再每次启动都弹（#2902）。
+  const settingsLoaded = Boolean(settings);
+  const savedAgentFocus = settings?.settings.managerAgentFocus;
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (restoreAgentFocusFromSettings(savedAgentFocus)) {
+      setAgentFocusOpen(false);
+    } else if (!savedAgentFocus && agentFocus) {
+      // 升级前就选过模式的老用户：设置文件里还没有备份，补存一次。
+      backupAgentFocus(agentFocus);
+    }
+  }, [settingsLoaded, savedAgentFocus, agentFocus]);
   const closeSetup = (completed: boolean) => {
     try { window.localStorage.setItem(SETUP_STORAGE_KEY, serializeSetupState(completed ? "completed" : "dismissed")); } catch { /* 本次窗口内仍可关闭。 */ }
     setSetupOpen(false);

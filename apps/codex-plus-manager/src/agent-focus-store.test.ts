@@ -41,6 +41,8 @@ function harness(initial: string | null = null) {
     },
     require: (name: string) => {
       if (name === "./agent-focus-model") return model;
+      // #2902：备份到设置文件走 Tauri；测试里没有 __TAURI_INTERNALS__，不会真的调用。
+      if (name === "@tauri-apps/api/core") return { invoke: async () => undefined };
       if (name === "react") return {
         useState: (read: () => unknown) => [read(), (value: unknown) => updates.push(value)],
         useEffect: (effect: () => unknown) => effect(),
@@ -108,4 +110,23 @@ test("其他窗口的更新与清空覆盖旧的会话回退值", () => {
   assert.equal(f.store.loadAgentFocus(), null);
   assert.equal(f.store.needAgentFocusPrompt(), true);
   assert.deepEqual(f.updates, ["enhance", "codex", null]);
+});
+
+test("本地存储丢了时从设置文件补回模式，补回后不再询问（#2902）", () => {
+  const f = harness(null);
+  assert.equal(f.store.needAgentFocusPrompt(), true);
+  assert.equal(f.store.restoreAgentFocusFromSettings("enhance"), true);
+  assert.equal(f.store.needAgentFocusPrompt(), false);
+  assert.equal(model.parseAgentFocus(f.stored()), "enhance");
+  // 设置文件里是未知值或空：不补。
+  const g = harness(null);
+  assert.equal(g.store.restoreAgentFocusFromSettings("bogus"), false);
+  assert.equal(g.store.restoreAgentFocusFromSettings(""), false);
+  assert.equal(g.store.needAgentFocusPrompt(), true);
+});
+
+test("本地已有有效选择时以本地为准，不被设置文件覆盖（#2902）", () => {
+  const f = harness(model.serializeAgentFocus("codex"));
+  assert.equal(f.store.restoreAgentFocusFromSettings("all"), false);
+  assert.equal(model.parseAgentFocus(f.stored()), "codex");
 });

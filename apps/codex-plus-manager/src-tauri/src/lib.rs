@@ -377,6 +377,7 @@ pub fn run() {
             computer_use_commands::computer_use_preview_stop,
             commands::native_browser_status,
             commands::save_settings,
+            commands::set_manager_agent_focus,
             commands::list_tools,
             commands::test_vlm,
             provider_lookup_commands::fetch_provider_models,
