@@ -11801,8 +11801,10 @@
     if (!codexPlusModelUnlockEnabled()) return payload;
     if (!codexPlusModelNames().length) await loadCodexModelCatalog();
     if (!modelJsonResponseLooksPatchable(payload)) return payload;
+    const hostId = modelResponseHostId(payload, payload.result, payload.message);
+    if (!hostId) return payload;
     try {
-      patchModelContainer(payload, modelResponseHostId(payload, payload.result, payload.message));
+      patchModelContainer(payload, hostId);
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -11973,6 +11975,7 @@
     if (record.ambiguous || !modelResponseIsComplete(message?.result,
       record.cursorKnown ? { cursor: record.cursor } : null)) return false;
     const hostId = modelResponseHostId(data, message, message?.result, record.hostId);
+    if (!hostId) return false;
     let changed = false;
     if (patchModelArray(message?.result?.data, true, hostId)) changed = true;
     if (patchModelArray(message?.result?.models, true, hostId)) changed = true;
@@ -11998,6 +12001,7 @@
     if (!["list-models-for-host", "model/list"].includes(method)) return result;
     if (!modelResponseIsComplete(result, params)) return result;
     hostId = modelResponseHostId(hostId, result);
+    if (!hostId) return result;
     try {
       if (Array.isArray(result)) patchModelArray(result, true, hostId);
       if (Array.isArray(result?.data)) patchModelArray(result.data, true, hostId);

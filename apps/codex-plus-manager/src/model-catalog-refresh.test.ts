@@ -363,6 +363,22 @@ it("does not rewrite an HTTP response with an unknown page position", async () =
   }
 });
 
+it("does not inject local models into model responses with an unknown host", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  r.api.install();
+  const http = { models: [{ model: "native" }] };
+  assert.deepEqual(await new r.window.testResponse(http).json(), { models: [{ model: "native" }] });
+  const app = { data: [{ model: "native" }], nextCursor: null };
+  r.api.patchAppResult("model/list", app, "", { cursor: null });
+  assert.deepEqual(app.data, [{ model: "native" }]);
+  r.api.record("no-host", "", { cursor: null });
+  const mcp = { type: "mcp-response", message: { id: "no-host",
+    result: { data: [{ model: "native" }], nextCursor: null } } };
+  assert.equal(r.api.patchMcp(mcp), false);
+  assert.deepEqual(mcp.message.result.data, [{ model: "native" }]);
+});
+
 it("patches only complete MCP and app-server model responses", async () => {
   const r = runtime();
   await load(r, ["a/custom"]);
@@ -481,8 +497,8 @@ it("colliding local and remote request IDs bypass catalog patches even after rei
     assert.deepEqual(duplicate, original);
     next.api.record("unknown", "");
     const unknown = { type: "mcp-response", message: { id: "unknown", result: { data: [{ model: "native" }] } } };
-    assert.equal(next.api.patchMcp(unknown), true);
-    assert.deepEqual(unknown.message.result.data.map(entry => entry.model), ["native", "shared-model"]);
+    assert.equal(next.api.patchMcp(unknown), false);
+    assert.deepEqual(unknown.message.result.data.map(entry => entry.model), ["native"]);
   }
 });
 
