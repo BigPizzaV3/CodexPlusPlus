@@ -10,7 +10,7 @@ function runtime(catalog: any) {
     "codexPlusModelPickerSplitLabel", "providerNameOf", "codexPlusModelPickerCatalogEntries",
     "codexPlusModelPickerCatalogAliases", "codexPlusModelPickerCatalogProviderMap",
     "codexPlusModelPickerCatalogExactMap", "codexPlusModelPickerRowModel",
-    "codexPlusModelPickerRememberProvider", "codexPlusModelPickerRows"];
+    "codexPlusModelPickerRememberProvider", "codexPlusModelPickerRows", "codexPlusModelPickerGroups"];
   const functions = names.map(name => {
     const found = source.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"));
     assert.ok(found, name);
@@ -26,7 +26,8 @@ function runtime(catalog: any) {
   });
   const api = vm.runInContext(`${functions}
     ({ exact: codexPlusModelPickerCatalogExactMap, providers: codexPlusModelPickerCatalogProviderMap,
-       rows: codexPlusModelPickerRows, rowModel: codexPlusModelPickerRowModel })`, context);
+       rows: codexPlusModelPickerRows, rowModel: codexPlusModelPickerRowModel,
+       groups: codexPlusModelPickerGroups })`, context);
   return { api, state, update: (next: any) => { context.codexModelCatalog = next; } };
 }
 const entry = (displayName: string, id: string) => ({
@@ -94,6 +95,45 @@ it("missing metadata preserves only known model ownership and leaves unknown bar
   const unknown = coldStart.api.rows({ querySelectorAll: () => [row("Unseen")] });
   assert.equal(unknown[0].provider, "");
   assert.equal(unknown[0].groupId, "");
+});
+
+it("uses uniquely remembered provider identity for a suffix when metadata is temporarily missing", () => {
+  const r = runtime({ status: "ok", models: ["a/sol"],
+    modelMetadata: { "a/sol": entry("Sol", "a") } });
+  r.api.providers();
+  r.update({ status: "ok", models: ["a/sol", "a/terra"], modelMetadata: {} });
+  const entries = r.api.rows({ querySelectorAll: () => [row("Sol"), row("Terra（Provider A）")] });
+  assert.deepEqual([...entries].map(value => value.groupId), ["provider:a", "provider:a"]);
+});
+
+it("keeps interleaved model-group and provider rows together after metadata disappears", () => {
+  const metadata = {
+    "group/1": { displayName: "Group One", codex_plus_group: "模型组", codex_plus_group_id: "groups" },
+    "hanhe/1": { displayName: "Hanhe One", codex_plus_group: "寒鹤", codex_plus_group_id: "hanhe" },
+    "fusheng/1": { displayName: "Fusheng One", codex_plus_group: "浮生", codex_plus_group_id: "fusheng" },
+  };
+  const r = runtime({ status: "ok", models: Object.keys(metadata), modelMetadata: metadata });
+  r.api.providers();
+  r.update({ status: "ok", models: [...Object.keys(metadata), "group/2", "hanhe/2"], modelMetadata: {} });
+  const entries = r.api.rows({ querySelectorAll: () => [
+    row("Group One"), row("Hanhe One"), row("Group Two（模型组）"),
+    row("Fusheng One"), row("Hanhe Two（寒鹤）"),
+  ] });
+  const groups = r.api.groups(entries);
+  assert.deepEqual([...groups].map(group => [group.name, group.entries.length]), [
+    ["模型组", 2], ["寒鹤", 2], ["浮生", 1],
+  ]);
+});
+
+it("does not pick the last provider when two catalog identities have the same name", () => {
+  const sameName = (displayName: string, id: string) => ({
+    displayName, codex_plus_group: "Same", codex_plus_group_id: id,
+  });
+  const r = runtime({ status: "ok", models: ["a/sol", "b/terra"],
+    modelMetadata: { "a/sol": sameName("Sol", "id-a"), "b/terra": sameName("Terra", "id-b") } });
+  const entries = r.api.rows({ querySelectorAll: () => [row("Unknown（Same）")] });
+  assert.equal(entries[0].groupId, "");
+  assert.equal(entries[0].authoritativeGroupId, false);
 });
 
 it("remembered ownership is discarded when its catalog source changes", () => {

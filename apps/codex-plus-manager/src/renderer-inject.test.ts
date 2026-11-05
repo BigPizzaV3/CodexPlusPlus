@@ -620,7 +620,8 @@ it("groups aggregate models by exact member identity instead of bare model name"
   // 或完整展示名精确匹配目录，不能只按裸模型名命中目录里第一个同名成员。
   assert.match(picker, /function codexPlusModelPickerCatalogExactMap\(\)/);
   assert.match(picker, /codexPlusModelPickerNormalizeLoose\(split\.name\)/);
-  assert.match(picker, /provider:\$\{split\.provider\}/);
+  assert.match(picker, /providerIds\.get\(split\.provider\)/);
+  assert.doesNotMatch(picker, /provider:\$\{split\.provider\}/);
   assert.doesNotMatch(
     picker,
     /const known = providers\.get\(codexPlusModelPickerNormalizeStrict\(split\.name\)\)/,

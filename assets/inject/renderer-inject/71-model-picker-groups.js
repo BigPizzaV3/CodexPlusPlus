@@ -555,7 +555,14 @@
   function codexPlusModelPickerRows(list) {
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
-    const providerIds = new Map([...exact.values()].filter(Boolean).map((entry) => [entry.provider, entry.groupId]));
+    const providerIds = new Map();
+    const rememberProviderId = (entry) => {
+      if (!entry?.provider || !entry.groupId) return;
+      if (!providerIds.has(entry.provider)) providerIds.set(entry.provider, entry.groupId);
+      else if (providerIds.get(entry.provider) !== entry.groupId) providerIds.set(entry.provider, null);
+    };
+    exact.forEach(rememberProviderId);
+    providers.forEach(rememberProviderId);
     const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     // 每轮算一次：逐行调用在目录失效时会退化成「行数 × 目录条目数」。
     const defaultProviderName = codexPlusModelPickerDefaultProviderName();
@@ -590,12 +597,11 @@
             || providers.get(codexPlusModelPickerNormalize(split.name))
           : null);
       const groupId = known?.groupId
-        || (split.provider ? providerIds.get(split.provider) || `provider:${split.provider}` : "");
+        || (split.provider ? providerIds.get(split.provider) || "" : "");
       // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
       const provider = exactKnown?.provider || split.provider || known?.provider || "";
-      const authoritativeGroupId = !!known?.groupId
-        || !!split.provider;
+      const authoritativeGroupId = !!groupId;
       rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
     });
     return rows;

@@ -628,6 +628,39 @@ it("认不出归属的行收进同一个「其他供应商」组，不被有名�
   assert.equal(groups.length, 3);
 });
 
+it("同一权威分组即使在列表里交错也只生成一个入口", async () => {
+  const source = await readShard();
+  const groupsOf = new Function(
+    `${functionSource(source, "codexPlusModelPickerGroups")}\nreturn codexPlusModelPickerGroups;`,
+  )() as (rows: unknown[]) => Array<{ id: string; name: string; entries: Array<{ name: string }> }>;
+  const groups = groupsOf([
+    { name: "group-1", provider: "模型组", groupId: "groups", authoritativeGroupId: true },
+    { name: "hanhe-1", provider: "寒鹤", groupId: "hanhe", authoritativeGroupId: true },
+    { name: "group-2", provider: "模型组", groupId: "groups", authoritativeGroupId: true },
+    { name: "fusheng-1", provider: "浮生", groupId: "fusheng", authoritativeGroupId: true },
+    { name: "hanhe-2", provider: "寒鹤", groupId: "hanhe", authoritativeGroupId: true },
+    { name: "group-3", provider: "模型组", groupId: "groups", authoritativeGroupId: true },
+  ]);
+  assert.deepEqual(groups.map(group => [group.name, group.entries.map(entry => entry.name)]), [
+    ["模型组", ["group-1", "group-2", "group-3"]],
+    ["寒鹤", ["hanhe-1", "hanhe-2"]],
+    ["浮生", ["fusheng-1"]],
+  ]);
+});
+
+it("同名但不同权威身份不能被合并，无法确认的条目也不猜测身份", async () => {
+  const source = await readShard();
+  const groupsOf = new Function(
+    `${functionSource(source, "codexPlusModelPickerGroups")}\nreturn codexPlusModelPickerGroups;`,
+  )() as (rows: unknown[]) => Array<{ id: string; entries: Array<{ name: string }> }>;
+  const groups = groupsOf([
+    { name: "one", provider: "同名", groupId: "id-a", authoritativeGroupId: true },
+    { name: "unknown", provider: "同名", groupId: "", authoritativeGroupId: false },
+    { name: "two", provider: "同名", groupId: "id-b", authoritativeGroupId: true },
+  ]);
+  assert.deepEqual(groups.map(group => group.entries.map(entry => entry.name)), [["one"], ["unknown"], ["two"]]);
+});
+
 it("目录快照缺元数据时用记下的权威归属兜底，后缀猜出来的不套给裸名行（#2860）", async () => {
   const source = await readShard();
   const state = {
