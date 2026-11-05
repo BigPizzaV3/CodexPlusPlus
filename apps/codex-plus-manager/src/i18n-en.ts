@@ -1995,6 +1995,8 @@ export const EN_PLAIN: Record<string, string> = {
   "打开供应商池": "Open provider pool",
   "增强": "Enhance",
   "Desktop 增强": "Desktop enhancements",
+  "复制登录链接": "Copy login link",
+  "复制后可以在无痕窗口或其他浏览器里打开": "Copy it to open in a private window or another browser",
   "卸载拓展“{0}”？整个拓展文件夹会移进废纸篓，需要时可以从废纸篓找回。": "Uninstall extension \u201c{0}\u201d? The whole extension folder will be moved to the Trash, so you can restore it if needed.",
   "卸载拓展": "Uninstall extension",
   "供应商切换": "Provider switch",
