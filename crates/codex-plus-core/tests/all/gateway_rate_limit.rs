@@ -154,6 +154,7 @@ fn provider(id: &str, base_url: &str, keys: &[&str]) -> GatewayProvider {
         upstream_gone: Vec::new(),
         models_checked_at_ms: 0,
         newapi_access: None,
+            subscription_policy: None,
         upstream_meta: Default::default(),
         relay: RelayProfile {
             id: id.to_string(),

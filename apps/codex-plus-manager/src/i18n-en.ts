@@ -5,6 +5,22 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "Codex 登录": "Codex sign-in",
+  "额度待刷新": "Usage awaiting refresh",
+  "待刷新": "Awaiting refresh",
+  "尚未取得官方用量": "Official usage is not available yet",
+  "官方未返回时间窗口": "No time windows returned by the provider",
+  "订阅额度受限": "Subscription allowance restricted",
+  "不登录": "Not signed in",
+  "保留已保存账号": "Keep saved accounts",
+  "应用当前登录选择": "Apply current sign-in selection",
+  "此账号尚未授权网关使用。请先在「订阅消费」中开启授权，再进行测试。": "Gateway use is not allowed for this account. Enable it under Subscription usage before testing.",
+  "设置订阅消费": "Subscription usage settings",
+  "订阅消费策略阻止了测试：请检查授权、使用上限和官方额度是否已刷新。": "The subscription usage policy blocked this test. Check permission, usage limits, and whether official usage has been refreshed.",
+  "编辑订阅额度策略": "Edit subscription quota policy",
+  "订阅消费": "Subscription usage",
+  "已授权网关": "Gateway use allowed",
+  "未授权网关": "Gateway use not allowed",
   "本机用量历史": "Local usage history",
   "启用本机用量历史": "Enable local usage history",
   "允许扩展按需读取本机用量元数据，默认关闭。": "Allow extensions to read local usage metadata on demand. Disabled by default.",

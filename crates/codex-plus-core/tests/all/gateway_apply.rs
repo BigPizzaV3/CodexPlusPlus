@@ -56,6 +56,7 @@ fn deepseek_input() -> ProviderInput {
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
     }
@@ -77,6 +78,7 @@ fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
     };
@@ -496,6 +498,7 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
             model_prices: None,
             proxy: None,
             strip_image_generation_tool: None,
+            subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
         },
@@ -667,6 +670,7 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 model_prices: None,
                 proxy: None,
                 strip_image_generation_tool: None,
+                subscription_policy: None,
                 strip_responses_image_detail: None,
                 disable_tool_search: None,
             },
@@ -948,6 +952,7 @@ fn signed_in_codex_keeps_its_chatgpt_identity_through_the_gateway() {
 /// 借出期间以 Codex 那份 token 为准；断开时把最新一代收回网关，Codex 回到没登录的样子。
 #[test]
 fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
+    use base64::Engine;
     let fixture = fixture(57398);
     let ctx = &fixture.ctx;
     std::fs::create_dir_all(&ctx.codex_home).unwrap();
@@ -982,6 +987,15 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     };
     assert!(read_auth().get("tokens").is_none(), "Codex 本来没登录");
 
+    let id_token = format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({
+                "sub": "pool-user",
+                "https://api.openai.com/auth": { "chatgpt_account_id": "acc-pool" }
+            }).to_string()
+        )
+    );
     // 网关里登录的 ChatGPT 账号。
     let chatgpt = RelayProfile {
         name: "ChatGPT Pro".into(),
@@ -990,7 +1004,7 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
         auth_contents: json!({
             "auth_mode": "chatgpt",
             "codex_plus_gateway": true,
-            "tokens": { "id_token": "idt", "access_token": "at-1", "refresh_token": "rt-1", "account_id": "acc-pool" }
+            "tokens": { "id_token": id_token, "access_token": "at-1", "refresh_token": "rt-1", "account_id": "acc-pool" }
         })
         .to_string(),
         model_list: "gpt-6.1-sol".into(),
@@ -1005,7 +1019,7 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     assert_eq!(auth["auth_mode"], "chatgpt");
     assert_eq!(auth["tokens"]["account_id"], "acc-pool");
     assert_eq!(auth["tokens"]["refresh_token"], "rt-1");
-    assert_eq!(auth["tokens"]["id_token"], "idt");
+    assert_eq!(auth["tokens"]["id_token"], id_token);
     assert_eq!(
         ctx.settings.load().unwrap().active_relay_session_provider(),
         codex_plus_core::settings::RelaySessionProvider::Openai,
@@ -1814,7 +1828,8 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     assert!(relay(&store).strip_image_generation_tool);
     assert!(relay(&store).strips_image_generation_tool());
 
-    let keep = ProviderInput { strip_image_generation_tool: None, ..input.clone() };
+    let keep = ProviderInput { strip_image_generation_tool: None,
+            subscription_policy: None, ..input.clone() };
     update_provider(&store, &id, &keep).unwrap();
     assert!(relay(&store).strip_image_generation_tool);
 
@@ -1844,6 +1859,7 @@ fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
             model_prices: None,
             proxy: None,
             strip_image_generation_tool: None,
+            subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
         },

@@ -4,6 +4,7 @@
  * 模型名三种写法：裸模型名（池里提供它的供应商依次尝试）、`<供应商 id>/<模型>`、`group/<组 id>`。
  */
 import { PRESETS } from "./presets.ts";
+import { normalizeSubscriptionPolicy, type SubscriptionPolicy, type SubscriptionPolicyInput } from "./subscription-policy.ts";
 
 /** 内置三个之外，通用 Agent 的 id 由后端的规格表决定（如 "opencode"）。 */
 export type GatewayAgentId = "codex" | "claude" | "grok" | (string & {});
@@ -95,6 +96,9 @@ export type GatewayPoolEntry = {
   disableToolSearch?: boolean;
   /** 登录得到的账号：chatgpt / copilot / grok；普通供应商为空。 */
   account?: string;
+  subscriptionPolicy?: SubscriptionPolicyInput | null;
+  /** 后端合并同账号所有别名策略后的准入结果。 */
+  subscriptionBlockReason?: string | null;
   /** 订阅账号的套餐，如「ChatGPT Pro」「Copilot Pro+」。 */
   plan?: string;
   /** 后台检查时上游有、列表里没有的模型。 */
@@ -145,8 +149,15 @@ export type GatewayGroupEntry = {
 export type AutoGroupEntry = GatewayGroupEntry & { hidden: boolean; customized: boolean };
 
 /** 订阅账号的一个额度窗口：windowMinutes 300 是 5 小时、10080 是每周，null 是按月（Copilot 高级请求）。 */
-export type QuotaWindow = { windowMinutes: number | null; usedPercent: number; resetsAtMs: number | null };
-export type ProviderQuota = { windows: QuotaWindow[]; updatedAtMs: number };
+export type QuotaWindow = { windowMinutes: number | null; usedPercent: number; resetsAtMs: number | null; observedAtMs?: number | null };
+export type ProviderQuota = {
+  windows: QuotaWindow[];
+  updatedAtMs: number;
+  windowsComplete?: boolean;
+  officialAllowed?: boolean | null;
+  officialLimitReached?: boolean | null;
+  creditsAvailable?: boolean | null;
+};
 export type SpeedView = { relayId: string; model: string; ms: number; samples: number };
 
 /** 私有接口订阅的登录方式。 */
@@ -874,12 +885,47 @@ export function quotaWindowLabel(window: QuotaWindow): { text: string; args: num
   return { text: "{0} 分钟", args: [minutes] };
 }
 
-/** 剩余比例（0–1），取最紧的窗口；过了重置时间的窗口按满额。与后端 `quota::remaining_at` 一致。 */
+/** 已重置但未重新查询的窗口不假定恢复。 */
 export function quotaRemaining(quota: ProviderQuota, nowMs: number): number {
+  if (quota.officialAllowed === false) return 0;
   return quota.windows.reduce((least, window) => {
-    const left = window.resetsAtMs !== null && window.resetsAtMs <= nowMs ? 1 : Math.min(1, Math.max(0, 1 - window.usedPercent / 100));
+    const left = window.resetsAtMs !== null && window.resetsAtMs <= nowMs ? 0 : Math.min(1, Math.max(0, 1 - window.usedPercent / 100));
     return Math.min(least, left);
   }, 1);
+}
+
+export function quotaWindowFresh(quota: ProviderQuota, window: QuotaWindow, nowMs: number, maxAgeSeconds = 600): boolean {
+  const observed = window.observedAtMs ?? quota.updatedAtMs;
+  return observed <= nowMs && nowMs - observed <= maxAgeSeconds * 1000
+    && Number.isFinite(window.usedPercent) && window.usedPercent >= 0 && window.usedPercent <= 100
+    && (window.resetsAtMs === null || window.resetsAtMs > nowMs);
+}
+
+/** 与后端相同的本地预检；后端返回值还包含同账号别名的更严格策略。 */
+export function subscriptionBlockReason(entry: GatewayPoolEntry, nowMs = Date.now()): string | null {
+  if (entry.account !== "chatgpt") return null;
+  const policy = normalizeSubscriptionPolicy(entry.subscriptionPolicy);
+  if (!policy.permitted) return "此账号尚未授权网关使用。请先在「订阅消费」中开启授权，再进行测试。";
+  if (policy.defaultUsedPercentLimit === 0) return "订阅额度已用上限设为 0%，已停止新请求";
+  const unknown = (text: string) => policy.unknownUsage === "allow" ? null : text;
+  const quota = entry.quota;
+  if (!quota) return entry.subscriptionBlockReason || unknown("官方额度未知，请刷新额度");
+  const fresh = quota.updatedAtMs <= nowMs && nowMs - quota.updatedAtMs <= policy.maxAgeSeconds * 1000;
+  if (fresh && (quota.officialAllowed === false || (quota.officialLimitReached === true && quota.officialAllowed !== true))) return "官方订阅额度受限，请等待重置或刷新额度";
+  let uncertain = !fresh || (!quota.windowsComplete && Object.keys(policy.windowUsedPercentLimits).some(key => !quota.windows.some(window => String(window.windowMinutes) === key)))
+    || (!quota.windows.length && !(quota.windowsComplete && quota.officialAllowed === true));
+  for (const window of quota.windows) {
+    if (!quotaWindowFresh(quota, window, nowMs, policy.maxAgeSeconds)) {
+      uncertain = true;
+      continue;
+    }
+    const cap = policy.windowUsedPercentLimits[String(window.windowMinutes)] ?? policy.defaultUsedPercentLimit ?? 100;
+    if (window.usedPercent >= cap) {
+      const label = window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10080 ? "7d" : `${window.windowMinutes ?? ""} 分钟`;
+      return `${label} 已用 ${window.usedPercent}%，达到 ${cap}% 上限`;
+    }
+  }
+  return entry.subscriptionBlockReason || (uncertain ? unknown("官方额度待刷新，请先刷新额度") : null);
 }
 
 /** 模型组成员在列表里的显示：「供应商 · 模型」「组名」，通配符原样显示。 */
@@ -1194,6 +1240,7 @@ export type ProviderDraft = {
   modelPrices?: Record<string, ProviderPrice> | null;
   /** 转发前移除托管生图工具（image_generation）：不支持生图的 Responses 中转用（#228）。 */
   stripImageGenerationTool?: boolean;
+  subscriptionPolicy?: SubscriptionPolicy | null;
   /** 转发前移除 Responses 图片 `detail`：不认 OpenAI detail 扩展的上游用（#2870）。 */
   stripResponsesImageDetail?: boolean;
   /** 不向上游发送 `tool_search`：上游 400 时开启（#2868）。 */
@@ -1230,6 +1277,7 @@ export function providerDraftFromEntry(entry: GatewayPoolEntry): ProviderDraft {
     priceOutput: entry.price ? String(entry.price.output) : "",
     proxy: entry.proxy ?? "",
     stripImageGenerationTool: entry.stripImageGenerationTool === true,
+    subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
     stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
     disableToolSearch: entry.disableToolSearch === true,
   };
@@ -1248,6 +1296,7 @@ export function providerInput(draft: ProviderDraft) {
     modelPrices: draft.modelPrices ?? null,
     proxy: draft.proxy.trim(),
     stripImageGenerationTool: draft.stripImageGenerationTool === true,
+    ...(draft.subscriptionPolicy !== undefined ? { subscriptionPolicy: draft.subscriptionPolicy } : {}),
     stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
     disableToolSearch: draft.disableToolSearch === true,
   };

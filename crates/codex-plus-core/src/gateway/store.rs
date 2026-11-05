@@ -26,6 +26,81 @@ pub const CLIENT_TOKEN_PREFIX: &str = "cpx-gw-";
 /// 路由组当作模型名时的前缀：`group/<组 id>`。
 pub const GROUP_MODEL_PREFIX: &str = "group/";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionLimitAction {
+    Stop,
+    NextPermitted,
+    ApiFallback,
+}
+
+impl Default for SubscriptionLimitAction {
+    fn default() -> Self {
+        Self::Stop
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionUnknownUsage {
+    Block,
+    Allow,
+}
+
+impl Default for SubscriptionUnknownUsage {
+    fn default() -> Self {
+        Self::Block
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionPolicy {
+    #[serde(default)]
+    pub permitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_used_percent_limit: Option<u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub window_used_percent_limits: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub on_limit: SubscriptionLimitAction,
+    #[serde(default)]
+    pub unknown_usage: SubscriptionUnknownUsage,
+    #[serde(default = "default_subscription_max_age_seconds")]
+    pub max_age_seconds: u64,
+}
+
+fn default_subscription_max_age_seconds() -> u64 {
+    600
+}
+
+impl Default for SubscriptionPolicy {
+    fn default() -> Self {
+        Self {
+            permitted: false,
+            default_used_percent_limit: None,
+            window_used_percent_limits: BTreeMap::new(),
+            on_limit: SubscriptionLimitAction::Stop,
+            unknown_usage: SubscriptionUnknownUsage::Block,
+            max_age_seconds: default_subscription_max_age_seconds(),
+        }
+    }
+}
+
+impl SubscriptionPolicy {
+    pub fn normalized(mut self) -> Self {
+        self.default_used_percent_limit = self
+            .default_used_percent_limit
+            .filter(|value| *value <= 100);
+        self.window_used_percent_limits
+            .retain(|_, value| *value <= 100);
+        if self.max_age_seconds == 0 {
+            self.max_age_seconds = default_subscription_max_age_seconds();
+        }
+        self
+    }
+}
+
 /// 网关供应商池里的一个供应商。上游配置复用 [`RelayProfile`] 的结构（协议、地址、多 Key 等），
 /// 但只存在网关里；`relay.id` 同时是它的短名，`<id>/<模型>` 可以指定只发给它。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +149,9 @@ pub struct GatewayProvider {
     /// 和 Key 一样只存在 gateway.json，界面只拿到打码后的样子。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newapi_access: Option<crate::relay_billing::NewApiAccess>,
+    /// 订阅账号是否允许被网关消耗，以及官方窗口的硬上限。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_policy: Option<SubscriptionPolicy>,
     /// 上次「从上游同步上下文窗口 / 思考等级」写进去的值（#2807）。
     /// 现值和这里一样说明是同步来的，下次同步默认可覆盖；不一样就是用户手动改过的，默认不覆盖。
     #[serde(default, skip_serializing_if = "UpstreamMetaRecord::is_empty")]
@@ -744,6 +822,7 @@ impl GatewaySettings {
                 upstream_gone: Vec::new(),
                 models_checked_at_ms: 0,
                 newapi_access: None,
+                subscription_policy: None,
                 upstream_meta: Default::default(),
                 relay,
                 extra: Map::new(),
@@ -1175,6 +1254,7 @@ mod tests {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
             newapi_access: None,
+            subscription_policy: None,
             upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: "deepseek".to_string(),

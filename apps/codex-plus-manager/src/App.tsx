@@ -283,6 +283,7 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { NativeAuthControl, SavedAuthAccountField } from "./NativeAuthControls";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
@@ -622,6 +623,7 @@ export type RelayProfile = {
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
   officialMixApiKey: boolean;
+  officialAccountRef?: string;
   hideOfficialUsageAlert: boolean;
   testModel: string;
   configContents: string;
@@ -8075,6 +8077,7 @@ function RelayScreen({
         )}
       />
       {connection}
+      <NativeAuthControl />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
       {!normalized.relayProfilesEnabled ? (
@@ -13339,7 +13342,7 @@ function RelayProfileEditor({
                   mode: "pureApi" as const,
                   icon: KeyRound,
                   title: t("纯 API"),
-                  description: t("只使用 API 凭据，不依赖官方登录。"),
+                  description: t("使用 API 凭据，原生登录账号独立选择。"),
                 },
               ]).map(({ mode, icon: Icon, title, description }) => (
                 <button
@@ -13359,6 +13362,9 @@ function RelayProfileEditor({
                 </button>
               ))}
             </div>
+            {editorMode !== "pureApi" ? (
+              <SavedAuthAccountField onChange={(officialAccountRef) => updateDraft({ officialAccountRef })} value={profile.officialAccountRef ?? ""} />
+            ) : null}
             {showApiFields ? (
               <div className="relay-inline-connection">
                 <div className="relay-inline-connection-head">

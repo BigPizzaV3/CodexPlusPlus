@@ -49,6 +49,7 @@ struct RefreshedTokens {
     access_token: String,
     refresh_token: String,
     account_id: String,
+    id_token: String,
 }
 
 /// 纯官方登录 profile（官方混合 API Key 走普通 API 通道，不算在这里）。
@@ -97,7 +98,11 @@ fn official_login_from_auth_value(value: &Value) -> Option<OfficialLogin> {
 /// 快照里是否具备可用的官方登录凭据（同步、不联网）。刷新是否成功由请求路径决定。
 pub fn official_login_available(profile: &RelayProfile) -> bool {
     is_official_login_profile(profile)
-        && official_login_from_auth_contents(&profile.auth_contents).is_some()
+        && crate::native_auth::resolve_profile_credentials(profile)
+            .ok()
+            .is_some_and(|resolved| {
+                official_login_from_auth_contents(&resolved.auth_contents).is_some()
+            })
 }
 
 /// 该 profile 的上游请求是否应走官方登录通道：纯官方 profile（归一化后没有
@@ -267,20 +272,28 @@ pub fn is_lent_to_codex(profile: &RelayProfile) -> bool {
 /// 同一账号时优先使用 live 凭据：Codex 客户端每次使用都会刷新并轮换
 /// refresh token，live 代际比快照新。账号不一致或 live 缺少 refresh token
 /// 而快照有时，保留快照。
-fn prefer_live_login(stored: OfficialLogin, live: Option<OfficialLogin>) -> OfficialLogin {
+fn prefer_live_auth(stored: &str, live: Option<&str>) -> String {
     let Some(live) = live else {
-        return stored;
+        return stored.to_string();
     };
-    if live.account_id.is_empty() || live.account_id != stored.account_id {
-        return stored;
+    if !crate::native_auth::same_account(stored, live) {
+        return stored.to_string();
     }
-    if live.refresh_token.is_empty() && !stored.refresh_token.is_empty() {
-        return stored;
+    let Some(stored_login) = official_login_from_auth_contents(stored) else {
+        return stored.to_string();
+    };
+    let Some(live_login) = official_login_from_auth_contents(live) else {
+        return stored.to_string();
+    };
+    if live_login.refresh_token.is_empty() && !stored_login.refresh_token.is_empty() {
+        return stored.to_string();
     }
-    if live.access_token == stored.access_token && live.refresh_token == stored.refresh_token {
-        return stored;
-    }
-    live
+    crate::native_auth::merge_selected_auth(stored, Some(live))
+        .unwrap_or_else(|_| stored.to_string())
+}
+
+fn same_credential_generation(current: &str, expected: &str) -> bool {
+    crate::native_auth::same_credential_generation(current, expected)
 }
 
 fn credential(login: OfficialLogin) -> OfficialCredential {
@@ -332,28 +345,17 @@ pub fn auth_contents_with_member_login(
         ));
     }
 
-    // live 侧按顶层 account_id 匹配（同步写出去的就是这个形状）。
-    let live_account_id = object
-        .get("tokens")
-        .and_then(|tokens| tokens.get("account_id"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
     let live_login = official_login_from_auth_contents(base_auth_contents);
     let member_login = member.expect("已判定存在");
     let mut login = member_login.clone();
-    if !live_account_id.is_empty() && live_account_id != member_login.account_id {
-        // 别的账号：不覆盖它，直接不动登录态。
+    let live_is_same_account =
+        crate::native_auth::same_account(base_auth_contents, member_auth_contents);
+    if live_login.is_some() && !live_is_same_account {
+        // 同工作区的其他成员也不能覆盖，更不能拼接两个人的 token。
         return None;
     }
     // live 与成员是同一账号时，access/refresh 取 live 里更新的一代；否则以成员快照为准。
-    let live_is_same_account = live_login
-        .as_ref()
-        .is_some_and(|live| live.account_id == login.account_id);
-    if live_is_same_account
-        && let Some(live) = live_login.as_ref()
-    {
+    if live_is_same_account && let Some(live) = live_login.as_ref() {
         if !live.access_token.is_empty() {
             login.access_token = live.access_token.clone();
         }
@@ -425,7 +427,10 @@ pub fn auth_contents_with_member_login(
             .and_then(|tokens| tokens.get("access_token"))
             .and_then(Value::as_str)
             .and_then(jwt_iat_secs);
-        object.insert("last_refresh".to_string(), json!(last_refresh_stamp(issued_at)));
+        object.insert(
+            "last_refresh".to_string(),
+            json!(last_refresh_stamp(issued_at)),
+        );
     }
     Some(format!(
         "{}\n",
@@ -511,10 +516,38 @@ async fn resolve_official_credential_with(
     codex_home: &Path,
     token_url_override: Option<&str>,
 ) -> anyhow::Result<OfficialCredential> {
+    let native_selected = crate::native_auth::is_default_home(codex_home)
+        && crate::native_auth::selection_account_ref(&store.load()?)
+            == Some(if profile.official_account_ref.trim().is_empty() {
+                profile.id.as_str()
+            } else {
+                profile.official_account_ref.trim()
+            });
+    if native_selected {
+        crate::native_auth::preserve_live_auth(codex_home)?;
+    }
+    let mut resolved = crate::native_auth::resolve_profile_credentials(profile)?;
+    if native_selected && profile.official_account_ref.trim().is_empty() {
+        let gateway = crate::gateway::store::GatewayStore::default().load()?;
+        resolved.auth_contents = gateway
+            .provider(&profile.id)
+            .context("所选原生登录账号已被删除")?
+            .relay
+            .auth_contents
+            .clone();
+    }
+    if native_selected
+        && let Ok(contents) = std::fs::read_to_string(codex_home.join("auth.json"))
+        && crate::native_auth::same_account(&contents, &resolved.auth_contents)
+        && !same_credential_generation(&contents, &resolved.auth_contents)
+    {
+        persist_live_login(codex_home, &contents, &resolved.auth_contents);
+    }
+    let profile = &resolved;
     if !is_official_login_profile(profile) {
         anyhow::bail!("供应商「{}」不是官方登录模式", profile.name);
     }
-    let stored = official_login_from_auth_contents(&profile.auth_contents).ok_or_else(|| {
+    official_login_from_auth_contents(&profile.auth_contents).ok_or_else(|| {
         anyhow::anyhow!(
             "官方登录成员「{}」缺少 ChatGPT 登录凭据，请先在管理器中完成或导入官方登录",
             profile.name
@@ -524,20 +557,43 @@ async fn resolve_official_credential_with(
     let lent_to_codex = is_lent_to_codex(profile);
     // 借给 Codex 时与直连模式的官方账号一样，同一账号以 Codex 的 live 凭据为准。
     let live = |home: &Path| {
-        if owned_by_gateway && !lent_to_codex {
+        if (owned_by_gateway || !profile.official_account_ref.trim().is_empty())
+            && !lent_to_codex
+            && !native_selected
+        {
             None
         } else {
-            live_chatgpt_login_from(home)
+            std::fs::read_to_string(home.join("auth.json"))
+                .ok()
+                .filter(|contents| {
+                    serde_json::from_str::<Value>(contents)
+                        .ok()
+                        .is_some_and(|auth| {
+                            auth.get("auth_mode").and_then(Value::as_str) == Some("chatgpt")
+                        })
+                })
         }
     };
-    let login = prefer_live_login(stored, live(codex_home));
+    let mut expected_auth = if native_selected {
+        profile.auth_contents.clone()
+    } else {
+        prefer_live_auth(&profile.auth_contents, live(codex_home).as_deref())
+    };
+    let initial_auth = expected_auth.clone();
+    let login =
+        official_login_from_auth_contents(&expected_auth).context("官方登录凭据格式无效")?;
     if !force_refresh && !token_needs_refresh(&login.access_token) {
         return Ok(credential(login));
     }
 
     // 串行刷新：并发请求只发一次刷新，其余等锁后直接用新凭据。
     let _guard = refresh_lock().lock().await;
-    let current = if owned_by_gateway {
+    if native_selected {
+        crate::native_auth::preserve_live_auth(codex_home)?;
+    }
+    let current = if !profile.official_account_ref.trim().is_empty() {
+        Some(crate::native_auth::resolve_profile_credentials(profile)?.auth_contents)
+    } else if owned_by_gateway {
         crate::gateway::store::GatewayStore::default()
             .load()
             .ok()
@@ -549,11 +605,18 @@ async fn resolve_official_credential_with(
     } else {
         current_auth_contents(store, &profile.id)
     };
-    let stored = current
-        .and_then(|contents| official_login_from_auth_contents(&contents))
-        .unwrap_or(login);
-    let login = prefer_live_login(stored, live(codex_home));
-    if !force_refresh && !token_needs_refresh(&login.access_token) {
+    let stored_auth = current.unwrap_or_else(|| expected_auth.clone());
+    let stored_generation = stored_auth.clone();
+    expected_auth = if native_selected {
+        stored_auth.clone()
+    } else {
+        prefer_live_auth(&stored_auth, live(codex_home).as_deref())
+    };
+    let login =
+        official_login_from_auth_contents(&expected_auth).context("官方登录凭据格式无效")?;
+    if (!force_refresh || !same_credential_generation(&initial_auth, &expected_auth))
+        && !token_needs_refresh(&login.access_token)
+    {
         return Ok(credential(login));
     }
     if login.refresh_token.trim().is_empty() {
@@ -562,7 +625,8 @@ async fn resolve_official_credential_with(
             profile.name
         );
     }
-    let account_key = login.account_id.clone();
+    let account_key = crate::native_auth::account_scope(&expected_auth)
+        .unwrap_or_else(|| format!("{}:{}", login.account_id, profile.id));
     if refresh_in_cooldown(&account_key) {
         anyhow::bail!(
             "官方登录凭据刷新刚失败过，暂时跳过（登录可能已在别处失效），请稍后重试或重新登录该官方账号"
@@ -578,13 +642,27 @@ async fn resolve_official_credential_with(
         Ok(tokens) => tokens,
         Err(error) => {
             // live 里可能是更新一代的 refresh token：换它再试一次。
-            let live = live(codex_home).filter(|live| {
-                !live.refresh_token.is_empty() && live.refresh_token != login.refresh_token
+            let retry_auth = live(codex_home).filter(|contents| {
+                crate::native_auth::same_account(&expected_auth, contents)
+                    && official_login_from_auth_contents(contents).is_some_and(|live| {
+                        !live.refresh_token.is_empty() && live.refresh_token != login.refresh_token
+                    })
             });
-            match live {
-                Some(live) if live.account_id == login.account_id => {
+            match retry_auth {
+                Some(contents) => {
+                    if native_selected {
+                        crate::native_auth::preserve_live_auth(codex_home)?;
+                    }
+                    let live = official_login_from_auth_contents(&contents)
+                        .context("官方登录凭据格式无效")?;
                     match refresh_codex_tokens(&token_url, &live.refresh_token, proxy).await {
-                        Ok(tokens) => tokens,
+                        Ok(tokens) => {
+                            expected_auth = crate::native_auth::merge_selected_auth(
+                                &expected_auth,
+                                Some(&contents),
+                            )?;
+                            tokens
+                        }
                         Err(retry_error) => {
                             mark_refresh_failure(&account_key);
                             return Err(retry_error);
@@ -604,30 +682,68 @@ async fn resolve_official_credential_with(
     } else {
         refreshed.account_id.clone()
     };
-    if owned_by_gateway {
-        persist_gateway_login(
+    if !login.account_id.is_empty() && account_id != login.account_id {
+        anyhow::bail!("官方登录刷新返回了不同的工作区，未覆盖原凭据");
+    }
+    let mut updated_auth = auth_with_tokens(
+        &expected_auth,
+        &refreshed.access_token,
+        &refreshed.refresh_token,
+        &account_id,
+    )?;
+    if !refreshed.id_token.is_empty() {
+        let mut auth: Value = serde_json::from_str(&updated_auth)?;
+        auth["tokens"]["id_token"] = json!(refreshed.id_token);
+        updated_auth = serde_json::to_string_pretty(&auth)?;
+        if let Some(expected_scope) = crate::native_auth::account_scope(&expected_auth)
+            && crate::native_auth::account_scope(&updated_auth).as_deref()
+                != Some(expected_scope.as_str())
+        {
+            anyhow::bail!("官方登录刷新返回了不同的账号身份，未覆盖原凭据");
+        }
+    }
+    if !profile.official_account_ref.trim().is_empty() {
+        let written = crate::native_auth::persist_gateway_rotation(
+            &profile.official_account_ref,
+            if native_selected {
+                &expected_auth
+            } else {
+                &stored_generation
+            },
+            &updated_auth,
+        )?;
+        if !written {
+            anyhow::bail!("官方登录凭据已被其他操作更新，未覆盖新凭据，请重试");
+        }
+        if native_selected {
+            persist_live_login(codex_home, &expected_auth, &updated_auth);
+        }
+    } else if owned_by_gateway {
+        let written = persist_gateway_login(
             &crate::gateway::store::GatewayStore::default(),
             &profile.id,
-            &refreshed.access_token,
-            &refreshed.refresh_token,
-            &account_id,
-        );
-        if lent_to_codex {
-            persist_live_login(
-                codex_home,
-                &refreshed.access_token,
-                &refreshed.refresh_token,
-                &account_id,
-            );
+            if native_selected {
+                &expected_auth
+            } else {
+                &stored_generation
+            },
+            &updated_auth,
+        )?;
+        if !written {
+            anyhow::bail!("官方登录凭据已被其他操作更新，未覆盖新凭据，请重试");
+        }
+        if lent_to_codex || native_selected {
+            persist_live_login(codex_home, &expected_auth, &updated_auth);
         }
     } else {
-        persist_refreshed_login(
-            store,
-            &profile.id,
-            &refreshed.access_token,
-            &refreshed.refresh_token,
-            &account_id,
-        );
+        let written =
+            persist_refreshed_login(store, &profile.id, &stored_generation, &updated_auth)?;
+        if !written {
+            anyhow::bail!("官方登录凭据已被其他操作更新，未覆盖新凭据，请重试");
+        }
+        if native_selected {
+            persist_live_login(codex_home, &expected_auth, &updated_auth);
+        }
     }
     Ok(OfficialCredential {
         access_token: refreshed.access_token,
@@ -666,7 +782,10 @@ async fn refresh_codex_tokens(
     )?;
     let response = client
         .post(token_url)
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
@@ -721,6 +840,7 @@ async fn refresh_codex_tokens(
         access_token,
         refresh_token,
         account_id,
+        id_token: string_field(&value, "id_token"),
     })
 }
 
@@ -766,15 +886,21 @@ fn auth_with_tokens(
 }
 
 /// 借给 Codex 的账号由网关刷新后，新一代 token 也写回 Codex 的 auth.json（只在仍是同一账号时）。
-fn persist_live_login(codex_home: &Path, access_token: &str, refresh_token: &str, account_id: &str) {
+fn persist_live_login(codex_home: &Path, expected_auth: &str, updated_auth: &str) {
     let path = codex_home.join("auth.json");
     let result = (|| -> anyhow::Result<()> {
         let contents = std::fs::read_to_string(&path)?;
-        if chatgpt_account_id_from_auth_contents(&contents) != account_id {
+        if !same_credential_generation(&contents, expected_auth)
+            || !crate::native_auth::native_write_allowed(codex_home, updated_auth)
+        {
             return Ok(());
         }
-        let updated = auth_with_tokens(&contents, access_token, refresh_token, account_id)?;
-        crate::settings::atomic_write(&path, format!("{updated}\n").as_bytes())
+        let merged = crate::native_auth::merge_selected_auth(&contents, Some(updated_auth))?;
+        // The native client does not take our locks; do not replace an observed newer write.
+        if std::fs::read_to_string(&path)? != contents {
+            anyhow::bail!("原生登录在刷新发布前已更新，保留外部新凭据");
+        }
+        crate::settings::atomic_write(&path, merged.as_bytes())
     })();
     if let Err(error) = result {
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -788,67 +914,52 @@ fn persist_live_login(codex_home: &Path, access_token: &str, refresh_token: &str
 pub(crate) fn persist_gateway_login(
     store: &crate::gateway::store::GatewayStore,
     provider_id: &str,
-    access_token: &str,
-    refresh_token: &str,
-    account_id: &str,
-) {
+    expected_auth: &str,
+    updated_auth: &str,
+) -> anyhow::Result<bool> {
     // 带锁读改写：界面命令同时改 gateway.json 时不会拿旧状态整体覆盖，也不会被它覆盖。
-    let result = store.update(|gateway| {
+    let (_, written) = store.update(|gateway| {
         let Some(provider) = gateway
             .providers
             .iter_mut()
             .find(|provider| provider.relay.id == provider_id)
         else {
-            return Ok(());
+            return Ok(false);
         };
-        provider.relay.auth_contents = auth_with_tokens(
-            &provider.relay.auth_contents,
-            access_token,
-            refresh_token,
-            account_id,
-        )?;
-        Ok(())
-    });
-    if let Err(error) = result {
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "official_login.gateway_refresh_persist_failed",
-            serde_json::json!({ "providerId": provider_id, "error": error.to_string() }),
-        );
-    }
+        if !same_credential_generation(&provider.relay.auth_contents, expected_auth) {
+            return Ok(false);
+        }
+        provider.relay.auth_contents = updated_auth.to_string();
+        Ok(true)
+    })?;
+    Ok(written)
 }
 
 fn persist_refreshed_login(
     store: &SettingsStore,
     profile_id: &str,
-    access_token: &str,
-    refresh_token: &str,
-    account_id: &str,
-) {
-    let result = (|| -> anyhow::Result<()> {
+    expected_auth: &str,
+    updated_auth: &str,
+) -> anyhow::Result<bool> {
+    (|| -> anyhow::Result<bool> {
         let mut settings = store.load()?;
         let Some(profile) = settings
             .relay_profiles
             .iter_mut()
             .find(|profile| profile.id == profile_id)
         else {
-            return Ok(());
+            return Ok(false);
         };
-        if !is_official_login_profile(profile) {
-            return Ok(());
+        if !is_official_login_profile(profile)
+            || !profile.official_account_ref.trim().is_empty()
+            || !same_credential_generation(&profile.auth_contents, expected_auth)
+        {
+            return Ok(false);
         }
-        profile.auth_contents =
-            auth_with_tokens(&profile.auth_contents, access_token, refresh_token, account_id)?;
-        store.save(&settings)
-    })();
-    if let Err(error) = result {
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "official_login.refresh_persist_failed",
-            serde_json::json!({
-                "profileId": profile_id,
-                "error": error.to_string()
-            }),
-        );
-    }
+        profile.auth_contents = updated_auth.to_string();
+        store.save(&settings)?;
+        Ok(true)
+    })()
 }
 
 #[cfg(test)]
@@ -916,8 +1027,9 @@ mod tests {
             }
         })
         .to_string();
-        let merged = auth_contents_with_member_login(r#"{"OPENAI_API_KEY":"cpx-gw"}"#, &member, false)
-            .expect("成员有凭据时应写出 auth.json");
+        let merged =
+            auth_contents_with_member_login(r#"{"OPENAI_API_KEY":"cpx-gw"}"#, &member, false)
+                .expect("成员有凭据时应写出 auth.json");
         let auth: Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(auth["last_refresh"], "2026-11-04T00:00:00.000Z", "{auth}");
         assert_eq!(auth["auth_mode"], "chatgpt");
@@ -938,10 +1050,18 @@ mod tests {
 
     #[test]
     fn refreshed_tokens_stamp_last_refresh() {
-        let updated = auth_with_tokens(r#"{"auth_mode":"chatgpt","tokens":{}}"#, "a2", "r2", "acct-1").unwrap();
+        let updated = auth_with_tokens(
+            r#"{"auth_mode":"chatgpt","tokens":{}}"#,
+            "a2",
+            "r2",
+            "acct-1",
+        )
+        .unwrap();
         let auth: Value = serde_json::from_str(&updated).unwrap();
         assert!(
-            auth["last_refresh"].as_str().is_some_and(|stamp| stamp.ends_with('Z')),
+            auth["last_refresh"]
+                .as_str()
+                .is_some_and(|stamp| stamp.ends_with('Z')),
             "{auth}"
         );
     }
@@ -961,8 +1081,10 @@ mod tests {
     fn rejects_auth_without_tokens() {
         assert!(official_login_from_auth_contents(r#"{"OPENAI_API_KEY":"sk-x"}"#).is_none());
         assert!(
-            official_login_from_auth_contents(r#"{"tokens":{"access_token":"","refresh_token":""}}"#)
-                .is_none()
+            official_login_from_auth_contents(
+                r#"{"tokens":{"access_token":"","refresh_token":""}}"#
+            )
+            .is_none()
         );
     }
 
@@ -993,38 +1115,35 @@ mod tests {
 
     #[test]
     fn prefers_live_login_for_same_account() {
-        let stored = OfficialLogin {
-            access_token: "old".to_string(),
-            refresh_token: "old-refresh".to_string(),
-            account_id: "acct-1".to_string(),
-        };
-        let live = OfficialLogin {
-            access_token: "new".to_string(),
-            refresh_token: "new-refresh".to_string(),
-            account_id: "acct-1".to_string(),
-        };
-        let picked = prefer_live_login(stored.clone(), Some(live.clone()));
+        let id_token = fake_jwt(json!({"sub":"person-1","iss":"https://auth.openai.com"}));
+        let stored_auth = json!({"tokens":{"id_token":id_token,"access_token":"old","refresh_token":"old-refresh","account_id":"acct-1"}}).to_string();
+        let live_auth = json!({"tokens":{"id_token":id_token,"access_token":"new","refresh_token":"new-refresh","account_id":"acct-1"}}).to_string();
+        let picked =
+            official_login_from_auth_contents(&prefer_live_auth(&stored_auth, Some(&live_auth)))
+                .unwrap();
         assert_eq!(picked.access_token, "new");
 
-        let other_account = OfficialLogin {
-            account_id: "acct-2".to_string(),
-            ..live.clone()
-        };
+        let other_auth = json!({"tokens":{"access_token":"other","refresh_token":"other-refresh","account_id":"acct-2"}}).to_string();
         assert_eq!(
-            prefer_live_login(stored.clone(), Some(other_account)).access_token,
+            official_login_from_auth_contents(&prefer_live_auth(&stored_auth, Some(&other_auth),))
+                .unwrap()
+                .access_token,
             "old"
         );
 
-        let live_without_refresh = OfficialLogin {
-            access_token: "new".to_string(),
-            refresh_token: String::new(),
-            account_id: "acct-1".to_string(),
-        };
+        let live_without_refresh =
+            json!({"tokens":{"id_token":id_token,"access_token":"new","account_id":"acct-1"}})
+                .to_string();
         assert_eq!(
-            prefer_live_login(stored.clone(), Some(live_without_refresh)).access_token,
+            official_login_from_auth_contents(&prefer_live_auth(
+                &stored_auth,
+                Some(&live_without_refresh),
+            ))
+            .unwrap()
+            .access_token,
             "old"
         );
-        assert_eq!(prefer_live_login(stored.clone(), None), stored);
+        assert_eq!(prefer_live_auth(&stored_auth, None), stored_auth);
     }
 
     #[test]
@@ -1100,7 +1219,10 @@ mod tests {
         assert_eq!(credential.account_id, "acct-1");
 
         let request = server.join().unwrap();
-        assert!(request.contains("client_id=app_EMoamEEZ73f0CkXaXp7hrann"), "{request}");
+        assert!(
+            request.contains("client_id=app_EMoamEEZ73f0CkXaXp7hrann"),
+            "{request}"
+        );
         assert!(request.contains("refresh_token=old-refresh"), "{request}");
 
         // 刷新结果（含轮换后的 refresh token）写回快照。

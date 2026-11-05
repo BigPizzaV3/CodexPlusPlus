@@ -725,6 +725,9 @@ fn resolve_synced_chatgpt_tokens(profile: &RelayProfile) -> SyncedChatgptTokens 
     let Ok(settings) = crate::settings::SettingsStore::default().load() else {
         return None;
     };
+    if settings.native_auth_selection.is_some() {
+        return None;
+    }
     let aggregate = settings
         .aggregate_relay_profiles
         .iter()
@@ -1133,6 +1136,8 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
     common_config_contents: &str,
     proxy_port: u16,
 ) -> anyhow::Result<RelayApplyResult> {
+    let resolved_profile = crate::native_auth::resolve_profile_credentials(profile)?;
+    let profile = &resolved_profile;
     let previous_model = live_root_model(home);
     let result =
         apply_relay_profile_to_home_inner(home, profile, common_config_contents, proxy_port)?;
@@ -1334,11 +1339,20 @@ pub fn apply_pure_api_config_to_home_with_session_provider(
         false,
         session_provider,
     )?;
-    let auth_contents = serde_json::to_string_pretty(&json!({
-        "OPENAI_API_KEY": bearer_token
-    }))?;
-    let backup_path =
-        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
+    // A pure API provider carries its bearer token in config.toml. Preserve an
+    // existing native auth store verbatim; only create the legacy API-key file
+    // when this CODEX_HOME has no auth file yet.
+    let auth_contents: Option<String> = match std::fs::read_to_string(home.join("auth.json")) {
+        Ok(contents) if !contents.trim().is_empty() => None,
+        _ => Some(serde_json::to_string_pretty(&json!({
+            "OPENAI_API_KEY": bearer_token
+        }))?),
+    };
+    let backup_path = write_codex_live_atomic(
+        home,
+        Some(&updated),
+        auth_contents.as_deref().map(str::as_bytes),
+    )?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -2677,6 +2691,19 @@ fn write_codex_live_atomic(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    let old_auth = read_optional_bytes(&auth_path)?;
+    let apply_native_selection = crate::native_auth::is_default_home(home)
+        && SettingsStore::default().load()?.native_auth_selection.is_some();
+    let auth_bytes = auth_bytes.or_else(|| {
+        apply_native_selection.then(|| old_auth.as_deref().unwrap_or(b"{}"))
+    });
+    let projected_auth = auth_bytes
+        .map(|bytes| {
+            let proposed = std::str::from_utf8(bytes).context("auth.json 不是有效 UTF-8")?;
+            crate::native_auth::project_native_auth(home, proposed).map(String::into_bytes)
+        })
+        .transpose()?;
+    let auth_bytes = projected_auth.as_deref();
     #[cfg(windows)]
     let normalized_config_text = config_text.map(normalize_config_text_for_write);
     #[cfg(windows)]
@@ -2705,11 +2732,13 @@ fn write_codex_live_atomic(
     }
 
     let old_config = read_optional_bytes(&config_path)?;
-    let old_auth = read_optional_bytes(&auth_path)?;
     let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
     let mut auth_written = false;
 
     if let Some(auth_bytes) = auth_bytes {
+        if read_optional_bytes(&auth_path)? != old_auth {
+            anyhow::bail!("原生登录已被其他进程更新，已停止覆盖，请重试");
+        }
         if let Err(error) = crate::settings::atomic_write(&auth_path, auth_bytes) {
             return Err(error.context("写入 auth.json 失败"));
         }
@@ -2718,10 +2747,12 @@ fn write_codex_live_atomic(
 
     if let Some(config_text) = config_text {
         if let Err(error) = crate::settings::atomic_write(&config_path, config_text.as_bytes()) {
-            if auth_written {
+            if auth_written
+                && read_optional_bytes(&auth_path)
+                    .is_ok_and(|current| current.as_deref() == auth_bytes)
+            {
                 let _ = restore_optional_file(&auth_path, old_auth.as_deref());
             }
-            let _ = restore_optional_file(&config_path, old_config.as_deref());
             return Err(error.context("写入 config.toml 失败"));
         }
     }

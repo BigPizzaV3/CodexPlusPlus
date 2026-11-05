@@ -993,16 +993,20 @@ async fn fetch_official_login_model_ids(
     let credential = crate::official_login::resolve_official_credential(profile, false).await?;
     let base = crate::official_login::official_base_url();
     let endpoint = format!("{}/models", base.trim().trim_end_matches('/'));
+    let version = crate::gateway::chatgpt_backend::codex_version(
+        &crate::codex_home::default_codex_home_dir(),
+    );
     let client = crate::http_client::proxied_client_for_relay(&profile.user_agent, &profile)?;
     let mut request = client
         .get(&endpoint)
-        .query(&[("client_version", OFFICIAL_MODELS_CLIENT_VERSION)])
+        .query(&[("client_version", version.as_str())])
         .header(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", credential.access_token.trim()),
         )
         .header("originator", "codex_cli_rs")
-        .header("version", OFFICIAL_MODELS_CLIENT_VERSION)
+        .header("version", &version)
+        .header(reqwest::header::USER_AGENT, crate::gateway::chatgpt_backend::codex_user_agent(&version))
         .timeout(MODELS_FETCH_TIMEOUT);
     if !credential.account_id.trim().is_empty() {
         request = request.header("chatgpt-account-id", credential.account_id.trim());

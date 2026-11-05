@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import type { GatewayPoolEntry } from "./gateway-model.ts";
+import { maskAccountText, subscriptionBlockReason, type GatewayPoolEntry, type ProviderQuota } from "./gateway-model.ts";
 import * as probeModel from "./provider-test.ts";
 
 const source = ts.transpileModule(readFileSync(new URL("./ProviderTestDialog.tsx", import.meta.url), "utf8"), {
@@ -30,10 +30,14 @@ function response(ok = true) {
   };
 }
 
-function harness(options: { initialModel?: string; lockModel?: boolean; models?: string[] } = {}) {
+function harness(options: { initialModel?: string; lockModel?: boolean; models?: string[]; account?: string; permitted?: boolean; quota?: ProviderQuota } = {}) {
   const entry: GatewayPoolEntry = {
     id: "provider", name: "Fixture provider", baseUrl: "https://fixture.invalid/v1",
     protocol: "responses", official: false, models: options.models ?? ["listed-model"], keyCount: 0,
+    account: options.account,
+    subscriptionPolicy: options.permitted === undefined ? undefined : { permitted: options.permitted },
+    quota: options.quota ?? { updatedAtMs: Date.now(), windowsComplete: true, officialAllowed: true,
+      windows: [{ windowMinutes: 300, usedPercent: 20, resetsAtMs: null }] },
   };
   const hooks: any[] = [];
   const cleanups = new Map<number, () => void>();
@@ -43,6 +47,7 @@ function harness(options: { initialModel?: string; lockModel?: boolean; models?:
   let starts = 0;
   let cancellations = 0;
   let closes = 0;
+  let policyEdits = 0;
   let verified = false;
   let escape = () => {};
   const exports: Record<string, any> = {};
@@ -88,7 +93,7 @@ function harness(options: { initialModel?: string; lockModel?: boolean; models?:
     "@/components/ui/button": { Button: "Button" },
     "./i18n": { t: (value: string) => value, tf: (value: string, args: string[]) => value.replace(/\{(\d+)\}/g, (_, index) => args[Number(index)]) },
     "./AppSelect": { AppSelect: "AppSelect" },
-    "./gateway-model": { maskAccountName: (value: string) => value },
+    "./gateway-model": { maskAccountName: (value: string) => value, maskAccountText, subscriptionBlockReason },
     "./gateway-ui": { Avatar: "Avatar" },
     "./use-escape-layer": { useEscapeLayer: (_active: boolean, close: () => void) => { escape = close; } },
     "./provider-test": probeModel,
@@ -110,12 +115,14 @@ function harness(options: { initialModel?: string; lockModel?: boolean; models?:
         onStart: () => { starts += 1; verified = false; },
         onResult: (result: probeModel.ProviderProbeResult) => { results.push(result); verified = result.ok === true; },
         onClose: () => { closes += 1; },
+        onEditSubscription: () => { policyEdits += 1; },
       }) as Element;
     },
     starts: () => starts,
     verified: () => verified,
     cancellations: () => cancellations,
     closes: () => closes,
+    policyEdits: () => policyEdits,
     escape: () => escape(),
     unmount: () => { cleanups.forEach((cleanup) => cleanup()); cleanups.clear(); },
   };
@@ -183,6 +190,51 @@ test("普通供应商测试仍可选择模型，进行中的重复提交不会�
   f.requests[0].result.resolve(response());
   await flush();
   f.unmount();
+});
+
+test("未授权的 ChatGPT 测试直接给出设置入口，不发送请求或自动授权", () => {
+  for (const permitted of [undefined, false]) {
+    const f = harness({ account: "chatgpt", permitted });
+    const tree = f.render();
+    assert.match(text(tree), /此账号尚未授权网关使用/);
+    assert.equal(find(tree, (element) => element.type === "Button" && element.props.type === "submit").props.disabled, true);
+    start(tree);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.starts(), 0);
+    find(tree, (element) => element.type === "Button" && text(element) === "设置订阅消费").props.onClick();
+    assert.equal(f.closes(), 1);
+    assert.equal(f.policyEdits(), 1);
+    f.unmount();
+  }
+});
+
+test("明确授权的 ChatGPT 账号仍可测试，其他订阅账号不受 ChatGPT 授权开关影响", async () => {
+  for (const account of ["chatgpt", "copilot"]) {
+    const f = harness({ account, permitted: account === "chatgpt" });
+    const tree = f.render();
+    assert.doesNotMatch(text(tree), /此账号尚未授权网关使用/);
+    start(tree);
+    assert.equal(f.requests.length, 1);
+    f.requests[0].result.resolve(response());
+    await flush();
+    assert.equal(f.verified(), true);
+    f.unmount();
+  }
+});
+
+test("5h或7d用尽时真实测试弹窗禁用提交，程序化提交也不发请求", () => {
+  for (const windowMinutes of [300, 10080]) {
+    const f = harness({ account: "chatgpt", permitted: true, quota: {
+      updatedAtMs: Date.now(), windowsComplete: true, officialAllowed: true,
+      windows: [{ windowMinutes, usedPercent: 100, resetsAtMs: null }],
+    } });
+    const tree = f.render();
+    assert.equal(find(tree, element => element.type === "Button" && element.props.type === "submit").props.disabled, true);
+    start(tree);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.starts(), 0);
+    f.unmount();
+  }
 });
 
 test("成功后每次重测同步清除父级验证，失败状态、异常和后台取消均不会复用旧成功", async () => {

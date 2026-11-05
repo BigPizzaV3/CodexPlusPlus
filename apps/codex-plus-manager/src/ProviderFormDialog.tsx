@@ -35,6 +35,8 @@ import {
 import { windowSummary } from "./ProviderWindowsDialog";
 import { filterModels, pickerOutcome, pickerRows, type PickerRow } from "./provider-sync-model";
 import "./ProviderFormDialog.css";
+import { SubscriptionPolicyFields } from "./SubscriptionPolicyFields";
+import { normalizeSubscriptionPolicy } from "./subscription-policy";
 
 export type ProviderFormState = { mode: "preset"; preset: GatewayPreset } | { mode: "custom" } | { mode: "edit"; entry: GatewayPoolEntry };
 
@@ -66,8 +68,12 @@ export function ProviderFormDialog({
   onEditWindows?: (models: string[]) => void;
 }) {
   const editing = form.mode === "edit";
+  const subscriptionEditing = form.mode === "edit" && form.entry.account === "chatgpt";
   const preset = form.mode === "preset" ? form.preset : null;
-  const [draft, setDraft] = useState<ProviderDraft>(() => (form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset)));
+  const [draft, setDraft] = useState<ProviderDraft>(() => {
+    const initial = form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset);
+    return subscriptionEditing ? { ...initial, subscriptionPolicy: normalizeSubscriptionPolicy(initial.subscriptionPolicy) } : initial;
+  });
   // 价格在供应商池的详情里按模型编辑；新添加时按公开价格表给每个模型悄悄填上（查不到的不填）。
   const autoPrice = useRef(!editing && !hasPrice(draft));
   const [fetching, setFetching] = useState(false);
@@ -75,7 +81,7 @@ export function ProviderFormDialog({
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [modelInput, setModelInput] = useState("");
   const update = (patch: Partial<ProviderDraft>) => setDraft((previous) => ({ ...previous, ...patch }));
-  const validation = validateProviderDraft(draft, editing);
+  const validation = subscriptionEditing ? null : validateProviderDraft(draft, editing);
   const keys = draftKeys(draft);
   const models = draftModels(draft);
   const chosenModel = defaultModel(draft);
@@ -126,7 +132,7 @@ export function ProviderFormDialog({
   };
 
   const title = form.mode === "edit" ? tf("编辑 {0}", [maskAccountName(form.entry.name)]) : preset ? tf("添加 {0}", [preset.name]) : t("添加自定义供应商");
-  const subtitle = preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic 兼容接口");
+  const subtitle = subscriptionEditing ? t("网关订阅消费授权") : preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic 兼容接口");
   // 编辑时已保存的 Key 只列打码后的样子，增删、替换在供应商池详情的「Key」一行里单独做（#2782）；
   // 旧版后端没给 Key 列表时仍是「留空表示不改」的输入框。
   const savedKeys = form.mode === "edit" ? form.entry.keys ?? [] : [];
@@ -151,6 +157,9 @@ export function ProviderFormDialog({
         </header>
 
         <div className="pf-body">
+          {subscriptionEditing ? (
+            <SubscriptionPolicyFields disabled={busy !== null} onChange={(subscriptionPolicy) => update({ subscriptionPolicy })} quota={form.mode === "edit" ? form.entry.quota : null} value={draft.subscriptionPolicy} />
+          ) : <>
           <section className="pf-section">
             <h4>{t("连接")}</h4>
             <div className="pf-grid">
@@ -305,7 +314,7 @@ export function ProviderFormDialog({
               </label>
             </section>
           ) : null}
-
+          </>}
         </div>
 
         {agentPicks ? <div className="pf-agents">{agentPicks}</div> : null}

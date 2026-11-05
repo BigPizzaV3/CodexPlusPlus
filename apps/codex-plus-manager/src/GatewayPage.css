@@ -2846,6 +2846,30 @@ body.gw-sorting * {
   font-weight: 500;
 }
 
+.shell .gw-quota-window[data-tone="unknown"] {
+  color: var(--gw-mute);
+}
+
+.shell .gw-quota-windows[data-compact] {
+  gap: 5px 16px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.shell .gw-quota-windows[data-compact] .gw-quota-window {
+  gap: 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.shell .gw-quota-windows[data-compact] .gw-quota-window b {
+  min-width: 19px;
+}
+
+.shell .gw-quota-windows[data-compact] .gw-quota-window i {
+  width: 48px;
+}
+
 .shell .gw-quota-window i {
   width: 56px;
 }

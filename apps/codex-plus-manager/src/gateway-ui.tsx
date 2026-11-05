@@ -9,6 +9,7 @@ import {
   maskAccountName,
   maskAccountText,
   quotaRemaining,
+  quotaWindowFresh,
   quotaWindowLabel,
   type GatewayResult,
   type MemberStatus,
@@ -199,6 +200,9 @@ export function KeyCount({ count }: { count: number }) {
 
 /** 订阅额度的剩余量：一根细条 + 百分比，取最紧的窗口。 */
 export function QuotaBadge({ quota }: { quota: ProviderQuota }) {
+  if (quota.officialAllowed === false) return <span className="gw-muted">{t("订阅额度受限")}</span>;
+  if (!quota.windows.length) return <span className="gw-muted">{quota.windowsComplete && quota.officialAllowed === true ? t("官方未返回时间窗口") : t("额度待刷新")}</span>;
+  if (quota.windows.some(window => !quotaWindowFresh(quota, window, Date.now()))) return <span className="gw-muted">{t("额度待刷新")}</span>;
   const left = Math.round(quotaRemaining(quota, Date.now()) * 100);
   const tone = left <= 10 ? "low" : left <= 30 ? "mid" : "ok";
   return (
@@ -209,21 +213,25 @@ export function QuotaBadge({ quota }: { quota: ProviderQuota }) {
   );
 }
 
-/** 订阅额度的明细：每个窗口一行，已用比例和重置时间。 */
-export function QuotaWindows({ quota }: { quota: ProviderQuota }) {
+/** 官方实际返回的窗口；卡片与详情共用，未知读数不显示为恢复。 */
+export function QuotaWindows({ quota, compact = false, maxAgeSeconds = 600 }: { quota: ProviderQuota; compact?: boolean; maxAgeSeconds?: number }) {
   const now = Date.now();
+  const fresh = quota.updatedAtMs <= now && now - quota.updatedAtMs <= maxAgeSeconds * 1000;
+  if (!quota.windows.length) return <span className="gw-muted">{fresh && quota.officialAllowed === false ? t("订阅额度受限") : fresh && quota.windowsComplete && quota.officialAllowed === true ? t("官方未返回时间窗口") : t("额度待刷新")}</span>;
   return (
-    <span className="gw-quota-windows">
+    <span className="gw-quota-windows" data-compact={compact || undefined}>
       {quota.windows.map((window, index) => {
         const reset = window.resetsAtMs !== null && window.resetsAtMs > now ? formatRemaining(window.resetsAtMs - now) : "";
         const label = quotaWindowLabel(window);
-        const used = window.resetsAtMs !== null && window.resetsAtMs <= now ? 0 : Math.round(window.usedPercent);
+        const known = quotaWindowFresh(quota, window, now, maxAgeSeconds);
+        const used = Math.round(window.usedPercent);
+        const name = window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10080 ? "7d" : label.args.length ? tf(label.text, label.args) : t(label.text);
         return (
-          <span className="gw-quota-window" data-tone={used >= 90 ? "low" : used >= 70 ? "mid" : "ok"} key={index}>
-            <b>{label.args.length ? tf(label.text, label.args) : t(label.text)}</b>
-            <i style={{ "--gw-quota": `${Math.max(0, 100 - used)}%` } as CSSProperties} />
-            <span>{tf("已用 {0}%", [used])}</span>
-            {reset ? <small>{tf("{0} 后重置", [reset])}</small> : null}
+          <span className="gw-quota-window" data-tone={!known ? "unknown" : used >= 90 ? "low" : used >= 70 ? "mid" : "ok"} key={index} title={reset ? tf("{0} 后重置", [reset]) : undefined}>
+            <b>{name}</b>
+            <i aria-hidden="true" style={{ "--gw-quota": known ? `${Math.max(0, Math.min(100, used))}%` : "0%" } as CSSProperties} />
+            <span>{known ? tf("已用 {0}%", [used]) : t("待刷新")}</span>
+            {!compact && reset ? <small>{tf("{0} 后重置", [reset])}</small> : null}
           </span>
         );
       })}

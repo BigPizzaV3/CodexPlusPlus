@@ -31,6 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["protocol-asset", "custom-protocol", "tray-icon"] }
 tauri-plugin-dialog = "2"
+tokio.workspace = true
 toml_edit.workspace = true
 
 [build-dependencies]

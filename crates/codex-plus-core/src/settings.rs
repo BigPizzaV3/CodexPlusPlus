@@ -70,6 +70,9 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    /// 供应商引用的网关/账号凭证；留空时沿用供应商自己的 auth 快照。
+    #[serde(rename = "officialAccountRef", default, skip_serializing_if = "String::is_empty")]
+    pub official_account_ref: String,
     #[serde(rename = "noAuth", default)]
     pub no_auth: bool,
     #[serde(rename = "hideOfficialUsageAlert", default)]
@@ -378,6 +381,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
@@ -1063,6 +1067,16 @@ impl ClaudeBashTimeoutSettings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum NativeAuthSelection {
+    None,
+    Account {
+        #[serde(rename = "accountRef")]
+        account_ref: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     /// 读取快照的版本，只用于条件保存，不写入 settings.json。
@@ -1100,6 +1114,9 @@ pub struct BackendSettings {
     /// 默认关闭；用户手动改过模型的会话不受影响。
     #[serde(rename = "threadModelFollowSwitchEnabled", default)]
     pub thread_model_follow_switch_enabled: bool,
+    /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。
+    #[serde(rename = "nativeAuthSelection", default)]
+    pub native_auth_selection: Option<NativeAuthSelection>,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -1493,6 +1510,7 @@ impl Default for BackendSettings {
             provider_sync_enabled: false,
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
+            native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -1642,7 +1660,8 @@ impl BackendSettings {
                 active_api_key_id: String::new(),
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
-                official_mix_api_key: true,
+                  official_mix_api_key: true,
+                  official_account_ref: String::new(),
                 no_auth: false,
                 hide_official_usage_alert: false,
                 test_model: String::new(),
@@ -1717,6 +1736,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
@@ -3474,6 +3494,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "protocol",
     "relayMode",
     "officialMixApiKey",
+    "officialAccountRef",
     "noAuth",
     "hideOfficialUsageAlert",
     "testModel",
