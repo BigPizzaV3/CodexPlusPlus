@@ -11357,6 +11357,8 @@
           || !Object.prototype.hasOwnProperty.call(current, "nextCursor")
           || current.nextCursor !== null || !modelArrayLooksPatchable(current.data, true)) return current;
       const models = [...current.data];
+      const snapshot = codexPlusModelCollectionSnapshots.get(current.data);
+      if (snapshot) codexPlusModelCollectionSnapshots.set(models, { ...snapshot });
       return patchModelArray(models, true, "local") ? { ...current, data: models } : current;
     });
   }

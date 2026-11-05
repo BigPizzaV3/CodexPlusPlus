@@ -145,6 +145,46 @@ it("late refetches use the current catalog after a change and reinjection", asyn
   assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/current"]);
 });
 
+it("preserves native descriptors when a catalog change reintroduces a filtered model", async () => {
+  const local = { queryKey: nativeQueryKey(), state: { data: {
+    data: [
+      { model: "a/old", displayName: "Old" },
+      { model: "a/returning", description: "Original native descriptor", nativeCapability: true },
+    ],
+    nextCursor: null,
+  } } };
+  const original = local.state.data;
+  const { client } = queryClient([local]);
+  const r = runtime({ testQueryClient: client });
+  await load(r, ["a/old"]);
+  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/old"]);
+  assert.equal(original.data.length, 2, "patching must not mutate the source cache");
+
+  r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
+  r.pending.shift()!.resolve(catalog(["a/old", "a/returning"]));
+  await settle();
+  const restored = local.state.data.data.find(entry => entry.model === "a/returning");
+  assert.equal(restored?.description, "Original native descriptor");
+  assert.equal(restored?.nativeCapability, true);
+});
+
+it("does not restore an obsolete snapshot after native cache data changes", async () => {
+  const local = { queryKey: nativeQueryKey(), state: { data: {
+    data: [{ model: "a/old", description: "Old" }, { model: "a/returning", description: "Stale" }],
+    nextCursor: null,
+  } } };
+  const { client } = queryClient([local]);
+  const r = runtime({ testQueryClient: client });
+  await load(r, ["a/old"]);
+  local.state.data.data.splice(0, 1, { model: "a/returning", description: "Fresh native data" });
+
+  r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
+  r.pending.shift()!.resolve(catalog(["a/returning"]));
+  await settle();
+  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/returning"]);
+  assert.equal(local.state.data.data[0].description, "Fresh native data");
+});
+
 it("catalog fingerprint changes bypass cache and invalidate only local model queries", async () => {
   const r = runtime();
   const first = r.api.load();
