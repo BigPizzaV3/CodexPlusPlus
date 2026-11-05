@@ -307,6 +307,15 @@ it("recognizes only a verified local pure API multi-instance catalog when relay 
   assert.deepEqual(result.data.map(entry => entry.model), ["native"]);
 });
 
+it("preserves model injection for official multi-instance profiles", async () => {
+  const r = runtime({}, { relayProfilesEnabled: false, codexMultiInstance: true,
+    activeRelayId: "gateway", relayProfiles: [{ id: "gateway", relayMode: "official" }] });
+  await load(r, ["official/model"]);
+  const result = { data: [{ model: "native" }], nextCursor: null };
+  r.api.patchAppResult("model/list", result, "local", { cursor: null });
+  assert.deepEqual(result.data.map(entry => entry.model), ["native", "official/model"]);
+});
+
 it("refreshes complete multi-instance model responses without changing the current selection", async () => {
   const worker = { relayProfilesEnabled: false, codexMultiInstance: true, activeRelayId: "gateway",
     modelCatalogFingerprint: "worker-1",

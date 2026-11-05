@@ -117,7 +117,11 @@
     if (codexPlusBackendSettingsLoaded && codexPlusBackendSettings?.codexMultiInstance === true
         && codexPlusBackendSettings?.relayProfilesEnabled === false) {
       const profile = codexModelCatalogActiveProfile();
-      if (codexModelCatalog.status !== "ok" || !codexModelCatalogBelongsToProfile(profile)) return [];
+      const profiles = Array.isArray(codexPlusBackendSettings.relayProfiles)
+        ? codexPlusBackendSettings.relayProfiles : [];
+      const active = profiles.filter((entry) => entry?.id === codexPlusBackendSettings.activeRelayId);
+      const official = active.length === 1 && active[0]?.relayMode === "official";
+      if (!official && (codexModelCatalog.status !== "ok" || !codexModelCatalogBelongsToProfile(profile))) return [];
     }
     return uniqueValues([
       codexModelCatalog.default_model,
