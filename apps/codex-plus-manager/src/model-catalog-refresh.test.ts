@@ -177,6 +177,85 @@ it("catalog fingerprint changes bypass cache and invalidate only local model que
   assert.equal(r.pending.length, 0);
 });
 
+it("retries a failed catalog refresh without requiring another settings event", async () => {
+  const r = runtime();
+  await load(r, ["a/old"]);
+  r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
+  r.pending.shift()!.reject(new Error("temporary failure"));
+  await settle();
+  assert.equal(r.api.catalog().model, "a/old");
+  assert.equal(r.timers.length, 1);
+
+  r.tick(10000);
+  r.timers.shift()!();
+  assert.equal(r.pending.length, 1, "the failed refresh must retry after its cooldown");
+  r.pending.shift()!.resolve(catalog(["a/new"]));
+  await settle();
+  assert.equal(r.api.catalog().model, "a/new");
+});
+
+it("keeps retrying transient failures without bypassing the cooldown", async () => {
+  const r = runtime();
+  await load(r, ["a/old"]);
+  const failed = r.api.load(true);
+  r.pending.shift()!.reject(new Error("first failure"));
+  await failed;
+  r.tick(5000);
+  r.timers.shift()!();
+  assert.equal(r.pending.length, 0);
+  assert.equal(r.timers.length, 1, "an early timer must retain the remaining cooldown");
+  r.tick(5000);
+  r.timers.shift()!();
+  r.pending.shift()!.reject(new Error("second failure"));
+  await settle();
+  assert.equal(r.api.catalog().model, "a/old");
+  assert.equal(r.timers.length, 1);
+  r.tick(10000);
+  r.timers.shift()!();
+  r.pending.shift()!.resolve(catalog(["a/recovered"]));
+  await settle();
+  assert.equal(r.api.catalog().model, "a/recovered");
+});
+
+it("discards retry timers after a source change or successful refresh", async () => {
+  for (const action of ["source", "success"]) {
+    const r = runtime();
+    await load(r, ["a/old"]);
+    const failed = r.api.load(true);
+    r.pending.shift()!.reject(new Error("temporary failure"));
+    await failed;
+    assert.equal(r.timers.length, 1);
+    if (action === "source") {
+      r.update({ ...r.settings(), activeRelayId: "other", modelCatalogFingerprint: "other" });
+    } else {
+      void r.api.load(true);
+    }
+    r.pending.shift()!.resolve(catalog(["a/new"]));
+    await settle();
+    r.tick(10000);
+    r.timers.shift()!();
+    assert.equal(r.pending.length, 0, "an obsolete retry must not initiate another request");
+    assert.equal(r.api.catalog().model, "a/new");
+  }
+});
+
+it("continues a failed catalog retry after reinjection", async () => {
+  const r = runtime();
+  await load(r, ["a/old"]);
+  const failed = r.api.load(true);
+  r.pending.shift()!.reject(new Error("temporary failure"));
+  await failed;
+  const next = runtime(r.window, r.settings());
+  r.tick(10000);
+  next.tick(10000);
+  for (const timer of r.timers.splice(0)) timer();
+  assert.equal(r.pending.length, 0, "the old runtime must not issue the retry");
+  assert.equal(next.pending.length, 1, "the current runtime must retain the retry");
+  next.pending.shift()!.resolve(catalog(["a/new"]));
+  await settle();
+  assert.equal(next.api.catalog().model, "a/new");
+});
+
 it("late responses and reinjection cannot overwrite the current configuration", async () => {
   const r = runtime();
   const old = r.api.load();

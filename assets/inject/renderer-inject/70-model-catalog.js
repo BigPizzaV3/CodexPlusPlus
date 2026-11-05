@@ -191,6 +191,24 @@
     }
   }
 
+  function scheduleCodexModelCatalogRetry() {
+    const failure = codexModelCatalogRuntime.failure;
+    if (!failure) return;
+    const retryAt = codexModelCatalogRuntime.retryAt;
+    window.setTimeout(() => {
+      if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime
+          || codexModelCatalogRuntime.failure !== failure
+          || codexModelCatalogRuntime.retryAt !== retryAt) return;
+      if (Date.now() < retryAt) {
+        scheduleCodexModelCatalogRetry();
+        return;
+      }
+      void loadCodexModelCatalog();
+    }, Math.max(0, retryAt - Date.now()));
+  }
+
+  scheduleCodexModelCatalogRetry();
+
   async function loadCodexModelCatalog(force = false) {
     if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return codexModelCatalog;
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
@@ -255,6 +273,7 @@
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
         codexModelCatalogRuntime.retryAt = Date.now() + 10000;
         codexModelCatalogRuntime.failure = failure;
+        scheduleCodexModelCatalogRetry();
         return failure;
       })
       .finally(() => {
