@@ -756,8 +756,11 @@
   }
 
   function modelRequestCursor(params) {
-    if (params?.method && params?.params) return modelRequestCursor(params.params);
-    return params?.cursor ?? null;
+    if (params?.method) {
+      return params.params && typeof params.params === "object"
+        ? modelRequestCursor(params.params) : undefined;
+    }
+    return params && typeof params === "object" && "cursor" in params ? params.cursor : null;
   }
 
   function modelResponseIsComplete(result, params) {

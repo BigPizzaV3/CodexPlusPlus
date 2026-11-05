@@ -373,6 +373,27 @@ it("does not infer a first page from an older listener or a reused request id", 
   assert.equal(result.data[0].model, "native");
 });
 
+it("does not treat an unknown request cursor as the first page", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  const cases = [
+    { cursor: undefined },
+    { method: "model/list" },
+    { method: "model/list", params: { cursor: undefined } },
+  ];
+  for (const [index, params] of cases.entries()) {
+    const result = { data: [{ model: "native" }], nextCursor: null };
+    r.api.patchAppResult("model/list", result, "local", params);
+    assert.equal(result.data[0].model, "native");
+
+    r.api.record(`unknown-${index}`, "local", params);
+    const response = { type: "mcp-response", message: { id: `unknown-${index}`,
+      result: { data: [{ model: "native" }], nextCursor: null } } };
+    assert.equal(r.api.patchMcp(response), false);
+    assert.equal(response.message.result.data[0].model, "native");
+  }
+});
+
 it("in-flight model/list requests retain their host and are consumed once after reinjection", async () => {
   const r = runtime();
   await load(r, ["a/old"]);
