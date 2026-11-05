@@ -96,6 +96,79 @@ it("missing metadata preserves only known model ownership and leaves unknown bar
   assert.equal(unknown[0].groupId, "");
 });
 
+it("remembered ownership is discarded when its catalog source changes", () => {
+  const r = runtime({ status: "ok", models: ["a/sol"], modelMetadata: { "a/sol": entry("Sol", "a") } });
+  r.api.providers();
+  assert.equal(r.state.providerNames.size > 0, true);
+  const changed = source.match(/^  function codexPlusModelPickerCatalogChanged\([^]*?^  \}/m)?.[0];
+  assert.ok(changed);
+  const notify = new Function("codexPlusModelPickerGroupsState", "codexPlusModelPickerSchedule",
+    "codexPlusModelPickerPersist", `${changed}\nreturn codexPlusModelPickerCatalogChanged;`)
+    (r.state, () => {}, () => {});
+  notify({ sourceChanged: false });
+  assert.equal(r.state.providerNames.size > 0, true, "same-source refresh retains ownership");
+  notify({ sourceChanged: true });
+  assert.equal(r.state.providerNames.size, 0, "a different source cannot inherit cached ownership");
+});
+
+it("persisted ownership is read only for its matching initialized source", () => {
+  const storeSource = source.match(/^  function codexPlusModelPickerStore\([^]*?^  \}/m)?.[0];
+  assert.ok(storeSource);
+  for (const [currentSource, cachedSource, shouldLoad] of [
+    ["source-a", "source-a", true],
+    ["source-b", "source-a", false],
+    ["source-a", undefined, false],
+    ["", "source-a", false],
+  ] as const) {
+    const state = { stored: false, providerNames: new Map(), defaultGroupId: "" };
+    const window = { __codexPlusModelCatalogRuntime: { source: currentSource },
+      localStorage: { getItem: () => JSON.stringify({
+        source: cachedSource, defaultGroupId: "provider:a",
+        providers: { sol: { name: "Provider A", groupId: "provider:a", parsed: false } },
+      }) } };
+    const load = new Function("window", "codexPlusModelPickerGroupsState", "codexPlusModelPickerGroupsStoreKey",
+      `${storeSource}\nreturn codexPlusModelPickerStore;`)(window, state, "test");
+    load();
+    assert.equal(state.providerNames.size > 0, shouldLoad, `${currentSource}/${cachedSource}`);
+    if (!currentSource) assert.equal(state.stored, false, "wait for initialized settings");
+  }
+});
+
+it("initialization discards ownership learned before the source was known", () => {
+  const storeSource = source.match(/^  function codexPlusModelPickerStore\([^]*?^  \}/m)?.[0];
+  assert.ok(storeSource);
+  const state = { stored: false, providerNames: new Map([["sol", { name: "Old" }]]),
+    defaultGroupId: "old", defaultProviderName: "Old" };
+  const window = { __codexPlusModelCatalogRuntime: { source: "" },
+    localStorage: { getItem: () => null } };
+  const load = new Function("window", "codexPlusModelPickerGroupsState", "codexPlusModelPickerGroupsStoreKey",
+    `${storeSource}\nreturn codexPlusModelPickerStore;`)(window, state, "test");
+  load();
+  assert.equal(state.stored, false);
+  window.__codexPlusModelCatalogRuntime.source = "new";
+  load();
+  assert.equal(state.providerNames.size, 0);
+  assert.equal(state.defaultGroupId, "");
+  assert.equal(state.defaultProviderName, "");
+});
+
+it("persists ownership only after a catalog source is initialized", () => {
+  const persistSource = source.match(/^  function codexPlusModelPickerPersist\([^]*?^  \}/m)?.[0];
+  assert.ok(persistSource);
+  const writes: any[] = [];
+  const window = { __codexPlusModelCatalogRuntime: { source: "" },
+    localStorage: { setItem: (_key: string, value: string) => writes.push(JSON.parse(value)) } };
+  const state = { providerNames: new Map([["sol", { name: "Provider A" }]]), defaultGroupId: "a" };
+  const persist = new Function("window", "codexPlusModelPickerGroupsState", "codexPlusModelPickerGroupsStoreKey",
+    `${persistSource}\nreturn codexPlusModelPickerPersist;`)(window, state, "test");
+  persist();
+  assert.equal(writes.length, 0);
+  window.__codexPlusModelCatalogRuntime.source = "source-a";
+  persist();
+  assert.equal(writes[0].source, "source-a");
+  assert.equal(writes[0].providers.sol.name, "Provider A");
+});
+
 it("a parenthesized model variant is preserved unless the catalog confirms a supplier suffix", () => {
   const r = runtime({ status: "ok", models: ["a/variant"],
     modelMetadata: { "a/variant": entry("GPT-6.1 (Sol)", "a") } });

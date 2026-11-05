@@ -170,7 +170,7 @@
     if (sourceChanged) {
       codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
       codexModelCatalogRuntime.catalog = codexModelCatalog;
-      window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
+      window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.({ sourceChanged: true });
     }
     codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
     codexModelCatalogRuntime.retryAt = 0;

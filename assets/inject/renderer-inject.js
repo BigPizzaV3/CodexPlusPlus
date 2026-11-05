@@ -11347,7 +11347,7 @@
     if (sourceChanged) {
       codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
       codexModelCatalogRuntime.catalog = codexModelCatalog;
-      window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
+      window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.({ sourceChanged: true });
     }
     codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
     codexModelCatalogRuntime.retryAt = 0;
@@ -12721,12 +12721,18 @@
     stored: false,
   };
 
-  function codexPlusModelPickerCatalogChanged() {
+  function codexPlusModelPickerCatalogChanged(options = {}) {
     const state = codexPlusModelPickerGroupsState;
+    if (options.sourceChanged) {
+      state.providerNames.clear();
+      state.stored = true;
+      state.providerDirty = false;
+    }
     state.defaultGroupId = "";
     state.defaultProviderName = "";
     state.signature = "";
     state.catalogRetryAt = 0;
+    if (options.sourceChanged) codexPlusModelPickerPersist();
     if (!state.disposed) codexPlusModelPickerSchedule(0);
   }
 
@@ -12761,10 +12767,18 @@
 
   function codexPlusModelPickerStore() {
     if (codexPlusModelPickerGroupsState.stored) return;
+    const runtime = window.__codexPlusModelCatalogRuntime;
+    if (runtime && !runtime.source) return;
     codexPlusModelPickerGroupsState.stored = true;
+    if (runtime) {
+      codexPlusModelPickerGroupsState.providerNames.clear();
+      codexPlusModelPickerGroupsState.defaultGroupId = "";
+      codexPlusModelPickerGroupsState.defaultProviderName = "";
+    }
     try {
       const raw = window.localStorage?.getItem(codexPlusModelPickerGroupsStoreKey);
       const parsed = raw ? JSON.parse(raw) : null;
+      if (runtime && parsed?.source !== runtime.source) return;
       if (typeof parsed?.defaultGroupId === "string") {
         codexPlusModelPickerGroupsState.defaultGroupId = parsed.defaultGroupId;
       }
@@ -12787,6 +12801,8 @@
 
   function codexPlusModelPickerPersist() {
     try {
+      const runtime = window.__codexPlusModelCatalogRuntime;
+      if (runtime && !runtime.source) return;
       const providers = {};
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
         providers[key] = value;
@@ -12796,6 +12812,7 @@
         JSON.stringify({
           providers,
           defaultGroupId: codexPlusModelPickerGroupsState.defaultGroupId || "",
+          ...(runtime ? { source: runtime.source } : {}),
         }),
       );
     } catch {}

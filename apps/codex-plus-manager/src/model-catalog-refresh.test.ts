@@ -370,13 +370,15 @@ it("invalidates the previous catalog when the same supplier changes connection i
 it("catalog changes notify the installed picker without requiring it during initialization", async () => {
   const r = runtime();
   await load(r, ["a/sol"]);
-  let notifications = 0;
-  r.window.__codexPlusModelPickerGroupsRuntime = { catalogChanged: () => { notifications++; } };
+  const notifications: any[] = [];
+  r.window.__codexPlusModelPickerGroupsRuntime = { catalogChanged: (options: any) => { notifications.push(options); } };
   r.update({ ...r.settings(), activeRelayId: "other", modelCatalogFingerprint: "other-catalog" });
-  assert.equal(notifications, 1, "clearing the previous supplier notifies the picker");
+  assert.equal(notifications.length, 1, "clearing the previous supplier notifies the picker");
+  assert.equal(notifications[0].sourceChanged, true);
   r.pending.shift()!.resolve(catalog(["b/terra"]));
   await settle();
-  assert.equal(notifications, 2, "publishing the new catalog notifies the picker");
+  assert.equal(notifications.length, 2, "publishing the new catalog notifies the picker");
+  assert.equal(notifications[1], undefined);
 });
 
 it("catalog patches respect hidden entries and never alter selected model or reasoning fields", async () => {
