@@ -1139,6 +1139,7 @@ fn settings_payload_value(
     // 页面心跳比较这两项，发拓展事件 relayProfile/switched、modelCatalog/changed（见 40-backend-settings.js）。
     let active_relay_profile_public = public_active_relay_profile(&settings);
     let catalog_fingerprint = model_catalog_fingerprint(&settings);
+    let catalog_source_identity = model_catalog_source_identity(&settings);
     let mut value = serde_json::to_value(settings)?;
     fn remove_named_keys(value: &mut Value) {
         match value {
@@ -1188,6 +1189,7 @@ fn settings_payload_value(
         );
         object.insert("activeRelayProfilePublic".to_string(), active_relay_profile_public);
         object.insert("modelCatalogFingerprint".to_string(), Value::String(catalog_fingerprint));
+        object.insert("modelCatalogSourceIdentity".to_string(), Value::String(catalog_source_identity));
         object.insert("codexMultiInstance".to_string(), Value::Bool(is_multi_instance));
         object.insert(
             "nativeFastLocalApiConfigured".to_string(),
@@ -1263,6 +1265,19 @@ fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
             }
         }
     }
+    format!("{:016x}", hasher.finish())
+}
+
+/// 只供内部载荷比较连接来源，不向第三方拓展暴露。
+fn model_catalog_source_identity(settings: &BackendSettings) -> String {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    static SOURCE_HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let profile = settings.active_relay_profile();
+    let mut hasher = SOURCE_HASHER.get_or_init(Default::default).build_hasher();
+    profile.id.hash(&mut hasher);
+    crate::relay_config::relay_profile_base_url(&profile).hash(&mut hasher);
+    crate::relay_config::relay_profile_api_key(&profile).hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 

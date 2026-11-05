@@ -260,6 +260,42 @@ async fn settings_payload_fingerprint_follows_model_catalog_fields() {
 }
 
 #[tokio::test]
+async fn internal_catalog_source_identity_tracks_connection_without_public_exposure() {
+    use codex_plus_core::settings::{RelayApiKey, RelayMode};
+
+    async fn read(settings: BackendSettings, path: &str) -> Value {
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings)),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData::default()),
+        );
+        handle_bridge_request(ctx, path, json!({})).await
+    }
+    let mut settings = settings_with_secret_profile("model");
+    settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
+    settings.relay_profiles[0].api_keys = vec![RelayApiKey {
+        id: "key".into(), name: "key".into(), api_key: "secret-a".into(),
+    }];
+    let first = read(settings.clone(), "/settings/get").await;
+    let same = read(settings.clone(), "/settings/get").await;
+    let identity = first["modelCatalogSourceIdentity"].as_str().unwrap();
+    assert!(!identity.is_empty());
+    assert!(!identity.contains("secret"));
+    assert_eq!(first["modelCatalogSourceIdentity"], same["modelCatalogSourceIdentity"]);
+    let mut changed = settings.clone();
+    changed.relay_profiles[0].api_keys[0].api_key = "secret-b".into();
+    assert_ne!(identity, read(changed, "/settings/get").await["modelCatalogSourceIdentity"]);
+    let mut changed = settings.clone();
+    changed.relay_profiles[0].config_contents.clear();
+    changed.relay_profiles[0].base_url = "https://different.example/v1".into();
+    assert_ne!(identity, read(changed, "/settings/get").await["modelCatalogSourceIdentity"]);
+    let mut renamed = settings.clone();
+    renamed.relay_profiles[0].name = "New name".into();
+    assert_eq!(identity, read(renamed, "/settings/get").await["modelCatalogSourceIdentity"]);
+    assert!(read(settings, "/settings/public").await.get("modelCatalogSourceIdentity").is_none());
+}
+
+#[tokio::test]
 async fn public_catalog_fingerprint_tracks_active_aggregate_members() {
     use codex_plus_core::settings::RelayMode;
 

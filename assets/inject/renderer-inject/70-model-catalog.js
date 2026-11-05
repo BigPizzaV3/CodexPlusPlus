@@ -134,7 +134,7 @@
     const profiles = Array.isArray(settings?.relayProfiles) ? settings.relayProfiles : [];
     const activeProfiles = profiles.filter((entry) => entry?.id === settings?.activeRelayId);
     return JSON.stringify([settings?.relayProfilesEnabled, settings?.activeRelayId,
-      settings?.activeAggregateRelayId, settings?.activeRelayCodexProvider,
+      settings?.activeAggregateRelayId, settings?.activeRelayCodexProvider, settings?.modelCatalogSourceIdentity,
       activeProfiles.map((entry) => [entry.relayMode, entry.protocol])]);
   }
 

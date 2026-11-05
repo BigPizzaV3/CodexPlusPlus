@@ -347,6 +347,26 @@ it("changes source when the active supplier keeps its ID but changes mode or pro
   }
 });
 
+it("invalidates the previous catalog when the same supplier changes connection identity", async () => {
+  const r = runtime({}, {
+    relayProfilesEnabled: true, activeRelayId: "gateway", modelCatalogFingerprint: "unchanged",
+    modelCatalogSourceIdentity: "source-1",
+    relayProfiles: [{ id: "gateway", relayMode: "pureApi", protocol: "responses" }],
+  });
+  await load(r, ["a/old"]);
+  const oldRequest = r.api.load(true);
+  const stale = r.pending.shift()!;
+  r.update({ ...r.settings(), modelCatalogSourceIdentity: "source-2" });
+  assert.equal(r.api.catalog().status, "loading");
+  assert.equal(r.pending.length, 1);
+  r.pending.shift()!.reject(new Error("unavailable"));
+  await settle();
+  stale.resolve(catalog(["a/stale"]));
+  await oldRequest;
+  assert.deepEqual([...r.api.catalog().models], []);
+  assert.equal(r.api.catalog().status, "failed");
+});
+
 it("catalog changes notify the installed picker without requiring it during initialization", async () => {
   const r = runtime();
   await load(r, ["a/sol"]);
