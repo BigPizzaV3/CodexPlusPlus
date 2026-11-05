@@ -650,11 +650,11 @@ pub fn existing_main_instance_blocks_launch_message(
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "检测到 Codex 已在运行，但没有开启调试端口 {debug_port}（主进程 PID {ids}）。\
-         Codex 同时只允许一个主实例，Codex++ 再启动的实例会把请求交给它后立即退出，无法注入。\
-         请先完全退出 Codex：关掉窗口后若托盘里还有 Codex 图标，右键选择退出；\
-         或在任务管理器里结束所有 {executable_name} 进程。然后再点「启动 Codex」。\
-         也可以点「重启 Codex」，由 Codex++ 结束它并重新启动。"
+        "检测到同包 Codex 进程（{executable_name}，PID {ids}），其命令行未声明本次调试端口 \
+         {debug_port}：可能未开启调试，也可能使用了其他端口或属于隔离实例。\
+         如果它与本次启动共用用户数据目录，新进程可能将请求交给已有实例后退出，\
+         导致本次端口无法注入。关闭窗口或托盘图标消失并不代表主进程已退出。\
+         可以在 Codex++ 中点击「重启 Codex」尝试恢复；无法确认目标身份时会保留进程并提示原因。"
     )
 }
 
@@ -2431,13 +2431,27 @@ mod tests {
     }
 
     #[test]
-    fn blocking_instance_message_tells_the_user_how_to_quit_codex() {
+    fn blocking_instance_message_distinguishes_the_requested_port_from_other_debug_ports() {
         let message = existing_main_instance_blocks_launch_message(9229, "ChatGPT.exe", &[28480, 31144]);
         assert!(message.contains("9229"));
         assert!(message.contains("28480, 31144"));
         assert!(message.contains("ChatGPT.exe"));
-        assert!(message.contains("托盘"));
+        assert!(message.contains("命令行未声明本次调试端口"));
+        assert!(message.contains("可能未开启调试"));
+        assert!(message.contains("也可能使用了其他端口"));
+        assert!(!message.contains("没有开启调试端口"));
+    }
+
+    #[test]
+    fn blocking_instance_message_recommends_a_verified_restart_instead_of_bulk_process_termination() {
+        let message = existing_main_instance_blocks_launch_message(52106, "ChatGPT.exe", &[32424]);
+        assert!(message.contains("如果它与本次启动共用用户数据目录"));
+        assert!(message.contains("可能将请求交给已有实例"));
+        assert!(message.contains("托盘图标消失并不代表主进程已退出"));
         assert!(message.contains("重启 Codex"));
+        assert!(message.contains("无法确认目标身份时会保留进程"));
+        assert!(!message.contains("结束所有"));
+        assert!(!message.contains("任务管理器"));
     }
 
     #[test]

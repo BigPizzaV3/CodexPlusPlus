@@ -54,7 +54,11 @@ impl StartupReply {
         if result.is_ok() {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.ready = true;
-            record_session_probe(&state.options, state.status_started_at_ms);
+            record_session_probe(
+                &state.options,
+                state.status_started_at_ms,
+                state.user_data_override,
+            );
         }
         self.reply.send(result)
     }
@@ -66,6 +70,7 @@ struct SessionState {
     options: LaunchOptions,
     requested_at_ms: u64,
     status_started_at_ms: u64,
+    user_data_override: Option<bool>,
 }
 
 /// 本进程 launcher 会话的只读快照，供自动接管的判据使用。
@@ -82,6 +87,10 @@ pub struct SessionSnapshot {
     /// `latest-status.json` 里的状态（`running` / `running_degraded` / …）。
     pub status: Option<String>,
     pub debug_port: Option<u16>,
+    /// 已就绪会话实际使用的应用目录，不从旧状态文件推测。
+    pub app_dir: Option<PathBuf>,
+    /// 本会话启动时是否显式声明了用户数据目录；接管已有实例时可能未知。
+    pub user_data_override: Option<bool>,
     /// 该会话的状态代际，用来判断是不是同一次启动。
     pub started_at_ms: Option<u64>,
 }
@@ -96,18 +105,24 @@ struct SessionProbe {
     helper_port: u16,
     app_dir: Option<std::path::PathBuf>,
     started_at_ms: u64,
+    user_data_override: Option<bool>,
 }
 
 fn session_probe_slot() -> &'static Mutex<Option<SessionProbe>> {
     SESSION_PROBE.get_or_init(|| Mutex::new(None))
 }
 
-fn record_session_probe(options: &LaunchOptions, started_at_ms: u64) {
+fn record_session_probe(
+    options: &LaunchOptions,
+    started_at_ms: u64,
+    user_data_override: Option<bool>,
+) {
     let probe = SessionProbe {
         debug_port: options.debug_port,
         helper_port: options.helper_port,
         app_dir: options.app_dir.clone(),
         started_at_ms,
+        user_data_override,
     };
     *session_probe_slot()
         .lock()
@@ -185,6 +200,7 @@ impl EmbeddedSession {
             options: options.clone(),
             requested_at_ms,
             status_started_at_ms: requested_at_ms,
+            user_data_override: None,
         }));
         let ready = StartupReply {
             reply: ready,
@@ -417,6 +433,8 @@ pub fn session_snapshot() -> SessionSnapshot {
             .as_ref()
             .map(|probe| probe.debug_port)
             .or_else(|| latest.as_ref().and_then(|latest| latest.debug_port)),
+        app_dir: probe.as_ref().and_then(|probe| probe.app_dir.clone()),
+        user_data_override: probe.as_ref().and_then(|probe| probe.user_data_override),
         started_at_ms: probe
             .as_ref()
             .map(|probe| probe.started_at_ms)
@@ -461,11 +479,11 @@ async fn runtime_commands(
                         if let Some(current) = &session {
                             let current_options = {
                                 let state = current.state.lock().unwrap_or_else(|error| error.into_inner());
-                                state.ready.then(|| (state.options.clone(), state.status_started_at_ms))
+                                state.ready.then(|| (state.options.clone(), state.status_started_at_ms, state.user_data_override))
                             };
                             let result = match current_options {
-                                Some((current_options, started_at_ms)) => {
-                                    record_session_probe(&current_options, started_at_ms);
+                                Some((current_options, started_at_ms, user_data_override)) => {
+                                    record_session_probe(&current_options, started_at_ms, user_data_override);
                                     if attach_only { Ok(()) } else { activate(current_options, started_at_ms).await }
                                 }
                                 None => Err(StartupBusy.into()),
@@ -1377,6 +1395,16 @@ impl LaunchHooks for LauncherHooks {
                     codex_plus_core::launcher::MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning,
                 ),
             });
+        }
+        if let Some(state) = &self.session_state {
+            let declared = extra_args.iter().any(|arg| {
+                codex_plus_core::watcher::windows_codex_switch_name(arg)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("user-data-dir"))
+            });
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .user_data_override = Some(declared);
         }
         self.core
             .launch_codex(app_dir, debug_port, settings, extra_args, instance)
@@ -2459,6 +2487,7 @@ mod tests {
                         std::future::pending::<()>().await;
                     });
                     tokio::task::yield_now().await;
+                    ready.state.lock().unwrap().user_data_override = Some(true);
                     ready.send(Ok(())).unwrap();
                     let _ = stop.await;
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -2481,6 +2510,10 @@ mod tests {
             test_start_command(LaunchOptions::default(), reply)
         })
         .unwrap();
+        assert_eq!(
+            session_probe_slot().lock().unwrap().as_ref().unwrap().user_data_override,
+            Some(true)
+        );
         send_test_command(&worker, |reply| {
             test_start_command(
                 LaunchOptions {
@@ -2491,6 +2524,10 @@ mod tests {
             )
         })
         .unwrap();
+        assert_eq!(
+            session_probe_slot().lock().unwrap().as_ref().unwrap().user_data_override,
+            Some(true)
+        );
         assert_eq!(launched.load(Ordering::SeqCst), 1);
         assert_eq!(activations.load(Ordering::SeqCst), 1);
         send_test_command(&worker, RuntimeCommand::Stop).unwrap();

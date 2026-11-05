@@ -2903,8 +2903,12 @@ enum RestartDisposition {
     StopAndRestart,
 }
 
-fn restart_disposition(sync_active_relay: bool, app_running: bool) -> RestartDisposition {
-    if !sync_active_relay && !app_running {
+fn restart_disposition(
+    sync_active_relay: bool,
+    app_running: bool,
+    is_windows: bool,
+) -> RestartDisposition {
+    if !is_windows && !sync_active_relay && !app_running {
         RestartDisposition::LaunchOnly
     } else {
         RestartDisposition::StopAndRestart
@@ -2917,15 +2921,24 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.restart_requested",
+        json!({
+            "debug_port": request.debug_port,
+            "helper_port": request.helper_port,
+            "app_path": request.app_path.trim(),
+            "sync_active_relay": request.sync_active_relay
+        }),
+    );
     // 按本实例的调试端口判定是否在跑。
     // 早先用 `find_codex_processes_for_debug_port`，但它在非 macOS 上返回全部
     // Codex 进程：Windows 上只要有多开实例在跑，就会把「主 Codex 没开」误判成
     // 「已运行」，进而走进重启分支去停进程。
     let app_running = codex_plus_core::cdp::endpoint_available(request.debug_port);
-    if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly
+    if restart_disposition(request.sync_active_relay, app_running, cfg!(windows))
+        == RestartDisposition::LaunchOnly
     {
-        // 调试端口不可连不代表 Codex 没在跑：Windows 商店版主 Codex 可能开着却没带端口
-        // （issue #2764）。走重启专用的启动，由 launcher 识别并结束它后再启动。
+        // Windows 始终先执行停止流程；其他平台保留原来的直接启动分支。
         return spawn_codex_plus_launch_with(
             request,
             "Codex 未运行，已按直接启动方式在后台唤起。",
@@ -2971,14 +2984,19 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         10,
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
-        || stop_main_codex_process(request.debug_port),
+        || stop_main_codex_process(&request),
         codex_plus_launcher::stop,
         wait_native_browser_shutdown,
     ) {
         Ok(shutdown) => shutdown,
         Err(error) => {
+            let message = restart_stop_failure_message(&error);
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.restart_stop_failed",
+                json!({"debug_port": request.debug_port, "message": message}),
+            );
             return failed(
-                &restart_stop_failure_message(&error),
+                &message,
                 json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
             );
         }
@@ -3001,7 +3019,7 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        "manager.restart_requested",
+        "manager.restart_starting",
         json!({
             "debug_port": request.debug_port,
             "helper_port": request.helper_port,
@@ -3027,11 +3045,11 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
     let mut restart_message = "Codex 已请求重启，启动任务正在后台运行。".to_string();
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
-        spawn_after_provider_guard_release(
-            provider_guard,
-            request,
-            start_embedded_launcher_for_restart,
-        )
+        #[cfg(windows)]
+        let start = start_embedded_launcher;
+        #[cfg(not(windows))]
+        let start = start_embedded_launcher_for_restart;
+        spawn_after_provider_guard_release(provider_guard, request, start)
     }) {
         Ok(warnings) => {
             for warning in warnings {
@@ -3071,23 +3089,71 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
 }
 
-/// 结束主 Codex 进程并确认调试端口已关闭。重启和「停止 Codex」共用。
-fn stop_main_codex_process(debug_port: u16) -> anyhow::Result<()> {
-    // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
-    // 这里允许「按端口没匹配到就退回全局结束」，否则会卡在
-    // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
-    // macOS 上按端口没匹配到时，退回结束没带调试端口的主进程（外部启动的 Codex）。
+/// 结束主 Codex 进程并确认退出。重启和「停止 Codex」共用。
+fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<()> {
     #[cfg(windows)]
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(debug_port, true);
+    {
+        let settings = SettingsStore::default().load()?;
+        let session = codex_plus_launcher::session_snapshot();
+        ensure_default_windows_main_context(
+            &settings.codex_extra_args,
+            std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").as_deref(),
+            std::env::var_os("CODEX_ELECTRON_AGENT_RUN_ID").as_deref(),
+            session.user_data_override,
+        )?;
+        let owned_debug_port = session.owned.then_some(session.debug_port).flatten();
+        let app_dir = session.app_dir.or_else(|| {
+            codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+                (!request.app_path.trim().is_empty())
+                    .then(|| Path::new(request.app_path.trim())),
+                Some(settings.codex_app_path.as_str()),
+            )
+        });
+        let app_dir = app_dir.ok_or_else(|| anyhow::anyhow!("无法核实 Codex 应用路径"))?;
+        let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
+        codex_plus_core::watcher::stop_windows_main_codex_processes_and_wait(
+            &executable,
+            owned_debug_port,
+        )?;
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    let debug_port = request.debug_port;
     #[cfg(target_os = "macos")]
     codex_plus_core::watcher::stop_main_codex_processes_and_wait(debug_port);
     #[cfg(not(any(windows, target_os = "macos")))]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(debug_port);
+    #[cfg(not(windows))]
     anyhow::ensure!(
         !codex_plus_core::cdp::endpoint_available(debug_port),
         "Codex 进程尚未退出"
     );
+    #[cfg(not(windows))]
     anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
+    #[cfg(not(windows))]
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn ensure_default_windows_main_context(
+    extra_args: &[String],
+    electron_user_data: Option<&std::ffi::OsStr>,
+    agent_run_id: Option<&std::ffi::OsStr>,
+    session_user_data_override: Option<bool>,
+) -> anyhow::Result<()> {
+    let has_override = |value: Option<&std::ffi::OsStr>| {
+        value.is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+    };
+    anyhow::ensure!(
+        !has_override(electron_user_data)
+            && !has_override(agent_run_id)
+            && session_user_data_override != Some(true)
+            && !extra_args.iter().any(|arg| {
+                codex_plus_core::watcher::windows_codex_switch_name(arg)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("user-data-dir"))
+            }),
+        "当前使用了自定义 Codex 用户数据目录，无法安全确认主实例；请先在对应实例中正常退出"
+    );
     Ok(())
 }
 
@@ -3121,7 +3187,16 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
-    if !codex_plus_core::cdp::endpoint_available(request.debug_port)
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.stop_requested",
+        json!({
+            "debug_port": request.debug_port,
+            "helper_port": request.helper_port,
+            "app_path": request.app_path.trim()
+        }),
+    );
+    if !cfg!(windows)
+        && !codex_plus_core::cdp::endpoint_available(request.debug_port)
         && !main_codex_running_without_debug_port()
     {
         return ok("Codex 没有在运行。", json!({}));
@@ -3142,7 +3217,7 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         10,
     ));
     match stop_codex_plus_for_restart(
-        || stop_main_codex_process(request.debug_port),
+        || stop_main_codex_process(&request),
         codex_plus_launcher::stop,
         wait_native_browser_shutdown,
     ) {
@@ -3157,7 +3232,14 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
             ));
             ok("Codex 已停止。", json!({}))
         }
-        Err(error) => failed(&stop_failure_message(&error), json!({})),
+        Err(error) => {
+            let message = stop_failure_message(&error);
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.stop_failed",
+                json!({"debug_port": request.debug_port, "message": message}),
+            );
+            failed(&message, json!({}))
+        }
     }
 }
 
@@ -11441,14 +11523,53 @@ base_url = "https://example.invalid/v1"
     #[test]
     fn restart_absent_app_uses_launch_but_explicit_sync_still_restarts() {
         assert_eq!(
-            restart_disposition(false, false),
+            restart_disposition(false, false, false),
             RestartDisposition::LaunchOnly
         );
         for (sync, running) in [(true, false), (false, true), (true, true)] {
             assert_eq!(
-                restart_disposition(sync, running),
+                restart_disposition(sync, running, false),
                 RestartDisposition::StopAndRestart
             );
+        }
+        for (sync, running) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(
+                restart_disposition(sync, running, true),
+                RestartDisposition::StopAndRestart
+            );
+        }
+    }
+
+    #[test]
+    fn windows_main_stop_rejects_explicit_isolated_contexts() {
+        use std::ffi::OsStr;
+        assert!(ensure_default_windows_main_context(&[], None, None, None).is_ok());
+        assert!(
+            ensure_default_windows_main_context(
+                &["--user-data-dir=C:\\isolated".to_string()],
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_default_windows_main_context(
+                &["--user-data-dir".to_string(), "C:\\isolated".to_string()],
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_default_windows_main_context(&[], Some(OsStr::new("C:\\isolated")), None, None)
+                .is_err()
+        );
+        assert!(ensure_default_windows_main_context(&[], None, Some(OsStr::new("run")), None).is_err());
+        assert!(ensure_default_windows_main_context(&[], None, None, Some(true)).is_err());
+        for arg in ["/USER-DATA-DIR=C:\\isolated", "-user-data-dir=C:\\isolated"] {
+            assert!(ensure_default_windows_main_context(&[arg.to_string()], None, None, None).is_err());
         }
     }
 
