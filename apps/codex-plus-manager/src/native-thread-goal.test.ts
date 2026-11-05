@@ -951,7 +951,7 @@ describe("native thread goal discovery and execution", () => {
 });
 
 describe("native thread goal renderer integration", () => {
-  function rendererFixture() {
+  function rendererFixture(source = rendererSource) {
     const f = fixture();
     const state = {
       now: 10_000,
@@ -973,8 +973,55 @@ describe("native thread goal renderer integration", () => {
     };
     f.context.sendCodexPlusDiagnostic = (event: string, details: any) =>
       state.diagnostics.push({ event, details });
-    vm.runInContext(`${rendererSource}\nthis.installFromRenderer = installCodexThreadGoalForwarding;`, f.context);
+    vm.runInContext(`${source}\nthis.installFromRenderer = installCodexThreadGoalForwarding;`, f.context);
     return { ...f, rendererState: state };
+  }
+
+  for (const catalogPresent of [false, true]) {
+    it(`installs forwarding from the assembled scan entry and continues model refresh (catalog=${catalogPresent})`, async () => {
+      const assembled = read("assets/inject/renderer-inject.js");
+      const manifest = JSON.parse(read("assets/inject/renderer-inject/manifest.json"));
+      const fragments = manifest.fragments as Array<{ name: string; lines: number }>;
+      const goalIndex = fragments.findIndex((fragment) => fragment.name === "32-thread-goal.js");
+      assert.ok(goalIndex >= 0, "生成清单必须同时保留 goal 和 fork 分片");
+      assert.ok(fragments.some((fragment) => fragment.name === "32-fork-readiness-fallback.js"));
+      const startLine = fragments.slice(0, goalIndex).reduce((sum, fragment) => sum + fragment.lines, 0);
+      const goalSource = assembled.split("\n").slice(startLine, startLine + fragments[goalIndex].lines).join("\n");
+      const f = rendererFixture(goalSource);
+      f.state.role = "follower";
+      const calls: string[] = [];
+      Object.assign(f.context, {
+        codexPlusBackendSettingsLoaded: true,
+        codexPlusExtensionWantsRequestMiddleware: () => false,
+        codexPlusModelUnlockEnabled: () => true,
+        codexPluginMarketplacePatchEnabled: () => false,
+        codexRemoteSessionProviderPatchEnabled: () => false,
+        codexPlusSettings: () => ({ sessionDelete: false, sideChatSave: false }),
+        codexPlusModelNames: () => catalogPresent ? ["fixture-model"] : [],
+      });
+      for (const name of [
+        "installAppServerModelRequestPatch", "installCodexAppServerClientCapture",
+        "installDictationSupportPatch", "installModelJsonResponsePatch", "patchAppServerModelMessages",
+        "loadCodexModelCatalog", "patchStatsigModelWhitelist",
+      ]) {
+        f.context[name] = () => { calls.push(name); return Promise.resolve(); };
+      }
+      const start = assembled.indexOf("  function ensureCodexModelWhitelistInstalls(");
+      const end = assembled.indexOf("\n  function threadIdVariants(", start);
+      assert.ok(start >= 0 && end > start, "找不到生成物的模型扫描入口");
+      vm.runInContext(assembled.slice(start, end) + "\nrefreshCodexModelWhitelistFromScan([]);", f.context);
+      await flush();
+      const params = { objective: "assembled renderer goal", threadSettings: { model: "fixture-model" } };
+      assert.equal(await f.manager.setThreadGoal(threadId, params), f.remoteGoal);
+      assert.equal(f.rendererState.posts.length, 1);
+      assert.equal(f.rendererState.posts[0].request.params, params);
+      assert.ok(calls.includes("installAppServerModelRequestPatch"));
+      assert.ok(calls.includes("installCodexAppServerClientCapture"));
+      assert.ok(calls.includes("installDictationSupportPatch"));
+      assert.ok(calls.includes("installModelJsonResponsePatch"));
+      assert.ok(calls.includes("patchAppServerModelMessages"));
+      assert.ok(calls.includes(catalogPresent ? "patchStatsigModelWhitelist" : "loadCodexModelCatalog"));
+    });
   }
 
   it("loads the native module and binds only the internal owner route with live settings", async () => {
