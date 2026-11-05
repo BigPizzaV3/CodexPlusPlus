@@ -134,11 +134,11 @@ check("Codex home project bar retains its existing composer paint", async page =
   assert.equal(await page.locator('#actions[data-codex-plus-image-paint]').count(), 0);
 });
 
-check("native header backing follows its top inset and live theme without seams", async page => {
+for (const shell of ["_shell_test", "shell-yWQKe6"]) check(`native header backing follows its top inset and live theme without seams ${shell}`, async page => {
   await html(page, ':root{--surface:#303030}.light{--surface:#e0e0e0}body{background:var(--surface)}' +
     '#header{position:sticky;top:-16px;z-index:30;height:80px;padding-top:16px;container-type:inline-size}' +
     '#header::before{content:"";position:absolute;z-index:-1;inset:var(--top-inset) 0 0;background:var(--surface)}',
-    '<div id="header" class="_shell_test" data-sticky style="--top-inset:8px">Plugins</div>');
+    `<div id="header" class="${shell}" data-sticky style="--top-inset:8px">Plugins</div>`);
   await configure(page, { dataUrl: assets.pattern });
   for (const [width, base] of [[800, 48], [900, 224]]) {
     if (base === 224) {
@@ -382,7 +382,8 @@ async function popup(page, kind, opacity = .2) {
   assert.deepEqual(await rect(page, "#surface"), geometry);
 }
 
-for (const anchor of ["composer", "header"]) check(`native shared tooltip portal clears ${anchor}`, async page => {
+for (const tooltip of ["_Tooltip_test", "Tooltip-IBN1Wh"])
+for (const anchor of ["composer", "header"]) check(`native shared tooltip portal clears ${anchor} ${tooltip}`, async page => {
   await html(page, `
     .fixed{position:fixed}.inset-0{inset:0}.pointer-events-none{pointer-events:none}.contain-layout{contain:layout}
     #anchor{position:fixed;left:0;top:0;width:600px;height:200px;background:#303030;z-index:20}
@@ -394,7 +395,7 @@ for (const anchor of ["composer", "header"]) check(`native shared tooltip portal
   `, `<div id="anchor" ${anchor === "composer" ? 'class="_ComposerLayoutRoot_test"' : 'data-app-shell-header-layout="thread"'}>Native anchor</div>
     <div id="portal" class="pointer-events-none fixed inset-0 zoom-adjusted-viewport contain-layout">
       <div id="boundary" data-radix-popper-content-wrapper>
-        <div id="tooltip" class="_Tooltip_test"><button id="tooltip-action">Usage</button><span id="sr" role="tooltip">Usage</span></div>
+        <div id="tooltip" class="${tooltip}"><button id="tooltip-action">Usage</button><span id="sr" role="tooltip">Usage</span></div>
       </div>
     </div>`);
   const geometry = await rect(page, "#boundary");
@@ -424,6 +425,39 @@ for (const anchor of ["composer", "header"]) check(`native shared tooltip portal
   await page.$eval("#second", node => node.remove()); await settle(page);
   assert.equal(await page.$eval("#portal", node => getComputedStyle(node).zIndex), "60",
     "the shared portal returns to its native layer after its last popup closes");
+});
+
+check("native toast area clears the titlebar without repainting or tracking notifications", async page => {
+  await html(page, '#header{position:fixed;inset:0 0 auto;height:120px;background:#303030;z-index:20}' +
+    '.codex-toast-area{position:fixed;inset:0;z-index:60;pointer-events:none}' +
+    '[data-sonner-toaster]{position:fixed;left:30px;top:20px;z-index:999999999;margin:0;padding:0}' +
+    '[data-sonner-toast]{position:relative;list-style:none;width:220px;height:80px;background:#60141c;pointer-events:auto}' +
+    '[data-sonner-toast] button{margin:10px;width:60px;height:30px;background:#00ff00;border:0}',
+    '<div id="header" data-app-shell-header-layout="thread">Native title</div>');
+  await configure(page);
+  await page.evaluate(() => {
+    const area = document.createElement("div");
+    area.id = "toasts"; area.className = "codex-toast-area pointer-events-none fixed inset-0";
+    area.innerHTML = '<div class="relative w-full"><ol data-sonner-toaster class="codex-sonner-toaster">' +
+      '<li data-sonner-toast><button id="dismiss">Close</button></li></ol></div>';
+    document.body.append(area);
+  });
+  await settle(page);
+  near(pixel(await shot(page), 200, 80), [96, 20, 28], "the toast, not the titlebar, owns the overlapping pixels");
+  await click(page, "#dismiss");
+  assert.equal(await page.locator("[data-sonner-toast][" + material + "]").count(), 0,
+    "notification surfaces retain native colors");
+  assert.equal(await page.locator("filter").count(), 0);
+  const work = await delta(page, () => page.evaluate(async () => {
+    for (let i = 0; i < 8; i++) {
+      document.querySelector("[data-sonner-toast]").style.transform = `translateY(${i}px)`;
+      await new Promise(requestAnimationFrame);
+    }
+  }));
+  zero(work, ["rectReads", "styleReads", "layerWrites", "filterNodes", "styleCommits"]);
+  await page.evaluate(() => window.__codexPlusImageOverlayCleanup()); await settle(page);
+  assert.equal(await page.$eval("#toasts", node => getComputedStyle(node).zIndex), "60",
+    "disabling the overlay restores the original toast context");
 });
 
 check("archive sticky controls do not leave a dark gradient over wallpaper", async page => {
