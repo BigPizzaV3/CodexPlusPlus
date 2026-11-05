@@ -42,10 +42,14 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   const sidebar = functionSource("AppSidebar");
   // 在网关、全局管理、工具这些通用页面时 Agent 行不显示选中，侧栏同一时间只有一个选中项。
   assert.match(sidebar, /const current = tool\.id === activeTool && !onGlobalPage;/);
-  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\} \$\{current && agentTabGroups/);
+  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\} \$\{expanded && agentTabGroups/);
   // 当前 Agent 的页面缩进列在侧栏里它那一行下面，不再是内容区顶部的胶囊。
   assert.match(sidebar, /className="cx-side-subnav" role="group" aria-label=\{t\("Agent 页面"\)\}/);
-  assert.match(sidebar, /\{current \? \(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, activeTool\)/);
+  assert.match(sidebar, /\{expanded \? \(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, activeTool\)/);
+  // #2913：再点当前 Agent 收起 / 展开它的页面列表，不跳页；切到别的 Agent 时重新展开。
+  assert.match(sidebar, /const expanded = current && collapsedAgent !== tool\.id;/);
+  assert.match(sidebar, /if \(current\) \{\n\s*setCollapsedAgent\(\(value\) => \(value === tool\.id \? null : tool\.id\)\);\n\s*return;/);
+  assert.match(sidebar, /aria-expanded=\{current \? expanded : undefined\}/);
   // 状态点表示接入方式而不是运行状态（运行状态在顶栏和 Codex 行的播放 / 停止键上）。
   assert.match(sidebar, /tone: "direct"/);
   const access = sidebar.slice(sidebar.indexOf("const access ="), sidebar.indexOf("return (", sidebar.indexOf("const access =")));

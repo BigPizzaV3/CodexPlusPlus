@@ -1431,7 +1431,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
   { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
   { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
-  { id: "claude", get label() { return t("增强"); }, icon: Languages, tool: "claude" },
+  // 增强针对的是 Claude Desktop（汉化、Cowork 时限等），名字写明，免得和 Claude Code 命令行的概览混在一起（#2913）。
+  { id: "claude", get label() { return t("Desktop 增强"); }, icon: Languages, tool: "claude" },
   // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
   { id: "sessions", get label() { return t("会话"); }, icon: MessagesSquare },
   { id: "context", label: "MCP", icon: Network },
@@ -16924,6 +16925,8 @@ function AppSidebar({
 }) {
   const gateway = useGatewayPayload(10_000);
   const [settingsQuery, setSettingsQuery] = useState("");
+  // 收起了页面列表的 Agent：再点一次当前 Agent 收起 / 展开它下面的页面（#2913）。切到别的 Agent 时清掉。
+  const [collapsedAgent, setCollapsedAgent] = useState<string | null>(null);
   const enhanceOnly = providersHidden(focus);
   const settingsMode = settingsModeRoutes.has(route);
   const onGlobalPage = globalNavigationRoutes.includes(route);
@@ -17105,6 +17108,9 @@ function AppSidebar({
           {/* 每个 Agent 一行；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面在内容区顶部的胶囊里。 */}
           {tools.map((tool) => {
             const current = tool.id === activeTool && !onGlobalPage;
+            const expanded = current && collapsedAgent !== tool.id;
+            // 这一行同时管 Claude Code（命令行配置概览）和 Claude Desktop（增强），侧栏只写 Claude，免得误以为增强针对的是命令行（#2913）。
+            const displayName = tool.id === "claude" ? "Claude" : tool.name;
             const title = tool.switchable
               ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
               : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
@@ -17119,15 +17125,24 @@ function AppSidebar({
               <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()}>
                 <button
                   aria-current={current ? "true" : undefined}
-                  aria-label={tool.switchable ? `${tool.name} · ${access.label}` : `${tool.name} · ${t("待接入")}`}
-                  className={`cx-side-item ${current ? "active" : ""} ${current && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
+                  aria-expanded={current ? expanded : undefined}
+                  aria-label={tool.switchable ? `${displayName} · ${access.label}` : `${displayName} · ${t("待接入")}`}
+                  className={`cx-side-item ${current ? "active" : ""} ${expanded && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
                   disabled={!tool.switchable}
-                  onClick={() => onOpenAgent(tool.id)}
+                  onClick={() => {
+                    // 再点当前 Agent：只收起 / 展开它的页面列表，不跳页；点别的 Agent 照常切过去并展开。
+                    if (current) {
+                      setCollapsedAgent((value) => (value === tool.id ? null : tool.id));
+                      return;
+                    }
+                    setCollapsedAgent(null);
+                    onOpenAgent(tool.id);
+                  }}
                   title={`${title}｜${access.label}`}
                   type="button"
                 >
                   <AgentGlyph agent={tool.id} className="cx-side-icon" />
-                  <span className="cx-side-label">{tool.name}</span>
+                  <span className="cx-side-label">{displayName}</span>
                   {enhanceOnly ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
                 {tool.id === "codex" && tool.switchable ? (() => {
@@ -17152,7 +17167,7 @@ function AppSidebar({
                 })() : null}
               </div>
               {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
-{current ? (() => {
+{expanded ? (() => {
             const pages = agentTabGroups(navigationSections, routeTool, activeTool)
               .flatMap((entry) => visibleRoutes(focus, entry.routes));
             if (pages.length < 2) return null;

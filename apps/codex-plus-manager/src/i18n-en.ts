@@ -1994,6 +1994,7 @@ export const EN_PLAIN: Record<string, string> = {
     "Manage providers in the gateway's Provider pool, shared by all agents, with key rotation, model routing, failover and usage stats. This page is the legacy direct Codex setup and keeps working.",
   "打开供应商池": "Open provider pool",
   "增强": "Enhance",
+  "Desktop 增强": "Desktop enhancements",
   "供应商切换": "Provider switch",
   "供应商切换不可用": "Provider switching unavailable",
   "供应商切换中": "Switching provider",
