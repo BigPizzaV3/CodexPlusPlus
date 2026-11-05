@@ -1232,8 +1232,15 @@ mod tests {
 
     #[test]
     fn borrowed_codex_login_is_returned_only_in_the_private_preview_copy() {
+        use base64::Engine;
+
         let fixture = fixture();
         let ctx = &fixture.ctx;
+        let claims = json!({"iss": "https://auth.openai.com", "sub": "loan-user"});
+        let id_token = format!(
+            "header.{}.signature",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
         codex_direct(ctx);
         let config_path = ctx.codex_home.join("config.toml");
         let auth_path = ctx.codex_home.join("auth.json");
@@ -1253,7 +1260,7 @@ mod tests {
                     "auth_mode": "chatgpt",
                     "codex_plus_gateway": true,
                     "tokens": {
-                        "id_token": "x",
+                        "id_token": id_token,
                         "access_token": "fake-loaned-token",
                         "refresh_token": "fake-loaned-refresh",
                         "account_id": "loan-account"
