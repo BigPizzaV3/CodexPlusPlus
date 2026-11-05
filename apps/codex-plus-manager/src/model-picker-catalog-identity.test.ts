@@ -153,6 +153,40 @@ it("keeps interleaved model-group and provider rows together after metadata disa
   ]);
 });
 
+it("retains distinct same-label model identities when metadata temporarily disappears", () => {
+  const metadata = {
+    "a/sol": entry("Sol", "a"),
+    "b/sol": entry("Sol", "b"),
+    "group/one": { displayName: "Group One", codex_plus_group: "模型组", codex_plus_group_id: "groups" },
+    "a/terra": entry("Terra", "a"),
+  };
+  const r = runtime({ status: "ok", models: Object.keys(metadata), modelMetadata: metadata });
+  r.api.rows({ querySelectorAll: () => [
+    row("Sol", "a/sol"), row("Sol", "b/sol"), row("Group One", "group/one"), row("Terra", "a/terra"),
+  ] });
+  r.update({ status: "ok", models: Object.keys(metadata), modelMetadata: {} });
+  const entries = r.api.rows({ querySelectorAll: () => [
+    row("Sol", "a/sol"), row("Group One", "group/one"),
+    row("Sol", "b/sol"), row("Terra", "a/terra"),
+  ] });
+  assert.deepEqual([...entries].map(value => value.groupId), ["provider:a", "groups", "provider:b", "provider:a"]);
+  assert.deepEqual([...r.api.groups(entries)].map(group => [group.name, group.entries.length]), [
+    ["Provider A", 2], ["模型组", 1], ["Provider B", 1],
+  ]);
+  const ambiguous = r.api.rows({ querySelectorAll: () => [row("Sol")] });
+  assert.equal(ambiguous[0].groupId, "", "an ambiguous label must not inherit another model's owner");
+  r.update({ status: "ok", models: Object.keys(metadata), modelMetadata: { "a/sol": metadata["a/sol"] } });
+  const partial = r.api.rows({ querySelectorAll: () => [row("Sol"), row("Sol", "b/sol")] });
+  assert.equal(partial[0].groupId, "", "partial metadata must not turn an ambiguous label into a match");
+  assert.equal(partial[1].groupId, "provider:b");
+  r.update({ status: "ok", models: Object.keys(metadata) });
+  const missing = r.api.rows({ querySelectorAll: () => [row("Sol", "a/sol"), row("Sol", "b/sol")] });
+  assert.deepEqual([...missing].map(value => value.groupId), ["provider:a", "provider:b"]);
+  r.update({ status: "ok", models: ["a/sol"], modelMetadata: {} });
+  const removed = r.api.rows({ querySelectorAll: () => [row("Sol", "a/sol")] });
+  assert.equal(removed[0].groupId, "provider:a", "removed models must not make remaining aliases ambiguous");
+});
+
 it("does not pick the last provider when two catalog identities have the same name", () => {
   const sameName = (displayName: string, id: string) => ({
     displayName, codex_plus_group: "Same", codex_plus_group_id: id,
@@ -162,6 +196,19 @@ it("does not pick the last provider when two catalog identities have the same na
   const entries = r.api.rows({ querySelectorAll: () => [row("Unknown（Same）")] });
   assert.equal(entries[0].groupId, "");
   assert.equal(entries[0].authoritativeGroupId, false);
+});
+
+it("does not reuse a model's old display name after its authoritative rename", () => {
+  const r = runtime({ status: "ok", models: ["a/one"],
+    modelMetadata: { "a/one": entry("Old Name", "a") } });
+  r.api.providers();
+  r.update({ status: "ok", models: ["a/one"],
+    modelMetadata: { "a/one": entry("New Name", "a") } });
+  r.api.providers();
+  r.update({ status: "ok", models: ["a/one", "b/two"], modelMetadata: {} });
+  const entries = r.api.rows({ querySelectorAll: () => [row("Old Name"), row("New Name", "a/one")] });
+  assert.equal(entries[0].groupId, "", "a stale label cannot claim a new model");
+  assert.equal(entries[1].groupId, "provider:a");
 });
 
 it("remembered ownership is discarded when its catalog source changes", () => {
@@ -192,12 +239,16 @@ it("persisted ownership is read only for its matching initialized source", () =>
     const window = { __codexPlusModelCatalogRuntime: { source: currentSource },
       localStorage: { getItem: () => JSON.stringify({
         source: cachedSource, defaultGroupId: "provider:a",
-        providers: { sol: { name: "Provider A", groupId: "provider:a", parsed: false } },
+        providers: {
+          sol: { name: "Provider A", groupId: "provider:a", parsed: false },
+          "model\u0000a/sol": { name: "Provider A", groupId: "provider:a", parsed: false, slug: "a/sol", displayName: "Sol" },
+        },
       }) } };
     const load = new Function("window", "codexPlusModelPickerGroupsState", "codexPlusModelPickerGroupsStoreKey",
       `${storeSource}\nreturn codexPlusModelPickerStore;`)(window, state, "test");
     load();
     assert.equal(state.providerNames.size > 0, shouldLoad, `${currentSource}/${cachedSource}`);
+    if (shouldLoad) assert.equal(state.providerNames.get("model\u0000a/sol")?.displayName, "Sol");
     if (!currentSource) assert.equal(state.stored, false, "wait for initialized settings");
   }
 });

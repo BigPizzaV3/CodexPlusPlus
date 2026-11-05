@@ -154,6 +154,7 @@
               parsed: value.parsed === true,
               groupId: typeof value.groupId === "string" ? value.groupId : "",
               ...(typeof value.slug === "string" && value.slug ? { slug: value.slug } : {}),
+              ...(typeof value.displayName === "string" && value.displayName ? { displayName: value.displayName } : {}),
             });
           }
         }
@@ -189,6 +190,16 @@
   function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "", slug = "") {
     const key = codexPlusModelPickerNormalize(displayName);
     if (!key || !provider) return;
+    if (!parsed && groupId && slug) {
+      const modelKey = `model\u0000${slug}`;
+      const previous = codexPlusModelPickerGroupsState.providerNames.get(modelKey);
+      if (!previous || previous.name !== provider || previous.groupId !== groupId || previous.displayName !== displayName) {
+        codexPlusModelPickerGroupsState.providerNames.set(modelKey, {
+          name: provider, parsed: false, groupId, slug, displayName,
+        });
+        codexPlusModelPickerGroupsState.providerDirty = true;
+      }
+    }
     const existing = codexPlusModelPickerGroupsState.providerNames.get(key);
     if (existing && !existing.parsed && parsed) return;
     const id = groupId || (existing?.name === provider ? existing.groupId || "" : "");
@@ -411,10 +422,25 @@
         && Array.isArray(codexModelCatalog?.models)
         && codexModelCatalog.models.every((slug) => modelMetadata?.[slug]);
       if (complete) return map;
+      const rememberedAliases = new Map();
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
-        if (map.has(key) || !value?.name || value.parsed) return;
+        if (!key.startsWith("model\u0000") || !value?.displayName || !value.groupId || value.parsed) return;
+        if (Array.isArray(codexModelCatalog?.models) && !codexModelCatalog.models.includes(value.slug)) return;
+        for (const alias of codexPlusModelPickerCatalogAliases(value.displayName, {}, value.slug)) {
+          if (!rememberedAliases.has(alias)) rememberedAliases.set(alias, value);
+          else if (rememberedAliases.get(alias)?.groupId !== value.groupId) rememberedAliases.set(alias, null);
+        }
+      });
+      rememberedAliases.forEach((value, key) => {
+        if (!map.has(key)) map.set(key, value ? { provider: value.name, groupId: value.groupId, parsed: false } : null);
+        else if (!value || map.get(key)?.groupId !== value.groupId) map.set(key, null);
+      });
+      codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
+        if (key.startsWith("model\u0000") || map.has(key) || !value?.name || value.parsed) return;
         if (Array.isArray(codexModelCatalog?.models) && value.slug
             && !codexModelCatalog.models.includes(value.slug)) return;
+        const current = value.slug && codexPlusModelPickerGroupsState.providerNames.get(`model\u0000${value.slug}`);
+        if (current?.displayName && !codexPlusModelPickerCatalogAliases(current.displayName, {}, value.slug).has(key)) return;
         map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
       });
       return map;
@@ -461,8 +487,8 @@
    */
   function codexPlusModelPickerCatalogExactMap() {
     const map = new Map();
-    const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    if (!modelMetadata || typeof modelMetadata !== "object") return map;
+    const candidate = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    const modelMetadata = candidate && typeof candidate === "object" ? candidate : {};
     const setUnique = (key, value) => {
       if (!key) return;
       if (!map.has(key)) map.set(key, value);
@@ -493,6 +519,12 @@
       }
     };
     for (const [slug, entry] of codexPlusModelPickerCatalogEntries()) register(entry, slug);
+    codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
+      if (!key.startsWith("model\u0000") || !value?.slug || !value.groupId || value.parsed) return;
+      if (Array.isArray(codexModelCatalog?.models) && !codexModelCatalog.models.includes(value.slug)) return;
+      if (modelMetadata[value.slug]) return;
+      register({ displayName: value.displayName, codex_plus_group: value.name, codex_plus_group_id: value.groupId }, value.slug);
+    });
     return map;
   }
 
@@ -539,12 +571,13 @@
 
   function codexPlusModelPickerRowModel(row) {
     const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata || {};
+    const models = codexModelCatalog?.models;
     const key = Object.keys(row).find((name) => name.startsWith("__reactFiber$"));
     for (let fiber = key && row[key], depth = 0; fiber && depth < 16; depth++, fiber = fiber.return) {
       const props = fiber.memoizedProps || {};
       if (typeof props.onSelectModel === "function" && Array.isArray(props.models)) break;
       for (const value of [fiber.key, props.model, props.model?.model, props.model?.id, props.value, props.item?.model]) {
-        if (typeof value === "string" && Object.hasOwn(metadata, value)) return value;
+        if (typeof value === "string" && (Object.hasOwn(metadata, value) || (Array.isArray(models) && models.includes(value)))) return value;
       }
     }
     return "";
