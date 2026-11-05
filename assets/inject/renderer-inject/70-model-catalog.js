@@ -170,13 +170,15 @@
   function patchCodexNativeModelQueryCache(client, key) {
     const provider = codexModelCatalog.codex_model_provider || codexModelCatalog.model_provider;
     if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime
-        || key[0] !== "models" || key[1] !== "list" || key[2] !== "local"
+        || key.length !== 7 || key[0] !== "models" || key[1] !== "list" || key[2] !== "local"
+        || typeof key[3] !== "string" || !Number.isInteger(key[4]) || key[4] <= 0
+        || typeof key[6] !== "string" || !key[6]
         || !provider || key[5] !== provider
         || !codexModelAllowedSet("local") || typeof client?.setQueryData !== "function") return;
     client.setQueryData(key, (current) => {
       if (!current || typeof current !== "object" || Array.isArray(current)
           || !Object.prototype.hasOwnProperty.call(current, "nextCursor")
-          || current.nextCursor != null || !modelArrayLooksPatchable(current.data, true)) return current;
+          || current.nextCursor !== null || !modelArrayLooksPatchable(current.data, true)) return current;
       const models = [...current.data];
       return patchModelArray(models, true, "local") ? { ...current, data: models } : current;
     });
