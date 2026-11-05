@@ -15,6 +15,7 @@ fn creator(temp: &tempfile::TempDir) -> ExtensionCreator {
         ),
         // 不连 Codex：只验证写入与汇报，热重载应如实报告未执行。
         debug_ports: Vec::new(),
+        state_dir: temp.path().join("state"),
     }
 }
 
@@ -155,7 +156,7 @@ async fn write_read_and_disable_round_trip_without_codex() {
     .await;
     assert!(!error, "{written}");
     assert_eq!(written["reload"]["reloaded"], false);
-    assert!(written["reload"]["reason"].as_str().unwrap().contains("没有找到已连接的 Codex 页面"));
+    assert!(written["reload"]["reason"].as_str().unwrap().contains("没有找到此实例的重载会话"));
     assert_eq!(written["extension"]["key"], "user:pomodoro");
     assert_eq!(written["extension"]["kind"], "package");
     assert_eq!(written["extension"]["status"], "not_loaded");

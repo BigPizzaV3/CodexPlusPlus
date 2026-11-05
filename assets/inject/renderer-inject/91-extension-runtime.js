@@ -371,12 +371,21 @@
    */
   const codexPlusBackendServiceEntries = new Map();
 
-  function codexPlusBackendServiceProxy(name) {
+  function codexPlusBackendSource() {
+    const source = window.__codexPlusBackendSource;
+    if (!source || typeof source !== "object") return null;
+    return Object.freeze({
+      ownerEpoch: source.ownerEpoch, generation: source.generation,
+      documentId: source.documentId, revision: source.revision,
+    });
+  }
+
+  function codexPlusBackendServiceProxy(name, source) {
     return new Proxy({}, {
       get: (_, method) => (typeof method !== "string" || method === "then") ? undefined : (...args) => {
         const bridge = window.__codexSessionDeleteBridge;
         if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
-        return Promise.resolve(bridge("/extensions/services/call", { name, method, args })).then((result) => {
+        return Promise.resolve(bridge("/extensions/services/call", { name, method, args, source })).then((result) => {
           if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${name}.${method} 调用失败`);
           return result?.result;
         });
@@ -385,6 +394,8 @@
   }
 
   function syncCodexPlusBackendServices() {
+    const source = codexPlusBackendSource();
+    const sourceKey = JSON.stringify(source);
     const list = Array.isArray(window.__codexPlusBackendServices) ? window.__codexPlusBackendServices : [];
     const wanted = new Map(
       list
@@ -392,15 +403,15 @@
         .map((item) => [String(item.name), String(item.key || "")]),
     );
     for (const [name, entry] of [...codexPlusBackendServiceEntries]) {
-      if (wanted.get(name) === entry.key) continue;
+      if (wanted.get(name) === entry.key && entry.sourceKey === sourceKey) continue;
       codexPlusBackendServiceEntries.delete(name);
       entry.dispose();
     }
     for (const [name, key] of wanted) {
       if (codexPlusBackendServiceEntries.has(name) || codexPlusServices.has(name)) continue;
       try {
-        const dispose = codexPlusProvideService(name, codexPlusBackendServiceProxy(name), `backend:${key}`);
-        codexPlusBackendServiceEntries.set(name, { key, dispose });
+        const dispose = codexPlusProvideService(name, codexPlusBackendServiceProxy(name, source), `backend:${key}`);
+        codexPlusBackendServiceEntries.set(name, { key, sourceKey, dispose });
       } catch {}
     }
   }
@@ -994,6 +1005,16 @@
     // 用过后台的实例卸载时通知 Codex++ 停掉它；带实例标识，热重载时不会误停新实例拉起的后台。
     const backendHandlers = new Map();
     const backendInstance = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const backendSource = codexPlusBackendSource();
+    const scopedBackendServices = new Map();
+    const getScopedService = (name) => {
+      if (disposed) return undefined;
+      const entry = codexPlusServices.get(name);
+      if (!entry) return undefined;
+      if (!codexPlusBackendServiceEntries.has(name)) return entry.value;
+      if (!scopedBackendServices.has(name)) scopedBackendServices.set(name, codexPlusBackendServiceProxy(name, backendSource));
+      return scopedBackendServices.get(name);
+    };
     let backendPolling = false;
     let backendStopTracked = false;
     const trackBackendStop = () => {
@@ -1004,9 +1025,11 @@
       });
     };
     const backendBridge = (path, payload) => {
+      if (disposed && path !== "/extensions/backend/stop") return Promise.reject(new Error("拓展实例已卸载"));
       const bridge = window.__codexSessionDeleteBridge;
       if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
-      return Promise.resolve(bridge(path, { key: scriptKey, instance: backendInstance, ...payload })).then((result) => {
+      return Promise.resolve(bridge(path, { key: scriptKey, instance: backendInstance, ...payload, source: backendSource })).then((result) => {
+        if (disposed && path !== "/extensions/backend/stop") throw new Error("拓展实例已卸载");
         if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${path} 调用失败`);
         return result;
       });
@@ -1025,6 +1048,7 @@
             await new Promise((resolve) => setTimeout(resolve, 2000));
             continue;
           }
+          if (disposed) break;
           for (const item of result.events || []) {
             for (const name of [item.event, "*"]) {
               for (const handler of [...(backendHandlers.get(name) || [])]) {
@@ -1124,11 +1148,12 @@
       },
       /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
       get(name) {
-        return codexPlusServices.get(String(name))?.value;
+        return getScopedService(String(name));
       },
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
         if (typeof apply !== "function") throw new Error("inject 需要 apply(ctx) 函数");
+        if (disposed) throw new Error("拓展实例已卸载");
         const child = codexPlusCreateExtensionFiber({
           apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps), required: codexPlusRequiredInject(deps),
         });
@@ -1352,7 +1377,7 @@
     // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
     for (const name of inject) {
       if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
-      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => getScopedService(name) });
     }
     if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
     codexPlusExtensionInstances.add(ctx);
