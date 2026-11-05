@@ -109,9 +109,13 @@ it("refreshes the confirmed local native cache before and after a stale refetch"
     state: { data: { data: [{ model: "native-last-page" }], nextCursor: null } } };
   const unknownCursor = { queryKey: ["models", "list", "local", "unknown", 100, "gateway", "fixture-catalog"],
     state: { data: { data: [{ model: "native-unknown" }], nextCursor: undefined } } };
-  const { client, pending } = queryClient([local, remote, otherProvider, malformed, paginated, lastPage, unknownCursor]);
+  const conflictingCursor = { queryKey: ["models", "list", "local", "conflicting", 100, "gateway", "fixture-catalog"],
+    state: { data: { data: [{ model: "native-conflicting" }], nextCursor: null, next_cursor: "next" } } };
+  const unknownSnakeCursor = { queryKey: ["models", "list", "local", "unknown-snake", 100, "gateway", "fixture-catalog"],
+    state: { data: { data: [{ model: "native-unknown-snake" }], nextCursor: null, next_cursor: undefined } } };
+  const { client, pending } = queryClient([local, remote, otherProvider, malformed, paginated, lastPage, unknownCursor, conflictingCursor, unknownSnakeCursor]);
   const original = local.state.data;
-  const unchanged = [remote, otherProvider, malformed, paginated, lastPage, unknownCursor].map(entry => structuredClone(entry.state.data));
+  const unchanged = [remote, otherProvider, malformed, paginated, lastPage, unknownCursor, conflictingCursor, unknownSnakeCursor].map(entry => structuredClone(entry.state.data));
   const r = runtime({ testQueryClient: client });
   await load(r, ["a/old", "a/new"], { "a/new": { displayName: "New model" } });
   assert.notEqual(local.state.data, original, "cache updates must not mutate existing query data");
@@ -120,7 +124,7 @@ it("refreshes the confirmed local native cache before and after a stale refetch"
   assert.equal(local.state.data.data[1].displayName, "New model");
   assert.equal(local.state.data.model, "selected");
   assert.equal(local.state.data.reasoningEffort, "ultra");
-  [remote, otherProvider, malformed, paginated, lastPage, unknownCursor].forEach((entry, index) =>
+  [remote, otherProvider, malformed, paginated, lastPage, unknownCursor, conflictingCursor, unknownSnakeCursor].forEach((entry, index) =>
     assert.deepEqual(entry.state.data, unchanged[index]));
 
   local.state.data = structuredClone(original);

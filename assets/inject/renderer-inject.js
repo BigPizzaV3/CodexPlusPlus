@@ -11355,7 +11355,9 @@
     client.setQueryData(key, (current) => {
       if (!current || typeof current !== "object" || Array.isArray(current)
           || !Object.prototype.hasOwnProperty.call(current, "nextCursor")
-          || current.nextCursor !== null || !modelArrayLooksPatchable(current.data, true)) return current;
+          || current.nextCursor !== null
+          || ("next_cursor" in current && current.next_cursor !== null)
+          || !modelArrayLooksPatchable(current.data, true)) return current;
       const models = [...current.data];
       const snapshot = codexPlusModelCollectionSnapshots.get(current.data);
       if (snapshot) codexPlusModelCollectionSnapshots.set(models, { ...snapshot });
