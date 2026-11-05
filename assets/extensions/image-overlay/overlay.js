@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 30 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 32 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -42,6 +42,10 @@
       "[data-browser-sidebar-toolbar]",
     ].join(", ");
     const toolbarSelector = "[data-browser-sidebar-toolbar]";
+    const toolbarSurfaceSelector = `${toolbarSelector} :is([data-menu-overlay-surface], [class*="controlSurface"])`;
+    // 胶囊内的按钮共用外壳，只补画最外层材质，避免嵌套控件重复叠图。
+    const isToolbarSurface = node => node.matches(toolbarSurfaceSelector) &&
+      !node.parentElement?.closest(toolbarSurfaceSelector);
     const browserSelector = `[data-browser-sidebar-webview], ${toolbarSelector}`;
     const sidebarSelector = "aside.app-shell-left-panel, [data-app-action-sidebar-scroll], nav[data-app-navigation-rail]";
     const sidebarRowSelector = "[data-app-action-sidebar-thread-row], [data-app-action-sidebar-project-row]";
@@ -53,8 +57,8 @@
       `${rightPanelSelector}[inert], ${rightPanelSelector}[aria-hidden="true"]`);
     const mediaSelector = `img, video, canvas, ${viewerSelector}, ${reviewHeaderSelector}`;
     const nativeRangeSelector = 'input[type="range"], [role="slider"]';
-    const composerSelector = '[class*="_ComposerLayoutRoot_"]';
-    const headerSelector = '[data-app-shell-header-layout], [data-sticky][class*="_shell_"], .sticky.z-30.bg-surface';
+    const composerSelector = ':is([data-composer-surface-variant][data-composer-radius-variant], [class*="_ComposerLayoutRoot_"])';
+    const headerSelector = '[data-app-shell-header-layout], [data-sticky]:is([class*="_shell_"], [class^="shell-"], [class*=" shell-"]), .sticky.z-30.bg-surface';
     const editorSelector = '[contenteditable="true"], .ProseMirror';
     const composerOverlaySelector = "[data-composer-overlay-floating-ui]";
     const diffPreviewSelector = '[data-testid="diff-preview-scroll"]';
@@ -73,7 +77,9 @@
     const footerAttribute = "data-codex-plus-image-footer-gutter";
     const footerSelector = "[data-thread-scroll-footer]";
     const topControlSelector = [
-      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]',
+      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]', '[class^="Tooltip-"]', '[class*=" Tooltip-"]',
+      // Sonner 的内层 z-index 无法越过这个原生 z60 外壳；只抬外壳，不改通知本身的颜色与动画。
+      ".codex-toast-area",
       "[data-radix-popper-content-wrapper]", '[data-slot="popover-content"]', "[popover]", composerOverlaySelector,
     ].join(", ");
     // Extensions keep their own layers; their full-page shell is the one wallpaper surface.
@@ -100,7 +106,7 @@
       [${containmentAttribute}] { contain:none!important; }
       [${containmentAttribute}^="flow"] { position:relative!important; }
       [${containmentAttribute}$="-clip"] { overflow:clip!important; }
-      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"])) { z-index:${wallpaperLayer}!important; }
+      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"], [${mediaAttribute}^="toolbar-surface"])) { z-index:${wallpaperLayer}!important; }
       [${mediaAttribute}="flow"], [${mediaAttribute}="island-flow"] { position:relative!important; }
       [${mediaAttribute}="viewer"] { z-index:${wallpaperLayer + 3}!important; }
       [${mediaAttribute}="footer"] { z-index:${wallpaperLayer + 1}!important; }
@@ -110,8 +116,9 @@
       ${composerSelector} .top-full [data-composer-placement="home"].bg-background-composer-action-bar { background:none!important; }
       [${mediaAttribute}="page"], [${mediaAttribute}="composer"] { isolation:isolate!important; }
       [${mediaAttribute}="composer"]:not([${mediaAttribute}="footer"] *) { z-index:${wallpaperLayer + 1}!important; }
-      [${mediaAttribute}^="toolbar"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
-      [${mediaAttribute}="toolbar-flow"] { position:relative!important; }
+      [${mediaAttribute}="toolbar"], [${mediaAttribute}="toolbar-flow"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
+      [${mediaAttribute}="toolbar-flow"], [${mediaAttribute}="toolbar-surface-flow"] { position:relative!important; }
+      [${mediaAttribute}^="toolbar-surface"] { isolation:isolate!important;backdrop-filter:none!important; }
       ${timelineSelector} { overscroll-behavior-y:none!important; }
       [${popupMaterialAttribute}] { background-image:none!important;filter:none!important;backdrop-filter:none!important; }
       [${paintAttribute}] { isolation:isolate!important; }
@@ -255,6 +262,7 @@
     };
     const nativeKind = node => node.matches(reviewHeaderSelector) ? "review" :
       node.matches(toolbarSelector) ? computed(node).position === "static" ? "toolbar-flow" : "toolbar" :
+      isToolbarSurface(node) ? computed(node).position === "static" ? "toolbar-surface-flow" : "toolbar-surface" :
       node.matches(pageSelector) ? "page" : node.matches(composerSelector) ? "composer" :
       node.matches(headerSelector) ? computed(node).position === "static" ? "header-flow" : "header" :
       node.matches(footerSelector) ? "footer" :
@@ -264,13 +272,15 @@
     const add = node => {
       if (owned(node) || inactivePanel(node) || node.closest(editorSelector)) return;
       const previous = records.get(node);
-      if (!node.matches(viewerSelector) && node.closest(viewerSelector) ||
+      const toolbarSurface = isToolbarSurface(node);
+      if (!toolbarSurface && !node.matches(viewerSelector) && node.closest(viewerSelector) ||
         !node.matches(reviewHeaderSelector) && node.closest(reviewHeaderSelector)) {
         if (previous) removeMedia(node, previous);
         return;
       }
-      const nativeBoundary = node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
-      if (nativeBoundary && !node.matches(`${composerSelector}, ${headerSelector}`)) {
+      const nativeBoundary = toolbarSurface ? node.closest(toolbarSelector) :
+        node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
+      if (nativeBoundary && !toolbarSurface && !node.matches(`${composerSelector}, ${headerSelector}`)) {
         if (previous) removeMedia(node, previous);
         return;
       }
@@ -512,7 +522,7 @@
       if (owned(node) || inactivePanel(node) || node.closest(viewerSelector)) return;
       // Paint below the native children. Never annotate editor-owned node views.
       const surface = node.matches('[data-composer-utility-bar-variant="home"]')
-        ? node.querySelector('[class*="_ComposerLayoutBody_"]') || node : node;
+        ? node.querySelector('[class*="ComposerLayoutBody"]') || node : node;
       let surfacePaint = records.get(node)?.paint;
       if (!surfacePaint) {
         unmark(node, mediaAttribute);
@@ -520,6 +530,21 @@
       }
       add(node);
       registerPaint(node, surfacePaint);
+    };
+    const addToolbarSurface = node => {
+      if (!isToolbarSurface(node) || owned(node) || inactivePanel(node)) return;
+      unmark(node, mediaAttribute);
+      const kind = nativeKind(node);
+      add(node);
+      // 保留原生渐变、阴影和交互伪元素，沿用输入框的空闲伪元素及视口坐标补画。
+      if (records.has(node)) {
+        mark(node, mediaAttribute, kind);
+        registerPaint(node);
+      }
+    };
+    const visitToolbarSurfaces = node => {
+      if (isToolbarSurface(node)) addToolbarSurface(node);
+      queryAll(node, toolbarSurfaceSelector).forEach(addToolbarSurface);
     };
     const addPopupSurface = (boundary, surface) => {
       if (owned(surface) || inactivePanel(surface) || surface.closest(reviewHeaderSelector) ||
@@ -660,19 +685,27 @@
       removeWithin(records, node, removeMedia, false);
       add(node);
     };
-    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, footerSelector, headerSelector,
+    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, toolbarSurfaceSelector, footerSelector, headerSelector,
       diffPreviewSelector, topControlSelector].join(", ");
     const visit = node => {
       if (node?.nodeType !== 1 || !node.isConnected || owned(node) || inactivePanel(node) ||
         node.closest(editorSelector)) return;
-      if (node.matches(browserSelector)) { add(node); return; }
-      if (node.closest(browserSelector)) return;
+      if (node.matches(browserSelector)) {
+        add(node);
+        if (node.matches(toolbarSelector)) visitToolbarSurfaces(node);
+        return;
+      }
+      if (node.closest(browserSelector)) {
+        if (node.closest(toolbarSelector)) visitToolbarSurfaces(node);
+        return;
+      }
       const targets = [node, ...(node.childElementCount ? queryAll(node, discoverySelector) : [])]
         .filter(target => !inactivePanel(target));
       // Establish native boundaries before registering their media descendants.
       for (const target of targets) if (target.matches(pageSelector)) addPage(target);
       for (const target of targets) if (target.matches(footerSelector)) addFooter(target);
       for (const target of targets) if (target.matches(composerSelector)) addComposer(target);
+      for (const target of targets) if (isToolbarSurface(target)) addToolbarSurface(target);
       for (const target of targets) if (target.matches(headerSelector)) addHeader(target);
       for (const target of targets) if (target.matches(reviewHeaderSelector)) addReviewHeader(target);
       for (const target of targets) {
@@ -777,12 +810,12 @@
       }
       for (const [node, record] of records) {
         if (node.isConnected && !inactivePanel(node) &&
-          (node.matches(viewerSelector) || !node.closest(viewerSelector)) &&
+          (node.matches(viewerSelector) || isToolbarSurface(node) || !node.closest(viewerSelector)) &&
           (node.matches(reviewHeaderSelector) || !node.closest(reviewHeaderSelector)) &&
-          (node.matches(mediaSelector) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
+          (node.matches(mediaSelector) || isToolbarSurface(node) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
             record.mediaIsland && node.querySelector("img, video, canvas"))) {
           if (record.nativeBoundary &&
-            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}`)) add(node);
+            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}, ${toolbarSelector}`)) add(node);
           continue;
         }
         removeMedia(node, record);
@@ -830,7 +863,7 @@
           continue;
         }
         if (mutation.type === "childList") {
-          if (mutation.target.closest?.(browserSelector)) continue;
+          if (mutation.target.closest?.(browserSelector) && !mutation.target.closest(toolbarSelector)) continue;
           const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
           if (!nodes.some(node => node.nodeType === 1 && !owned(node))) continue;
           pruneNeeded = true;
@@ -861,7 +894,21 @@
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
-        if (node.closest?.(browserSelector) && !node.matches(browserSelector)) continue;
+        if (node.matches(toolbarSelector)) {
+          // 原生容器可能在子控件已挂载后才声明工具栏身份。
+          if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); pruneNeeded = true; changed = true; }
+          // 工具栏自身由浏览器定位，但其新补画表面仍须跟踪 none → transform。
+          if (invalidatePaintChains(node)) changed = true;
+        }
+        if (node.closest?.(browserSelector) && !node.matches(browserSelector)) {
+          if (node.closest(toolbarSelector)) {
+            if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); changed = true; }
+            else if (isToolbarSurface(node)) { addToolbarSurface(node); changed = true; }
+            if (invalidatePaintChains(node)) changed = true;
+            pruneNeeded ||= semanticAttributes.has(node);
+          }
+          continue;
+        }
         // Native hosts and painted surfaces own their animated geometry.
         if (node.matches(`${browserSelector}, ${headerSelector}`) && records.has(node) && !semanticAttributes.has(node)) continue;
         if (node === root || node === document.body) {
@@ -891,6 +938,7 @@
           changed ||= isPreviewOpen() !== previewVisible;
         pruneNeeded ||= semanticAttributes.has(node);
         if (node.matches(pageSelector) && !records.get(node)?.paint) visit(node);
+        if (node.matches(composerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addComposer(node); changed = true; }
         if (node.matches(headerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addHeader(node); changed = true; }
         if (node.matches(reviewHeaderSelector)) { addReviewHeader(node); continue; }
         const popup = popups.get(node);
@@ -1416,7 +1464,7 @@
       themeInputs.set(root, themeKey(root));
       if (document.body) themeInputs.set(document.body, themeKey(document.body));
       mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement"] });
+        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface"] });
       for (const [target, event, handler, capture] of events)
         target.addEventListener(event, handler, { capture, passive: true });
       // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
@@ -1435,7 +1483,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 30, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 32, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

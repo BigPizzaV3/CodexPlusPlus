@@ -5,6 +5,8 @@
 //! 守住这几条：报了这个错时（含 xAI / Grok 的措辞、流内拒收）去掉一批加密项重发并成功，
 //! 之后同一批旧项提前去掉；每个请求最多重发两次；已经把内容转发给 Codex 后不再重发；
 //! 正常请求原样转发、不碰 reasoning / compaction 项；别的 400 不重试。
+//!
+//! #2917：上游说推理项的 content 必须为空（DeepSeek / GLM 转换回来的明文思考）时，清空后重发一次并记住。
 
 use codex_plus_core::protocol_proxy::{
     ForcedRelay, ProxySessionHeaders, open_responses_proxy_request_for_relay,
@@ -725,4 +727,205 @@ async fn rejection_by_one_key_does_not_strip_for_another_key_of_same_relay() {
     let sent = received(&server).await;
     assert_eq!(sent.len(), 4);
     assert_eq!(sent[3]["input"], json!([user]));
+}
+
+// ---- #2917：推理项的明文 content ----
+//
+// 同一对话先用 DeepSeek / GLM（经 Codex++ 转换），再换到 OpenAI 风格的 Responses 上游：历史里的 reasoning 项
+// 带着明文 content（reasoning_text）和占位 encrypted_content，上游要求 content 为空，整条请求 400。
+
+/// DeepSeek 转换回来的占位加密内容。
+const DEEPSEEK_PLACEHOLDER: &str = "deepseek-placeholder-signature";
+
+fn plain_reasoning(text: &str) -> Value {
+    json!({"type": "reasoning", "summary": [{"type": "summary_text", "text": "摘要"}],
+           "content": [{"type": "reasoning_text", "text": text}],
+           "encrypted_content": DEEPSEEK_PLACEHOLDER})
+}
+
+/// 第一个带明文 content 的推理项下标。
+fn first_plain_reasoning(body: &Value) -> Option<usize> {
+    body["input"].as_array()?.iter().position(|item| {
+        item["type"] == "reasoning"
+            && item["content"]
+                .as_array()
+                .is_some_and(|parts| !parts.is_empty())
+    })
+}
+
+/// OpenAI 对推理项明文 content 的原样报错。
+fn content_not_allowed(index: usize) -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(json!({"error": {
+        "message": format!("[ArrayParam] [input[{index}].content] [array_above_max_length] Invalid 'input[{index}].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead."),
+        "type": "invalid_request_error", "param": format!("input[{index}].content"),
+        "code": "array_above_max_length"
+    }}))
+}
+
+/// 模拟 Nebula：推理项带明文 content 就拒收；`rejects_placeholder` 时还校验不过别家的占位加密内容。
+async fn strict_content_upstream(rejects_placeholder: bool) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(move |incoming: &Request| {
+            let body: Value = serde_json::from_slice(&incoming.body).unwrap();
+            if let Some(index) = first_plain_reasoning(&body) {
+                content_not_allowed(index)
+            } else if rejects_placeholder && contains_any(incoming, &[DEEPSEEK_PLACEHOLDER]) {
+                unverifiable()
+            } else {
+                completed()
+            }
+        })
+        .mount(&server)
+        .await;
+    server
+}
+
+fn emptied(mut item: Value) -> Value {
+    item["content"] = json!([]);
+    item
+}
+
+#[tokio::test]
+async fn plain_reasoning_content_is_emptied_and_retried_once() {
+    let server = strict_content_upstream(false).await;
+    let relay = relay(&server, "content");
+    let user = json!({"type": "message", "role": "user", "content": "继续"});
+    let answer = json!({"type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "好的"}]});
+    let first = request(vec![
+        user.clone(),
+        plain_reasoning("DeepSeek 的思考"),
+        answer.clone(),
+        plain_reasoning("GLM 的思考"),
+        user.clone(),
+    ]);
+
+    let (status, trace) = send_forced_traced(&relay, &first).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        trace.retry_reasons,
+        vec!["reasoning_content_not_allowed".to_string()]
+    );
+    let sent = received(&server).await;
+    assert_eq!(sent.len(), 2, "只重发一次");
+    assert_eq!(sent[0], first, "第一次原样转发");
+    // 所有推理项的 content 清空，summary 与 encrypted_content 保留，其余项不动。
+    assert_eq!(
+        sent[1]["input"],
+        json!([
+            user,
+            emptied(plain_reasoning("DeepSeek 的思考")),
+            answer,
+            emptied(plain_reasoning("GLM 的思考")),
+            user,
+        ])
+    );
+
+    // 下一轮：同一家同一模型按记忆提前清空，不再先吃一次 400。
+    let second = request(vec![
+        user.clone(),
+        plain_reasoning("DeepSeek 的思考"),
+        json!({"type": "message", "role": "user", "content": "再来"}),
+    ]);
+    let (status, trace) = send_forced_traced(&relay, &second).await;
+    assert_eq!(status, 200);
+    assert!(trace.retry_reasons.is_empty(), "{:?}", trace.retry_reasons);
+    let sent = received(&server).await;
+    assert_eq!(sent.len(), 3, "已知不收明文，一次就成功");
+    assert_eq!(
+        sent[2]["input"][1],
+        emptied(plain_reasoning("DeepSeek 的思考"))
+    );
+}
+
+#[tokio::test]
+async fn emptied_content_then_unverifiable_placeholder_is_stripped() {
+    // 清空明文后，占位的加密内容又校验不过：接着按 #2777 去掉推理项。两类重试各自计数。
+    let server = strict_content_upstream(true).await;
+    let relay = relay(&server, "content-then-encrypted");
+    let user = json!({"type": "message", "role": "user", "content": "继续"});
+    let body = request(vec![user.clone(), plain_reasoning("DeepSeek 的思考")]);
+
+    let (status, trace) = send_forced_traced(&relay, &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        trace.retry_reasons,
+        vec![
+            "reasoning_content_not_allowed".to_string(),
+            "invalid_encrypted_content".to_string(),
+        ]
+    );
+    let sent = received(&server).await;
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[2]["input"], json!([user]));
+}
+
+#[tokio::test]
+async fn in_stream_reasoning_content_rejection_is_retried() {
+    for auto_retry in [AutoRetry::Off, AutoRetry::Streaming, AutoRetry::Buffered] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|incoming: &Request| {
+                let body: Value = serde_json::from_slice(&incoming.body).unwrap();
+                match first_plain_reasoning(&body) {
+                    Some(index) => sse(&[
+                        created(),
+                        json!({"type": "response.failed", "response": {
+                            "id": "resp_fixture", "status": "failed",
+                            "error": {"code": "array_above_max_length",
+                                      "message": format!("Invalid 'input[{index}].content': array too long.")}
+                        }}),
+                    ]),
+                    None => sse(&[created(), text_delta("ok"), stream_completed()]),
+                }
+            })
+            .mount(&server)
+            .await;
+        let relay = relay(&server, "content-stream");
+        let user = json!({"type": "message", "role": "user", "content": "继续"});
+        let mut body = request(vec![user.clone(), plain_reasoning("DeepSeek 的思考")]);
+        body["stream"] = json!(true);
+
+        let (status, output) = send_forced_with(&relay, &body, auto_retry).await;
+        let output = String::from_utf8_lossy(&output);
+        assert_eq!(status, 200);
+        assert!(
+            output.contains("response.completed"),
+            "{auto_retry:?}: {output}"
+        );
+        assert!(
+            !output.contains("response.failed"),
+            "{auto_retry:?}: 被拒的那次不转发"
+        );
+        let sent = received(&server).await;
+        assert_eq!(sent.len(), 2, "{auto_retry:?}: 只重发一次");
+        assert_eq!(
+            sent[1]["input"],
+            json!([user, emptied(plain_reasoning("DeepSeek 的思考"))])
+        );
+    }
+}
+
+#[tokio::test]
+async fn array_errors_not_about_reasoning_content_are_not_retried() {
+    // 同样是 array_above_max_length，但点名的是消息项：不是 #2917，错误原样交回。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(content_not_allowed(0))
+        .mount(&server)
+        .await;
+    let relay = relay(&server, "content-other");
+    let body = request(vec![
+        json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}),
+        plain_reasoning("DeepSeek 的思考"),
+    ]);
+
+    let (status, error) = send_forced(&relay, &body).await;
+    assert_eq!(status, 400);
+    let error: Value = serde_json::from_slice(&error).unwrap();
+    assert_eq!(error["error"]["code"], "array_above_max_length");
+    let sent = received(&server).await;
+    assert_eq!(sent.len(), 1, "不重试");
+    assert_eq!(sent[0], body, "不改动推理项");
 }

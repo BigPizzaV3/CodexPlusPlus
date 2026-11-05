@@ -654,7 +654,7 @@ pub fn delete_grok_session(
 }
 
 /// 移进废纸篓：同名时在文件名后加时间戳，不覆盖废纸篓里已有的东西。只做重命名，不删除任何内容。
-fn move_to_trash(path: &Path, trash_dir: &Path) -> anyhow::Result<PathBuf> {
+pub(crate) fn move_to_trash(path: &Path, trash_dir: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(trash_dir).with_context(|| format!("创建 {}", trash_dir.display()))?;
     let name = path.file_name().context("路径没有文件名")?;
     let mut target = trash_dir.join(name);

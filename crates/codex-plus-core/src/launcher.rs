@@ -2504,8 +2504,21 @@ pub(crate) fn decode_protocol_proxy_request_body(
         anyhow::bail!("不支持的 Content-Encoding：{encoding}");
     };
 
-    String::from_utf8(decoded)
-        .map_err(|error| anyhow::anyhow!("Responses 请求体不是 UTF-8：{error}"))
+    match String::from_utf8(decoded) {
+        Ok(text) => Ok(text),
+        // 请求体里混进非 UTF-8 字节（多半是工具输出被截断在多字节字符中间）时不再整单拒绝：
+        // 原先这里直接 400，长会话里一个坏字节会让这个线程之后的每一轮都报同样的错（#2900）。
+        // 坏字节换成 U+FFFD 照常转发（JSON 结构是 ASCII，不受影响），记一条诊断方便追来源。
+        Err(error) => {
+            let offset = error.utf8_error().valid_up_to();
+            let text = String::from_utf8_lossy(error.as_bytes()).into_owned();
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.request_body_invalid_utf8",
+                serde_json::json!({ "firstInvalidOffset": offset, "bodyBytes": error.as_bytes().len() }),
+            );
+            Ok(text)
+        }
+    }
 }
 
 fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {
@@ -7738,6 +7751,13 @@ mod tests {
 
         assert_eq!(decoded.as_bytes(), body);
         assert!(decode_protocol_proxy_request_body(body, Some("gzip")).is_err());
+        // #2900：坏字节换成 U+FFFD 照常解出，不再整单拒绝。
+        let mut broken = br#"{"input":"ab"#.to_vec();
+        broken.extend_from_slice(&[0xE4, 0x41]);
+        broken.extend_from_slice(br#"cd"}"#);
+        let text = decode_protocol_proxy_request_body(&broken, None).unwrap();
+        assert!(text.contains('\u{FFFD}'), "{text}");
+        assert!(serde_json::from_str::<serde_json::Value>(&text).is_ok(), "JSON 结构不受影响：{text}");
     }
 
     #[tokio::test]

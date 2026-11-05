@@ -1,7 +1,7 @@
 {
   "id": "image-overlay",
   "name": "背景图",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "在 Codex 窗口里铺一张本机图片作为背景，可调透明度与铺放方式。",
   "engines": { "codexpp": 1 },
   "renderer": ["overlay.js", "main.js"],
