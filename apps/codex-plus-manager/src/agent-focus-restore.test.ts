@@ -6,7 +6,8 @@ import { readFile } from "node:fs/promises";
  * #2902：使用模式在页面本地存储之外再存进设置文件，本地存储丢了（例如管理员身份启动时 WebView 数据目录不同）
  * 时启动用它补回，问卷不再每次都弹。这里钉住三处接线，行为由 agent-focus-store 的单测覆盖。
  */
-const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
+// Windows 检出是 CRLF：先统一成 LF，下面的正则才能按 \n 匹配。
+const read = async (path: string) => (await readFile(new URL(path, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 it("选择模式时同时备份进设置文件，启动时本地缺失就从设置文件补回", async () => {
   const store = await read("./agent-focus-store.ts");
