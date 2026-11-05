@@ -428,6 +428,18 @@ export const pickerViewScenarios: Array<{
       const hanhe = page.locator('[data-codex-plus-model-group-id="provider-hanhe"]');
       await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-fusheng"]')?.getAttribute("data-current") === "true");
       assert.equal(await fusheng.evaluate((node: Element) => getComputedStyle(node, "::after").display), "block");
+      const indicatorLayout = await fusheng.evaluate((node: HTMLElement) => {
+        const title = node.querySelector<HTMLElement>(".codex-plus-model-group-title")!;
+        const count = node.querySelector<HTMLElement>(".codex-plus-model-group-count")!;
+        return { title: title.getBoundingClientRect().toJSON(), count: count.getBoundingClientRect().toJSON(),
+          titleOrder: getComputedStyle(title).order, dotOrder: getComputedStyle(node, "::after").order,
+          countOrder: getComputedStyle(count).order, titleGrow: getComputedStyle(title).flexGrow };
+      });
+      assert.equal(indicatorLayout.titleOrder, "1");
+      assert.equal(indicatorLayout.dotOrder, "2");
+      assert.equal(indicatorLayout.countOrder, "4");
+      assert.equal(indicatorLayout.titleGrow, "0");
+      assert.ok(indicatorLayout.count.x - indicatorLayout.title.right >= 6, "the indicator has space immediately after the name");
       await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).click();
       await page.locator('[data-fixture-model="hanhe/gpt-6-sol"]').click();
       await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-hanhe"]')?.getAttribute("data-current") === "true");
