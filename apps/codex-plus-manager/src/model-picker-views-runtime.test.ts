@@ -228,6 +228,53 @@ async function switchToList(page: any) {
   await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).waitFor({ state: "visible" });
 }
 
+async function assertListIndicatorLayout(page: any, selector: string, expectDefault: boolean) {
+  const header = page.locator(selector);
+  const boxes = await header.evaluate((node: HTMLElement) => {
+    const rect = (element: Element) => {
+      const box = element.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+    };
+    const badge = node.querySelector(".codex-plus-model-group-default");
+    return {
+      header: rect(node),
+      chevron: rect(node.querySelector(".codex-plus-model-group-chevron")!),
+      title: rect(node.querySelector(".codex-plus-model-group-title")!),
+      badge: badge ? rect(badge) : null,
+      count: rect(node.querySelector(".codex-plus-model-group-count")!),
+    };
+  });
+  assert.equal(!!boxes.badge, expectDefault, "default badge must match the selected group");
+  const session = await page.context().newCDPSession(page);
+  let dot: { left: number; right: number; top: number; bottom: number };
+  try {
+    const { root } = await session.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await session.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    const { node } = await session.send("DOM.describeNode", { nodeId, depth: 1 });
+    const after = node.pseudoElements?.find((item: any) => item.pseudoType === "after");
+    assert.ok(after, "current group must have a rendered ::after indicator");
+    const { model } = await session.send("DOM.getBoxModel", { backendNodeId: after.backendNodeId });
+    const quad = model.border as number[];
+    dot = { left: Math.min(quad[0], quad[2], quad[4], quad[6]),
+      right: Math.max(quad[0], quad[2], quad[4], quad[6]),
+      top: Math.min(quad[1], quad[3], quad[5], quad[7]),
+      bottom: Math.max(quad[1], quad[3], quad[5], quad[7]) };
+  } finally {
+    await session.detach();
+  }
+  const items = [boxes.chevron, boxes.title, dot!, ...(boxes.badge ? [boxes.badge] : []), boxes.count];
+  const gap = dot!.left - boxes.title.right;
+  assert.ok(dot!.right > dot!.left && dot!.bottom > dot!.top, "indicator must have a visible box");
+  assert.ok(gap >= 0 && gap <= 8, `indicator must sit immediately after the group title, gap=${gap}`);
+  for (const [index, item] of items.entries()) {
+    assert.ok(item.left >= boxes.header.left - 0.5 && item.right <= boxes.header.right + 0.5,
+      `group item ${index} must fit within the header`);
+    assert.ok(item.top >= boxes.header.top - 0.5 && item.bottom <= boxes.header.bottom + 0.5,
+      `group item ${index} must fit vertically within the header`);
+    if (index) assert.ok(item.left >= items[index - 1].right - 0.5, `group items ${index - 1} and ${index} must not overlap`);
+  }
+}
+
 export async function pickerIconSnapshot(page: any) {
   return await page.evaluate(() => {
     const list = document.querySelector(".ModelList-fixture")!;
@@ -427,23 +474,16 @@ export const pickerViewScenarios: Array<{
       const fusheng = page.locator('[data-codex-plus-model-group-id="provider-fusheng"]');
       const hanhe = page.locator('[data-codex-plus-model-group-id="provider-hanhe"]');
       await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-fusheng"]')?.getAttribute("data-current") === "true");
-      assert.equal(await fusheng.evaluate((node: Element) => getComputedStyle(node, "::after").display), "block");
-      const indicatorLayout = await fusheng.evaluate((node: HTMLElement) => {
-        const title = node.querySelector<HTMLElement>(".codex-plus-model-group-title")!;
-        const count = node.querySelector<HTMLElement>(".codex-plus-model-group-count")!;
-        return { title: title.getBoundingClientRect().toJSON(), count: count.getBoundingClientRect().toJSON(),
-          titleOrder: getComputedStyle(title).order, dotOrder: getComputedStyle(node, "::after").order,
-          countOrder: getComputedStyle(count).order, titleGrow: getComputedStyle(title).flexGrow };
-      });
-      assert.equal(indicatorLayout.titleOrder, "1");
-      assert.equal(indicatorLayout.dotOrder, "2");
-      assert.equal(indicatorLayout.countOrder, "4");
-      assert.equal(indicatorLayout.titleGrow, "0");
-      assert.ok(indicatorLayout.count.x - indicatorLayout.title.right >= 6, "the indicator has space immediately after the name");
+      assert.equal(await fusheng.getAttribute("aria-label"), "浮生，5 个模型，当前使用");
+      assert.equal(await hanhe.getAttribute("aria-label"), "寒鹤（默认供应商），3 个模型");
+      await assertListIndicatorLayout(page, '[data-codex-plus-model-group-id="provider-fusheng"]', false);
       await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).click();
       await page.locator('[data-fixture-model="hanhe/gpt-6-sol"]').click();
       await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-hanhe"]')?.getAttribute("data-current") === "true");
       assert.equal(await fusheng.getAttribute("data-current"), "false");
+      assert.equal(await fusheng.getAttribute("aria-label"), "浮生，5 个模型");
+      assert.equal(await hanhe.getAttribute("aria-label"), "寒鹤（默认供应商），3 个模型，当前使用");
+      await assertListIndicatorLayout(page, '[data-codex-plus-model-group-id="provider-hanhe"]', true);
       await page.getByRole("button", { name: VIEW_LABELS.collapse, exact: true }).click();
       assert.equal(await hanhe.evaluate((node: Element) => getComputedStyle(node, "::after").display), "block");
       await page.evaluate(() => {
@@ -452,6 +492,39 @@ export const pickerViewScenarios: Array<{
       });
       await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-fusheng"]')?.getAttribute("data-current") === "true");
       assert.equal(await hanhe.getAttribute("data-current"), "false");
+      assert.equal(await fusheng.getAttribute("aria-label"), "浮生，5 个模型，当前使用");
+      assert.equal(await hanhe.getAttribute("aria-label"), "寒鹤（默认供应商），3 个模型");
+    },
+  },
+  {
+    name: "long list group names keep the current indicator and badges clear at narrow widths",
+    async run({ page }) {
+      await page.evaluate(() => {
+        const catalog = (window as any).codexModelCatalog;
+        for (const [slug, entry] of Object.entries(catalog.modelMetadata) as Array<[string, any]>) {
+          if (slug.startsWith("fusheng/")) entry.codex_plus_group = "非常长的非默认供应商名称用于测试截断显示";
+          if (slug.startsWith("hanhe/")) entry.codex_plus_group = "非常长的默认供应商名称用于测试截断显示";
+        }
+        (window as any).__codexPlusModelPickerGroupsRuntime.scan();
+      });
+      await switchToList(page);
+      const nonDefaultTitle = page.locator('[data-codex-plus-model-group-id="provider-fusheng"] .codex-plus-model-group-title');
+      const defaultTitle = page.locator('[data-codex-plus-model-group-id="provider-hanhe"] .codex-plus-model-group-title');
+      assert.equal(await nonDefaultTitle.textContent(), "非常长的非默认供应商名称用于测试截断显示");
+      assert.equal(await defaultTitle.textContent(), "非常长的默认供应商名称用于测试截断显示");
+      for (const width of [280, 320, 455]) {
+        await page.setViewportSize({ width, height: 960 });
+        if (width === 280) assert.equal(await nonDefaultTitle.evaluate((node: HTMLElement) => node.scrollWidth > node.clientWidth), true);
+        await assertListIndicatorLayout(page, '[data-codex-plus-model-group-id="provider-fusheng"]', false);
+      }
+      await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).click();
+      await page.locator('[data-fixture-model="hanhe/gpt-6-sol"]').click();
+      await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-hanhe"]')?.getAttribute("data-current") === "true");
+      for (const width of [280, 320, 455]) {
+        await page.setViewportSize({ width, height: 960 });
+        if (width === 280) assert.equal(await defaultTitle.evaluate((node: HTMLElement) => node.scrollWidth > node.clientWidth), true);
+        await assertListIndicatorLayout(page, '[data-codex-plus-model-group-id="provider-hanhe"]', true);
+      }
     },
   },
   {
