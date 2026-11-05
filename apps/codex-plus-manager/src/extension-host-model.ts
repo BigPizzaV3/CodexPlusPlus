@@ -6,6 +6,7 @@ type HostExtension = {
   enabled: boolean;
   claude_enabled?: boolean | null;
   status: string;
+  runtimeStatus?: string;
   package?: { claudeDesktop?: Record<string, unknown> | null } | null;
 };
 

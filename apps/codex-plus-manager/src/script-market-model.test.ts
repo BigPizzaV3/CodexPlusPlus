@@ -78,6 +78,9 @@ test("relative age buckets updates into hours, days, months and years", () => {
 test("local script state merges the user switch with the runtime load status", () => {
   assert.equal(localScriptState({ enabled: false, status: "disabled" }, true), "off");
   assert.equal(localScriptState({ enabled: false, status: "loaded" }, true), "off");
+  assert.equal(localScriptState({ enabled: false, status: "disabled", runtimeStatus: "loaded" }, true), "pendingStop");
+  assert.equal(localScriptState({ enabled: true, status: "disabled", runtimeStatus: "loaded" }, false), "pendingStop");
+  assert.equal(localScriptState({ enabled: false, status: "disabled", runtimeStatus: "unknown" }, true), "unknownOff");
   assert.equal(localScriptState({ enabled: true, status: "disabled" }, false), "globalOff");
   assert.equal(localScriptState({ enabled: true, status: "loaded" }, true), "loaded");
   assert.equal(localScriptState({ enabled: true, status: "loading" }, true), "loading");

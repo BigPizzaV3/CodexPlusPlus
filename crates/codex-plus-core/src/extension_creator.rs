@@ -56,6 +56,8 @@ const INSTRUCTIONS: &str = "用户要做或改 Codex++ 拓展（加功能、改�
 pub struct ExtensionCreator {
     pub manager: UserScriptManager,
     pub debug_ports: Vec<u16>,
+    /// 接入时固化的会话状态目录；重载不得猜测或回退到其他实例。
+    pub state_dir: std::path::PathBuf,
 }
 
 pub async fn serve(creator: ExtensionCreator) -> anyhow::Result<()> {
@@ -876,41 +878,21 @@ async fn reload_and_report(creator: &ExtensionCreator, key: &str) -> anyhow::Res
 /// 只有页内重载才自动执行。某个已加载脚本没登记清理函数时，重载会整页刷新 Codex，
 /// 可能打断用户正在进行的对话，这种情况交给用户在管理器里手动点。
 async fn reload(creator: &ExtensionCreator) -> Value {
-    let mut last_error = String::from("没有找到已连接的 Codex 页面；拓展文件已写好，Codex 下次启动或在 Codex++ 管理器点「热重载」后生效");
-    for port in &creator.debug_ports {
-        let Ok(status) = user_scripts::live_runtime_status(*port).await else {
-            continue;
-        };
-        let blockers = status
-            .as_object()
-            .map(|scripts| {
-                scripts
-                    .iter()
-                    .filter(|(_, record)| {
-                        record
-                            .get("cleanups")
-                            .and_then(Value::as_array)
-                            .is_none_or(Vec::is_empty)
-                    })
-                    .map(|(key, _)| key.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if !blockers.is_empty() {
-            return json!({
-                "reloaded": false,
-                "reason": "有旧脚本不支持页内热重载，自动重载会刷新整个 Codex 页面、可能打断当前对话，所以没有自动执行。拓展文件已写好，请让用户在 Codex++ 管理器的「本地拓展」里点「热重载」。",
-                "blockingScripts": blockers,
-            });
-        }
-        match user_scripts::reload_live_scripts(*port, &creator.manager).await {
+    let port = crate::status::StatusStore::new(creator.state_dir.join("latest-status.json"))
+        .load_latest().ok().flatten().and_then(|status| status.debug_port);
+    if let Some(port) = port {
+        match user_scripts::reload_native_scripts(&creator.state_dir, port, &creator.manager, false, None).await {
             Ok(inventory) => {
-                return json!({ "reloaded": true, "mode": inventory["reload_mode"] });
+                let operation = &inventory["reloadOperation"];
+                if operation["phase"] == "applied" {
+                    return json!({ "reloaded": true, "mode": inventory["reload_mode"], "operation": operation });
+                }
+                return json!({ "reloaded": false, "reason": "热重载未确认完成，请在 Codex++ 管理器检查状态；没有自动请求页面刷新。", "operation": operation });
             }
-            Err(error) => last_error = format!("热重载失败：{error:#}"),
+            Err(error) => return json!({ "reloaded": false, "reason": format!("热重载失败：{error:#}") }),
         }
     }
-    json!({ "reloaded": false, "reason": last_error })
+    json!({ "reloaded": false, "reason": "没有找到此实例的重载会话；拓展文件已写好，请在对应 Codex++ 管理器中启动 Codex 后重载。" })
 }
 
 /// 启用中拓展声明的工具，以 MCP 工具定义返回。名字是 `<拓展 id>__<工具名>`。

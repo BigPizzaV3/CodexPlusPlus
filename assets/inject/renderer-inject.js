@@ -5667,7 +5667,10 @@
     checkBackendStatus();
   }
 
-  function userScriptStatusLabel(status) {
+  function userScriptStatusLabel(status, script) {
+    if (script?.configuredEnabled === false && script.runtimeStatus === "unknown") return "状态未确认";
+    if (script?.configuredEnabled === false &&
+        script.runtimeStatus && !["unknown", "not_loaded"].includes(script.runtimeStatus)) return "等待停用";
     return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
   }
 
@@ -5719,7 +5722,7 @@
       const select = `${entry.kind}:${escapeHtml(entry.key)}`;
       const action = entry.kind === "market"
         ? `<button type="button" class="codex-plus-discovery-icon-button" data-codex-market-install="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="安装 ${escapeHtml(entry.name)}">${codexPlusDiscoveryIcons.plus}</button>`
-        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`;
+        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}" ${entry.script?.missing ? "disabled" : ""}><span></span></button>`;
       return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
@@ -5851,13 +5854,13 @@
     const publisherLine = [
       author ? escapeHtml(author) : "",
       version ? `v${escapeHtml(version)}` : "",
-      local ? `${escapeHtml(sourceLabel)} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
+      local ? `${escapeHtml(sourceLabel)} · ${escapeHtml(userScriptStatusLabel(local.status, local))}` : "",
     ].filter(Boolean).join('<span class="codex-plus-extensions-detail-sep">·</span>');
 
     const actions = [];
     if (isInstalled) {
       actions.push(`
-        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}"><span></span></button>
+        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}" ${local?.missing ? "disabled" : ""}><span></span></button>
       `);
       // 内置脚本在只读目录里，删不掉；只给用户目录的脚本提供卸载。
       if (local?.source === "user") {
@@ -5983,9 +5986,77 @@
    * 只改开关不会动已经跑起来的拓展实例：不重载的话关掉的拓展界面还挂着，
    * 打开的拓展也要等下次启动才装上。重载失败时仍刷新清单，开关状态至少准确。
    */
-  async function reloadUserScriptsAfterChange() {
-    const result = await postJson("/user-scripts/reload", {});
-    if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
+  let codexPlusPendingReload = null;
+  let codexPlusReloadTask = null;
+  let codexPlusReloadDemand = 0;
+  function reloadUserScriptsAfterChange() {
+    codexPlusReloadDemand += 1;
+    if (codexPlusReloadTask) return codexPlusReloadTask;
+    codexPlusReloadTask = (async () => {
+      try {
+        let observed;
+        do {
+          observed = codexPlusReloadDemand;
+          await runUserScriptsAfterChange();
+        } while (observed !== codexPlusReloadDemand);
+      } finally {
+        codexPlusReloadTask = null;
+      }
+    })();
+    return codexPlusReloadTask;
+  }
+
+  async function runUserScriptsAfterChange() {
+    if (!codexPlusPendingReload) {
+      const hello = await postJson("/user-scripts/reload-status", { capabilities: true });
+      if (hello?.capabilities?.operationProtocol !== 1 || !/^[a-f0-9]{32}$/.test(hello.ownerEpoch || "")) {
+        showToast("当前启动器不支持可确认的重载，请更新对应 Codex++ 实例", { type: "error" });
+        await loadUserScripts();
+        return;
+      }
+      const nonce = crypto.randomUUID().replaceAll("-", "");
+      codexPlusPendingReload = {
+        operationId: `${hello.ownerEpoch}-${Date.now().toString(16)}-${nonce}`,
+        ownerEpoch: hello.ownerEpoch, allowPage: true, phase: "not_found",
+      };
+    }
+    let operation = codexPlusPendingReload;
+    const verificationId = crypto.randomUUID().replaceAll("-", "");
+    const deadline = Date.now() + 20000;
+    while (!["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase) && Date.now() < deadline) {
+      try {
+        const result = operation.phase === "not_found"
+          ? await postJson("/user-scripts/reload", { operationId: operation.operationId, allowPage: true, verificationId })
+          : await postJson("/user-scripts/reload-status", { operationId: operation.operationId, verificationId });
+        // 提交响应丢失时先查询，同编号未登记才允许幂等重投。
+        if (result?.reloadOperation?.operationId === operation.operationId) {
+          operation = result.reloadOperation;
+          if (operation.phase === "applied" && result.desiredRevisionPending === true) {
+            operation = { ...operation, phase: "verifying" };
+          } else if (operation.phase === "applied" && typeof result.desiredRevision === "string" && result.desiredRevision !== operation.revision) {
+            const epoch = operation.ownerEpoch;
+            operation = {
+              operationId: `${epoch}-${Date.now().toString(16)}-${crypto.randomUUID().replaceAll("-", "")}`,
+              ownerEpoch: epoch, allowPage: true, phase: "not_found",
+            };
+          } else if (operation.phase === "applied" && typeof result.desiredRevision !== "string") {
+            operation = { ...operation, phase: "degraded", reason: "原重载已完成，但当前拓展快照无法确认" };
+          }
+        } else {
+          operation = { ...operation, phase: "unknown" };
+        }
+      } catch {
+        operation = { ...operation, phase: "unknown" };
+      }
+      codexPlusPendingReload = operation;
+      if (!["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    if (["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) codexPlusPendingReload = null;
+    if (operation.phase !== "applied") {
+      showToast(operation.reason || "拓展重载结果待确认，请检查运行状态", { type: "error" });
+    }
     await loadUserScripts();
   }
 
@@ -6154,7 +6225,7 @@
       kind: "installed",
       key: script.key,
       name: marketById.get(script.market_id)?.name || script.name || script.key,
-      meta: `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(script) : script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status)}`,
+      meta: `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(script) : script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status, script)}`,
       enabled: !!script.enabled,
       script,
     }));
@@ -7999,7 +8070,7 @@
       ["标识符", local.key],
       ["版本", local.package?.version || local.version || ""],
       ["来源", sourceLabel],
-      ["状态", userScriptStatusLabel(local.status)],
+      ["状态", userScriptStatusLabel(local.status, local)],
     ]) : "";
     const market = marketItem ? table("市场", [
       ["作者", marketItem.author || ""],
@@ -18005,12 +18076,21 @@
    */
   const codexPlusBackendServiceEntries = new Map();
 
-  function codexPlusBackendServiceProxy(name) {
+  function codexPlusBackendSource() {
+    const source = window.__codexPlusBackendSource;
+    if (!source || typeof source !== "object") return null;
+    return Object.freeze({
+      ownerEpoch: source.ownerEpoch, generation: source.generation,
+      documentId: source.documentId, revision: source.revision,
+    });
+  }
+
+  function codexPlusBackendServiceProxy(name, source) {
     return new Proxy({}, {
       get: (_, method) => (typeof method !== "string" || method === "then") ? undefined : (...args) => {
         const bridge = window.__codexSessionDeleteBridge;
         if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
-        return Promise.resolve(bridge("/extensions/services/call", { name, method, args })).then((result) => {
+        return Promise.resolve(bridge("/extensions/services/call", { name, method, args, source })).then((result) => {
           if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${name}.${method} 调用失败`);
           return result?.result;
         });
@@ -18019,6 +18099,8 @@
   }
 
   function syncCodexPlusBackendServices() {
+    const source = codexPlusBackendSource();
+    const sourceKey = JSON.stringify(source);
     const list = Array.isArray(window.__codexPlusBackendServices) ? window.__codexPlusBackendServices : [];
     const wanted = new Map(
       list
@@ -18026,15 +18108,15 @@
         .map((item) => [String(item.name), String(item.key || "")]),
     );
     for (const [name, entry] of [...codexPlusBackendServiceEntries]) {
-      if (wanted.get(name) === entry.key) continue;
+      if (wanted.get(name) === entry.key && entry.sourceKey === sourceKey) continue;
       codexPlusBackendServiceEntries.delete(name);
       entry.dispose();
     }
     for (const [name, key] of wanted) {
       if (codexPlusBackendServiceEntries.has(name) || codexPlusServices.has(name)) continue;
       try {
-        const dispose = codexPlusProvideService(name, codexPlusBackendServiceProxy(name), `backend:${key}`);
-        codexPlusBackendServiceEntries.set(name, { key, dispose });
+        const dispose = codexPlusProvideService(name, codexPlusBackendServiceProxy(name, source), `backend:${key}`);
+        codexPlusBackendServiceEntries.set(name, { key, sourceKey, dispose });
       } catch {}
     }
   }
@@ -18628,6 +18710,16 @@
     // 用过后台的实例卸载时通知 Codex++ 停掉它；带实例标识，热重载时不会误停新实例拉起的后台。
     const backendHandlers = new Map();
     const backendInstance = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const backendSource = codexPlusBackendSource();
+    const scopedBackendServices = new Map();
+    const getScopedService = (name) => {
+      if (disposed) return undefined;
+      const entry = codexPlusServices.get(name);
+      if (!entry) return undefined;
+      if (!codexPlusBackendServiceEntries.has(name)) return entry.value;
+      if (!scopedBackendServices.has(name)) scopedBackendServices.set(name, codexPlusBackendServiceProxy(name, backendSource));
+      return scopedBackendServices.get(name);
+    };
     let backendPolling = false;
     let backendStopTracked = false;
     const trackBackendStop = () => {
@@ -18638,9 +18730,11 @@
       });
     };
     const backendBridge = (path, payload) => {
+      if (disposed && path !== "/extensions/backend/stop") return Promise.reject(new Error("拓展实例已卸载"));
       const bridge = window.__codexSessionDeleteBridge;
       if (typeof bridge !== "function") return Promise.reject(new Error("Codex 页面尚未连接，请稍后重试"));
-      return Promise.resolve(bridge(path, { key: scriptKey, instance: backendInstance, ...payload })).then((result) => {
+      return Promise.resolve(bridge(path, { key: scriptKey, instance: backendInstance, ...payload, source: backendSource })).then((result) => {
+        if (disposed && path !== "/extensions/backend/stop") throw new Error("拓展实例已卸载");
         if (result?.status === "failed" || result?.error) throw new Error(result.message || result.error || `${path} 调用失败`);
         return result;
       });
@@ -18659,6 +18753,7 @@
             await new Promise((resolve) => setTimeout(resolve, 2000));
             continue;
           }
+          if (disposed) break;
           for (const item of result.events || []) {
             for (const name of [item.event, "*"]) {
               for (const handler of [...(backendHandlers.get(name) || [])]) {
@@ -18758,11 +18853,12 @@
       },
       /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
       get(name) {
-        return codexPlusServices.get(String(name))?.value;
+        return getScopedService(String(name));
       },
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
         if (typeof apply !== "function") throw new Error("inject 需要 apply(ctx) 函数");
+        if (disposed) throw new Error("拓展实例已卸载");
         const child = codexPlusCreateExtensionFiber({
           apply, scriptKey, manifest, extensionId, inject: codexPlusNormalizeInject(deps), required: codexPlusRequiredInject(deps),
         });
@@ -18986,7 +19082,7 @@
     // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
     for (const name of inject) {
       if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
-      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => getScopedService(name) });
     }
     if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
     codexPlusExtensionInstances.add(ctx);

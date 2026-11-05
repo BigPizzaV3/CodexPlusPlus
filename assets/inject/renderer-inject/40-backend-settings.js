@@ -335,7 +335,10 @@
     checkBackendStatus();
   }
 
-  function userScriptStatusLabel(status) {
+  function userScriptStatusLabel(status, script) {
+    if (script?.configuredEnabled === false && script.runtimeStatus === "unknown") return "状态未确认";
+    if (script?.configuredEnabled === false &&
+        script.runtimeStatus && !["unknown", "not_loaded"].includes(script.runtimeStatus)) return "等待停用";
     return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
   }
 
@@ -387,7 +390,7 @@
       const select = `${entry.kind}:${escapeHtml(entry.key)}`;
       const action = entry.kind === "market"
         ? `<button type="button" class="codex-plus-discovery-icon-button" data-codex-market-install="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="安装 ${escapeHtml(entry.name)}">${codexPlusDiscoveryIcons.plus}</button>`
-        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`;
+        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}" ${entry.script?.missing ? "disabled" : ""}><span></span></button>`;
       return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
@@ -519,13 +522,13 @@
     const publisherLine = [
       author ? escapeHtml(author) : "",
       version ? `v${escapeHtml(version)}` : "",
-      local ? `${escapeHtml(sourceLabel)} · ${escapeHtml(userScriptStatusLabel(local.status))}` : "",
+      local ? `${escapeHtml(sourceLabel)} · ${escapeHtml(userScriptStatusLabel(local.status, local))}` : "",
     ].filter(Boolean).join('<span class="codex-plus-extensions-detail-sep">·</span>');
 
     const actions = [];
     if (isInstalled) {
       actions.push(`
-        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}"><span></span></button>
+        <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}" ${local?.missing ? "disabled" : ""}><span></span></button>
       `);
       // 内置脚本在只读目录里，删不掉；只给用户目录的脚本提供卸载。
       if (local?.source === "user") {
@@ -651,9 +654,77 @@
    * 只改开关不会动已经跑起来的拓展实例：不重载的话关掉的拓展界面还挂着，
    * 打开的拓展也要等下次启动才装上。重载失败时仍刷新清单，开关状态至少准确。
    */
-  async function reloadUserScriptsAfterChange() {
-    const result = await postJson("/user-scripts/reload", {});
-    if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
+  let codexPlusPendingReload = null;
+  let codexPlusReloadTask = null;
+  let codexPlusReloadDemand = 0;
+  function reloadUserScriptsAfterChange() {
+    codexPlusReloadDemand += 1;
+    if (codexPlusReloadTask) return codexPlusReloadTask;
+    codexPlusReloadTask = (async () => {
+      try {
+        let observed;
+        do {
+          observed = codexPlusReloadDemand;
+          await runUserScriptsAfterChange();
+        } while (observed !== codexPlusReloadDemand);
+      } finally {
+        codexPlusReloadTask = null;
+      }
+    })();
+    return codexPlusReloadTask;
+  }
+
+  async function runUserScriptsAfterChange() {
+    if (!codexPlusPendingReload) {
+      const hello = await postJson("/user-scripts/reload-status", { capabilities: true });
+      if (hello?.capabilities?.operationProtocol !== 1 || !/^[a-f0-9]{32}$/.test(hello.ownerEpoch || "")) {
+        showToast("当前启动器不支持可确认的重载，请更新对应 Codex++ 实例", { type: "error" });
+        await loadUserScripts();
+        return;
+      }
+      const nonce = crypto.randomUUID().replaceAll("-", "");
+      codexPlusPendingReload = {
+        operationId: `${hello.ownerEpoch}-${Date.now().toString(16)}-${nonce}`,
+        ownerEpoch: hello.ownerEpoch, allowPage: true, phase: "not_found",
+      };
+    }
+    let operation = codexPlusPendingReload;
+    const verificationId = crypto.randomUUID().replaceAll("-", "");
+    const deadline = Date.now() + 20000;
+    while (!["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase) && Date.now() < deadline) {
+      try {
+        const result = operation.phase === "not_found"
+          ? await postJson("/user-scripts/reload", { operationId: operation.operationId, allowPage: true, verificationId })
+          : await postJson("/user-scripts/reload-status", { operationId: operation.operationId, verificationId });
+        // 提交响应丢失时先查询，同编号未登记才允许幂等重投。
+        if (result?.reloadOperation?.operationId === operation.operationId) {
+          operation = result.reloadOperation;
+          if (operation.phase === "applied" && result.desiredRevisionPending === true) {
+            operation = { ...operation, phase: "verifying" };
+          } else if (operation.phase === "applied" && typeof result.desiredRevision === "string" && result.desiredRevision !== operation.revision) {
+            const epoch = operation.ownerEpoch;
+            operation = {
+              operationId: `${epoch}-${Date.now().toString(16)}-${crypto.randomUUID().replaceAll("-", "")}`,
+              ownerEpoch: epoch, allowPage: true, phase: "not_found",
+            };
+          } else if (operation.phase === "applied" && typeof result.desiredRevision !== "string") {
+            operation = { ...operation, phase: "degraded", reason: "原重载已完成，但当前拓展快照无法确认" };
+          }
+        } else {
+          operation = { ...operation, phase: "unknown" };
+        }
+      } catch {
+        operation = { ...operation, phase: "unknown" };
+      }
+      codexPlusPendingReload = operation;
+      if (!["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+    if (["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) codexPlusPendingReload = null;
+    if (operation.phase !== "applied") {
+      showToast(operation.reason || "拓展重载结果待确认，请检查运行状态", { type: "error" });
+    }
     await loadUserScripts();
   }
 
@@ -822,7 +893,7 @@
       kind: "installed",
       key: script.key,
       name: marketById.get(script.market_id)?.name || script.name || script.key,
-      meta: `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(script) : script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status)}`,
+      meta: `${typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(script) : script.source === "builtin" ? "内置" : script.market_id ? "市场" : "用户"} · ${userScriptStatusLabel(script.status, script)}`,
       enabled: !!script.enabled,
       script,
     }));

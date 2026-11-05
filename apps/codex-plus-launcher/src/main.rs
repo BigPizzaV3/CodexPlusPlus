@@ -14,6 +14,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+mod user_script_reload;
+
 type NavigationHandler = Arc<dyn Fn(Value) -> Result<()> + Send + Sync>;
 static NAVIGATION_HANDLER: OnceLock<Mutex<Option<NavigationHandler>>> = OnceLock::new();
 
@@ -1389,6 +1391,7 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
+        self.runtime.start_native_control(debug_port)?;
         let ctx = BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
@@ -1464,6 +1467,7 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
+        self.runtime.stop_native_control();
         self.core.shutdown_helper(helper_port).await;
     }
 
@@ -1694,16 +1698,20 @@ impl LauncherDataService {
 
 struct LauncherRuntimeService {
     debug_port: Mutex<u16>,
-    websocket_url: Mutex<Option<String>>,
+    websocket_url: Arc<Mutex<Option<String>>>,
     user_scripts: UserScriptManager,
+    reload_owner: user_script_reload::ReloadOwner,
+    native_control: Mutex<Option<(u16, codex_plus_core::user_script_control::ControlServer)>>,
 }
 
 impl LauncherRuntimeService {
     fn new(debug_port: u16, user_scripts: UserScriptManager) -> Self {
         Self {
             debug_port: Mutex::new(debug_port),
-            websocket_url: Mutex::new(None),
+            websocket_url: Arc::new(Mutex::new(None)),
             user_scripts,
+            reload_owner: user_script_reload::ReloadOwner::default(),
+            native_control: Mutex::new(None),
         }
     }
 
@@ -1713,6 +1721,40 @@ impl LauncherRuntimeService {
 
     fn set_websocket_url(&self, websocket_url: &str) {
         *self.websocket_url.lock().unwrap() = Some(websocket_url.to_string());
+    }
+
+    fn start_native_control(self: &Arc<Self>, debug_port: u16) -> anyhow::Result<()> {
+        use codex_plus_core::user_script_control::{self as control, ControlAction, ControlIdentity};
+        let mut current = self.native_control.lock().unwrap();
+        if current.as_ref().is_some_and(|(port, _)| *port == debug_port) {
+            return Ok(());
+        }
+        anyhow::ensure!(current.is_none(), "重载协调器已绑定另一个实例端口");
+        let identity = ControlIdentity::new(
+            &codex_plus_core::paths::default_app_state_dir(), debug_port, &self.user_scripts,
+        )?;
+        let runtime = Arc::downgrade(self);
+        let handler = Arc::new(move |action| {
+            let runtime = runtime.upgrade().context("重载会话已退出")?;
+            let (operation, verification) = match action {
+                ControlAction::Submit(payload) => {
+                    let operation = runtime.reload_owner.submit(
+                        &payload, runtime.websocket_url.clone(), runtime.user_scripts.clone(),
+                    )?;
+                    (operation, payload["verificationId"].as_str().map(str::to_owned))
+                }
+                ControlAction::Status(id) => (runtime.reload_owner.control_status(&id), None),
+                ControlAction::StatusWithVerification(id, verification) =>
+                    (runtime.reload_owner.control_status(&id), Some(verification)),
+            };
+            Ok(runtime.reload_owner.control_response(operation, verification.as_deref(), &runtime.user_scripts))
+        });
+        *current = Some((debug_port, control::start_owner(identity, self.reload_owner.epoch().to_owned(), handler)?));
+        Ok(())
+    }
+
+    fn stop_native_control(&self) {
+        self.native_control.lock().unwrap().take();
     }
 }
 
@@ -1751,23 +1793,43 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
+        let _guard = self.reload_owner.lock_initial_load().await;
         let websocket_url = self
             .websocket_url
             .lock()
             .unwrap()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
-        codex_plus_core::user_scripts::load_scripts_at(&websocket_url, &self.user_scripts).await
+        codex_plus_core::user_scripts::load_scripts_at(
+            &websocket_url, &self.user_scripts, user_script_reload::next_sequence()
+        ).await
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
-        let websocket_url = self
-            .websocket_url
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
-        codex_plus_core::user_scripts::reload_scripts_at(&websocket_url, &self.user_scripts).await
+        self.begin_user_script_reload(json!({})).await
+    }
+
+    async fn begin_user_script_reload(&self, payload: Value) -> anyhow::Result<Value> {
+        let mut inventory = self.user_scripts.inventory()?;
+        let operation = self.reload_owner.submit(&payload, self.websocket_url.clone(), self.user_scripts.clone())?;
+        inventory["reloadOperation"] = operation;
+        Ok(inventory)
+    }
+
+    async fn begin_user_script_reload_no_page(&self, mut payload: Value) -> anyhow::Result<Value> {
+        let payload = payload.as_object_mut().ok_or_else(|| anyhow::anyhow!("重载参数必须是对象"))?;
+        payload.insert("allowPage".to_string(), json!(false));
+        self.begin_user_script_reload(json!(payload)).await
+    }
+
+    async fn user_script_reload_status(&self, payload: Value) -> anyhow::Result<Value> {
+        if payload.get("capabilities").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({ "capabilities": { "noPageReload": true, "operationProtocol": 1 },
+                "ownerEpoch": self.reload_owner.epoch() }));
+        }
+        let id = payload.get("operationId").and_then(Value::as_str).unwrap_or_default();
+        let operation = self.reload_owner.control_status(id);
+        Ok(self.reload_owner.control_response(operation, payload["verificationId"].as_str(), &self.user_scripts))
     }
 
     async fn cdp_targets(&self) -> anyhow::Result<Value> {
@@ -1972,6 +2034,21 @@ fn default_user_script_manager() -> UserScriptManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn no_page_reload_route_overrides_a_conflicting_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            dir.path().join("user"),
+            dir.path().join("settings.json"),
+        );
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let result = runtime.begin_user_script_reload_no_page(json!({
+            "allowPage": true
+        })).await.unwrap();
+        assert_eq!(result["reloadOperation"]["allowPage"], false);
+    }
 
     #[test]
     fn first_index_repair_preserves_startup_sync_even_if_setting_changes() {

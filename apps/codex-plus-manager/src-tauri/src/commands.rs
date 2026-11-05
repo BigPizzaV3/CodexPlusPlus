@@ -1384,6 +1384,17 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     worker_settings
         .codex_extra_args
         .push(format!("--user-data-dir={}", user_data_dir.display()));
+    worker_settings.relay_context_config_contents = match std::env::current_exe()
+        .map_err(anyhow::Error::from)
+        .and_then(|executable| crate::extension_creator_commands::rebind_multi_instance_creator(
+            &codex_home, &worker_state_dir, &executable, &worker_settings.relay_context_config_contents,
+        ))
+    {
+        Ok(context) => context,
+        Err(error) => return failed(
+            &format!("绑定多开拓展重载会话失败：{error}"), json!({ "instanceId": instance_id }),
+        ),
+    };
     if let Err(error) = worker_store.save(&worker_settings) {
         return failed(
             &format!("保存多开 launcher 设置失败：{error}"),
@@ -6658,8 +6669,17 @@ pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
     )
 }
 
+fn user_script_reload_success_message(mode: &str) -> &'static str {
+    match mode {
+        "scripts" => "用户脚本已热重载。",
+        "page" => "已刷新 Codex 页面并确认拓展加载。",
+        "navigation" => "Codex 页面已切换，并确认拓展加载。",
+        _ => "已确认当前 Codex 页面的拓展加载。",
+    }
+}
+
 #[tauri::command]
-pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
+pub async fn reload_user_scripts(operation: Option<Value>) -> CommandResult<SettingsPayload> {
     let debug_port = StatusStore::default()
         .load_latest()
         .ok()
@@ -6669,9 +6689,15 @@ pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
     let manager = default_user_script_manager();
     // 手动改过拓展文件后热重载：顺带让 Codex 钩子条目与拓展声明一致。
     codex_plus_core::extension_hooks::sync_default(&manager);
-    match codex_plus_core::user_scripts::reload_live_scripts(debug_port, &manager).await {
+    match codex_plus_core::user_scripts::reload_native_scripts(
+        &codex_plus_core::paths::default_app_state_dir(), debug_port, &manager, true, operation.as_ref(),
+    ).await {
         Ok(user_scripts) => {
-            let page_reload = user_scripts["reload_mode"] == "page";
+            let reload_mode = user_scripts["reload_mode"].as_str().unwrap_or_default().to_owned();
+            let phase = user_scripts["reloadOperation"]["phase"].as_str().unwrap_or("unknown").to_owned();
+            let operation_id = user_scripts["reloadOperation"]["operationId"].as_str().unwrap_or_default().to_string();
+            let reason = user_scripts["reloadOperation"]["reason"].as_str().unwrap_or_default().to_string();
+            let applied = phase == "applied";
             let script_failed = user_scripts["scripts"]
                 .as_array()
                 .is_some_and(|scripts| scripts.iter().any(|script| script["status"] == "failed"));
@@ -6683,17 +6709,17 @@ pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
                     .to_string(),
                 user_scripts,
             };
-            if script_failed {
-                failed("部分脚本执行失败，请查看本地脚本状态。", payload)
-            } else {
-                ok(
-                    if page_reload {
-                        "已请求刷新 Codex 页面以安全重载旧脚本。"
-                    } else {
-                        "用户脚本已热重载。"
-                    },
+            if !applied {
+                failed(
+                    &format!("用户脚本重载{}（操作 {operation_id}）{}",
+                        if phase == "unknown" { "结果待确认" } else { "未完成" },
+                        if reason.is_empty() { String::new() } else { format!("：{reason}") }),
                     payload,
                 )
+            } else if script_failed {
+                failed("部分脚本执行失败，请查看本地脚本状态。", payload)
+            } else {
+                ok(user_script_reload_success_message(&reload_mode), payload)
             }
         }
         Err(error) => failed(
@@ -10761,6 +10787,14 @@ fn default_log_lines() -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_script_reload_message_distinguishes_document_changes_from_script_reload() {
+        assert_eq!(super::user_script_reload_success_message("scripts"), "用户脚本已热重载。");
+        assert_eq!(super::user_script_reload_success_message("page"), "已刷新 Codex 页面并确认拓展加载。");
+        assert_eq!(super::user_script_reload_success_message("navigation"), "Codex 页面已切换，并确认拓展加载。");
+        assert_eq!(super::user_script_reload_success_message(""), "已确认当前 Codex 页面的拓展加载。");
+    }
+
     #[test]
     fn multi_instance_user_data_respects_explicit_electron_root() {
         let temp = tempfile::tempdir().unwrap();

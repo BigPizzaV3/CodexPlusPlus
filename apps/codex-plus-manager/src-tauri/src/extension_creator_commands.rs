@@ -118,10 +118,42 @@ pub fn run_mcp(args: &[OsString]) -> anyhow::Result<()> {
     // 拓展工具调用后台服务时，经这些端口上的 Codex 页面桥接转给托管后台的进程。
     codex_plus_core::extension_backend::set_remote_bridge_ports(ports.clone());
     let creator = ExtensionCreator {
-        manager: crate::commands::default_user_script_manager(),
+        manager: codex_plus_core::user_scripts::default_user_script_manager_for_settings(state_dir.join("settings.json")),
         debug_ports: ports,
+        state_dir,
     };
     tauri::async_runtime::block_on(extension_creator::serve(creator))
+}
+
+/// 多开只重绑定确属本工具的条目；未接入、停用和其他程序的同名条目都保留原意。
+pub(crate) fn rebind_multi_instance_creator(
+    home: &Path,
+    state_dir: &Path,
+    executable: &Path,
+    context: &str,
+) -> anyhow::Result<String> {
+    fn rebind(contents: &str, executable: &Path, state_dir: &Path) -> anyhow::Result<String> {
+        let document = contents.parse::<toml_edit::DocumentMut>()
+            .map_err(|_| anyhow::anyhow!("多开拓展创作配置不是有效 TOML"))?;
+        let entries = std::iter::once((extension_creator::SERVER_ID, extension_creator::MCP_FLAG))
+            .chain(std::iter::once((extension_creator::LEGACY_SERVER_ID, extension_creator::LEGACY_MCP_FLAG)));
+        let owned = entries.filter_map(|(id, flag)| {
+            let entry = document.get("mcp_servers")?.get(id)?;
+            (entry.get("args")?.as_array()?.get(0)?.as_str()? == flag)
+                .then(|| entry.get("enabled").and_then(toml_edit::Item::as_bool).unwrap_or(true))
+        }).next();
+        let Some(enabled) = owned else { return Ok(contents.to_owned()) };
+        let updated = managed_mcp::upsert_managed_context(&extension_creator::SPEC, contents, executable, state_dir)?;
+        if enabled { Ok(updated) } else { managed_mcp::disable_managed_context(&extension_creator::SPEC, &updated) }
+    }
+    let context = rebind(context, executable, state_dir)?;
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path).context("读取多开拓展创作配置失败")?;
+    let updated = rebind(&contents, executable, state_dir)?;
+    if updated != contents {
+        codex_plus_core::settings::atomic_write(&config_path, updated.as_bytes())?;
+    }
+    Ok(context)
 }
 
 #[cfg(test)]
@@ -137,6 +169,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = [OsString::from("--state-dir"), dir.path().as_os_str().to_owned()];
         assert_eq!(state_dir_from_args(&args).unwrap(), dir.path());
+    }
+
+    #[test]
+    fn multi_creator_rebinds_only_owned_entries_and_preserves_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let worker_state = dir.path().join("worker-state");
+        let main_state = dir.path().join("main-state");
+        let original = managed_mcp::upsert_managed_context(
+            &extension_creator::SPEC, "", &executable, &main_state,
+        ).unwrap();
+        let disabled = managed_mcp::disable_managed_context(&extension_creator::SPEC, &original).unwrap();
+        std::fs::write(dir.path().join("config.toml"), &disabled).unwrap();
+        let rebound = rebind_multi_instance_creator(dir.path(), &worker_state, &executable, &disabled).unwrap();
+        let document = rebound.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["mcp_servers"][extension_creator::SERVER_ID]["args"][2].as_str(), worker_state.to_str());
+        assert_eq!(document["mcp_servers"][extension_creator::SERVER_ID]["enabled"].as_bool(), Some(false));
+        let foreign = "[mcp_servers.codex_plus_extensions]\ncommand='other'\nargs=['--other']\n";
+        std::fs::write(dir.path().join("config.toml"), foreign).unwrap();
+        assert_eq!(rebind_multi_instance_creator(dir.path(), &worker_state, &executable, foreign).unwrap(), foreign);
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), foreign);
     }
 
     #[test]

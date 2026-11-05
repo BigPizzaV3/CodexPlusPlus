@@ -95,9 +95,11 @@ export function relativeAge(time: number, now: number): RelativeAge {
  * 「关了」，开启时第二列才有信息。合并后开关单独成控件，状态只描述开关之外的事实：
  * 整体开关关着、已加载、加载中、加载失败、未加载（Codex 未运行或还没热重载）。
  */
-export type LocalScriptState = "off" | "globalOff" | "loaded" | "loading" | "failed" | "notLoaded";
+export type LocalScriptState = "off" | "globalOff" | "loaded" | "loading" | "failed" | "notLoaded" | "pendingStop" | "unknownOff";
 
-export function localScriptState(script: { enabled: boolean; status: string }, globalEnabled: boolean): LocalScriptState {
+export function localScriptState(script: { enabled: boolean; status: string; runtimeStatus?: string }, globalEnabled: boolean): LocalScriptState {
+  if ((!script.enabled || !globalEnabled) && script.runtimeStatus === "unknown") return "unknownOff";
+  if ((!script.enabled || !globalEnabled) && script.runtimeStatus && !["unknown", "not_loaded"].includes(script.runtimeStatus)) return "pendingStop";
   if (!script.enabled) return "off";
   if (!globalEnabled) return "globalOff";
   switch (script.status) {

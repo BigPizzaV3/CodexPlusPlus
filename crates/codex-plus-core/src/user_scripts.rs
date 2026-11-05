@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::script_market::MarketScript;
 
@@ -19,18 +21,19 @@ pub const EXTENSION_API_VERSION: u64 = 1;
 /// 拓展包的清单文件名。目录里有它，目录才被当成拓展包。
 pub const EXTENSION_MANIFEST_FILE: &str = "codexpp.json";
 
-/// 一次性连接当前 Codex 页面；不增加轮询，也不接管 launcher 的桥接连接。
+/// 通过 launcher 的私有会话通道登记重载；页面繁忙不影响操作接收。
 pub async fn reload_live_scripts(
     debug_port: u16,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
-    let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = live_runtime_target(&targets)?;
-    let websocket = target
-        .web_socket_debugger_url
-        .as_deref()
-        .context("Codex renderer has no WebSocket URL")?;
-    reload_scripts_at(websocket, manager).await
+    reload_native_scripts(&crate::paths::default_app_state_dir(), debug_port, manager, true, None).await
+}
+
+pub async fn reload_live_scripts_no_page(
+    debug_port: u16,
+    manager: &UserScriptManager,
+) -> anyhow::Result<Value> {
+    reload_native_scripts(&crate::paths::default_app_state_dir(), debug_port, manager, false, None).await
 }
 
 /// 拓展配置改了以后先试着原地生效：页面里这个拓展的所有实例都用 `ctx.onConfigUpdate` 接住新配置时返回 `"applied"`，
@@ -53,39 +56,259 @@ pub async fn reload_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
-    // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
-    crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &manager.build_reload_bundle()?).await
+    let port = reqwest::Url::parse(websocket)?.port().context("重载 WebSocket 缺少明确端口")?;
+    reload_live_scripts(port, manager).await
 }
+
+type PendingReloadSlot = Arc<tokio::sync::Mutex<Option<Value>>>;
+static PENDING_RELOADS: OnceLock<Mutex<BTreeMap<String, PendingReloadSlot>>> = OnceLock::new();
+
+/// resume 携带原 operationId/ownerEpoch。未知结果只能向原 owner 查询或幂等重投原编号。
+pub async fn reload_native_scripts(
+    state_dir: &std::path::Path,
+    debug_port: u16,
+    manager: &UserScriptManager,
+    allow_page: bool,
+    resume: Option<&Value>,
+) -> anyhow::Result<Value> {
+    use crate::user_script_control::{self as control, ControlIdentity};
+    let identity = ControlIdentity::new(state_dir, debug_port, manager)?;
+    let slot = PENDING_RELOADS.get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock().unwrap().entry(identity.key()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone();
+    let mut pending = slot.lock().await;
+    if let Some(resume) = resume.filter(|value| value.is_object()) {
+        let epoch = resume["ownerEpoch"].as_str().context("待确认操作缺少 owner 身份")?;
+        let id = resume["operationId"].as_str().context("待确认操作缺少编号")?;
+        anyhow::ensure!(control::operation_issued_at(epoch, id).is_some(), "待确认重载的操作身份无效");
+        if let Some(current) = pending.as_ref() {
+            anyhow::ensure!(current["operationId"] == resume["operationId"] && current["ownerEpoch"] == resume["ownerEpoch"],
+                "另一个重载仍待确认，请先查询原操作");
+        } else {
+            *pending = Some(resume.clone());
+        }
+    }
+    if pending.is_none() {
+        let hello = control::request(&identity, json!({ "action": "hello" })).await?;
+        anyhow::ensure!(hello.pointer("/result/capabilities/nativeReload") == Some(&Value::Bool(true))
+            && (allow_page || supports_no_page_reload(&hello["result"])), "当前启动器不支持可确认的重载");
+        let epoch = hello["ownerEpoch"].as_str().context("重载协调器未提供 owner 身份")?;
+        *pending = Some(json!({
+            "operationId": control::new_operation_id(epoch), "ownerEpoch": epoch,
+            "allowPage": allow_page, "phase": "accepted", "needsSubmit": true,
+        }));
+    }
+    let mut operation = pending.as_ref().unwrap().clone();
+    let mut id = operation["operationId"].clone();
+    let epoch = operation["ownerEpoch"].clone();
+    let mut original_policy = operation["allowPage"].as_bool().context("待确认操作缺少原刷新策略")?;
+    let mut needs_submit = operation["needsSubmit"] == true;
+    if !allow_page && original_policy {
+        // 无刷新调用可以查询已接收的旧操作，但不能替它首次提交或重投允许刷新的策略。
+        needs_submit = false;
+    }
+    let mut reason = String::new();
+    let verification_id = uuid::Uuid::new_v4().simple().to_string();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if needs_submit && !allow_page && original_policy {
+            operation["needsSubmit"] = json!(true);
+            *pending = Some(operation.clone());
+            let mut blocked = operation.clone();
+            blocked["phase"] = json!("blocked");
+            blocked["active"] = json!(false);
+            blocked["reason"] = json!("原待确认操作允许页面刷新；本次无刷新调用仅查询，未提交。请显式允许页面刷新后继续原操作。");
+            return reload_inventory(manager, blocked);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            operation["phase"] = json!("unknown");
+            operation["active"] = json!(true);
+            operation["needsSubmit"] = json!(needs_submit);
+            operation["reason"] = json!(if reason.is_empty() { "等待原重载操作确认".to_owned() } else { reason });
+            *pending = Some(operation.clone());
+            return reload_inventory(manager, operation);
+        }
+        let request = json!({
+            "action": if needs_submit { "submit" } else { "status" },
+            "ownerEpoch": epoch, "operationId": id, "allowPage": original_policy,
+            "verificationId": verification_id,
+        });
+        // 丢失 submit 的 ACK 不代表未接收；下一次先查原编号，未登记时才幂等重投。
+        needs_submit = false;
+        operation["needsSubmit"] = json!(false);
+        match control::request(&identity, request).await {
+            Ok(response) => {
+                let received = &response["result"]["reloadOperation"];
+                if received["operationId"] == id {
+                    operation = received.clone();
+                    operation["ownerEpoch"] = epoch.clone();
+                    operation["allowPage"] = json!(original_policy);
+                    let phase = operation["phase"].as_str().unwrap_or_default();
+                    if matches!(phase, "applied" | "failed" | "blocked" | "degraded" | "rejected") {
+                        if phase == "applied" {
+                            if response["result"]["desiredRevisionPending"] == true {
+                                operation["phase"] = json!("verifying");
+                                *pending = Some(operation.clone());
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                            if response["result"]["desiredRevision"].is_string()
+                                && response["result"]["desiredRevision"] != operation["revision"]
+                            {
+                                // 旧操作完成时新配置已写入：串行开始当前意图，不把旧清单当新配置已生效。
+                                let epoch_text = epoch.as_str().context("重载 owner 身份无效")?;
+                                id = json!(control::new_operation_id(epoch_text));
+                                // 原操作已终结。后续新意图采用本次调用的刷新策略，不继承旧策略。
+                                original_policy = allow_page;
+                                operation = json!({ "operationId": id, "ownerEpoch": epoch,
+                                    "allowPage": original_policy, "phase": "accepted", "needsSubmit": true });
+                                needs_submit = true;
+                                *pending = Some(operation.clone());
+                                continue;
+                            }
+                            if !response["result"]["desiredRevision"].is_string() {
+                                operation["phase"] = json!("degraded");
+                                operation["reason"] = json!("原重载已完成，但当前拓展快照无法确认");
+                            }
+                        }
+                        *pending = None;
+                        return reload_inventory(manager, operation);
+                    }
+                    needs_submit = phase == "not_found";
+                } else {
+                    reason = "重载协调器返回了不匹配的操作编号".to_owned();
+                }
+            }
+            Err(error) if error.downcast_ref::<control::OwnerChanged>().is_some() => {
+                operation["phase"] = json!("degraded");
+                operation["active"] = json!(false);
+                operation["reason"] = json!(format!("{error:#}"));
+                *pending = None;
+                return reload_inventory(manager, operation);
+            }
+            Err(error) => reason = format!("{error:#}"),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+fn reload_inventory(manager: &UserScriptManager, operation: Value) -> anyhow::Result<Value> {
+    let runtime = operation.pointer("/inventory/scripts").and_then(Value::as_array).map(|scripts| {
+        scripts.iter().filter_map(|script| Some((script["key"].as_str()?.to_owned(), json!({
+            "status": script["runtimeStatus"], "error": script["error"],
+            "name": script["name"], "source": script["source"],
+        })))).collect::<serde_json::Map<String, Value>>()
+    }).map(Value::Object);
+    // 配置始终重新读取；operation里的历史inventory只用于登记运行状态。
+    let mut inventory = manager.inventory_with_runtime_status(runtime.as_ref())
+        .unwrap_or_else(|_| json!({ "inventoryUnavailable": true }));
+    inventory["reload_mode"] = operation["mode"].clone();
+    inventory["reloadOperation"] = operation;
+    Ok(inventory)
+}
+
+fn supports_no_page_reload(status: &Value) -> bool {
+    status.pointer("/capabilities/noPageReload") == Some(&Value::Bool(true))
+}
+
+struct InitialAttempt {
+    document: String,
+    source: Value,
+    bundle: String,
+    skip_claim: Option<SkipStartClaim>,
+}
+type InitialAttemptSlot = Arc<tokio::sync::Mutex<Option<InitialAttempt>>>;
+static INITIAL_ATTEMPTS: OnceLock<Mutex<BTreeMap<PathBuf, InitialAttemptSlot>>> = OnceLock::new();
 
 pub async fn load_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
+    sequence: u64,
 ) -> anyhow::Result<Value> {
-    // 页面重新加载：上一个页面的后台不再有人用。
-    crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?).await
+    load_scripts_with_evaluator(manager, sequence, |expression| async move {
+        crate::bridge::evaluate_script(websocket, &expression).await
+    }).await
 }
 
-async fn apply_scripts_at(
-    websocket: &str,
+pub async fn load_scripts_with_evaluator<F, Fut>(
     manager: &UserScriptManager,
-    bundle: &str,
-) -> anyhow::Result<Value> {
-    let response = crate::bridge::evaluate_script(websocket, bundle).await?;
-    if let Some(exception) = response.pointer("/result/exceptionDetails") {
-        anyhow::bail!(
-            "脚本重载失败：{}",
-            exception
-                .pointer("/exception/description")
-                .and_then(Value::as_str)
-                .unwrap_or("renderer exception")
-        );
+    sequence: u64,
+    evaluate: F,
+) -> anyhow::Result<Value>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let slot = INITIAL_ATTEMPTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock().unwrap().entry(manager.config_path().to_path_buf())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone();
+    let mut attempt = slot.lock().await;
+    let probe = evaluate(UserScriptManager::build_operation_probe("")).await?;
+    let probe = parse_live_runtime_status_response(&probe)?;
+    if probe["initialized"] == true || probe["refreshPending"] == true {
+        if probe["initialized"] == true {
+            anyhow::ensure!(crate::extension_backend::backend_source_is_current(manager, &probe["backendSource"]),
+                "页面已初始化，但后台来源属于旧代；未把重连报告为成功");
+            if let Ok(claim) = serde_json::from_value::<SkipStartClaim>(probe["initialSkipClaim"].clone()) {
+                manager.consume_skip_start_claim(&claim)?;
+            }
+            *attempt = None;
+            if probe["initialMode"] == "skipped" {
+                return manager.skipped_initial_inventory();
+            }
+        }
+        return manager.inventory_with_runtime_status(probe.get("scripts"));
     }
+    let document = probe["documentId"].as_str().context("页面文档标识不可用")?;
+    if attempt.as_ref().is_some_and(|current| current.document != document) {
+        *attempt = None;
+    }
+    if attempt.is_none() {
+        let (claim_manager, claim_document) = (manager.clone(), document.to_owned());
+        let skip_claim = tokio::task::spawn_blocking(move || claim_manager.claim_skip_start(&claim_document)).await??;
+        // 发送前保存完整尝试；超时后同文档只重送相同 guard/source，不能创建新代。
+        let generation = crate::extension_backend::backend_generation(manager);
+        if !crate::extension_backend::stop_all_if_generation(manager, generation).await {
+            anyhow::bail!("后台代际发生变化，未执行页面初始化");
+        }
+        let source = if skip_claim.is_some() {
+            // 安全启动不扫描、复制或读取将被跳过的脚本和后台包。
+            crate::extension_backend::bind_backend_document(manager, generation.wrapping_add(1), document).await?
+        } else {
+            let snapshot_manager = manager.clone();
+            let snapshot = tokio::task::spawn_blocking(move || snapshot_manager.reload_snapshot()).await?;
+            match snapshot {
+                Ok((_, revision)) => {
+                    let staging_manager = manager.clone();
+                    let staged = tokio::task::spawn_blocking(move || staging_manager.stage_backend_snapshot(&revision)).await??;
+                    crate::extension_backend::bind_backend_snapshot(manager, generation.wrapping_add(1), document, staged).await?
+                }
+                // 冷启动保留原来的宽松加载；没有严格 revision 的文档不能通过 owner 的完成核验。
+                Err(_) => crate::extension_backend::bind_backend_document(manager, generation.wrapping_add(1), document).await?,
+            }
+        };
+        let (bundle_manager, bundle_document, bundle_source) = (manager.clone(), document.to_owned(), source.clone());
+        let (bundle, skip_claim) = tokio::task::spawn_blocking(move || {
+            bundle_manager.build_guarded_initial_bundle_with_claim(&bundle_document, sequence, &bundle_source, skip_claim)
+        }).await??;
+        *attempt = Some(InitialAttempt { document: document.to_owned(), source, bundle, skip_claim });
+    }
+    let current = attempt.as_ref().unwrap();
+    anyhow::ensure!(crate::extension_backend::backend_source_is_current(manager, &current.source),
+        "页面初始化仍待确认，但其后台代际已变化；未重送旧初始化");
+    let response = evaluate(current.bundle.clone()).await?;
     let result = parse_live_runtime_status_response(&response)?;
-    let mut inventory = manager.inventory_with_runtime_status(result.get("scripts"))?;
-    inventory["reload_mode"] = result["mode"].clone();
-    Ok(inventory)
+    if result["accepted"] != true {
+        anyhow::bail!("页面初始化已被较新的操作取代");
+    }
+    if let Some(claim) = &current.skip_claim {
+        manager.consume_skip_start_claim(claim)?;
+    }
+    let skipped = current.skip_claim.is_some();
+    *attempt = None;
+    if skipped {
+        return manager.skipped_initial_inventory();
+    }
+    manager.inventory_with_runtime_status(result.get("scripts"))
 }
 
 /// Query the live renderer-side user-script registry through a one-shot CDP
@@ -131,6 +354,8 @@ pub struct UserScriptConfig {
     pub claude_scripts: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub skip_next_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_start_marker: Option<SkipStartMarker>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub market: BTreeMap<String, MarketScriptInstall>,
     /// 拓展包的配置值，键是脚本 key（`user:<id>`）。只存清单 schema 里声明过的键。
@@ -145,6 +370,7 @@ impl Default for UserScriptConfig {
             scripts: BTreeMap::new(),
             claude_scripts: BTreeMap::new(),
             skip_next_start: false,
+            skip_start_marker: None,
             market: BTreeMap::new(),
             configs: BTreeMap::new(),
         }
@@ -153,6 +379,103 @@ impl Default for UserScriptConfig {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkipStartMarker {
+    pub id: String,
+    pub document_id: Option<String>,
+    pub acknowledged: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct SkipStartClaim {
+    pub marker_id: String,
+    pub document_id: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BackendSnapshotBytes {
+    extension: String,
+    entry: PathBuf,
+    config: Value,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ReloadSnapshotData {
+    bundle: String,
+    revision: String,
+    backends: BTreeMap<String, BackendSnapshotBytes>,
+    services: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StagedBackendEntry {
+    pub extension: String,
+    pub script: PathBuf,
+    pub config: Value,
+}
+
+#[derive(Debug)]
+struct StagedBackendFiles {
+    files: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+}
+
+impl Drop for StagedBackendFiles {
+    fn drop(&mut self) {
+        let files = std::mem::take(&mut self.files);
+        let directories = std::mem::take(&mut self.directories);
+        if files.is_empty() && directories.is_empty() {
+            return;
+        }
+        // 释放代际时可能仍持有后台注册锁；逐文件 I/O 不能占住 launcher 接收线程。
+        let cleanup = move || Self::cleanup(files, directories);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn_blocking(cleanup);
+        } else {
+            cleanup();
+        }
+    }
+}
+
+impl StagedBackendFiles {
+    fn cleanup(files: Vec<PathBuf>, directories: Vec<PathBuf>) {
+        let mut failed = 0;
+        for path in files.iter().rev() {
+            // Windows 不允许直接删除只读文件；这里只恢复本次记录的单个快照文件。
+            #[cfg(windows)]
+            if let Ok(metadata) = fs::symlink_metadata(path) {
+                if !metadata.file_type().is_symlink() {
+                    let mut permissions = metadata.permissions();
+                    permissions.set_readonly(false);
+                    let _ = fs::set_permissions(path, permissions);
+                }
+            }
+            if fs::remove_file(path).is_err() { failed += 1; }
+        }
+        for path in directories.iter().rev() {
+            if fs::remove_dir(path).is_err() { failed += 1; }
+        }
+        if failed > 0 {
+            let _ = crate::diagnostic_log::append_diagnostic_log("user_scripts.snapshot_cleanup_incomplete",
+                json!({ "directory": directories.first(), "failedEntries": failed }));
+        }
+    }
+}
+
+/// 只在实际应用时创建，探测 revision 不写磁盘。最后一个后台/页面代际引用释放后逐文件清理。
+#[derive(Debug, Clone)]
+pub struct StagedBackendSnapshot {
+    pub(crate) revision: String,
+    pub(crate) entries: BTreeMap<String, StagedBackendEntry>,
+    pub(crate) services: Vec<(String, String)>,
+    _files: Arc<StagedBackendFiles>,
+}
+
+impl StagedBackendSnapshot {
+    pub fn revision(&self) -> &str { &self.revision }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -225,6 +548,7 @@ impl UserScriptManager {
     /// 官方拓展包的一次性迁移：配置与开关里都还没有它时写入；返回是否写了。
     fn migrate_bundled(&self, key: &str, values: Map<String, Value>, enabled: bool) -> anyhow::Result<bool> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         if config.configs.contains_key(key) || config.scripts.contains_key(key) {
             return Ok(false);
@@ -286,7 +610,21 @@ impl UserScriptManager {
 
     pub fn save_config(&self, config: &UserScriptConfig) -> anyhow::Result<()> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         self.save_config_unlocked(config)
+    }
+
+    fn config_file_lock(&self) -> anyhow::Result<fs::File> {
+        if let Some(parent) = self.config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // 锁持有稳定的旁路文件，不锁会被 atomic_write 替换的配置 inode。
+        let mut name = self.config_path.as_os_str().to_os_string();
+        name.push(".lock");
+        let file = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .open(PathBuf::from(name)).context("打开用户脚本跨进程锁失败")?;
+        fs2::FileExt::lock_exclusive(&file).context("获取用户脚本跨进程锁失败")?;
+        Ok(file)
     }
 
     fn save_config_unlocked(&self, config: &UserScriptConfig) -> anyhow::Result<()> {
@@ -307,6 +645,7 @@ impl UserScriptManager {
 
     pub fn set_global_enabled(&self, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         config.enabled = enabled;
         self.save_config_unlocked(&config)?;
@@ -315,27 +654,78 @@ impl UserScriptManager {
 
     pub fn set_skip_next_start(&self, skip: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         config.skip_next_start = skip;
+        config.skip_start_marker = skip.then(|| SkipStartMarker {
+            id: uuid::Uuid::new_v4().to_string(), document_id: None, acknowledged: false,
+        });
         self.save_config_unlocked(&config)?;
         Ok(config)
+    }
+
+    /// 在发送页面命令前持久绑定；重试沿用标识，旧页面的不明结果不能跳过第二个页面。
+    pub fn claim_skip_start(&self, document_id: &str) -> anyhow::Result<Option<SkipStartClaim>> {
+        anyhow::ensure!(!document_id.is_empty(), "安全启动缺少页面文档标识");
+        let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
+        let mut config = self.load_reload_config()?;
+        if let Some(marker) = &config.skip_start_marker {
+            if marker.document_id.as_deref() == Some(document_id) {
+                return Ok(Some(SkipStartClaim { marker_id: marker.id.clone(), document_id: document_id.to_string() }));
+            }
+            if marker.document_id.is_some() && !marker.acknowledged {
+                anyhow::bail!("上一次安全启动的页面结果尚未确认，请重新设置“下次启动跳过脚本”后重试");
+            }
+        }
+        if !config.skip_next_start {
+            return Ok(None);
+        }
+        // 兼容旧版 bool 配置，第一次领取时才赋予持久标识。
+        let marker = config.skip_start_marker.get_or_insert_with(|| SkipStartMarker {
+            id: uuid::Uuid::new_v4().to_string(), document_id: None, acknowledged: false,
+        });
+        marker.document_id = Some(document_id.to_string());
+        let claim = SkipStartClaim { marker_id: marker.id.clone(), document_id: document_id.to_string() };
+        self.save_config_unlocked(&config)?;
+        Ok(Some(claim))
+    }
+
+    /// 只确认最初领取的标记；迟到 ACK 不能消费用户之后设置的新标记。
+    pub fn consume_skip_start_claim(&self, claim: &SkipStartClaim) -> anyhow::Result<bool> {
+        let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
+        let mut config = self.load_reload_config()?;
+        let Some(marker) = config.skip_start_marker.as_mut().filter(|marker| {
+            marker.id == claim.marker_id && marker.document_id.as_deref() == Some(claim.document_id.as_str())
+        }) else { return Ok(false); };
+        if marker.acknowledged { return Ok(true); }
+        marker.acknowledged = true;
+        config.skip_next_start = false;
+        self.save_config_unlocked(&config)?;
+        Ok(true)
     }
 
     /// Consume the one-shot safe-start marker before building the first-page bundle.
     /// The marker is cleared only after the updated configuration is persisted.
     pub fn consume_skip_next_start(&self) -> anyhow::Result<bool> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         if !config.skip_next_start {
             return Ok(false);
         }
+        anyhow::ensure!(!config.skip_start_marker.as_ref().is_some_and(|marker| marker.document_id.is_some()),
+            "已绑定页面的安全启动标记只能按页面确认消费");
         config.skip_next_start = false;
+        config.skip_start_marker = None;
         self.save_config_unlocked(&config)?;
         Ok(true)
     }
 
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         // 有设置字段的内置拓展：开关就是那个设置项，写设置，不在用户脚本配置里另记一份
         // （顺手清掉旧版本记下的停用标记，免得它在没有入口的地方一直压着功能）。
@@ -361,6 +751,7 @@ impl UserScriptManager {
     /// Claude 只接受显式适配的拓展包；不改 Codex 的单项开关或设置字段。
     pub fn set_claude_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         let script = self.scan_script_files(&config)?
             .into_iter()
@@ -381,6 +772,8 @@ impl UserScriptManager {
     }
 
     pub fn delete_user_script(&self, key: &str) -> anyhow::Result<UserScriptConfig> {
+        let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let Some(file_name) = key.strip_prefix("user:").filter(|value| !value.is_empty()) else {
             anyhow::bail!("only user scripts can be deleted");
         };
@@ -417,7 +810,6 @@ impl UserScriptManager {
             })?;
         }
 
-        let _guard = self.config_lock.lock().unwrap();
         let mut config = self.load_config_unlocked();
         config.scripts.remove(key);
         config.claude_scripts.remove(key);
@@ -432,6 +824,7 @@ impl UserScriptManager {
 
     pub fn record_market_install(&self, script: &MarketScript) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut config = self.load_config_unlocked();
         let key = format!("user:{}", market_script_filename(&script.id));
         config.scripts.entry(key.clone()).or_insert(true);
@@ -635,6 +1028,7 @@ impl UserScriptManager {
             stored.insert(name.clone(), value.clone());
         }
         let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         let mut latest = self.load_config_unlocked();
         latest.configs.insert(key.to_string(), stored.clone());
         self.save_config_unlocked(&latest)?;
@@ -992,6 +1386,8 @@ impl UserScriptManager {
     /// 清单最后写，写入中途失败时旧清单仍在。不删除包里已有的其他文件。
     /// 返回脚本 key 与清单校验结果（`error` 非空表示包写好了但不会被加载）。
     pub fn write_extension_package(&self, write: &ExtensionWrite) -> anyhow::Result<Value> {
+        let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
         validate_extension_id(&write.id)?;
         crate::extension_backend::invalidate_scan_cache();
         let file_count = write.files.len() + write.assets.len();
@@ -1411,6 +1807,7 @@ impl UserScriptManager {
         } else {
             self.build_enabled_bundle()?
         };
+        let revision = bundle_revision(&bundle);
         Ok(format!(
             r#"(() => {{
   {RUNTIME_SCRIPT}
@@ -1418,6 +1815,8 @@ impl UserScriptManager {
   if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
     runtime.initialized = true;
     {bundle}
+    runtime.appliedRevision = {revision};
+    runtime.initialMode = "{mode}";
   }}
   return JSON.stringify({{ mode: "{mode}", scripts: runtime.scripts }});
 }})()"#,
@@ -1425,8 +1824,350 @@ impl UserScriptManager {
                 "skipped"
             } else {
                 "scripts"
-            }
+            },
+            revision = json!(revision),
         ))
+    }
+
+    /// 初始载入只在页面确认后消费跳过标记，迟到的旧载入受文档和序号约束。
+    pub fn build_guarded_initial_bundle(&self, document_id: &str, sequence: u64, backend_source: &Value) -> anyhow::Result<(String, Option<SkipStartClaim>)> {
+        let skip_claim = self.claim_skip_start(document_id)?;
+        self.build_guarded_initial_bundle_with_claim(document_id, sequence, backend_source, skip_claim)
+    }
+
+    fn skipped_initial_inventory(&self) -> anyhow::Result<Value> {
+        let _guard = self.config_lock.lock().unwrap();
+        let config = self.load_reload_config()?;
+        Ok(json!({
+            "enabled": config.enabled, "skip_next_start": config.skip_next_start,
+            "scripts": [], "initialMode": "skipped", "inventoryDeferred": true,
+            "builtin_dir": self.builtin_dir, "user_dir": self.user_dir,
+        }))
+    }
+
+    fn build_guarded_initial_bundle_with_claim(
+        &self, document_id: &str, sequence: u64, backend_source: &Value, skip_claim: Option<SkipStartClaim>,
+    ) -> anyhow::Result<(String, Option<SkipStartClaim>)> {
+        let skip = skip_claim.is_some();
+        let (bundle, revision) = if skip {
+            (String::new(), None)
+        } else {
+            match self.reload_snapshot() {
+                Ok((bundle, revision)) => {
+                    if let Some(expected) = backend_source.get("revision").and_then(Value::as_str) {
+                        anyhow::ensure!(expected == revision, "页面 bundle 与已绑定后台快照不一致，未发送初始化");
+                    }
+                    (bundle, Some(revision))
+                }
+                Err(error) if backend_source.get("revision").and_then(Value::as_str).is_some() => {
+                    return Err(error.context("已绑定后台快照，但页面来源读取失败；未发送初始化"));
+                }
+                // 尚未绑定严格快照的冷启动保留损坏包诊断，不冒充已核验版本。
+                Err(_) => (self.build_enabled_bundle()?, None),
+            }
+        };
+        Ok((format!(
+            r#"(() => {{
+  {RUNTIME_SCRIPT}
+  const runtime = window.__codexPlusUserScripts;
+  const skipClaim = {skip_claim};
+  if (runtime.documentId === {document} && runtime.initialized && skipClaim &&
+      runtime.initialSkipClaim?.marker_id === skipClaim.marker_id &&
+      runtime.initialSkipClaim?.document_id === skipClaim.document_id) {{
+    return JSON.stringify({{ accepted: true, replayed: true, scripts: runtime.scripts }});
+  }}
+  const incomingSource = {backend_source};
+  const currentSource = window.__codexPlusBackendSource;
+  if (!skipClaim && runtime.documentId === {document} && runtime.initialized &&
+      runtime.reloadSequence === {sequence} && runtime.appliedRevision === {revision} &&
+      currentSource && incomingSource &&
+      currentSource.ownerEpoch === incomingSource.ownerEpoch &&
+      currentSource.generation === incomingSource.generation &&
+      currentSource.documentId === incomingSource.documentId &&
+      currentSource.revision === incomingSource.revision) {{
+    return JSON.stringify({{ accepted: true, replayed: true, scripts: runtime.scripts }});
+  }}
+  if (runtime.documentId !== {document} || runtime.initialized || runtime.refreshPending ||
+      {sequence} <= (runtime.reloadSequence || 0) || Object.keys(runtime.scripts).length) {{
+    return JSON.stringify({{ accepted: false, scripts: runtime.scripts }});
+  }}
+  runtime.reloadSequence = {sequence};
+  runtime.initialized = true;
+  runtime.initialSkipClaim = skipClaim;
+  window.__codexPlusBackendSource = {backend_source};
+  window.__codexPlusBackendServices = [];
+  try {{ window.__codexPlusSyncBackendServices?.(); }} catch {{}}
+  {bundle}
+  runtime.appliedRevision = {revision};
+  runtime.initialMode = {mode};
+  runtime.initialError = null;
+  return JSON.stringify({{ accepted: true, scripts: runtime.scripts }});
+}})()"#,
+            document = json!(document_id), revision = json!(revision), backend_source = json!(backend_source),
+            skip_claim = json!(skip_claim),
+            mode = json!(if skip { "skipped" } else { "scripts" }),
+        ), skip_claim))
+    }
+
+    /// 内部写入共同持锁。外部编辑不遵守此锁，因此连续读取两次并拒绝可观察到的不稳定版本。
+    pub fn reload_snapshot(&self) -> anyhow::Result<(String, String)> {
+        let _guard = self.config_lock.lock().unwrap();
+        let _file_guard = self.config_file_lock()?;
+        self.reload_snapshot_checked(|| {})
+    }
+
+    fn reload_snapshot_checked(&self, after_first: impl FnOnce()) -> anyhow::Result<(String, String)> {
+        let data = self.reload_snapshot_data_checked(after_first)?;
+        Ok((data.bundle, data.revision))
+    }
+
+    fn reload_snapshot_data_checked(&self, after_first: impl FnOnce()) -> anyhow::Result<ReloadSnapshotData> {
+        let before = self.reload_config_bytes()?;
+        let first = self.reload_snapshot_unlocked()?;
+        after_first();
+        let between = self.reload_config_bytes()?;
+        let second = self.reload_snapshot_unlocked()?;
+        let after = self.reload_config_bytes()?;
+        anyhow::ensure!(before == between && between == after && first == second,
+            "用户脚本或配置在读取快照时发生变化，未应用混合版本，请等待编辑完成后重试");
+        Ok(first)
+    }
+
+    fn reload_config_bytes(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        match fs::read(&self.config_path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).context("读取用户脚本配置失败"),
+        }
+    }
+
+    fn reload_snapshot_unlocked(&self) -> anyhow::Result<ReloadSnapshotData> {
+        let config = self.load_reload_config()?;
+        let mut scripts = if config.enabled { self.scan_script_files_strict(&config)? } else { Vec::new() };
+        let disabled = crate::settings_catalog::builtin_extension_defs()
+            .iter()
+            .filter(|def| def.setting.is_none())
+            .map(|def| def.id.as_str())
+            .filter(|id| config.scripts.get(&builtin_extension_key(id)) == Some(&false))
+            .collect::<Vec<_>>();
+        let mut replaced_by = Map::new();
+        if config.enabled {
+            for script in scripts.iter_mut().filter(|script| script.enabled) {
+                if let Some(package) = &mut script.package {
+                    if let Some(error) = &package.error {
+                        anyhow::bail!("读取拓展 {} 失败: {}", script.key, error);
+                    }
+                    let root = package.root.as_ref().context("拓展包缺少根目录")?;
+                    package.locales = load_extension_locales(root, true)
+                        .with_context(|| format!("读取拓展 {} 语言文件失败", script.key))?;
+                    (package.assets, package.skipped_assets) = load_extension_assets(root, true)
+                        .with_context(|| format!("读取拓展 {} 资源失败", script.key))?;
+                    for id in &package.replaces {
+                        replaced_by.entry(id.clone()).or_insert_with(|| Value::String(script.key.clone()));
+                    }
+                }
+            }
+        }
+        let builtin_state = format!(
+            "window.__codexPlusBuiltinExtensionState = {}; try {{ window.__codexPlusSyncBuiltinExtensions?.(); }} catch {{}}",
+            json!({ "disabled": disabled, "replacedBy": replaced_by })
+        );
+        let mut blocks = vec![builtin_state];
+        let mut package_sources = Vec::new();
+        let mut backends = BTreeMap::new();
+        let mut services: Vec<(String, String)> = Vec::new();
+        if config.enabled {
+            blocks.push(RUNTIME_SCRIPT.to_string());
+            for script in scripts.iter().filter(|script| script.enabled) {
+                if let Some(package) = &script.package {
+                    let root = package.root.as_deref().context("拓展包缺少根目录")?;
+                    let files = snapshot_package_sources(root, &script.key)?;
+                    package_sources.extend(files.iter().cloned());
+                    if let Some(backend) = &package.backend {
+                        anyhow::ensure!(backend.is_file(), "拓展 {} 后台入口不是文件", script.key);
+                        let prefix = format!("{}\0", script.key);
+                        backends.insert(script.key.clone(), BackendSnapshotBytes {
+                            extension: package.id.clone(),
+                            entry: backend.strip_prefix(root)?.to_path_buf(),
+                            config: package.config.clone(),
+                            files: files.into_iter().map(|(name, bytes)| (name.strip_prefix(&prefix).unwrap_or(&name).to_string(), bytes)).collect(),
+                        });
+                        for name in &package.backend_provides {
+                            if !services.iter().any(|(existing, _)| existing == name) {
+                                services.push((name.clone(), script.key.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            blocks.push(format!(
+                "window.__codexPlusBackendServices = {}; try {{ window.__codexPlusSyncBackendServices?.(); }} catch {{}}",
+                Value::Array(services.iter().map(|(name, key)| json!({ "name": name, "key": key })).collect())
+            ));
+            for script in scripts.iter().filter(|script| script.enabled) {
+                let source = match &script.package {
+                    Some(package) => package.renderer.iter()
+                        .map(|path| fs::read_to_string(path).with_context(|| format!("读取拓展 {} 页面入口失败", script.key)))
+                        .collect::<anyhow::Result<Vec<_>>>()?.join("\n;\n"),
+                    None => fs::read_to_string(&script.path)
+                        .with_context(|| format!("读取用户脚本 {} 失败", script.key))?,
+                };
+                blocks.push(wrap_script(script, &source));
+            }
+        }
+        let bundle = blocks.join("\n");
+        let revision = snapshot_revision(&bundle, &package_sources);
+        Ok(ReloadSnapshotData { bundle, revision, backends, services })
+    }
+
+    /// 将同一份已验证字节用于实际 Node 启动，避免 probe 与 import 原路径之间的 TOCTOU。
+    pub fn stage_backend_snapshot(&self, expected_revision: &str) -> anyhow::Result<StagedBackendSnapshot> {
+        let data = {
+            let _guard = self.config_lock.lock().unwrap();
+            let _file_guard = self.config_file_lock()?;
+            self.reload_snapshot_data_checked(|| {})?
+        };
+        anyhow::ensure!(data.revision == expected_revision, "拓展快照已变化，未创建旧版本的后台代际");
+        let mut staged = StagedBackendFiles { files: Vec::new(), directories: Vec::new() };
+        let mut entries = BTreeMap::new();
+        if !data.backends.is_empty() {
+            let parent = self.config_path.parent().context("用户脚本配置缺少父目录")?;
+            // 同一父目录可能托管多个配置，保留数只约束本配置；创建配额与跨进程写入共同串行。
+            let bucket = format!("{:x}", Sha256::digest(self.config_path.file_name().context("配置路径缺少文件名")?.to_string_lossy().as_bytes()));
+            let prefix = format!(".reload-backend-{}-", &bucket[..16]);
+            let directory = {
+                let _guard = self.config_lock.lock().unwrap();
+                let _file_guard = self.config_file_lock()?;
+                let retained = fs::read_dir(parent)?.filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix)).take(4).count();
+                anyhow::ensure!(retained < 4, "后台快照目录尚有未释放的活动代或清理失败记录，未继续创建副本");
+                let directory = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4().simple()));
+                crate::user_script_control::create_private_directory(&directory)?;
+                directory
+            };
+            staged.directories.push(directory.clone());
+            for (index, (key, backend)) in data.backends.into_iter().enumerate() {
+                let root = directory.join(format!("package-{index}"));
+                fs::create_dir(&root)?;
+                staged.directories.push(root.clone());
+                let mut known_directories = BTreeSet::from([root.clone()]);
+                for (relative, bytes) in backend.files {
+                    validate_package_relative_path(&relative)?;
+                    let path = root.join(&relative);
+                    let mut pending = Vec::new();
+                    let mut ancestor = path.parent().context("后台快照路径缺少父目录")?;
+                    while !known_directories.contains(ancestor) {
+                        anyhow::ensure!(ancestor.starts_with(&root), "后台快照路径超出本次目录");
+                        pending.push(ancestor.to_path_buf());
+                        ancestor = ancestor.parent().context("后台快照路径无效")?;
+                    }
+                    for parent in pending.into_iter().rev() {
+                        fs::create_dir(&parent)?;
+                        known_directories.insert(parent.clone());
+                        staged.directories.push(parent);
+                    }
+                    use std::io::Write;
+                    let mut file = fs::OpenOptions::new().create_new(true).write(true).open(&path)?;
+                    staged.files.push(path.clone());
+                    file.write_all(&bytes)?;
+                    let mut permissions = file.metadata()?.permissions();
+                    permissions.set_readonly(true);
+                    file.set_permissions(permissions)?;
+                }
+                let script = root.join(&backend.entry);
+                anyhow::ensure!(script.is_file(), "后台入口不在已复制的快照中: {}", backend.entry.display());
+                entries.insert(key, StagedBackendEntry { extension: backend.extension, script, config: backend.config });
+            }
+        }
+        Ok(StagedBackendSnapshot {
+            revision: data.revision, entries, services: data.services, _files: Arc::new(staged),
+        })
+    }
+
+    fn load_reload_config(&self) -> anyhow::Result<UserScriptConfig> {
+        let text = match fs::read_to_string(&self.config_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(UserScriptConfig::default()),
+            Err(error) => return Err(error).context("读取用户脚本配置失败"),
+        };
+        let value: Value = serde_json::from_str(&text).context("用户脚本配置不是合法 JSON")?;
+        let raw = value.as_object().context("用户脚本配置顶层必须是对象")?;
+        for key in ["enabled", "skip_next_start"] {
+            if raw.get(key).is_some_and(|value| !value.is_boolean()) {
+                anyhow::bail!("用户脚本配置 {key} 必须是布尔值");
+            }
+        }
+        if let Some(marker) = raw.get("skip_start_marker").filter(|value| !value.is_null()) {
+            anyhow::ensure!(skip_start_marker_from_value(marker).is_some(), "用户脚本配置 skip_start_marker 无效");
+        }
+        for key in ["scripts", "claude_scripts"] {
+            if let Some(value) = raw.get(key) {
+                let map = value.as_object().with_context(|| format!("用户脚本配置 {key} 必须是对象"))?;
+                anyhow::ensure!(map.values().all(Value::is_boolean), "用户脚本配置 {key} 的值必须是布尔值");
+            }
+        }
+        if let Some(value) = raw.get("configs") {
+            let map = value.as_object().context("用户脚本配置 configs 必须是对象")?;
+            anyhow::ensure!(map.values().all(Value::is_object), "用户脚本配置 configs 的值必须是对象");
+        }
+        if let Some(value) = raw.get("market") {
+            let map = value.as_object().context("用户脚本配置 market 必须是对象")?;
+            anyhow::ensure!(map.values().all(|value| market_install_from_value(value).is_some()), "用户脚本配置 market 包含无效记录");
+        }
+        Ok(config_from_object(raw))
+    }
+
+    pub fn build_prepare_operation(id: &str, document_id: &str, revision: &str, allow_page: bool, sequence: u64) -> String {
+        format!(
+            r#"(() => {{
+  {RUNTIME_SCRIPT}
+  return JSON.stringify(window.__codexPlusUserScripts.prepareOperation({}, {}, {}, {}, {}));
+}})()"#,
+            json!(id), json!(document_id), json!(revision), json!(allow_page), sequence,
+        )
+    }
+
+    pub fn build_operation_probe(id: &str) -> String {
+        format!(
+            r##"(() => {{
+  {RUNTIME_SCRIPT}
+  const runtime = window.__codexPlusUserScripts;
+  const readiness = runtime.nativePageReadiness();
+  return JSON.stringify({{
+    documentId: runtime.documentId,
+    initialized: !!runtime.initialized,
+    refreshPending: !!runtime.refreshPending,
+    operation: runtime.reloadOperations[{}] || null,
+    revision: runtime.appliedRevision || null,
+    initialMode: runtime.initialMode || null,
+    initialSkipClaim: runtime.initialSkipClaim || null,
+    backendSource: window.__codexPlusBackendSource || null,
+    initialError: runtime.initialError || null,
+    ready: readiness.ready,
+    pageReadiness: readiness,
+    cleanupSupported: Object.values(runtime.scripts).every(script => !!script.cleanups?.length),
+    scripts: runtime.scripts
+  }});
+}})()"##,
+            json!(id)
+        )
+    }
+
+    pub fn build_apply_operation(id: &str, document_id: &str, revision: &str, bundle: &str, backend_source: &Value) -> String {
+        format!(
+            r#"(() => {{
+  {RUNTIME_SCRIPT}
+  const runtime = window.__codexPlusUserScripts;
+  const operation = runtime.applyOperation({}, {}, {}, () => {{
+    window.__codexPlusBackendSource = {};
+    window.__codexPlusBackendServices = [];
+    try {{ window.__codexPlusSyncBackendServices?.(); }} catch {{}}
+    {bundle}
+  }});
+  return JSON.stringify({{ operation, scripts: runtime.scripts }});
+}})()"#,
+            json!(id), json!(document_id), json!(revision), json!(backend_source),
+        )
     }
 
     /// 即便全部禁用也必须清理上一次运行的脚本。
@@ -1451,7 +2192,7 @@ impl UserScriptManager {
         let runtime_scripts = runtime_status
             .and_then(|value| value.get("scripts").or(Some(value)))
             .and_then(Value::as_object);
-        Ok(self
+        let mut result: Vec<Value> = self
             .scan_script_files(config)?
             .into_iter()
             .map(|script| {
@@ -1468,6 +2209,21 @@ impl UserScriptManager {
                     "not_loaded"
                 };
                 let live = runtime_scripts.and_then(|items| items.get(&script.key));
+                let configured_enabled = config.enabled && script.enabled;
+                let runtime_state = if runtime_scripts.is_none() {
+                    "unknown"
+                } else {
+                    live.and_then(|item| item.get("status").and_then(Value::as_str))
+                        .unwrap_or("not_loaded")
+                };
+                // 配置和页面登记是不同的事实；缺少页面快照时不能推断已经卸载。
+                let apply_state = match (configured_enabled, runtime_state) {
+                    (_, "unknown") => "unknown",
+                    // Registry membership does not establish which bundle revision ran.
+                    (false, "not_loaded") | (true, "loaded") => "unknown",
+                    (true, "failed") => "failed",
+                    _ => "pending",
+                };
                 let status = if fallback_status == "disabled" || package_error.is_some() {
                     fallback_status
                 } else {
@@ -1489,6 +2245,9 @@ impl UserScriptManager {
                     "kind": if script.package.is_some() { "package" } else { "script" },
                     "package": script.package.as_ref().map(|package| package.summary()),
                     "enabled": script.enabled,
+                    "configuredEnabled": configured_enabled,
+                    "runtimeStatus": runtime_state,
+                    "applyState": apply_state,
                     "claude_enabled": script.package.as_ref()
                         .filter(|package| package.claude_desktop.is_some())
                         .map(|_| config.claude_scripts.get(&script.key).copied().unwrap_or(true)),
@@ -1502,10 +2261,39 @@ impl UserScriptManager {
                     "homepage": market.as_ref().map(|item| item.homepage.as_str()).unwrap_or("")
                 })
             })
-            .collect())
+            .collect();
+        if let Some(runtime) = runtime_scripts {
+            for (key, live) in runtime {
+                if result.iter().any(|item| item["key"].as_str() == Some(key.as_str())) {
+                    continue;
+                }
+                result.push(json!({
+                    "key": key,
+                    "name": live["name"].as_str().unwrap_or(key),
+                    "source": live["source"].as_str().unwrap_or("user"),
+                    "kind": "script",
+                    "enabled": false,
+                    "configuredEnabled": false,
+                    "runtimeStatus": live["status"].as_str().unwrap_or("unknown"),
+                    "applyState": "pending",
+                    "status": "disabled",
+                    "error": "",
+                    "missing": true
+                }));
+            }
+        }
+        Ok(result)
     }
 
     fn scan_script_files(&self, config: &UserScriptConfig) -> anyhow::Result<Vec<UserScriptFile>> {
+        self.scan_script_files_with_mode(config, false)
+    }
+
+    fn scan_script_files_strict(&self, config: &UserScriptConfig) -> anyhow::Result<Vec<UserScriptFile>> {
+        self.scan_script_files_with_mode(config, true)
+    }
+
+    fn scan_script_files_with_mode(&self, config: &UserScriptConfig, strict: bool) -> anyhow::Result<Vec<UserScriptFile>> {
         fs::create_dir_all(&self.user_dir).with_context(|| {
             format!(
                 "failed to create user scripts directory {}",
@@ -1513,11 +2301,11 @@ impl UserScriptManager {
             )
         })?;
         let mut scripts = Vec::new();
-        self.append_scripts("builtin", &self.builtin_dir, config, &mut scripts)?;
+        self.append_scripts("builtin", &self.builtin_dir, config, &mut scripts, strict)?;
         if let Some(bundled) = &self.bundled_dir {
-            self.append_scripts(crate::bundled_extensions::BUNDLED_SOURCE, bundled, config, &mut scripts)?;
+            self.append_scripts(crate::bundled_extensions::BUNDLED_SOURCE, bundled, config, &mut scripts, strict)?;
         }
-        self.append_scripts("user", &self.user_dir, config, &mut scripts)?;
+        self.append_scripts("user", &self.user_dir, config, &mut scripts, strict)?;
         // 第三方拓展包的 replaces 写了改成官方拓展包的原内置拓展 id（如 usage-statusline）：
         // 它启用时对应的官方拓展包让位，停用时回来，和顶替内置拓展的效果一致。
         if config.enabled {
@@ -1551,24 +2339,43 @@ impl UserScriptManager {
         directory: &std::path::Path,
         config: &UserScriptConfig,
         scripts: &mut Vec<UserScriptFile>,
+        strict: bool,
     ) -> anyhow::Result<()> {
-        let Ok(entries) = fs::read_dir(directory) else {
-            return Ok(());
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if !strict || error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error).with_context(|| format!("读取脚本目录 {} 失败", directory.display())),
         };
         // 单文件脚本是 `*.js`；拓展包是带 codexpp.json 的子目录。目录名以 .js 结尾的
         // 不当包处理，免得和同名脚本文件抢同一个 key。
-        let mut paths = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                let is_js = path.extension().and_then(|value| value.to_str()) == Some("js");
-                if path.is_dir() {
-                    !is_js && path.join(EXTENSION_MANIFEST_FILE).is_file()
-                } else {
-                    is_js
+        let mut paths = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if !strict => { let _ = error; continue; }
+                Err(error) => return Err(error).with_context(|| format!("枚举脚本目录 {} 失败", directory.display())),
+            };
+            let path = entry.path();
+            let is_js = path.extension().and_then(|value| value.to_str()) == Some("js");
+            if strict {
+                let metadata = fs::metadata(&path).with_context(|| format!("读取脚本路径 {} 失败", path.display()))?;
+                if metadata.is_dir() {
+                    if !is_js {
+                        let manifest = path.join(EXTENSION_MANIFEST_FILE);
+                        match fs::metadata(&manifest) {
+                            Ok(meta) if meta.is_file() => paths.push(path),
+                            Ok(_) => anyhow::bail!("拓展清单不是文件: {}", manifest.display()),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(error).with_context(|| format!("读取拓展清单 {} 失败", manifest.display())),
+                        }
+                    }
+                } else if is_js {
+                    paths.push(path);
                 }
-            })
-            .collect::<Vec<_>>();
+            } else if (path.is_dir() && !is_js && path.join(EXTENSION_MANIFEST_FILE).is_file()) || (!path.is_dir() && is_js) {
+                paths.push(path);
+            }
+        }
         paths.sort_by_key(|path| {
             path.file_name()
                 .map(|name| name.to_string_lossy().to_lowercase())
@@ -1601,6 +2408,98 @@ impl UserScriptManager {
         }
         Ok(())
     }
+}
+
+fn bundle_revision(bundle: &str) -> String {
+    snapshot_revision(bundle, &[])
+}
+
+const RELOAD_PACKAGE_MAX_FILES: usize = 4096;
+const RELOAD_PACKAGE_MAX_ENTRIES: usize = 8192;
+const RELOAD_PACKAGE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const RELOAD_PACKAGE_MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
+
+/// 包内模块可以动态引用文件，不能只读取 backend.script 入口或猜测 import 语法。
+/// 纳入整个包（含 node_modules），.git 作为版本控制元数据排除；包外运行依赖不在快照契约内。
+fn snapshot_package_sources(root: &std::path::Path, key: &str) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    struct Budget { entries: usize, bytes: usize }
+    fn visit(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        key: &str,
+        ancestors: &mut BTreeSet<PathBuf>,
+        sources: &mut BTreeMap<String, Vec<u8>>,
+        budget: &mut Budget,
+    ) -> anyhow::Result<()> {
+        use std::io::Read;
+        budget.entries += 1;
+        anyhow::ensure!(budget.entries <= RELOAD_PACKAGE_MAX_ENTRIES, "拓展 {key} 的快照目录条目超过 {RELOAD_PACKAGE_MAX_ENTRIES}，未执行热重载");
+        let resolved = path.canonicalize().with_context(|| format!("解析拓展 {key} 快照路径失败: {}", path.display()))?;
+        anyhow::ensure!(resolved.starts_with(root), "拓展 {key} 的依赖超出包目录: {}", path.display());
+        let metadata = fs::metadata(&resolved)?;
+        if metadata.is_dir() {
+            anyhow::ensure!(ancestors.len() < 64 && ancestors.insert(resolved.clone()), "拓展 {key} 的快照目录过深或存在循环链接");
+            let mut paths = Vec::new();
+            for entry in fs::read_dir(&resolved)? {
+                let entry = entry?;
+                if entry.file_name() == ".git" { continue; }
+                paths.push(path.join(entry.file_name()));
+                anyhow::ensure!(paths.len() + budget.entries <= RELOAD_PACKAGE_MAX_ENTRIES,
+                    "拓展 {key} 的快照目录条目超过 {RELOAD_PACKAGE_MAX_ENTRIES}，未执行热重载");
+            }
+            paths.sort();
+            for child in paths { visit(root, &child, key, ancestors, sources, budget)?; }
+            ancestors.remove(&resolved);
+        } else {
+            anyhow::ensure!(metadata.is_file(), "拓展 {key} 包含不能快照的特殊文件: {}", path.display());
+            anyhow::ensure!(sources.len() < RELOAD_PACKAGE_MAX_FILES, "拓展 {key} 的快照文件超过 {RELOAD_PACKAGE_MAX_FILES}，未执行热重载");
+            anyhow::ensure!(metadata.len() <= RELOAD_PACKAGE_MAX_FILE_BYTES as u64,
+                "拓展 {key} 的快照单文件超过 16 MiB: {}", path.display());
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
+            fs::File::open(&resolved)?.take(RELOAD_PACKAGE_MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= RELOAD_PACKAGE_MAX_FILE_BYTES, "拓展 {key} 的快照单文件读取中超过 16 MiB");
+            budget.bytes = budget.bytes.checked_add(bytes.len()).context("拓展快照大小溢出")?;
+            anyhow::ensure!(budget.bytes <= RELOAD_PACKAGE_MAX_BYTES, "拓展 {key} 的快照总量超过 64 MiB，未执行热重载");
+            let relative = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+            sources.insert(format!("{key}\0{relative}"), bytes);
+        }
+        Ok(())
+    }
+    let root = root.canonicalize()?;
+    let mut sources = BTreeMap::new();
+    visit(&root, &root, key, &mut BTreeSet::new(), &mut sources, &mut Budget { entries: 0, bytes: 0 })?;
+    Ok(sources.into_iter().collect())
+}
+
+fn snapshot_revision(bundle: &str, backends: &[(String, Vec<u8>)]) -> String {
+    // Bundle text can contain extension secrets. Never expose an unsalted
+    // digest that could be used to test guesses against those values.
+    static KEY: std::sync::OnceLock<[u8; 64]> = std::sync::OnceLock::new();
+    let key = KEY.get_or_init(|| {
+        let mut key = [0_u8; 64];
+        for block in key.chunks_exact_mut(16) {
+            block.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        }
+        key
+    });
+    let mut inner_key = *key;
+    let mut outer_key = *key;
+    for byte in &mut inner_key { *byte ^= 0x36; }
+    for byte in &mut outer_key { *byte ^= 0x5c; }
+    let mut inner = Sha256::new();
+    inner.update(inner_key);
+    inner.update((bundle.len() as u64).to_be_bytes());
+    inner.update(bundle.as_bytes());
+    for (key, bytes) in backends {
+        inner.update((key.len() as u64).to_be_bytes());
+        inner.update(key.as_bytes());
+        inner.update((bytes.len() as u64).to_be_bytes());
+        inner.update(bytes);
+    }
+    let mut outer = Sha256::new();
+    outer.update(outer_key);
+    outer.update(inner.finalize());
+    format!("{:x}", outer.finalize())
 }
 
 #[derive(Debug)]
@@ -1905,7 +2804,7 @@ pub fn default_user_script_manager() -> UserScriptManager {
     default_user_script_manager_for_settings(crate::paths::default_settings_path())
 }
 
-pub(crate) fn default_user_script_manager_for_settings(settings_path: PathBuf) -> UserScriptManager {
+pub fn default_user_script_manager_for_settings(settings_path: PathBuf) -> UserScriptManager {
     let config_dir = default_user_scripts_config_dir();
     let builtin_dir = std::env::current_exe()
         .ok()
@@ -2268,22 +3167,30 @@ pub(crate) fn extension_asset_mime(path: &str) -> Option<&'static str> {
 }
 
 /// 读包内 `assets/` 下的资源，转成 data URL 交给页面（`ctx.asset(path)`）。超限的跳过并记下原因。
-fn load_extension_assets(root: &std::path::Path) -> (std::collections::BTreeMap<String, String>, Vec<String>) {
+fn load_extension_assets(root: &std::path::Path, strict: bool) -> anyhow::Result<(std::collections::BTreeMap<String, String>, Vec<String>)> {
     use base64::Engine;
     let mut assets = std::collections::BTreeMap::new();
     let mut skipped = Vec::new();
     let mut total = 0usize;
     let mut stack = vec![root.join("assets")];
     while let Some(directory) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&directory) else {
-            continue;
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if !strict || error.kind() == std::io::ErrorKind::NotFound && directory == root.join("assets") => continue,
+            Err(error) => return Err(error).with_context(|| format!("读取资源目录 {} 失败", directory.display())),
         };
-        let mut entries = entries.flatten().collect::<Vec<_>>();
+        let mut entries = if strict {
+            entries.collect::<std::io::Result<Vec<_>>>()?
+        } else {
+            entries.flatten().collect::<Vec<_>>()
+        };
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) if !strict => continue,
+                Err(error) => return Err(error).with_context(|| format!("读取资源 {} 失败", path.display())),
             };
             if metadata.file_type().is_symlink() {
                 continue;
@@ -2305,12 +3212,14 @@ fn load_extension_assets(root: &std::path::Path) -> (std::collections::BTreeMap<
             }
             // 每次扫描都会走到这里：按（路径, 大小, 修改时间）缓存编码结果，文件没变就不重读。
             let modified = metadata.modified().ok();
-            let cached = ASSET_CACHE.lock().unwrap().get(&path).filter(|entry| entry.0 == metadata.len() && entry.1 == modified).map(|entry| entry.2.clone());
+            let cached = (!strict).then(|| ASSET_CACHE.lock().unwrap().get(&path).filter(|entry| entry.0 == metadata.len() && entry.1 == modified).map(|entry| entry.2.clone())).flatten();
             let data_url = match cached {
                 Some(data_url) => data_url,
                 None => {
-                    let Ok(bytes) = fs::read(&path) else {
-                        continue;
+                    let bytes = match fs::read(&path) {
+                        Ok(bytes) => bytes,
+                        Err(_) if !strict => continue,
+                        Err(error) => return Err(error).with_context(|| format!("读取资源 {} 失败", path.display())),
                     };
                     let data_url = format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
                     ASSET_CACHE.lock().unwrap().insert(path.clone(), (metadata.len(), modified, data_url.clone()));
@@ -2321,7 +3230,7 @@ fn load_extension_assets(root: &std::path::Path) -> (std::collections::BTreeMap<
             assets.insert(relative, data_url);
         }
     }
-    (assets, skipped)
+    Ok((assets, skipped))
 }
 
 type AssetCacheEntry = (u64, Option<std::time::SystemTime>, String);
@@ -2719,9 +3628,9 @@ fn parse_extension_manifest(
     if !package.schedules.is_empty() && package.backend.is_none() {
         anyhow::bail!("schedules 调用的是后台方法，需要同时声明 backend");
     }
-    package.locales = load_extension_locales(&root)?;
+    package.locales = load_extension_locales(&root, false)?;
     package.providers = parse_extension_providers(raw.get("providers"), &package.config_schema)?;
-    (package.assets, package.skipped_assets) = load_extension_assets(&root);
+    (package.assets, package.skipped_assets) = load_extension_assets(&root, false)?;
     // 版本校验放在最后：清单本身的格式错误更具体，优先报。
     if let Some(range) = engine_range {
         let current = crate::extension_semver::codexpp_version();
@@ -2787,13 +3696,20 @@ const EXTENSION_LOCALE_MAX_BYTES: u64 = 256 * 1024;
 
 /// 读包内 `locale/*.json`。文件名就是语言 id（如 `en`、`zh`、`zh-TW`），内容是 JSON 对象；
 /// `meta.title` / `meta.description` 是本地化的名称与描述，其余键是拓展自己的词条。
-fn load_extension_locales(root: &std::path::Path) -> anyhow::Result<std::collections::BTreeMap<String, Value>> {
+fn load_extension_locales(root: &std::path::Path, strict: bool) -> anyhow::Result<std::collections::BTreeMap<String, Value>> {
     let mut locales = std::collections::BTreeMap::new();
     let directory = root.join("locale");
-    let Ok(entries) = fs::read_dir(&directory) else {
-        return Ok(locales);
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if !strict || error.kind() == std::io::ErrorKind::NotFound => return Ok(locales),
+        Err(error) => return Err(error).with_context(|| format!("读取语言目录 {} 失败", directory.display())),
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) if !strict => continue,
+            Err(error) => return Err(error).with_context(|| format!("枚举语言目录 {} 失败", directory.display())),
+        };
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
@@ -2812,7 +3728,8 @@ fn load_extension_locales(root: &std::path::Path) -> anyhow::Result<std::collect
         if !resolved.starts_with(root) {
             anyhow::bail!("locale/{lang}.json 指向包外");
         }
-        if fs::metadata(&resolved).map(|meta| meta.len()).unwrap_or(0) > EXTENSION_LOCALE_MAX_BYTES {
+        let size = if strict { fs::metadata(&resolved)?.len() } else { fs::metadata(&resolved).map(|meta| meta.len()).unwrap_or(0) };
+        if size > EXTENSION_LOCALE_MAX_BYTES {
             anyhow::bail!("locale/{lang}.json 超过 256 KiB");
         }
         let value: Value = serde_json::from_str(&fs::read_to_string(&resolved)?)
@@ -3390,9 +4307,24 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
             })
             .unwrap_or_default(),
         skip_next_start,
+        skip_start_marker: raw.get("skip_start_marker").and_then(skip_start_marker_from_value),
         market,
         configs,
     }
+}
+
+fn skip_start_marker_from_value(value: &Value) -> Option<SkipStartMarker> {
+    let marker = value.as_object()?;
+    let id = marker.get("id")?.as_str()?.to_string();
+    if uuid::Uuid::parse_str(&id).is_err() { return None; }
+    let document_id = match marker.get("document_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(document)) if !document.is_empty() => Some(document.clone()),
+        _ => return None,
+    };
+    let acknowledged = marker.get("acknowledged")?.as_bool()?;
+    if acknowledged && document_id.is_none() { return None; }
+    Some(SkipStartMarker { id, document_id, acknowledged })
 }
 
 pub fn market_script_filename(id: &str) -> String {
@@ -3451,6 +4383,104 @@ fn current_unix_timestamp_string() -> String {
 #[cfg(test)]
 mod runtime_status_tests {
     use super::*;
+
+    #[test]
+    fn snapshot_cleanup_runs_outside_the_current_thread_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("snapshot");
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("dependency.mjs");
+        fs::write(&file, "export default 1").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().max_blocking_threads(1).build().unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        runtime.block_on(async move {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let occupied = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+            drop(StagedBackendFiles {
+                files: vec![file.clone()], directories: vec![directory.clone()],
+            });
+            // 唯一的 blocking 线程尚未释放，清理应排队，当前线程仍能完成下一轮调度。
+            assert!(file.is_file(), "Drop 不应在当前线程执行文件清理");
+            tokio::time::timeout(Duration::from_secs(1), tokio::task::yield_now()).await.unwrap();
+            release.send(()).unwrap();
+            occupied.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while directory.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("后台快照清理未在期限内完成");
+        });
+    }
+
+    #[test]
+    fn snapshot_cleanup_without_runtime_removes_only_recorded_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("snapshot");
+        fs::create_dir(&directory).unwrap();
+        let file = directory.join("dependency.mjs");
+        let preserved = temp.path().join("unrelated.txt");
+        fs::write(&file, "export default 1").unwrap();
+        fs::write(&preserved, "keep").unwrap();
+        drop(StagedBackendFiles { files: vec![file], directories: vec![directory.clone()] });
+        assert!(!directory.exists());
+        assert_eq!(fs::read_to_string(preserved).unwrap(), "keep");
+    }
+
+    #[test]
+    fn snapshot_rejects_direct_configuration_edits_between_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(&config, "{}").unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), &config);
+        // 未参与 bundle 的扩展字段也要检测；外部编辑并不持本进程的锁。
+        let result = manager.reload_snapshot_checked(|| fs::write(&config, r#"{"externalEdit":true}"#).unwrap());
+        assert!(result.unwrap_err().to_string().contains("混合版本"));
+    }
+
+    #[test]
+    fn snapshot_rejects_direct_dependency_edits_between_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let user = temp.path().join("user");
+        let package = user.join("demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join(EXTENSION_MANIFEST_FILE), r#"{"id":"demo","renderer":"main.js"}"#).unwrap();
+        fs::write(package.join("main.js"), "window.demo = true").unwrap();
+        fs::write(package.join("dynamic.js"), "module.exports = 1").unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), user, temp.path().join("config.json"));
+        let result = manager.reload_snapshot_checked(|| fs::write(package.join("dynamic.js"), "module.exports = 2").unwrap());
+        assert!(result.unwrap_err().to_string().contains("混合版本"));
+    }
+
+    #[test]
+    fn snapshot_config_lock_is_shared_by_independent_manager_objects() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = || UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+        let first = manager();
+        let second = manager();
+        let lock = first.config_file_lock().unwrap();
+        let path = temp.path().join("config.json.lock");
+        let contender = fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
+        drop(lock);
+        fs2::FileExt::try_lock_exclusive(&contender).unwrap();
+        drop(contender);
+        second.set_global_enabled(false).unwrap();
+        assert!(!first.load_config().enabled);
+    }
+
+    #[test]
+    fn no_page_reload_requires_explicit_capability() {
+        assert!(supports_no_page_reload(&json!({ "capabilities": { "noPageReload": true } })));
+        assert!(!supports_no_page_reload(&json!({ "capabilities": { "noPageReload": false } })));
+        assert!(!supports_no_page_reload(&json!({ "capabilities": { "noPageReload": "true" } })));
+        assert!(!supports_no_page_reload(&json!({ "scripts": [] })));
+        assert!(!supports_no_page_reload(&Value::Null));
+    }
 
     fn target(id: &str, title: &str, url: &str, websocket: &str) -> crate::cdp::CdpTarget {
         crate::cdp::CdpTarget {

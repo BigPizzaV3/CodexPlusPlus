@@ -1,7 +1,7 @@
 //! 拓展的常驻后台：清单校验、用真实 Node 跑通的方法调用、事件长轮询与停止。
 
 use super::common::with_extension_backend_cleanup;
-use codex_plus_core::extension_backend::{call, events, stop, stop_all};
+use codex_plus_core::extension_backend::{backend_generation, bind_backend_snapshot, call, events, stop, stop_all, stop_all_if_generation};
 use codex_plus_core::user_scripts::UserScriptManager;
 use futures_util::FutureExt;
 use serde_json::json;
@@ -117,6 +117,12 @@ export default ({ config, dataDir, emit }) => {
         assert!(stop(&manager, &key, Some("new")).await);
         assert!(!stop(&manager, &key, None).await, "已经停了");
 
+        // 服务或定时器可能先于页面实例启动新后台，旧页面的 stop 不能匹配无实例归属的后台。
+        assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 2);
+        assert!(!stop(&manager, &key, Some("old")).await);
+        assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 4);
+        stop_all(&manager).await;
+
         // 改了配置（或脚本）后下一次调用按新内容重起。
         assert_eq!(call(&manager, &key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 2);
         manager.set_extension_config(&key, json!({"step": 10}).as_object().unwrap()).unwrap();
@@ -141,6 +147,142 @@ async fn backend_startup_failures_are_reported() {
     with_extension_backend_cleanup(&[&manager], async {
         let error = call(&manager, &format!("user:{id}"), "x", json!(null), Duration::from_secs(10), None).await.unwrap_err();
         assert!(error.to_string().contains("启动就坏"), "{error}");
+    }).await;
+}
+
+#[tokio::test]
+async fn bound_backend_generation_loads_snapshot_bytes_for_delayed_dynamic_imports_and_resources() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() { return; }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let key = "user:immutable";
+    write_package(&temp, "immutable", json!({
+        "backend": { "script": "backend/main.mjs", "provides": ["snapshotProbe"] },
+        "config": { "dependency": { "type": "string", "default": "dynamic" } }
+    }), &[
+        ("backend/main.mjs", r#"import fs from "node:fs";
+export default ({config}) => ({
+  async read() {
+    const dependency = await import(`./${config.dependency}.mjs`);
+    return {value: dependency.default, data: fs.readFileSync(new URL("./data.txt", import.meta.url), "utf8")};
+  },
+  where() { return import.meta.url; }
+});"#),
+        ("backend/dynamic.mjs", "export default 'first';"),
+        ("backend/data.txt", "first resource"),
+    ]);
+    with_extension_backend_cleanup(&[&manager], async {
+        let first_revision = manager.reload_snapshot().unwrap().1;
+        let snapshot = manager.stage_backend_snapshot(&first_revision).unwrap();
+        let generation = backend_generation(&manager);
+        let source = bind_backend_snapshot(&manager, generation, "first-document", snapshot).await.unwrap();
+        assert_eq!(source["revision"], first_revision);
+        assert!(codex_plus_core::extension_backend::backend_source_is_current(&manager, &source));
+        let mut missing_revision = source.clone();
+        missing_revision.as_object_mut().unwrap().remove("revision");
+        assert!(!codex_plus_core::extension_backend::backend_source_is_current(&manager, &missing_revision));
+
+        // 尚未启动 Node。原目录之后的变更不许影响已绑定代际第一次 import。
+        let package = temp.path().join("user/immutable/backend");
+        fs::write(package.join("dynamic.mjs"), "export default 'second';").unwrap();
+        fs::write(package.join("data.txt"), "second resource").unwrap();
+        assert_eq!(call(&manager, key, "read", json!(null), Duration::from_secs(10), None).await.unwrap(),
+            json!({"value": "first", "data": "first resource"}));
+        let location = call(&manager, key, "where", json!(null), Duration::from_secs(10), None).await.unwrap();
+        assert!(location.as_str().unwrap().contains(".reload-backend-"));
+        // 同一代的后台被按实例停止后再启动，也仍从这份保留的快照加载。
+        assert!(stop(&manager, key, None).await);
+        assert_eq!(call(&manager, key, "read", json!(null), Duration::from_secs(10), None).await.unwrap(),
+            json!({"value": "first", "data": "first resource"}));
+
+        stop_all(&manager).await;
+        let second_revision = manager.reload_snapshot().unwrap().1;
+        assert_ne!(first_revision, second_revision);
+        let snapshot = manager.stage_backend_snapshot(&second_revision).unwrap();
+        bind_backend_snapshot(&manager, backend_generation(&manager), "second-document", snapshot).await.unwrap();
+        assert_eq!(call(&manager, key, "read", json!(null), Duration::from_secs(10), None).await.unwrap(),
+            json!({"value": "second", "data": "second resource"}));
+        stop_all(&manager).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fs::read_dir(temp.path()).unwrap().filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().starts_with(".reload-backend-"))
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("后台快照目录未在期限内清理");
+    }).await;
+}
+
+#[test]
+fn staging_backend_snapshot_rejects_a_revision_changed_before_staging() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "changing", json!({"backend": {"script": "backend/main.mjs"}}),
+        &[("backend/main.mjs", "export default () => ({})"), ("backend/dependency.mjs", "export default 1")]);
+    let first = manager.reload_snapshot().unwrap().1;
+    fs::write(temp.path().join("user/changing/backend/dependency.mjs"), "export default 2").unwrap();
+    assert!(manager.stage_backend_snapshot(&first).unwrap_err().to_string().contains("快照已变化"));
+    assert!(!fs::read_dir(temp.path()).unwrap().filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().starts_with(".reload-backend-")));
+}
+
+#[tokio::test]
+async fn stopped_startup_cannot_register_or_remove_a_new_generation() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let key = "user:delayed";
+    write_package(&temp, "delayed", json!({"backend": {"script": "backend/main.mjs"}}), &[(
+        "backend/main.mjs",
+        r#"import fs from "node:fs";
+export default async ({ dataDir }) => {
+  const marker = `${dataDir}/started-${process.pid}`;
+  fs.writeFileSync(marker, "");
+  while (!fs.existsSync(`${marker}.release`)) await new Promise(resolve => setTimeout(resolve, 10));
+  let count = 0;
+  return { add() { return ++count; } };
+};"#,
+    )]);
+    let data_dir = temp.path().join("extension-data").join("delayed");
+    async fn markers(dir: &std::path::Path, count: usize) -> Vec<std::path::PathBuf> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let entries = fs::read_dir(dir).ok().into_iter().flatten().flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("started-")
+                        && !path.to_string_lossy().ends_with(".release"))
+                    .collect::<Vec<_>>();
+                if entries.len() >= count {
+                    return entries;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("后台未按预期启动")
+    }
+    let start = |manager: UserScriptManager| tokio::spawn(async move {
+        call(&manager, key, "add", json!(null), Duration::from_secs(10), None).await
+    });
+    with_extension_backend_cleanup(&[&manager], async {
+        let old_generation = backend_generation(&manager);
+        let old = start(manager.clone());
+        let first = markers(&data_dir, 1).await.remove(0);
+        assert!(stop_all_if_generation(&manager, old_generation).await);
+        let new = start(manager.clone());
+        let second = markers(&data_dir, 2).await.into_iter().find(|path| *path != first).unwrap();
+
+        let old_result = tokio::time::timeout(Duration::from_secs(2), old).await
+            .expect("停止操作必须及时取消尚未就绪的旧启动").unwrap();
+        assert!(old_result.is_err(), "旧启动不得登记到新代际");
+        assert!(!stop_all_if_generation(&manager, old_generation).await, "旧操作不得停止新代际");
+        let follower = start(manager.clone());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(markers(&data_dir, 2).await.len(), 2, "旧启动的清理不得删除新启动登记");
+        fs::write(format!("{}.release", second.display()), "").unwrap();
+        let values = [new.await.unwrap().unwrap().as_u64().unwrap(), follower.await.unwrap().unwrap().as_u64().unwrap()];
+        assert!(values.contains(&1) && values.contains(&2), "{values:?}");
+        assert_eq!(call(&manager, key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 3);
     }).await;
 }
 
