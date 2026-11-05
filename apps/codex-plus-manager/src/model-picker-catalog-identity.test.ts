@@ -41,6 +41,34 @@ const row = (label: string, model?: string) => ({
   },
 });
 
+it("clears the remembered default only when a successful catalog explicitly removes it", () => {
+  const definition = source.match(/^  function codexPlusModelPickerDefaultGroupId\([^]*?^  \}/m)?.[0];
+  assert.ok(definition);
+  const state = { defaultGroupId: "", providerDirty: false };
+  const context = vm.createContext({
+    codexModelCatalog: { status: "ok", codex_plus_default_group_id: "provider:a" },
+    codexPlusModelPickerGroupsState: state,
+    codexPlusModelPickerRememberProvider: () => {},
+    providerNameOf: () => "",
+  });
+  const getDefault = vm.runInContext(`${definition}\ncodexPlusModelPickerDefaultGroupId`, context);
+  assert.equal(getDefault(), "provider:a");
+  context.codexModelCatalog = { status: "failed", codex_plus_default_group_id: "" };
+  assert.equal(getDefault(), "provider:a", "failure must retain the last successful default");
+  context.codexModelCatalog = { status: "ok" };
+  assert.equal(getDefault(), "provider:a", "older backends without the field retain the fallback");
+  state.providerDirty = false;
+  context.codexModelCatalog = { status: "ok", codex_plus_default_group_id: "",
+    modelMetadata: { old: { codex_plus_default: true, codex_plus_group_id: "provider:a" } } };
+  assert.equal(getDefault(), "");
+  assert.equal(state.defaultGroupId, "");
+  assert.equal(state.providerDirty, true, "the cleared default must be persisted");
+  context.codexModelCatalog = { status: "not_applied", codex_plus_default_group_id: "provider:b" };
+  assert.equal(getDefault(), "provider:b");
+  context.codexModelCatalog = { status: "not_applied", codex_plus_default_group_id: "" };
+  assert.equal(getDefault(), "");
+});
+
 it("canonical row IDs resolve identical labels without borrowing the selected parent model", () => {
   const r = runtime({ status: "ok", models: ["a/sol", "b/sol"],
     modelMetadata: { "a/sol": entry("GPT-6.1-Sol", "a"), "b/sol": entry("GPT-6.1-Sol", "b") } });

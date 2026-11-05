@@ -234,7 +234,9 @@
   function codexPlusModelPickerDefaultGroupId() {
     const state = codexPlusModelPickerGroupsState;
     const direct = codexModelCatalog?.codex_plus_default_group_id;
-    if (typeof direct === "string" && direct.trim()) {
+    // 成功目录的显式空值代表取消默认成员；缺字段或请求失败仍沿用上次结果。
+    if (typeof direct === "string"
+        && (direct.trim() || ["ok", "not_applied"].includes(codexModelCatalog?.status))) {
       if (state.defaultGroupId !== direct.trim()) {
         state.defaultGroupId = direct.trim();
         state.providerDirty = true;
