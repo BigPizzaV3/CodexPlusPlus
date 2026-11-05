@@ -320,6 +320,33 @@ it("a new supplier does not inherit a previous supplier's successful snapshot on
   assert.equal(r.api.catalog().status, "failed");
 });
 
+it("changes source when the active supplier keeps its ID but changes mode or protocol", async () => {
+  for (const change of [{ relayMode: "official" }, { protocol: "chat" }]) {
+    const r = runtime({}, {
+      relayProfilesEnabled: true, activeRelayId: "gateway", modelCatalogFingerprint: "unchanged",
+      relayProfiles: [{ id: "gateway", relayMode: "pureApi", protocol: "responses" }],
+    });
+    await load(r, ["a/old"]);
+    const selected = { hostId: "local", model: "user-selected", reasoningEffort: "ultra",
+      models: [{ model: "native" }] };
+    const oldRequest = r.api.load(true);
+    const stale = r.pending.shift()!;
+    const settings = r.settings();
+    r.update({ ...settings, relayProfiles: [{ ...settings.relayProfiles[0], ...change }] });
+    assert.equal(r.api.catalog().status, "loading");
+    assert.equal(r.pending.length, 1, "a changed source must trigger a fresh catalog read");
+    r.pending.shift()!.reject(new Error("unavailable"));
+    await settle();
+    stale.resolve(catalog(["a/stale"]));
+    await oldRequest;
+    assert.deepEqual([...r.api.catalog().models], []);
+    assert.equal(r.api.catalog().status, "failed");
+    r.api.patch(selected);
+    assert.equal(selected.model, "user-selected");
+    assert.equal(selected.reasoningEffort, "ultra");
+  }
+});
+
 it("catalog changes notify the installed picker without requiring it during initialization", async () => {
   const r = runtime();
   await load(r, ["a/sol"]);
