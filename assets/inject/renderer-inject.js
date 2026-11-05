@@ -432,7 +432,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "34";
+  const codexAppServerModelRequestPatchVersion = "35";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -11772,6 +11772,9 @@
 
   function modelJsonResponseLooksPatchable(payload) {
     if (!payload || typeof payload !== "object") return false;
+    // 通用 JSON 包装器没有请求游标，末页的空 nextCursor 不能证明它是完整列表。
+    if ([payload, payload.result, payload.message?.result].some(modelResponseHasPagination)
+        || Array.isArray(payload.pages)) return false;
     const descriptorArrays = [
       payload.models,
       payload.data,
@@ -11902,7 +11905,8 @@
           request.params = { ...(request.params || {}), includeHidden: true };
           if (request.id != null) {
             const requestId = String(request.id);
-            window.__codexPlusModelCatalogRuntime.recordRequest(requestId, modelResponseHostId(detail, request, request.params));
+            window.__codexPlusModelCatalogRuntime.recordRequest(
+              requestId, modelResponseHostId(detail, request, request.params), request.params);
           }
         }
       } catch (error) {
@@ -11921,9 +11925,32 @@
     }, true);
   }
 
-  function recordModelListRequest(requestId, hostId) {
+  function modelResponseHasPagination(value) {
+    return !!value && typeof value === "object"
+      && ("nextCursor" in value || "next_cursor" in value);
+  }
+
+  function modelRequestCursor(params) {
+    if (params?.method && params?.params) return modelRequestCursor(params.params);
+    return params?.cursor ?? null;
+  }
+
+  function modelResponseIsComplete(result, params) {
+    if (modelRequestCursor(params) !== null) return false;
+    if (!modelResponseHasPagination(result)) return true;
+    if (!params || typeof params !== "object") return false;
+    if ("nextCursor" in result && result.nextCursor !== null) return false;
+    if ("next_cursor" in result && result.next_cursor !== null) return false;
+    return true;
+  }
+
+  function recordModelListRequest(requestId, hostId, params) {
     const previous = codexPlusModelListRequests.get(requestId);
-    const record = { hostId, ambiguous: !!previous && (previous.ambiguous || previous.hostId !== hostId) };
+    const cursor = modelRequestCursor(params);
+    const cursorKnown = !!params && typeof params === "object";
+    const record = { hostId, cursor, cursorKnown, ambiguous: !!previous
+      && (previous.ambiguous || previous.hostId !== hostId
+        || previous.cursor !== cursor || previous.cursorKnown !== cursorKnown) };
     codexPlusModelListRequests.set(requestId, record);
     if (codexPlusModelListRequests.size > 64) {
       codexPlusModelListRequests.delete(codexPlusModelListRequests.keys().next().value);
@@ -11941,7 +11968,8 @@
     if (!codexPlusModelListRequests.has(requestId)) return false;
     const record = codexPlusModelListRequests.get(requestId);
     codexPlusModelListRequests.delete(requestId);
-    if (record.ambiguous) return false;
+    if (record.ambiguous || !modelResponseIsComplete(message?.result,
+      record.cursorKnown ? { cursor: record.cursor } : null)) return false;
     const hostId = modelResponseHostId(data, message, message?.result, record.hostId);
     let changed = false;
     if (patchModelArray(message?.result?.data, true, hostId)) changed = true;
@@ -11964,8 +11992,9 @@
     return String(method || "");
   }
 
-  function patchAppServerModelResult(method, result, hostId) {
+  function patchAppServerModelResult(method, result, hostId, params) {
     if (!["list-models-for-host", "model/list"].includes(method)) return result;
+    if (!modelResponseIsComplete(result, params)) return result;
     hostId = modelResponseHostId(hostId, result);
     try {
       if (Array.isArray(result)) patchModelArray(result, true, hostId);
@@ -12118,7 +12147,7 @@
       }
       if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
+      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client), nextParams || {});
     };
     if (typeof client.prewarmThreadStart === "function") {
       const originalPrewarmThreadStart = (client.__codexPlusServiceTierOriginalPrewarmThreadStart
@@ -12369,7 +12398,7 @@
       }
       if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
+      return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client), nextParams || {});
     };
     // 所有请求最终都经 createRequest(method, params, options) 组装：拓展的 codex/request 中间件挂在这里。
     // createRequest 是同步的，与 codex/request 的契约一致（中间件同步返回，返回 Promise 视为出错并放行）。

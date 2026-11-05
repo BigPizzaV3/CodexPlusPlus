@@ -7,7 +7,7 @@ const source = readFileSync(new URL("../../../assets/inject/renderer-inject/70-m
 const declarations = source.slice(source.indexOf("  const previousCodexModelCatalogRuntime"),
   source.indexOf("  if (window.__CODEX_PLUS_TEST_SERVICE_TIER__)"));
 const functions = source.slice(source.indexOf("  function codexPlusModelUnlockEnabled()"),
-  source.indexOf("  function appServerModelRequestMethod("));
+  source.indexOf("  function codexPerModelContextEnabled("));
 
 function runtime(sharedWindow: any = {}, initialSettings?: any) {
   let now = 10000;
@@ -49,7 +49,8 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
     return { load: loadCodexModelCatalog, refresh: refreshCodexModelCatalogForSettings,
       patch: patchModelContainer, install: installModelJsonResponsePatch,
       installMessages: patchAppServerModelMessages, record: recordModelListRequest,
-      patchMcp: patchMcpModelResponseData, patchStatsig: patchStatsigModelDynamicConfig,
+      patchMcp: patchMcpModelResponseData, patchAppResult: patchAppServerModelResult,
+      patchStatsig: patchStatsigModelDynamicConfig,
       installStatsig: patchStatsigModelWhitelist,
       catalog: () => codexModelCatalog }; })()`, context);
   return {
@@ -312,6 +313,60 @@ it("response wrappers use the current runtime after hot reinjection", async () =
   const response = new r.window.testResponse({ hostId: "local", models: [{ model: "native" }] });
   const value = await response.json();
   assert.deepEqual(value.models.map((entry: any) => entry.model), ["a/new"]);
+});
+
+it("does not rewrite an HTTP response with an unknown page position", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  r.api.install();
+  for (const nextCursor of ["next", null]) {
+    const value = { hostId: "local", data: [{ model: "native" }], nextCursor };
+    const original = structuredClone(value);
+    assert.deepEqual(await new r.window.testResponse(value).json(), original);
+  }
+});
+
+it("patches only complete MCP and app-server model responses", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  r.api.installMessages();
+  for (const [cursor, nextCursor, shouldPatch] of [
+    [null, null, true],
+    [null, "next", false],
+    ["previous", null, false],
+  ] as const) {
+    const id = `${cursor}-${nextCursor}`;
+    const request = { id, method: "model/list", params: { hostId: "local", cursor } };
+    r.emit("codex-message-from-view", { detail: { type: "mcp-request", request } });
+    const response = { type: "mcp-response", message: { id,
+      result: { data: [{ model: "native" }], nextCursor } } };
+    r.api.patchMcp(response);
+    assert.deepEqual(response.message.result.data.map(entry => entry.model), [shouldPatch ? "a/custom" : "native"]);
+    const appResult = { data: [{ model: "native" }], nextCursor };
+    r.api.patchAppResult("model/list", appResult, "local", { cursor });
+    assert.deepEqual(appResult.data.map(entry => entry.model), [shouldPatch ? "a/custom" : "native"]);
+  }
+});
+
+it("does not infer a first page from an older listener or a reused request id", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  r.api.record("legacy", "local");
+  const legacy = { type: "mcp-response", message: { id: "legacy",
+    result: { data: [{ model: "native" }], nextCursor: null } } };
+  assert.equal(r.api.patchMcp(legacy), false);
+  assert.equal(legacy.message.result.data[0].model, "native");
+
+  r.api.record("collision", "local", { cursor: null });
+  r.api.record("collision", "local", { cursor: "previous" });
+  const collision = { type: "mcp-response", message: { id: "collision",
+    result: { data: [{ model: "native" }], nextCursor: null } } };
+  assert.equal(r.api.patchMcp(collision), false);
+  assert.equal(collision.message.result.data[0].model, "native");
+
+  const result = { data: [{ model: "native" }], next_cursor: null };
+  r.api.patchAppResult("model/list", result, "local");
+  assert.equal(result.data[0].model, "native");
 });
 
 it("in-flight model/list requests retain their host and are consumed once after reinjection", async () => {
