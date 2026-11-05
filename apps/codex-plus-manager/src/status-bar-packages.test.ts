@@ -137,3 +137,30 @@ test("请求状态条：经 composer.above 插槽挂载、提供 codexpp.proxySt
   assert.deepEqual(h.scope.codexPlusProxyStatusState.requests, []);
   assert.equal(h.services.has("codexpp.proxyStatus"), false);
 });
+
+test("请求状态条空闲时不找输入框、不读布局（#2883 跟进）", () => {
+  const source = packageSource("proxy-request-status", ["status.js"]);
+  let cardLookups = 0;
+  const document = {
+    hidden: false,
+    head: { appendChild: () => undefined },
+    getElementById: () => null,
+    createElement: () => ({ dataset: {}, setAttribute: () => undefined }),
+    // 找输入框卡片会走到这里；空闲时一次都不该调用。
+    querySelectorAll: (selector: string) => { if (selector.includes("data-composer-surface-variant")) cardLookups += 1; return []; },
+    querySelector: () => null,
+  };
+  const window = { setInterval: () => 1, clearInterval: () => undefined, setTimeout: () => 1, clearTimeout: () => undefined };
+  const api = new Function("document", "window", `${source}\nreturn { state: codexPlusProxyStatusState, render: codexPlusProxyStatusRender };`)(document, window) as {
+    state: { running: boolean; requests: unknown[] };
+    render(): void;
+  };
+  api.state.running = true;
+  api.state.requests = [];
+  for (let i = 0; i < 20; i += 1) api.render();
+  assert.equal(cardLookups, 0, "没有进行中的请求时不该去找输入框（那一步会逐个读布局）");
+  // 有请求时照常去找输入框。
+  api.state.requests = [{ threadId: "t1", phase: "requesting" }];
+  api.render();
+  assert.equal(cardLookups, 1);
+});

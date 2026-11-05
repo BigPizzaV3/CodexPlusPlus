@@ -33,6 +33,8 @@
     failures: 0,
     /** composer.above 插槽给的容器（每个输入框一个），由 main.js 增删。 */
     slotHosts: new Set(),
+    /** 上一次画出的内容摘要：没变就不重建节点。 */
+    lastSignature: "",
   };
 
   // 开关就是拓展本身（#2824）：停用后不显示、不轮询；重新启用后装上即接上。
@@ -152,7 +154,9 @@
 
   function codexPlusProxyStatusHide() {
     const node = codexPlusProxyStatusState.node;
-    if (node) node.dataset.hidden = "true";
+    // 值没变就不写，免得每 500ms 一次的倒计时在空闲时也制造 DOM 变更、唤醒别人的 MutationObserver。
+    if (node && node.dataset.hidden !== "true") node.dataset.hidden = "true";
+    codexPlusProxyStatusState.lastSignature = "";
   }
 
   function codexPlusProxyStatusFormatDuration(ms) {
@@ -164,6 +168,12 @@
 
   function codexPlusProxyStatusRender() {
     if (!codexPlusProxyStatusEnabled()) {
+      codexPlusProxyStatusHide();
+      return;
+    }
+    // 没有任何进行中的请求（绝大多数时间）：先返回，不去找输入框。找输入框要对每张卡片读一次布局，
+    // 原先空闲时也每 500ms 读一轮（#2883 跟进：实测约 2.9 次/秒的强制布局全来自这里）。
+    if (!codexPlusProxyStatusState.requests.length) {
       codexPlusProxyStatusHide();
       return;
     }
@@ -211,6 +221,10 @@
     else if (attempts > 1) meta.push(`第 ${attempts} 次`);
     if (visibleRequests.length > 1) meta.push(`+${visibleRequests.length - 1}`);
 
+    // 内容和上一轮一样就不重建（倒计时按秒变，500ms 一跳时有一半是重复的）。
+    const signature = JSON.stringify([phase, label, meta, lastError, lastErrorMessage]);
+    if (signature === codexPlusProxyStatusState.lastSignature && node.dataset.hidden === "false" && node.isConnected) return;
+    codexPlusProxyStatusState.lastSignature = signature;
     node.dataset.hidden = "false";
     node.dataset.phase = phase || "requesting";
     node.setAttribute("aria-label", text.aria);
