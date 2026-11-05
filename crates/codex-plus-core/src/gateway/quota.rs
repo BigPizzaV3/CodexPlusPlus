@@ -200,7 +200,7 @@ impl DispatchGate {
             return Err(SubscriptionBlocked {
                 action: SubscriptionLimitAction::NextPermitted,
                 status: 403,
-                message: "订阅账号的回退策略仅允许下一个已授权订阅账号，未允许 API 回退".to_string(),
+                message: "订阅账号的回退策略仅允许下一个订阅账号，未允许 API 回退".to_string(),
             });
         }
         let result = dispatch_decision(gateway, relay);
@@ -221,20 +221,19 @@ fn action_rank(action: &SubscriptionLimitAction) -> u8 {
     }
 }
 
-fn shared_policy(gateway: &GatewaySettings, relay: &RelayProfile) -> Option<SubscriptionPolicy> {
-    let provider = gateway.provider(&relay.id)?;
-    // Permission belongs to this explicit binding; an unused alias cannot revoke another one.
-    let mut policy = provider.subscription_policy.clone().filter(|policy| policy.permitted)?;
+fn shared_policy(gateway: &GatewaySettings, relay: &RelayProfile) -> SubscriptionPolicy {
+    let mut policy = gateway.provider(&relay.id)
+        .and_then(|provider| provider.subscription_policy.clone()).unwrap_or_default();
     let Some(scope) = crate::native_auth::account_scope(&relay.auth_contents) else {
-        return Some(policy);
+        return policy;
     };
     for alias in &gateway.providers {
-        if !crate::official_login::member_uses_official_login_transport(&alias.relay)
+        if !alias.enabled || !crate::official_login::member_uses_official_login_transport(&alias.relay)
             || crate::native_auth::account_scope(&alias.relay.auth_contents).as_ref() != Some(&scope)
         {
             continue;
         }
-        let Some(other) = alias.subscription_policy.as_ref().filter(|other| other.permitted) else {
+        let Some(other) = alias.subscription_policy.as_ref() else {
             continue;
         };
         policy.max_age_seconds = policy.max_age_seconds.min(other.max_age_seconds);
@@ -263,7 +262,7 @@ fn shared_policy(gateway: &GatewaySettings, relay: &RelayProfile) -> Option<Subs
                 .min(other.default_used_percent_limit.unwrap_or(100)),
         );
     }
-    Some(policy)
+    policy
 }
 
 /// A local admission decision only: this neither reserves official quota nor changes native auth.
@@ -287,9 +286,7 @@ fn dispatch_decision_at(
         status,
         message: format!("ChatGPT 订阅账号「{}」：{reason}", relay.name),
     };
-    let Some(policy) = shared_policy(gateway, relay) else {
-        return Err(denied(SubscriptionLimitAction::ApiFallback, 403, "未明确允许网关使用此账号"));
-    };
+    let policy = shared_policy(gateway, relay);
     let unknown = |reason: &str| {
         if matches!(
             &policy.unknown_usage,
@@ -601,12 +598,10 @@ struct RefreshFlight {
 }
 
 fn refresh_key(relay: &RelayProfile) -> String {
-    if crate::official_login::member_uses_official_login_transport(relay)
-        && let Some(scope) = crate::native_auth::account_scope(&relay.auth_contents)
-    {
-        return format!("chatgpt:{scope}");
+    if !relay.official_account_ref.trim().is_empty() {
+        return format!("credential:{}", relay.official_account_ref.trim());
     }
-    format!("relay:{}", relay.id)
+    format!("credential:{}", relay.id)
 }
 
 fn refresh_flight(relay: &RelayProfile) -> Arc<RefreshFlight> {
@@ -662,7 +657,7 @@ where
     result
 }
 
-/// 手动刷新可绕过缓存，与同账号在途查询共享结果；读取用量不授予消费权限。
+/// 手动刷新可绕过缓存，与同一凭证的在途查询共享结果。
 pub async fn refresh(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQuota>> {
     refresh_coordinated(relay, None, || fetch_reading(relay)).await
 }
@@ -670,7 +665,7 @@ pub async fn refresh(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQuot
 async fn fetch_reading(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQuota>> {
     let now = now_ms();
     let quota = if crate::official_login::member_uses_official_login_transport(relay) {
-        let credential = crate::official_login::resolve_official_credential(relay, false).await?;
+        let credential = crate::official_login::resolve_official_credential_for_quota(relay).await?;
         // 额度查询按这个供应商自己的代理设置发（#2775）。
         let mut request = crate::http_client::build_for_relay(
             reqwest::Client::builder().timeout(Duration::from_secs(20)),
@@ -702,13 +697,16 @@ async fn fetch_reading(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQu
     Ok(quota)
 }
 
-/// 包含尚未启用/授权的已导入账号，按真实账号去重。有效缓存与失败退避限制轮询请求。
+/// 包含尚未启用的已导入账号，按凭证引用去重。有效缓存与失败退避限制轮询请求。
 fn prefetch_targets(gateway: &GatewaySettings) -> Vec<(&RelayProfile, u64)> {
     let mut targets: Vec<(&RelayProfile, u64)> = Vec::new();
     let mut positions = HashMap::new();
     for provider in &gateway.providers {
         let relay = &provider.relay;
-        if !supports(relay) {
+        if provider.source == "native:external"
+            || crate::official_login::is_native_owned_login(relay)
+            || !supports(relay)
+        {
             continue;
         }
         let max_age_ms = provider.subscription_policy.as_ref()
@@ -745,6 +743,50 @@ pub async fn watch(store: GatewayStore) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    fn default_gateway_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(Mutex::default)
+    }
+
+    struct DefaultGatewaySnapshot {
+        path: PathBuf,
+        previous: Option<Vec<u8>>,
+    }
+
+    impl DefaultGatewaySnapshot {
+        fn install(relay: &RelayProfile) -> Self {
+            let path = GatewayStore::default_path();
+            let previous = std::fs::read(&path).ok();
+            let provider = serde_json::from_value(json!({
+                "source": "login:chatgpt",
+                "relay": relay,
+            }))
+            .unwrap();
+            GatewayStore::default()
+                .save(&GatewaySettings {
+                    providers: vec![provider],
+                    ..GatewaySettings::default()
+                })
+                .unwrap();
+            Self { path, previous }
+        }
+    }
+
+    impl Drop for DefaultGatewaySnapshot {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(bytes) => {
+                    let _ = std::fs::write(&self.path, bytes);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&self.path);
+                }
+            }
+        }
+    }
 
     fn subscription_relay(id: &str, subject: &str) -> RelayProfile {
         use base64::Engine;
@@ -763,6 +805,7 @@ mod tests {
             base_url: String::new(),
             api_key: String::new(),
             auth_contents: json!({
+                "auth_mode": "chatgpt",
                 "tokens": {
                     "id_token": format!("header.{claims}.signature"),
                     "access_token": format!("access-{id}"),
@@ -803,25 +846,18 @@ mod tests {
     }
 
     #[test]
-    fn saved_subscription_requires_explicit_gateway_permission() {
-        let relay = subscription_relay("quota-denied", "quota-denied");
+    fn legacy_subscription_is_usable_without_a_policy_or_usage_reading() {
+        let relay = subscription_relay("quota-legacy", "quota-legacy");
         let mut gateway = GatewaySettings::default();
         add_subscription(&mut gateway, &relay, None);
+        assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
         record_for_relay(&relay, reading(0.0, 1_000, 2_000));
-        assert!(!SubscriptionPolicy::default().permitted);
-        assert_eq!(
-            dispatch_decision_at(&gateway, &relay, 1_000)
-                .unwrap_err()
-                .status,
-            403
-        );
+        assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
         gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
-        assert_eq!(
-            dispatch_decision_at(&gateway, &relay, 1_000)
-                .unwrap_err()
-                .status,
-            403
-        );
+        assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
+        let legacy: SubscriptionPolicy = serde_json::from_value(json!({"permitted": false})).unwrap();
+        assert_eq!(legacy, SubscriptionPolicy::default());
+        assert!(serde_json::to_value(&legacy).unwrap().get("permitted").is_none());
     }
 
     #[test]
@@ -832,7 +868,6 @@ mod tests {
             &mut gateway,
             &relay,
             Some(SubscriptionPolicy {
-                permitted: true,
                 default_used_percent_limit: Some(0),
                 ..SubscriptionPolicy::default()
             }),
@@ -868,7 +903,7 @@ mod tests {
             &mut gateway,
             &relay,
             Some(SubscriptionPolicy {
-                permitted: true,
+                unknown_usage: SubscriptionUnknownUsage::Block,
                 ..SubscriptionPolicy::default()
             }),
         );
@@ -930,8 +965,8 @@ mod tests {
                 &mut gateway,
                 relay,
                 Some(SubscriptionPolicy {
-                    permitted: true,
                     default_used_percent_limit: Some(cap),
+                    unknown_usage: SubscriptionUnknownUsage::Block,
                     ..SubscriptionPolicy::default()
                 }),
             );
@@ -962,7 +997,6 @@ mod tests {
             &mut gateway,
             &relay,
             Some(SubscriptionPolicy {
-                permitted: true,
                 default_used_percent_limit: Some(80),
                 on_limit: SubscriptionLimitAction::NextPermitted,
                 ..SubscriptionPolicy::default()
@@ -1175,7 +1209,7 @@ mod tests {
         for plan in ["plus", "pro", "team"] {
             let relay = subscription_relay(&format!("quota-week-{plan}"), &format!("quota-week-{plan}"));
             let mut gateway = GatewaySettings::default();
-            let mut policy = SubscriptionPolicy { permitted: true, ..SubscriptionPolicy::default() };
+            let mut policy = SubscriptionPolicy::default();
             policy.window_used_percent_limits.insert("300".into(), 0);
             policy.window_used_percent_limits.insert("10080".into(), 80);
             add_subscription(&mut gateway, &relay, Some(policy));
@@ -1196,7 +1230,9 @@ mod tests {
     fn empty_complete_inventory_requires_official_allowance_and_credits_do_not_grant_it() {
         let relay = subscription_relay("quota-empty-flags", "quota-empty-flags");
         let mut gateway = GatewaySettings::default();
-        add_subscription(&mut gateway, &relay, Some(SubscriptionPolicy { permitted: true, ..SubscriptionPolicy::default() }));
+        add_subscription(&mut gateway, &relay, Some(SubscriptionPolicy {
+            unknown_usage: SubscriptionUnknownUsage::Block, ..SubscriptionPolicy::default()
+        }));
         for (time, flags, status) in [
             (1000, json!({"allowed": true, "limit_reached": false}), None),
             (1001, json!({"allowed": false, "limit_reached": true}), Some(429)),
@@ -1249,7 +1285,7 @@ mod tests {
         let relay = subscription_relay("quota-mixed-age", "quota-mixed-age");
         let mut gateway = GatewaySettings::default();
         add_subscription(&mut gateway, &relay, Some(SubscriptionPolicy {
-            permitted: true, unknown_usage: SubscriptionUnknownUsage::Allow, ..SubscriptionPolicy::default()
+            unknown_usage: SubscriptionUnknownUsage::Allow, ..SubscriptionPolicy::default()
         }));
         record_for_relay(&relay, weekly_usage("plus", 1000));
         record_for_relay(&relay, reading(100.0, 700000, u64::MAX));
@@ -1274,7 +1310,11 @@ mod tests {
     async fn refresh_deduplicates_aliases_and_reuses_usage_without_consumption_permission() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let a = subscription_relay("quota-prefetch-a", "quota-prefetch");
-        let b = subscription_relay("quota-prefetch-b", "quota-prefetch");
+        let mut b = subscription_relay("quota-prefetch-b", "quota-prefetch");
+        b.official_account_ref = a.id.clone();
+        let _default_gateway_lock = default_gateway_test_lock().lock().unwrap();
+        let _canonical = DefaultGatewaySnapshot::install(&a);
+        assert!(crate::official_login::member_uses_official_login_transport(&b));
         let calls = AtomicUsize::new(0);
         let fetch = || async {
             calls.fetch_add(1, Ordering::SeqCst);
@@ -1312,6 +1352,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failure_of_one_login_does_not_back_off_an_independent_session_of_the_same_account() {
+        let first = subscription_relay("quota-session-failed", "quota-session-owner");
+        let second = subscription_relay("quota-session-ok", "quota-session-owner");
+        assert!(refresh_coordinated(&first, Some(600000), || async {
+            Err(anyhow::anyhow!("expired native session"))
+        }).await.is_err());
+        assert!(refresh_coordinated(&second, Some(600000), || async {
+            Ok(Some(weekly_usage("plus", now_ms())))
+        }).await.is_ok());
+        assert_eq!(quota_for_relay(&first), quota_for_relay(&second));
+    }
+
+    #[test]
+    fn preserved_native_backups_are_not_prefetch_or_lending_targets() {
+        let relay = subscription_relay("native-backup-prefetch", "native-backup-owner");
+        let mut gateway = GatewaySettings::default();
+        add_subscription(&mut gateway, &relay, None);
+        gateway.providers[0].source = "native:external".into();
+        assert!(prefetch_targets(&gateway).is_empty());
+        gateway.providers[0].source.clear();
+        let mut auth: Value = serde_json::from_str(&gateway.providers[0].relay.auth_contents).unwrap();
+        auth[crate::official_login::GATEWAY_OWNED_MARKER] = json!(true);
+        auth[crate::official_login::NATIVE_OWNED_MARKER] = json!(true);
+        gateway.providers[0].relay.auth_contents = auth.to_string();
+        assert!(prefetch_targets(&gateway).is_empty());
+        assert!(!crate::official_login::is_gateway_owned_login(&gateway.providers[0].relay));
+    }
+
+    #[tokio::test]
     async fn cancelled_refresh_releases_the_account_slot() {
         let relay = subscription_relay("quota-refresh-cancel", "quota-refresh-cancel");
         let notified = Arc::new(tokio::sync::Notify::new());
@@ -1334,7 +1403,11 @@ mod tests {
     #[test]
     fn prefetch_uses_strictest_alias_freshness_regardless_of_order_or_permission() {
         let a = subscription_relay("quota-ttl-a", "quota-ttl");
-        let b = subscription_relay("quota-ttl-b", "quota-ttl");
+        let mut b = subscription_relay("quota-ttl-b", "quota-ttl");
+        b.official_account_ref = a.id.clone();
+        let _default_gateway_lock = default_gateway_test_lock().lock().unwrap();
+        let _canonical = DefaultGatewaySnapshot::install(&a);
+        assert!(crate::official_login::member_uses_official_login_transport(&b));
         let mut gateway = GatewaySettings::default();
         for (relay, seconds) in [(&a, 600), (&b, 30)] {
             add_subscription(&mut gateway, relay, Some(SubscriptionPolicy {

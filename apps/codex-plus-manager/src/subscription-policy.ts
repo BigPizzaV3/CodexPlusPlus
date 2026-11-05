@@ -1,5 +1,4 @@
 export type SubscriptionPolicy = {
-  permitted: boolean;
   defaultUsedPercentLimit?: number | null;
   windowUsedPercentLimits: Record<string, number>;
   onLimit: "stop" | "nextPermitted" | "apiFallback";
@@ -14,11 +13,10 @@ export type SubscriptionPolicyInput = Partial<Omit<SubscriptionPolicy, "windowUs
 
 export function defaultSubscriptionPolicy(): SubscriptionPolicy {
   return {
-    permitted: false,
     defaultUsedPercentLimit: null,
     windowUsedPercentLimits: {},
     onLimit: "stop",
-    unknownUsage: "block",
+    unknownUsage: "allow",
     maxAgeSeconds: 600,
   };
 }
@@ -26,7 +24,6 @@ export function defaultSubscriptionPolicy(): SubscriptionPolicy {
 export function normalizeSubscriptionPolicy(value?: SubscriptionPolicyInput | null): SubscriptionPolicy {
   const defaults = defaultSubscriptionPolicy();
   return {
-    permitted: value?.permitted === true,
     defaultUsedPercentLimit: value?.defaultUsedPercentLimit ?? defaults.defaultUsedPercentLimit,
     windowUsedPercentLimits: { ...value?.windowUsedPercentLimits },
     onLimit: value?.onLimit ?? defaults.onLimit,

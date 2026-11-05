@@ -905,7 +905,6 @@ export function quotaWindowFresh(quota: ProviderQuota, window: QuotaWindow, nowM
 export function subscriptionBlockReason(entry: GatewayPoolEntry, nowMs = Date.now()): string | null {
   if (entry.account !== "chatgpt") return null;
   const policy = normalizeSubscriptionPolicy(entry.subscriptionPolicy);
-  if (!policy.permitted) return "此账号尚未授权网关使用。请先在「订阅消费」中开启授权，再进行测试。";
   if (policy.defaultUsedPercentLimit === 0) return "订阅额度已用上限设为 0%，已停止新请求";
   const unknown = (text: string) => policy.unknownUsage === "allow" ? null : text;
   const quota = entry.quota;

@@ -457,16 +457,16 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
 fn native_auth_state() -> anyhow::Result<NativeAuthState> {
     let settings = SettingsStore::default().load()?;
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    codex_plus_core::native_auth::preserve_live_auth(&home)?;
     let live = match std::fs::read_to_string(home.join("auth.json")) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
     let gateway = GatewayStore::default().load()?;
+    let has_native_login = codex_plus_core::official_login::official_login_from_auth_contents(&live).is_some();
     let mut accounts = Vec::new();
     let mut actual_account_ref = None;
-    let mut actual_label = String::new();
+    let mut actual_label = if has_native_login { "ChatGPT".to_string() } else { String::new() };
     for provider in &gateway.providers {
         if codex_plus_core::official_login::official_login_from_auth_contents(
             &provider.relay.auth_contents,
@@ -497,7 +497,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         });
     }
     let drift = match settings.native_auth_selection.as_ref() {
-        Some(codex_plus_core::settings::NativeAuthSelection::None) if actual_account_ref.is_some() => {
+        Some(codex_plus_core::settings::NativeAuthSelection::None) if has_native_login => {
             Some("当前 auth 仍有登录凭据".to_string())
         }
         Some(codex_plus_core::settings::NativeAuthSelection::Account { account_ref })
@@ -2453,7 +2453,9 @@ pub async fn login_gateway_chatgpt(
                 .providers
                 .iter_mut()
                 .find(|provider| {
-                    accounts::same_chatgpt_login(
+                    provider.source != "native:external"
+                    && !codex_plus_core::official_login::is_native_owned_login(&provider.relay)
+                    && accounts::same_chatgpt_login(
                         &provider.relay.auth_contents,
                         &account.auth_contents,
                     )

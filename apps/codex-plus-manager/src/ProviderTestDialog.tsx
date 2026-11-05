@@ -204,7 +204,7 @@ export function ProviderTestDialog({
         <footer className="pf-foot">
           <span className="pf-error">{error}</span>
           {subscriptionBlocked && onEditSubscription ? (
-            <Button onClick={() => { close(); onEditSubscription(); }} size="sm" type="button" variant="ghost">{t("设置订阅消费")}</Button>
+            <Button onClick={() => { close(); onEditSubscription(); }} size="sm" type="button" variant="ghost">{t("设置订阅额度")}</Button>
           ) : null}
           {running ? (
             <Button onClick={cancel} size="sm" type="button" variant="ghost">{t("取消测试")}</Button>

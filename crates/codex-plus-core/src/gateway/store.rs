@@ -49,15 +49,13 @@ pub enum SubscriptionUnknownUsage {
 
 impl Default for SubscriptionUnknownUsage {
     fn default() -> Self {
-        Self::Block
+        Self::Allow
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionPolicy {
-    #[serde(default)]
-    pub permitted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_used_percent_limit: Option<u8>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -77,11 +75,10 @@ fn default_subscription_max_age_seconds() -> u64 {
 impl Default for SubscriptionPolicy {
     fn default() -> Self {
         Self {
-            permitted: false,
             default_used_percent_limit: None,
             window_used_percent_limits: BTreeMap::new(),
             on_limit: SubscriptionLimitAction::Stop,
-            unknown_usage: SubscriptionUnknownUsage::Block,
+            unknown_usage: SubscriptionUnknownUsage::Allow,
             max_age_seconds: default_subscription_max_age_seconds(),
         }
     }
@@ -149,7 +146,7 @@ pub struct GatewayProvider {
     /// 和 Key 一样只存在 gateway.json，界面只拿到打码后的样子。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newapi_access: Option<crate::relay_billing::NewApiAccess>,
-    /// 订阅账号是否允许被网关消耗，以及官方窗口的硬上限。
+    /// 官方订阅窗口的硬上限；未配置时沿用接入即可使用的行为。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_policy: Option<SubscriptionPolicy>,
     /// 上次「从上游同步上下文窗口 / 思考等级」写进去的值（#2807）。

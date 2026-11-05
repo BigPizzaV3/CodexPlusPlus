@@ -649,7 +649,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn unpermitted_official_probe_stops_before_credentials_are_prepared() {
+    async fn zero_cap_official_probe_stops_before_credentials_are_prepared() {
         let relay = RelayProfile {
             id: "unpermitted-probe".into(),
             name: "Synthetic account".into(),
@@ -665,7 +665,9 @@ mod tests {
             }).to_string(),
             ..RelayProfile::default()
         };
-        let provider = serde_json::from_value(serde_json::json!({ "relay": relay })).unwrap();
+        let provider = serde_json::from_value(serde_json::json!({
+            "relay": relay, "subscriptionPolicy": { "defaultUsedPercentLimit": 0 }
+        })).unwrap();
         let gateway = GatewaySettings {
             providers: vec![provider],
             ..GatewaySettings::default()
@@ -676,7 +678,7 @@ mod tests {
         ).await.unwrap();
         assert!(!result.ok);
         assert_eq!(result.category, "subscription_policy");
-        assert!(result.error.contains("未明确允许"));
+        assert!(result.error.contains("上限设为 0%"));
         assert_eq!(result.http_status, None);
     }
 

@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Context;
 use serde_json::Value;
 
-use crate::gateway::store::{GatewayProvider, GatewayStore, SubscriptionPolicy};
+use crate::gateway::store::{GatewayProvider, GatewayStore};
 use crate::settings::{BackendSettings, NativeAuthSelection, RelayProfile, SettingsStore};
 
 fn jwt_claims(token: &str) -> Option<Value> {
@@ -204,10 +204,14 @@ fn preserve_auth(
             );
             return Ok(Some(provider.relay.id.clone()));
         }
-        // Preserving a native login never grants permission to spend its subscription.
+        // A preserved native session remains a backup, not a separately rotating gateway login.
         let mut stored_auth = auth_object(live)?;
         stored_auth.insert(
             crate::official_login::GATEWAY_OWNED_MARKER.to_string(),
+            Value::Bool(true),
+        );
+        stored_auth.insert(
+            crate::official_login::NATIVE_OWNED_MARKER.to_string(),
             Value::Bool(true),
         );
         stored_auth.remove(crate::official_login::LENT_TO_CODEX_MARKER);
@@ -226,7 +230,6 @@ fn preserve_auth(
             "enabled": false,
             "source": "native:external",
             "relay": relay,
-            "subscriptionPolicy": SubscriptionPolicy::default(),
         }))?;
         provider.extra.insert(
             NATIVE_GENERATION.to_string(),
@@ -245,6 +248,9 @@ pub fn preserve_live_auth(home: &Path) -> anyhow::Result<Option<String>> {
         return Ok(None);
     }
     let settings = SettingsStore::default().load()?;
+    if settings.native_auth_selection.is_none() {
+        return Ok(None);
+    }
     let live = read_auth(home)?;
     preserve_auth(
         &GatewayStore::default(),
@@ -291,6 +297,9 @@ pub fn project_native_auth(home: &Path, proposed: &str) -> anyhow::Result<String
         return Ok(proposed.to_string());
     }
     let settings = SettingsStore::default().load()?;
+    if settings.native_auth_selection.is_none() {
+        return Ok(proposed.to_string());
+    }
     let live = read_auth(home)?;
     let store = GatewayStore::default();
     preserve_auth(&store, &settings, live.as_deref().unwrap_or_default())?;
@@ -328,13 +337,26 @@ fn remember_projection(store: &GatewayStore, account_ref: &str, auth: &str) -> a
     Ok(())
 }
 
-fn gateway_auth(account_ref: &str) -> anyhow::Result<String> {
-    let gateway = GatewayStore::default().load()?;
-    gateway
-        .provider(account_ref)
-        .map(|provider| provider.relay.auth_contents.clone())
-        .filter(|contents| !contents.trim().is_empty())
+pub(crate) fn gateway_auth(account_ref: &str) -> anyhow::Result<String> {
+    gateway_auth_optional(account_ref)?
         .with_context(|| format!("找不到网关账号凭证：{account_ref}"))
+}
+
+pub(crate) fn gateway_auth_optional(account_ref: &str) -> anyhow::Result<Option<String>> {
+    let gateway = GatewayStore::default().load()?;
+    Ok(gateway
+        .provider(account_ref)
+        .map(|provider| {
+            let mut auth = provider.relay.auth_contents.clone();
+            if provider.source == "native:external"
+                && let Ok(mut value) = serde_json::from_str::<Value>(&auth)
+            {
+                value[crate::official_login::NATIVE_OWNED_MARKER] = Value::Bool(true);
+                auth = value.to_string();
+            }
+            auth
+        })
+        .filter(|contents| !contents.trim().is_empty()))
 }
 
 /// Resolve a profile's canonical account reference without changing persisted state.
@@ -459,9 +481,10 @@ pub(crate) fn merge_selected_auth(live: &str, selected: Option<&str>) -> anyhow:
 
 /// Save the choice before publishing auth, with the settings store's conditional rollback.
 pub fn set_native_auth_selection(account_ref: Option<&str>) -> anyhow::Result<()> {
+    let home = crate::codex_home::default_codex_home_dir();
+    let _guard = crate::official_login::native_auth_write_guard(&home)?;
     let settings_store = SettingsStore::default();
     let mut settings = settings_store.load()?;
-    let home = crate::codex_home::default_codex_home_dir();
     let auth_path = home.join("auth.json");
     let previous_auth = read_auth(&home)?;
     let gateway = GatewayStore::default();
@@ -595,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn external_login_is_preserved_without_gateway_permission() {
+    fn explicit_switch_preserves_native_sessions_as_non_refreshable_backups() {
         let temp = tempfile::tempdir().unwrap();
         let store = GatewayStore::at(temp.path().join("gateway.json"));
         let mut settings = BackendSettings::default();
@@ -619,7 +642,9 @@ mod tests {
         assert_eq!(gateway.providers.len(), 2);
         for provider in &gateway.providers {
             assert!(!provider.enabled);
-            assert!(!provider.subscription_policy.as_ref().unwrap().permitted);
+            assert!(provider.subscription_policy.is_none());
+            assert!(crate::official_login::is_native_owned_login(&provider.relay));
+            assert!(!crate::official_login::is_gateway_owned_login(&provider.relay));
         }
         assert!(same_credential_generation(
             &gateway.provider(&second).unwrap().relay.auth_contents,

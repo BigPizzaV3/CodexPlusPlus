@@ -845,9 +845,9 @@ function PoolRow({
           ) : null}
           {entry.account === "chatgpt" ? (
             <div className="gw-detail-row">
-              <span className="gw-detail-label">{t("订阅消费")}</span>
+              <span className="gw-detail-label">{t("订阅额度策略")}</span>
               <div className="gw-detail-value">
-                {entry.subscriptionPolicy?.permitted ? t("已授权网关") : t("未授权网关")}
+                {t("按官方窗口限制")}
               </div>
               <span className="gw-detail-actions"><EditIcon disabled={busy !== null} label={t("编辑订阅额度策略")} onClick={onEdit} /></span>
             </div>

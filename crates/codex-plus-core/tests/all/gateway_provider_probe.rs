@@ -521,7 +521,7 @@ async fn official_catalog_and_probe_negotiate_one_version_despite_an_old_native_
     let mut relay = gateway.provider(&id).unwrap().relay.clone();
     relay.gateway_proxy = Some("direct".into());
     gateway.providers[0].subscription_policy = Some(SubscriptionPolicy {
-        permitted: true, ..SubscriptionPolicy::default()
+        ..SubscriptionPolicy::default()
     });
     store.update(|saved| {
         *saved = gateway.clone();

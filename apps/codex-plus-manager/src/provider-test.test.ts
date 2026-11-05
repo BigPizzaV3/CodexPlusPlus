@@ -48,7 +48,9 @@ test("供应商测试：按失败分类给排查提示，认证失败时说明�
   assert.match(probeHints(result({ category: "rate_limited" }))[0].text, /限速.*额度/);
   assert.match(probeHints(result({ category: "timeout" }))[0].text, /Base URL 和代理/);
   assert.match(probeHints(result({ category: "connect" }))[0].text, /Base URL 和代理/);
-  assert.match(probeHints(result({ category: "subscription_policy" }))[0].text, /订阅消费策略.*授权.*官方额度/);
+  const quotaHint = probeHints(result({ category: "subscription_policy" }))[0].text;
+  assert.match(quotaHint, /订阅额度策略.*使用上限.*官方额度/);
+  assert.doesNotMatch(quotaHint, /授权/);
   assert.match(probeHints(result({ category: "whatever" }))[0].text, /错误原文/);
 });
 

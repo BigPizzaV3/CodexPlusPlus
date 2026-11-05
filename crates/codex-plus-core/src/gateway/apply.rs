@@ -809,13 +809,15 @@ fn with_openai_session_identity(contents: &str) -> anyhow::Result<String> {
 /// 池里能借给 Codex 登录的账号：打开着的、网关自己登录的 ChatGPT 账号（按池里的顺序取第一个）。
 fn lendable_login(gateway: &GatewaySettings) -> Option<&GatewayProvider> {
     gateway.providers.iter().find(|provider| {
-        provider.enabled && crate::official_login::is_gateway_owned_login(&provider.relay)
+        provider.enabled && provider.source != "native:external"
+            && crate::official_login::is_gateway_owned_login(&provider.relay)
     })
 }
 
 /// 把网关的 ChatGPT 账号借给 Codex 登录：token 写进 Codex 的 auth.json（其余字段不动），
 /// 网关里标记「借出」——之后这个账号以 Codex 那份为准，网关刷新也写回那里，两边始终同一代。
 fn lend_login_to_codex(ctx: &ApplyContext, provider_id: &str) -> anyhow::Result<()> {
+    let _guard = crate::official_login::native_auth_write_guard(&ctx.codex_home)?;
     // 带锁读改写：借出用的是锁内读到的最新一代 token，也不会把同时刷新写回的 token 盖掉。
     ctx.gateway.update(|gateway| {
         let Some(provider) = gateway
@@ -845,6 +847,7 @@ fn lend_login_to_codex(ctx: &ApplyContext, provider_id: &str) -> anyhow::Result<
 /// 收回借给 Codex 的账号：Codex 那份是最新一代，token 写回网关、去掉「借出」标记，
 /// 再从 Codex 的 auth.json 里拿掉这个登录（借之前 Codex 本来就没登录）。
 pub fn return_lent_login(store: &GatewayStore, codex_home: &std::path::Path) -> anyhow::Result<()> {
+    let _guard = crate::official_login::native_auth_write_guard(codex_home)?;
     let path = codex_home.join("auth.json");
     let live = stash::read_optional(&path)?.unwrap_or_default();
     let expected = store.load()?;
@@ -1126,6 +1129,7 @@ fn restore_codex_files(
     saved: &CodexLiveStash,
     live: &CodexLiveStash,
 ) -> anyhow::Result<()> {
+    let _guard = crate::official_login::native_auth_write_guard(&ctx.codex_home)?;
     let config = restored_codex_config(saved, live)?;
     stash::write_or_remove(&ctx.codex_home.join(CODEX_LIVE_FILES[0]), config.as_deref())?;
     let auth = restored_codex_auth(saved, live)?;
@@ -2887,6 +2891,31 @@ fn update_provider_in(
         bail!("供应商不存在：{id}");
     };
     if crate::official_login::member_uses_official_login_transport(&provider.relay) {
+        if let Some(proxy) = &input.proxy {
+            provider.proxy = clean_proxy(proxy)?;
+        }
+        if !input.name.trim().is_empty() {
+            provider.relay.name = input.name.trim().to_string();
+        }
+        if !input.model.trim().is_empty() || !input.model_list.trim().is_empty() {
+            provider.relay.model = input.model.trim().to_string();
+            provider.relay.model_list = input.model_list.clone();
+        }
+        if let Some(value) = input.strip_image_generation_tool {
+            provider.relay.strip_image_generation_tool = value;
+        }
+        if let Some(value) = input.strip_responses_image_detail {
+            provider.relay.strip_responses_image_detail = value;
+        }
+        if let Some(value) = input.disable_tool_search {
+            provider.relay.disable_tool_search = value;
+        }
+        if input.price.is_some() {
+            provider.price = clean_price(input.price.clone());
+        }
+        if let Some(prices) = &input.model_prices {
+            provider.model_prices = clean_model_prices(prices.clone());
+        }
         if let Some(policy) = input.subscription_policy.clone() {
             provider.subscription_policy = Some(policy.normalized());
         }
@@ -3922,7 +3951,6 @@ mod tests {
         let (_, id) = add_provider(&store, relay, "login:chatgpt", None).unwrap();
         let before = store.load().unwrap();
         let policy = crate::gateway::store::SubscriptionPolicy {
-            permitted: true,
             default_used_percent_limit: Some(80),
             ..Default::default()
         };
@@ -3932,6 +3960,48 @@ mod tests {
         }).unwrap();
         assert_eq!(updated.provider(&id).unwrap().relay, before.provider(&id).unwrap().relay);
         assert_eq!(updated.provider(&id).unwrap().subscription_policy.as_ref(), Some(&policy));
+        let updated = update_provider(&store, &id, &ProviderInput {
+            name: "Renamed account".into(),
+            model: "new-model".into(),
+            model_list: "new-model\nanother-model".into(),
+            proxy: Some("http://127.0.0.1:7890".into()),
+            strip_image_generation_tool: Some(true),
+            ..Default::default()
+        }).unwrap();
+        let provider = updated.provider(&id).unwrap();
+        let original = before.provider(&id).unwrap();
+        assert_eq!(provider.relay.name, "Renamed account");
+        assert_eq!(provider.relay.model, "new-model");
+        assert_eq!(provider.relay.model_list, "new-model\nanother-model");
+        assert_eq!(provider.proxy, "http://127.0.0.1:7890");
+        assert!(provider.relay.strip_image_generation_tool);
+        assert_eq!(provider.relay.auth_contents, original.relay.auth_contents);
+        assert_eq!(provider.relay.official_account_ref, original.relay.official_account_ref);
+        assert_eq!(provider.relay.relay_mode, original.relay.relay_mode);
+        assert_eq!(provider.subscription_policy.as_ref(), Some(&policy));
+        let persisted_before_rejected = store.load().unwrap();
+        assert!(update_provider(&store, &id, &ProviderInput {
+            proxy: Some("not a proxy".into()),
+            ..Default::default()
+        }).is_err());
+        let persisted = store.load().unwrap();
+        assert_eq!(persisted, persisted_before_rejected);
+        let persisted_provider = persisted.provider(&id).unwrap();
+        assert_eq!(persisted_provider.relay.model, "");
+        assert_eq!(
+            persisted_provider.relay.model_list,
+            "new-model\nanother-model"
+        );
+        assert_eq!(
+            persisted_provider.relay.gateway_proxy.as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(persisted_provider.relay.auth_contents, original.relay.auth_contents);
+        assert_eq!(
+            persisted_provider.relay.official_account_ref,
+            original.relay.official_account_ref
+        );
+        assert_eq!(persisted_provider.relay.relay_mode, original.relay.relay_mode);
     }
 
     #[test]

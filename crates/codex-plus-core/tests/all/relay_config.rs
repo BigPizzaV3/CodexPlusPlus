@@ -2018,7 +2018,7 @@ fn official_mix_api_profile_removes_auth_api_key_on_storage() {
 }
 
 #[test]
-fn apply_pure_api_config_preserves_login_and_writes_provider_token() {
+fn legacy_pure_api_config_writes_api_auth_and_provider_token() {
     let temp = tempfile::tempdir().unwrap();
     let original_auth = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old"}}"#;
     std::fs::write(
@@ -2041,14 +2041,7 @@ fn apply_pure_api_config_preserves_login_and_writes_provider_token() {
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(result.configured);
     assert!(!config.contains(r#"model = "gpt-5""#));
-    assert_eq!(
-        auth,
-        serde_json::from_str::<serde_json::Value>(original_auth).unwrap()
-    );
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
-        original_auth,
-    );
+    assert_eq!(auth, serde_json::json!({"OPENAI_API_KEY": "sk-test-redacted"}));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
     assert!(config.contains(r#"name = "custom""#));

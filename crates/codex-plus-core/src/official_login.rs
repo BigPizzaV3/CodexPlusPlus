@@ -243,6 +243,8 @@ fn live_chatgpt_login_from(home: &Path) -> Option<OfficialLogin> {
 /// 凭据里带这个标记的是网关自己登录的账号：token 存在 gateway.json，刷新也写回那里，
 /// 且不采纳 Codex 的 live 登录（两边是各自独立的登录，代际不能混用）。
 pub const GATEWAY_OWNED_MARKER: &str = "codex_plus_gateway";
+/// Explicitly preserved native sessions are backups, not independently refreshable gateway logins.
+pub const NATIVE_OWNED_MARKER: &str = "codex_plus_native_owned";
 
 /// 网关的账号正借给 Codex 登录（Codex 接入网关、自己没登录时）：这期间 token 以 Codex 的
 /// auth.json 为准（Codex 自己会刷新），网关刷新后也同时写回 auth.json，两边始终是同一代。
@@ -261,7 +263,12 @@ fn gateway_owned(profile: &RelayProfile) -> bool {
 
 /// 网关自己登录的 ChatGPT 账号（不是从直连模式复制来的）。
 pub fn is_gateway_owned_login(profile: &RelayProfile) -> bool {
-    gateway_owned(profile) && member_uses_official_login_transport(profile)
+    gateway_owned(profile) && !is_native_owned_login(profile)
+        && member_uses_official_login_transport(profile)
+}
+
+pub fn is_native_owned_login(profile: &RelayProfile) -> bool {
+    auth_flag(profile, NATIVE_OWNED_MARKER)
 }
 
 /// 网关的这个账号是否正借给 Codex 登录。
@@ -443,6 +450,16 @@ fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+pub(crate) fn native_auth_write_guard(
+    home: &Path,
+) -> anyhow::Result<Option<tokio::sync::MutexGuard<'static, ()>>> {
+    if !crate::native_auth::is_default_home(home) {
+        return Ok(None);
+    }
+    refresh_lock().try_lock().map(Some)
+        .map_err(|_| anyhow::anyhow!("官方凭据正在刷新，暂未切换原生登录，请稍后重试"))
+}
+
 fn refresh_failures() -> &'static Mutex<HashMap<String, u128>> {
     static FAILURES: OnceLock<Mutex<HashMap<String, u128>>> = OnceLock::new();
     FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -509,6 +526,16 @@ pub async fn resolve_official_credential(
     .await
 }
 
+/// Usage polling must not rotate a session currently owned by the native client.
+pub async fn resolve_official_credential_for_quota(
+    profile: &RelayProfile,
+) -> anyhow::Result<OfficialCredential> {
+    resolve_official_credential_mode(
+        profile, false, &SettingsStore::default(),
+        &crate::codex_home::default_codex_home_dir(), None, true,
+    ).await
+}
+
 async fn resolve_official_credential_with(
     profile: &RelayProfile,
     force_refresh: bool,
@@ -516,32 +543,43 @@ async fn resolve_official_credential_with(
     codex_home: &Path,
     token_url_override: Option<&str>,
 ) -> anyhow::Result<OfficialCredential> {
-    let native_selected = crate::native_auth::is_default_home(codex_home)
-        && crate::native_auth::selection_account_ref(&store.load()?)
+    resolve_official_credential_mode(
+        profile, force_refresh, store, codex_home, token_url_override, false,
+    ).await
+}
+
+async fn resolve_official_credential_mode(
+    profile: &RelayProfile,
+    force_refresh: bool,
+    store: &SettingsStore,
+    codex_home: &Path,
+    token_url_override: Option<&str>,
+    quota_read: bool,
+) -> anyhow::Result<OfficialCredential> {
+    let settings = store.load()?;
+    let native_explicit = crate::native_auth::is_default_home(codex_home)
+        && settings.native_auth_selection.is_some();
+    let native_selected = native_explicit
+        && crate::native_auth::selection_account_ref(&settings)
             == Some(if profile.official_account_ref.trim().is_empty() {
                 profile.id.as_str()
             } else {
                 profile.official_account_ref.trim()
             });
-    if native_selected {
-        crate::native_auth::preserve_live_auth(codex_home)?;
-    }
     let mut resolved = crate::native_auth::resolve_profile_credentials(profile)?;
-    if native_selected && profile.official_account_ref.trim().is_empty() {
-        let gateway = crate::gateway::store::GatewayStore::default().load()?;
-        resolved.auth_contents = gateway
-            .provider(&profile.id)
-            .context("所选原生登录账号已被删除")?
-            .relay
-            .auth_contents
-            .clone();
-    }
-    if native_selected
-        && let Ok(contents) = std::fs::read_to_string(codex_home.join("auth.json"))
-        && crate::native_auth::same_account(&contents, &resolved.auth_contents)
-        && !same_credential_generation(&contents, &resolved.auth_contents)
+    if gateway_owned(profile) && profile.official_account_ref.trim().is_empty()
+        && let Some(auth) = crate::native_auth::gateway_auth_optional(&profile.id)?
     {
-        persist_live_login(codex_home, &contents, &resolved.auth_contents);
+        let mut canonical = resolved.clone();
+        canonical.auth_contents = auth;
+        if is_native_owned_login(&canonical) {
+            resolved = canonical;
+        }
+    }
+    if let Some(result) = native_read_only_credential(
+        &resolved, native_selected, native_explicit, codex_home, quota_read, force_refresh,
+    ) {
+        return result;
     }
     let profile = &resolved;
     if !is_official_login_profile(profile) {
@@ -553,41 +591,46 @@ async fn resolve_official_credential_with(
             profile.name
         )
     })?;
-    let owned_by_gateway = gateway_owned(profile);
-    let lent_to_codex = is_lent_to_codex(profile);
-    // 借给 Codex 时与直连模式的官方账号一样，同一账号以 Codex 的 live 凭据为准。
-    let live = |home: &Path| {
-        if (owned_by_gateway || !profile.official_account_ref.trim().is_empty())
-            && !lent_to_codex
-            && !native_selected
-        {
-            None
-        } else {
-            std::fs::read_to_string(home.join("auth.json"))
-                .ok()
-                .filter(|contents| {
-                    serde_json::from_str::<Value>(contents)
-                        .ok()
-                        .is_some_and(|auth| {
-                            auth.get("auth_mode").and_then(Value::as_str) == Some("chatgpt")
-                        })
-                })
-        }
-    };
     let mut expected_auth = if native_selected {
         profile.auth_contents.clone()
     } else {
-        prefer_live_auth(&profile.auth_contents, live(codex_home).as_deref())
+        prefer_live_auth(&profile.auth_contents, live_auth_for_profile(profile, codex_home, native_selected, native_explicit).as_deref())
     };
     let initial_auth = expected_auth.clone();
     let login =
         official_login_from_auth_contents(&expected_auth).context("官方登录凭据格式无效")?;
-    if !force_refresh && !token_needs_refresh(&login.access_token) {
+    if !native_selected && !force_refresh && !token_needs_refresh(&login.access_token) {
         return Ok(credential(login));
     }
 
     // 串行刷新：并发请求只发一次刷新，其余等锁后直接用新凭据。
     let _guard = refresh_lock().lock().await;
+    let settings = store.load()?;
+    let native_explicit = crate::native_auth::is_default_home(codex_home)
+        && settings.native_auth_selection.is_some();
+    let selected_now = native_explicit
+        && crate::native_auth::selection_account_ref(&settings)
+            == Some(if profile.official_account_ref.trim().is_empty() {
+                profile.id.as_str()
+            } else {
+                profile.official_account_ref.trim()
+            });
+    let mut latest = profile.clone();
+    if (gateway_owned(profile) || !profile.official_account_ref.trim().is_empty())
+        && let Some(auth) = crate::native_auth::gateway_auth_optional(
+        if profile.official_account_ref.trim().is_empty() { &profile.id } else { &profile.official_account_ref },
+    )? {
+        latest.auth_contents = auth;
+    }
+    if let Some(result) = native_read_only_credential(
+        &latest, selected_now, native_explicit, codex_home, quota_read, force_refresh,
+    ) {
+        return result;
+    }
+    let profile = &latest;
+    let native_selected = selected_now;
+    let owned_by_gateway = gateway_owned(profile);
+    let lent_to_codex = is_lent_to_codex(profile) && !native_explicit;
     if native_selected {
         crate::native_auth::preserve_live_auth(codex_home)?;
     }
@@ -595,13 +638,9 @@ async fn resolve_official_credential_with(
         Some(crate::native_auth::resolve_profile_credentials(profile)?.auth_contents)
     } else if owned_by_gateway {
         crate::gateway::store::GatewayStore::default()
-            .load()
-            .ok()
-            .and_then(|gateway| {
-                gateway
-                    .provider(&profile.id)
-                    .map(|provider| provider.relay.auth_contents.clone())
-            })
+            .load()?
+            .provider(&profile.id)
+            .map(|provider| provider.relay.auth_contents.clone())
     } else {
         current_auth_contents(store, &profile.id)
     };
@@ -610,8 +649,15 @@ async fn resolve_official_credential_with(
     expected_auth = if native_selected {
         stored_auth.clone()
     } else {
-        prefer_live_auth(&stored_auth, live(codex_home).as_deref())
+        prefer_live_auth(&stored_auth, live_auth_for_profile(profile, codex_home, native_selected, native_explicit).as_deref())
     };
+    if native_selected
+        && let Ok(contents) = std::fs::read_to_string(codex_home.join("auth.json"))
+        && crate::native_auth::same_account(&contents, &expected_auth)
+        && !same_credential_generation(&contents, &expected_auth)
+    {
+        persist_live_login(codex_home, &contents, &expected_auth);
+    }
     let login =
         official_login_from_auth_contents(&expected_auth).context("官方登录凭据格式无效")?;
     if (!force_refresh || !same_credential_generation(&initial_auth, &expected_auth))
@@ -625,8 +671,8 @@ async fn resolve_official_credential_with(
             profile.name
         );
     }
-    let account_key = crate::native_auth::account_scope(&expected_auth)
-        .unwrap_or_else(|| format!("{}:{}", login.account_id, profile.id));
+    let account_key = format!("{}:{}", login.account_id,
+        if profile.official_account_ref.trim().is_empty() { &profile.id } else { &profile.official_account_ref });
     if refresh_in_cooldown(&account_key) {
         anyhow::bail!(
             "官方登录凭据刷新刚失败过，暂时跳过（登录可能已在别处失效），请稍后重试或重新登录该官方账号"
@@ -642,7 +688,7 @@ async fn resolve_official_credential_with(
         Ok(tokens) => tokens,
         Err(error) => {
             // live 里可能是更新一代的 refresh token：换它再试一次。
-            let retry_auth = live(codex_home).filter(|contents| {
+            let retry_auth = live_auth_for_profile(profile, codex_home, native_selected, native_explicit).filter(|contents| {
                 crate::native_auth::same_account(&expected_auth, contents)
                     && official_login_from_auth_contents(contents).is_some_and(|live| {
                         !live.refresh_token.is_empty() && live.refresh_token != login.refresh_token
@@ -749,6 +795,55 @@ async fn resolve_official_credential_with(
         access_token: refreshed.access_token,
         account_id,
     })
+}
+
+fn live_auth_for_profile(
+    profile: &RelayProfile, home: &Path, native_selected: bool, native_explicit: bool,
+) -> Option<String> {
+    if native_explicit && !native_selected {
+        return None;
+    }
+    if (gateway_owned(profile) || !profile.official_account_ref.trim().is_empty())
+        && !is_lent_to_codex(profile) && !native_selected
+    {
+        return None;
+    }
+    std::fs::read_to_string(home.join("auth.json")).ok().filter(|contents| {
+        serde_json::from_str::<Value>(contents).ok().is_some_and(|auth| {
+            auth.get("auth_mode").and_then(Value::as_str) == Some("chatgpt")
+        })
+    })
+}
+
+fn native_read_only_credential(
+    profile: &RelayProfile,
+    native_selected: bool,
+    native_explicit: bool,
+    home: &Path,
+    quota_read: bool,
+    force_refresh: bool,
+) -> Option<anyhow::Result<OfficialCredential>> {
+    let live = std::fs::read_to_string(home.join("auth.json")).ok();
+    let lent_to_codex = is_lent_to_codex(profile) && !native_explicit;
+    let native_session = native_selected || lent_to_codex || !gateway_owned(profile)
+        || live.as_deref().is_some_and(|live| {
+            crate::native_auth::same_credential_generation(live, &profile.auth_contents)
+        });
+    if !is_native_owned_login(profile) && !(quota_read && native_session) {
+        return None;
+    }
+    Some((|| {
+        let auth = if native_selected || (!native_explicit && (lent_to_codex || !gateway_owned(profile))) {
+            prefer_live_auth(&profile.auth_contents, live.as_deref())
+        } else {
+            profile.auth_contents.clone()
+        };
+        let login = official_login_from_auth_contents(&auth).context("官方登录凭据格式无效")?;
+        if force_refresh || token_needs_refresh(&login.access_token) {
+            anyhow::bail!("原生登录凭据需由 Codex 刷新或重新登录；额度查询不会轮换此凭据");
+        }
+        Ok(credential(login))
+    })())
 }
 
 fn current_auth_contents(store: &SettingsStore, profile_id: &str) -> Option<String> {
@@ -966,6 +1061,62 @@ fn persist_refreshed_login(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn native_switch_cannot_publish_while_a_refresh_holds_the_lock() {
+        let _refresh = refresh_lock().lock().await;
+        let home = crate::codex_home::default_codex_home_dir();
+        assert!(native_auth_write_guard(&home).is_err());
+    }
+
+    #[tokio::test]
+    async fn usage_reads_and_native_backups_never_rotate_native_tokens() {
+        for kind in ["native-backup", "lent", "direct"] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = SettingsStore::new(temp.path().join("settings.json"));
+            let mut auth = json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "account_id": "native-workspace",
+                    "access_token": fake_jwt(json!({"exp": 1, "sub": "native-user"})),
+                    "refresh_token": "native-refresh-must-not-be-used"
+                }
+            });
+            if kind != "direct" {
+                auth[GATEWAY_OWNED_MARKER] = json!(true);
+            }
+            if kind == "native-backup" {
+                auth[NATIVE_OWNED_MARKER] = json!(true);
+            } else if kind == "lent" {
+                auth[LENT_TO_CODEX_MARKER] = json!(true);
+            }
+            let original = auth.to_string();
+            std::fs::write(temp.path().join("auth.json"), &original).unwrap();
+            let profile = official_profile(&original);
+            let settings = crate::settings::BackendSettings {
+                relay_profiles: vec![profile.clone()],
+                ..Default::default()
+            };
+            store.save(&settings).unwrap();
+            let persisted_auth = store.load().unwrap().relay_profiles[0].auth_contents.clone();
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let token_url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                resolve_official_credential_mode(
+                    &profile, false, &store, temp.path(), Some(&token_url), kind != "native-backup",
+                ),
+            ).await.expect("native-owned reads must not wait for a refresh response");
+            assert!(result.unwrap_err().to_string().contains("不会轮换"), "{kind}");
+            assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+            assert_eq!(std::fs::read_to_string(temp.path().join("auth.json")).unwrap(), original);
+            assert_eq!(
+                store.load().unwrap().relay_profiles[0].auth_contents,
+                persisted_auth
+            );
+        }
+    }
 
     fn fake_jwt(payload: Value) -> String {
         use base64::Engine;

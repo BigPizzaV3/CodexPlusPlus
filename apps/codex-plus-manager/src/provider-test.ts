@@ -54,7 +54,7 @@ export function probeHints(result: ProviderProbeResult, account = false): ProbeH
   if (result.ok) return [];
   switch (result.category) {
     case "subscription_policy":
-      return [hint("订阅消费策略阻止了测试：请检查授权、使用上限和官方额度是否已刷新。")];
+      return [hint("订阅额度策略阻止了测试：请检查使用上限和官方额度是否已刷新。")];
     case "auth": {
       const hints = [account
         ? hint("登录凭据无效或已过期：请在详情底部点「重新登录」。")

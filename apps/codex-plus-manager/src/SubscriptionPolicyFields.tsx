@@ -20,10 +20,6 @@ export function SubscriptionPolicyFields({ value, onChange, quota, disabled = fa
       <h4>{t("ChatGPT 订阅额度")}</h4>
       {quota ? <div className="gw-chip-row"><QuotaWindows maxAgeSeconds={policy.maxAgeSeconds} quota={quota} /></div> : <p className="pf-hint">{t("尚未取得官方用量")}</p>}
       <div className="subscription-policy">
-        <label className="subscription-permission">
-          <input checked={policy.permitted} disabled={disabled} onChange={(event) => update({ permitted: event.currentTarget.checked })} type="checkbox" />
-          <span>{t("允许网关消耗此账号的订阅额度")}</span>
-        </label>
         <label>
           <span>{t("所有窗口已用上限（%）")}</span>
           <input aria-label={t("所有窗口已用上限（%）")} disabled={disabled} max={100} min={0} onChange={(event) => { const limit = subscriptionPercentLimit(event.currentTarget.value); if (limit !== undefined) update({ defaultUsedPercentLimit: limit }); }} placeholder="100" step={1} type="number" value={policy.defaultUsedPercentLimit ?? ""} />
@@ -38,7 +34,7 @@ export function SubscriptionPolicyFields({ value, onChange, quota, disabled = fa
           <span>{t("达到上限后")}</span>
           <AppSelect ariaLabel={t("达到上限后")} disabled={disabled} onChange={(onLimit) => update({ onLimit: onLimit as SubscriptionPolicy["onLimit"] })} options={[
             { value: "stop", label: t("停止请求") },
-            { value: "nextPermitted", label: t("下一个已授权账号") },
+            { value: "nextPermitted", label: t("下一个订阅账号") },
             { value: "apiFallback", label: t("回退到 API 供应商") },
           ]} value={policy.onLimit} />
         </label>

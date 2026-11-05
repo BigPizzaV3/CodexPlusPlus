@@ -36,7 +36,7 @@ function children(value: any): Element[] {
   return [value, ...children(value.props?.children)];
 }
 
-test("真实额度字段组件可编辑后端省略、null 和空窗口表，不白屏且能授权保存", () => {
+test("真实额度字段组件可编辑省略、null和空窗口表，不白屏且没有额外授权开关", () => {
   for (const windowUsedPercentLimits of [undefined, null, {}]) {
     const updates: policies.SubscriptionPolicy[] = [];
     const value = { permitted: false, ...(windowUsedPercentLimits === undefined ? {} : { windowUsedPercentLimits }) };
@@ -46,21 +46,23 @@ test("真实额度字段组件可编辑后端省略、null 和空窗口表，不
     }, onChange: (policy: policies.SubscriptionPolicy) => updates.push(policy) });
     const inputs = children(tree).filter((element) => element.type === "input");
     const permission = inputs.find((element) => element.props.type === "checkbox");
-    assert.ok(permission);
-    assert.equal(permission.props.checked, false);
-    permission.props.onChange({ currentTarget: { checked: true } });
-    assert.deepEqual(structuredClone(updates.at(-1)), { ...policies.defaultSubscriptionPolicy(), permitted: true });
+    assert.equal(permission, undefined);
+    const selectors = children(tree).filter((element) => element.type === "AppSelect");
+    assert.equal(selectors.find((element) => element.props.ariaLabel === "用量未知或过期时")?.props.value, "allow");
+    const next = selectors.find((element) => element.props.ariaLabel === "达到上限后")?.props.options.find((option: { value: string }) => option.value === "nextPermitted");
+    assert.equal(next?.label, "下一个订阅账号");
     const fiveHours = inputs.find((element) => element.props["aria-label"] === "300 分钟已用上限（%）");
     assert.ok(fiveHours);
     assert.equal(fiveHours.props.value, "");
     fiveHours.props.onChange({ currentTarget: { value: "80" } });
     assert.deepEqual(updates.at(-1)?.windowUsedPercentLimits, { "300": 80 });
+    assert.equal("permitted" in updates.at(-1)!, false);
     assert.equal(value.permitted, false);
   }
 });
 
 test("官方只返回7d时不造5h字段，也不删除已存但当前不适用的阈值", () => {
-  const value = { permitted: true, windowUsedPercentLimits: { "300": 0, "10080": 80 } };
+  const value = { windowUsedPercentLimits: { "300": 0, "10080": 80 } };
   let saved: policies.SubscriptionPolicy | undefined;
   const tree = exports.SubscriptionPolicyFields({ value, quota: {
     windowsComplete: true, updatedAtMs: Date.now(),
@@ -74,9 +76,9 @@ test("官方只返回7d时不造5h字段，也不删除已存但当前不适用�
   assert.deepEqual(saved?.windowUsedPercentLimits, { "300": 0, "10080": 90 });
 });
 
-test("编辑已授权账号的窗口阈值时保留其他窗口和失败策略", () => {
+test("编辑账号的窗口阈值时保留其他窗口和失败策略", () => {
   const value = {
-    ...policies.defaultSubscriptionPolicy(), permitted: true, windowUsedPercentLimits: { "43200": 91 },
+    ...policies.defaultSubscriptionPolicy(), windowUsedPercentLimits: { "43200": 91 },
     onLimit: "apiFallback" as const, unknownUsage: "allow" as const, maxAgeSeconds: 120,
   };
   let saved: policies.SubscriptionPolicy | undefined;
