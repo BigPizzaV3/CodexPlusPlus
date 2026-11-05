@@ -1383,6 +1383,7 @@
       [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header{flex-direction:row;align-items:center;justify-content:flex-start;gap:6px;padding:8px;border:0;border-radius:4px;font-size:12px;line-height:18px;text-align:start}
       [data-codex-plus-model-view-mode="list"] .codex-plus-model-provider-icon{display:none}
       [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header::after{display:none}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header[data-current="true"]::after{display:block;position:static;flex:none;margin-inline-start:auto;width:6px;height:6px;border:0;background:var(--color-token-text-primary,#dfdfdf)}
       [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header .codex-plus-model-group-default{position:static;transform:none;background:none}
       [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-item{padding-inline-start:28px!important}
       .codex-plus-model-group-chevron{display:grid;place-items:center;flex:none;width:14px;height:16px;color:var(--color-token-text-secondary,#aaa)}
@@ -1395,6 +1396,9 @@
   }
 
   function codexPlusModelPickerNeedsRescan(records) {
+    if (records.some((record) => record.type === "attributes"
+      && ["aria-checked", "data-state", "data-model-selected"].includes(record.attributeName)
+      && record.target.matches?.('[role="menuitemradio"]'))) return true;
     const changed = records.some((record) => {
       if (record.type === "attributes") return true;
       const nodes = [...record.addedNodes, ...record.removedNodes];
@@ -1437,7 +1441,7 @@
     state.observer.observe(list, {
       childList: true, subtree: true, attributes: true,
       attributeFilter: ["style", "class", "data-codex-plus-model-ordering", "data-codex-plus-model-order",
-        "data-codex-plus-model-view-mode", "data-codex-plus-model-heading", "aria-checked", "data-state"],
+        "data-codex-plus-model-view-mode", "data-codex-plus-model-heading", "aria-checked", "data-state", "data-model-selected"],
     });
   }
 

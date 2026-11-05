@@ -421,6 +421,28 @@ export const pickerViewScenarios: Array<{
     },
   },
   {
+    name: "list current group indicator follows selection and stays visible when collapsed",
+    async run({ page }) {
+      await switchToList(page);
+      const fusheng = page.locator('[data-codex-plus-model-group-id="provider-fusheng"]');
+      const hanhe = page.locator('[data-codex-plus-model-group-id="provider-hanhe"]');
+      await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-fusheng"]')?.getAttribute("data-current") === "true");
+      assert.equal(await fusheng.evaluate((node: Element) => getComputedStyle(node, "::after").display), "block");
+      await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).click();
+      await page.locator('[data-fixture-model="hanhe/gpt-6-sol"]').click();
+      await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-hanhe"]')?.getAttribute("data-current") === "true");
+      assert.equal(await fusheng.getAttribute("data-current"), "false");
+      await page.getByRole("button", { name: VIEW_LABELS.collapse, exact: true }).click();
+      assert.equal(await hanhe.evaluate((node: Element) => getComputedStyle(node, "::after").display), "block");
+      await page.evaluate(() => {
+        document.querySelectorAll("[data-fixture-model]").forEach(row => row.setAttribute("aria-checked", "false"));
+        document.querySelector('[data-fixture-model="fusheng/gpt-6-sol"]')?.setAttribute("data-model-selected", "");
+      });
+      await page.waitForFunction(() => document.querySelector('[data-codex-plus-model-group-id="provider-fusheng"]')?.getAttribute("data-current") === "true");
+      assert.equal(await hanhe.getAttribute("data-current"), "false");
+    },
+  },
+  {
     name: "list group toggles, expand all and collapse all do not change a selected model",
     async run({ page }) {
       await switchToList(page);
