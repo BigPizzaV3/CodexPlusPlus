@@ -2140,7 +2140,11 @@ export function App() {
   const deleteUserScript = async (key: string) => {
     const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
     const name = script?.name || key;
-    if (!(await appConfirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]), { title: t("删除脚本"), confirmText: t("删除"), danger: true }))) return;
+    const isPackage = script?.kind === "package";
+    const question = isPackage
+      ? tf("卸载拓展“{0}”？整个拓展文件夹会移进废纸篓，需要时可以从废纸篓找回。", [name])
+      : tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]);
+    if (!(await appConfirm(question, { title: isPackage ? t("卸载拓展") : t("删除脚本"), confirmText: isPackage ? t("卸载") : t("删除"), danger: true }))) return;
     const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
     if (result) {
       setSettings(result);
@@ -17452,8 +17456,8 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
     : isPackage
       ? tf("拓展包 · {0}", [script.package?.version || t("未知版本")])
       : script.source === "builtin" ? t("内置") : t("用户");
-  // 拓展包是文件夹，后端只删单文件，这里不给删除按钮。
-  const canDelete = codexHost && script.source === "user" && !isPackage;
+  // 拓展包是文件夹：后端整个移进废纸篓（可找回，#2919），单文件脚本直接删除。
+  const canDelete = codexHost && script.source === "user";
   const state = extensionStateForHost(script, host, globalEnabled);
   const { label, hint } = localScriptStateLabel(state, host);
   const stateHint = codexHost && state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
