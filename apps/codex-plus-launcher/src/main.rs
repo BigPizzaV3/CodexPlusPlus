@@ -2460,6 +2460,44 @@ mod tests {
     #[test]
     fn embedded_runtime_deduplicates_start_and_waits_for_cleanup_before_restarting() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let child_root = std::env::var_os("CODEX_PLUS_RUNTIME_PROBE_TEST_ROOT");
+        if child_root.is_none() {
+            let fixture = tempfile::tempdir().unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "tests::embedded_runtime_deduplicates_start_and_waits_for_cleanup_before_restarting",
+                    "--nocapture",
+                ])
+                .env("CODEX_PLUS_RUNTIME_PROBE_TEST_ROOT", fixture.path());
+            for (variable, directory) in [
+                ("CODEX_PLUS_STATE_DIR", "state"),
+                ("CODEX_HOME", "home"),
+                ("CODEX_SQLITE_HOME", "sqlite"),
+                ("APPDATA", "appdata"),
+                ("XDG_CONFIG_HOME", "xdg"),
+            ] {
+                let directory = fixture.path().join(directory);
+                std::fs::create_dir(&directory).unwrap();
+                command.env(variable, directory);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(codex_plus_core::windows_create_no_window());
+            }
+            // 其他 runtime 用例也会清空进程级快照；在单独测试进程内验证该快照。
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(std::fs::read(fixture.path().join("completed")).unwrap(), b"ok");
+            return;
+        }
         let launched = Arc::new(AtomicUsize::new(0));
         let cleaned = Arc::new(AtomicUsize::new(0));
         let activations = Arc::new(AtomicUsize::new(0));
@@ -2542,6 +2580,7 @@ mod tests {
         worker.thread.join().unwrap();
         assert_eq!(cleaned.load(Ordering::SeqCst), 2);
         assert_eq!(connections_dropped.load(Ordering::SeqCst), 2);
+        std::fs::write(PathBuf::from(child_root.unwrap()).join("completed"), b"ok").unwrap();
     }
 
     #[test]

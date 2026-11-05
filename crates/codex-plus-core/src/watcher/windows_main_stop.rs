@@ -965,20 +965,23 @@ mod tests {
     }
 
     #[cfg(windows)]
+    struct OwnedTestChild(std::process::Child);
+
+    #[cfg(windows)]
+    impl Drop for OwnedTestChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(windows)]
     #[test]
     fn owned_process_stop_preserves_an_isolated_sibling() {
         use std::os::windows::process::CommandExt;
-        use std::process::{Child, Command, Stdio};
+        use std::process::{Command, Stdio};
 
         use crate::windows_integration::{CREATE_NO_WINDOW, VerifiedStopProcess};
-
-        struct OwnedTestChild(Child);
-        impl Drop for OwnedTestChild {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
 
         let fixture = tempfile::tempdir().unwrap();
         let app_data = fixture.path().join("appdata");
@@ -1033,5 +1036,99 @@ mod tests {
         assert!(main.0.try_wait().unwrap().is_some());
         assert!(isolated.0.try_wait().unwrap().is_none());
         drop(isolated.0.stdin.take());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn public_stop_api_stops_only_its_owned_default_main() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let app_data = fixture.path().join("appdata");
+        std::fs::create_dir(&app_data).unwrap();
+        // 原名 driver 不会进入 ChatGPT.exe 快照；仅子进程持有临时 APPDATA。
+        let mut driver = OwnedTestChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "watcher::windows_main_stop::tests::public_stop_api_driver",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER", "owned-driver")
+                .env("APPDATA", &app_data)
+                .stdin(Stdio::null())
+                .creation_flags(crate::windows_integration::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        );
+        assert!(driver.0.wait().unwrap().success());
+        assert_eq!(
+            std::fs::read(app_data.join("stop-api-completed")).unwrap(),
+            b"ok"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "仅由 public_stop_api_stops_only_its_owned_default_main 启动"]
+    fn public_stop_api_driver() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        if std::env::var_os("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER") != Some("owned-driver".into()) {
+            return;
+        }
+        let original = std::env::current_exe().unwrap();
+        assert!(!crate::app_paths::is_windows_desktop_app_executable_name(
+            original.file_name().unwrap().to_str().unwrap()
+        ));
+        let app_data = PathBuf::from(std::env::var_os("APPDATA").unwrap());
+        assert!(app_data.is_absolute());
+        let fixture = tempfile::tempdir_in(&app_data).unwrap();
+        let executable = fixture.path().join("ChatGPT.exe");
+        std::fs::copy(&original, &executable).unwrap();
+        let spawn = |isolated: bool| {
+            let mut command = Command::new(&executable);
+            command
+                .args([
+                    "--exact",
+                    "windows_integration::tests::stop_identity_child_process",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("CODEX_PLUS_STOP_IDENTITY_TEST_CHILD", "owned-helper")
+                .env("APPDATA", &app_data)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+            if isolated {
+                command.env(
+                    "CODEX_ELECTRON_USER_DATA_PATH",
+                    fixture.path().join("isolated"),
+                );
+            }
+            OwnedTestChild(command.spawn().unwrap())
+        };
+        let mut main = spawn(false);
+        let mut isolated = spawn(true);
+        assert!(main.0.try_wait().unwrap().is_none());
+        assert!(isolated.0.try_wait().unwrap().is_none());
+        assert_eq!(
+            stop_windows_main_codex_processes_and_wait(&executable, None).unwrap(),
+            1
+        );
+        assert!(main.0.try_wait().unwrap().is_some());
+        assert!(isolated.0.try_wait().unwrap().is_none());
+        assert_eq!(
+            stop_windows_main_codex_processes_and_wait(&executable, None).unwrap(),
+            0
+        );
+        assert!(isolated.0.try_wait().unwrap().is_none());
+        std::fs::write(app_data.join("stop-api-completed"), b"ok").unwrap();
     }
 }
