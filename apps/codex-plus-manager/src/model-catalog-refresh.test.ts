@@ -34,7 +34,8 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
     window: sharedWindow, Response, Map, Set, WeakMap, Promise, Date: { now: () => now },
     codexPlusBackendSettings: settings, codexPlusBackendSettingsLoaded: true,
     codexPlusSettings: () => ({ modelWhitelistUnlock: true }),
-    codexRemoteSessionActiveProfile: () => settings.relayProfiles.find((entry: any) => entry.id === settings.activeRelayId),
+    codexRemoteSessionActiveProfile: () => settings.relayProfilesEnabled
+      ? settings.relayProfiles.find((entry: any) => entry.id === settings.activeRelayId) : null,
     codexServiceTierModelFromValue: (value: any) => value,
     renderCodexPlusMenu: () => {}, scheduleCodexModelWhitelistRefresh: () => {},
     sendCodexPlusDiagnostic: () => {},
@@ -50,6 +51,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
       patch: patchModelContainer, install: installModelJsonResponsePatch,
       installMessages: patchAppServerModelMessages, record: recordModelListRequest,
       patchMcp: patchMcpModelResponseData, patchAppResult: patchAppServerModelResult,
+      allowed: codexPureApiAllowedModelSet,
       patchStatsig: patchStatsigModelDynamicConfig,
       installStatsig: patchStatsigModelWhitelist,
       catalog: () => codexModelCatalog }; })()`, context);
@@ -266,6 +268,60 @@ it("catalog patches respect hidden entries and never alter selected model or rea
   assert.equal(value.models[0].hidden, true);
   assert.equal(value.models[1].hidden, false);
   assert.deepEqual([...value.hiddenModels], ["group/1"]);
+});
+
+it("recognizes only a verified local pure API multi-instance catalog when relay switching is disabled", async () => {
+  const profile = { id: "gateway", relayMode: "pureApi", modelList: "a/sol\nb/terra" };
+  const worker = { relayProfilesEnabled: false, codexMultiInstance: true, activeRelayId: "gateway",
+    modelCatalogFingerprint: "worker-1", relayProfiles: [profile] };
+  for (const [settings, allowed] of [
+    [worker, true],
+    [{ ...worker, codexMultiInstance: false }, false],
+    [{ ...worker, codexMultiInstance: undefined }, false],
+    [{ ...worker, activeRelayId: "other" }, false],
+    [{ ...worker, relayProfiles: [profile, profile] }, false],
+    [{ ...worker, relayProfiles: [{ ...profile, relayMode: "aggregate" }] }, false],
+  ] as const) {
+    const r = runtime({}, settings);
+    await load(r, ["a/sol", "b/terra"]);
+    assert.equal(!!r.api.allowed("local"), allowed);
+    assert.equal(r.api.allowed("remote"), null);
+    assert.equal(r.api.allowed(""), null);
+    if (allowed) {
+      const result = { data: [{ model: "native" }], nextCursor: null,
+        model: "previous-model", reasoningEffort: "high" };
+      r.api.patchAppResult("model/list", result, "local", { cursor: null });
+      assert.deepEqual(result.data.map(entry => entry.model), ["a/sol", "b/terra"]);
+      assert.equal(result.model, "previous-model");
+      assert.equal(result.reasoningEffort, "high");
+    }
+  }
+  const r = runtime({}, worker);
+  const request = r.api.load(true);
+  r.pending.shift()!.resolve({ ...catalog(["foreign"]), model_provider: "other",
+    sources: [{ id: "relay-profile:other" }] });
+  await request;
+  assert.equal(r.api.allowed("local"), null);
+});
+
+it("refreshes complete multi-instance model responses without changing the current selection", async () => {
+  const worker = { relayProfilesEnabled: false, codexMultiInstance: true, activeRelayId: "gateway",
+    modelCatalogFingerprint: "worker-1",
+    relayProfiles: [{ id: "gateway", relayMode: "pureApi", modelList: "a/sol" }] };
+  const r = runtime({}, worker);
+  await load(r, ["a/sol", "b/old"]);
+  const result = { data: [{ model: "native" }], nextCursor: null,
+    model: "previous-model", reasoningEffort: "high" };
+  r.api.patchAppResult("model/list", result, "local", { cursor: null });
+  assert.deepEqual(result.data.map(entry => entry.model), ["a/sol", "b/old"]);
+
+  r.update({ ...worker, modelCatalogFingerprint: "worker-2" });
+  r.pending.shift()!.resolve(catalog(["a/sol", "b/new"]));
+  await settle();
+  r.api.patchAppResult("model/list", result, "local", { cursor: null });
+  assert.deepEqual(result.data.map(entry => entry.model), ["a/sol", "b/new"]);
+  assert.equal(result.model, "previous-model");
+  assert.equal(result.reasoningEffort, "high");
 });
 
 it("response wrappers use the current runtime after hot reinjection", async () => {

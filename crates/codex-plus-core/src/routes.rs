@@ -1126,6 +1126,7 @@ impl BridgeDataService for UnavailableDataService {
 fn settings_payload_value(
     mut settings: BackendSettings,
     codex_app_version: String,
+    is_multi_instance: bool,
 ) -> anyhow::Result<Value> {
     let managed_session_connection = managed_session_connection(&settings);
     let active_relay_session_provider = settings.active_relay_session_provider();
@@ -1187,6 +1188,7 @@ fn settings_payload_value(
         );
         object.insert("activeRelayProfilePublic".to_string(), active_relay_profile_public);
         object.insert("modelCatalogFingerprint".to_string(), Value::String(catalog_fingerprint));
+        object.insert("codexMultiInstance".to_string(), Value::Bool(is_multi_instance));
         object.insert(
             "nativeFastLocalApiConfigured".to_string(),
             Value::Bool(native_fast.native_fast_local_api_configured),
@@ -1384,7 +1386,7 @@ mod dictation_privacy_tests {
     fn dictation_settings_bridge_removes_asr_key() {
         let mut settings = BackendSettings::default();
         settings.dictation.api_key = "fake-asr-private-key".to_string();
-        let result = settings_payload_value(settings, String::new()).unwrap();
+        let result = settings_payload_value(settings, String::new(), false).unwrap();
         assert!(result["dictation"].get("apiKey").is_none());
         assert_eq!(result["dictation"]["apiKeyConfigured"], true);
         assert!(!result.to_string().contains("fake-asr-private-key"));
@@ -1396,17 +1398,31 @@ mod dictation_privacy_tests {
         settings.relay_profiles[0].api_keys = vec![crate::settings::RelayApiKey {
             id: "backup".into(), name: "备用".into(), api_key: "fake-backup-secret".into(),
         }];
-        let result = settings_payload_value(settings, String::new()).unwrap();
+        let result = settings_payload_value(settings, String::new(), false).unwrap();
         assert!(result["relayProfiles"][0].get("apiKeys").is_none());
         assert!(!result.to_string().contains("fake-backup-secret"));
     }
+
+    #[test]
+    fn settings_bridge_reports_multi_instance_without_enabling_relay_switching() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles_enabled = false;
+        for is_multi_instance in [false, true] {
+            let result =
+                settings_payload_value(settings.clone(), String::new(), is_multi_instance).unwrap();
+            assert_eq!(result["codexMultiInstance"], is_multi_instance);
+            assert_eq!(result["relayProfilesEnabled"], false);
+            assert!(result["managedSessionConnection"].is_null());
+        }
+    }
+
     #[test]
     fn dictation_settings_bridge_applies_enhancement_switch_without_mutating_settings() {
         let mut settings = BackendSettings::default();
         settings.enhancements_enabled = false;
         settings.dictation.enabled = true;
         settings.dictation.api_key = "fake-asr-private-key".to_string();
-        let result = settings_payload_value(settings.clone(), String::new()).unwrap();
+        let result = settings_payload_value(settings.clone(), String::new(), false).unwrap();
         assert_eq!(result["dictation"]["enabled"], false);
         assert_eq!(result["dictation"]["apiKeyConfigured"], true);
         assert!(settings.dictation.enabled);
@@ -1420,7 +1436,11 @@ async fn settings_value(
 ) -> anyhow::Result<Value> {
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
-    settings_payload_value(settings, codex_app_version)
+    settings_payload_value(
+        settings,
+        codex_app_version,
+        std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").as_deref() == Some(std::ffi::OsStr::new("1")),
+    )
 }
 
 fn backend_status_value(
