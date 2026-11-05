@@ -284,6 +284,52 @@ it("does not pick the last provider when two catalog identities have the same na
   assert.equal(entries[0].authoritativeGroupId, false);
 });
 
+it("collects interleaved ambiguous owners without hiding their original labels", () => {
+  const sameName = (displayName: string, id: string) => ({
+    displayName, codex_plus_group: "Same", codex_plus_group_id: id,
+  });
+  const metadata = {
+    "a/one": sameName("One", "id-a"),
+    "b/two": sameName("Two", "id-b"),
+  };
+  const r = runtime({ status: "ok", models: Object.keys(metadata), modelMetadata: metadata });
+  const entries = r.api.rows({ querySelectorAll: () => [
+    row("Unknown 1（Same）"), row("One", "a/one"),
+    row("Unknown 2（Same）"), row("Two", "b/two"),
+    row("Unknown 3（Same）"),
+  ] });
+  assert.deepEqual([...entries].filter(value => !value.groupId).map(value => value.name),
+    ["Unknown 1（Same）", "Unknown 2（Same）", "Unknown 3（Same）"]);
+  assert.deepEqual([...r.api.groups(entries)].map(group => [group.name, group.id, group.entries.length]), [
+    ["", "", 3], ["Same", "id-a", 1], ["Same", "id-b", 1],
+  ]);
+});
+
+it("moves previously ambiguous rows into their verified groups when metadata arrives", () => {
+  const r = runtime({ status: "ok", models: ["a/one", "b/two"],
+    modelMetadata: {
+      "a/one": { displayName: "One", codex_plus_group: "Same", codex_plus_group_id: "id-a" },
+      "b/two": { displayName: "Two", codex_plus_group: "Same", codex_plus_group_id: "id-b" },
+    } });
+  const menu = () => r.api.rows({ querySelectorAll: () => [
+    row("One", "a/one"), row("Three（Same）"), row("Two", "b/two"),
+  ] });
+  let groups = r.api.groups(menu());
+  assert.deepEqual([...groups].map(group => [group.id, group.entries.length]), [
+    ["id-a", 1], ["", 1], ["id-b", 1],
+  ]);
+  r.update({ status: "ok", models: ["a/one", "a/three", "b/two"],
+    modelMetadata: {
+      "a/one": { displayName: "One", codex_plus_group: "Same", codex_plus_group_id: "id-a" },
+      "a/three": { displayName: "Three（Same）", codex_plus_group: "Same", codex_plus_group_id: "id-a" },
+      "b/two": { displayName: "Two", codex_plus_group: "Same", codex_plus_group_id: "id-b" },
+    } });
+  groups = r.api.groups(menu());
+  assert.deepEqual([...groups].map(group => [group.id, group.entries.length]), [
+    ["id-a", 2], ["id-b", 1],
+  ]);
+});
+
 it("does not reuse a model's old display name after its authoritative rename", () => {
   const r = runtime({ status: "ok", models: ["a/one"],
     modelMetadata: { "a/one": entry("Old Name", "a") } });

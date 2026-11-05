@@ -13293,7 +13293,7 @@
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
       const provider = exactKnown?.provider || split.provider || known?.provider || "";
       const authoritativeGroupId = !!groupId;
-      rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
+      rows.push({ row, label: identity.text, name: groupId ? split.name : identity.text, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
     });
     return rows;
   }
@@ -13341,39 +13341,28 @@
     return best || codexPlusModelPickerGroupsState.defaultProviderName || "";
   }
 
-  /** 权威 groupId 全局合组；无 ID 的旧行只做相邻回退，避免同名误合并。 */
+  /** 按权威 ID 合组；归属不明的行集中展示，保留原始标签。 */
   function codexPlusModelPickerGroups(rows, defaultProviderName = "") {
     const groups = [];
     const identified = new Map();
-    let legacy = null;
-    // 归属认不出的行（没有后缀、目录也查不到）全部收进同一个「其他供应商」组。
-    // 按相邻切段会被有名分组隔成好几段，几段共用一个 id：只有第一段有标题、点哪段都展开全部（#2860）。
     let unnamed = null;
     for (const entry of rows) {
       const key = entry.provider || "";
       const id = entry.authoritativeGroupId !== false && typeof entry.groupId === "string" ? entry.groupId.trim() : "";
       let group;
       if (id) {
-        legacy = null;
         group = identified.get(id);
         if (!group) {
           group = { key, id, name: entry.provider || defaultProviderName, entries: [] };
           identified.set(id, group);
           groups.push(group);
         }
-      } else if (!(entry.provider || defaultProviderName)) {
-        legacy = null;
+      } else {
         if (!unnamed) {
           unnamed = { key: "", id: "", name: "", entries: [] };
           groups.push(unnamed);
         }
         group = unnamed;
-      } else {
-        if (!legacy || legacy.key !== key) {
-          legacy = { key, id: `legacy:${groups.length}:${key}`, name: entry.provider || defaultProviderName, entries: [] };
-          groups.push(legacy);
-        }
-        group = legacy;
       }
       group.entries.push(entry);
     }
