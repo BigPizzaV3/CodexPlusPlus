@@ -1514,8 +1514,15 @@
   function codexPlusModelPickerScan() {
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
-    // 内置拓展「模型分组」停用时当作没有列表：已分组的列表还原。
-    const menu = globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups") ? null : codexPlusModelPickerMenu();
+    if (globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups")) {
+      if (state.activeList) codexPlusModelPickerClear(state.activeList);
+      document.querySelectorAll("[data-codex-plus-model-groups]").forEach((list) => codexPlusModelPickerClear(list));
+      state.activeList = null;
+      state.observer?.disconnect();
+      state.observer = null;
+      return;
+    }
+    const menu = codexPlusModelPickerMenu();
     const list = menu ? codexPlusModelPickerList(menu) : null;
     if (!list) {
       codexPlusModelPickerReportUnrecognized();
@@ -1621,3 +1628,4 @@
       document.getElementById(codexPlusModelPickerGroupsStyleId)?.remove();
     },
   };
+  if (globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerScan();

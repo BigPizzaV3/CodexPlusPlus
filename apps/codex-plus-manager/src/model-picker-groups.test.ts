@@ -125,6 +125,24 @@ it("重注入时与上一个实例交接，不先拆再建造成闪烁", async (
   assert.match(source, /releaseDom\(\)/, "彻底还原要有单独出口");
 });
 
+it("内置拓展停用时清理重注入前遗留的分组列表", async () => {
+  const source = await readShard();
+  const orphan = { id: "orphan" };
+  const state = { disposed: false, activeList: null, observer: null };
+  const cleared: unknown[] = [];
+  const scan = new Function(
+    "codexPlusModelPickerGroupsState", "globalThis", "document", "codexPlusModelPickerClear",
+    `${functionSource(source, "codexPlusModelPickerScan")}\nreturn codexPlusModelPickerScan;`,
+  )(state, { __codexPlusBuiltinInactive: new Set(["model-picker-groups"]) },
+    { querySelectorAll: (selector: string) => {
+      assert.equal(selector, "[data-codex-plus-model-groups]");
+      return [orphan];
+    } }, (list: unknown) => cleared.push(list));
+  scan();
+  assert.deepEqual(cleared, [orphan]);
+  assert.match(source, /if \(globalThis\.__codexPlusBuiltinInactive\?\.has\("model-picker-groups"\)\) codexPlusModelPickerScan\(\);/);
+});
+
 it("入口使用独立供应商图标，并通过导航显示模型列表", async () => {
   const source = await readShard();
   assert.match(source, /codex-plus-model-provider-grid/);

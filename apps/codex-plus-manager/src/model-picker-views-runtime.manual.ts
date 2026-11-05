@@ -193,9 +193,9 @@ export async function createPickerFixture(browser: any, options: {
     if (options.storage) await page.evaluate((storage: Record<string, string>) => {
       for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value);
     }, options.storage);
-    const inject = async () => {
+    const inject = async (scan = true) => {
       await page.addScriptTag({ content: `(() => {\n${content}\n})();` });
-      await page.evaluate(() => (window as any).__codexPlusModelPickerGroupsRuntime.scan());
+      if (scan) await page.evaluate(() => (window as any).__codexPlusModelPickerGroupsRuntime.scan());
     };
     await inject();
     return {
@@ -505,6 +505,29 @@ export const pickerViewScenarios: Array<{
         await page.setViewportSize({ width, height: 960 });
         if (width === 280) assert.equal(await defaultTitle.evaluate((node: HTMLElement) => node.scrollWidth > node.clientWidth), true);
         await assertListIndicatorLayout(page, '[data-codex-plus-model-group-id="provider-hanhe"]', true);
+      }
+    },
+  },
+  {
+    name: "reinjection while the model groups builtin is disabled restores both views",
+    async run({ page, inject }) {
+      for (const mode of ["icons", "list"]) {
+        if (mode === "list") await switchToList(page);
+        await page.evaluate(() => {
+          (window as any).__codexPlusBuiltinInactive.add("model-picker-groups");
+        });
+        await inject(false);
+        assert.equal(await page.locator("[data-fixture-model]:visible").count(), 10);
+        assert.equal(await page.locator(".native-recommendation").isVisible(), true);
+        assert.equal(await page.getByRole("button", { name: VIEW_LABELS.list, exact: true }).count(), 0);
+        assert.equal(await page.getByRole("button", { name: VIEW_LABELS.icons, exact: true }).count(), 0);
+        await assertNativeRowsUntouched(page);
+        await page.evaluate(() => {
+          (window as any).__codexPlusBuiltinInactive.delete("model-picker-groups");
+          (window as any).__codexPlusModelPickerGroupsRuntime.sync();
+        });
+        const expected = mode === "list" ? VIEW_LABELS.icons : VIEW_LABELS.list;
+        await page.getByRole("button", { name: expected, exact: true }).waitFor({ state: "visible" });
       }
     },
   },
