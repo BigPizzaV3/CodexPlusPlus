@@ -379,6 +379,33 @@ it("does not inject local models into model responses with an unknown host", asy
   assert.deepEqual(mcp.message.result.data, [{ model: "native" }]);
 });
 
+it("restores unchanged shared local snapshots for unknown hosts without replacing newer data", async () => {
+  const r = runtime();
+  await load(r, ["a/custom"]);
+  r.api.install();
+  for (const path of ["http", "app", "mcp"]) {
+    const original = [{ model: "a/custom" }, { model: "native", description: "original" }];
+    const models = original.slice();
+    r.api.patch({ hostId: "local", models });
+    assert.deepEqual(models.map(entry => entry.model), ["a/custom"]);
+    if (path === "http") {
+      await new r.window.testResponse({ models }).json();
+    } else if (path === "app") {
+      r.api.patchAppResult("model/list", { data: models, nextCursor: null }, "", { cursor: null });
+    } else {
+      r.api.record(path, "", { cursor: null });
+      assert.equal(r.api.patchMcp({ type: "mcp-response", message: { id: path,
+        result: { data: models, nextCursor: null } } }), true);
+    }
+    assert.deepEqual(models, original, `${path} must restore the original native objects`);
+  }
+  const models = [{ model: "a/custom" }, { model: "old-native" }];
+  r.api.patch({ hostId: "local", models });
+  models.splice(0, models.length, { model: "new-native" });
+  r.api.patchAppResult("model/list", { data: models, nextCursor: null }, "", { cursor: null });
+  assert.deepEqual(models, [{ model: "new-native" }]);
+});
+
 it("patches only complete MCP and app-server model responses", async () => {
   const r = runtime();
   await load(r, ["a/custom"]);
