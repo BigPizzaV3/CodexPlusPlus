@@ -302,6 +302,9 @@ it("recognizes only a verified local pure API multi-instance catalog when relay 
     sources: [{ id: "relay-profile:other" }] });
   await request;
   assert.equal(r.api.allowed("local"), null);
+  const result = { data: [{ model: "native" }], nextCursor: null };
+  r.api.patchAppResult("model/list", result, "local", { cursor: null });
+  assert.deepEqual(result.data.map(entry => entry.model), ["native"]);
 });
 
 it("refreshes complete multi-instance model responses without changing the current selection", async () => {

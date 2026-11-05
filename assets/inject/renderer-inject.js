@@ -11291,6 +11291,11 @@
   }
 
   function codexPlusModelNames() {
+    if (codexPlusBackendSettingsLoaded && codexPlusBackendSettings?.codexMultiInstance === true
+        && codexPlusBackendSettings?.relayProfilesEnabled === false) {
+      const profile = codexModelCatalogActiveProfile();
+      if (codexModelCatalog.status !== "ok" || !codexModelCatalogBelongsToProfile(profile)) return [];
+    }
     return uniqueValues([
       codexModelCatalog.default_model,
       codexModelCatalog.model,
@@ -11543,6 +11548,13 @@
     return matches.length === 1 && matches[0]?.relayMode === "pureApi" ? matches[0] : null;
   }
 
+  function codexModelCatalogBelongsToProfile(profile) {
+    const profileId = String(profile?.id || "").trim();
+    return !!profileId && (codexModelCatalog.model_provider === profileId
+      || (Array.isArray(codexModelCatalog.sources)
+        && codexModelCatalog.sources.some((source) => source?.id === `relay-profile:${profileId}`)));
+  }
+
   function modelFilterPolicy(allowed) {
     return allowed ? `${codexModelCatalogActiveProfile()?.id || ""}:${codexModelCatalog.model || ""}:${JSON.stringify([...allowed].sort())}` : "";
   }
@@ -11631,12 +11643,8 @@
     const profile = codexModelCatalogActiveProfile();
     if (!codexPlusModelUnlockEnabled() || !codexPlusBackendSettingsLoaded
         || profile?.relayMode !== "pureApi" || codexModelCatalog.status !== "ok") return null;
-    const profileId = String(profile.id || "").trim();
-    const belongsToProfile = profileId && (codexModelCatalog.model_provider === profileId
-      || (Array.isArray(codexModelCatalog.sources)
-        && codexModelCatalog.sources.some((source) => source?.id === `relay-profile:${profileId}`)));
     const names = codexPlusModelNames();
-    return belongsToProfile && names.length ? new Set(names) : null;
+    return codexModelCatalogBelongsToProfile(profile) && names.length ? new Set(names) : null;
   }
 
   function codexAggregateAllowedModelSet(hostId) {
