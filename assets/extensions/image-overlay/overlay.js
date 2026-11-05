@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 32 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 33 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -76,6 +76,12 @@
     const topControlAttribute = "data-codex-plus-image-top-control";
     const footerAttribute = "data-codex-plus-image-footer-gutter";
     const footerSelector = "[data-thread-scroll-footer]";
+    const hostSurfaceAttribute = "data-codex-plus-image-host-surface";
+    const hostSelector = `${footerSelector}, [${popupBoundaryAttribute}]`;
+    // 宿主内的背景由共同规则发现；编辑器、媒体、通知及首页项目栏保留自己的材质。
+    const hostProtectedSelector = `${editorSelector}, ${viewerSelector}, ${pageSelector}, ${composerSelector}, ` +
+      `${reviewHeaderSelector}, ${controlSelector}, img, video, canvas, svg, .codex-toast-area, ` +
+      '[data-sonner-toaster], [data-composer-placement="home"]';
     const topControlSelector = [
       '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]', '[class^="Tooltip-"]', '[class*=" Tooltip-"]',
       // Sonner 的内层 z-index 无法越过这个原生 z60 外壳；只抬外壳，不改通知本身的颜色与动画。
@@ -169,6 +175,12 @@
     const paintsDirty = new Set();
     const geometryPaints = new Set();
     const paintObservers = new Map();
+    const hostSurfaces = new Map();
+    const hostGeometry = new Set();
+    const hostDirty = new Set();
+    const hostStyleDirty = new Set();
+    const hostComposition = new Map();
+    let tintedWallpaperUrl = "";
     let geometryDirty = true;
     const originalAttributes = new Map();
     const stats = { frames: 0, rectReads: 0, styleReads: 0, queries: 0, maskWrites: 0, layerWrites: 0 };
@@ -436,6 +448,10 @@
     // 祖先样式变化（class/style 突变、过渡/动画结束）后，只标记待查，统一在 render 里读样式。
     const invalidatePaintChains = target => {
       let found = false;
+      for (const surface of hostSurfaces.keys()) if (target === surface || target.contains(surface)) {
+        hostDirty.add(surface);
+        found = true;
+      }
       for (const node of paintedNodes) {
         const paint = records.get(node)?.paint;
         if (!paint || target !== paint.surface && !target.contains(paint.surface)) continue;
@@ -514,6 +530,121 @@
     const removeWithin = (registry, tree, remove, includeRoot = true) => {
       for (const [node, record] of registry)
         if ((includeRoot || node !== tree) && tree.contains(node)) remove(node, record);
+    };
+    const hostForSurface = node => {
+      if (owned(node) || inactivePanel(node) || node.closest(hostProtectedSelector)) return null;
+      const host = node.closest(hostSelector);
+      if (host && !hostComposition.has(host)) hostComposition.set(host, hostAboveWallpaper(host));
+      return host && hostComposition.get(host) && !host.closest('.codex-toast-area, [data-sonner-toaster]') ? host : null;
+    };
+    // 外层原生变换仍会约束宿主的层级；保留其原生顺序，已由全局壁纸覆盖的背景不再局部补画。
+    const hostAboveWallpaper = host => {
+      let outer = host, parent;
+      while ((parent = outer.parentElement?.closest(hostSelector))) outer = parent;
+      for (parent = outer.parentElement; parent; parent = parent.parentElement) {
+        const paint = computed(parent);
+        if (transformedStyle(paint)) return false;
+      }
+      return true;
+    };
+    const refreshHostComposition = target => {
+      if (previewVisible) return false;
+      let changed = false;
+      for (const [host, above] of hostComposition) {
+        if (!host.isConnected || !host.matches(hostSelector)) { hostComposition.delete(host); continue; }
+        if (!target || !target.contains(host)) continue;
+        const next = hostAboveWallpaper(host);
+        if (above === next) continue;
+        hostComposition.set(host, next);
+        if (next) discoverHostSurfaces(host);
+        else removeWithin(hostSurfaces, host, removeHostSurface);
+        changed = true;
+      }
+      return changed;
+    };
+    const removeHostSurface = node => {
+      hostSurfaces.delete(node);
+      hostGeometry.delete(node);
+      hostDirty.delete(node);
+      hostStyleDirty.delete(node);
+      unmark(node, hostSurfaceAttribute);
+      if (!records.has(node) && !controls.has(node) && !paintObservers.has(node)) resizeObserver.unobserve(node);
+      writeRules();
+    };
+    // 仅对全覆盖不透明材质补画；透明色、局部渐变和图片背景需要另外的 alpha 合成。
+    const opaqueColor = value => value !== "transparent" && !/rgba\(|hsla\(|\//.test(value);
+    const hasHostMaterial = paint => {
+      if (paint.backgroundImage === "none") return opaqueColor(paint.backgroundColor);
+      if (!paint.backgroundImage.includes("gradient(") || /url\(/.test(paint.backgroundImage)) return false;
+      if (opaqueColor(paint.backgroundColor)) return true;
+      return !/transparent|rgba\(|hsla\(|\//.test(paint.backgroundImage) &&
+        ["auto", "auto auto", "100% 100%"].includes(paint.backgroundSize) &&
+        paint.backgroundRepeat === "repeat" && paint.backgroundClip !== "text";
+    };
+    const updateHostSurface = node => {
+      const previous = hostSurfaces.get(node);
+      if (!hostForSurface(node) || node.hasAttribute(paintAttribute) || node.hasAttribute(popupMaterialAttribute)) {
+        if (previous) removeHostSurface(node);
+        return;
+      }
+      unmark(node, hostSurfaceAttribute);
+      const paint = computed(node);
+      if (!hasHostMaterial(paint)) {
+        if (previous) removeHostSurface(node);
+        return;
+      }
+      const material = Object.fromEntries(["backgroundImage", "backgroundSize", "backgroundPosition", "backgroundRepeat",
+        "backgroundAttachment", "backgroundOrigin", "backgroundClip"].map(key => [key, paint[key]]));
+      const record = previous || { id: ++nextControl, rule: "" };
+      record.material = material;
+      hostSurfaces.set(node, record);
+      mark(node, hostSurfaceAttribute, String(record.id));
+      hostDirty.add(node);
+      schedule();
+    };
+    const discoverHostSurfaces = tree => {
+      const host = tree.closest(hostSelector);
+      if (host) hostComposition.set(host, hostAboveWallpaper(host));
+      if (!hostForSurface(tree)) return;
+      const walk = node => {
+        if (owned(node) || node.matches(hostProtectedSelector)) return;
+        updateHostSurface(node);
+        for (const child of node.children) walk(child);
+      };
+      walk(tree);
+    };
+    const refreshHostSurfaces = () => {
+      const nodes = geometryDirty ? new Set([...hostDirty, ...hostGeometry]) : hostDirty;
+      for (const node of nodes) {
+        const record = hostSurfaces.get(node);
+        if (!record) continue;
+        if (!node.isConnected || !hostForSurface(node)) { removeHostSurface(node); continue; }
+        let transformed = false;
+        for (let parent = node; parent; parent = parent.parentElement)
+          if (transformedStyle(computed(parent))) { transformed = true; break; }
+        let geometry = null;
+        if (transformed) {
+          const box = bounds(node);
+          const sx = layoutScale(box.width, node.offsetWidth), sy = layoutScale(box.height, node.offsetHeight);
+          const wall = wallpaperRect(fitMode, innerWidth, innerHeight, resource.width, resource.height);
+          if (wall) geometry = localWallpaper(wall, box.left + node.clientLeft * sx, box.top + node.clientTop * sy, sx, sy);
+          hostGeometry.add(node);
+          resizeObserver.observe(node);
+        } else if (hostGeometry.delete(node) && !records.has(node) && !controls.has(node) && !paintObservers.has(node)) {
+          resizeObserver.unobserve(node);
+        }
+        const native = record.material;
+        const rule = `[${hostSurfaceAttribute}="${record.id}"]{` +
+          `background-image:url(${JSON.stringify(tintedWallpaperUrl)}),${native.backgroundImage}!important;` +
+          `background-size:${geometry?.size || fitStyles.size},${native.backgroundSize}!important;` +
+          `background-position:${geometry?.position || fitStyles.position},${native.backgroundPosition}!important;` +
+          `background-repeat:${fitStyles.repeat},${native.backgroundRepeat}!important;` +
+          `background-attachment:${geometry ? "scroll" : "fixed"},${native.backgroundAttachment}!important;` +
+          `background-origin:padding-box,${native.backgroundOrigin}!important;` +
+          `background-clip:${native.backgroundClip.split(",")[0]},${native.backgroundClip}!important;}`;
+        if (record.rule !== rule) { record.rule = rule; writeRules(); }
+      }
+      hostDirty.clear();
     };
     const popupBackgroundKey = node => Array.from(node.style)
       .filter(name => name.startsWith("background") || name === "color")
@@ -722,6 +853,9 @@
         else addNativePopup(popup);
       }
       if (node.parentElement?.matches(footerSelector)) addFooter(node.parentElement);
+      refreshHostComposition(node);
+      if (hostForSurface(node)) discoverHostSurfaces(node);
+      else for (const target of targets) if (target.matches(hostSelector)) discoverHostSurfaces(target);
     };
     const intersectionObserver = new IntersectionObserver(entries => {
       let changed = false;
@@ -760,7 +894,8 @@
         if (record) record.box = null;
         const painted = paintObservers.get(target);
         if (painted) paintsDirty.add(painted);
-        changed ||= !!(control || record || painted);
+        if (hostSurfaces.has(target)) hostDirty.add(target);
+        changed ||= !!(control || record || painted || hostSurfaces.has(target));
       }
       if (changed && !previewVisible) schedule();
     });
@@ -796,6 +931,8 @@
       stats.layerWrites++;
     };
     const prune = () => {
+      for (const surface of hostSurfaces.keys())
+        if (!surface.isConnected || !hostForSurface(surface)) removeHostSurface(surface);
       for (const [footer, record] of footers) {
         if (footer.isConnected && !inactivePanel(footer) && !footer.closest(reviewHeaderSelector) &&
           record.scroller.isConnected && record.scroller.contains(footer)) continue;
@@ -829,6 +966,7 @@
       }
     };
     const retireTree = tree => {
+      removeWithin(hostSurfaces, tree, removeHostSurface);
       removeWithin(popups, tree, removePopup);
       removeWithin(controls, tree, removeControl);
       removeWithin(records, tree, removeMedia);
@@ -841,12 +979,13 @@
       const attributes = new Set();
       const semanticAttributes = new Set();
       const panels = new Set();
-      const movedInactive = new Set();
+      const movedProtected = new Set();
       for (const mutation of mutations) {
         if (owned(mutation.target) || mutation.target.closest?.(editorSelector)) continue;
         if (mutation.type === "childList") {
           for (const node of mutation.removedNodes)
-            if (node.nodeType === 1 && node.isConnected && inactivePanel(node)) movedInactive.add(node);
+            if (node.nodeType === 1 && node.isConnected &&
+              (inactivePanel(node) || owned(node) || node.closest(editorSelector))) movedProtected.add(node);
         }
         if (mutation.type === "attributes" && mutation.target.matches(rightPanelSelector) &&
           ["inert", "aria-hidden", "data-app-shell-focus-area"].includes(mutation.attributeName)) {
@@ -870,7 +1009,8 @@
           for (const node of mutation.addedNodes)
             if (node.nodeType === 1 && node.isConnected && !owned(node)) added.add(node);
           if ([...mutation.removedNodes].some(node =>
-            node.nodeType === 1 && !owned(node) && (node.matches(`[${mediaAttribute}],[${controlAttribute}],[${footerAttribute}]`) ||
+            node.nodeType === 1 && !owned(node) && (node.matches(`[${mediaAttribute}],[${controlAttribute}],[${footerAttribute}],[${hostSurfaceAttribute}]`) ||
+              node.querySelector(`[${hostSurfaceAttribute}]`) ||
               node.querySelector(`[${mediaAttribute}],[${controlAttribute}],[${popupMaterialAttribute}],[${footerAttribute}]`) ||
               node.matches(`[${popupMaterialAttribute}]`)))) changed = true;
         } else {
@@ -880,7 +1020,7 @@
       }
       const before = stats.layerWrites;
       const count = records.size + controls.size + popups.size;
-      for (const tree of movedInactive) { retireTree(tree); changed = true; }
+      for (const tree of movedProtected) { retireTree(tree); changed = true; }
       for (const panel of panels) {
         if (inactivePanel(panel)) retireTree(panel);
         else visit(panel);
@@ -894,6 +1034,8 @@
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
+        if (hostSurfaces.has(node) && !hostForSurface(node)) removeHostSurface(node);
+        if (hostForSurface(node)) { discoverHostSurfaces(node); changed = true; }
         if (node.matches(toolbarSelector)) {
           // 原生容器可能在子控件已挂载后才声明工具栏身份。
           if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); pruneNeeded = true; changed = true; }
@@ -916,6 +1058,7 @@
           if (themeInputs.get(node) !== key) {
             themeInputs.set(node, key);
             refreshPopupTheme();
+            for (const surface of hostSurfaces.keys()) updateHostSurface(surface);
             for (const surface of paintedNodes) if (surface.matches(headerSelector)) registerPaint(surface);
           }
         }
@@ -958,6 +1101,7 @@
         if (node.matches(topControlSelector)) {
           const count = popups.size;
           addNativePopup(node);
+          discoverHostSurfaces(node);
           changed ||= popups.size !== count;
         }
         if (node.closest(`[${popupBoundaryAttribute}]`) && !records.has(node) && !scopes.has(node)) continue;
@@ -999,10 +1143,12 @@
         changed = true;
       }
       changed ||= stats.layerWrites !== before;
+      for (const target of attributes) changed = refreshHostComposition(target) || changed;
       if (pruneNeeded && [...viewers].some(node => !node.isConnected || !node.matches(viewerSelector)))
         changed = true;
       if (changed) {
         if (pruneNeeded) prune();
+        refreshHostComposition();
         if (isPreviewOpen() !== previewVisible) {
           if (raf) cancelAnimationFrame(raf);
           render();
@@ -1222,6 +1368,7 @@
     };
     const flushRules = () => {
       const rules = nativeRules + [...footers.values()].map(record => record.rule).join("\n") +
+        [...hostSurfaces.values()].map(record => record.rule).join("\n") +
         [...paintedNodes].map(node => records.get(node))
         .map(record => record.wallRule).join("\n") +
         [...activeControls].map(node => controls.get(node).rule).concat([...popups.values()].map(record => record.rule))
@@ -1235,6 +1382,10 @@
       const previewWasVisible = previewVisible;
       previewVisible = isPreviewOpen();
       if (previewVisible) return;
+      if (previewWasVisible) refreshHostComposition(root);
+      for (const surface of hostStyleDirty) updateHostSurface(surface);
+      hostStyleDirty.clear();
+      if (hostDirty.size || geometryDirty && hostGeometry.size) refreshHostSurfaces();
       // 预览期间跳过的祖先变化，在预览关闭后补查一次。
       if (previewWasVisible) for (const node of paintedNodes) {
         const paint = records.get(node)?.paint;
@@ -1347,12 +1498,28 @@
     const onPaintMotionEnd = event => {
       const target = event.target;
       if (target?.nodeType !== 1 || previewVisible || owned(target)) return;
-      if (invalidatePaintChains(target)) schedule();
+      if (scopes.has(target)) refreshScope(target);
+      const compositionChanged = refreshHostComposition(target);
+      if (hostForSurface(target)) hostStyleDirty.add(target);
+      for (const surface of hostSurfaces.keys()) if (target === surface || target.contains(surface)) hostStyleDirty.add(surface);
+      if (invalidatePaintChains(target) || hostStyleDirty.size || compositionChanged) schedule();
+    };
+    const onHostState = event => {
+      for (let node = event.target; node?.nodeType === 1 && !owned(node); node = node.parentElement) {
+        // 透明选项也会在 hover/focus 时获得材质，只检查本次交互的祖先链。
+        if (hostForSurface(node)) hostStyleDirty.add(node);
+        if (node.matches(hostSelector)) break;
+      }
+      if (hostStyleDirty.size) schedule();
     };
     const onScroll = event => {
       if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
       if (previewVisible) return;
       const target = event.target;
+      for (const surface of hostGeometry) if (target === document || target?.contains?.(surface)) {
+        hostDirty.add(surface);
+        schedule();
+      }
       // 只有按视口换算的表面需要跟随滚动重算；沿用 fixed 的表面不受影响，无额外开销。
       if (geometryPaints.size) {
         let moved = false;
@@ -1422,6 +1589,10 @@
       [document, "transitionend", onPaintMotionEnd, true],
       [document, "transitioncancel", onPaintMotionEnd, true],
       [document, "animationend", onPaintMotionEnd, true],
+      [document, "pointerover", onHostState, true],
+      [document, "pointerout", onHostState, true],
+      [document, "focusin", onHostState, true],
+      [document, "focusout", onHostState, true],
     ];
     window.__codexPlusImageOverlayCleanup = (keepResource = false) => {
       if (disposed) return;
@@ -1438,9 +1609,11 @@
       svg.remove();
       image.onload = null;
       image.onerror = null;
+      if (tintedWallpaperUrl) URL.revokeObjectURL(tintedWallpaperUrl);
       for (const collection of [records, scopes, browserPortals, controls, popups, visibleMedia,
         visibleControls, activeControls, paintedNodes, viewers, scopeKeys, footers, themeInputs,
-        paintsDirty, geometryPaints, paintObservers]) collection.clear();
+        paintsDirty, geometryPaints, paintObservers, hostSurfaces, hostGeometry, hostDirty, hostStyleDirty,
+        hostComposition]) collection.clear();
       finishReady(false);
       if (!keepResource && resource) {
         if (resource.blobUrl) URL.revokeObjectURL(resource.blobUrl);
@@ -1456,6 +1629,10 @@
       resource.fitMode = fitMode;
       resource.width ||= image.naturalWidth;
       resource.height ||= image.naturalHeight;
+      // 背景图片本身带透明度；不占用原生伪元素、定位容器，也不把 data URI 写到节点样式。
+      const tinted = svgNode("svg", { width: resource.width, height: resource.height });
+      tinted.appendChild(svgNode("image", { href: source, width: resource.width, height: resource.height, opacity }));
+      tintedWallpaperUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(tinted)], { type: "image/svg+xml" }));
       overlay.style.backgroundImage = `url(${JSON.stringify(resource.imageSource)})`;
       style.textContent = nativeRules;
       root.append(style, svg);
@@ -1483,7 +1660,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 32, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 33, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

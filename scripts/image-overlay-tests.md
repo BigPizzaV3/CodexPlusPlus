@@ -8,6 +8,11 @@ accepts CODEX_TEST_BROWSER_PATH or CODEX_TEST_BROWSER (default: msedge).
 - node scripts/test-image-native-surfaces.cjs: current semantic composer attributes,
   legacy/home layouts and browser toolbar capsules with opaque native gradients;
   native media, hover/focus, cleanup and transformed surface alignment.
+- node scripts/test-image-host-surfaces.cjs: shared footer/popup backgrounds, including
+  unlabelled cards, nested opaque surfaces, native gradients, hover/focus, late mount,
+  host identity changes, reparenting, and release into third-party extension subtrees.
+  Checks that already globally covered cards are not painted twice and that ordinary
+  external siblings retain their native hit order.
 - node scripts/test-image-native-media.cjs: transparent images, fit/zoom, backdrop
   composition, frozen-JavaScript scrolling and native view-transition snapshots.
 - node scripts/test-image-composite.cjs: whole-frame comparison against the original
@@ -46,7 +51,20 @@ Toolbar lifecycle cases also cover late host designation, nested capsule promoti
 and adding/removing an inline transform without a resize event. A non-identity
 transform on an additional shared ancestor that keeps the entire subtree below the
 global wallpaper is a pre-existing stacking limitation, not covered as a passing
-alignment guarantee by these tests.
+alignment guarantee by these tests. `node scripts/audit-image-host-transforms.cjs`
+preserves the complete failing acceptance cases for this separate issue: the current
+baseline and candidate both fail two composer/media composition scenarios. This audit
+is intentionally reported separately from the passing regression suite, not skipped.
+
+Shared host painting is limited to opaque colors and full-coverage opaque gradients.
+It adds a background image layer without creating a new containing block or occupying
+native pseudo-elements. A cached host check defers to the global wallpaper when an
+outer transform/will-change context still traps the native host below it; it does not
+raise that ancestor and change its sibling order. Transparent/partial gradients,
+alpha colors and native image backgrounds retain their native material. Their full
+per-pixel alpha composition is outside this change; they must not acquire an extra
+full-rectangle wallpaper layer. Rotation/skew and complete animated ancestor/media
+composition also remain outside the passing alignment guarantee.
 
 Navigation regressions model both native browser hosts and hidden/visible reparenting,
 with guest pixels and application header controls checked after each navigation.
