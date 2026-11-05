@@ -187,13 +187,33 @@ fn agent_gateway_profile(
     port: u16,
     agent: &ToolId,
 ) -> RelayProfile {
+    let model_list = agent_gateway_model_list(gateway, binding, agent);
+    let base = format!("{}/v1", gateway_base_url_on(host, port, agent));
+    RelayProfile {
+        id: "codex-plus-gateway".to_string(),
+        name: "Codex++ 网关".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        base_url: base.clone(),
+        upstream_base_url: base,
+        api_key: binding.token.clone(),
+        model_list,
+        ..RelayProfile::default()
+    }
+}
+
+fn agent_gateway_model_list(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    agent: &ToolId,
+) -> String {
     // 池里所有能用的模型和模型组都进 Agent 的模型列表；Codex 按供应商分组显示，多家都有的模型每家各列一份。
     let models = if *agent == ToolId::Codex {
         route::codex_binding_models(gateway, binding)
     } else {
         route::binding_exposed_models(gateway, binding)
     };
-    let model_list = models
+    models
         .iter()
         .filter(|model| !model.is_empty())
         // 窗口依次取供应商池、绑定声明的后缀、Agent 默认窗口；都没有就不带，
@@ -220,19 +240,7 @@ fn agent_gateway_profile(
             }
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    let base = format!("{}/v1", gateway_base_url_on(host, port, agent));
-    RelayProfile {
-        id: "codex-plus-gateway".to_string(),
-        name: "Codex++ 网关".to_string(),
-        protocol: RelayProtocol::Responses,
-        relay_mode: RelayMode::PureApi,
-        base_url: base.clone(),
-        upstream_base_url: base,
-        api_key: binding.token.clone(),
-        model_list,
-        ..RelayProfile::default()
-    }
+        .join("\n")
 }
 
 /// 写 Agent 配置。Claude 首次切换时若把 live 配置存成了「切换前的配置」，返回它的 id。
@@ -359,19 +367,20 @@ pub fn codex_gateway_profile_on(
 ) -> anyhow::Result<RelayProfile> {
     let signed_in = crate::wsl_network::codex_gateway_uses_official_identity(signed_in, wsl_host);
     let host = crate::wsl_network::codex_gateway_host(wsl_host);
-    let synthetic = agent_gateway_profile(gateway, binding, &host, port, &ToolId::Codex);
+    let catalog = codex_gateway_model_catalog(gateway, binding);
+    let base_url = format!("{}/v1", gateway_base_url_on(&host, port, &ToolId::Codex));
     let mut profile = crate::provider_import::pool_relay_profile(
         "Codex++ 网关",
-        &synthetic.base_url,
-        &synthetic.api_key,
+        &base_url,
+        &binding.token,
         RelayProtocol::Responses,
         &binding_default_model(gateway, binding),
-        &synthetic.model_list,
+        &catalog.model_list,
         &[],
     )?;
     profile.id = CODEX_GATEWAY_RELAY_ID.to_string();
     profile.relay_mode = RelayMode::PureApi;
-    profile.model_metadata = codex_model_metadata(gateway, binding, &synthetic.model_list);
+    profile.model_metadata = catalog.model_metadata;
     if signed_in {
         profile.config_contents = with_openai_session_identity(&profile.config_contents)?;
     }
@@ -381,6 +390,26 @@ pub fn codex_gateway_profile_on(
         profile.config_contents = with_local_api_identity(&profile.config_contents)?;
     }
     Ok(profile)
+}
+
+/// 仅包含展示目录，不携带网关地址、凭据或实例的默认模型。
+/// model_list 保留窗口后缀；写入供应商前应清除旧窗口映射并执行标准归一化。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexGatewayModelCatalog {
+    pub model_list: String,
+    pub model_metadata: String,
+}
+
+pub fn codex_gateway_model_catalog(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+) -> CodexGatewayModelCatalog {
+    let model_list = agent_gateway_model_list(gateway, binding, &ToolId::Codex);
+    let model_metadata = codex_model_metadata(gateway, binding, &model_list);
+    CodexGatewayModelCatalog {
+        model_list,
+        model_metadata,
+    }
 }
 
 /// 没登录 ChatGPT 时的托管供应商：显式写 `requires_openai_auth = false`，与直连模式手加的

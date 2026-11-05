@@ -1984,6 +1984,71 @@ fn gateway_catalog_refresh_follows_model_sync_and_pool_changes() {
 }
 
 #[test]
+fn codex_gateway_directory_snapshot_matches_published_catalog_without_connection_settings() {
+    use codex_plus_core::gateway::apply::{codex_gateway_model_catalog, codex_gateway_profile};
+    use codex_plus_core::gateway::model_sync::set_provider_models;
+
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57389);
+    let ctx = &fixture.ctx;
+    let provider_id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    set_provider_models(
+        &ctx.gateway,
+        &provider_id,
+        &["deepseek-v4-pro".into(), "new-model".into()],
+        None,
+    )
+    .unwrap();
+    let (_, group_id) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Shared models".into(),
+            members: vec![GroupMember {
+                model: format!("{provider_id}/new-model"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let mut binding = binding();
+    binding.token = "test-private-token".into();
+    let snapshot = codex_gateway_model_catalog(&gateway, &binding);
+    let profile = codex_gateway_profile(&gateway, &binding, ctx.port, false).unwrap();
+
+    let (normalized_models, windows) =
+        codex_plus_core::model_suffix::migrate_model_list_with_suffixes(&snapshot.model_list);
+    assert_eq!(normalized_models, profile.model_list);
+    assert_eq!(
+        serde_json::to_value(windows).unwrap(),
+        serde_json::from_str::<Value>(&profile.model_windows).unwrap()
+    );
+    assert_eq!(snapshot.model_metadata, profile.model_metadata);
+    assert!(snapshot.model_list.contains("new-model"));
+    assert!(snapshot.model_list.contains(&format!("group/{group_id}")));
+    assert!(!snapshot.model_list.contains(&binding.token));
+    assert!(!snapshot.model_metadata.contains(&binding.token));
+    assert!(!snapshot.model_metadata.contains("api.deepseek.test"));
+
+    binding.token = "rotated-test-token".into();
+    assert_eq!(snapshot, codex_gateway_model_catalog(&gateway, &binding));
+
+    set_provider_windows(
+        &ctx.gateway,
+        &provider_id,
+        [("new-model".into(), 96_000)].into(),
+        None,
+    )
+    .unwrap();
+    let updated = codex_gateway_model_catalog(&ctx.gateway.load().unwrap(), &binding);
+    let (_, updated_windows) =
+        codex_plus_core::model_suffix::migrate_model_list_with_suffixes(&updated.model_list);
+    assert_eq!(updated_windows.get("new-model").map(String::as_str), Some("96000"));
+    assert_ne!(snapshot, updated);
+}
+
+#[test]
 fn gateway_catalog_refresh_keeps_provider_models_when_group_hides_shared_member() {
     let _state = crate::common::IsolatedTestState::new();
     let fixture = fixture(57387);
