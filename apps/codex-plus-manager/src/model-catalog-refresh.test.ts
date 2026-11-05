@@ -94,100 +94,65 @@ function queryClient(entries: Array<{ queryKey: any[]; state: { data: any } }>) 
 const nativeQueryKey = (host = "local", provider = "gateway") =>
   ["models", "list", host, "no-auth", 100, provider, "fixture-catalog"];
 
-it("refreshes the confirmed local native cache before and after a stale refetch", async () => {
+it("invalidates local queries without modifying a same-key last page", async () => {
   const local = { queryKey: nativeQueryKey(), state: { data: { data: [
     { model: "a/old", displayName: "Old", isDefault: true },
     { model: "native-only" },
   ], nextCursor: null, model: "selected", reasoningEffort: "ultra" } } };
   const remote = { queryKey: nativeQueryKey("remote"), state: { data: structuredClone(local.state.data) } };
-  const otherProvider = { queryKey: nativeQueryKey("local", "other"), state: { data: structuredClone(local.state.data) } };
-  const malformed = { queryKey: ["models", "list", "local", "different", 100, "gateway"],
-    state: { data: { data: [{ other: "value" }], nextCursor: null } } };
-  const paginated = { queryKey: ["models", "list", "local", "page", 100, "gateway", "fixture-catalog"],
-    state: { data: { data: [{ model: "native-page" }], nextCursor: "next" } } };
-  const lastPage = { queryKey: [...nativeQueryKey(), "cursor-for-last-page"],
-    state: { data: { data: [{ model: "native-last-page" }], nextCursor: null } } };
-  const unknownCursor = { queryKey: ["models", "list", "local", "unknown", 100, "gateway", "fixture-catalog"],
-    state: { data: { data: [{ model: "native-unknown" }], nextCursor: undefined } } };
-  const conflictingCursor = { queryKey: ["models", "list", "local", "conflicting", 100, "gateway", "fixture-catalog"],
-    state: { data: { data: [{ model: "native-conflicting" }], nextCursor: null, next_cursor: "next" } } };
-  const unknownSnakeCursor = { queryKey: ["models", "list", "local", "unknown-snake", 100, "gateway", "fixture-catalog"],
-    state: { data: { data: [{ model: "native-unknown-snake" }], nextCursor: null, next_cursor: undefined } } };
-  const { client, pending } = queryClient([local, remote, otherProvider, malformed, paginated, lastPage, unknownCursor, conflictingCursor, unknownSnakeCursor]);
+  const { client, pending } = queryClient([local, remote]);
   const original = local.state.data;
-  const unchanged = [remote, otherProvider, malformed, paginated, lastPage, unknownCursor, conflictingCursor, unknownSnakeCursor].map(entry => structuredClone(entry.state.data));
-  const r = runtime({ testQueryClient: client });
+  const originalRemote = remote.state.data;
+  const shared = { testQueryClient: client };
+  const r = runtime(shared);
   await load(r, ["a/old", "a/new"], { "a/new": { displayName: "New model" } });
-  assert.notEqual(local.state.data, original, "cache updates must not mutate existing query data");
+  assert.equal(local.state.data, original);
+  assert.equal(remote.state.data, originalRemote);
   assert.deepEqual(original.data.map(entry => entry.model), ["a/old", "native-only"]);
-  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/old", "a/new"]);
-  assert.equal(local.state.data.data[1].displayName, "New model");
-  assert.equal(local.state.data.model, "selected");
-  assert.equal(local.state.data.reasoningEffort, "ultra");
-  [remote, otherProvider, malformed, paginated, lastPage, unknownCursor, conflictingCursor, unknownSnakeCursor].forEach((entry, index) =>
-    assert.deepEqual(entry.state.data, unchanged[index]));
-
-  local.state.data = structuredClone(original);
+  assert.deepEqual(pending.map(item => item.key), [local.queryKey]);
+  const next = runtime(shared, r.settings());
+  await load(next, ["a/current"]);
   pending.find(item => item.key === local.queryKey)!.resolve();
   await settle();
-  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/old", "a/new"]);
-});
-
-it("late refetches use the current catalog after a change and reinjection", async () => {
-  const local = { queryKey: nativeQueryKey(), state: { data: {
-    data: [{ model: "a/old" }], nextCursor: null,
-  } } };
-  const { client, pending } = queryClient([local]);
-  const shared = { testQueryClient: client };
-  const first = runtime(shared);
-  await load(first, ["a/old"]);
-  const next = runtime(shared, first.settings());
-  await load(next, ["a/current"]);
-  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/current"]);
-  local.state.data = { data: [{ model: "a/old" }], nextCursor: null };
-  pending[0].resolve();
-  await settle();
-  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/current"]);
+  assert.equal(local.state.data, original);
+  assert.equal(local.state.data.model, "selected");
+  assert.equal(local.state.data.reasoningEffort, "ultra");
 });
 
 it("preserves native descriptors when a catalog change reintroduces a filtered model", async () => {
-  const local = { queryKey: nativeQueryKey(), state: { data: {
-    data: [
-      { model: "a/old", displayName: "Old" },
-      { model: "a/returning", description: "Original native descriptor", nativeCapability: true },
-    ],
-    nextCursor: null,
-  } } };
-  const original = local.state.data;
-  const { client } = queryClient([local]);
-  const r = runtime({ testQueryClient: client });
+  const local = { hostId: "local", models: [
+    { model: "a/old", displayName: "Old" },
+    { model: "a/returning", description: "Original native descriptor", nativeCapability: true },
+  ] };
+  const r = runtime();
   await load(r, ["a/old"]);
-  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/old"]);
-  assert.equal(original.data.length, 2, "patching must not mutate the source cache");
+  r.api.patch(local);
+  assert.deepEqual(Array.from(local.models, entry => entry.model), ["a/old"]);
 
   r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
   r.pending.shift()!.resolve(catalog(["a/old", "a/returning"]));
   await settle();
-  const restored = local.state.data.data.find(entry => entry.model === "a/returning");
+  r.api.patch(local);
+  const restored = local.models.find(entry => entry.model === "a/returning");
   assert.equal(restored?.description, "Original native descriptor");
   assert.equal(restored?.nativeCapability, true);
 });
 
-it("does not restore an obsolete snapshot after native cache data changes", async () => {
-  const local = { queryKey: nativeQueryKey(), state: { data: {
-    data: [{ model: "a/old", description: "Old" }, { model: "a/returning", description: "Stale" }],
-    nextCursor: null,
-  } } };
-  const { client } = queryClient([local]);
-  const r = runtime({ testQueryClient: client });
+it("does not restore an obsolete snapshot after native model data changes", async () => {
+  const local = { hostId: "local", models: [
+    { model: "a/old", description: "Old" }, { model: "a/returning", description: "Stale" },
+  ] };
+  const r = runtime();
   await load(r, ["a/old"]);
-  local.state.data.data.splice(0, 1, { model: "a/returning", description: "Fresh native data" });
+  r.api.patch(local);
+  local.models.splice(0, 1, { model: "a/returning", description: "Fresh native data" });
 
   r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
   r.pending.shift()!.resolve(catalog(["a/returning"]));
   await settle();
-  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/returning"]);
-  assert.equal(local.state.data.data[0].description, "Fresh native data");
+  r.api.patch(local);
+  assert.deepEqual(Array.from(local.models, entry => entry.model), ["a/returning"]);
+  assert.equal(local.models[0].description, "Fresh native data");
 });
 
 it("catalog fingerprint changes bypass cache and invalidate only local model queries", async () => {

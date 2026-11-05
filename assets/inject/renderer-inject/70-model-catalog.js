@@ -38,7 +38,6 @@
     patchStatsig: patchStatsigModelDynamicConfig,
     recordRequest: recordModelListRequest,
     patchMcp: patchMcpModelResponseData,
-    patchNativeQueryCache: patchCodexNativeModelQueryCache,
   };
   window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
@@ -167,27 +166,6 @@
     void loadCodexModelCatalog(true);
   }
 
-  function patchCodexNativeModelQueryCache(client, key) {
-    const provider = codexModelCatalog.codex_model_provider || codexModelCatalog.model_provider;
-    if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime
-        || key.length !== 7 || key[0] !== "models" || key[1] !== "list" || key[2] !== "local"
-        || typeof key[3] !== "string" || !Number.isInteger(key[4]) || key[4] <= 0
-        || typeof key[6] !== "string" || !key[6]
-        || !provider || key[5] !== provider
-        || !codexModelAllowedSet("local") || typeof client?.setQueryData !== "function") return;
-    client.setQueryData(key, (current) => {
-      if (!current || typeof current !== "object" || Array.isArray(current)
-          || !Object.prototype.hasOwnProperty.call(current, "nextCursor")
-          || current.nextCursor !== null
-          || ("next_cursor" in current && current.next_cursor !== null)
-          || !modelArrayLooksPatchable(current.data, true)) return current;
-      const models = [...current.data];
-      const snapshot = codexPlusModelCollectionSnapshots.get(current.data);
-      if (snapshot) codexPlusModelCollectionSnapshots.set(models, { ...snapshot });
-      return patchModelArray(models, true, "local") ? { ...current, data: models } : current;
-    });
-  }
-
   function refreshCodexNativeModelQueries() {
     const client = typeof findCodexQueryClient === "function" ? findCodexQueryClient() : null;
     if (typeof client?.invalidateQueries !== "function") return;
@@ -196,12 +174,8 @@
       if (!Array.isArray(key) || !key.some((part) => typeof part === "string"
           && /^(models|model-list|list-models-for-host|available-models)$/u.test(part))) continue;
       if (!key.some((part) => part === "local" || part?.hostId === "local")) continue;
-      // 新版原生查询可能绕过响应包装器；仅处理已确认的本机模型列表缓存。
-      try { codexModelCatalogRuntime.patchNativeQueryCache?.(client, key); }
-      catch {}
       try {
         Promise.resolve(client.invalidateQueries({ queryKey: key, exact: true }))
-          .then(() => window.__codexPlusModelCatalogRuntime?.patchNativeQueryCache?.(client, key))
           .catch(() => {});
       }
       catch {}
