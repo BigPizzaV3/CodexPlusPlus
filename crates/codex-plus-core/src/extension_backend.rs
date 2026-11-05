@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::Context;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, Notify, oneshot};
+use tokio::sync::{Mutex, Notify, oneshot, watch};
 
 use crate::user_scripts::UserScriptManager;
 
@@ -150,6 +150,8 @@ struct Backend {
     /// 最近一次调用来自哪个页面实例；旧实例卸载时发来的 stop 只在它仍是最近调用方时生效。
     instance: Option<String>,
     _child: tokio::process::Child,
+    /// 后台仍可能延迟 import/readFile；直到这一代进程释放前保留实际启动的文件。
+    _snapshot: Option<crate::user_scripts::StagedBackendSnapshot>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -161,6 +163,113 @@ enum BackendHost {
 /// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+// 与 BACKENDS 同时访问时，先持有 BACKENDS，再取得此锁。
+static BACKEND_GENERATIONS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+static BACKEND_DOCUMENTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (u64, String, Option<crate::user_scripts::StagedBackendSnapshot>)>>> =
+    std::sync::LazyLock::new(Default::default);
+static BACKEND_OWNER_EPOCH: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+
+fn generation_key(manager: &UserScriptManager, host: BackendHost) -> String {
+    match host {
+        BackendHost::Codex => slot_prefix(manager),
+        BackendHost::ClaudeDesktop => format!("claudeDesktop\u{0}{}", slot_prefix(manager)),
+    }
+}
+
+fn generation(key: &str) -> u64 {
+    *BACKEND_GENERATIONS.lock().unwrap().get(key).unwrap_or(&0)
+}
+
+/// 返回当前目录的后台代际，用于使迟到的停止操作不影响较新的后台。
+pub fn backend_generation(manager: &UserScriptManager) -> u64 {
+    generation(&generation_key(manager, BackendHost::Codex))
+}
+
+/// 清理开始前撤销页面来源，阻止旧回调在下一代后台启动前重新进入。
+pub async fn revoke_backend_document(manager: &UserScriptManager, expected: u64) -> Option<u64> {
+    let _backends = BACKENDS.lock().await;
+    let key = generation_key(manager, BackendHost::Codex);
+    let mut generations = BACKEND_GENERATIONS.lock().unwrap();
+    let current = generations.entry(key.clone()).or_default();
+    if *current != expected {
+        return None;
+    }
+    *current = current.wrapping_add(1);
+    let next = *current;
+    BACKEND_DOCUMENTS.lock().unwrap().remove(&key);
+    let starting = STARTING.lock().unwrap();
+    for (slot, entry) in starting.iter() {
+        if slot.starts_with(&key) {
+            let _ = entry.cancel.send(true);
+            entry.notify.notify_waiters();
+        }
+    }
+    Some(next)
+}
+
+/// 为已停止旧代的页面绑定来源快照。此值用于生命周期隔离，不是身份认证凭据。
+pub async fn bind_backend_document(manager: &UserScriptManager, expected: u64, document: &str) -> anyhow::Result<Value> {
+    bind_backend_source(manager, expected, document, None).await
+}
+
+/// 页面来源和 Node 实际执行的同一份快照共同绑定到代际，不能回退到实时原路径。
+pub async fn bind_backend_snapshot(
+    manager: &UserScriptManager,
+    expected: u64,
+    document: &str,
+    snapshot: crate::user_scripts::StagedBackendSnapshot,
+) -> anyhow::Result<Value> {
+    bind_backend_source(manager, expected, document, Some(snapshot)).await
+}
+
+async fn bind_backend_source(
+    manager: &UserScriptManager,
+    expected: u64,
+    document: &str,
+    snapshot: Option<crate::user_scripts::StagedBackendSnapshot>,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(!document.is_empty() && document.len() <= 256, "页面文档标识无效");
+    let _backends = BACKENDS.lock().await;
+    let key = generation_key(manager, BackendHost::Codex);
+    anyhow::ensure!(generation(&key) == expected, "后台代际已变化");
+    let mut documents = BACKEND_DOCUMENTS.lock().unwrap();
+    if let Some((bound_generation, bound_document, bound_snapshot)) = documents.get(&key) {
+        anyhow::ensure!(*bound_generation != expected || bound_document == document, "后台代际已绑定其他页面");
+        anyhow::ensure!(*bound_generation != expected
+            || bound_snapshot.as_ref().map(|value| value.revision()) == snapshot.as_ref().map(|value| value.revision()),
+            "后台代际已绑定其他快照");
+    }
+    let revision = snapshot.as_ref().map(|value| value.revision().to_string());
+    documents.insert(key, (expected, document.to_string(), snapshot));
+    Ok(json!({ "ownerEpoch": BACKEND_OWNER_EPOCH.as_str(), "generation": expected, "documentId": document, "revision": revision }))
+}
+
+fn bound_snapshot(manager: &UserScriptManager, expected: u64) -> Option<crate::user_scripts::StagedBackendSnapshot> {
+    BACKEND_DOCUMENTS.lock().unwrap().get(&generation_key(manager, BackendHost::Codex))
+        .filter(|bound| bound.0 == expected).and_then(|bound| bound.2.clone())
+}
+
+fn source_generation(manager: &UserScriptManager, source: Option<&Value>) -> anyhow::Result<u64> {
+    let source = source.context("缺少后台调用来源")?;
+    let owner = source.get("ownerEpoch").and_then(Value::as_str).context("缺少后台来源进程")?;
+    let expected = source.get("generation").and_then(Value::as_u64).context("缺少后台来源代际")?;
+    let document = source.get("documentId").and_then(Value::as_str).context("缺少后台来源文档")?;
+    let key = generation_key(manager, BackendHost::Codex);
+    anyhow::ensure!(owner == BACKEND_OWNER_EPOCH.as_str()
+        && generation(&key) == expected
+        && BACKEND_DOCUMENTS.lock().unwrap().get(&key).is_some_and(|bound| {
+            bound.0 == expected && bound.1 == document &&
+                bound.2.as_ref().is_none_or(|snapshot| source.get("revision").and_then(Value::as_str) == Some(snapshot.revision()))
+        }),
+        "后台调用来源已过期");
+    Ok(expected)
+}
+
+pub fn backend_source_is_current(manager: &UserScriptManager, source: &Value) -> bool {
+    source_generation(manager, Some(source)).is_ok()
+}
 
 /// 后台的登记键：拓展目录（以它的配置文件定位）+ 拓展 key。
 fn slot(manager: &UserScriptManager, key: &str) -> String {
@@ -208,6 +317,8 @@ async fn spawn(
     manager: &UserScriptManager,
     (extension, script, config): (String, PathBuf, Value),
     host: BackendHost,
+    expected_generation: u64,
+    snapshot: Option<crate::user_scripts::StagedBackendSnapshot>,
 ) -> anyhow::Result<Backend> {
     let fingerprint = fingerprint(&script, &config);
     let node = crate::extension_node::require_node()?;
@@ -269,7 +380,7 @@ async fn spawn(
                         let result = if host == BackendHost::ClaudeDesktop {
                             Err(anyhow::anyhow!("Claude Desktop 后台未开放 Codex 宿主调用"))
                         } else {
-                            host_call(&message, &host_manager).await
+                            host_call_for_generation(&message, &host_manager, expected_generation).await
                         };
                         let reply = match result {
                             Ok(result) => json!({ "hostReply": host_id, "result": result }),
@@ -318,7 +429,7 @@ async fn spawn(
         Ok(Err(_)) => anyhow::bail!("拓展后台启动后立即退出"),
         Err(_) => anyhow::bail!("拓展后台 15 秒内没有就绪"),
     }
-    Ok(Backend { stdin, pending, events, notify, next_id: 1, fingerprint, instance: None, _child: child })
+    Ok(Backend { stdin, pending, events, notify, next_id: 1, fingerprint, instance: None, _child: child, _snapshot: snapshot })
 }
 
 /// 后台、模型工具发起的宿主调用：只读会话查询（sessionQuery），以及按名字调用后台服务（services.call）。
@@ -328,10 +439,21 @@ pub(crate) fn host_call<'a>(
     message: &'a Value,
     manager: &'a UserScriptManager,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>> {
-    Box::pin(host_call_inner(message, manager))
+    Box::pin(host_call_inner(message, manager, None))
 }
 
-async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow::Result<Value> {
+fn host_call_for_generation<'a>(
+    message: &'a Value,
+    manager: &'a UserScriptManager,
+    expected: u64,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send + 'a>> {
+    Box::pin(host_call_inner(message, manager, Some(expected)))
+}
+
+async fn host_call_inner(message: &Value, manager: &UserScriptManager, expected: Option<u64>) -> anyhow::Result<Value> {
+    if let Some(expected) = expected {
+        anyhow::ensure!(backend_generation(manager) == expected, "后台宿主调用来源已过期");
+    }
     let service = message.get("service").and_then(Value::as_str).unwrap_or_default().to_string();
     let method = message.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -344,20 +466,20 @@ async fn host_call_inner(message: &Value, manager: &UserScriptManager) -> anyhow
             // 后台都托管在处理桥接的那个进程里。本进程不是它（拓展 MCP、钩子进程）时经 Codex 页面的桥接转过去，
             // 否则同一个后台会在两个进程里各起一份，状态对不上。
             if let Some(ports) = REMOTE_BRIDGE_PORTS.get() {
-                let result = remote_bridge_call(ports, "/extensions/services/call", &params).await?;
+                let result = remote_bridge_call(ports, "/extensions/services/call-external", &params).await?;
                 return Ok(result.get("result").cloned().unwrap_or(Value::Null));
             }
-            call_service(manager, &params).await
+            call_service_for_generation(manager, &params, expected).await
         }
         ("sessions", "list" | "create" | "fork" | "rename" | "append" | "startTurn" | "steer" | "interrupt" | "compact") => {
             // 会话写入经 Codex 页面里的 app-server 连接完成：在页面里调 __codexPlusSessionsCall。
             let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
-            page_call(&ports, "__codexPlusSessionsCall", &json!(method), &params).await
+            page_call(&ports, "__codexPlusSessionsCall", &json!(method), &params, expected).await
         }
         ("ui", "ask" | "toast") => {
             // 问用户 / 提示：在 Codex 页面里弹，等用户回答（提问最长等 10 分钟）。
             let ports = REMOTE_BRIDGE_PORTS.get().cloned().unwrap_or_else(default_debug_ports);
-            page_call(&ports, "__codexPlusUiCall", &json!(method), &params).await
+            page_call(&ports, "__codexPlusUiCall", &json!(method), &params, expected).await
         }
         // stream 只有命令行入口（[`run_host_call_cli`]）能边收边吐；别的通道一次性返回同样的结果。
         ("llm", "complete" | "stream") => crate::extension_llm::complete(&params).await,
@@ -387,7 +509,7 @@ fn default_debug_ports() -> Vec<u16> {
 }
 
 /// 在 Codex 页面里调用一个全局函数 `window[function](name, params)`，返回它的结果。
-async fn page_call(ports: &[u16], function: &str, name: &Value, params: &Value) -> anyhow::Result<Value> {
+async fn page_call(ports: &[u16], function: &str, name: &Value, params: &Value, expected: Option<u64>) -> anyhow::Result<Value> {
     let mut websocket = None;
     for port in ports {
         let Ok(targets) = crate::cdp::list_targets(*port).await else {
@@ -399,8 +521,12 @@ async fn page_call(ports: &[u16], function: &str, name: &Value, params: &Value) 
         }
     }
     let websocket = websocket.context("没有找到已连接的 Codex 页面")?;
+    let source_check = expected.map(|expected| format!(
+        "const source = window.__codexPlusBackendSource; if (!source || source.ownerEpoch !== {} || source.generation !== {}) throw new Error('后台宿主调用来源已过期');",
+        json!(BACKEND_OWNER_EPOCH.as_str()), expected
+    )).unwrap_or_default();
     let expression = format!(
-        "(async () => {{ if (typeof window.{function} !== \"function\") throw new Error(\"Codex 页面还没装好 Codex++ 拓展运行时\"); return JSON.stringify(await window.{function}({name}, {params})); }})()"
+        "(async () => {{ {source_check} if (typeof window.{function} !== \"function\") throw new Error(\"Codex 页面还没装好 Codex++ 拓展运行时\"); return JSON.stringify(await window.{function}({name}, {params})); }})()"
     );
     // 提问要等用户回答：按它的 timeoutMs 多给 5 秒；其余页面调用（会话写入）给 30 秒。
     let timeout = if function == "__codexPlusUiCall" && name == "ask" {
@@ -503,18 +629,25 @@ async fn remote_bridge_call(ports: &[u16], path: &str, payload: &Value) -> anyho
 /// 扫描拓展目录的短缓存：服务调用、后台调用每次都要知道「谁启用着、脚本与配置是什么」，
 /// 一轮对话里可能连续几十次，没必要每次都整轮扫描。改动最多 2 秒后生效。
 const SCAN_CACHE_TTL: Duration = Duration::from_secs(2);
-type ScanCache<T> = std::sync::LazyLock<std::sync::Mutex<HashMap<String, (std::time::Instant, T)>>>;
+type ScanCache<T> = std::sync::LazyLock<std::sync::Mutex<HashMap<String, (std::time::Instant, u64, T)>>>;
 static BACKEND_SCAN: ScanCache<Result<(String, PathBuf, Value), String>> = std::sync::LazyLock::new(Default::default);
 static SERVICE_SCAN: ScanCache<Vec<(String, String)>> = std::sync::LazyLock::new(Default::default);
+static SCAN_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn cached<T: Clone>(cache: &ScanCache<T>, key: &str, load: impl FnOnce() -> T) -> T {
-    if let Some((at, value)) = cache.lock().unwrap().get(key) {
-        if at.elapsed() < SCAN_CACHE_TTL {
+    let revision = SCAN_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some((at, cached_revision, value)) = cache.lock().unwrap().get(key) {
+        if *cached_revision == SCAN_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+            && at.elapsed() < SCAN_CACHE_TTL
+        {
             return value.clone();
         }
     }
     let value = load();
-    cache.lock().unwrap().insert(key.to_string(), (std::time::Instant::now(), value.clone()));
+    let mut cache = cache.lock().unwrap();
+    if SCAN_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == revision {
+        cache.insert(key.to_string(), (std::time::Instant::now(), revision, value.clone()));
+    }
     value
 }
 
@@ -524,25 +657,42 @@ fn declared_backend(manager: &UserScriptManager, key: &str) -> anyhow::Result<(S
 }
 
 fn backend_services(manager: &UserScriptManager) -> anyhow::Result<Vec<(String, String)>> {
+    if let Some(snapshot) = bound_snapshot(manager, backend_generation(manager)) {
+        return Ok(snapshot.services.clone());
+    }
     let cache_key = manager.config_path().display().to_string();
-    if let Some((at, value)) = SERVICE_SCAN.lock().unwrap().get(&cache_key) {
-        if at.elapsed() < SCAN_CACHE_TTL {
+    let revision = SCAN_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some((at, cached_revision, value)) = SERVICE_SCAN.lock().unwrap().get(&cache_key) {
+        if *cached_revision == SCAN_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+            && at.elapsed() < SCAN_CACHE_TTL
+        {
             return Ok(value.clone());
         }
     }
     let value = manager.enabled_backend_services()?;
-    SERVICE_SCAN.lock().unwrap().insert(cache_key, (std::time::Instant::now(), value.clone()));
+    let mut cache = SERVICE_SCAN.lock().unwrap();
+    if SCAN_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == revision {
+        cache.insert(cache_key, (std::time::Instant::now(), revision, value.clone()));
+    }
     Ok(value)
 }
 
 /// 清掉扫描缓存（热重载、启停拓展后立即生效用）。
 pub fn invalidate_scan_cache() {
+    SCAN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     BACKEND_SCAN.lock().unwrap().clear();
     SERVICE_SCAN.lock().unwrap().clear();
 }
 
 /// 按服务名调用提供它的后台：`{ name, method, args, timeoutMs? }`。后台没起就先起。
 pub async fn call_service(manager: &UserScriptManager, params: &Value) -> anyhow::Result<Value> {
+    call_service_for_generation(manager, params, None).await
+}
+
+async fn call_service_for_generation(manager: &UserScriptManager, params: &Value, expected: Option<u64>) -> anyhow::Result<Value> {
+    if let Some(expected) = expected {
+        anyhow::ensure!(backend_generation(manager) == expected, "后台服务调用来源已过期");
+    }
     let name = params.get("name").and_then(Value::as_str).context("缺少服务名")?;
     let method = params.get("method").and_then(Value::as_str).filter(|method| !method.is_empty()).context("缺少服务方法名")?;
     let (_, key) = backend_services(manager)?
@@ -556,11 +706,19 @@ pub async fn call_service(manager: &UserScriptManager, params: &Value) -> anyhow
         .unwrap_or(DEFAULT_CALL_TIMEOUT)
         .min(Duration::from_secs(24));
     let args = params.get("args").cloned().filter(Value::is_array).unwrap_or_else(|| json!([]));
-    call(manager, &key, "__service", json!({ "name": name, "method": method, "args": args }), timeout, None).await
+    call_for_host(manager, &key, "__service", json!({ "name": name, "method": method, "args": args }), timeout, None, BackendHost::Codex, expected).await
 }
 
 /// 桥接路由 `/extensions/services/call`：`{ name, method, args, timeoutMs? }`。
 pub async fn route_service_call(payload: &Value) -> anyhow::Result<Value> {
+    let manager = crate::user_scripts::default_user_script_manager();
+    let expected = source_generation(&manager, payload.get("source"))?;
+    let result = call_service_for_generation(&manager, payload, Some(expected)).await?;
+    Ok(json!({ "status": "ok", "result": result }))
+}
+
+/// CLI/MCP 进程通过 CDP 中转的显式入口，不使用页面拓展实例的生命周期。
+pub async fn route_external_service_call(payload: &Value) -> anyhow::Result<Value> {
     let manager = crate::user_scripts::default_user_script_manager();
     let result = call_service(&manager, payload).await?;
     Ok(json!({ "status": "ok", "result": result }))
@@ -568,7 +726,12 @@ pub async fn route_service_call(payload: &Value) -> anyhow::Result<Value> {
 
 /// 正在启动中的后台：key → 启动完成的通知。启动（最多 15 秒等就绪）不占全局锁，
 /// 否则一个后台在启动时调用别的后台服务会和全局锁互相等待。
-static STARTING: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<Notify>>>> = std::sync::LazyLock::new(Default::default);
+struct Starting {
+    generation: u64,
+    notify: Arc<Notify>,
+    cancel: watch::Sender<bool>,
+}
+static STARTING: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Starting>>> = std::sync::LazyLock::new(Default::default);
 
 /// 启动方的收尾：无论启动成功、失败还是调用方被取消（future 被丢弃），都移除启动中标记并唤醒等待者，
 /// 否则被取消后标记留着，之后每次调用都会等满 15 秒报「启动超时」。
@@ -579,7 +742,10 @@ struct StartingGuard {
 
 impl Drop for StartingGuard {
     fn drop(&mut self) {
-        STARTING.lock().unwrap().remove(&self.key);
+        let mut starting = STARTING.lock().unwrap();
+        if starting.get(&self.key).is_some_and(|entry| Arc::ptr_eq(&entry.notify, &self.notify)) {
+            starting.remove(&self.key);
+        }
         self.notify.notify_waiters();
     }
 }
@@ -591,12 +757,18 @@ async fn ensure_started(
     declared: (String, PathBuf, Value),
     wanted: &str,
     host: BackendHost,
+    expected_generation: u64,
+    snapshot: Option<crate::user_scripts::StagedBackendSnapshot>,
 ) -> anyhow::Result<()> {
     let key = &host_slot(manager, key, host);
+    let generation_key = generation_key(manager, host);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        {
+        let (notify, cancel) = {
             let mut backends = BACKENDS.lock().await;
+            if generation(&generation_key) != expected_generation {
+                anyhow::bail!("拓展后台启动已被新的重载操作取代");
+            }
             match backends.get(key) {
                 Some(backend) if backend.fingerprint == wanted => return Ok(()),
                 Some(_) => {
@@ -604,29 +776,39 @@ async fn ensure_started(
                 }
                 None => {}
             }
-        }
-        let (notify, starter) = {
             let mut starting = STARTING.lock().unwrap();
             match starting.get(key) {
-                Some(notify) => (notify.clone(), false),
-                None => {
+                Some(entry) if entry.generation == expected_generation => (entry.notify.clone(), None),
+                _ => {
                     let notify = Arc::new(Notify::new());
-                    starting.insert(key.to_string(), notify.clone());
-                    (notify, true)
+                    let (cancel, receiver) = watch::channel(false);
+                    let entry = Starting { generation: expected_generation, notify: notify.clone(), cancel };
+                    if let Some(old) = starting.insert(key.to_string(), entry) {
+                        let _ = old.cancel.send(true);
+                        old.notify.notify_waiters();
+                    }
+                    (notify, Some(receiver))
                 }
             }
         };
-        if starter {
+        if let Some(mut cancel) = cancel {
             let _guard = StartingGuard { key: key.to_string(), notify };
-            let backend = spawn(manager, declared, host).await?;
-            BACKENDS.lock().await.insert(key.to_string(), backend);
+            let backend = tokio::select! {
+                result = spawn(manager, declared, host, expected_generation, snapshot) => result?,
+                _ = cancel.changed() => anyhow::bail!("拓展后台启动已被新的重载操作取代"),
+            };
+            let mut backends = BACKENDS.lock().await;
+            if generation(&generation_key) != expected_generation {
+                anyhow::bail!("拓展后台启动已被新的重载操作取代");
+            }
+            backends.insert(key.to_string(), backend);
             return Ok(());
         }
         // 别人正在启动：等它结束后再看一次（结束得早于开始等待时，下一轮直接看到结果）。
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        if !STARTING.lock().unwrap().contains_key(key) {
+        if !STARTING.lock().unwrap().get(key).is_some_and(|entry| Arc::ptr_eq(&entry.notify, &notify)) {
             continue;
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
@@ -645,7 +827,7 @@ pub async fn call(
     timeout: Duration,
     instance: Option<&str>,
 ) -> anyhow::Result<Value> {
-    call_for_host(manager, key, method, params, timeout, instance, BackendHost::Codex).await
+    call_for_host(manager, key, method, params, timeout, instance, BackendHost::Codex, None).await
 }
 
 /// Claude Mods 只调用清单显式声明的方法，后台进程、状态目录和宿主权限均与 Codex 分开。
@@ -657,7 +839,7 @@ pub(crate) async fn call_claude(
     timeout: Duration,
     instance: Option<&str>,
 ) -> anyhow::Result<Value> {
-    call_for_host(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop).await
+    call_for_host(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop, None).await
 }
 
 async fn call_for_host(
@@ -668,26 +850,42 @@ async fn call_for_host(
     timeout: Duration,
     instance: Option<&str>,
     host: BackendHost,
+    source_generation: Option<u64>,
 ) -> anyhow::Result<Value> {
     if method.is_empty() || method.len() > 128 {
         anyhow::bail!("方法名无效");
     }
+    let generation_key = generation_key(manager, host);
+    let expected_generation = source_generation.unwrap_or_else(|| generation(&generation_key));
+    anyhow::ensure!(generation(&generation_key) == expected_generation, "拓展后台调用来源已过期");
+    let snapshot = if host == BackendHost::Codex { bound_snapshot(manager, expected_generation) } else { None };
     // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
     let declared = match match host {
-        BackendHost::Codex => declared_backend(manager, key),
+        BackendHost::Codex => match &snapshot {
+            Some(snapshot) => snapshot.entries.get(key)
+                .map(|entry| (entry.extension.clone(), entry.script.clone(), entry.config.clone()))
+                .with_context(|| format!("快照 {} 中没有启用的后台 {key}，未从原目录启动", snapshot.revision())),
+            None => declared_backend(manager, key),
+        },
         BackendHost::ClaudeDesktop => manager.enabled_claude_extension_backend(key, method),
     } {
         Ok(declared) => declared,
         Err(error) => {
-            BACKENDS.lock().await.remove(&host_slot(manager, key, host));
+            let mut backends = BACKENDS.lock().await;
+            if generation(&generation_key) == expected_generation {
+                backends.remove(&host_slot(manager, key, host));
+            }
             return Err(error);
         }
     };
     let wanted = fingerprint(&declared.1, &declared.2);
-    ensure_started(manager, key, declared, &wanted, host).await?;
+    ensure_started(manager, key, declared, &wanted, host, expected_generation, snapshot).await?;
     let key = &host_slot(manager, key, host);
-    let receiver = {
+    let (receiver, pending) = {
         let mut backends = BACKENDS.lock().await;
+        if generation(&generation_key) != expected_generation {
+            anyhow::bail!("拓展后台调用已被新的重载操作取代");
+        }
         let Some(backend) = backends.get_mut(key) else {
             anyhow::bail!("拓展后台已退出，请重试");
         };
@@ -708,20 +906,28 @@ async fn call_for_host(
             backends.remove(key);
             anyhow::bail!("拓展后台已退出，请重试");
         }
-        receiver
+        (receiver, backend.pending.clone())
     };
-    match tokio::time::timeout(timeout, receiver).await {
+    let outcome = tokio::time::timeout(timeout, receiver).await;
+    anyhow::ensure!(generation(&generation_key) == expected_generation, "拓展后台调用已被新的重载操作取代");
+    match outcome {
         Ok(Ok(Ok(value))) => Ok(value),
         Ok(Ok(Err(error))) => {
             if error == "拓展后台已退出" {
-                BACKENDS.lock().await.remove(key);
+                let mut backends = BACKENDS.lock().await;
+                if backends.get(key).is_some_and(|backend| Arc::ptr_eq(&backend.pending, &pending)) {
+                    backends.remove(key);
+                }
             }
             anyhow::bail!("{error}")
         }
         Ok(Err(_)) => anyhow::bail!("拓展后台没有回应"),
         Err(_) => {
             if host == BackendHost::ClaudeDesktop {
-                BACKENDS.lock().await.remove(key);
+                let mut backends = BACKENDS.lock().await;
+                if backends.get(key).is_some_and(|backend| Arc::ptr_eq(&backend.pending, &pending)) {
+                    backends.remove(key);
+                }
             }
             anyhow::bail!("调用 {method} 超时");
         }
@@ -730,14 +936,20 @@ async fn call_for_host(
 
 /// 取走 `since` 之后的事件；没有就最多等 `wait`。后台没起时直接返回空（不为取事件而启动后台）。
 pub async fn events(manager: &UserScriptManager, key: &str, since: u64, wait: Duration) -> Value {
+    events_for_generation(manager, key, since, wait, None).await.expect("unfenced events")
+}
+
+async fn events_for_generation(manager: &UserScriptManager, key: &str, since: u64, wait: Duration, expected: Option<u64>) -> anyhow::Result<Value> {
     let key = &slot(manager, key);
+    let generation_key = generation_key(manager, BackendHost::Codex);
     let wait = wait.min(MAX_EVENT_WAIT);
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         let (queue, notify) = {
             let backends = BACKENDS.lock().await;
+            anyhow::ensure!(expected.is_none_or(|value| generation(&generation_key) == value), "后台事件来源已过期");
             let Some(backend) = backends.get(key) else {
-                return json!({ "events": [], "next": since, "running": false });
+                return Ok(json!({ "events": [], "next": since, "running": false }));
             };
             (backend.events.clone(), backend.notify.clone())
         };
@@ -750,32 +962,68 @@ pub async fn events(manager: &UserScriptManager, key: &str, since: u64, wait: Du
             .map(|(_, event)| event.clone())
             .collect::<Vec<_>>();
         if !ready.is_empty() {
+            anyhow::ensure!(expected.is_none_or(|value| generation(&generation_key) == value), "后台事件来源已过期");
             let next = ready.last().and_then(|event| event["seq"].as_u64()).unwrap_or(since);
-            return json!({ "events": ready, "next": next, "running": true });
+            return Ok(json!({ "events": ready, "next": next, "running": true }));
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            return json!({ "events": [], "next": since, "running": true });
+            anyhow::ensure!(expected.is_none_or(|value| generation(&generation_key) == value), "后台事件来源已过期");
+            return Ok(json!({ "events": [], "next": since, "running": true }));
         }
     }
 }
 
 /// 后台队列里最新事件的序号；后台没起时为 None。
-async fn latest_seq(manager: &UserScriptManager, key: &str) -> Option<u64> {
-    let queue = BACKENDS.lock().await.get(&slot(manager, key))?.events.clone();
+async fn latest_seq(manager: &UserScriptManager, key: &str, expected: u64) -> anyhow::Result<Option<u64>> {
+    let backends = BACKENDS.lock().await;
+    anyhow::ensure!(backend_generation(manager) == expected, "后台事件来源已过期");
+    let Some(backend) = backends.get(&slot(manager, key)) else { return Ok(None) };
+    let queue = backend.events.clone();
+    drop(backends);
     let last = queue.lock().await.back().map(|(seq, _)| *seq).unwrap_or(0);
-    Some(last)
+    anyhow::ensure!(backend_generation(manager) == expected, "后台事件来源已过期");
+    Ok(Some(last))
 }
 
 /// 停掉这个拓展目录的全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
 pub async fn stop_all(manager: &UserScriptManager) {
-    let prefix = slot_prefix(manager);
-    BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
+    stop_all_for_host(manager, BackendHost::Codex, None).await;
+}
+
+/// 仅在代际仍匹配时停止；过期操作不能关闭新的后台。
+pub async fn stop_all_if_generation(manager: &UserScriptManager, expected: u64) -> bool {
+    stop_all_for_host(manager, BackendHost::Codex, Some(expected)).await
+}
+
+async fn stop_all_for_host(manager: &UserScriptManager, host: BackendHost, expected: Option<u64>) -> bool {
+    let prefix = generation_key(manager, host);
+    let mut backends = BACKENDS.lock().await;
+    let mut generations = BACKEND_GENERATIONS.lock().unwrap();
+    let current = generations.entry(prefix.clone()).or_default();
+    if expected.is_some_and(|value| value != *current) {
+        return false;
+    }
+    *current = current.wrapping_add(1);
+    BACKEND_DOCUMENTS.lock().unwrap().remove(&prefix);
+    backends.retain(|slot, _| !slot.starts_with(&prefix));
+    {
+        let starting = STARTING.lock().unwrap();
+        for (slot, entry) in starting.iter() {
+            if slot.starts_with(&prefix) {
+                let _ = entry.cancel.send(true);
+                entry.notify.notify_waiters();
+            }
+        }
+    }
+    invalidate_scan_cache();
+    drop(generations);
+    drop(backends);
+    true
 }
 
 /// Claude MCP 断开时只停止它托管的后台，不影响 Codex 页面的后台。
 pub async fn stop_all_claude(manager: &UserScriptManager) {
-    let prefix = format!("claudeDesktop\u{0}{}", slot_prefix(manager));
-    BACKENDS.lock().await.retain(|slot, _| !slot.starts_with(&prefix));
+    stop_all_for_host(manager, BackendHost::ClaudeDesktop, None).await;
 }
 
 pub(crate) async fn stop_claude(manager: &UserScriptManager, key: &str) {
@@ -785,12 +1033,19 @@ pub(crate) async fn stop_claude(manager: &UserScriptManager, key: &str) {
 /// 停掉一个拓展的后台。给了 `instance` 时，只在最近一次调用也来自它时才停：
 /// 热重载时旧实例的 stop 可能晚于新实例的首次调用到达，不能把新后台停了。返回是否停掉。
 pub async fn stop(manager: &UserScriptManager, key: &str, instance: Option<&str>) -> bool {
+    stop_for_generation(manager, key, instance, None).await
+}
+
+async fn stop_for_generation(manager: &UserScriptManager, key: &str, instance: Option<&str>, expected: Option<u64>) -> bool {
     let key = &slot(manager, key);
     let mut backends = BACKENDS.lock().await;
+    if expected.is_some_and(|value| backend_generation(manager) != value) {
+        return false;
+    }
     let matches = match (backends.get(key), instance) {
         (None, _) => false,
         (Some(_), None) => true,
-        (Some(backend), Some(instance)) => backend.instance.as_deref().is_none_or(|last| last == instance),
+        (Some(backend), Some(instance)) => backend.instance.as_deref() == Some(instance),
     };
     if matches {
         backends.remove(key);
@@ -1094,7 +1349,8 @@ pub async fn route_call(payload: &Value) -> anyhow::Result<Value> {
         .min(Duration::from_secs(24));
     let instance = payload.get("instance").and_then(Value::as_str);
     let manager = crate::user_scripts::default_user_script_manager();
-    let result = call(&manager, key, method, payload.get("params").cloned().unwrap_or(Value::Null), timeout, instance).await?;
+    let expected = source_generation(&manager, payload.get("source"))?;
+    let result = call_for_host(&manager, key, method, payload.get("params").cloned().unwrap_or(Value::Null), timeout, instance, BackendHost::Codex, Some(expected)).await?;
     Ok(json!({ "status": "ok", "result": result }))
 }
 
@@ -1102,7 +1358,8 @@ pub async fn route_call(payload: &Value) -> anyhow::Result<Value> {
 pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
     let manager = crate::user_scripts::default_user_script_manager();
-    let stopped = stop(&manager, key, payload.get("instance").and_then(Value::as_str)).await;
+    let expected = source_generation(&manager, payload.get("source"))?;
+    let stopped = stop_for_generation(&manager, key, payload.get("instance").and_then(Value::as_str), Some(expected)).await;
     Ok(json!({ "status": "ok", "stopped": stopped }))
 }
 
@@ -1111,8 +1368,9 @@ pub async fn route_stop(payload: &Value) -> anyhow::Result<Value> {
 pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
     let key = payload.get("key").and_then(Value::as_str).context("缺少拓展 key")?;
     let manager = crate::user_scripts::default_user_script_manager();
+    let expected = source_generation(&manager, payload.get("source"))?;
     if payload.get("since").and_then(Value::as_str) == Some("latest") {
-        return Ok(match latest_seq(&manager, key).await {
+        return Ok(match latest_seq(&manager, key, expected).await? {
             Some(next) => json!({ "status": "ok", "events": [], "next": next, "running": true }),
             None => json!({ "status": "ok", "events": [], "next": 0, "running": false }),
         });
@@ -1123,9 +1381,84 @@ pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
         .and_then(Value::as_u64)
         .map(Duration::from_millis)
         .unwrap_or(MAX_EVENT_WAIT);
-    let mut result = events(&manager, key, since, wait).await;
+    let mut result = events_for_generation(&manager, key, since, wait, Some(expected)).await?;
     result["status"] = json!("ok");
     Ok(result)
+}
+
+#[cfg(test)]
+mod source_fencing_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn quiescing_revokes_source_before_replacing_backend_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+        let generation = backend_generation(&manager);
+        let old = bind_backend_document(&manager, generation, "document").await.unwrap();
+        let quiescing = revoke_backend_document(&manager, generation).await.unwrap();
+        assert!(source_generation(&manager, Some(&old)).is_err());
+        assert_ne!(backend_generation(&manager), generation);
+        assert!(call_for_host(&manager, "user:unused", "test", Value::Null, Duration::from_secs(1), None, BackendHost::Codex, Some(generation)).await.is_err());
+        assert!(stop_all_if_generation(&manager, quiescing).await);
+        let current = backend_generation(&manager);
+        let source = bind_backend_document(&manager, current, "document").await.unwrap();
+        assert!(revoke_backend_document(&manager, generation).await.is_none());
+        assert_eq!(source_generation(&manager, Some(&source)).unwrap(), current);
+        stop_all(&manager).await;
+    }
+
+    #[tokio::test]
+    async fn old_document_and_backend_generation_cannot_enter_new_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+        let old_generation = backend_generation(&manager);
+        let old = bind_backend_document(&manager, old_generation, "old-document").await.unwrap();
+        assert_eq!(source_generation(&manager, Some(&old)).unwrap(), old_generation);
+        assert!(source_generation(&manager, None).is_err());
+        assert!(bind_backend_document(&manager, old_generation, "different-document").await.is_err());
+
+        assert!(stop_all_if_generation(&manager, old_generation).await);
+        assert!(source_generation(&manager, Some(&old)).is_err());
+        assert!(bind_backend_document(&manager, old_generation, "old-document").await.is_err());
+        let current_generation = backend_generation(&manager);
+        let current = bind_backend_document(&manager, current_generation, "new-document").await.unwrap();
+        assert_eq!(source_generation(&manager, Some(&current)).unwrap(), current_generation);
+        assert!(source_generation(&manager, Some(&json!({
+            "ownerEpoch": "other-owner", "generation": current_generation, "documentId": "new-document"
+        }))).is_err());
+        assert!(call_for_host(&manager, "user:unused", "test", Value::Null, Duration::from_secs(1), None, BackendHost::Codex, Some(old_generation)).await.is_err());
+        assert!(events_for_generation(&manager, "user:unused", 0, Duration::ZERO, Some(old_generation)).await.is_err());
+        assert!(!stop_for_generation(&manager, "user:unused", None, Some(old_generation)).await);
+        assert!(host_call_for_generation(&json!({ "service": "services", "method": "call", "params": {} }), &manager, old_generation).await.is_err());
+        stop_all(&manager).await;
+    }
+}
+
+#[cfg(test)]
+mod scan_cache_tests {
+    use super::{SCAN_GENERATION, ScanCache, cached};
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    #[test]
+    fn old_revision_cannot_be_returned_as_a_cache_hit() {
+        static CACHE: ScanCache<u64> = std::sync::LazyLock::new(Default::default);
+        let revision = SCAN_GENERATION.load(Ordering::SeqCst);
+        CACHE.lock().unwrap().insert("stale".into(), (Instant::now(), revision.wrapping_sub(1), 1));
+        assert_eq!(cached(&CACHE, "stale", || 2), 2);
+    }
+
+    #[test]
+    fn invalidated_in_flight_scan_cannot_fill_cache() {
+        static CACHE: ScanCache<u64> = std::sync::LazyLock::new(Default::default);
+        assert_eq!(cached(&CACHE, "pending", || {
+            SCAN_GENERATION.fetch_add(1, Ordering::SeqCst);
+            1
+        }), 1);
+        assert!(!CACHE.lock().unwrap().contains_key("pending"));
+        assert_eq!(cached(&CACHE, "pending", || 2), 2);
+    }
 }
 
 #[cfg(test)]

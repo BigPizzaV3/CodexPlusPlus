@@ -766,6 +766,14 @@ type UserScriptInventory = {
   enabled?: boolean;
   claude_enabled?: boolean;
   skip_next_start?: boolean;
+  reloadOperation?: {
+    operationId: string;
+    ownerEpoch: string;
+    allowPage: boolean;
+    phase: string;
+    active?: boolean;
+    reason?: string;
+  };
   builtins?: BuiltinExtension[];
   scripts?: Array<{
     key: string;
@@ -788,6 +796,10 @@ type UserScriptInventory = {
       settingsPage?: boolean;
     } | null;
     enabled: boolean;
+    configuredEnabled?: boolean;
+    runtimeStatus?: string;
+    applyState?: string;
+    missing?: boolean;
     claude_enabled?: boolean | null;
     status: string;
     error: string;
@@ -2145,9 +2157,14 @@ export function App() {
     return result;
   };
 
+  const pendingUserScriptReload = useRef<UserScriptInventory["reloadOperation"] | null>(null);
   const reloadUserScripts = async (silent = false) => {
-    const result = await run(() => call<SettingsResult>("reload_user_scripts"));
+    const result = await run(() => call<SettingsResult>("reload_user_scripts", {
+      operation: pendingUserScriptReload.current,
+    }));
     if (result) {
+      const operation = result.user_scripts?.reloadOperation;
+      pendingUserScriptReload.current = operation?.phase === "unknown" ? operation : null;
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
@@ -2232,6 +2249,7 @@ export function App() {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result);
+      if (isSuccessStatus(result.status)) await reloadUserScripts();
       await refreshUserScriptInventory();
     }
   };
@@ -10713,7 +10731,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
       <TopbarActions>
         {codexHost ? <button className="cx-secondary" disabled={reloading} onClick={() => void reload()} title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")} type="button">
           <RefreshCw className={reloading ? "animate-spin" : ""} />
-          {t("热重载拓展")}
+          {t(inventory?.reloadOperation?.phase === "unknown" ? "查询重载状态" : "热重载拓展")}
         </button> : <button className="cx-secondary" onClick={onOpenClaude} type="button">
           <AppWindow />
           {t("Claude 补丁版")}
@@ -17846,6 +17864,10 @@ function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "c
     return { label: t("重启后应用"), hint: t("重启 Claude 补丁版后应用") };
   }
   switch (state) {
+    case "unknownOff":
+      return { label: t("状态未确认"), hint: t("已设置关闭，但无法确认 Codex 页面中的运行状态") };
+    case "pendingStop":
+      return { label: t("等待停用"), hint: t("已设置关闭，但 Codex 页面中仍有该拓展的运行记录") };
     case "off":
       return { label: t("已关闭"), hint: t("该拓展已关闭，不会注入 Codex") };
     case "globalOff":
@@ -17993,7 +18015,7 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       ? tf("拓展包 · {0}", [script.package?.version || t("未知版本")])
       : script.source === "builtin" ? t("内置") : t("用户");
   // 拓展包是文件夹：后端整个移进废纸篓（可找回，#2919），单文件脚本直接删除。
-  const canDelete = codexHost && script.source === "user";
+  const canDelete = codexHost && script.source === "user" && !script.missing;
   const state = extensionStateForHost(script, host, globalEnabled);
   const { label, hint } = localScriptStateLabel(state, host);
   const stateHint = codexHost && state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
@@ -18086,6 +18108,7 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
         <input
           aria-label={tf("启用 {0}", [script.name])}
           checked={enabled}
+          disabled={script.missing}
           onChange={() => void actions.setUserScriptEnabled(script.key, !enabled, host)}
           type="checkbox"
         />

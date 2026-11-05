@@ -110,6 +110,19 @@ async fn bridge_routes_cover_all_current_paths() {
 }
 
 #[tokio::test]
+async fn default_runtime_rejects_no_page_reload_without_invoking_legacy_reload() {
+    let runtime = FakeRuntime::default();
+    let error = runtime.begin_user_script_reload(json!({ "allowPage": false })).await.unwrap_err();
+    assert!(error.to_string().contains("不支持禁止刷新页面"));
+    assert_eq!(*runtime.reload_calls.lock().unwrap(), 0);
+    assert!(runtime.begin_user_script_reload_no_page(json!({ "allowPage": true })).await.is_err());
+    assert_eq!(*runtime.reload_calls.lock().unwrap(), 0);
+    let allowed = runtime.begin_user_script_reload(json!({ "allowPage": true })).await.unwrap();
+    assert_eq!(allowed["reloaded"], true);
+    assert_eq!(*runtime.reload_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
 async fn cdp_evaluate_rejects_empty_expression_without_touching_cdp() {
     let error = evaluate_extension_cdp(1, &json!({"kind": "avatar-overlay"}))
         .await
@@ -1269,7 +1282,7 @@ async fn user_script_inventory_merges_renderer_runtime_status() {
     std::fs::write(user_dir.join("loaded.js"), "window.loaded = true;").unwrap();
     std::fs::write(user_dir.join("failed.js"), "throw new Error('boom');").unwrap();
     let manager =
-        UserScriptManager::new(builtin_dir, user_dir, temp.path().join("user_scripts.json"));
+        UserScriptManager::new(builtin_dir, &user_dir, temp.path().join("user_scripts.json"));
     let runtime_status = json!({
         "user:loaded.js": {"status": "loaded", "error": ""},
         "user:failed.js": {"status": "failed", "error": "boom"}
@@ -1292,6 +1305,31 @@ async fn user_script_inventory_merges_renderer_runtime_status() {
     assert_eq!(loaded["error"], "");
     assert_eq!(failed["status"], "failed");
     assert_eq!(failed["error"], "boom");
+
+    manager.set_script_enabled("user:loaded.js", false).unwrap();
+    let inventory = manager.inventory_with_runtime_status(Some(&runtime_status)).unwrap();
+    let disabled = inventory["scripts"].as_array().unwrap().iter()
+        .find(|script| script["key"] == "user:loaded.js").unwrap();
+    assert_eq!(disabled["configuredEnabled"], false);
+    assert_eq!(disabled["runtimeStatus"], "loaded");
+    assert_eq!(disabled["applyState"], "pending");
+    let inventory = manager.inventory().unwrap();
+    let unknown = inventory["scripts"].as_array().unwrap().iter()
+        .find(|script| script["key"] == "user:loaded.js").unwrap();
+    assert_eq!(unknown["runtimeStatus"], "unknown");
+    assert_eq!(unknown["applyState"], "unknown");
+    let inventory = manager.inventory_with_runtime_status(Some(&json!({}))).unwrap();
+    let stopped = inventory["scripts"].as_array().unwrap().iter()
+        .find(|script| script["key"] == "user:loaded.js").unwrap();
+    assert_eq!(stopped["runtimeStatus"], "not_loaded");
+    assert_eq!(stopped["applyState"], "unknown");
+    std::fs::remove_file(user_dir.join("loaded.js")).unwrap();
+    let inventory = manager.inventory_with_runtime_status(Some(&runtime_status)).unwrap();
+    let orphan = inventory["scripts"].as_array().unwrap().iter()
+        .find(|script| script["key"] == "user:loaded.js").unwrap();
+    assert_eq!(orphan["missing"], true);
+    assert_eq!(orphan["runtimeStatus"], "loaded");
+    assert_eq!(orphan["applyState"], "pending");
 }
 
 /// #2919：拓展包是文件夹，卸载时整个移进废纸篓（可找回），不做递归删除；配置里的记录一并去掉。
@@ -1375,7 +1413,7 @@ async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_
 }
 
 #[tokio::test]
-async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
+async fn core_runtime_load_binds_source_and_reload_cannot_bypass_the_owner() {
     let temp = tempfile::tempdir().unwrap();
     let builtin_dir = temp.path().join("builtin");
     std::fs::create_dir_all(&builtin_dir).unwrap();
@@ -1386,7 +1424,7 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
         temp.path().join("user_scripts.json"),
     );
     let evaluated = Arc::new(Mutex::new(Vec::<String>::new()));
-    let runtime = CoreRuntimeService::new(9229, StatusStore::default())
+    let runtime = CoreRuntimeService::new(0, StatusStore::default())
         .with_user_scripts(manager)
         .with_user_script_evaluator({
             let evaluated = evaluated.clone();
@@ -1395,7 +1433,14 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
                     .lock()
                     .unwrap()
                     .push(format!("{websocket_url}:{script}"));
-                Ok(json!({"status": "ok"}))
+                let value = if script.contains("const readiness =") {
+                    json!({ "documentId": "core-document", "initialized": false, "scripts": {} })
+                } else {
+                    json!({ "accepted": true, "scripts": {
+                        "builtin:demo.js": { "status": "loaded" }
+                    } })
+                };
+                Ok(json!({ "result": { "result": { "value": value.to_string() } } }))
             })
         })
         .with_websocket_url("ws://page");
@@ -1413,14 +1458,15 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
         status,
         json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false, "settingsRevision": ""})
     );
-    assert_eq!(reloaded["scripts"][0]["key"], "builtin:demo.js");
+    assert_eq!(reloaded["status"], "failed");
     assert_eq!(loaded["scripts"][0]["key"], "builtin:demo.js");
     let evaluated = evaluated.lock().unwrap();
     assert_eq!(evaluated.len(), 2);
     assert!(evaluated[0].starts_with("ws://page:"));
-    assert!(evaluated[0].contains("window.demo = true;"));
-    assert!(!evaluated[0].contains(".prepareReload();"));
-    assert!(evaluated[1].contains(".prepareReload();"));
+    assert!(evaluated[0].contains("const readiness ="));
+    assert!(evaluated[1].contains("window.demo = true;"));
+    assert!(evaluated[1].contains("window.__codexPlusBackendSource ="));
+    assert!(!evaluated.iter().any(|script| script.contains(".prepareReload();")));
 }
 
 #[tokio::test]
@@ -1859,6 +1905,7 @@ impl BridgeSettingsService for FakeSettings {
 struct FakeRuntime {
     enabled: Mutex<bool>,
     script_enabled: Mutex<bool>,
+    reload_calls: Mutex<usize>,
     manager_payload: Mutex<Value>,
     goal_payloads: Mutex<Vec<Value>>,
     goal_reply: Mutex<Option<Result<Value, String>>>,
@@ -1869,6 +1916,7 @@ impl Default for FakeRuntime {
         Self {
             enabled: Mutex::new(true),
             script_enabled: Mutex::new(true),
+            reload_calls: Mutex::new(0),
             manager_payload: Mutex::new(json!({})),
             goal_payloads: Mutex::new(Vec::new()),
             goal_reply: Mutex::new(None),
@@ -1908,6 +1956,7 @@ impl BridgeRuntimeService for FakeRuntime {
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
+        *self.reload_calls.lock().unwrap() += 1;
         Ok(self.inventory(true))
     }
 

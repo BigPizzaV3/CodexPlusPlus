@@ -1,4 +1,4 @@
-use codex_plus_core::user_scripts::{BOOTSTRAP_SCRIPT, UserScriptManager};
+use codex_plus_core::user_scripts::{BOOTSTRAP_SCRIPT, SkipStartClaim, UserScriptManager};
 use serde_json::json;
 use std::{fs, process::Command};
 
@@ -50,6 +50,109 @@ fn skip_next_start_is_one_shot_and_preserves_script_choices() {
     let next = manager.build_initial_bundle().unwrap();
     assert!(next.contains("mode: \"scripts\""));
     assert!(next.contains("window.unsafeScript = true"));
+}
+
+#[test]
+fn skip_start_claim_survives_lost_ack_and_late_ack_cannot_consume_a_new_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = || UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+    let first = manager();
+    first.set_skip_next_start(true).unwrap();
+    let claim = first.claim_skip_start("first-document").unwrap().unwrap();
+    let restarted = manager();
+    assert_eq!(restarted.claim_skip_start("first-document").unwrap(), Some(claim.clone()));
+    assert!(restarted.claim_skip_start("second-document").is_err());
+    assert!(restarted.load_config().skip_next_start);
+
+    restarted.set_skip_next_start(true).unwrap();
+    assert!(!first.consume_skip_start_claim(&claim).unwrap());
+    assert!(restarted.load_config().skip_next_start);
+    let new_claim = first.claim_skip_start("second-document").unwrap().unwrap();
+    assert_ne!(claim.marker_id, new_claim.marker_id);
+    let wrong_document = SkipStartClaim { document_id: "wrong-document".into(), ..new_claim.clone() };
+    assert!(!first.consume_skip_start_claim(&wrong_document).unwrap());
+    assert!(restarted.consume_skip_start_claim(&new_claim).unwrap());
+    assert!(first.consume_skip_start_claim(&new_claim).unwrap());
+    assert!(!restarted.load_config().skip_next_start);
+    assert_eq!(manager().claim_skip_start("second-document").unwrap(), Some(new_claim));
+    assert_eq!(manager().claim_skip_start("third-document").unwrap(), None);
+}
+
+#[test]
+fn guarded_skip_start_migrates_legacy_marker_and_replays_without_reapplying() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config.json");
+    fs::write(&config, r#"{"skip_next_start":true}"#).unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), &config);
+    let source = json!({ "ownerEpoch": "owner", "generation": 1, "documentId": "page" });
+    let (first, claim) = manager.build_guarded_initial_bundle("page", 1, &source).unwrap();
+    let claim = claim.unwrap();
+    assert!(manager.load_config().skip_start_marker.is_some());
+    let (retry, retry_claim) = manager.build_guarded_initial_bundle("page", 2, &source).unwrap();
+    assert_eq!(retry_claim, Some(claim.clone()));
+    let output = Command::new("node").arg("-e").arg(r#"
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const window = { __codexPlusUserScripts: { documentId: 'page', scripts: {} } };
+const context = vm.createContext({ window, console });
+assert.equal(JSON.parse(vm.runInContext(process.argv[1], context)).accepted, true);
+const source = window.__codexPlusBackendSource;
+const retry = JSON.parse(vm.runInContext(process.argv[2], context));
+assert.equal(retry.accepted, true);
+assert.equal(retry.replayed, true);
+assert.equal(window.__codexPlusBackendSource, source);
+assert.equal(window.__codexPlusUserScripts.initialMode, 'skipped');
+assert.equal(Object.keys(window.__codexPlusUserScripts.scripts).length, 0);
+"#).arg(&first).arg(&retry).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(manager.consume_skip_start_claim(&claim).unwrap());
+    let (next, skip) = manager.build_guarded_initial_bundle("different-page", 3, &source).unwrap();
+    assert!(skip.is_none());
+    assert!(next.contains("runtime.initialMode = \"scripts\""));
+}
+
+#[test]
+fn user_script_config_writer_process() {
+    let Some(root) = std::env::var_os("CODEX_PLUS_USER_SCRIPT_LOCK_TEST_DIR") else { return; };
+    let writer = std::env::var("CODEX_PLUS_USER_SCRIPT_LOCK_TEST_WRITER").unwrap();
+    let root = std::path::PathBuf::from(root);
+    fs::write(root.join(format!("ready-{writer}")), b"ready").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !root.join("start").is_file() {
+        assert!(std::time::Instant::now() < deadline, "cross-process writer start timed out");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let manager = UserScriptManager::new(root.join("builtin"), root.join("user"), root.join("config.json"));
+    for index in 0..48 {
+        manager.set_script_enabled(&format!("user:writer-{writer}-{index}.js"), false).unwrap();
+    }
+}
+
+#[test]
+fn independent_process_config_mutations_preserve_each_others_updates() {
+    use std::process::Stdio;
+    let temp = tempfile::tempdir().unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let mut children = Vec::new();
+    for writer in ["0", "1"] {
+        children.push(Command::new(&executable)
+            .args(["--exact", "user_scripts_reload::user_script_config_writer_process", "--nocapture"])
+            .env("CODEX_PLUS_USER_SCRIPT_LOCK_TEST_DIR", temp.path())
+            .env("CODEX_PLUS_USER_SCRIPT_LOCK_TEST_WRITER", writer)
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !(temp.path().join("ready-0").is_file() && temp.path().join("ready-1").is_file())
+        && std::time::Instant::now() < deadline
+    { std::thread::sleep(std::time::Duration::from_millis(5)); }
+    // 无论就绪检查结果如何都放行并回收子进程。
+    fs::write(temp.path().join("start"), b"start").unwrap();
+    let results = children.into_iter().map(|child| child.wait_with_output().unwrap()).collect::<Vec<_>>();
+    for output in results {
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+    let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+    assert_eq!(manager.load_config().scripts.len(), 96);
 }
 
 #[test]
@@ -193,6 +296,179 @@ fn write_package(root: &std::path::Path, dir: &str, manifest: serde_json::Value)
     fs::write(package.join("codexpp.json"), manifest.to_string()).unwrap();
 }
 
+#[test]
+fn strict_reload_snapshot_rejects_invalid_config_and_script_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    let config = temp.path().join("config.json");
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &config);
+    fs::write(user.join("demo.js"), "window.demo = true;").unwrap();
+
+    let (bundle, revision) = manager.reload_snapshot().unwrap();
+    assert_eq!(bundle, manager.build_enabled_bundle().unwrap());
+    assert_eq!(revision, manager.reload_snapshot().unwrap().1);
+    fs::write(&config, "{").unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::write(&config, r#"{"scripts":{"user:demo.js":"yes"}}"#).unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::write(&config, "{}").unwrap();
+    fs::write(user.join("demo.js"), [0xff]).unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::write(&config, r#"{"scripts":{"user:demo.js":false}}"#).unwrap();
+    assert!(manager.reload_snapshot().is_ok());
+    let unreadable_config = temp.path().join("config-directory");
+    fs::create_dir(&unreadable_config).unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, unreadable_config);
+    assert!(manager.reload_snapshot().is_err());
+}
+
+#[test]
+fn strict_reload_snapshot_rejects_invalid_enabled_packages_and_partial_resources() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    let config = temp.path().join("config.json");
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &config);
+    write_package(&user, "demo", json!({
+        "id": "demo", "renderer": "main.js",
+        "backend": { "script": "backend.js", "provides": ["demo.service"] }
+    }));
+    let package = user.join("demo");
+    fs::write(package.join("main.js"), "window.demo = true;").unwrap();
+    fs::write(package.join("backend.js"), "process.stdin.resume();").unwrap();
+    let (bundle, _) = manager.reload_snapshot().unwrap();
+    assert_eq!(bundle, manager.build_enabled_bundle().unwrap());
+    assert!(bundle.contains("demo.service"));
+
+    fs::write(package.join("main.js"), [0xff]).unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::write(package.join("main.js"), "window.demo = true;").unwrap();
+    fs::remove_file(package.join("backend.js")).unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::write(package.join("backend.js"), "process.stdin.resume();").unwrap();
+    fs::write(package.join("assets"), "not a directory").unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::remove_file(package.join("assets")).unwrap();
+    fs::write(package.join("locale"), "not a directory").unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::remove_file(package.join("locale")).unwrap();
+    fs::write(package.join("codexpp.json"), "{").unwrap();
+    assert!(manager.reload_snapshot().is_err());
+    fs::write(&config, r#"{"scripts":{"user:demo":false}}"#).unwrap();
+    assert!(manager.reload_snapshot().is_ok());
+    fs::create_dir_all(user.join("bad").join("codexpp.json")).unwrap();
+    assert!(manager.reload_snapshot().is_err());
+}
+
+#[test]
+fn strict_reload_snapshot_tracks_backend_entry_and_matches_initial_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    write_package(&user, "demo", json!({
+        "id": "demo", "renderer": "main.js",
+        "backend": { "script": "backend.js", "provides": ["demo.service"] }
+    }));
+    let package = user.join("demo");
+    fs::write(package.join("main.js"), "window.demo = true;").unwrap();
+    fs::write(package.join("backend.js"), "module.exports = 1;").unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, temp.path().join("config.json"));
+    let (bundle, first) = manager.reload_snapshot().unwrap();
+    let source = json!({ "ownerEpoch": "owner", "generation": 1, "documentId": "document" });
+    let (initial, skip) = manager.build_guarded_initial_bundle("document", 1, &source).unwrap();
+    assert!(skip.is_none());
+    assert!(initial.contains(&format!("runtime.appliedRevision = {};", json!(first))));
+    fs::write(package.join("backend.js"), "module.exports = 2;").unwrap();
+    let (changed_bundle, second) = manager.reload_snapshot().unwrap();
+    assert_eq!(bundle, changed_bundle);
+    assert_ne!(first, second);
+    let (initial, _) = manager.build_guarded_initial_bundle("document", 2, &source).unwrap();
+    assert!(initial.contains(&format!("runtime.appliedRevision = {};", json!(second))));
+}
+
+#[test]
+fn guarded_initial_load_never_falls_back_after_binding_a_strict_backend_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    write_package(&user, "demo", json!({
+        "id": "demo", "renderer": "main.js",
+        "backend": { "script": "backend.js", "provides": ["demo.service"] }
+    }));
+    let package = user.join("demo");
+    fs::write(package.join("main.js"), "window.demo = true;").unwrap();
+    fs::write(package.join("backend.js"), "module.exports = 1;").unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, temp.path().join("config.json"));
+    let (_, revision) = manager.reload_snapshot().unwrap();
+    let source = json!({ "ownerEpoch": "owner", "generation": 1, "documentId": "document", "revision": revision });
+    assert!(manager.build_guarded_initial_bundle("document", 1, &source).is_ok());
+    fs::write(package.join("backend.js"), "module.exports = 2;").unwrap();
+    assert!(manager.build_guarded_initial_bundle("document", 2, &source).unwrap_err()
+        .to_string().contains("已绑定后台快照不一致"));
+    fs::write(package.join("codexpp.json"), "{").unwrap();
+    assert!(manager.build_guarded_initial_bundle("document", 3, &source).unwrap_err()
+        .to_string().contains("页面来源读取失败"));
+    let unbound = json!({ "ownerEpoch": "owner", "generation": 2, "documentId": "document", "revision": null });
+    let (diagnostic_bundle, _) = manager.build_guarded_initial_bundle("document", 4, &unbound).unwrap();
+    assert!(diagnostic_bundle.contains("runtime.appliedRevision = null;"));
+}
+
+#[test]
+fn strict_reload_snapshot_tracks_nested_dynamic_backend_dependencies_and_resources() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    write_package(&user, "demo", json!({
+        "id": "demo", "renderer": "main.js",
+        "backend": { "script": "backend.js", "provides": ["demo.service"] }
+    }));
+    let package = user.join("demo");
+    fs::write(package.join("main.js"), "window.demo = true;").unwrap();
+    fs::write(package.join("backend.js"), "require('./lib/' + process.env.MODE); require('nested');").unwrap();
+    fs::create_dir_all(package.join("lib")).unwrap();
+    fs::create_dir_all(package.join("node_modules/nested")).unwrap();
+    fs::write(package.join("lib/data.js"), "module.exports = 1").unwrap();
+    fs::write(package.join("node_modules/nested/index.js"), "module.exports = 2").unwrap();
+    fs::write(package.join("data.bin"), [0, 1, 2]).unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, temp.path().join("config.json"));
+    let (bundle, first) = manager.reload_snapshot().unwrap();
+    fs::write(package.join("lib/data.js"), "module.exports = 3").unwrap();
+    let (same_bundle, second) = manager.reload_snapshot().unwrap();
+    assert_eq!(bundle, same_bundle);
+    assert_ne!(first, second);
+    fs::write(package.join("node_modules/nested/index.js"), "module.exports = 4").unwrap();
+    let (_, third) = manager.reload_snapshot().unwrap();
+    assert_ne!(second, third);
+    fs::write(package.join("data.bin"), [0, 1, 3]).unwrap();
+    let (_, fourth) = manager.reload_snapshot().unwrap();
+    assert_ne!(third, fourth);
+    fs::write(package.join("lib/new.js"), "module.exports = 5").unwrap();
+    assert_ne!(fourth, manager.reload_snapshot().unwrap().1);
+}
+
+#[test]
+fn strict_reload_snapshot_rejects_unbounded_package_files_instead_of_ignoring_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    write_package(&user, "demo", json!({ "id": "demo", "renderer": "main.js" }));
+    let package = user.join("demo");
+    fs::write(package.join("main.js"), "window.demo = true;").unwrap();
+    let too_large = fs::File::create(package.join("dependency.bin")).unwrap();
+    too_large.set_len(16 * 1024 * 1024 + 1).unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, temp.path().join("config.json"));
+    assert!(manager.reload_snapshot().unwrap_err().to_string().contains("16 MiB"));
+    #[cfg(unix)]
+    {
+        drop(too_large);
+        fs::remove_file(package.join("dependency.bin")).unwrap();
+        let outside = temp.path().join("outside.js");
+        fs::write(&outside, "module.exports = 'outside';").unwrap();
+        std::os::unix::fs::symlink(outside, package.join("outside.js")).unwrap();
+        assert!(manager.reload_snapshot().unwrap_err().to_string().contains("超出包目录"));
+    }
+}
 #[test]
 fn extension_packages_are_scanned_bundled_and_exposed_with_manifest() {
     let temp = tempfile::tempdir().unwrap();

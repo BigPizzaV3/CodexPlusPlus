@@ -165,6 +165,17 @@ pub trait BridgeRuntimeService: Send + Sync {
         crate::user_scripts::default_user_script_manager().extension_readme(&key)
     }
     async fn reload_user_scripts(&self) -> anyhow::Result<Value>;
+    async fn begin_user_script_reload(&self, payload: Value) -> anyhow::Result<Value> {
+        anyhow::ensure!(payload.get("allowPage").and_then(Value::as_bool) != Some(false),
+            "当前宿主不支持禁止刷新页面的重载");
+        self.reload_user_scripts().await
+    }
+    async fn begin_user_script_reload_no_page(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("当前宿主不支持禁止刷新页面的重载")
+    }
+    async fn user_script_reload_status(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("用户脚本重载状态不可用")
+    }
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
         self.user_script_inventory().await
     }
@@ -466,7 +477,9 @@ pub async fn handle_bridge_request(
             }
         }
         "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
-        "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
+        "/user-scripts/reload" => ctx.runtime.begin_user_script_reload(payload.clone()).await,
+        "/user-scripts/reload-no-page" => ctx.runtime.begin_user_script_reload_no_page(payload.clone()).await,
+        "/user-scripts/reload-status" => ctx.runtime.user_script_reload_status(payload.clone()).await,
         "/cdp/targets" => ctx.runtime.cdp_targets().await,
         "/cdp/evaluate" => ctx.runtime.cdp_evaluate(payload.clone()).await,
         // 系统鼠标位置：拓展写「桌宠跟随鼠标」这类功能用（页面里拿不到窗口外的鼠标）。只读。
@@ -479,6 +492,7 @@ pub async fn handle_bridge_request(
         "/extensions/backend/events" => crate::extension_backend::route_events(&payload).await,
         "/extensions/backend/stop" => crate::extension_backend::route_stop(&payload).await,
         "/extensions/services/call" => crate::extension_backend::route_service_call(&payload).await,
+        "/extensions/services/call-external" => crate::extension_backend::route_external_service_call(&payload).await,
         // 拓展自己调模型（ctx.llm）：经协议代理用当前供应商，不跑拓展网关中间件。
         "/extensions/llm/complete" => crate::extension_llm::route_complete(&payload).await,
         "/extensions/llm/models" => crate::extension_llm::route_models(),
@@ -935,11 +949,17 @@ impl BridgeRuntimeService for CoreRuntimeService {
             self.websocket_url.as_deref(),
             &self.user_script_evaluator,
         ) {
-            evaluator(websocket_url, &user_scripts.build_initial_bundle()?)?;
+            static SEQUENCE: std::sync::LazyLock<std::sync::atomic::AtomicU64> = std::sync::LazyLock::new(|| {
+                let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                std::sync::atomic::AtomicU64::new(time.saturating_mul(1024))
+            });
+            let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::user_scripts::load_scripts_with_evaluator(user_scripts, sequence, |expression| {
+                std::future::ready(evaluator(websocket_url, &expression))
+            }).await
         } else {
-            anyhow::bail!("Codex 页面尚未连接");
+            anyhow::bail!("Codex 页面尚未连接")
         }
-        self.user_script_inventory().await
     }
 
     async fn script_market_list(&self) -> anyhow::Result<Value> {
@@ -965,17 +985,9 @@ impl BridgeRuntimeService for CoreRuntimeService {
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
-        if let (Some(user_scripts), Some(websocket_url), Some(evaluator)) = (
-            &self.user_scripts,
-            self.websocket_url.as_deref(),
-            &self.user_script_evaluator,
-        ) {
-            let bundle = user_scripts.build_reload_bundle()?;
-            evaluator(websocket_url, &bundle)?;
-        } else {
-            anyhow::bail!("Codex 页面尚未连接");
-        }
-        self.user_script_inventory().await
+        let manager = self.user_scripts.as_ref().ok_or_else(|| anyhow::anyhow!("用户脚本目录不可用"))?;
+        // 所有运行期重载都交给实例 owner，旧的直接 bundle 入口不能绕过代际和确认协议。
+        crate::user_scripts::reload_live_scripts(self.debug_port, manager).await
     }
 
     async fn cdp_targets(&self) -> anyhow::Result<Value> {

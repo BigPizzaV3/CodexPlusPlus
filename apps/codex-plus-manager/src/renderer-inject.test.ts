@@ -1455,20 +1455,34 @@ const showToast = (message) => toasts.push(message);
 const refreshCodexPlusExtensionsView = () => calls.push("refresh");
 ${segment(renderer, "  async function uninstallUserScript(", "  /** 左面板的导航项。")}
 return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () => codexPlusExtensionsSelected };`);
-    const ok = harness(async (path: string) => (path === "/user-scripts/delete" ? {} : { scripts: [] }));
+    const epoch = "a".repeat(32);
+    const bridge = (failed = false) => async (path: string, payload: Record<string, unknown>) => {
+      if (path === "/user-scripts/reload-status" && payload.capabilities) {
+        return { capabilities: { operationProtocol: 1 }, ownerEpoch: epoch };
+      }
+      if (path === "/user-scripts/reload") {
+        return { reloadOperation: {
+          operationId: payload.operationId, ownerEpoch: epoch,
+          phase: failed ? "failed" : "applied", revision: "current",
+          reason: failed ? "Codex 页面尚未连接" : "",
+        }, desiredRevision: "current" };
+      }
+      return { scripts: [] };
+    };
+    const ok = harness(bridge());
     await ok.setUserScriptEnabled("user:pomodoro", false);
-    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list"]);
     assert.deepEqual(ok.toasts, []);
 
-    const uninstall = harness(async () => ({ scripts: [] }));
+    const uninstall = harness(bridge());
     await uninstall.uninstallUserScript("user:pomodoro");
-    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload", "/user-scripts/list", "refresh"]);
+    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list", "refresh"]);
     assert.equal(uninstall.selected(), null);
 
     // 页面没连上时重载失败：提示用户，清单照样刷新，开关状态不至于错。
-    const failed = harness(async (path: string) => (path === "/user-scripts/reload" ? { status: "failed", message: "Codex 页面尚未连接" } : { scripts: [] }));
+    const failed = harness(bridge(true));
     await failed.setUserScriptEnabled("user:pomodoro", true);
-    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list"]);
     assert.equal(failed.toasts.length, 1);
     assert.match(failed.toasts[0], /Codex 页面尚未连接/);
   });
@@ -3893,6 +3907,8 @@ describe("拓展运行时内核", () => {
 
   it("ctx.backend：call 走桥接带上本脚本 key，on 长轮询分发事件，卸载后停止", async () => {
     const k = await kernel({ scriptKey: "user:pkg-b" });
+    const source = { ownerEpoch: "epoch", generation: 1, documentId: "doc", revision: "snapshot-1" };
+    (k.window as any).__codexPlusBackendSource = source;
     const requests: Array<[string, any]> = [];
     let eventsServed = 0;
     let release: (() => void) | null = null;
@@ -3910,7 +3926,7 @@ describe("拓展运行时内核", () => {
     assert.deepEqual(await ctx.backend.call("add", { x: 1 }, { timeout: 5000 }), { echo: { x: 1 } });
     const instance = requests[0][1].instance;
     assert.match(instance, /^[a-z0-9]+-[a-z0-9]+$/);
-    assert.deepEqual(requests[0], ["/extensions/backend/call", { key: "user:pkg-b", instance, method: "add", params: { x: 1 }, timeoutMs: 5000 }]);
+    assert.deepEqual(requests[0], ["/extensions/backend/call", { key: "user:pkg-b", instance, method: "add", params: { x: 1 }, timeoutMs: 5000, source }]);
     await assert.rejects(ctx.backend.call("boom"), /后台坏了/);
     ctx.backend.on("tick", (payload: unknown, meta: unknown) => seen.push(["tick", payload, meta]));
     ctx.backend.on("*", (payload: unknown) => seen.push(["*", payload]));
@@ -3918,12 +3934,13 @@ describe("拓展运行时内核", () => {
     assert.deepEqual(seen, [["tick", { n: 1 }, { event: "tick" }], ["*", { n: 1 }]]);
     const polls = requests.filter(([path]) => path === "/extensions/backend/events");
     assert.equal(polls.length, 2, "两个订阅共用一条轮询");
-    assert.deepEqual(polls[1][1], { key: "user:pkg-b", instance, since: 2, waitMs: 20000 });
+    assert.deepEqual(polls[1][1], { key: "user:pkg-b", instance, since: 2, waitMs: 20000, source });
+    (k.window as any).__codexPlusBackendSource = { ...source, generation: 2 };
     ctx.dispose();
     release!();
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(requests.filter(([path]) => path === "/extensions/backend/events").length, 2, "卸载后不再轮询");
-    assert.deepEqual(requests.filter(([path]) => path === "/extensions/backend/stop"), [["/extensions/backend/stop", { key: "user:pkg-b", instance }]], "用过后台的实例卸载时通知停止");
+    assert.deepEqual(requests.filter(([path]) => path === "/extensions/backend/stop"), [["/extensions/backend/stop", { key: "user:pkg-b", instance, source }]], "旧实例停止使用创建时的来源");
   });
 
   it("消息按钮、消息装饰、侧边面板随实例卸载撤销；面板句柄带 open / close", async () => {
@@ -4428,6 +4445,8 @@ describe("拓展运行时内核", () => {
 
   it("后台服务：注入包下发的清单登记成页面服务，方法经桥接调用，清单变化时增删", async () => {
     const k = await kernel();
+    const source = { ownerEpoch: "epoch", generation: 1, documentId: "doc", revision: "snapshot-1" };
+    (k.window as any).__codexPlusBackendSource = source;
     const requests: any[] = [];
     (k.window as any).__codexSessionDeleteBridge = (path: string, payload: any) => {
       requests.push([path, payload]);
@@ -4441,13 +4460,42 @@ describe("拓展运行时内核", () => {
     const fiber = k.create({ inject: ["metrics"], apply(ctx: any) { metrics = ctx.metrics; } });
     assert.equal(fiber.state, "active");
     assert.equal(await metrics.record("a", 1), 2);
-    assert.deepEqual(requests[0], ["/extensions/services/call", { name: "metrics", method: "record", args: ["a", 1] }]);
+    assert.deepEqual(requests[0], ["/extensions/services/call", { name: "metrics", method: "record", args: ["a", 1], source }]);
     await assert.rejects(metrics.fail(), /后台报错/);
     assert.equal(metrics.then, undefined, "代理不是 thenable，可以直接 await 拿到");
+    const oldMetrics = metrics;
+    const nextSource = { ...source, generation: 2, revision: "snapshot-2" };
+    (k.window as any).__codexPlusBackendSource = nextSource;
+    (k.window as any).__codexPlusSyncBackendServices();
+    await oldMetrics.record("old");
+    assert.deepEqual(requests.at(-1)[1].source, source, "旧代理保留旧来源");
+    await (k.services.get("metrics")!.value as any).record("new");
+    assert.deepEqual(requests.at(-1)[1].source, nextSource, "新代理使用新来源");
     (k.window as any).__codexPlusBackendServices = [];
     (k.window as any).__codexPlusSyncBackendServices();
     assert.equal(k.services.has("metrics"), false);
     assert.equal(fiber.state, "pending", "提供方撤掉，依赖方回到挂起");
+  });
+
+  it("旧 ctx 获取后台服务时不会使用新代来源，卸载后也不能获取新代理", async () => {
+    const k = await kernel();
+    const oldSource = { ownerEpoch: "epoch", generation: 1, documentId: "doc", revision: "snapshot-1" };
+    const requests: any[] = [];
+    (k.window as any).__codexSessionDeleteBridge = (_path: string, payload: any) => {
+      requests.push(payload);
+      return Promise.resolve({ status: "ok", result: null });
+    };
+    (k.window as any).__codexPlusBackendSource = oldSource;
+    (k.window as any).__codexPlusBackendServices = [{ name: "metrics", key: "user:stats" }];
+    k.installBuiltins();
+    const ctx = k.create(() => {});
+    (k.window as any).__codexPlusBackendSource = { ...oldSource, generation: 2, revision: "snapshot-2" };
+    (k.window as any).__codexPlusSyncBackendServices();
+    await ctx.get("metrics").record();
+    assert.deepEqual(requests[0].source, oldSource);
+    ctx.dispose();
+    assert.equal(ctx.get("metrics"), undefined);
+    assert.throws(() => ctx.inject([], () => {}), /已卸载/);
   });
 
   it("codex/request 中间件挂在 createRequest 上：turn/start 绕过 sendRequest 也经过，且每个请求只跑一次", async () => {

@@ -260,7 +260,7 @@
       ["标识符", local.key],
       ["版本", local.package?.version || local.version || ""],
       ["来源", sourceLabel],
-      ["状态", userScriptStatusLabel(local.status)],
+      ["状态", userScriptStatusLabel(local.status, local)],
     ]) : "";
     const market = marketItem ? table("市场", [
       ["作者", marketItem.author || ""],

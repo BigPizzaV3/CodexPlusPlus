@@ -125,6 +125,7 @@ pub mod extension_node;
 pub mod extension_semver;
 pub mod upstream_model_meta;
 pub mod user_scripts;
+pub mod user_script_control;
 pub mod version;
 pub mod vision;
 pub mod watcher;
