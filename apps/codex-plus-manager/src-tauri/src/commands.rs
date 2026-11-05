@@ -3095,12 +3095,11 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<()> {
     {
         let settings = SettingsStore::default().load()?;
         let session = codex_plus_launcher::session_snapshot();
-        ensure_default_windows_main_context(
-            &settings.codex_extra_args,
-            std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").as_deref(),
-            std::env::var_os("CODEX_ELECTRON_AGENT_RUN_ID").as_deref(),
-            session.user_data_override,
-        )?;
+        // 设置可能在启动后被编辑；停止时沿用该会话真正使用过的参数。
+        let launch_extra_args = session
+            .launch_extra_args
+            .as_deref()
+            .or_else(|| (!session.owned).then_some(settings.codex_extra_args.as_slice()));
         let owned_debug_port = session.owned.then_some(session.debug_port).flatten();
         let app_dir = session.app_dir.or_else(|| {
             codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
@@ -3111,9 +3110,10 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<()> {
         });
         let app_dir = app_dir.ok_or_else(|| anyhow::anyhow!("无法核实 Codex 应用路径"))?;
         let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
-        codex_plus_core::watcher::stop_windows_main_codex_processes_and_wait(
+        codex_plus_core::watcher::stop_windows_main_codex_processes_with_args_and_wait(
             &executable,
             owned_debug_port,
+            launch_extra_args,
         )?;
         return Ok(());
     }
@@ -3131,29 +3131,6 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<()> {
     #[cfg(not(windows))]
     anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
     #[cfg(not(windows))]
-    Ok(())
-}
-
-#[cfg(any(windows, test))]
-fn ensure_default_windows_main_context(
-    extra_args: &[String],
-    electron_user_data: Option<&std::ffi::OsStr>,
-    agent_run_id: Option<&std::ffi::OsStr>,
-    session_user_data_override: Option<bool>,
-) -> anyhow::Result<()> {
-    let has_override = |value: Option<&std::ffi::OsStr>| {
-        value.is_some_and(|value| !value.to_string_lossy().trim().is_empty())
-    };
-    anyhow::ensure!(
-        !has_override(electron_user_data)
-            && !has_override(agent_run_id)
-            && session_user_data_override != Some(true)
-            && !extra_args.iter().any(|arg| {
-                codex_plus_core::watcher::windows_codex_switch_name(arg)
-                    .is_some_and(|name| name.eq_ignore_ascii_case("user-data-dir"))
-            }),
-        "当前使用了自定义 Codex 用户数据目录，无法安全确认主实例；请先在对应实例中正常退出"
-    );
     Ok(())
 }
 
@@ -11537,39 +11514,6 @@ base_url = "https://example.invalid/v1"
                 restart_disposition(sync, running, true),
                 RestartDisposition::StopAndRestart
             );
-        }
-    }
-
-    #[test]
-    fn windows_main_stop_rejects_explicit_isolated_contexts() {
-        use std::ffi::OsStr;
-        assert!(ensure_default_windows_main_context(&[], None, None, None).is_ok());
-        assert!(
-            ensure_default_windows_main_context(
-                &["--user-data-dir=C:\\isolated".to_string()],
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            ensure_default_windows_main_context(
-                &["--user-data-dir".to_string(), "C:\\isolated".to_string()],
-                None,
-                None,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            ensure_default_windows_main_context(&[], Some(OsStr::new("C:\\isolated")), None, None)
-                .is_err()
-        );
-        assert!(ensure_default_windows_main_context(&[], None, Some(OsStr::new("run")), None).is_err());
-        assert!(ensure_default_windows_main_context(&[], None, None, Some(true)).is_err());
-        for arg in ["/USER-DATA-DIR=C:\\isolated", "-user-data-dir=C:\\isolated"] {
-            assert!(ensure_default_windows_main_context(&[arg.to_string()], None, None, None).is_err());
         }
     }
 

@@ -17,6 +17,8 @@ struct ProcessFacts {
 struct StopContext {
     executable: String,
     user_data: Option<String>,
+    debug_port_only: bool,
+    listener_identity: Option<(u32, u64)>,
     owner: StopProcessOwner,
     app_data: String,
     owned_debug_port: Option<u16>,
@@ -33,15 +35,31 @@ trait HeldMainProcess {
 
 /// 停止已经核验的 Windows Codex 主进程，并等待原句柄确认退出。
 ///
-/// 仅处理调用管理器的默认主上下文：双方须属于同一用户、登录及 Windows
-/// 会话，APPDATA 相同，且均没有已知的 userData/agent 隔离覆盖。调用者须已确认使用
-/// 官方默认启动约定；这不是对所有未来版本实际 userData 计算方式的证明。
-/// 已就绪后台会话的端口只用于拒绝不属于默认上下文的候选，不用于扩大停止范围。
+/// 使用调用管理器的环境上下文；附加参数有自定义目录时使用 with_args 入口。
 /// 不使用调试端口兜底，不遍历或结束子进程，不重新按 PID 终止进程。
 #[cfg(windows)]
 pub fn stop_windows_main_codex_processes_and_wait(
     expected_executable: &Path,
     owned_debug_port: Option<u16>,
+) -> Result<usize> {
+    stop_windows_main_codex_processes_with_args_and_wait(
+        expected_executable,
+        owned_debug_port,
+        Some(&[]),
+    )
+}
+
+/// 按实际启动参数和管理器环境核验用户数据上下文，兼容自定义目录。
+///
+/// 双方须属于同一用户、登录及 Windows 会话，APPDATA 相同且没有 agent 隔离覆盖。
+/// 自定义 userData 只允许精确目录匹配；默认上下文仍排除所有隔离实例。
+/// 接管会话的启动参数未知时，只允许停止实际监听者的原进程身份，不猜测默认目录。
+/// 已就绪会话的端口只用于拒绝漏停，不用于扩大停止范围。
+#[cfg(windows)]
+pub fn stop_windows_main_codex_processes_with_args_and_wait(
+    expected_executable: &Path,
+    owned_debug_port: Option<u16>,
+    launch_extra_args: Option<&[String]>,
 ) -> Result<usize> {
     use crate::windows_integration::{VerifiedStopProcess, bounded_process_snapshot};
 
@@ -50,26 +68,41 @@ pub fn stop_windows_main_codex_processes_and_wait(
         .and_then(|name| name.to_str())
         .filter(|name| crate::app_paths::is_windows_desktop_app_executable_name(name))
         .ok_or_else(|| anyhow::anyhow!("缺少可信的 Codex 桌面应用入口"))?;
-    let executable = normalized_path(expected_executable)?;
     let manager = VerifiedStopProcess::capture(std::process::id(), false)?
         .ok_or_else(|| anyhow::anyhow!("无法持有当前管理器的进程身份"))?;
-    let environment = manager.stop_environment()?;
-    anyhow::ensure!(
-        environment.user_data.is_none() && environment.agent_run_id.is_none(),
-        "管理器存在隔离环境覆盖，无法按已知官方默认启动约定识别主实例"
-    );
-    let app_data = normalized_path_text(
-        environment
-            .app_data
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("无法核实管理器 APPDATA"))?,
-    )?;
-    let context = StopContext {
-        executable,
-        user_data: None,
-        owner: manager.stop_owner()?,
-        app_data,
+    let mut context = stop_context(
+        expected_executable,
+        launch_extra_args,
+        manager.stop_owner()?,
+        manager.stop_environment()?,
         owned_debug_port,
+    )?;
+    // 接管会话没有目录快照时，绑定真实监听者的持有身份，不按相同端口参数批量匹配。
+    let listener = if let Some(port) = owned_debug_port {
+        let listener =
+            crate::windows_integration::capture_debug_listener(port, expected_executable)?;
+        if let Some(listener) = listener.as_ref() {
+            if context.debug_port_only {
+                context.listener_identity = Some((listener.process_id, listener.birth_id));
+            }
+            let held = VerifiedStopProcess::capture(listener.process_id, false)?
+                .ok_or_else(|| anyhow::anyhow!("核验时已接管的 Codex 监听进程消失"))?;
+            let facts = held.facts()?;
+            anyhow::ensure!(
+                held.alive()? && facts.birth == listener.birth_id,
+                "核验时已接管的 Codex 监听进程身份发生变化"
+            );
+            ensure_listener_matches(&facts, &context)?;
+        } else {
+            anyhow::ensure!(
+                !context.debug_port_only
+                    && crate::windows_integration::loopback_listener_process_ids(port)?.is_empty(),
+                "无法核实已接管调试端口的唯一 Codex 监听者"
+            );
+        }
+        listener
+    } else {
+        None
     };
     let candidates = || -> Result<Vec<u32>> {
         Ok(bounded_process_snapshot(65_536)?
@@ -86,7 +119,91 @@ pub fn stop_windows_main_codex_processes_and_wait(
         || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
     )?;
     ensure_no_live_targets(candidates()?, VerifiedStopProcess::capture, &context)?;
+    if let Some(listener) = listener {
+        anyhow::ensure!(!listener.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
+    }
+    if let Some(port) = owned_debug_port {
+        anyhow::ensure!(
+            crate::windows_integration::loopback_listener_process_ids(port)?.is_empty(),
+            "停止后调试端口出现其他监听者，未继续启动"
+        );
+    }
     Ok(stopped)
+}
+
+fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Result<()> {
+    anyhow::ensure!(
+        target_matches(facts, context)?,
+        "已接管的 Codex 监听进程与待停止的用户数据上下文不一致，未结束任何进程"
+    );
+    Ok(())
+}
+
+fn stop_context(
+    executable: &Path,
+    extra_args: Option<&[String]>,
+    owner: StopProcessOwner,
+    environment: StopProcessEnvironment,
+    owned_debug_port: Option<u16>,
+) -> Result<StopContext> {
+    anyhow::ensure!(
+        environment
+            .agent_run_id
+            .as_deref()
+            .is_none_or(str::is_empty),
+        "管理器存在 agent 隔离覆盖，无法按已知主实例启动约定核验"
+    );
+    anyhow::ensure!(
+        extra_args.is_some() || owned_debug_port.is_some_and(|port| port != 0),
+        "会话启动参数未知且缺少已接管调试端口，无法确认停止目标"
+    );
+    let arguments = parsed_launch_arguments(&crate::settings::normalize_codex_extra_args(
+        extra_args.unwrap_or_default(),
+    ))?;
+    anyhow::ensure!(!arguments.child, "主实例启动参数不能声明 Chromium 子进程");
+    // launcher 按显式参数覆盖子进程的环境目录；不以管理器继承的旧值拒绝该配置。
+    let user_data = match arguments.user_data {
+        Some(path) => Some(path),
+        None => environment
+            .user_data
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(normalized_path_text)
+            .transpose()?,
+    };
+    Ok(StopContext {
+        executable: normalized_path(executable)?,
+        user_data,
+        debug_port_only: extra_args.is_none(),
+        listener_identity: None,
+        owner,
+        app_data: normalized_path_text(
+            environment
+                .app_data
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("无法核实管理器 APPDATA"))?,
+        )?,
+        owned_debug_port,
+    })
+}
+
+fn effective_user_data(
+    argument: Option<String>,
+    environment: &StopProcessEnvironment,
+) -> Result<Option<String>> {
+    let environment = environment
+        .user_data
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(normalized_path_text)
+        .transpose()?;
+    if let (Some(argument), Some(environment)) = (&argument, &environment) {
+        anyhow::ensure!(
+            argument == environment,
+            "Codex 命令行与环境中的用户数据目录冲突"
+        );
+    }
+    Ok(argument.or(environment))
 }
 
 #[cfg(windows)]
@@ -170,6 +287,10 @@ fn capture_and_stop<P: HeldMainProcess>(
         );
         held.push((stoppable, current));
     }
+    anyhow::ensure!(
+        !context.debug_port_only || held.len() == 1,
+        "无法核实已接管调试端口对应的 Codex 主进程，未按保存设置猜测停止目标"
+    );
     revalidate_held(&held, context)?;
     let mut closing = Vec::new();
     for (process, _) in &held {
@@ -234,6 +355,12 @@ fn candidate_facts<P: HeldMainProcess>(
     process: &P,
     context: &StopContext,
 ) -> Result<Option<ProcessFacts>> {
+    if context
+        .listener_identity
+        .is_some_and(|(id, _)| process.id() != id)
+    {
+        return Ok(None);
+    }
     if !process.alive()? {
         return Ok(None);
     }
@@ -244,7 +371,15 @@ fn candidate_facts<P: HeldMainProcess>(
         Err(error) => return Err(error).context("无法筛选 Codex 主实例"),
     }
     match process.facts() {
-        Ok(facts) => Ok(Some(facts)),
+        Ok(facts) => {
+            anyhow::ensure!(
+                context
+                    .listener_identity
+                    .is_none_or(|(_, birth)| facts.birth == birth),
+                "已接管的 Codex 监听进程创建身份发生变化"
+            );
+            Ok(Some(facts))
+        }
         Err(_) if !process.alive()? => Ok(None),
         Err(error) => Err(error).context("无法完整核验 Codex 主实例"),
     }
@@ -256,7 +391,7 @@ fn reject_skipped_owned_session(facts: &ProcessFacts, context: &StopContext) -> 
         && parsed_arguments(&facts.arguments, &normalized_path(&facts.image)?)?.debug_port
             == context.owned_debug_port
     {
-        anyhow::bail!("当前后台会话的 Codex 进程不属于可核验的默认用户数据上下文，无法确认停止");
+        anyhow::bail!("当前后台会话的 Codex 进程与待停止的用户数据上下文不一致，无法确认停止");
     }
     Ok(())
 }
@@ -326,31 +461,19 @@ fn target_matches(facts: &ProcessFacts, context: &StopContext) -> Result<bool> {
     if normalized_path_text(app_data)? != context.app_data {
         return Ok(false);
     }
-    let environment_dir = environment
-        .user_data
+    let effective = effective_user_data(arguments.user_data, environment)?;
+    if environment
+        .agent_run_id
         .as_deref()
-        .map(normalized_path_text)
-        .transpose()?;
-    if let (Some(argument), Some(environment)) = (&arguments.user_data, &environment_dir) {
-        anyhow::ensure!(
-            argument == environment,
-            "Codex 命令行与环境中的用户数据目录冲突"
-        );
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(false);
     }
-    let effective = arguments.user_data.or(environment_dir);
-    match &context.user_data {
-        Some(expected) => {
-            if effective.as_ref() != Some(expected) {
-                return Ok(false);
-            }
-            anyhow::ensure!(
-                environment.agent_run_id.is_none(),
-                "Codex 含 agent 隔离覆盖，无法安全证明用户数据上下文"
-            );
-            Ok(true)
-        }
-        None => Ok(effective.is_none() && environment.agent_run_id.is_none()),
+    if context.debug_port_only {
+        // MSIX 激活的命令行可以不带调试参数；授权来自已持有的真实监听者身份。
+        return Ok(context.listener_identity.is_some());
     }
+    Ok(effective == context.user_data)
 }
 
 struct ParsedArguments {
@@ -367,10 +490,14 @@ fn parsed_arguments(arguments: &[String], image: &str) -> Result<ParsedArguments
         normalized_path_text(first)? == image,
         "Codex argv[0] 与实际映像不一致"
     );
+    parsed_launch_arguments(&arguments[1..])
+}
+
+fn parsed_launch_arguments(arguments: &[String]) -> Result<ParsedArguments> {
     let mut child = None;
     let mut user_data = None;
     let mut debug_port = None;
-    let mut index = 1;
+    let mut index = 0;
     while index < arguments.len() {
         let argument = &arguments[index];
         anyhow::ensure!(
@@ -521,6 +648,8 @@ mod tests {
         StopContext {
             executable: normalized_path_text(IMAGE).unwrap(),
             user_data: user_data.map(|path| normalized_path_text(path).unwrap()),
+            debug_port_only: false,
+            listener_identity: None,
             owner: StopProcessOwner {
                 user_sid: vec![1, 2, 3],
                 authentication_id: (10, 0),
@@ -765,6 +894,165 @@ mod tests {
         );
         assert!(!target_matches(&facts(&[]), &expected).unwrap());
         assert!(!target_matches(&facts(&["--user-data-dir=C:\\test\\other"]), &expected).unwrap());
+    }
+
+    #[test]
+    fn custom_launch_context_supports_arguments_environment_and_override_precedence() {
+        let environment = facts(&[]).environment;
+        for arguments in [
+            vec![r"--user-data-dir=C:\test\custom"],
+            vec!["--user-data-dir", r"C:\test\custom"],
+            vec![r"/USER-DATA-DIR=C:\test\custom"],
+            vec![r"-user-data-dir=C:\test\custom"],
+        ] {
+            let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let mut inherited = environment.clone();
+            inherited.user_data = Some(r"C:\inherited".to_owned());
+            let expected = stop_context(
+                Path::new(IMAGE),
+                Some(&arguments),
+                context(None).owner,
+                inherited,
+                None,
+            )
+            .unwrap();
+            assert_eq!(expected.user_data.as_deref(), Some(r"c:\test\custom"));
+            assert!(
+                target_matches(&facts(&[r"--user-data-dir=C:\test\custom"]), &expected).unwrap()
+            );
+            assert!(!target_matches(&facts(&[]), &expected).unwrap());
+        }
+        let mut inherited = environment.clone();
+        inherited.user_data = Some(r"C:\test\environment".to_owned());
+        let expected = stop_context(
+            Path::new(IMAGE),
+            Some(&[]),
+            context(None).owner,
+            inherited.clone(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(expected.user_data.as_deref(), Some(r"c:\test\environment"));
+        let mut candidate = facts(&[]);
+        candidate.environment = inherited;
+        assert!(target_matches(&candidate, &expected).unwrap());
+        candidate
+            .arguments
+            .push(r"--user-data-dir=C:\other".to_owned());
+        assert!(target_matches(&candidate, &expected).is_err());
+        let mut agent = environment;
+        agent.agent_run_id = Some("agent".to_owned());
+        assert!(
+            stop_context(
+                Path::new(IMAGE),
+                Some(&[]),
+                context(None).owner,
+                agent,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn custom_stop_preserves_default_other_directory_and_agent_instances() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let selected = fake(
+            1,
+            vec![facts(&[r"--user-data-dir=C:\test\custom"])],
+            &events,
+        );
+        let default = fake(2, vec![facts(&[])], &events);
+        let other = fake(3, vec![facts(&[r"--user-data-dir=C:\test\other"])], &events);
+        let mut agent_facts = facts(&[r"--user-data-dir=C:\test\custom"]);
+        agent_facts.environment.agent_run_id = Some("agent".to_owned());
+        let agent = fake(4, vec![agent_facts], &events);
+        assert_eq!(
+            stop(
+                vec![selected, default.clone(), other.clone(), agent.clone()],
+                &context(Some(r"C:\test\custom")),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(*events.borrow(), [1]);
+        assert!(default.alive().unwrap() && other.alive().unwrap() && agent.alive().unwrap());
+    }
+
+    #[test]
+    fn attached_session_requires_a_verified_port_instead_of_current_settings() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let selected = fake(
+            1,
+            vec![facts(&[
+                r"--user-data-dir=C:\started",
+                "--remote-debugging-port=52106",
+            ])],
+            &events,
+        );
+        let other = fake(
+            2,
+            vec![facts(&[r"--user-data-dir=C:\changed-settings"])],
+            &events,
+        );
+        let mut expected = stop_context(
+            Path::new(IMAGE),
+            None,
+            context(None).owner,
+            facts(&[]).environment,
+            Some(52106),
+        )
+        .unwrap();
+        expected.listener_identity = Some((1, 100));
+        let same_port = fake(
+            3,
+            vec![facts(&[
+                r"--user-data-dir=C:\other",
+                "--remote-debugging-port=52106",
+            ])],
+            &events,
+        );
+        assert_eq!(
+            stop(vec![selected, other.clone(), same_port.clone()], &expected).unwrap(),
+            1
+        );
+        assert!(other.alive().unwrap());
+        assert!(same_port.alive().unwrap());
+        assert_eq!(*events.borrow(), [1]);
+        assert!(stop(vec![other], &expected).is_err());
+        assert!(
+            stop_context(
+                Path::new(IMAGE),
+                None,
+                context(None).owner,
+                facts(&[]).environment,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn attached_listener_identity_allows_msix_arguments_without_a_debug_flag() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let main = fake(1, vec![facts(&[])], &events);
+        let other = fake(2, vec![facts(&[])], &events);
+        let mut expected = context(None);
+        expected.debug_port_only = true;
+        expected.owned_debug_port = Some(52106);
+        expected.listener_identity = Some((1, 100));
+        assert_eq!(stop(vec![main, other.clone()], &expected).unwrap(), 1);
+        assert!(other.alive().unwrap());
+        assert_eq!(*events.borrow(), [1]);
+    }
+
+    #[test]
+    fn known_scope_rejects_a_listener_using_another_directory_without_a_debug_flag() {
+        let expected = context(Some(r"C:\custom"));
+        assert!(ensure_listener_matches(&facts(&[]), &expected).is_err());
+        assert!(
+            ensure_listener_matches(&facts(&[r"--user-data-dir=C:\custom"]), &expected,).is_ok()
+        );
     }
 
     #[test]
@@ -1020,6 +1308,8 @@ mod tests {
         let context = StopContext {
             executable: normalized_path(&executable).unwrap(),
             user_data: None,
+            debug_port_only: false,
+            listener_identity: None,
             owner,
             app_data: normalized_path(&app_data).unwrap(),
             owned_debug_port: None,
@@ -1040,16 +1330,17 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn public_stop_api_stops_only_its_owned_default_main() {
+    fn public_stop_api_stops_only_its_selected_main() {
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        let fixture = tempfile::tempdir().unwrap();
-        let app_data = fixture.path().join("appdata");
-        std::fs::create_dir(&app_data).unwrap();
-        // 原名 driver 不会进入 ChatGPT.exe 快照；仅子进程持有临时 APPDATA。
-        let mut driver = OwnedTestChild(
-            Command::new(std::env::current_exe().unwrap())
+        for mode in ["default", "environment"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let app_data = fixture.path().join("appdata");
+            std::fs::create_dir(&app_data).unwrap();
+            // 原名 driver 不会进入 ChatGPT.exe 快照；仅子进程持有临时环境。
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
                 .args([
                     "--exact",
                     "watcher::windows_main_stop::tests::public_stop_api_driver",
@@ -1057,28 +1348,31 @@ mod tests {
                     "--nocapture",
                 ])
                 .env_clear()
-                .env("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER", "owned-driver")
+                .env("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER", mode)
                 .env("APPDATA", &app_data)
                 .stdin(Stdio::null())
-                .creation_flags(crate::windows_integration::CREATE_NO_WINDOW)
-                .spawn()
-                .unwrap(),
-        );
-        assert!(driver.0.wait().unwrap().success());
-        assert_eq!(
-            std::fs::read(app_data.join("stop-api-completed")).unwrap(),
-            b"ok"
-        );
+                .creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+            if mode == "environment" {
+                command.env("CODEX_ELECTRON_USER_DATA_PATH", app_data.join("selected"));
+            }
+            let mut driver = OwnedTestChild(command.spawn().unwrap());
+            assert!(driver.0.wait().unwrap().success(), "{mode}");
+            assert_eq!(
+                std::fs::read(app_data.join("stop-api-completed")).unwrap(),
+                b"ok"
+            );
+        }
     }
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "仅由 public_stop_api_stops_only_its_owned_default_main 启动"]
+    #[ignore = "仅由 public_stop_api_stops_only_its_selected_main 启动"]
     fn public_stop_api_driver() {
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        if std::env::var_os("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER") != Some("owned-driver".into()) {
+        let mode = std::env::var("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER").unwrap_or_default();
+        if !matches!(mode.as_str(), "default" | "environment") {
             return;
         }
         let original = std::env::current_exe().unwrap();
@@ -1090,7 +1384,8 @@ mod tests {
         let fixture = tempfile::tempdir_in(&app_data).unwrap();
         let executable = fixture.path().join("ChatGPT.exe");
         std::fs::copy(&original, &executable).unwrap();
-        let spawn = |isolated: bool| {
+        let selected = app_data.join("selected");
+        let spawn = |user_data: Option<&Path>| {
             let mut command = Command::new(&executable);
             command
                 .args([
@@ -1106,29 +1401,46 @@ mod tests {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
-            if isolated {
-                command.env(
-                    "CODEX_ELECTRON_USER_DATA_PATH",
-                    fixture.path().join("isolated"),
-                );
+            if let Some(user_data) = user_data {
+                command.env("CODEX_ELECTRON_USER_DATA_PATH", user_data);
             }
             OwnedTestChild(command.spawn().unwrap())
         };
-        let mut main = spawn(false);
-        let mut isolated = spawn(true);
+        let mut main = spawn(None);
+        let mut isolated = spawn(Some(&selected));
+        let mut other = spawn(Some(&fixture.path().join("other")));
         assert!(main.0.try_wait().unwrap().is_none());
         assert!(isolated.0.try_wait().unwrap().is_none());
         assert_eq!(
             stop_windows_main_codex_processes_and_wait(&executable, None).unwrap(),
             1
         );
-        assert!(main.0.try_wait().unwrap().is_some());
-        assert!(isolated.0.try_wait().unwrap().is_none());
+        assert_eq!(main.0.try_wait().unwrap().is_some(), mode == "default");
+        assert_eq!(
+            isolated.0.try_wait().unwrap().is_some(),
+            mode == "environment"
+        );
+        assert!(other.0.try_wait().unwrap().is_none());
         assert_eq!(
             stop_windows_main_codex_processes_and_wait(&executable, None).unwrap(),
             0
         );
-        assert!(isolated.0.try_wait().unwrap().is_none());
+        if mode == "default" {
+            let arguments = vec![format!("--user-data-dir={}", selected.display())];
+            assert_eq!(
+                stop_windows_main_codex_processes_with_args_and_wait(
+                    &executable,
+                    None,
+                    Some(&arguments),
+                )
+                .unwrap(),
+                1
+            );
+            assert!(isolated.0.try_wait().unwrap().is_some());
+        } else {
+            assert!(main.0.try_wait().unwrap().is_none());
+        }
+        assert!(other.0.try_wait().unwrap().is_none());
         std::fs::write(app_data.join("stop-api-completed"), b"ok").unwrap();
     }
 }

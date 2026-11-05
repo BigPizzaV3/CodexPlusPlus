@@ -9,7 +9,10 @@ pub use crate::windows_integration::WindowsProcessInfo;
 #[cfg(any(windows, test))]
 mod windows_main_stop;
 #[cfg(windows)]
-pub use windows_main_stop::stop_windows_main_codex_processes_and_wait;
+pub use windows_main_stop::{
+    stop_windows_main_codex_processes_and_wait,
+    stop_windows_main_codex_processes_with_args_and_wait,
+};
 
 pub const WATCHER_INTERVAL_SECONDS: f64 = 3.0;
 pub const CDP_PROBE_TIMEOUT_SECONDS: f64 = 0.5;
