@@ -1443,8 +1443,7 @@
     });
     state.observer.observe(list, {
       childList: true, subtree: true, attributes: true,
-      attributeFilter: ["style", "class", "data-codex-plus-model-ordering", "data-codex-plus-model-order",
-        "data-codex-plus-model-view-mode", "data-codex-plus-model-heading", "aria-checked", "data-state", "data-model-selected"],
+      attributeFilter: ["aria-checked", "data-state", "data-model-selected"],
     });
   }
 
@@ -1452,7 +1451,7 @@
    * 一次扫描：菜单开着就确保分组已打好；关了就清理并停止轮询。
    *
    * 为什么还要轮询：React 复用行节点时不会产生 childList 变更，只靠 MutationObserver
-   * 会漏掉"标签变了"这种情况。600ms 一次、且只在菜单开着时跑，开销可以忽略。
+   * 会漏掉"标签变了"这种情况。250ms 一次、且只在菜单开着时跑。
    */
   /**
    * 模型菜单开着却认不出来时（#2753：旧版 Codex 上分组不出现），记一次结构快照，
@@ -1473,7 +1472,7 @@
       if (menu.closest("[data-codex-plus-ext]")) continue;
       const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
       if (radios.length < 2 || !visibleElement(menu)) continue;
-      // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
+      // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射。
       exact ||= codexPlusModelPickerCatalogExactMap();
       if (!exact.size) return;
       const known = radios.filter((row) => {

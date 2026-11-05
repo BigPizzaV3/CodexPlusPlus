@@ -399,6 +399,92 @@ it("同一菜单扫描保留当前供应商，重新打开时回到供应商入�
   assert.deepEqual(observed, [secondList], "同一个菜单只注册一个观察器");
 });
 
+it("视图切换和批量展开折叠保持状态与原生焦点", async () => {
+  const source = await readShard();
+  const state = { viewMode: "icons", collapsed: new Set<string>() };
+  const stored: string[] = [];
+  const focused: string[] = [];
+  let cleared = 0;
+  let patched = 0;
+  const list = { isConnected: true, querySelector: (selector: string) => ({
+    focus: () => { focused.push(selector); },
+  }) };
+  const action = new Function(
+    "codexPlusModelPickerGroupsState", "window", "codexPlusModelPickerViewStoreKey",
+    "codexPlusModelPickerClear", "codexPlusModelPickerUniqueGroupIds", "codexPlusModelPickerGroups",
+    "codexPlusModelPickerRows", "codexPlusModelPickerDefaultProviderName", "codexPlusModelPickerPatch",
+    `${functionSource(source, "codexPlusModelPickerViewAction")}\nreturn codexPlusModelPickerViewAction;`,
+  )(state, { localStorage: { setItem: (_key: string, value: string) => stored.push(value) } },
+    "view", () => { cleared++; }, (groups: unknown) => groups, () => [{ id: "a" }, { id: "b" }],
+    () => [], () => "", () => { patched++; });
+  action(list, "list");
+  assert.equal(state.viewMode, "list");
+  assert.deepEqual(stored, ["list"]);
+  assert.match(focused.at(-1)!, /icons/);
+  action(list, "collapse");
+  assert.deepEqual([...state.collapsed], ["a", "b"]);
+  action(list, "expand");
+  assert.equal(state.collapsed.size, 0);
+  action(list, "icons");
+  assert.equal(state.viewMode, "icons");
+  assert.deepEqual(stored, ["list", "icons"]);
+  assert.match(focused.at(-1)!, /list/);
+  assert.equal(cleared, 2);
+  assert.equal(patched, 4);
+  action({ ...list, isConnected: false }, "list");
+  assert.equal(patched, 4);
+});
+
+it("观察器忽略自身属性但响应原生选中与结构变化", async () => {
+  const source = await readShard();
+  const list = {};
+  const state = { activeList: null as unknown, activeGroupId: "", observer: null as any,
+    patchedLists: new WeakSet(), viewMode: "list", signature: "list:old" };
+  let scheduled = 0;
+  let callback: (records: any[]) => void = () => {};
+  let options: any;
+  class Observer {
+    constructor(cb: (records: any[]) => void) { callback = cb; }
+    observe(_list: unknown, value: unknown) { options = value; }
+    disconnect() {}
+  }
+  const needs = new Function(
+    "codexPlusModelPickerGroupsExtMark", "codexPlusModelPickerList", "codexPlusModelPickerMenu",
+    "codexPlusModelPickerRows", "codexPlusModelPickerGroups", "codexPlusModelPickerDefaultProviderName",
+    "codexPlusModelPickerUniqueGroupIds", "codexPlusModelPickerFingerprint", "codexPlusModelPickerHeadersIntact",
+    "codexPlusModelPickerGroupsState",
+    `${functionSource(source, "codexPlusModelPickerNeedsRescan")}\nreturn codexPlusModelPickerNeedsRescan;`,
+  )("model-groups", () => list, () => ({}), () => [], () => [{}], () => "",
+    (groups: unknown) => groups, () => "new", () => true, state);
+  const observe = new Function(
+    "codexPlusModelPickerGroupsState", "codexPlusModelPickerClear", "MutationObserver",
+    "codexPlusModelPickerNeedsRescan", "codexPlusModelPickerScheduleRescan",
+    `${functionSource(source, "codexPlusModelPickerObserveList")}\nreturn codexPlusModelPickerObserveList;`,
+  )(state, () => {}, Observer, needs, () => { scheduled++; });
+  observe(list);
+  assert.deepEqual(options.attributeFilter, ["aria-checked", "data-state", "data-model-selected"]);
+  assert.equal(options.childList, true);
+  assert.equal(options.subtree, true);
+  const deliverAttribute = (name: string, radio: boolean) => {
+    if (options.attributeFilter.includes(name)) {
+      callback([{ type: "attributes", attributeName: name, target: { matches: () => radio } }]);
+    }
+  };
+  for (const name of ["style", "class", "data-codex-plus-model-ordering",
+    "data-codex-plus-model-order", "data-codex-plus-model-view-mode", "data-codex-plus-model-heading"]) {
+    deliverAttribute(name, true);
+  }
+  assert.equal(scheduled, 0);
+  for (const name of options.attributeFilter) deliverAttribute(name, true);
+  assert.equal(scheduled, 3);
+  const own = { nodeType: 1, closest: () => ({}) };
+  callback([{ type: "childList", addedNodes: [own], removedNodes: [] }]);
+  assert.equal(scheduled, 3);
+  const native = { nodeType: 1, closest: () => null };
+  callback([{ type: "childList", addedNodes: [native], removedNodes: [] }]);
+  assert.equal(scheduled, 4);
+});
+
 it("供应商网格支持方向键，模型列表中的 Escape 返回供应商入口", async () => {
   const source = await readShard();
   let focused = -1;

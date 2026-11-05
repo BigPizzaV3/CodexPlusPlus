@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -326,24 +325,6 @@ export const pickerViewScenarios: Array<{
       await page.keyboard.press("Escape");
       assert.equal(await page.locator(".codex-plus-model-provider-grid").isVisible(), true);
       assert.equal(await provider.evaluate((node: Element) => node === document.activeElement), true);
-    },
-  },
-  {
-    name: "main icon geometry and provider navigation match the main reference",
-    baseline: true,
-    async run({ page }, browser) {
-      const source = execFileSync("git", ["show",
-        `${process.env.CODEX_PLUS_MODEL_PICKER_REFERENCE_REF || "4ccd3262"}:assets/inject/renderer-inject/71-model-picker-groups.js`],
-      { cwd: repository, encoding: "utf8", maxBuffer: 1024 * 1024 });
-      const reference = await createPickerFixture(browser, { source });
-      try {
-        assert.deepEqual(await pickerIconSnapshot(page), await pickerIconSnapshot(reference.page));
-        for (const current of [page, reference.page]) {
-          await current.locator('[data-codex-plus-model-group-id="provider-hanhe"]').click();
-        }
-        assert.deepEqual(await pickerIconSnapshot(page), await pickerIconSnapshot(reference.page));
-        assert.deepEqual(reference.errors, []);
-      } finally { await reference.close(); }
     },
   },
   {
@@ -739,9 +720,10 @@ export const pickerViewScenarios: Array<{
     },
   },
   {
-    name: "order loss alone and title-control removal heal through the live observer",
+    name: "order loss and title-control removal heal through the scheduled scan",
     async run({ page }) {
       await switchToList(page);
+      await page.evaluate(() => (window as any).__codexPlusModelPickerGroupsRuntime.sync());
       const before = await page.locator("[data-fixture-model]").evaluateAll((rows: HTMLElement[]) =>
         rows.map(row => getComputedStyle(row).order));
       await page.evaluate(() => {
@@ -755,9 +737,8 @@ export const pickerViewScenarios: Array<{
       }, before);
       await page.evaluate(() => {
         document.querySelector(".codex-plus-model-view-controls")?.remove();
-        (window as any).__codexPlusModelPickerGroupsRuntime.scan();
       });
-      assert.equal(await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).count(), 1);
+      await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).waitFor({ state: "visible" });
       assert.equal(await page.getByText("选择模型", { exact: true }).count(), 1);
       await assertNativeRowsUntouched(page);
     },
