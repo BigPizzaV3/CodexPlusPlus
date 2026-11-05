@@ -40,7 +40,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
     sendCodexPlusDiagnostic: () => {},
     uniqueValues: (values: any[]) => [...new Set(values.filter(value => typeof value === "string" && value.trim()))],
     readCodexAppServerPreparation: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
-    findCodexQueryClient: () => ({
+    findCodexQueryClient: () => sharedWindow.testQueryClient || ({
       getQueryCache: () => ({ getAll: () => [...queries, { queryKey: ["threads", "local"] }] }),
       invalidateQueries: (filter: any) => invalidated.push(filter.queryKey),
     }),
@@ -75,6 +75,71 @@ async function load(r: ReturnType<typeof runtime>, models: string[], metadata = 
   r.pending.shift()!.resolve(catalog(models, metadata));
   await request;
 }
+
+function queryClient(entries: Array<{ queryKey: any[]; state: { data: any } }>) {
+  const pending: Array<{ key: any[]; resolve: () => void }> = [];
+  const client = {
+    getQueryCache: () => ({ getAll: () => entries }),
+    setQueryData: (key: any[], update: (value: any) => any) => {
+      const entry = entries.find(value => JSON.stringify(value.queryKey) === JSON.stringify(key));
+      if (entry) entry.state.data = update(entry.state.data);
+    },
+    invalidateQueries: ({ queryKey }: { queryKey: any[] }) =>
+      new Promise<void>(resolve => pending.push({ key: queryKey, resolve })),
+  };
+  return { client, pending };
+}
+
+const nativeQueryKey = (host = "local", provider = "gateway") =>
+  ["models", "list", host, "no-auth", 100, provider, "fixture-catalog"];
+
+it("refreshes the confirmed local native cache before and after a stale refetch", async () => {
+  const local = { queryKey: nativeQueryKey(), state: { data: { data: [
+    { model: "a/old", displayName: "Old", isDefault: true },
+    { model: "native-only" },
+  ], nextCursor: null, model: "selected", reasoningEffort: "ultra" } } };
+  const remote = { queryKey: nativeQueryKey("remote"), state: { data: structuredClone(local.state.data) } };
+  const otherProvider = { queryKey: nativeQueryKey("local", "other"), state: { data: structuredClone(local.state.data) } };
+  const malformed = { queryKey: ["models", "list", "local", "different", 100, "gateway"],
+    state: { data: { data: [{ other: "value" }], nextCursor: null } } };
+  const paginated = { queryKey: ["models", "list", "local", "page", 100, "gateway"],
+    state: { data: { data: [{ model: "native-page" }], nextCursor: "next" } } };
+  const { client, pending } = queryClient([local, remote, otherProvider, malformed, paginated]);
+  const original = local.state.data;
+  const unchanged = [remote, otherProvider, malformed, paginated].map(entry => structuredClone(entry.state.data));
+  const r = runtime({ testQueryClient: client });
+  await load(r, ["a/old", "a/new"], { "a/new": { displayName: "New model" } });
+  assert.notEqual(local.state.data, original, "cache updates must not mutate existing query data");
+  assert.deepEqual(original.data.map(entry => entry.model), ["a/old", "native-only"]);
+  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/old", "a/new"]);
+  assert.equal(local.state.data.data[1].displayName, "New model");
+  assert.equal(local.state.data.model, "selected");
+  assert.equal(local.state.data.reasoningEffort, "ultra");
+  [remote, otherProvider, malformed, paginated].forEach((entry, index) =>
+    assert.deepEqual(entry.state.data, unchanged[index]));
+
+  local.state.data = structuredClone(original);
+  pending.find(item => item.key === local.queryKey)!.resolve();
+  await settle();
+  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/old", "a/new"]);
+});
+
+it("late refetches use the current catalog after a change and reinjection", async () => {
+  const local = { queryKey: nativeQueryKey(), state: { data: {
+    data: [{ model: "a/old" }], nextCursor: null,
+  } } };
+  const { client, pending } = queryClient([local]);
+  const shared = { testQueryClient: client };
+  const first = runtime(shared);
+  await load(first, ["a/old"]);
+  const next = runtime(shared, first.settings());
+  await load(next, ["a/current"]);
+  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/current"]);
+  local.state.data = { data: [{ model: "a/old" }], nextCursor: null };
+  pending[0].resolve();
+  await settle();
+  assert.deepEqual(Array.from(local.state.data.data, entry => entry.model), ["a/current"]);
+});
 
 it("catalog fingerprint changes bypass cache and invalidate only local model queries", async () => {
   const r = runtime();
