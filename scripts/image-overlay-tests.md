@@ -10,6 +10,11 @@ accepts CODEX_TEST_BROWSER_PATH or CODEX_TEST_BROWSER (default: msedge).
   native media, hover/focus, cleanup and transformed surface alignment.
 - node scripts/test-image-native-media.cjs: transparent images, fit/zoom, backdrop
   composition, frozen-JavaScript scrolling and native view-transition snapshots.
+- node scripts/test-image-interaction-surfaces.cjs: shared request/approval cards,
+  legacy shells, rails, tips and progress capsules in footer/dialog/timeline hosts;
+  late identity, nested backgrounds, transparent variants and reparenting.
+- node scripts/test-image-viewer-surfaces.cjs: image-viewer chrome and composer
+  migration, native image pixels, editing/clicking, transforms and viewport resize.
 - node scripts/test-image-composite.cjs: whole-frame comparison against the original
   fixed-DIV wallpaper, ordinary iframe/shadow content, video/canvas and resource lifetime.
 - node scripts/test-background-resume.cjs: scan scheduler suspension and coalescing.

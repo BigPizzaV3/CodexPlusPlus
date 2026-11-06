@@ -85,6 +85,12 @@
       ".tortilla-gallery.bg-surface-elevated-secondary", ".tortilla-gallery .bg-surface-elevated-secondary",
     ].join(", ");
     const surfaceBoundarySelector = `[${mediaAttribute}^="surface"]`;
+    const imageViewerSelector = '.codex-dialog:has([data-image-preview-toolbar], [data-image-preview-composer]), [role="dialog"]:has([data-testid="image-preview-dismiss-area"])';
+    const viewerSurfaceSelector = `:is(${imageViewerSelector}) :is(` +
+      `[class*="controlSurface"], [role="toolbar"][class*="annotationTheme"], ` +
+      `.pointer-events-auto.rounded-full:has([role="slider"]), [data-image-preview-composer] ${composerSelector})`;
+    const isViewerSurface = node => node.matches(viewerSurfaceSelector) &&
+      !node.parentElement?.closest(viewerSurfaceSelector);
     const topControlSelector = [
       '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]', '[class^="Tooltip-"]', '[class*=" Tooltip-"]',
       // Sonner 的内层 z-index 无法越过这个原生 z60 外壳；只抬外壳，不改通知本身的颜色与动画。
@@ -285,12 +291,12 @@
       const previous = records.get(node);
       localSurface ||= !!previous?.localSurface;
       const toolbarSurface = isToolbarSurface(node);
-      if (!toolbarSurface && !node.matches(viewerSelector) && node.closest(viewerSelector) ||
+      if (!toolbarSurface && !isViewerSurface(node) && !node.matches(viewerSelector) && node.closest(viewerSelector) ||
         !node.matches(reviewHeaderSelector) && node.closest(reviewHeaderSelector)) {
         if (previous) removeMedia(node, previous);
         return;
       }
-      const nativeBoundary = toolbarSurface ? node.closest(toolbarSelector) :
+      const nativeBoundary = toolbarSurface ? node.closest(toolbarSelector) : (localSurface && node.closest(viewerSelector)) ||
         node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${surfaceBoundarySelector}, ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
       if (nativeBoundary && !localSurface && !toolbarSurface && !node.matches(`${composerSelector}, ${headerSelector}`)) {
         if (previous) removeMedia(node, previous);
@@ -457,9 +463,10 @@
       }
       return found;
     };
-    const refreshPaints = () => {
+    const refreshPaints = (viewerOnly = false) => {
       const nodes = geometryDirty ? new Set([...paintsDirty, ...geometryPaints]) : paintsDirty;
       for (const node of nodes) {
+        if (viewerOnly && !isViewerSurface(node)) continue;
         const record = records.get(node);
         const paint = record?.paint;
         if (!paint || !paintedNodes.has(node) || !paint.surface.isConnected) continue;
@@ -481,7 +488,9 @@
         const rule = wallRule(paint);
         if (record.wallRule !== rule) { record.wallRule = rule; writeRules(); }
       }
-      paintsDirty.clear();
+      if (viewerOnly) {
+        for (const node of nodes) if (isViewerSurface(node)) paintsDirty.delete(node);
+      } else paintsDirty.clear();
     };
     const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
       const record = records.get(node);
@@ -531,9 +540,10 @@
       .filter(name => name.startsWith("background") || name === "color")
       .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";");
     const isLocalSurface = node => {
-      if (!node.matches(surfaceSelector) || owned(node) || inactivePanel(node) ||
-        node.closest(`${viewerSelector}, ${editorSelector}, ${pageSelector}`) || node.matches(topControlSelector) ||
-        !node.parentElement?.closest(`${footerSelector}, ${topControlSelector}`)) return false;
+      const viewerSurface = isViewerSurface(node);
+      if (!(viewerSurface || node.matches(surfaceSelector)) || owned(node) || inactivePanel(node) ||
+        node.closest(`${editorSelector}, ${pageSelector}`) || node.matches(topControlSelector) ||
+        (!viewerSurface && (node.closest(viewerSelector) || !node.parentElement?.closest(`${footerSelector}, ${topControlSelector}`)))) return false;
       const paint = computed(node);
       return paint.backgroundImage !== "none" || paint.backgroundColor !== "transparent" &&
         !/(?:rgba\([^)]*,|\/)\s*0\s*\)$/.test(paint.backgroundColor);
@@ -554,6 +564,7 @@
       registerPaint(node);
     };
     const addComposer = node => {
+      if (isViewerSurface(node)) { addSurface(node); return; }
       if (owned(node) || inactivePanel(node) || node.closest(viewerSelector)) return;
       // Paint below the native children. Never annotate editor-owned node views.
       const surface = node.matches('[data-composer-utility-bar-variant="home"]')
@@ -720,7 +731,7 @@
       removeWithin(records, node, removeMedia, false);
       add(node);
     };
-    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, surfaceSelector, toolbarSurfaceSelector, footerSelector, headerSelector,
+    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, surfaceSelector, viewerSurfaceSelector, toolbarSurfaceSelector, footerSelector, headerSelector,
       diffPreviewSelector, topControlSelector].join(", ");
     const visit = node => {
       if (node?.nodeType !== 1 || !node.isConnected || owned(node) || inactivePanel(node) ||
@@ -747,7 +758,7 @@
         if (target.matches(diffPreviewSelector)) addDiffPreview(target);
         if (target.matches(topControlSelector)) addNativePopup(target);
       }
-      for (const target of targets) if (target.matches(surfaceSelector)) addSurface(target);
+      for (const target of targets) if (target.matches(surfaceSelector) || isViewerSurface(target)) addSurface(target);
       for (const target of targets) {
         if (target.matches(mediaSelector)) add(target);
         if (target.matches(controlSelector)) addControl(target);
@@ -971,11 +982,21 @@
             continue;
           }
           const key = viewerKey(node);
+          if (semanticAttributes.has(node)) {
+            queryAll(node, viewerSurfaceSelector).forEach(addSurface);
+            pruneNeeded = true; changed = true;
+          }
+          if (invalidatePaintChains(node)) changed = true;
           if (record.viewerKey === key) continue;
           record.viewerKey = key;
           changed ||= isPreviewOpen() !== previewVisible;
           continue;
-        } else if (node.closest(viewerSelector) && !node.matches(browserSelector)) continue;
+        } else if (node.closest(viewerSelector) && !node.matches(browserSelector)) {
+          if (isViewerSurface(node) || records.get(node)?.localSurface) { addSurface(node); changed = true; }
+          if (semanticAttributes.has(node)) { queryAll(node, viewerSurfaceSelector).forEach(addSurface); pruneNeeded = true; changed = true; }
+          if (invalidatePaintChains(node)) changed = true;
+          continue;
+        }
         if ([...viewers].some(viewer => node.contains(viewer)))
           changed ||= isPreviewOpen() !== previewVisible;
         pruneNeeded ||= semanticAttributes.has(node);
@@ -1277,7 +1298,12 @@
       stats.frames++;
       const previewWasVisible = previewVisible;
       previewVisible = isPreviewOpen();
-      if (previewVisible) return;
+      if (previewVisible) {
+        // 保留预览内容的原生层级，只更新控件背景；不恢复整个会话的媒体/控件扫描。
+        if (paintsDirty.size || geometryDirty && geometryPaints.size) refreshPaints(true);
+        geometryDirty = false;
+        return;
+      }
       // 预览期间跳过的祖先变化，在预览关闭后补查一次。
       if (previewWasVisible) for (const node of paintedNodes) {
         const paint = records.get(node)?.paint;
@@ -1394,7 +1420,12 @@
     };
     const onScroll = event => {
       if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
-      if (previewVisible) return;
+      if (previewVisible) {
+        for (const node of geometryPaints) if (isViewerSurface(node) && event.target?.contains?.(node)) {
+          paintsDirty.add(node); schedule();
+        }
+        return;
+      }
       const target = event.target;
       // 只有按视口换算的表面需要跟随滚动重算；沿用 fixed 的表面不受影响，无额外开销。
       if (geometryPaints.size) {
@@ -1507,7 +1538,7 @@
       themeInputs.set(root, themeKey(root));
       if (document.body) themeInputs.set(document.body, themeKey(document.body));
       mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-in-progress-fixed-content"] });
+        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-in-progress-fixed-content", "data-image-preview-composer", "data-image-preview-toolbar"] });
       for (const [target, event, handler, capture] of events)
         target.addEventListener(event, handler, { capture, passive: true });
       // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
