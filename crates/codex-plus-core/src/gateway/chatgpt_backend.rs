@@ -327,8 +327,20 @@ pub fn codex_prompt_from_models(value: &Value, model: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Codex CLI 的版本：读模型缓存里记录的，没有就用内置的。
+/// 旧缓存不能降低官方请求的兼容版本；更新的有效缓存仍优先。
 pub fn codex_version(codex_home: &Path) -> String {
+    let builtin = crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION;
+    let parts = |text: &str| -> Option<[u64; 3]> {
+        let values = text
+            .split('.')
+            .map(|part| {
+                (!part.is_empty() && part.bytes().all(|ch| ch.is_ascii_digit()))
+                    .then(|| part.parse::<u64>().ok())
+                    .flatten()
+            })
+            .collect::<Option<Vec<_>>>()?;
+        values.try_into().ok()
+    };
     std::fs::read_to_string(codex_home.join("models_cache.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -339,11 +351,9 @@ pub fn codex_version(codex_home: &Path) -> String {
                 .map(str::to_string)
         })
         .filter(|version| {
-            version
-                .split('.')
-                .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+            parts(version).is_some_and(|value| value >= parts(builtin).unwrap())
         })
-        .unwrap_or_else(|| crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION.to_string())
+        .unwrap_or_else(|| builtin.to_string())
 }
 
 /// Codex CLI 的 User-Agent：`codex_cli_rs/0.159.0 (Mac OS 26.0.0; arm64) Apple_Terminal/455`。
@@ -718,6 +728,34 @@ mod tests {
             crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION
         );
         assert!(codex_user_agent("0.170.2").starts_with("codex_cli_rs/0.170.2 ("));
+    }
+
+    #[test]
+    fn obsolete_or_invalid_cache_cannot_downgrade_official_requests() {
+        let temp = tempfile::tempdir().unwrap();
+        let builtin = crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION;
+        for version in [
+            "0.124.0", "0.99.9", "0", "1.2", "1.2.3.4", "9.bad.0", "9.0.0\n", "",
+            "18446744073709551616.0.0",
+        ] {
+            let cache = json!({"client_version": version}).to_string();
+            std::fs::write(temp.path().join("models_cache.json"), &cache).unwrap();
+            assert_eq!(codex_version(temp.path()), builtin, "{version}");
+            assert_eq!(
+                std::fs::read_to_string(temp.path().join("models_cache.json")).unwrap(),
+                cache,
+                "版本选择不改写客户端缓存"
+            );
+        }
+        for version in [builtin, "0.170.2", "1.0.0"] {
+            std::fs::write(
+                temp.path().join("models_cache.json"),
+                json!({"client_version": version}).to_string(),
+            ).unwrap();
+            assert_eq!(codex_version(temp.path()), version);
+        }
+        std::fs::write(temp.path().join("models_cache.json"), "{invalid").unwrap();
+        assert_eq!(codex_version(temp.path()), builtin);
     }
 
     #[test]
