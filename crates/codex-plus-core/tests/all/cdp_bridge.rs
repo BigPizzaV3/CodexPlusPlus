@@ -3223,7 +3223,7 @@ fn remote_delete_uses_only_the_matching_native_host_without_local_fallback() {
     let shard = std::fs::read_to_string("../../assets/inject/renderer-inject/60-plugin-marketplace.js").unwrap();
     let helpers = &shard[shard.find("  function isClientNewThreadId(value)").unwrap()..shard.find("  if (window.__CODEX_PLUS_TEST_SESSION_REF__)").unwrap()];
     let native = &shard[shard.find("  const codexNativeHostClients =").unwrap()..shard.find("  function threadIdBadgeTitleNode(row)").unwrap()];
-    let post = &shard[shard.find("  async function postJson(path, payload)").unwrap()..shard.find("  function downloadMarkdownFallback(").unwrap()];
+    let post = &shard[shard.find("  async function postJson(path, payload, options = {})").unwrap()..shard.find("  function downloadMarkdownFallback(").unwrap()];
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("native-delete.cjs");
     std::fs::write(&path, format!(r#"

@@ -168,6 +168,9 @@ static BACKEND_GENERATIONS: std::sync::LazyLock<std::sync::Mutex<HashMap<String,
     std::sync::LazyLock::new(Default::default);
 static BACKEND_DOCUMENTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (u64, String, Option<crate::user_scripts::StagedBackendSnapshot>)>>> =
     std::sync::LazyLock::new(Default::default);
+// 页面来源撤销后，外部调用不得在新快照绑定前从实时目录启动后台。
+static BACKEND_QUIESCING: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
 static BACKEND_OWNER_EPOCH: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| uuid::Uuid::new_v4().to_string());
 
@@ -199,6 +202,51 @@ pub async fn revoke_backend_document(manager: &UserScriptManager, expected: u64)
     *current = current.wrapping_add(1);
     let next = *current;
     BACKEND_DOCUMENTS.lock().unwrap().remove(&key);
+    let starting = STARTING.lock().unwrap();
+    for (slot, entry) in starting.iter() {
+        if slot.starts_with(&key) {
+            let _ = entry.cancel.send(true);
+            entry.notify.notify_waiters();
+        }
+    }
+    Some(next)
+}
+
+/// 只撤销仍与页面所见来源完全一致的代际；没有快照时 revision 必须显式为 null。
+pub async fn revoke_backend_source(manager: &UserScriptManager, source: &Value) -> Option<u64> {
+    let owner = source.get("ownerEpoch")?.as_str()?;
+    let expected = source.get("generation")?.as_u64()?;
+    let document = source.get("documentId")?.as_str()?;
+    let revision = match source.get("revision")? {
+        Value::Null => None,
+        Value::String(value) => Some(value.as_str()),
+        _ => return None,
+    };
+    if owner != BACKEND_OWNER_EPOCH.as_str() {
+        return None;
+    }
+
+    let _backends = BACKENDS.lock().await;
+    let key = generation_key(manager, BackendHost::Codex);
+    let mut generations = BACKEND_GENERATIONS.lock().unwrap();
+    let current = *generations.get(&key).unwrap_or(&0);
+    if current != expected {
+        return None;
+    }
+    let mut documents = BACKEND_DOCUMENTS.lock().unwrap();
+    let matches = documents.get(&key).is_some_and(|bound| {
+        bound.0 == expected
+            && bound.1 == document
+            && bound.2.as_ref().map(|snapshot| snapshot.revision()) == revision
+    });
+    if !matches {
+        return None;
+    }
+
+    let next = current.wrapping_add(1);
+    generations.insert(key.clone(), next);
+    documents.remove(&key);
+    BACKEND_QUIESCING.lock().unwrap().insert(key.clone(), next);
     let starting = STARTING.lock().unwrap();
     for (slot, entry) in starting.iter() {
         if slot.starts_with(&key) {
@@ -242,13 +290,30 @@ async fn bind_backend_source(
             "后台代际已绑定其他快照");
     }
     let revision = snapshot.as_ref().map(|value| value.revision().to_string());
-    documents.insert(key, (expected, document.to_string(), snapshot));
+    documents.insert(key.clone(), (expected, document.to_string(), snapshot));
+    let mut quiescing = BACKEND_QUIESCING.lock().unwrap();
+    if quiescing.get(&key) == Some(&expected) {
+        quiescing.remove(&key);
+    }
     Ok(json!({ "ownerEpoch": BACKEND_OWNER_EPOCH.as_str(), "generation": expected, "documentId": document, "revision": revision }))
 }
 
 fn bound_snapshot(manager: &UserScriptManager, expected: u64) -> Option<crate::user_scripts::StagedBackendSnapshot> {
     BACKEND_DOCUMENTS.lock().unwrap().get(&generation_key(manager, BackendHost::Codex))
         .filter(|bound| bound.0 == expected).and_then(|bound| bound.2.clone())
+}
+
+fn backend_http_for_generation(manager: &UserScriptManager, key: &str, expected: u64) -> bool {
+    // 新清单不能给旧后台授权，但实时停用仍应立即阻止新请求。
+    manager.extension_backend_http(key)
+        && bound_snapshot(manager, expected).is_none_or(|snapshot| {
+            snapshot.entries.get(key).is_some_and(|entry| entry.http)
+        })
+}
+
+fn ensure_not_quiescing(key: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!BACKEND_QUIESCING.lock().unwrap().contains_key(key), "拓展后台正在重载，请稍后重试");
+    Ok(())
 }
 
 fn source_generation(manager: &UserScriptManager, source: Option<&Value>) -> anyhow::Result<u64> {
@@ -769,6 +834,9 @@ async fn ensure_started(
             if generation(&generation_key) != expected_generation {
                 anyhow::bail!("拓展后台启动已被新的重载操作取代");
             }
+            if host == BackendHost::Codex {
+                ensure_not_quiescing(&generation_key)?;
+            }
             match backends.get(key) {
                 Some(backend) if backend.fingerprint == wanted => return Ok(()),
                 Some(_) => {
@@ -800,6 +868,9 @@ async fn ensure_started(
             let mut backends = BACKENDS.lock().await;
             if generation(&generation_key) != expected_generation {
                 anyhow::bail!("拓展后台启动已被新的重载操作取代");
+            }
+            if host == BackendHost::Codex {
+                ensure_not_quiescing(&generation_key)?;
             }
             backends.insert(key.to_string(), backend);
             return Ok(());
@@ -858,6 +929,9 @@ async fn call_for_host(
     let generation_key = generation_key(manager, host);
     let expected_generation = source_generation.unwrap_or_else(|| generation(&generation_key));
     anyhow::ensure!(generation(&generation_key) == expected_generation, "拓展后台调用来源已过期");
+    if host == BackendHost::Codex {
+        ensure_not_quiescing(&generation_key)?;
+    }
     let snapshot = if host == BackendHost::Codex { bound_snapshot(manager, expected_generation) } else { None };
     // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
     let declared = match match host {
@@ -873,6 +947,9 @@ async fn call_for_host(
         Err(error) => {
             let mut backends = BACKENDS.lock().await;
             if generation(&generation_key) == expected_generation {
+                if host == BackendHost::Codex {
+                    ensure_not_quiescing(&generation_key)?;
+                }
                 backends.remove(&host_slot(manager, key, host));
             }
             return Err(error);
@@ -885,6 +962,9 @@ async fn call_for_host(
         let mut backends = BACKENDS.lock().await;
         if generation(&generation_key) != expected_generation {
             anyhow::bail!("拓展后台调用已被新的重载操作取代");
+        }
+        if host == BackendHost::Codex {
+            ensure_not_quiescing(&generation_key)?;
         }
         let Some(backend) = backends.get_mut(key) else {
             anyhow::bail!("拓展后台已退出，请重试");
@@ -987,15 +1067,20 @@ async fn latest_seq(manager: &UserScriptManager, key: &str, expected: u64) -> an
 
 /// 停掉这个拓展目录的全部后台（页面加载、热重载拓展时调用）。进程随 Child 释放被杀掉。
 pub async fn stop_all(manager: &UserScriptManager) {
-    stop_all_for_host(manager, BackendHost::Codex, None).await;
+    stop_all_for_host(manager, BackendHost::Codex, None, false).await;
 }
 
 /// 仅在代际仍匹配时停止；过期操作不能关闭新的后台。
 pub async fn stop_all_if_generation(manager: &UserScriptManager, expected: u64) -> bool {
-    stop_all_for_host(manager, BackendHost::Codex, Some(expected)).await
+    stop_all_for_host(manager, BackendHost::Codex, Some(expected), false).await
 }
 
-async fn stop_all_for_host(manager: &UserScriptManager, host: BackendHost, expected: Option<u64>) -> bool {
+/// 页面初始化时，阻止外部调用在新代际绑定快照之前使用实时目录。
+pub async fn stop_all_for_binding_if_generation(manager: &UserScriptManager, expected: u64) -> bool {
+    stop_all_for_host(manager, BackendHost::Codex, Some(expected), true).await
+}
+
+async fn stop_all_for_host(manager: &UserScriptManager, host: BackendHost, expected: Option<u64>, binding: bool) -> bool {
     let prefix = generation_key(manager, host);
     let mut backends = BACKENDS.lock().await;
     let mut generations = BACKEND_GENERATIONS.lock().unwrap();
@@ -1003,7 +1088,15 @@ async fn stop_all_for_host(manager: &UserScriptManager, host: BackendHost, expec
     if expected.is_some_and(|value| value != *current) {
         return false;
     }
+    let previous = *current;
     *current = current.wrapping_add(1);
+    let mut quiescing = BACKEND_QUIESCING.lock().unwrap();
+    if expected.is_none() {
+        quiescing.remove(&prefix);
+    } else if binding || quiescing.get(&prefix) == Some(&previous) {
+        quiescing.insert(prefix.clone(), *current);
+    }
+    drop(quiescing);
     BACKEND_DOCUMENTS.lock().unwrap().remove(&prefix);
     backends.retain(|slot, _| !slot.starts_with(&prefix));
     {
@@ -1023,7 +1116,7 @@ async fn stop_all_for_host(manager: &UserScriptManager, host: BackendHost, expec
 
 /// Claude MCP 断开时只停止它托管的后台，不影响 Codex 页面的后台。
 pub async fn stop_all_claude(manager: &UserScriptManager) {
-    stop_all_for_host(manager, BackendHost::ClaudeDesktop, None).await;
+    stop_all_for_host(manager, BackendHost::ClaudeDesktop, None, false).await;
 }
 
 pub(crate) async fn stop_claude(manager: &UserScriptManager, key: &str) {
@@ -1083,7 +1176,8 @@ pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path
         return fail(404, "not found".into());
     }
     let key = crate::user_scripts::extension_package_key(id);
-    if !manager.extension_backend_http(&key) {
+    let expected_generation = backend_generation(manager);
+    if !backend_http_for_generation(manager, &key, expected_generation) {
         return fail(404, format!("extension {id} does not serve HTTP"));
     }
     let headers = raw_headers
@@ -1097,7 +1191,7 @@ pub async fn route_http_with(manager: &UserScriptManager, method: &str, raw_path
     if let Ok(parsed) = serde_json::from_slice::<Value>(body) {
         request["json"] = parsed;
     }
-    match call(manager, &key, "http", request, DEFAULT_CALL_TIMEOUT, None).await {
+    match call_for_host(manager, &key, "http", request, DEFAULT_CALL_TIMEOUT, None, BackendHost::Codex, Some(expected_generation)).await {
         Ok(Value::String(text)) => (200, "text/plain; charset=utf-8".into(), text.into_bytes()),
         Ok(Value::Object(response)) if response.contains_key("status") || response.contains_key("body") || response.contains_key("json") => {
             let status = response.get("status").and_then(Value::as_u64).filter(|code| (100..600).contains(code)).unwrap_or(200) as u16;
@@ -1185,7 +1279,8 @@ pub async fn route_upgrade_with(
         return refuse(stream, "404 Not Found", "not found").await;
     }
     let key = crate::user_scripts::extension_package_key(id);
-    if !manager.extension_backend_http(&key) {
+    let expected_generation = backend_generation(manager);
+    if !backend_http_for_generation(manager, &key, expected_generation) {
         return refuse(stream, "404 Not Found", &format!("extension {id} does not serve HTTP")).await;
     }
     let headers = raw_headers
@@ -1194,7 +1289,7 @@ pub async fn route_upgrade_with(
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), Value::String(value.trim().to_string())))
         .collect::<serde_json::Map<_, _>>();
-    let reply = match call(manager, &key, "upgrade", json!({ "path": sub, "query": query, "headers": headers }), DEFAULT_CALL_TIMEOUT, None).await {
+    let reply = match call_for_host(manager, &key, "upgrade", json!({ "path": sub, "query": query, "headers": headers }), DEFAULT_CALL_TIMEOUT, None, BackendHost::Codex, Some(expected_generation)).await {
         Ok(reply) => reply,
         Err(error) => return refuse(stream, "502 Bad Gateway", &format!("{error:#}")).await,
     };
@@ -1389,6 +1484,135 @@ pub async fn route_events(payload: &Value) -> anyhow::Result<Value> {
 #[cfg(test)]
 mod source_fencing_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn revoke_source_requires_the_current_complete_snapshot_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let user = temp.path().join("user");
+        std::fs::create_dir(&user).unwrap();
+        let script = user.join("demo.js");
+        std::fs::write(&script, "window.demo = 1;").unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), &user, temp.path().join("config.json"));
+        let (_, old_revision) = manager.reload_snapshot().unwrap();
+        let old_snapshot = manager.stage_backend_snapshot(&old_revision).unwrap();
+        let old_generation = backend_generation(&manager);
+        let old = bind_backend_snapshot(&manager, old_generation, "old-document", old_snapshot).await.unwrap();
+        let current_generation = revoke_backend_document(&manager, old_generation).await.unwrap();
+
+        std::fs::write(&script, "window.demo = 2;").unwrap();
+        let (_, revision) = manager.reload_snapshot().unwrap();
+        assert_ne!(old_revision, revision);
+        let snapshot = manager.stage_backend_snapshot(&revision).unwrap();
+        let current = bind_backend_snapshot(&manager, current_generation, "new-document", snapshot).await.unwrap();
+        let key = generation_key(&manager, BackendHost::Codex);
+        let starting_slot = slot(&manager, "user:demo");
+        let (cancel, receiver) = watch::channel(false);
+        STARTING.lock().unwrap().insert(starting_slot.clone(), Starting {
+            generation: current_generation,
+            notify: Arc::new(Notify::new()),
+            cancel,
+        });
+
+        let mut wrong_document = current.clone();
+        wrong_document["documentId"] = json!("old-document");
+        let mut wrong_owner = current.clone();
+        wrong_owner["ownerEpoch"] = json!("other-owner");
+        let mut wrong_revision = current.clone();
+        wrong_revision["revision"] = json!(old_revision);
+        let mut null_revision = current.clone();
+        null_revision["revision"] = Value::Null;
+        let mut missing_revision = current.clone();
+        missing_revision.as_object_mut().unwrap().remove("revision");
+        for stale in [old, wrong_document, wrong_owner, wrong_revision, null_revision, missing_revision] {
+            assert!(revoke_backend_source(&manager, &stale).await.is_none());
+            assert_eq!(backend_generation(&manager), current_generation);
+            assert!(backend_source_is_current(&manager, &current));
+            assert_eq!(bound_snapshot(&manager, current_generation).unwrap().revision(), revision);
+            assert!(!*receiver.borrow());
+        }
+
+        let next = revoke_backend_source(&manager, &current).await.unwrap();
+        assert_eq!(next, current_generation.wrapping_add(1));
+        assert_eq!(backend_generation(&manager), next);
+        assert!(!backend_source_is_current(&manager, &current));
+        assert!(BACKEND_DOCUMENTS.lock().unwrap().get(&key).is_none());
+        assert!(*receiver.borrow());
+        assert!(revoke_backend_source(&manager, &current).await.is_none());
+        STARTING.lock().unwrap().remove(&starting_slot);
+        stop_all(&manager).await;
+    }
+
+    #[tokio::test]
+    async fn revoke_source_requires_explicit_null_revision_for_unstaged_document() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+        let current_generation = backend_generation(&manager);
+        let key = generation_key(&manager, BackendHost::Codex);
+        let source = bind_backend_document(&manager, current_generation, "document").await.unwrap();
+        let mut absent_revision = source.clone();
+        absent_revision.as_object_mut().unwrap().remove("revision");
+        let mut wrong_revision = source.clone();
+        wrong_revision["revision"] = json!("unexpected-snapshot");
+
+        for invalid in [absent_revision, wrong_revision] {
+            assert!(revoke_backend_source(&manager, &invalid).await.is_none());
+            assert_eq!(backend_generation(&manager), current_generation);
+            assert!(backend_source_is_current(&manager, &source));
+        }
+        assert_eq!(revoke_backend_source(&manager, &source).await, Some(current_generation.wrapping_add(1)));
+        assert!(BACKEND_DOCUMENTS.lock().unwrap().get(&key).is_none());
+        assert_eq!(backend_generation(&manager), current_generation.wrapping_add(1));
+        stop_all(&manager).await;
+    }
+
+    #[tokio::test]
+    async fn revoke_source_rechecks_binding_after_waiting_for_backend_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+        let old_generation = backend_generation(&manager);
+        let old = bind_backend_document(&manager, old_generation, "old-document").await.unwrap();
+        let key = generation_key(&manager, BackendHost::Codex);
+        let backends = BACKENDS.lock().await;
+        let waiting_manager = manager.clone();
+        let (ready, waiting) = oneshot::channel();
+        let revoke = tokio::spawn(async move {
+            let _ = ready.send(());
+            revoke_backend_source(&waiting_manager, &old).await
+        });
+        waiting.await.unwrap();
+
+        let current_generation = old_generation.wrapping_add(1);
+        {
+            let mut generations = BACKEND_GENERATIONS.lock().unwrap();
+            let mut documents = BACKEND_DOCUMENTS.lock().unwrap();
+            generations.insert(key.clone(), current_generation);
+            documents.insert(key.clone(), (current_generation, "new-document".to_string(), None));
+        }
+        drop(backends);
+        assert!(revoke.await.unwrap().is_none());
+        let current = json!({
+            "ownerEpoch": BACKEND_OWNER_EPOCH.as_str(), "generation": current_generation,
+            "documentId": "new-document", "revision": null,
+        });
+        assert_eq!(backend_generation(&manager), current_generation);
+        assert!(backend_source_is_current(&manager, &current));
+        assert_eq!(revoke_backend_source(&manager, &current).await, Some(current_generation.wrapping_add(1)));
+        stop_all(&manager).await;
+    }
+
+    #[tokio::test]
+    async fn revoke_source_without_binding_does_not_create_a_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"));
+        let key = generation_key(&manager, BackendHost::Codex);
+        let source = json!({
+            "ownerEpoch": BACKEND_OWNER_EPOCH.as_str(), "generation": 0,
+            "documentId": "unbound-document", "revision": null,
+        });
+        assert!(revoke_backend_source(&manager, &source).await.is_none());
+        assert!(!BACKEND_GENERATIONS.lock().unwrap().contains_key(&key));
+        assert!(!BACKEND_DOCUMENTS.lock().unwrap().contains_key(&key));
+    }
 
     #[tokio::test]
     async fn quiescing_revokes_source_before_replacing_backend_generation() {

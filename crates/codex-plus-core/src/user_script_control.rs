@@ -606,13 +606,15 @@ mod tests {
         let epoch = new_owner_epoch();
         let ids = Arc::new(Mutex::new(Vec::new()));
         let captured = ids.clone();
+        let handler_epoch = epoch.clone();
         let handler: ControlHandler = Arc::new(move |action| {
             let ControlAction::Submit(payload) = action else { anyhow::bail!("测试应直接收到新意图") };
             let mut ids = captured.lock().unwrap();
             ids.push(payload["operationId"].clone());
             let revision = if ids.len() == 1 { "old" } else { "current" };
             Ok(json!({
-                "reloadOperation": { "operationId": payload["operationId"], "phase": "applied", "revision": revision },
+                "reloadOperation": { "operationId": payload["operationId"], "ownerEpoch": handler_epoch,
+                    "allowPage": true, "sourceDocumentId": null, "phase": "applied", "active": false, "revision": revision },
                 "desiredRevision": "current",
             }))
         });
@@ -641,8 +643,73 @@ mod tests {
         let inventory = crate::user_scripts::reload_native_scripts(temp.path(), 9325, &manager, true, Some(&json!({
             "operationId": old_id, "ownerEpoch": old_epoch, "allowPage": true, "phase": "unknown",
         }))).await.unwrap();
-        assert_eq!(inventory["reloadOperation"]["phase"], "degraded");
+        assert_eq!(inventory["reloadOperation"]["phase"], "unknown");
+        assert_eq!(inventory["reloadOperation"]["active"], true);
+        assert_eq!(inventory["reloadOperation"]["operationId"], old_id);
+        assert_eq!(inventory["reloadOperation"]["ownerEpoch"], old_epoch);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn retired_tombstone_does_not_clear_an_unconfirmed_native_operation() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("scripts.json"));
+        let identity = ControlIdentity::new(temp.path(), 9326, &manager).unwrap();
+        let epoch = new_owner_epoch();
+        let id = new_operation_id(&epoch);
+        let handler_epoch = epoch.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let submissions = calls.clone();
+        let handler: ControlHandler = Arc::new(move |action| {
+            match action {
+                ControlAction::Submit(_) => {
+                    submissions.fetch_add(1, Ordering::SeqCst);
+                    anyhow::bail!("不应重投无法确认的旧操作")
+                }
+                ControlAction::Status(id) | ControlAction::StatusWithVerification(id, _) => Ok(json!({
+                    "reloadOperation": { "operationId": id, "ownerEpoch": handler_epoch,
+                        "phase": "rejected", "active": false, "reason": "已过期" }
+                })),
+            }
+        });
+        let _server = start_owner(identity, epoch.clone(), handler).unwrap();
+        let reference = json!({ "operationId": id, "ownerEpoch": epoch,
+            "allowPage": true, "phase": "unknown", "needsSubmit": false });
+        for resume in [Some(&reference), None] {
+            let inventory = tokio::time::timeout(Duration::from_secs(3),
+                crate::user_scripts::reload_native_scripts(temp.path(), 9326, &manager, true, resume),
+            ).await.unwrap().unwrap();
+            assert_eq!(inventory["reloadOperation"]["phase"], "unknown");
+            assert_eq!(inventory["reloadOperation"]["active"], true);
+            assert_eq!(inventory["reloadOperation"]["operationId"], id);
+            assert_eq!(inventory["reloadOperation"]["ownerEpoch"], epoch);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_native_resume_does_not_poison_the_next_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("scripts.json"));
+        let identity = ControlIdentity::new(temp.path(), 9327, &manager).unwrap();
+        let epoch = new_owner_epoch();
+        let handler_epoch = epoch.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let submissions = calls.clone();
+        let handler: ControlHandler = Arc::new(move |action| {
+            let ControlAction::Submit(payload) = action else { anyhow::bail!("测试应提交新的操作") };
+            submissions.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({ "reloadOperation": { "operationId": payload["operationId"],
+                "ownerEpoch": handler_epoch, "allowPage": true, "sourceDocumentId": null,
+                "phase": "applied", "active": false, "revision": "current" },
+                "desiredRevision": "current" }))
+        });
+        let _server = start_owner(identity, epoch.clone(), handler).unwrap();
+        let invalid = json!({ "operationId": new_operation_id(&epoch), "ownerEpoch": epoch });
+        assert!(crate::user_scripts::reload_native_scripts(temp.path(), 9327, &manager, true, Some(&invalid)).await.is_err());
+        let inventory = crate::user_scripts::reload_native_scripts(temp.path(), 9327, &manager, true, None).await.unwrap();
+        assert_eq!(inventory["reloadOperation"]["phase"], "applied");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -695,6 +762,35 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn new_document_initialization_releases_quiescing_backend_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(temp.path().join("builtin"), temp.path().join("user"), temp.path().join("scripts.json"));
+        let generation = crate::extension_backend::backend_generation(&manager);
+        let old = crate::extension_backend::bind_backend_document(&manager, generation, "old-document").await.unwrap();
+        crate::extension_backend::revoke_backend_source(&manager, &old).await.unwrap();
+        let error = crate::extension_backend::call(&manager, "user:missing", "test", Value::Null,
+            Duration::from_secs(1), None).await.unwrap_err();
+        assert!(error.to_string().contains("正在重载"));
+
+        let calls = AtomicUsize::new(0);
+        crate::user_scripts::load_scripts_with_evaluator(&manager, 3, |expression| {
+            let response = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                json!({ "documentId": "new-document", "initialized": false })
+            } else {
+                assert!(expression.contains("new-document"));
+                json!({ "accepted": true, "scripts": {} })
+            };
+            std::future::ready(Ok(json!({ "result": { "result": { "value": response.to_string() } } })))
+        }).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let error = crate::extension_backend::call(&manager, "user:missing", "test", Value::Null,
+            Duration::from_secs(1), None).await.unwrap_err();
+        assert!(!error.to_string().contains("正在重载"));
+        assert!(!crate::extension_backend::backend_source_is_current(&manager, &old));
+        crate::extension_backend::stop_all(&manager).await;
+    }
+
     #[test]
     fn guarded_initial_replay_is_exact_and_old_document_cannot_bind_source() {
         let temp = tempfile::tempdir().unwrap();
@@ -734,15 +830,17 @@ assert.equal(next.window.__codexPlusUserScripts.initialized, undefined);
         let old_id = new_operation_id(&epoch);
         let submissions = Arc::new(Mutex::new(Vec::new()));
         let captured = submissions.clone();
+        let handler_epoch = epoch.clone();
         let handler: ControlHandler = Arc::new(move |action| {
             match action {
                 ControlAction::Status(id) | ControlAction::StatusWithVerification(id, _) => Ok(json!({ "reloadOperation": {
-                    "operationId": id, "phase": "not_found",
+                    "operationId": id, "ownerEpoch": handler_epoch, "phase": "not_found", "active": false,
                 } })),
                 ControlAction::Submit(payload) => {
                     captured.lock().unwrap().push(payload.clone());
                     Ok(json!({ "reloadOperation": {
-                        "operationId": payload["operationId"], "phase": "applied", "revision": "current",
+                        "operationId": payload["operationId"], "ownerEpoch": handler_epoch, "allowPage": true,
+                        "sourceDocumentId": null, "phase": "applied", "active": false, "revision": "current",
                     }, "desiredRevision": "current" }))
                 }
             }
@@ -772,17 +870,20 @@ assert.equal(next.window.__codexPlusUserScripts.initialized, undefined);
         let old_for_handler = old_id.clone();
         let submissions = Arc::new(Mutex::new(Vec::new()));
         let captured = submissions.clone();
+        let handler_epoch = epoch.clone();
         let handler: ControlHandler = Arc::new(move |action| match action {
             ControlAction::Status(id) | ControlAction::StatusWithVerification(id, _) => {
                 assert_eq!(id, old_for_handler);
-                Ok(json!({ "reloadOperation": { "operationId": id, "phase": "applied", "revision": "old" },
+                Ok(json!({ "reloadOperation": { "operationId": id, "ownerEpoch": handler_epoch, "allowPage": true,
+                    "sourceDocumentId": null, "phase": "applied", "active": false, "revision": "old" },
                     "desiredRevision": "current" }))
             }
             ControlAction::Submit(payload) => {
                 assert_ne!(payload["operationId"], old_for_handler);
                 assert_eq!(payload["allowPage"], false);
                 captured.lock().unwrap().push(payload.clone());
-                Ok(json!({ "reloadOperation": { "operationId": payload["operationId"], "phase": "applied", "revision": "current" },
+                Ok(json!({ "reloadOperation": { "operationId": payload["operationId"], "ownerEpoch": handler_epoch, "allowPage": false,
+                    "sourceDocumentId": null, "phase": "applied", "active": false, "revision": "current" },
                     "desiredRevision": "current" }))
             }
         });

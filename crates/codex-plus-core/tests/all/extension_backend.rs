@@ -1,7 +1,7 @@
 //! 拓展的常驻后台：清单校验、用真实 Node 跑通的方法调用、事件长轮询与停止。
 
 use super::common::with_extension_backend_cleanup;
-use codex_plus_core::extension_backend::{backend_generation, bind_backend_snapshot, call, events, stop, stop_all, stop_all_if_generation};
+use codex_plus_core::extension_backend::{backend_generation, bind_backend_snapshot, call, events, stop, stop_all, stop_all_for_binding_if_generation, stop_all_if_generation};
 use codex_plus_core::user_scripts::UserScriptManager;
 use futures_util::FutureExt;
 use serde_json::json;
@@ -210,6 +210,162 @@ export default ({config}) => ({
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("后台快照目录未在期限内清理");
+    }).await;
+}
+
+#[tokio::test]
+async fn initial_page_binding_blocks_external_backend_until_snapshot_is_bound() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() { return; }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let key = "user:initial-binding";
+    write_package(&temp, "initial-binding", json!({
+        "backend": { "script": "backend/main.mjs" }
+    }), &[("backend/main.mjs", r#"export default () => ({
+  version() { return "snapshot"; }
+});"#)]);
+    with_extension_backend_cleanup(&[&manager], async {
+        let generation = backend_generation(&manager);
+        assert!(stop_all_for_binding_if_generation(&manager, generation).await);
+        let revision = manager.reload_snapshot().unwrap().1;
+        let snapshot = manager.stage_backend_snapshot(&revision).unwrap();
+        fs::write(temp.path().join("user/initial-binding/backend/main.mjs"), r#"export default () => ({
+  version() { return "live"; }
+});"#).unwrap();
+
+        let unbound = call(&manager, key, "version", json!(null), Duration::from_secs(10), None).await;
+        assert!(unbound.is_err(), "页面快照绑定前不得执行实时目录后台: {unbound:?}");
+
+        let first_binding = generation.wrapping_add(1);
+        assert!(stop_all_for_binding_if_generation(&manager, first_binding).await);
+        assert!(bind_backend_snapshot(&manager, first_binding, "stale-document", snapshot.clone()).await.is_err());
+        assert!(call(&manager, key, "version", json!(null), Duration::from_secs(10), None).await.is_err());
+        bind_backend_snapshot(&manager, first_binding.wrapping_add(1), "initial-document", snapshot).await.unwrap();
+        let bound = call(&manager, key, "version", json!(null), Duration::from_secs(10), None).await.unwrap();
+        assert_eq!(bound, "snapshot");
+    }).await;
+}
+
+#[tokio::test]
+async fn bound_backend_http_permission_matches_the_executed_snapshot() {
+    async fn upgrade_response(manager: &UserScriptManager) -> String {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap());
+        let (client, server) = tokio::join!(client, listener.accept());
+        let mut client = client.unwrap();
+        let (mut server, _) = server.unwrap();
+        codex_plus_core::extension_backend::route_upgrade_with(
+            manager, &mut server, "/ext/http-snapshot/", "GET / HTTP/1.1\r\nHost: localhost\r\n", b"",
+        ).await.unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    if codex_plus_core::dsh_plugins::locate_node().is_none() { return; }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let manifest = |http| json!({
+        "id": "http-snapshot",
+        "name": "http-snapshot",
+        "backend": { "script": "backend/main.mjs", "http": http }
+    });
+    write_package(&temp, "http-snapshot", manifest(false), &[(
+        "backend/main.mjs",
+        r#"export default () => ({
+  http() { return "snapshot"; },
+  upgrade() { return { error: "snapshot upgrade handler" }; }
+});"#,
+    )]);
+    with_extension_backend_cleanup(&[&manager], async {
+        let revision = manager.reload_snapshot().unwrap().1;
+        let snapshot = manager.stage_backend_snapshot(&revision).unwrap();
+        bind_backend_snapshot(&manager, backend_generation(&manager), "http-document", snapshot).await.unwrap();
+
+        let path = temp.path().join("user/http-snapshot/codexpp.json");
+        fs::write(&path, manifest(true).to_string()).unwrap();
+        let response = codex_plus_core::extension_backend::route_http_with(
+            &manager, "GET", "/ext/http-snapshot/", "GET / HTTP/1.1\r\nHost: localhost\r\n", &[],
+        ).await;
+        assert_eq!(response.0, 404, "新清单不能给旧后台增加 HTTP 权限: {response:?}");
+        let upgrade = upgrade_response(&manager).await;
+        assert!(upgrade.contains("does not serve HTTP"), "新清单不能给旧后台增加升级权限: {upgrade}");
+
+        stop_all(&manager).await;
+        let revision = manager.reload_snapshot().unwrap().1;
+        let snapshot = manager.stage_backend_snapshot(&revision).unwrap();
+        bind_backend_snapshot(&manager, backend_generation(&manager), "http-document-new", snapshot).await.unwrap();
+        let response = codex_plus_core::extension_backend::route_http_with(
+            &manager, "GET", "/ext/http-snapshot/", "GET / HTTP/1.1\r\nHost: localhost\r\n", &[],
+        ).await;
+        assert_eq!(response.0, 200, "加载了允许 HTTP 的快照后应恢复访问: {response:?}");
+        let upgrade = upgrade_response(&manager).await;
+        assert!(upgrade.contains("snapshot upgrade handler"), "允许的升级请求应到达后台: {upgrade}");
+
+        fs::write(&path, manifest(false).to_string()).unwrap();
+        let response = codex_plus_core::extension_backend::route_http_with(
+            &manager, "GET", "/ext/http-snapshot/", "GET / HTTP/1.1\r\nHost: localhost\r\n", &[],
+        ).await;
+        assert_eq!(response.0, 404, "实时撤销 HTTP 权限仍应立即生效: {response:?}");
+
+        fs::write(&path, manifest(true).to_string()).unwrap();
+        manager.set_script_enabled("user:http-snapshot", false).unwrap();
+        let response = codex_plus_core::extension_backend::route_http_with(
+            &manager, "GET", "/ext/http-snapshot/", "GET / HTTP/1.1\r\nHost: localhost\r\n", &[],
+        ).await;
+        assert_eq!(response.0, 404, "实时停用拓展仍应立即生效: {response:?}");
+    }).await;
+}
+
+#[tokio::test]
+async fn external_call_during_page_cleanup_cannot_replace_the_old_snapshot_backend() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() { return; }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let key = "user:quiescing";
+    write_package(&temp, "quiescing", json!({
+        "backend": { "script": "backend/main.mjs", "provides": ["cleanupProbe"], "http": true }
+    }), &[("backend/main.mjs", r#"export default () => ({
+  where() { return { pid: process.pid, source: import.meta.url, version: "old" }; },
+  http() { return "old"; }
+});"#)]);
+    with_extension_backend_cleanup(&[&manager], async {
+        let revision = manager.reload_snapshot().unwrap().1;
+        let snapshot = manager.stage_backend_snapshot(&revision).unwrap();
+        let generation = backend_generation(&manager);
+        let source = bind_backend_snapshot(&manager, generation, "cleanup-document", snapshot).await.unwrap();
+        let first = call(&manager, key, "where", json!(null), Duration::from_secs(10), None).await.unwrap();
+        assert_eq!(first["version"], "old");
+        assert!(first["source"].as_str().unwrap().contains(".reload-backend-"));
+
+        fs::write(temp.path().join("user/quiescing/backend/main.mjs"), r#"export default () => ({
+  where() { return { pid: process.pid, source: import.meta.url, version: "new" }; }
+});"#).unwrap();
+        let revoked = codex_plus_core::extension_backend::revoke_backend_source(&manager, &source).await.unwrap();
+        let during = call(&manager, key, "where", json!(null), Duration::from_secs(10), None).await;
+        assert!(during.is_err(), "清理尚未确认时不能启动实时目录后台: {during:?}");
+        let service = codex_plus_core::extension_backend::call_service(&manager, &json!({
+            "name": "cleanupProbe", "method": "where", "args": []
+        })).await;
+        assert!(service.is_err());
+        let http = codex_plus_core::extension_backend::route_http_with(
+            &manager, "GET", "/ext/quiescing/", "GET /ext/quiescing/ HTTP/1.1\r\nHost: localhost\r\n", &[],
+        ).await;
+        assert_ne!(http.0, 200);
+        assert_eq!(events(&manager, key, 0, Duration::from_millis(10)).await["running"], true);
+
+        assert!(stop_all_if_generation(&manager, revoked).await);
+        assert!(!stop_all_if_generation(&manager, revoked).await);
+        assert!(codex_plus_core::extension_backend::bind_backend_document(&manager, revoked, "stale-document").await.is_err());
+        assert!(call(&manager, key, "where", json!(null), Duration::from_secs(10), None).await.is_err());
+        let new_revision = manager.reload_snapshot().unwrap().1;
+        let snapshot = manager.stage_backend_snapshot(&new_revision).unwrap();
+        bind_backend_snapshot(&manager, backend_generation(&manager), "cleanup-document", snapshot).await.unwrap();
+        let second = call(&manager, key, "where", json!(null), Duration::from_secs(10), None).await.unwrap();
+        assert_eq!(second["version"], "new");
+        assert_ne!(first["pid"], second["pid"]);
+        assert!(second["source"].as_str().unwrap().contains(".reload-backend-"));
     }).await;
 }
 

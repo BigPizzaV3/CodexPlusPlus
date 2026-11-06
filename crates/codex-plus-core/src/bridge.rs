@@ -108,32 +108,56 @@ pub fn build_bridge_script(binding_name: &str) -> String {
   const previousCallbacks = window.__codexSessionDeleteCallbacks;
   if (previousCallbacks && typeof previousCallbacks.forEach === "function") {{
     previousCallbacks.forEach((callback) => {{
-      try {{ callback.resolve({{ status: "failed", message: "桥接已重新连接" }}); }} catch {{}}
+      try {{ callback.resolve({{ status: "failed", message: "桥接已重新连接", bridgeFailure: true }}); }} catch {{}}
     }});
+    previousCallbacks.clear?.();
   }}
   window.__codexSessionDeleteCallbacks = new Map();
   window.__codexSessionDeleteSeq = Number.isFinite(window.__codexSessionDeleteSeq)
     ? window.__codexSessionDeleteSeq
     : 0;
+  window.__codexSessionDeleteRequestPrefix ||= typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${{Date.now().toString(36)}}-${{Math.random().toString(36).slice(2)}}`;
   window.__codexPlusBridgeHealth = window.__codexPlusBridgeHealth || {{}};
   window.__codexPlusBridgeHealth.lastInjectionAt = Date.now();
   window.__codexSessionDeleteResolve = (id, result) => {{
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;
-    window.__codexSessionDeleteCallbacks.delete(id);
     callback.resolve(result);
   }};
   window.__codexSessionDeleteReject = (id, message) => {{
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;
-    window.__codexSessionDeleteCallbacks.delete(id);
     callback.resolve({{ status: "failed", message }});
   }};
-  window.__codexSessionDeleteBridge = (path, payload) => new Promise((resolve) => {{
-    const id = String(++window.__codexSessionDeleteSeq);
-    window.__codexSessionDeleteCallbacks.set(id, {{ resolve }});
-    window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+  window.__codexSessionDeleteBridge = (path, payload, options) => new Promise((resolve, reject) => {{
+    const callbacks = window.__codexSessionDeleteCallbacks;
+    const id = `${{window.__codexSessionDeleteRequestPrefix}}-${{++window.__codexSessionDeleteSeq}}`;
+    let timer = null;
+    let settled = false;
+    const finish = (result, error, failed = false) => {{
+      if (settled) return;
+      settled = true;
+      if (callbacks.get(id) === callback) callbacks.delete(id);
+      if (timer !== null) clearTimeout(timer);
+      if (failed) reject(error);
+      else resolve(result);
+    }};
+    const callback = {{ resolve: (result) => finish(result) }};
+    callbacks.set(id, callback);
+    if (Number.isFinite(options?.timeoutMs) && options.timeoutMs > 0) {{
+      timer = setTimeout(() => finish({{
+        status: "failed", message: "桥接请求超时", timeout: true, bridgeFailure: true,
+      }}), options.timeoutMs);
+    }}
+    try {{
+      window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+    }} catch (error) {{
+      finish(undefined, error, true);
+    }}
   }});
+  window.__codexSessionDeleteBridge.supportsTimeout = true;
 }})();
 "#
     )

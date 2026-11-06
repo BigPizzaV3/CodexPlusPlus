@@ -76,12 +76,15 @@ pub async fn reload_native_scripts(
     let slot = PENDING_RELOADS.get_or_init(|| Mutex::new(BTreeMap::new()))
         .lock().unwrap().entry(identity.key()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None))).clone();
     let mut pending = slot.lock().await;
-    if let Some(resume) = resume.filter(|value| value.is_object()) {
+    if let Some(resume) = resume {
+        anyhow::ensure!(resume.is_object(), "待确认操作格式无效");
         let epoch = resume["ownerEpoch"].as_str().context("待确认操作缺少 owner 身份")?;
         let id = resume["operationId"].as_str().context("待确认操作缺少编号")?;
+        let policy = resume["allowPage"].as_bool().context("待确认操作缺少原刷新策略")?;
         anyhow::ensure!(control::operation_issued_at(epoch, id).is_some(), "待确认重载的操作身份无效");
         if let Some(current) = pending.as_ref() {
-            anyhow::ensure!(current["operationId"] == resume["operationId"] && current["ownerEpoch"] == resume["ownerEpoch"],
+            anyhow::ensure!(current["operationId"] == resume["operationId"] && current["ownerEpoch"] == resume["ownerEpoch"]
+                && current["allowPage"] == policy,
                 "另一个重载仍待确认，请先查询原操作");
         } else {
             *pending = Some(resume.clone());
@@ -127,21 +130,25 @@ pub async fn reload_native_scripts(
             *pending = Some(operation.clone());
             return reload_inventory(manager, operation);
         }
+        let submitting = needs_submit;
         let request = json!({
-            "action": if needs_submit { "submit" } else { "status" },
+            "action": if submitting { "submit" } else { "status" },
             "ownerEpoch": epoch, "operationId": id, "allowPage": original_policy,
             "verificationId": verification_id,
         });
         // 丢失 submit 的 ACK 不代表未接收；下一次先查原编号，未登记时才幂等重投。
         needs_submit = false;
         operation["needsSubmit"] = json!(false);
+        *pending = Some(operation.clone());
         match control::request(&identity, request).await {
             Ok(response) => {
                 let received = &response["result"]["reloadOperation"];
-                if received["operationId"] == id {
+                if native_reload_receipt_matches(received, &id, &epoch, original_policy, !submitting) {
                     operation = received.clone();
-                    operation["ownerEpoch"] = epoch.clone();
-                    operation["allowPage"] = json!(original_policy);
+                    // 未登记记录可以省略原策略；仅使用先前保存的策略重投原编号。
+                    if operation["phase"] == "not_found" {
+                        operation["allowPage"] = json!(original_policy);
+                    }
                     let phase = operation["phase"].as_str().unwrap_or_default();
                     if matches!(phase, "applied" | "failed" | "blocked" | "degraded" | "rejected") {
                         if phase == "applied" {
@@ -151,7 +158,7 @@ pub async fn reload_native_scripts(
                                 tokio::time::sleep(Duration::from_millis(500)).await;
                                 continue;
                             }
-                            if response["result"]["desiredRevision"].is_string()
+                            if response["result"]["desiredRevision"].as_str().is_some_and(|value| !value.is_empty())
                                 && response["result"]["desiredRevision"] != operation["revision"]
                             {
                                 // 旧操作完成时新配置已写入：串行开始当前意图，不把旧清单当新配置已生效。
@@ -165,7 +172,7 @@ pub async fn reload_native_scripts(
                                 *pending = Some(operation.clone());
                                 continue;
                             }
-                            if !response["result"]["desiredRevision"].is_string() {
+                            if !response["result"]["desiredRevision"].as_str().is_some_and(|value| !value.is_empty()) {
                                 operation["phase"] = json!("degraded");
                                 operation["reason"] = json!("原重载已完成，但当前拓展快照无法确认");
                             }
@@ -175,20 +182,48 @@ pub async fn reload_native_scripts(
                     }
                     needs_submit = phase == "not_found";
                 } else {
-                    reason = "重载协调器返回了不匹配的操作编号".to_owned();
+                    operation["phase"] = json!("unknown");
+                    operation["active"] = json!(true);
+                    operation["reason"] = json!("重载协调器返回的操作身份或状态不完整，原结果仍待确认");
+                    *pending = Some(operation.clone());
+                    return reload_inventory(manager, operation);
                 }
             }
             Err(error) if error.downcast_ref::<control::OwnerChanged>().is_some() => {
-                operation["phase"] = json!("degraded");
-                operation["active"] = json!(false);
+                operation["phase"] = json!("unknown");
+                operation["active"] = json!(true);
                 operation["reason"] = json!(format!("{error:#}"));
-                *pending = None;
+                *pending = Some(operation.clone());
                 return reload_inventory(manager, operation);
             }
             Err(error) => reason = format!("{error:#}"),
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+fn native_reload_receipt_matches(
+    receipt: &Value,
+    id: &Value,
+    epoch: &Value,
+    allow_page: bool,
+    status_request: bool,
+) -> bool {
+    if &receipt["operationId"] != id || &receipt["ownerEpoch"] != epoch {
+        return false;
+    }
+    let phase = receipt["phase"].as_str().unwrap_or_default();
+    if phase == "not_found" {
+        return status_request && receipt["active"] == false
+            && receipt.get("allowPage").is_none_or(|value| value == allow_page)
+            && receipt.get("sourceDocumentId").is_none_or(Value::is_null);
+    }
+    let terminal = matches!(phase, "applied" | "failed" | "blocked" | "degraded" | "rejected");
+    let in_progress = matches!(phase, "accepted" | "quiescing" | "stopped" | "pageRequested" | "applying" | "verifying" | "unknown");
+    receipt["allowPage"] == allow_page
+        && receipt.get("sourceDocumentId").is_some_and(Value::is_null)
+        && ((terminal && receipt["active"] == false) || (in_progress && receipt["active"] == true))
+        && (phase != "applied" || receipt["revision"].as_str().is_some_and(|value| !value.is_empty()))
 }
 
 fn reload_inventory(manager: &UserScriptManager, operation: Value) -> anyhow::Result<Value> {
@@ -218,6 +253,27 @@ struct InitialAttempt {
 }
 type InitialAttemptSlot = Arc<tokio::sync::Mutex<Option<InitialAttempt>>>;
 static INITIAL_ATTEMPTS: OnceLock<Mutex<BTreeMap<PathBuf, InitialAttemptSlot>>> = OnceLock::new();
+
+async fn initial_inventory(
+    manager: &UserScriptManager,
+    runtime_status: Option<Value>,
+    skipped: bool,
+) -> anyhow::Result<Value> {
+    let manager = manager.clone();
+    tokio::task::spawn_blocking(move || {
+        if skipped {
+            manager.skipped_initial_inventory()
+        } else {
+            manager.inventory_with_runtime_status(runtime_status.as_ref())
+        }
+    }).await?
+}
+
+async fn consume_initial_skip_claim(manager: &UserScriptManager, claim: SkipStartClaim) -> anyhow::Result<()> {
+    let manager = manager.clone();
+    tokio::task::spawn_blocking(move || manager.consume_skip_start_claim(&claim)).await??;
+    Ok(())
+}
 
 pub async fn load_scripts_at(
     websocket: &str,
@@ -249,14 +305,14 @@ where
             anyhow::ensure!(crate::extension_backend::backend_source_is_current(manager, &probe["backendSource"]),
                 "页面已初始化，但后台来源属于旧代；未把重连报告为成功");
             if let Ok(claim) = serde_json::from_value::<SkipStartClaim>(probe["initialSkipClaim"].clone()) {
-                manager.consume_skip_start_claim(&claim)?;
+                consume_initial_skip_claim(manager, claim).await?;
             }
             *attempt = None;
             if probe["initialMode"] == "skipped" {
-                return manager.skipped_initial_inventory();
+                return initial_inventory(manager, None, true).await;
             }
         }
-        return manager.inventory_with_runtime_status(probe.get("scripts"));
+        return initial_inventory(manager, probe.get("scripts").cloned(), false).await;
     }
     let document = probe["documentId"].as_str().context("页面文档标识不可用")?;
     if attempt.as_ref().is_some_and(|current| current.document != document) {
@@ -267,7 +323,7 @@ where
         let skip_claim = tokio::task::spawn_blocking(move || claim_manager.claim_skip_start(&claim_document)).await??;
         // 发送前保存完整尝试；超时后同文档只重送相同 guard/source，不能创建新代。
         let generation = crate::extension_backend::backend_generation(manager);
-        if !crate::extension_backend::stop_all_if_generation(manager, generation).await {
+        if !crate::extension_backend::stop_all_for_binding_if_generation(manager, generation).await {
             anyhow::bail!("后台代际发生变化，未执行页面初始化");
         }
         let source = if skip_claim.is_some() {
@@ -301,14 +357,14 @@ where
         anyhow::bail!("页面初始化已被较新的操作取代");
     }
     if let Some(claim) = &current.skip_claim {
-        manager.consume_skip_start_claim(claim)?;
+        consume_initial_skip_claim(manager, claim.clone()).await?;
     }
     let skipped = current.skip_claim.is_some();
     *attempt = None;
     if skipped {
-        return manager.skipped_initial_inventory();
+        return initial_inventory(manager, None, true).await;
     }
-    manager.inventory_with_runtime_status(result.get("scripts"))
+    initial_inventory(manager, result.get("scripts").cloned(), false).await
 }
 
 /// Query the live renderer-side user-script registry through a one-shot CDP
@@ -399,6 +455,7 @@ struct BackendSnapshotBytes {
     extension: String,
     entry: PathBuf,
     config: Value,
+    http: bool,
     files: Vec<(String, Vec<u8>)>,
 }
 
@@ -415,6 +472,7 @@ pub(crate) struct StagedBackendEntry {
     pub extension: String,
     pub script: PathBuf,
     pub config: Value,
+    pub http: bool,
 }
 
 #[derive(Debug)]
@@ -2003,6 +2061,7 @@ impl UserScriptManager {
                             extension: package.id.clone(),
                             entry: backend.strip_prefix(root)?.to_path_buf(),
                             config: package.config.clone(),
+                            http: package.backend_http,
                             files: files.into_iter().map(|(name, bytes)| (name.strip_prefix(&prefix).unwrap_or(&name).to_string(), bytes)).collect(),
                         });
                         for name in &package.backend_provides {
@@ -2089,7 +2148,7 @@ impl UserScriptManager {
                 }
                 let script = root.join(&backend.entry);
                 anyhow::ensure!(script.is_file(), "后台入口不在已复制的快照中: {}", backend.entry.display());
-                entries.insert(key, StagedBackendEntry { extension: backend.extension, script, config: backend.config });
+                entries.insert(key, StagedBackendEntry { extension: backend.extension, script, config: backend.config, http: backend.http });
             }
         }
         Ok(StagedBackendSnapshot {

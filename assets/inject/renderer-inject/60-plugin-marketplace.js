@@ -1687,7 +1687,7 @@
     document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
   }
 
-  async function postJson(path, payload) {
+  async function postJson(path, payload, options = {}) {
     if (path === "/delete") {
       const hostId = deletePayloadHost(payload);
       if (!hostId) return { status: "failed", message: "无法确定会话主机归属，未删除", session_id: payload?.session_id || "" };
@@ -1720,7 +1720,10 @@
         return await fetchBackendStatusFromHelper(path, payload);
       }
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
-      return { status: "failed", message: "桥接不可用，请重启启动器" };
+      return { status: "failed", message: "桥接不可用，请重启启动器", bridgeFailure: true };
+    }
+    if (options.timeoutMs > 0 && window.__codexSessionDeleteBridge.supportsTimeout !== true) {
+      return { status: "failed", message: "当前桥接不支持有界请求", code: "bridge_timeout_unsupported" };
     }
     function bridgeWithBackendTimeout(path, payload) {
       let request;
@@ -1762,8 +1765,9 @@
         });
         return fallback;
       }
-      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
-      recordCodexPlusBridgeSuccess();
+      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload, options);
+      if (bridgeResult?.bridgeFailure) recordCodexPlusBridgeFailure();
+      else recordCodexPlusBridgeSuccess();
       return bridgeResult;
     } catch (error) {
       recordCodexPlusBridgeFailure();

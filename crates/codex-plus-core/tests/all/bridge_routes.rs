@@ -44,6 +44,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ),
         ("/user-scripts/delete", json!({"key": "user:a.js"})),
         ("/user-scripts/reload", json!({})),
+        ("/user-scripts/reload-operation-v1", json!({})),
         ("/user-scripts/load", json!({})),
         ("/cdp/targets", json!({})),
         ("/cdp/evaluate", json!({"kind":"avatar-overlay","expression":"1"})),
@@ -119,6 +120,29 @@ async fn default_runtime_rejects_no_page_reload_without_invoking_legacy_reload()
     assert_eq!(*runtime.reload_calls.lock().unwrap(), 0);
     let allowed = runtime.begin_user_script_reload(json!({ "allowPage": true })).await.unwrap();
     assert_eq!(allowed["reloaded"], true);
+    assert_eq!(*runtime.reload_calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn versioned_reload_route_never_delegates_to_legacy_runtime() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::default()),
+        runtime.clone(),
+        Arc::new(FakeData::default()),
+    );
+    let result = handle_bridge_request(ctx.clone(), "/user-scripts/reload-operation-v1", json!({
+        "operationId": "operation",
+        "ownerEpoch": "owner",
+        "sourceDocumentId": "document",
+        "allowPage": true
+    })).await;
+    assert_eq!(result["status"], "failed");
+    assert_ne!(result["message"], "Unknown bridge path");
+    assert_eq!(*runtime.reload_calls.lock().unwrap(), 0);
+
+    let legacy = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
+    assert_eq!(legacy["reloaded"], true);
     assert_eq!(*runtime.reload_calls.lock().unwrap(), 1);
 }
 

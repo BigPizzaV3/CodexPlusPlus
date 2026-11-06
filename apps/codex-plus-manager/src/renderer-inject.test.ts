@@ -1448,6 +1448,15 @@ return {
     const renderer = await readFile(rendererPath, "utf8");
     const harness = new Function("bridge", `
 const calls = [], toasts = [];
+const storage = new Map();
+const window = {
+  __codexPlusUserScripts: { documentId: "test-document" },
+  sessionStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: (key) => storage.delete(key),
+  },
+};
 let codexPlusExtensionsSelected = { kind: "installed", key: "user:pomodoro" };
 const postJson = async (path, payload) => { calls.push(path); return bridge(path, payload); };
 const loadUserScripts = async (path = "/user-scripts/list", payload = {}) => { await postJson(path, payload); };
@@ -1458,12 +1467,13 @@ return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () 
     const epoch = "a".repeat(32);
     const bridge = (failed = false) => async (path: string, payload: Record<string, unknown>) => {
       if (path === "/user-scripts/reload-status" && payload.capabilities) {
-        return { capabilities: { operationProtocol: 1 }, ownerEpoch: epoch };
+        return { capabilities: { operationProtocol: 1, documentFence: true, fencedSubmitV1: true }, ownerEpoch: epoch };
       }
-      if (path === "/user-scripts/reload") {
+      if (path === "/user-scripts/reload-operation-v1") {
         return { reloadOperation: {
-          operationId: payload.operationId, ownerEpoch: epoch,
-          phase: failed ? "failed" : "applied", revision: "current",
+          operationId: payload.operationId, ownerEpoch: epoch, allowPage: payload.allowPage,
+          sourceDocumentId: payload.sourceDocumentId,
+          phase: failed ? "failed" : "applied", active: false, revision: "current",
           reason: failed ? "Codex 页面尚未连接" : "",
         }, desiredRevision: "current" };
       }
@@ -1471,20 +1481,55 @@ return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () 
     };
     const ok = harness(bridge());
     await ok.setUserScriptEnabled("user:pomodoro", false);
-    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload-operation-v1", "/user-scripts/list"]);
     assert.deepEqual(ok.toasts, []);
 
     const uninstall = harness(bridge());
     await uninstall.uninstallUserScript("user:pomodoro");
-    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list", "refresh"]);
+    assert.deepEqual(uninstall.calls, ["/user-scripts/delete", "/user-scripts/reload-status", "/user-scripts/reload-operation-v1", "/user-scripts/list", "refresh"]);
     assert.equal(uninstall.selected(), null);
 
     // 页面没连上时重载失败：提示用户，清单照样刷新，开关状态不至于错。
     const failed = harness(bridge(true));
     await failed.setUserScriptEnabled("user:pomodoro", true);
-    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload-operation-v1", "/user-scripts/list"]);
     assert.equal(failed.toasts.length, 1);
     assert.match(failed.toasts[0], /Codex 页面尚未连接/);
+  });
+
+  it("falls back to the legacy reload route only when the host explicitly lacks fenced reload", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const harness = new Function("bridge", `
+const calls = [], toasts = [];
+const storage = new Map();
+const window = {
+  __codexPlusUserScripts: { documentId: "legacy-document" },
+  sessionStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: (key) => storage.delete(key),
+  },
+};
+let codexPlusExtensionsSelected = { kind: "installed", key: "user:legacy" };
+const postJson = async (path, payload) => { calls.push(path); return bridge(path, payload); };
+const loadUserScripts = async (path = "/user-scripts/list", payload = {}) => { await postJson(path, payload); };
+const showToast = (message) => toasts.push(message);
+const refreshCodexPlusExtensionsView = () => calls.push("refresh");
+${segment(renderer, "  async function uninstallUserScript(", "  /** 左面板的导航项。")}
+return { calls, toasts, setUserScriptEnabled };`)(bridge);
+    async function bridge(path: string) {
+      if (path === "/user-scripts/reload-status") {
+        return { capabilities: { operationProtocol: 0 }, ownerEpoch: "b".repeat(32) };
+      }
+      if (path === "/user-scripts/reload") return { scripts: [] };
+      return { scripts: [] };
+    }
+    await harness.setUserScriptEnabled("user:legacy", false);
+    assert.deepEqual(harness.calls, [
+      "/user-scripts/set-script-enabled", "/user-scripts/reload-status", "/user-scripts/reload",
+      "/user-scripts/list",
+    ]);
+    assert.deepEqual(harness.toasts, []);
   });
 
   it("keeps the 拓展 page nav when extension hosts refresh it without a tab", async () => {
@@ -2779,7 +2824,8 @@ describe("拓展接口层", () => {
     const routes = await readRouteWhitelist();
     assert.ok(routes.length > 0, "白名单不能为空");
     // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
-    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create",
+      "/user-scripts/reload", "/user-scripts/reload-operation-v1", "/user-scripts/reload-no-page", "/user-scripts/reload-status"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");

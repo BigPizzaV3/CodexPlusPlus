@@ -6261,59 +6261,242 @@
    * 打开的拓展也要等下次启动才装上。重载失败时仍刷新清单，开关状态至少准确。
    */
   let codexPlusPendingReload = null;
-  let codexPlusReloadTask = null;
-  let codexPlusReloadDemand = 0;
+  const codexPlusReloadState = typeof window === "undefined"
+    ? { pending: codexPlusPendingReload, task: null, demand: 0 }
+    : (window.__codexPlusReloadState ||= { pending: codexPlusPendingReload, task: null, demand: 0 });
+  const codexPlusReloadRequestTimeoutMs = 3000;
+  const codexPlusReloadStorageKey = "__codexPlusPendingUserScriptReloadV1";
+  const codexPlusReloadTerminalPhases = ["applied", "failed", "blocked", "degraded", "rejected"];
+
+  function codexPlusReloadReference(operation) {
+    return {
+      operationId: operation.operationId,
+      ownerEpoch: operation.ownerEpoch,
+      allowPage: operation.allowPage,
+      sourceDocumentId: operation.sourceDocumentId,
+    };
+  }
+
+  function validCodexPlusDocumentId(documentId) {
+    if (typeof documentId !== "string" || !documentId || documentId.length > 256) return false;
+    try {
+      // Rust 的 JSON 字符串不接受未配对的 UTF-16 代理项。
+      encodeURIComponent(documentId);
+      return new TextEncoder().encode(documentId).length <= 256;
+    } catch {
+      return false;
+    }
+  }
+
+  function validCodexPlusReloadReference(reference) {
+    return !!reference && typeof reference === "object"
+      && /^[a-f0-9]{32}$/.test(reference.ownerEpoch || "")
+      && new RegExp(`^${reference.ownerEpoch}-[a-f0-9]+-[a-f0-9]{32}$`).test(reference.operationId || "")
+      && typeof reference.allowPage === "boolean"
+      && validCodexPlusDocumentId(reference.sourceDocumentId);
+  }
+
+  function sameCodexPlusReloadReference(left, right) {
+    return validCodexPlusReloadReference(left) && validCodexPlusReloadReference(right)
+      && left.operationId === right.operationId && left.ownerEpoch === right.ownerEpoch
+      && left.allowPage === right.allowPage && left.sourceDocumentId === right.sourceDocumentId;
+  }
+
+  function readCodexPlusReloadReference() {
+    try {
+      const raw = window.sessionStorage.getItem(codexPlusReloadStorageKey);
+      if (raw === null) return { reference: null };
+      const reference = JSON.parse(raw);
+      if (!validCodexPlusReloadReference(reference)) return { error: true };
+      return { reference: codexPlusReloadReference(reference) };
+    } catch {
+      return { error: true };
+    }
+  }
+
+  function saveCodexPlusReloadReference(operation) {
+    try {
+      const reference = codexPlusReloadReference(operation);
+      const existing = readCodexPlusReloadReference();
+      if (existing.error || (existing.reference && !sameCodexPlusReloadReference(existing.reference, reference))) return false;
+      window.sessionStorage.setItem(codexPlusReloadStorageKey, JSON.stringify(reference));
+      return sameCodexPlusReloadReference(readCodexPlusReloadReference().reference, reference);
+    } catch {
+      return false;
+    }
+  }
+
+  function clearCodexPlusReloadReference(operation) {
+    try {
+      const existing = readCodexPlusReloadReference();
+      if (existing.error || (existing.reference && !sameCodexPlusReloadReference(existing.reference, operation))) return false;
+      if (!existing.reference) return true;
+      window.sessionStorage.removeItem(codexPlusReloadStorageKey);
+      const after = readCodexPlusReloadReference();
+      return !after.error && !after.reference;
+    } catch {
+      return false;
+    }
+  }
+
+  if (!codexPlusReloadState.restoreChecked) {
+    codexPlusReloadState.restoreChecked = true;
+    const stored = readCodexPlusReloadReference();
+    if (!codexPlusReloadState.pending && stored.reference) {
+      codexPlusReloadState.pending = { ...stored.reference, phase: "unknown" };
+      codexPlusReloadState.restored = true;
+    }
+  }
+
   function reloadUserScriptsAfterChange() {
-    codexPlusReloadDemand += 1;
-    if (codexPlusReloadTask) return codexPlusReloadTask;
-    codexPlusReloadTask = (async () => {
+    codexPlusReloadState.demand += 1;
+    if (codexPlusReloadState.task) return codexPlusReloadState.task;
+    codexPlusReloadState.task = (async () => {
       try {
         let observed;
         do {
-          observed = codexPlusReloadDemand;
+          observed = codexPlusReloadState.demand;
           await runUserScriptsAfterChange();
-        } while (observed !== codexPlusReloadDemand);
+        } while (observed !== codexPlusReloadState.demand);
       } finally {
-        codexPlusReloadTask = null;
+        codexPlusReloadState.task = null;
       }
     })();
-    return codexPlusReloadTask;
+    return codexPlusReloadState.task;
+  }
+
+  async function refreshUserScriptsAfterReload() {
+    try {
+      const result = await loadUserScripts("/user-scripts/list", {}, { timeoutMs: codexPlusReloadRequestTimeoutMs });
+      if (result?.status !== "failed") return;
+    } catch {}
+    showToast("拓展清单暂时无法刷新，请稍后重试", { type: "error" });
+  }
+  codexPlusReloadState.refresh = refreshUserScriptsAfterReload;
+
+  async function codexPlusReloadHandshake() {
+    let hello;
+    try {
+      hello = await postJson("/user-scripts/reload-status", { capabilities: true }, { timeoutMs: codexPlusReloadRequestTimeoutMs });
+    } catch {}
+    if (hello?.capabilities?.operationProtocol === 1 && hello.capabilities.documentFence === true
+        && hello.capabilities.fencedSubmitV1 === true
+        && /^[a-f0-9]{32}$/.test(hello.ownerEpoch || "")) return { ownerEpoch: hello.ownerEpoch };
+    const unsupported = hello?.message === "Unknown bridge path"
+      || (hello?.capabilities && (hello.capabilities.operationProtocol !== 1
+        || hello.capabilities.documentFence !== true || hello.capabilities.fencedSubmitV1 !== true));
+    return unsupported
+      ? { legacyFallback: true }
+      : { error: "无法确认启动器重载能力，本次未提交重载，请检查连接后重试" };
   }
 
   async function runUserScriptsAfterChange() {
-    if (!codexPlusPendingReload) {
-      const hello = await postJson("/user-scripts/reload-status", { capabilities: true });
-      if (hello?.capabilities?.operationProtocol !== 1 || !/^[a-f0-9]{32}$/.test(hello.ownerEpoch || "")) {
-        showToast("当前启动器不支持可确认的重载，请更新对应 Codex++ 实例", { type: "error" });
-        await loadUserScripts();
-        return;
-      }
-      const nonce = crypto.randomUUID().replaceAll("-", "");
-      codexPlusPendingReload = {
-        operationId: `${hello.ownerEpoch}-${Date.now().toString(16)}-${nonce}`,
-        ownerEpoch: hello.ownerEpoch, allowPage: true, phase: "not_found",
-      };
+    const stored = readCodexPlusReloadReference();
+    if (stored.error || (stored.reference && codexPlusReloadState.pending
+        && !sameCodexPlusReloadReference(stored.reference, codexPlusReloadState.pending))) {
+      showToast("无法安全读取待确认重载记录，本次未提交重载", { type: "error" });
+      await codexPlusReloadState.refresh();
+      return;
     }
-    let operation = codexPlusPendingReload;
-    const verificationId = crypto.randomUUID().replaceAll("-", "");
+    if (!codexPlusReloadState.pending && stored.reference) {
+      codexPlusReloadState.pending = { ...stored.reference, phase: "unknown" };
+    }
+    let operation = codexPlusReloadState.pending;
+    let verifiedEpoch = null;
+    let verificationId = crypto.randomUUID().replaceAll("-", "");
     const deadline = Date.now() + 20000;
-    while (!["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase) && Date.now() < deadline) {
+    let problem = "";
+    while (Date.now() < deadline) {
+      if (!operation) {
+        const hello = await codexPlusReloadHandshake();
+        if (hello.error) { problem = hello.error; break; }
+        if (hello.legacyFallback) {
+          try {
+            const result = await postJson("/user-scripts/reload", {}, {
+              timeoutMs: Math.max(1, Math.min(codexPlusReloadRequestTimeoutMs, deadline - Date.now())),
+            });
+            if (!result?.scripts) {
+              problem = `旧版用户脚本重载失败：${result?.message || "结果无法确认"}`;
+            }
+          } catch (error) {
+            problem = `旧版用户脚本重载失败：${error?.message || "结果无法确认"}`;
+          }
+          if (problem) showToast(problem, { type: "error" });
+          await codexPlusReloadState.refresh();
+          return;
+        }
+        const sourceDocumentId = window.__codexPlusUserScripts?.documentId;
+        if (!validCodexPlusDocumentId(sourceDocumentId)) {
+          problem = "当前页面的文档身份尚不可用，本次未提交重载";
+          break;
+        }
+        operation = {
+          operationId: `${hello.ownerEpoch}-${Date.now().toString(16)}-${crypto.randomUUID().replaceAll("-", "")}`,
+          ownerEpoch: hello.ownerEpoch, allowPage: true, sourceDocumentId, phase: "not_found",
+        };
+        verifiedEpoch = hello.ownerEpoch;
+        verificationId = crypto.randomUUID().replaceAll("-", "");
+        codexPlusReloadState.pending = operation;
+      }
+      if (codexPlusReloadTerminalPhases.includes(operation.phase)) break;
       try {
-        const result = operation.phase === "not_found"
-          ? await postJson("/user-scripts/reload", { operationId: operation.operationId, allowPage: true, verificationId })
-          : await postJson("/user-scripts/reload-status", { operationId: operation.operationId, verificationId });
+        const submitting = operation.phase === "not_found";
+        if (submitting && verifiedEpoch !== operation.ownerEpoch) {
+          const hello = await codexPlusReloadHandshake();
+          if (hello.error) { problem = hello.error; break; }
+          if (hello.ownerEpoch !== operation.ownerEpoch) {
+            operation = { ...operation, phase: "unknown" };
+            problem = "启动器实例已变化，原重载结果无法确认，未向新实例提交";
+            break;
+          }
+          verifiedEpoch = hello.ownerEpoch;
+        }
+        if (submitting && !saveCodexPlusReloadReference(operation)) {
+          operation = { ...operation, phase: "unknown" };
+          problem = "无法保存并验证待确认重载记录，本次未提交重载";
+          break;
+        }
+        const options = { timeoutMs: Math.max(1, Math.min(codexPlusReloadRequestTimeoutMs, deadline - Date.now())) };
+        if (submitting) codexPlusReloadState.pending = { ...operation, phase: "unknown" };
+        const result = submitting
+          ? await postJson("/user-scripts/reload-operation-v1", { ...codexPlusReloadReference(operation), verificationId }, options)
+          : await postJson("/user-scripts/reload-status", { operationId: operation.operationId, verificationId }, options);
         // 提交响应丢失时先查询，同编号未登记才允许幂等重投。
-        if (result?.reloadOperation?.operationId === operation.operationId) {
-          operation = result.reloadOperation;
+        const received = result?.reloadOperation;
+        if (received?.operationId === operation.operationId && typeof received.ownerEpoch === "string"
+            && received.ownerEpoch !== operation.ownerEpoch) {
+          operation = { ...operation, phase: "unknown" };
+          problem = "启动器实例已变化，原重载结果无法确认，未向新实例提交";
+          break;
+        }
+        const unregistered = !submitting && received?.phase === "not_found" && received.active === false
+          && (!Object.prototype.hasOwnProperty.call(received, "allowPage") || received.allowPage === operation.allowPage)
+          && (!Object.prototype.hasOwnProperty.call(received, "sourceDocumentId") || received.sourceDocumentId === operation.sourceDocumentId);
+        const matchingReference = received?.allowPage === operation.allowPage
+          && received.sourceDocumentId === operation.sourceDocumentId;
+        const validRevision = received?.phase !== "applied"
+          || (typeof received.revision === "string" && received.revision.length > 0);
+        const validReceipt = received?.phase === "not_found" ? unregistered
+          : matchingReference && validRevision
+            && (!codexPlusReloadTerminalPhases.includes(received?.phase) || received.active === false);
+        if (received?.operationId === operation.operationId && received.ownerEpoch === operation.ownerEpoch
+            && validReceipt) {
+          operation = { ...received, ...codexPlusReloadReference(operation) };
           if (operation.phase === "applied" && result.desiredRevisionPending === true) {
             operation = { ...operation, phase: "verifying" };
-          } else if (operation.phase === "applied" && typeof result.desiredRevision === "string" && result.desiredRevision !== operation.revision) {
-            const epoch = operation.ownerEpoch;
-            operation = {
-              operationId: `${epoch}-${Date.now().toString(16)}-${crypto.randomUUID().replaceAll("-", "")}`,
-              ownerEpoch: epoch, allowPage: true, phase: "not_found",
-            };
-          } else if (operation.phase === "applied" && typeof result.desiredRevision !== "string") {
+          } else if (operation.phase === "applied" && typeof result.desiredRevision === "string"
+              && result.desiredRevision.length > 0 && result.desiredRevision !== operation.revision) {
+            if (!clearCodexPlusReloadReference(operation)) {
+              operation = { ...operation, phase: "unknown" };
+              problem = "原重载已结束，但待确认记录无法安全清理，未提交后续重载";
+              break;
+            }
+            codexPlusReloadState.pending = null;
+            operation = null;
+            verifiedEpoch = null;
+            continue;
+          } else if (operation.phase === "applied"
+              && (typeof result.desiredRevision !== "string" || result.desiredRevision.length === 0)) {
             operation = { ...operation, phase: "degraded", reason: "原重载已完成，但当前拓展快照无法确认" };
           }
         } else {
@@ -6322,16 +6505,29 @@
       } catch {
         operation = { ...operation, phase: "unknown" };
       }
-      codexPlusPendingReload = operation;
-      if (!["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+      codexPlusReloadState.pending = operation;
+      if (!codexPlusReloadTerminalPhases.includes(operation.phase)) {
+        const remaining = deadline - Date.now();
+        if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(500, remaining)));
       }
     }
-    if (["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) codexPlusPendingReload = null;
-    if (operation.phase !== "applied") {
-      showToast(operation.reason || "拓展重载结果待确认，请检查运行状态", { type: "error" });
+    const terminal = operation && codexPlusReloadTerminalPhases.includes(operation.phase);
+    if (terminal && !clearCodexPlusReloadReference(operation)) {
+      operation = { ...operation, phase: "unknown" };
+      problem = "重载已结束，但待确认记录无法安全清理，请检查存储后重试";
     }
-    await loadUserScripts();
+    codexPlusReloadState.pending = terminal && !problem ? null : operation;
+    if (problem || (operation && operation.phase !== "applied")) {
+      showToast(problem || (terminal && operation.reason) || "拓展重载结果待确认，请检查运行状态", { type: "error" });
+    }
+    await codexPlusReloadState.refresh();
+  }
+
+  if (codexPlusReloadState.restored && !codexPlusReloadState.restoreScheduled) {
+    codexPlusReloadState.restoreScheduled = true;
+    Promise.resolve().then(() => {
+      if (codexPlusReloadState.pending && !codexPlusReloadState.task) void reloadUserScriptsAfterChange();
+    });
   }
 
   /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
@@ -6412,11 +6608,11 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusPageNav(codexPlusExtensionsTab);
   }
 
-  async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
+  async function loadUserScripts(path = "/user-scripts/list", payload = {}, options = {}) {
     const requestPayload = path === "/user-scripts/list"
       ? { ...payload, runtime_status: window.__codexPlusUserScripts?.scripts || {} }
       : payload;
-    const result = await postJson(path, requestPayload);
+    const result = await postJson(path, requestPayload, options);
     if (result?.scripts) {
       codexPlusUserScripts = result;
       codexPlusUserScriptsLoaded = true;
@@ -6425,6 +6621,7 @@
       // 已安装状态变了，市场的「已安装/有更新」标记也要跟着刷新。
       if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
     }
+    return result;
   }
 
   /**
@@ -10520,7 +10717,7 @@
     document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
   }
 
-  async function postJson(path, payload) {
+  async function postJson(path, payload, options = {}) {
     if (path === "/delete") {
       const hostId = deletePayloadHost(payload);
       if (!hostId) return { status: "failed", message: "无法确定会话主机归属，未删除", session_id: payload?.session_id || "" };
@@ -10553,7 +10750,10 @@
         return await fetchBackendStatusFromHelper(path, payload);
       }
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
-      return { status: "failed", message: "桥接不可用，请重启启动器" };
+      return { status: "failed", message: "桥接不可用，请重启启动器", bridgeFailure: true };
+    }
+    if (options.timeoutMs > 0 && window.__codexSessionDeleteBridge.supportsTimeout !== true) {
+      return { status: "failed", message: "当前桥接不支持有界请求", code: "bridge_timeout_unsupported" };
     }
     function bridgeWithBackendTimeout(path, payload) {
       let request;
@@ -10595,8 +10795,9 @@
         });
         return fallback;
       }
-      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
-      recordCodexPlusBridgeSuccess();
+      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload, options);
+      if (bridgeResult?.bridgeFailure) recordCodexPlusBridgeFailure();
+      else recordCodexPlusBridgeSuccess();
       return bridgeResult;
     } catch (error) {
       recordCodexPlusBridgeFailure();

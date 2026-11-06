@@ -67,13 +67,17 @@ test("old scripts use one page refresh when page fallback is allowed", () => {
 });
 
 test("a later fenced operation supersedes a stopped one and rejects late commands", () => {
-  const { runtime } = page({ old: { cleanups: [() => {}] } });
+  let cleanups = 0;
+  let applies = 0;
+  const { runtime } = page({ old: { cleanups: [() => { cleanups++; }] } });
   const doc = runtime.documentId;
   assert.equal(runtime.prepareOperation("old", doc, "r1", true, 10).phase, "stopped");
   assert.equal(runtime.prepareOperation("new", doc, "r2", true, 11).phase, "stopped");
   assert.equal(runtime.applyOperation("old", doc, "r1", () => {}).phase, "rejected");
   assert.equal(runtime.prepareOperation("late", doc, "r1", true, 9).reason, "stale_operation");
-  assert.equal(runtime.applyOperation("new", doc, "r2", () => {}).phase, "verifying");
+  assert.equal(runtime.applyOperation("new", doc, "r2", () => { applies++; }).phase, "verifying");
+  assert.equal(cleanups, 1);
+  assert.equal(applies, 1);
 });
 
 test("backend source is withdrawn before cleanup and page fallback", () => {

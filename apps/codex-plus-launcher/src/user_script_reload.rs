@@ -104,14 +104,25 @@ impl ReloadOwner {
             .filter(|id| !id.is_empty()).map(str::to_owned).unwrap_or_else(|| new_operation_id(&self.epoch));
         let issued_at = operation_issued_at(&self.epoch, &id).context("重载操作编号无效或属于旧 owner")?;
         anyhow::ensure!(issued_at <= now_ms().saturating_add(30_000), "重载操作编号时间无效");
+        if let Some(epoch) = payload.get("ownerEpoch") {
+            anyhow::ensure!(epoch.as_str() == Some(&self.epoch), "重载 owner 已变化；没有提交旧操作");
+        }
         let allow_page = payload.get("allowPage").and_then(Value::as_bool).unwrap_or(true);
+        let source_document = match payload.get("sourceDocumentId") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().filter(|value| !value.is_empty() && value.len() <= 256)
+                .context("重载来源文档标识无效")?.to_owned()),
+        };
         let record = json!({ "operationId": id, "ownerEpoch": self.epoch, "allowPage": allow_page, "phase": "accepted", "active": true,
+            "sourceDocumentId": source_document,
             "issuedAt": issued_at,
             "createdAt": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 });
         {
             let mut state = self.state.lock().unwrap();
             if let Some(previous) = state.get(&id) {
-                anyhow::ensure!(previous["allowPage"] == allow_page, "重载操作编号与已有请求冲突");
+                anyhow::ensure!(previous["allowPage"] == allow_page
+                    && previous["sourceDocumentId"] == record["sourceDocumentId"],
+                    "重载操作编号与已有请求冲突");
                 return Ok(previous.clone());
             }
             anyhow::ensure!(issued_at > self.retired_before.load(Ordering::Relaxed),
@@ -136,7 +147,7 @@ impl ReloadOwner {
         }
         let owner = self.clone();
         tokio::spawn(async move {
-            owner.observe(&id, Duration::from_secs(45), owner.run(&id, allow_page, &websocket, &manager)).await;
+            owner.observe(&id, Duration::from_secs(45), owner.run(&id, allow_page, source_document.as_deref(), &websocket, &manager)).await;
         });
         Ok(record)
     }
@@ -154,6 +165,11 @@ impl ReloadOwner {
 
     pub(super) fn status(&self, id: &str) -> Option<Value> {
         self.state.lock().unwrap().get(id).cloned()
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish_for_test(&self, id: &str, phase: &str, fields: Value) {
+        self.update(id, phase, fields);
     }
 
     pub(super) fn control_status(&self, id: &str) -> Value {
@@ -174,6 +190,7 @@ impl ReloadOwner {
     fn update(&self, id: &str, phase: &str, fields: Value) {
         let mut state = self.state.lock().unwrap();
         let Some(record) = state.get_mut(id) else { return };
+        if record["active"] == false { return; }
         record["phase"] = json!(phase);
         if matches!(phase, "applied" | "failed" | "blocked" | "degraded" | "rejected") {
             record["active"] = json!(false);
@@ -188,36 +205,167 @@ impl ReloadOwner {
         );
     }
 
-    async fn run(&self, id: &str, allow_page: bool, websocket: &Arc<Mutex<Option<String>>>, manager: &UserScriptManager) {
+    async fn run(&self, id: &str, allow_page: bool, source_document: Option<&str>, websocket: &Arc<Mutex<Option<String>>>, manager: &UserScriptManager) {
         // Keep other reloads out even while a new document's bootstrap is allowed to run.
         let _operation_guard = self.operations.lock().await;
+        // 同一操作不能在目标切换后静默转交给另一个 CDP target。
+        let target = loop {
+            let current = websocket.lock().unwrap().clone();
+            if let Some(url) = current {
+                break url;
+            }
+            self.update(id, "unknown", json!({ "reason": "页面尚未连接，操作结果待确认" }));
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        let pinned = Arc::new(Mutex::new(Some(target.clone())));
+        self.run_until_target_changes(id, websocket, &target,
+            self.run_on_target(id, allow_page, source_document, websocket, &target, &pinned, manager)).await;
+    }
+
+    async fn run_until_target_changes<F>(
+        &self,
+        id: &str,
+        current: &Arc<Mutex<Option<String>>>,
+        target: &str,
+        operation: F,
+    )
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        tokio::pin!(operation);
+        tokio::select! {
+            _ = &mut operation => {}
+            _ = wait_for_target_change(current, target) => {
+                self.update(id, "unknown", json!({
+                    "reason": "页面目标已切换；原操作仍在等待旧页面确认",
+                    "active": true,
+                }));
+                operation.await;
+            }
+        }
+    }
+
+    async fn run_on_target(&self, id: &str, allow_page: bool, source_document: Option<&str>, current: &Arc<Mutex<Option<String>>>, target: &str, websocket: &Arc<Mutex<Option<String>>>, manager: &UserScriptManager) {
+        self.run_on_target_with(id, allow_page, source_document, current, target, websocket, manager,
+            |websocket, expression| {
+                let websocket = websocket.clone();
+                let expression = expression.to_owned();
+                async move { evaluate(&websocket, &expression).await }
+            }).await;
+    }
+
+    async fn run_on_target_with<F, Fut>(&self, id: &str, allow_page: bool, source_document: Option<&str>, current: &Arc<Mutex<Option<String>>>, target: &str, websocket: &Arc<Mutex<Option<String>>>, manager: &UserScriptManager, evaluate_page: F)
+    where
+        F: Fn(&Arc<Mutex<Option<String>>>, &str) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<Value>>,
+    {
         let mut attempt = 0_u64;
+        let mut prepare_sent = false;
+        let mut mutation_confirmed = false;
+        let mut applied_once = false;
+        let mut stopped_source: Option<(String, u64)> = None;
         loop {
-            let guard = self.execution.lock().await;
             attempt += 1;
             let operation_id = format!("{id}-{attempt:x}");
             let sequence = next_sequence();
             let (bundle, revision) = match snapshot(manager).await {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    self.update(id, "failed", json!({ "reason": format!("{error:#}") }));
+                    self.update(id, if stopped_source.is_some() || applied_once { "degraded" } else { "failed" },
+                        json!({ "reason": format!("{error:#}") }));
                     return;
                 }
             };
             self.update(id, "accepted", json!({ "revision": revision, "attempt": attempt }));
-            let before = self.wait_probe(id, websocket, &operation_id).await;
+            // 探测本身不执行清理。旧目标不可达时不能一直占用初始化锁。
+            loop {
+                if target_changed(current, target) {
+                    if self.finish_on_target_change(id, prepare_sent, mutation_confirmed) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                if evaluate_page(websocket, &build_probe_with_page_receipt(&operation_id)).await
+                    .is_ok_and(|value| value["documentId"].is_string()) { break; }
+                self.update(id, "unknown", json!({ "reason": "页面暂未响应，等待确认" }));
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let guard = self.execution.lock().await;
+            if target_changed(current, target) {
+                drop(guard);
+                if self.finish_on_target_change(id, prepare_sent, mutation_confirmed) {
+                    return;
+                }
+                continue;
+            }
+            // 获取锁后重新探测，防止等待锁期间 bootstrap 或导航改变文档。
+            let before = match evaluate_page(websocket, &build_probe_with_page_receipt(&operation_id)).await {
+                Ok(value) if value["documentId"].is_string() => value,
+                _ => {
+                    drop(guard);
+                    self.update(id, "unknown", json!({ "reason": "页面暂未响应，等待确认" }));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+            };
+            if target_changed(current, target) {
+                drop(guard);
+                if self.finish_on_target_change(id, prepare_sent, mutation_confirmed) {
+                    return;
+                }
+                continue;
+            }
             let document = before["documentId"].as_str().unwrap_or_default().to_string();
             if document.is_empty() { continue; }
+            if !prepare_sent && source_document.is_some_and(|source| source != document) {
+                self.update(id, "rejected", json!({ "reason": "来源页面已切换；未把旧请求应用到新页面" }));
+                return;
+            }
+            if stopped_source.as_ref().is_some_and(|(stopped_document, _)| stopped_document != &document) {
+                drop(guard);
+                if self.verify_navigation(id, websocket, &operation_id,
+                    &stopped_source.as_ref().unwrap().0, "navigation", manager).await {
+                    return;
+                }
+                stopped_source = None;
+                continue;
+            }
             let mut generation = codex_plus_core::extension_backend::backend_generation(manager);
-            let source_revoked = allow_page || before["cleanupSupported"] == true;
-            if source_revoked {
-                match codex_plus_core::extension_backend::revoke_backend_document(manager, generation).await {
+            let source_revoked = stopped_source.is_some() || allow_page || before["cleanupSupported"] == true;
+            if let Some((_, stopped_generation)) = stopped_source.as_ref() {
+                if before["initialized"] != true || !before["backendSource"].is_null()
+                    || generation != *stopped_generation
+                {
+                    self.update(id, "degraded", json!({ "reason": "页面清理后文档或后台代际已变化，未应用新快照" }));
+                    return;
+                }
+                generation = *stopped_generation;
+            } else if source_revoked {
+                if before["initialized"] != true || !before["backendSource"].is_object() {
+                    drop(guard);
+                    self.update(id, "unknown", json!({ "reason": "等待页面初始化及后台来源确认" }));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                match revoke_probed_backend_source(manager, &document, &before).await {
                     Some(next) => generation = next,
                     None => {
-                        self.update(id, "degraded", json!({ "reason": "后台代际已变化，未开始页面清理" }));
+                        self.update(id, "degraded", json!({ "reason": "页面文档或后台来源已变化，未开始页面清理" }));
                         return;
                     }
                 }
+            }
+            if target_changed(current, target) {
+                if source_revoked && (!prepare_sent || mutation_confirmed) {
+                    self.update(id, "degraded", json!({ "reason": "页面目标已切换，旧后台来源已撤销；请检查或重新加载页面" }));
+                    return;
+                }
+                drop(guard);
+                if self.finish_on_target_change(id, prepare_sent, mutation_confirmed) {
+                    return;
+                }
+                continue;
             }
             self.update(id, "quiescing", json!({ "documentId": document }));
             let preparation = json!({
@@ -226,21 +374,24 @@ impl ReloadOwner {
             });
             let prepare = build_prepare_with_page_receipt(&preparation);
             // A timeout does not cancel CDP execution. Never resend this prepare.
-            let acknowledged = evaluate(websocket, &prepare).await.ok();
+            prepare_sent = true;
+            mutation_confirmed = false;
+            let acknowledged = evaluate_page(&websocket, &prepare).await.ok();
             if let Some(response) = &acknowledged {
                 if response["phase"] == "rejected" || response["phase"] == "failed" {
-                    self.update(id, "failed", json!({ "reason": response["reason"] }));
+                    self.update(id, if source_revoked { "degraded" } else { "failed" },
+                        json!({ "reason": if source_revoked { "页面准备未完成，旧后台来源已撤销；请检查当前页面" } else { response["reason"].as_str().unwrap_or("页面准备失败") } }));
                     return;
                 }
             }
             let prepared = self.wait_preparation_with_probe(id, &preparation, acknowledged, || {
-                self.wait_probe(id, websocket, &operation_id)
+                self.wait_probe_with(id, &websocket, &operation_id, &evaluate_page)
             }).await;
             let Some(prepared) = prepared else {
                 // Navigation can destroy the prepare response before it is read.
                 // Let the new document's bootstrap acquire the same execution permit.
                 drop(guard);
-                if self.verify_navigation(id, websocket, &operation_id, &document, "navigation", manager).await {
+                if self.verify_navigation(id, &websocket, &operation_id, &document, "navigation", manager).await {
                     return;
                 }
                 continue;
@@ -257,20 +408,37 @@ impl ReloadOwner {
                 "pageRequested" => {
                     self.update(id, "pageRequested", json!({ "mode": "page", "reason": prepared["reason"] }));
                     drop(guard);
-                    if self.verify_navigation(id, websocket, &operation_id, &document, "page", manager).await {
+                    if self.verify_navigation(id, &websocket, &operation_id, &document, "page", manager).await {
                         return;
                     }
                     continue;
                 }
-                "stopped" => {}
+                "stopped" => mutation_confirmed = true,
                 _ => {
-                    self.update(id, "failed", json!({ "reason": "无法确认页面清理状态" }));
+                    self.update(id, if source_revoked { "degraded" } else { "failed" },
+                        json!({ "reason": "无法确认页面清理状态；请检查当前页面" }));
                     return;
                 }
             }
             self.update(id, "stopped", json!({}));
-            if snapshot(manager).await.ok().map(|snapshot| snapshot.1) != Some(revision.clone()) {
-                continue;
+            if target_changed(current, target) {
+                self.finish_on_target_change(id, prepare_sent, mutation_confirmed);
+                return;
+            }
+            match snapshot(manager).await {
+                Ok((_, current_revision)) if current_revision == revision => {}
+                Ok(_) => {
+                    stopped_source = Some((document, generation));
+                    continue;
+                }
+                Err(error) => {
+                    self.update(id, "degraded", json!({ "reason": format!("页面已清理，但无法重新读取拓展快照；请修复后重新加载页面：{error:#}") }));
+                    return;
+                }
+            }
+            if target_changed(current, target) {
+                self.finish_on_target_change(id, prepare_sent, mutation_confirmed);
+                return;
             }
             if !codex_plus_core::extension_backend::stop_all_if_generation(manager, generation).await {
                 self.update(id, "degraded", json!({ "reason": "后台代际已变化，页面已清理但未重新加载" }));
@@ -282,39 +450,60 @@ impl ReloadOwner {
             {
                 Ok(staged) => staged,
                 Err(error) => {
-                    self.update(id, "degraded", json!({ "reason": format!("无法固定后台快照：{error:#}") }));
+                    self.update(id, "degraded", json!({ "reason": format!("页面已清理，无法固定后台快照；请修复后重新加载页面：{error:#}") }));
                     return;
                 }
             };
+            if target_changed(current, target) {
+                self.finish_on_target_change(id, prepare_sent, mutation_confirmed);
+                return;
+            }
             let backend_source = match codex_plus_core::extension_backend::bind_backend_snapshot(
                 manager, generation.wrapping_add(1), &document, staged,
             ).await {
                 Ok(source) => source,
                 Err(error) => {
-                    self.update(id, "degraded", json!({ "reason": format!("无法绑定页面后台代际：{error:#}") }));
+                    self.update(id, "degraded", json!({ "reason": format!("页面已清理，无法绑定页面后台代际；请重新加载页面：{error:#}") }));
                     return;
                 }
             };
+            if target_changed(current, target) {
+                self.finish_on_target_change(id, prepare_sent, mutation_confirmed);
+                return;
+            }
+            stopped_source = None;
             self.update(id, "applying", json!({}));
             let apply = UserScriptManager::build_apply_operation(&operation_id, &document, &revision, &bundle, &backend_source);
             // As with prepare, a lost response is resolved by querying the same operation.
-            if let Ok(response) = evaluate(websocket, &apply).await {
+            mutation_confirmed = false;
+            if let Ok(response) = evaluate_page(&websocket, &apply).await {
                 if response["operation"]["phase"] == "rejected" || response["operation"]["phase"] == "failed" {
                     self.update(id, "failed", json!({ "reason": response["operation"]["reason"] }));
                     return;
                 }
             }
             loop {
-                let probe = self.wait_probe(id, websocket, &operation_id).await;
+                let probe = self.wait_probe_with(id, &websocket, &operation_id, &evaluate_page).await;
                 if probe["documentId"] != document { break; }
+                if !preparation_identity_matches(&probe["operation"], &preparation) {
+                    self.update(id, "unknown", json!({ "reason": "页面应用回执身份不匹配，操作结果待确认" }));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
                 let phase = probe["operation"]["phase"].as_str().unwrap_or_default();
                 if phase == "failed" || phase == "rejected" || phase == "superseded" {
                     self.update(id, "failed", json!({ "reason": probe["operation"]["reason"] }));
                     return;
                 }
                 if phase == "verifying" && probe["revision"] == revision && probe["ready"] == true {
+                    applied_once = true;
+                    mutation_confirmed = true;
                     if !codex_plus_core::extension_backend::backend_source_is_current(manager, &probe["backendSource"]) {
                         self.update(id, "degraded", json!({ "reason": "页面脚本已执行，但后台来源已失效" }));
+                        return;
+                    }
+                    if target_changed(current, target) {
+                        self.finish_on_target_change(id, prepare_sent, mutation_confirmed);
                         return;
                     }
                     if snapshot(manager).await.ok().map(|snapshot| snapshot.1) != Some(revision.clone()) {
@@ -327,6 +516,19 @@ impl ReloadOwner {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
+    }
+
+    fn finish_on_target_change(&self, id: &str, prepare_sent: bool, mutation_confirmed: bool) -> bool {
+        if !prepare_sent {
+            self.update(id, "rejected", json!({ "reason": "页面目标已切换，未开始页面清理" }));
+            return true;
+        }
+        if mutation_confirmed {
+            self.update(id, "degraded", json!({ "reason": "页面目标已切换；此前操作已确认，但新页面尚未验证，请检查或重新加载页面" }));
+            return true;
+        }
+        self.update(id, "unknown", json!({ "reason": "页面目标已切换，原操作仍待确认" }));
+        false
     }
 
     async fn wait_preparation_with_probe<F, Fut>(
@@ -353,8 +555,17 @@ impl ReloadOwner {
             if observed["documentId"] != preparation["documentId"] {
                 return None;
             }
-            if observed["operation"].is_object() {
-                return Some(observed["operation"].clone());
+            let operation = &observed["operation"];
+            if preparation_identity_matches(operation, preparation) {
+                let complete = match operation["phase"].as_str().unwrap_or_default() {
+                    "stopped" => operation["mode"] == "scripts",
+                    "pageRequested" => page_receipt_matches(operation, preparation),
+                    "blocked" | "degraded" | "failed" | "rejected" => true,
+                    _ => false,
+                };
+                if complete {
+                    return Some(operation.clone());
+                }
             }
             self.update(id, "unknown", json!({ "reason": "等待页面确认清理操作" }));
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -429,8 +640,20 @@ impl ReloadOwner {
     }
 
     async fn wait_probe(&self, id: &str, websocket: &Arc<Mutex<Option<String>>>, operation_id: &str) -> Value {
+        self.wait_probe_with(id, websocket, operation_id, &|websocket, expression| {
+            let websocket = websocket.clone();
+            let expression = expression.to_owned();
+            async move { evaluate(&websocket, &expression).await }
+        }).await
+    }
+
+    async fn wait_probe_with<F, Fut>(&self, id: &str, websocket: &Arc<Mutex<Option<String>>>, operation_id: &str, evaluate_page: &F) -> Value
+    where
+        F: Fn(&Arc<Mutex<Option<String>>>, &str) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<Value>>,
+    {
         loop {
-            if let Ok(value) = evaluate(websocket, &build_probe_with_page_receipt(operation_id)).await {
+            if let Ok(value) = evaluate_page(websocket, &build_probe_with_page_receipt(operation_id)).await {
                 if value["documentId"].is_string() { return value; }
             }
             self.update(id, "unknown", json!({ "reason": "页面暂未响应，操作结果待确认" }));
@@ -457,10 +680,34 @@ impl ReloadOwner {
     }
 }
 
+async fn wait_for_target_change(current: &Arc<Mutex<Option<String>>>, target: &str) {
+    loop {
+        if target_changed(current, target) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn target_changed(current: &Arc<Mutex<Option<String>>>, target: &str) -> bool {
+    current.lock().unwrap().as_deref().is_some_and(|url| url != target)
+}
+
+async fn revoke_probed_backend_source(manager: &UserScriptManager, document: &str, probe: &Value) -> Option<u64> {
+    if probe.pointer("/backendSource/documentId").and_then(Value::as_str) != Some(document) {
+        return None;
+    }
+    codex_plus_core::extension_backend::revoke_backend_source(manager, &probe["backendSource"]).await
+}
+
+fn preparation_identity_matches(receipt: &Value, preparation: &Value) -> bool {
+    ["id", "documentId", "revision", "allowPage", "sequence"].iter()
+        .all(|key| receipt.get(*key).is_some_and(|value| preparation.get(*key) == Some(value)))
+}
+
 fn page_receipt_matches(receipt: &Value, preparation: &Value) -> bool {
-    receipt["phase"] == "pageRequested" && receipt["allowPage"] == true
-        && ["id", "documentId", "revision", "allowPage", "sequence"].iter()
-            .all(|key| receipt.get(*key).is_some_and(|value| preparation.get(*key) == Some(value)))
+    receipt["phase"] == "pageRequested" && receipt["mode"] == "page" && receipt["allowPage"] == true
+        && preparation_identity_matches(receipt, preparation)
 }
 
 fn build_prepare_with_page_receipt(preparation: &Value) -> String {
@@ -539,6 +786,17 @@ mod tests {
         })
     }
 
+    fn fixture_preparation(expression: &str) -> Value {
+        let encoded = expression.lines()
+            .find_map(|line| line.trim().strip_prefix("const expected = "))
+            .and_then(|line| line.strip_suffix(';'))
+            .expect("准备操作缺少预期身份");
+        let mut operation: Value = serde_json::from_str(encoded).unwrap();
+        operation["phase"] = json!("stopped");
+        operation["mode"] = json!("scripts");
+        operation
+    }
+
     fn probe_after_requested_page_reload(preparation: &Value, storage_available: bool) -> Value {
         let prepare = build_prepare_with_page_receipt(preparation);
         let probe = build_probe_with_page_receipt(preparation["id"].as_str().unwrap());
@@ -579,6 +837,302 @@ process.stdout.write(JSON.stringify(observed));
         let output = std::process::Command::new("node").args(["-e", &script]).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    #[tokio::test]
+    async fn changed_snapshot_after_cleanup_is_prepared_again_on_the_same_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "change").await;
+        assert_eq!(result.0["phase"], "applied");
+        assert_eq!(result.1, 2);
+        assert_eq!(result.2, 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_error_after_cleanup_reports_degraded_without_reapplying() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "invalid").await;
+        assert_eq!(result.0["phase"], "degraded");
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, 0);
+    }
+
+    #[tokio::test]
+    async fn lost_cleanup_response_is_confirmed_without_repeating_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "lost_prepare").await;
+        assert_eq!(result.0["phase"], "applied");
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, 1);
+    }
+
+    #[tokio::test]
+    async fn timed_out_cleanup_can_finish_later_without_being_resent() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "deferred_prepare").await;
+        assert_eq!(result.0["phase"], "applied");
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, 1);
+    }
+
+    #[tokio::test]
+    async fn lost_apply_response_is_confirmed_without_repeating_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "lost_apply").await;
+        assert_eq!(result.0["phase"], "applied");
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, 1);
+    }
+
+    #[tokio::test]
+    async fn target_change_after_confirmed_apply_does_not_block_later_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "target_after_apply").await;
+        assert_eq!(result.0["phase"], "degraded");
+        assert_eq!(result.0["active"], false);
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, 1);
+    }
+
+    #[tokio::test]
+    async fn target_change_after_confirmed_cleanup_does_not_block_later_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        std::fs::create_dir(&user).unwrap();
+        let script = user.join("fixture.js");
+        std::fs::write(&script, "window.fixtureVersion = 'old';").unwrap();
+        let manager = UserScriptManager::new(dir.path().join("builtin"), &user, dir.path().join("scripts.json"));
+        let owner = ReloadOwner::default();
+        let generation = codex_plus_core::extension_backend::backend_generation(&manager);
+        let source = codex_plus_core::extension_backend::bind_backend_document(&manager, generation, "document").await.unwrap();
+        let id = codex_plus_core::user_script_control::new_operation_id(owner.epoch());
+        owner.state.lock().unwrap().insert(id.clone(), json!({ "active": true }));
+        let current = Arc::new(Mutex::new(Some("old-target".to_string())));
+        let pinned = Arc::new(Mutex::new(Some("old-target".to_string())));
+        let changed_target = current.clone();
+        let cleanups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let applications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let operation = Arc::new(Mutex::new(None::<Value>));
+        let cleanup_count = cleanups.clone();
+        let application_count = applications.clone();
+        let task = async {
+            let _operation_guard = owner.operations.lock().await;
+            owner.run_on_target_with(
+                &id, true, Some("document"), &current, "old-target", &pinned, &manager,
+                move |_, expression| {
+                    let changed_target = changed_target.clone();
+                    let cleanups = cleanup_count.clone();
+                    let applications = application_count.clone();
+                    let source = source.clone();
+                    let script = script.clone();
+                    let operation = operation.clone();
+                    let expression = expression.to_owned();
+                    async move {
+                        if expression.contains("const encoded =") {
+                            cleanups.fetch_add(1, Ordering::SeqCst);
+                            std::fs::write(&script, "window.fixtureVersion = 'new';").unwrap();
+                            let prepared = fixture_preparation(&expression);
+                            *operation.lock().unwrap() = Some(prepared.clone());
+                            Ok(prepared)
+                        } else if expression.contains("const operation = runtime.applyOperation") {
+                            applications.fetch_add(1, Ordering::SeqCst);
+                            Ok(json!({ "operation": { "phase": "verifying" } }))
+                        } else {
+                            let stopped = cleanups.load(Ordering::SeqCst) > 0;
+                            if stopped {
+                                *changed_target.lock().unwrap() = Some("new-target".to_string());
+                            }
+                            Ok(json!({ "documentId": "document", "initialized": true, "ready": true,
+                                "cleanupSupported": true, "backendSource": if stopped { Value::Null } else { source },
+                                "operation": operation.lock().unwrap().clone() }))
+                        }
+                    }
+                },
+            ).await;
+        };
+        let completed = tokio::time::timeout(Duration::from_secs(2), task).await;
+        let status = owner.status(&id).unwrap();
+        let next_can_start = tokio::time::timeout(Duration::from_secs(1), owner.operations.lock()).await.is_ok();
+        codex_plus_core::extension_backend::stop_all(&manager).await;
+        assert!(completed.is_ok(), "已确认清理后的目标切换不能无限占用重载队列");
+        assert_eq!(status["phase"], "degraded");
+        assert_eq!(status["active"], false);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+        assert_eq!(applications.load(Ordering::SeqCst), 0);
+        assert!(next_can_start);
+    }
+
+    async fn exercise_changed_snapshot(root: &std::path::Path, after_prepare: &str) -> (Value, usize, usize) {
+        let user = root.join("user");
+        std::fs::create_dir(&user).unwrap();
+        let script = user.join("fixture.js");
+        std::fs::write(&script, "window.fixtureVersion = 'old';").unwrap();
+        let config = root.join("scripts.json");
+        let manager = UserScriptManager::new(root.join("builtin"), &user, &config);
+        let owner = ReloadOwner::default();
+        let generation = codex_plus_core::extension_backend::backend_generation(&manager);
+        let source = codex_plus_core::extension_backend::bind_backend_document(&manager, generation, "document").await.unwrap();
+        let id = codex_plus_core::user_script_control::new_operation_id(owner.epoch());
+        owner.state.lock().unwrap().insert(id.clone(), json!({ "active": true }));
+        let websocket = Arc::new(Mutex::new(Some("mock-target".to_string())));
+        let old_evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let new_evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let old_cleanup = old_evaluations.clone();
+        let new_apply = new_evaluations.clone();
+        let probe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probes = probe_count.clone();
+        let first_source = source.clone();
+        let evaluator_manager = manager.clone();
+        let operation = Arc::new(Mutex::new(None::<Value>));
+        let invalid = after_prepare == "invalid";
+        let change_after_apply = after_prepare == "target_after_apply";
+        let lost_prepare = after_prepare == "lost_prepare";
+        let deferred_prepare = after_prepare == "deferred_prepare";
+        let lost_apply = after_prepare == "lost_apply";
+        let current_target = websocket.clone();
+        let task = async {
+            let _operation_guard = owner.operations.lock().await;
+            owner.run_on_target_with(
+                &id, true, Some("document"), &websocket, "mock-target", &websocket, &manager,
+                move |_, expression| {
+                    let old_cleanup = old_cleanup.clone();
+                    let new_apply = new_apply.clone();
+                    let probes = probes.clone();
+                    let first_source = first_source.clone();
+                    let script = script.clone();
+                    let config = config.clone();
+                    let manager = evaluator_manager.clone();
+                    let operation = operation.clone();
+                    let current_target = current_target.clone();
+                    let expression = expression.to_owned();
+                    async move {
+                        if expression.contains("const encoded =") {
+                            if old_cleanup.fetch_add(1, Ordering::SeqCst) == 0 {
+                                if invalid {
+                                    std::fs::write(&config, "{invalid").unwrap();
+                                } else if !change_after_apply && !lost_prepare && !deferred_prepare && !lost_apply {
+                                    std::fs::write(&script, "window.fixtureVersion = 'new';").unwrap();
+                                }
+                            }
+                            let prepared = fixture_preparation(&expression);
+                            if deferred_prepare {
+                                let pending = operation.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(125)).await;
+                                    *pending.lock().unwrap() = Some(prepared);
+                                });
+                                anyhow::bail!("模拟 CDP 超时后页面才完成清理");
+                            }
+                            *operation.lock().unwrap() = Some(prepared.clone());
+                            if lost_prepare {
+                                anyhow::bail!("模拟清理已执行但 CDP 响应超时");
+                            }
+                            Ok(prepared)
+                        } else if expression.contains("const operation = runtime.applyOperation") {
+                            assert!(expression.contains(if change_after_apply || lost_prepare || deferred_prepare || lost_apply {
+                                "window.fixtureVersion = 'old';"
+                            } else {
+                                "window.fixtureVersion = 'new';"
+                            }));
+                            new_apply.fetch_add(1, Ordering::SeqCst);
+                            let mut applied = operation.lock().unwrap();
+                            applied.as_mut().unwrap()["phase"] = json!("verifying");
+                            if change_after_apply {
+                                std::fs::write(&script, "window.fixtureVersion = 'new';").unwrap();
+                            }
+                            if lost_apply {
+                                anyhow::bail!("模拟应用已执行但 CDP 响应超时");
+                            }
+                            Ok(json!({ "operation": applied.clone() }))
+                        } else {
+                            let index = probes.fetch_add(1, Ordering::SeqCst);
+                            let generation = codex_plus_core::extension_backend::backend_generation(&manager);
+                            let operation = operation.lock().unwrap().clone();
+                            if change_after_apply && new_apply.load(Ordering::SeqCst) > 0 {
+                                *current_target.lock().unwrap() = Some("new-target".to_string());
+                            }
+                            let backend_source = if index < 2 {
+                                first_source
+                            } else if new_apply.load(Ordering::SeqCst) > 0 {
+                                json!({ "ownerEpoch": first_source["ownerEpoch"], "generation": generation,
+                                    "documentId": "document", "revision": operation.as_ref().unwrap()["revision"] })
+                            } else {
+                                Value::Null
+                            };
+                            let revision = if new_apply.load(Ordering::SeqCst) > 0 {
+                                operation.as_ref().map(|value| value["revision"].clone())
+                            } else {
+                                manager.reload_snapshot().ok().map(|snapshot| json!(snapshot.1))
+                            };
+                            Ok(json!({ "documentId": "document", "initialized": true, "ready": true,
+                                "cleanupSupported": true, "backendSource": backend_source,
+                                "scripts": { "user:fixture.js": { "status": "loaded", "name": "fixture.js", "source": "user" } },
+                                "revision": revision,
+                                "operation": operation }))
+                        }
+                    }
+                },
+            ).await;
+        };
+        let completed = tokio::time::timeout(Duration::from_secs(3), task).await;
+        let status = owner.status(&id).unwrap();
+        let prepares = old_evaluations.load(Ordering::SeqCst);
+        let applies = new_evaluations.load(Ordering::SeqCst);
+        codex_plus_core::extension_backend::stop_all(&manager).await;
+        completed.expect("版本变化后重载未完成");
+        (status, prepares, applies)
+    }
+
+    #[tokio::test]
+    async fn same_document_waits_for_a_matching_complete_preparation_receipt() {
+        let owner = ReloadOwner::default();
+        let preparation = page_preparation();
+        let mut matching = preparation.clone();
+        matching["phase"] = json!("stopped");
+        matching["mode"] = json!("scripts");
+
+        for (field, value) in [
+            ("id", json!("other-attempt")),
+            ("documentId", json!("other-document")),
+            ("revision", json!("other-revision")),
+            ("allowPage", json!(false)),
+            ("sequence", json!(18)),
+            ("mode", json!("page")),
+        ] {
+            let mut stale = matching.clone();
+            stale[field] = value;
+            let observed = json!({ "documentId": "old-document", "operation": stale });
+            let result = tokio::time::timeout(Duration::from_millis(40),
+                owner.wait_preparation_with_probe("reload", &preparation, None, || {
+                    std::future::ready(observed.clone())
+                })).await;
+            assert!(result.is_err(), "不匹配的清理回执不能确认: {field}");
+        }
+
+        let mut incomplete = matching.clone();
+        incomplete.as_object_mut().unwrap().remove("sequence");
+        let observed = json!({ "documentId": "old-document", "operation": incomplete });
+        assert!(tokio::time::timeout(Duration::from_millis(40),
+            owner.wait_preparation_with_probe("reload", &preparation, None, || {
+                std::future::ready(observed.clone())
+            })).await.is_err(), "缺失字段的清理回执不能确认");
+
+        let mut denied = preparation.clone();
+        denied["allowPage"] = json!(false);
+        let mut page_requested = denied.clone();
+        page_requested["phase"] = json!("pageRequested");
+        page_requested["mode"] = json!("page");
+        let observed = json!({ "documentId": "old-document", "operation": page_requested });
+        assert!(tokio::time::timeout(Duration::from_millis(40),
+            owner.wait_preparation_with_probe("reload", &denied, None, || {
+                std::future::ready(observed.clone())
+            })).await.is_err(), "禁止刷新时不能接受页面刷新回执");
+
+        let observed = json!({ "documentId": "old-document", "operation": matching.clone() });
+        let prepared = owner.wait_preparation_with_probe("reload", &preparation, None, || {
+            std::future::ready(observed.clone())
+        }).await;
+        assert_eq!(prepared, Some(matching));
     }
 
     #[tokio::test]
@@ -694,6 +1248,106 @@ process.stdout.write(JSON.stringify(observed));
         next.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn changed_target_does_not_cancel_old_coordination_or_release_execution() {
+        let owner = ReloadOwner::default();
+        owner.state.lock().unwrap().insert("target-change".into(), json!({ "active": true }));
+        let current = Arc::new(Mutex::new(Some("old-target".to_owned())));
+        let task_owner = owner.clone();
+        let task_current = current.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            task_owner.run_until_target_changes("target-change", &task_current, "old-target", async {
+                let _guard = task_owner.lock_initial_load().await;
+                let _ = started_tx.send(());
+                let _ = finish_rx.await;
+                task_owner.update("target-change", "applied", json!({}));
+            }).await;
+        });
+        started_rx.await.unwrap();
+        *current.lock().unwrap() = Some("new-target".to_owned());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while owner.status("target-change").unwrap()["phase"] != "unknown" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let status = owner.status("target-change").unwrap();
+        assert_eq!(status["active"], true);
+        assert!(!task.is_finished());
+        assert!(tokio::time::timeout(Duration::from_millis(30), owner.lock_initial_load()).await.is_err());
+        finish_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap();
+        assert_eq!(owner.status("target-change").unwrap()["phase"], "applied");
+        let _guard = tokio::time::timeout(Duration::from_secs(1), owner.lock_initial_load()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn target_change_before_prepare_rejects_without_blocking_bootstrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user");
+        std::fs::create_dir(&user).unwrap();
+        let manager = UserScriptManager::new(dir.path().join("builtin"), user, dir.path().join("scripts.json"));
+        let owner = ReloadOwner::default();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let old_target = format!("ws://127.0.0.1:{}/devtools/page/old", listener.local_addr().unwrap().port());
+        let (connected_tx, connected_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let _ = connected_tx.send(());
+            let _ = release_rx.await;
+            drop(socket);
+        });
+        let current = Arc::new(Mutex::new(Some(old_target.clone())));
+        let pinned = Arc::new(Mutex::new(Some(old_target.clone())));
+        let id = codex_plus_core::user_script_control::new_operation_id(owner.epoch());
+        owner.state.lock().unwrap().insert(id.clone(), json!({ "active": true }));
+        let task_owner = owner.clone();
+        let task_current = current.clone();
+        let task_id = id.clone();
+        let task = tokio::spawn(async move {
+            task_owner.run_on_target(&task_id, true, Some("old-document"), &task_current, &old_target, &pinned, &manager).await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), connected_rx).await.unwrap().unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(1), owner.lock_initial_load()).await.unwrap();
+        *current.lock().unwrap() = Some("ws://127.0.0.1:2/devtools/page/new".to_owned());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while owner.status(&id).unwrap()["phase"] != "rejected" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert_eq!(owner.status(&id).unwrap()["active"], false);
+        task.await.unwrap();
+        server.await.unwrap();
+        drop(guard);
+    }
+
+    #[test]
+    fn terminal_operation_cannot_be_made_active_again_by_a_late_observer() {
+        let owner = ReloadOwner::default();
+        owner.state.lock().unwrap().insert("finished".into(), json!({ "active": true }));
+        owner.update("finished", "applied", json!({}));
+        owner.update("finished", "unknown", json!({ "active": true }));
+        let status = owner.status("finished").unwrap();
+        assert_eq!(status["phase"], "applied");
+        assert_eq!(status["active"], false);
+    }
+
+    #[tokio::test]
+    async fn mismatched_probe_document_cannot_revoke_current_backend_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(dir.path().join("builtin"), dir.path().join("user"), dir.path().join("scripts.json"));
+        let generation = codex_plus_core::extension_backend::backend_generation(&manager);
+        let source = codex_plus_core::extension_backend::bind_backend_document(&manager, generation, "new-document").await.unwrap();
+        let probe = json!({ "backendSource": source });
+        assert_eq!(revoke_probed_backend_source(&manager, "old-document", &probe).await, None);
+        assert_eq!(codex_plus_core::extension_backend::backend_generation(&manager), generation);
+        assert!(codex_plus_core::extension_backend::backend_source_is_current(&manager, &probe["backendSource"]));
+        assert_eq!(revoke_probed_backend_source(&manager, "new-document", &probe).await, Some(generation.wrapping_add(1)));
+    }
+
     #[test]
     fn inventory_verdict_requires_matching_terminal_states() {
         let runtime = json!({});
@@ -730,6 +1384,8 @@ process.stdout.write(JSON.stringify(observed));
         assert_eq!(first, duplicate);
         assert_eq!(owner.state.lock().unwrap().len(), 1);
         assert!(owner.submit(&json!({ "operationId": id, "allowPage": true }), websocket.clone(), manager.clone()).is_err());
+        assert!(owner.submit(&json!({ "operationId": id, "allowPage": false, "sourceDocumentId": "other-document" }), websocket.clone(), manager.clone()).is_err());
+        assert!(owner.submit(&json!({ "operationId": id, "allowPage": false, "ownerEpoch": "old-owner" }), websocket.clone(), manager.clone()).is_err());
         let issued_at = first["issuedAt"].as_u64().unwrap();
         owner.state.lock().unwrap().remove(&id);
         owner.retired_before.store(issued_at, Ordering::Relaxed);

@@ -170,6 +170,9 @@ pub trait BridgeRuntimeService: Send + Sync {
             "当前宿主不支持禁止刷新页面的重载");
         self.reload_user_scripts().await
     }
+    async fn begin_user_script_reload_operation_v1(&self, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("当前宿主不支持带身份校验的重载操作")
+    }
     async fn begin_user_script_reload_no_page(&self, _payload: Value) -> anyhow::Result<Value> {
         anyhow::bail!("当前宿主不支持禁止刷新页面的重载")
     }
@@ -478,6 +481,7 @@ pub async fn handle_bridge_request(
         }
         "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
         "/user-scripts/reload" => ctx.runtime.begin_user_script_reload(payload.clone()).await,
+        "/user-scripts/reload-operation-v1" => ctx.runtime.begin_user_script_reload_operation_v1(payload.clone()).await,
         "/user-scripts/reload-no-page" => ctx.runtime.begin_user_script_reload_no_page(payload.clone()).await,
         "/user-scripts/reload-status" => ctx.runtime.user_script_reload_status(payload.clone()).await,
         "/cdp/targets" => ctx.runtime.cdp_targets().await,

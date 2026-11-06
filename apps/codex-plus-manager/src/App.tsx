@@ -2158,17 +2158,29 @@ export function App() {
   };
 
   const pendingUserScriptReload = useRef<UserScriptInventory["reloadOperation"] | null>(null);
-  const reloadUserScripts = async (silent = false) => {
-    const result = await run(() => call<SettingsResult>("reload_user_scripts", {
-      operation: pendingUserScriptReload.current,
-    }));
-    if (result) {
-      const operation = result.user_scripts?.reloadOperation;
-      pendingUserScriptReload.current = operation?.phase === "unknown" ? operation : null;
-      setSettings(result);
-      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
-    }
+  const [pendingReload, setPendingReload] = useState<UserScriptInventory["reloadOperation"] | null>(null);
+  const userScriptReloadQueue = useRef<Promise<void>>(Promise.resolve());
+  const reloadUserScripts = (silent = false) => {
+    const request = userScriptReloadQueue.current.then(async () => {
+      const result = await run(() => call<SettingsResult>("reload_user_scripts", {
+        operation: pendingUserScriptReload.current,
+      }));
+      if (result) {
+        const operation = result.user_scripts?.reloadOperation;
+        if (operation?.phase === "unknown") {
+          pendingUserScriptReload.current = operation;
+          setPendingReload(operation);
+        } else if (operation && ["applied", "failed", "blocked", "degraded", "rejected"].includes(operation.phase)) {
+          pendingUserScriptReload.current = null;
+          setPendingReload(null);
+        }
+        setSettings(result);
+        setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
+        showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
+      }
+    });
+    userScriptReloadQueue.current = request.catch(() => {});
+    return request;
   };
 
   const installMarketScript = async (id: string) => {
@@ -5474,7 +5486,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} reloadPending={pendingReload !== null} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "home" ? (
             <HomeScreen
@@ -10612,7 +10624,7 @@ function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running")
   return t("Codex 未运行或不可连接");
 }
 
-function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenBuiltins, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; onOpenClaude: () => void; actions: Actions }) {
+function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, reloadPending, onOpenBuiltins, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; reloadPending: boolean; onOpenBuiltins: () => void; onOpenClaude: () => void; actions: Actions }) {
   const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
@@ -10731,7 +10743,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
       <TopbarActions>
         {codexHost ? <button className="cx-secondary" disabled={reloading} onClick={() => void reload()} title={t("应用本地拓展及开关；旧版脚本可能需要刷新 Codex 页面")} type="button">
           <RefreshCw className={reloading ? "animate-spin" : ""} />
-          {t(inventory?.reloadOperation?.phase === "unknown" ? "查询重载状态" : "热重载拓展")}
+          {t(reloadPending ? "查询重载状态" : "热重载拓展")}
         </button> : <button className="cx-secondary" onClick={onOpenClaude} type="button">
           <AppWindow />
           {t("Claude 补丁版")}

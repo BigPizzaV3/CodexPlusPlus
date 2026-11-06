@@ -1727,6 +1727,7 @@ struct LauncherRuntimeService {
     websocket_url: Arc<Mutex<Option<String>>>,
     user_scripts: UserScriptManager,
     reload_owner: user_script_reload::ReloadOwner,
+    legacy_reload: Mutex<Option<String>>,
     native_control: Mutex<Option<(u16, codex_plus_core::user_script_control::ControlServer)>>,
 }
 
@@ -1737,6 +1738,7 @@ impl LauncherRuntimeService {
             websocket_url: Arc::new(Mutex::new(None)),
             user_scripts,
             reload_owner: user_script_reload::ReloadOwner::default(),
+            legacy_reload: Mutex::new(None),
             native_control: Mutex::new(None),
         }
     }
@@ -1782,40 +1784,118 @@ impl LauncherRuntimeService {
     fn stop_native_control(&self) {
         self.native_control.lock().unwrap().take();
     }
+
+    async fn wait_for_legacy_reload(&self, timeout: std::time::Duration) -> anyhow::Result<Value> {
+        let id = {
+            let mut pending = self.legacy_reload.lock().unwrap();
+            if let Some(id) = pending.as_ref() {
+                id.clone()
+            } else {
+                let operation = self.reload_owner.submit(
+                    &json!({}), self.websocket_url.clone(), self.user_scripts.clone(),
+                )?;
+                let id = operation["operationId"].as_str()
+                    .context("重载协调器未提供操作编号")?.to_owned();
+                *pending = Some(id.clone());
+                id
+            }
+        };
+        let verification = codex_plus_core::user_script_control::new_owner_epoch();
+        let (record, desired_revision) = tokio::time::timeout(timeout, async {
+            loop {
+                let Some(operation) = self.reload_owner.status(&id) else { return None };
+                if operation["active"] == false {
+                    if operation["phase"] == "applied" {
+                        let response = self.reload_owner.control_response(
+                            operation.clone(), Some(&verification), &self.user_scripts,
+                        );
+                        if response["desiredRevisionPending"] != true {
+                            return Some((operation, response["desiredRevision"].as_str().map(str::to_owned)));
+                        }
+                    } else {
+                        return Some((operation, None));
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }).await.map_err(|_| anyhow::anyhow!(
+            "重载已提交但尚未确认；稍后再次操作将继续查询原请求"
+        ))?.context("原重载记录已不可用，未再次执行")?;
+
+        let phase = record["phase"].as_str().unwrap_or_default();
+        let result = match phase {
+            "applied" => legacy_reload_inventory(&record, desired_revision.as_deref()),
+            "failed" | "blocked" | "degraded" | "rejected" => Err(anyhow::anyhow!(
+                "{}", record["reason"].as_str().filter(|reason| !reason.is_empty())
+                    .unwrap_or("用户脚本重载未完成")
+            )),
+            _ => anyhow::bail!("原重载状态无法确认，未再次执行"),
+        };
+        let mut pending = self.legacy_reload.lock().unwrap();
+        if pending.as_deref() == Some(&id) {
+            *pending = None;
+        }
+        result
+    }
+}
+
+fn legacy_reload_inventory(operation: &Value, desired_revision: Option<&str>) -> anyhow::Result<Value> {
+    let revision = operation["revision"].as_str().filter(|revision| !revision.is_empty())
+        .context("重载已结束，但应用版本无法确认")?;
+    let desired = desired_revision.filter(|revision| !revision.is_empty())
+        .context("重载已结束，但当前配置无法确认")?;
+    anyhow::ensure!(revision == desired, "重载期间配置已变化，请再次重载");
+    let mut inventory = operation["inventory"].clone();
+    anyhow::ensure!(inventory["scripts"].is_array(), "重载结果缺少可确认的脚本清单");
+    inventory["reload_mode"] = operation["mode"].clone();
+    Ok(inventory)
 }
 
 #[async_trait::async_trait]
 impl BridgeRuntimeService for LauncherRuntimeService {
     async fn user_script_inventory(&self) -> anyhow::Result<Value> {
-        self.user_scripts.inventory()
+        let manager = self.user_scripts.clone();
+        tokio::task::spawn_blocking(move || manager.inventory()).await?
     }
 
     async fn user_script_inventory_with_runtime_status(
         &self,
         payload: Value,
     ) -> anyhow::Result<Value> {
-        self.user_scripts
-            .inventory_with_runtime_status(payload.get("runtime_status"))
+        let manager = self.user_scripts.clone();
+        let runtime_status = payload.get("runtime_status").cloned();
+        tokio::task::spawn_blocking(move || {
+            manager.inventory_with_runtime_status(runtime_status.as_ref())
+        }).await?
     }
 
     async fn set_user_scripts_enabled(&self, enabled: bool) -> anyhow::Result<Value> {
-        self.user_scripts.set_global_enabled(enabled)?;
-        self.user_scripts.inventory()
+        let manager = self.user_scripts.clone();
+        tokio::task::spawn_blocking(move || {
+            manager.set_global_enabled(enabled)?;
+            manager.inventory()
+        }).await?
     }
 
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
-        let result = self.user_scripts.set_script_enabled(&key, enabled);
-        // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
-        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
-        result?;
-        self.user_scripts.inventory()
+        let manager = self.user_scripts.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = manager.set_script_enabled(&key, enabled);
+            // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+            codex_plus_core::extension_hooks::sync_default(&manager);
+            result?;
+            manager.inventory()
+        }).await?
     }
 
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
-        let result = self.user_scripts.delete_user_script(&key);
-        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
-        result?;
-        self.user_scripts.inventory()
+        let manager = self.user_scripts.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = manager.delete_user_script(&key);
+            codex_plus_core::extension_hooks::sync_default(&manager);
+            result?;
+            manager.inventory()
+        }).await?
     }
 
     async fn load_user_scripts(&self) -> anyhow::Result<Value> {
@@ -1836,10 +1916,42 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn begin_user_script_reload(&self, payload: Value) -> anyhow::Result<Value> {
-        let mut inventory = self.user_scripts.inventory()?;
+        if payload.as_object().is_some_and(|fields| fields.is_empty()) {
+            return self.wait_for_legacy_reload(std::time::Duration::from_secs(20)).await;
+        }
+        // 非空请求保留原有身份校验和即时回执语义。
+        let manager = self.user_scripts.clone();
+        let mut inventory = tokio::task::spawn_blocking(move || manager.inventory()).await??;
         let operation = self.reload_owner.submit(&payload, self.websocket_url.clone(), self.user_scripts.clone())?;
-        inventory["reloadOperation"] = operation;
+        let response = self.reload_owner.control_response(operation, payload["verificationId"].as_str(), &self.user_scripts);
+        if let (Some(target), Some(fields)) = (inventory.as_object_mut(), response.as_object()) {
+            target.extend(fields.clone());
+        }
         Ok(inventory)
+    }
+
+    async fn begin_user_script_reload_operation_v1(&self, payload: Value) -> anyhow::Result<Value> {
+        anyhow::ensure!(payload.is_object(), "重载参数必须是对象");
+        let epoch = payload.get("ownerEpoch").and_then(Value::as_str)
+            .filter(|epoch| *epoch == self.reload_owner.epoch())
+            .ok_or_else(|| anyhow::anyhow!("重载 owner 已变化或缺失"))?;
+        payload.get("operationId").and_then(Value::as_str)
+            .filter(|id| codex_plus_core::user_script_control::operation_issued_at(epoch, id).is_some())
+            .ok_or_else(|| anyhow::anyhow!("重载操作编号无效或属于旧 owner"))?;
+        anyhow::ensure!(
+            payload.get("sourceDocumentId").and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty() && value.len() <= 256),
+            "页面重载缺少有效的来源文档标识"
+        );
+        anyhow::ensure!(payload.get("allowPage").and_then(Value::as_bool).is_some(),
+            "页面重载缺少有效的刷新策略");
+        if let Some(verification) = payload.get("verificationId") {
+            anyhow::ensure!(verification.as_str().is_some_and(|id|
+                id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())),
+                "重载验证编号无效");
+        }
+        let operation = self.reload_owner.submit(&payload, self.websocket_url.clone(), self.user_scripts.clone())?;
+        Ok(self.reload_owner.control_response(operation, payload["verificationId"].as_str(), &self.user_scripts))
     }
 
     async fn begin_user_script_reload_no_page(&self, mut payload: Value) -> anyhow::Result<Value> {
@@ -1850,7 +1962,7 @@ impl BridgeRuntimeService for LauncherRuntimeService {
 
     async fn user_script_reload_status(&self, payload: Value) -> anyhow::Result<Value> {
         if payload.get("capabilities").and_then(Value::as_bool) == Some(true) {
-            return Ok(json!({ "capabilities": { "noPageReload": true, "operationProtocol": 1 },
+            return Ok(json!({ "capabilities": { "noPageReload": true, "operationProtocol": 1, "documentFence": true, "fencedSubmitV1": true },
                 "ownerEpoch": self.reload_owner.epoch() }));
         }
         let id = payload.get("operationId").and_then(Value::as_str).unwrap_or_default();
@@ -2060,6 +2172,34 @@ fn default_user_script_manager() -> UserScriptManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn script_configuration_lock_does_not_block_the_launcher_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("settings.json");
+        let lock_path = dir.path().join("settings.json.lock");
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+                .open(lock_path).unwrap();
+            file.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+        locked_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let manager = UserScriptManager::new(dir.path().join("builtin"), dir.path().join("user"), config);
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let task = tokio::spawn(async move { runtime.set_user_scripts_enabled(false).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let still_waiting = !task.is_finished();
+        let _ = release_tx.send(());
+        holder.join().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), task).await.unwrap().unwrap().unwrap();
+        assert!(still_waiting, "配置锁等待阻塞了单线程运行时");
+        assert_eq!(result["enabled"], false);
+    }
 
     #[tokio::test]
     async fn no_page_reload_route_overrides_a_conflicting_payload() {
@@ -2074,6 +2214,301 @@ mod tests {
             "allowPage": true
         })).await.unwrap();
         assert_eq!(result["reloadOperation"]["allowPage"], false);
+        assert!(result["scripts"].is_array());
+    }
+
+    #[tokio::test]
+    async fn native_and_page_reload_share_the_launcher_owner_and_queue() {
+        use codex_plus_core::user_script_control::{self as control, ControlIdentity};
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            dir.path().join("user"),
+            dir.path().join("settings.json"),
+        );
+        let port = 49160;
+        let identity = ControlIdentity::new(
+            &codex_plus_core::paths::default_app_state_dir(), port, &manager,
+        ).unwrap();
+        let runtime = Arc::new(LauncherRuntimeService::new(port, manager));
+        runtime.start_native_control(port).unwrap();
+
+        let native_hello = control::request(&identity, json!({ "action": "hello" })).await.unwrap();
+        let page_hello = runtime.user_script_reload_status(json!({ "capabilities": true })).await.unwrap();
+        let epoch = native_hello["ownerEpoch"].as_str().unwrap();
+        assert_eq!(page_hello["ownerEpoch"], epoch);
+
+        let native_id = control::new_operation_id(epoch);
+        let native_submit = json!({
+            "action": "submit", "ownerEpoch": epoch, "operationId": native_id, "allowPage": false,
+        });
+        let accepted = control::request(&identity, native_submit.clone()).await.unwrap();
+        assert_eq!(accepted["result"]["reloadOperation"]["operationId"], native_id);
+        assert_eq!(accepted["result"]["reloadOperation"]["allowPage"], false);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let response = runtime.user_script_reload_status(json!({ "operationId": native_id })).await.unwrap();
+                if response["reloadOperation"]["phase"] == "unknown" {
+                    assert_eq!(response["reloadOperation"]["ownerEpoch"], epoch);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+
+        let duplicate = control::request(&identity, native_submit).await.unwrap();
+        assert_eq!(duplicate["result"]["reloadOperation"]["operationId"], native_id);
+        assert_eq!(
+            duplicate["result"]["reloadOperation"]["createdAt"],
+            accepted["result"]["reloadOperation"]["createdAt"],
+        );
+
+        let page_id = control::new_operation_id(epoch);
+        let page = runtime.begin_user_script_reload_operation_v1(json!({
+            "operationId": page_id, "ownerEpoch": epoch,
+            "sourceDocumentId": "page-document", "allowPage": true,
+        })).await.unwrap();
+        assert_eq!(page["reloadOperation"]["operationId"], page_id);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = control::request(&identity, json!({
+            "action": "status", "ownerEpoch": epoch, "operationId": page_id,
+        })).await.unwrap();
+        assert_eq!(status["result"]["reloadOperation"]["phase"], "accepted");
+        assert_eq!(status["result"]["reloadOperation"]["sourceDocumentId"], "page-document");
+        runtime.stop_native_control();
+    }
+
+    #[tokio::test]
+    async fn legacy_reload_does_not_report_success_before_the_page_is_reachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            dir.path().join("user"),
+            dir.path().join("settings.json"),
+        );
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let result = tokio::time::timeout(
+            Duration::from_millis(150),
+            runtime.begin_user_script_reload(json!({})),
+        ).await;
+        assert!(result.is_err(), "旧接口不能把登记中的操作返回为已重载的脚本清单");
+        let first_id = runtime.legacy_reload.lock().unwrap().clone().unwrap();
+        let error = runtime.wait_for_legacy_reload(Duration::from_millis(50)).await.unwrap_err();
+        assert!(error.to_string().contains("尚未确认"));
+        let retry = tokio::time::timeout(
+            Duration::from_millis(150),
+            runtime.begin_user_script_reload(json!({})),
+        ).await;
+        assert!(retry.is_err());
+        assert_eq!(runtime.legacy_reload.lock().unwrap().as_deref(), Some(first_id.as_str()));
+        assert_eq!(runtime.reload_owner.status(&first_id).unwrap()["active"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_reload_reports_the_actual_terminal_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("not-a-directory");
+        std::fs::write(&user, b"fixture").unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"), user, dir.path().join("settings.json"),
+        );
+        let runtime = LauncherRuntimeService::new(0, manager);
+        runtime.set_websocket_url("ws://127.0.0.1:1/devtools/page/fixture");
+        let error = tokio::time::timeout(
+            Duration::from_secs(3),
+            runtime.begin_user_script_reload(json!({})),
+        ).await.unwrap().unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert!(runtime.legacy_reload.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn nonempty_unnumbered_reload_still_checks_owner_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            dir.path().join("user"),
+            dir.path().join("settings.json"),
+        );
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let result = runtime.begin_user_script_reload(json!({ "ownerEpoch": "old-owner" })).await;
+        assert!(result.is_err());
+        assert!(runtime.legacy_reload.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_reload_returns_only_the_confirmed_current_revision() {
+        for changed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let manager = UserScriptManager::new(
+                dir.path().join("builtin"),
+                dir.path().join("user"),
+                dir.path().join("settings.json"),
+            );
+            let revision = manager.reload_snapshot().unwrap().1;
+            let runtime = Arc::new(LauncherRuntimeService::new(0, manager));
+            let waiting = runtime.clone();
+            let task = tokio::spawn(async move {
+                waiting.begin_user_script_reload(json!({})).await
+            });
+            let id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(id) = runtime.legacy_reload.lock().unwrap().clone() {
+                        break id;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+            runtime.reload_owner.finish_for_test(&id, "applied", json!({
+                "revision": if changed { "older-revision" } else { &revision },
+                "mode": "scripts", "inventory": { "scripts": [] },
+            }));
+            let result = tokio::time::timeout(Duration::from_secs(3), task).await.unwrap().unwrap();
+            if changed {
+                assert!(result.unwrap_err().to_string().contains("配置已变化"));
+            } else {
+                let inventory = result.unwrap();
+                assert_eq!(inventory["scripts"], json!([]));
+                assert_eq!(inventory["reload_mode"], "scripts");
+            }
+            assert!(runtime.legacy_reload.lock().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn legacy_reload_inventory_requires_a_confirmed_script_list() {
+        assert!(legacy_reload_inventory(&json!({ "inventory": {} }), None).is_err());
+        assert!(legacy_reload_inventory(&json!({
+            "revision": "current", "inventory": {}
+        }), Some("current")).is_err());
+        assert!(legacy_reload_inventory(&json!({
+            "revision": "old", "inventory": { "scripts": [] }
+        }), Some("new")).is_err());
+        assert!(legacy_reload_inventory(&json!({
+            "revision": "old", "inventory": { "scripts": [] }
+        }), None).is_err());
+        let result = legacy_reload_inventory(&json!({
+            "revision": "current", "inventory": { "scripts": [] }, "mode": "scripts"
+        }), Some("current")).unwrap();
+        assert_eq!(result["scripts"], json!([]));
+        assert_eq!(result["reload_mode"], "scripts");
+    }
+
+    #[tokio::test]
+    async fn identified_reload_ack_does_not_depend_on_inventory_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid_user_dir = dir.path().join("not-a-directory");
+        std::fs::write(&invalid_user_dir, b"fixture").unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            invalid_user_dir,
+            dir.path().join("settings.json"),
+        );
+        assert!(manager.inventory().is_err());
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let id = codex_plus_core::user_script_control::new_operation_id(runtime.reload_owner.epoch());
+        let payload = json!({ "operationId": id, "ownerEpoch": runtime.reload_owner.epoch(),
+            "allowPage": false, "sourceDocumentId": "document" });
+        let accepted = runtime.begin_user_script_reload_operation_v1(payload.clone()).await.unwrap();
+        assert_eq!(accepted["reloadOperation"]["operationId"], id);
+        assert_eq!(accepted["reloadOperation"]["phase"], "accepted");
+        assert_eq!(accepted["desiredRevisionPending"], false);
+        assert!(accepted.get("desiredRevision").is_some());
+        assert!(accepted.get("scripts").is_none());
+
+        let repeated = runtime.begin_user_script_reload_operation_v1(payload).await.unwrap();
+        assert_eq!(repeated["reloadOperation"]["operationId"], id);
+        assert_eq!(repeated["reloadOperation"]["phase"], "accepted");
+        assert_eq!(repeated["desiredRevisionPending"], false);
+        let status = runtime.user_script_reload_status(json!({ "operationId": id })).await.unwrap();
+        assert_eq!(status["reloadOperation"]["operationId"], id);
+    }
+
+    #[tokio::test]
+    async fn versioned_reload_requires_complete_identity_before_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            dir.path().join("user"),
+            dir.path().join("settings.json"),
+        );
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let epoch = runtime.reload_owner.epoch();
+        let id = codex_plus_core::user_script_control::new_operation_id(epoch);
+        let valid = json!({
+            "operationId": id, "ownerEpoch": epoch, "sourceDocumentId": "document",
+            "allowPage": false, "verificationId": "a".repeat(32)
+        });
+        let mut invalid = vec![Value::Null, json!([])];
+        for field in ["operationId", "ownerEpoch", "sourceDocumentId", "allowPage"] {
+            let mut payload = valid.clone();
+            payload.as_object_mut().unwrap().remove(field);
+            invalid.push(payload);
+        }
+        for (field, value) in [
+            ("operationId", json!("bad-id")),
+            ("operationId", json!(null)),
+            ("ownerEpoch", json!("old-owner")),
+            ("ownerEpoch", json!(false)),
+            ("sourceDocumentId", json!("")),
+            ("sourceDocumentId", json!("\u{00e9}".repeat(129))),
+            ("sourceDocumentId", json!(null)),
+            ("allowPage", json!("false")),
+            ("allowPage", json!(null)),
+            ("verificationId", json!("short")),
+            ("verificationId", json!(null)),
+        ] {
+            let mut payload = valid.clone();
+            payload[field] = value;
+            invalid.push(payload);
+        }
+        for payload in invalid {
+            assert!(runtime.begin_user_script_reload_operation_v1(payload.clone()).await.is_err(), "{payload}");
+            assert!(runtime.reload_owner.status(&id).is_none());
+        }
+
+        let capabilities = runtime.user_script_reload_status(json!({ "capabilities": true })).await.unwrap();
+        assert_eq!(capabilities["capabilities"]["fencedSubmitV1"], true);
+        let accepted = runtime.begin_user_script_reload_operation_v1(valid.clone()).await.unwrap();
+        assert_eq!(accepted["reloadOperation"]["operationId"], id);
+        assert_eq!(accepted["reloadOperation"]["sourceDocumentId"], "document");
+        assert_eq!(accepted["reloadOperation"]["allowPage"], false);
+        let repeated = runtime.begin_user_script_reload_operation_v1(valid).await.unwrap();
+        assert_eq!(repeated["reloadOperation"]["operationId"], id);
+        let conflicting = json!({
+            "operationId": id, "ownerEpoch": epoch, "sourceDocumentId": "document",
+            "allowPage": true
+        });
+        assert!(runtime.begin_user_script_reload_operation_v1(conflicting).await.is_err());
+        let status = runtime.user_script_reload_status(json!({ "operationId": id })).await.unwrap();
+        assert_eq!(status["reloadOperation"]["operationId"], id);
+
+        let page_id = codex_plus_core::user_script_control::new_operation_id(epoch);
+        let page = runtime.begin_user_script_reload_operation_v1(json!({
+            "operationId": page_id, "ownerEpoch": epoch, "sourceDocumentId": "document",
+            "allowPage": true
+        })).await.unwrap();
+        assert_eq!(page["reloadOperation"]["allowPage"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_identified_reload_does_not_require_a_source_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = UserScriptManager::new(
+            dir.path().join("builtin"),
+            dir.path().join("user"),
+            dir.path().join("settings.json"),
+        );
+        let runtime = LauncherRuntimeService::new(0, manager);
+        let id = codex_plus_core::user_script_control::new_operation_id(runtime.reload_owner.epoch());
+        let accepted = runtime.begin_user_script_reload(json!({
+            "operationId": id, "allowPage": true
+        })).await.unwrap();
+        assert_eq!(accepted["reloadOperation"]["operationId"], id);
+        assert_eq!(accepted["reloadOperation"]["sourceDocumentId"], Value::Null);
+        assert!(accepted["scripts"].is_array());
     }
 
     #[test]

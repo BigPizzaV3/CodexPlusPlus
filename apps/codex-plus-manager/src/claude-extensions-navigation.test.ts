@@ -229,6 +229,7 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
     onOpenClaude: () => h.calls.push(["openClaude"]),
     onOpenBuiltins: () => h.calls.push(["openBuiltins"]),
     actions: h.actions,
+    reloadPending: false,
     settings: {
       user_scripts: {
         enabled: false,
@@ -560,6 +561,212 @@ test("Claude 保存失败或请求无结果时不写入成功状态", async () =
   await noCachedStatus.context.setUserScriptsEnabled(true, "claude");
   assert.equal(noCachedStatus.memo.status, null);
   assert.equal(noCachedStatus.state.form.claudeAppExtensions, true);
+});
+
+test("Codex 用户脚本和拓展包可删除，缺失项、内置项及 Claude 不显示删除", () => {
+  const cases = [
+    { host: "codex", script: { ...extensionScript("user:single.js", true, false), kind: "script", package: null }, canDelete: true },
+    { host: "codex", script: extensionScript("user:package", true, false), canDelete: true },
+    { host: "codex", script: { ...extensionScript("user:missing", false, false), kind: "script", package: null, missing: true }, canDelete: false },
+    { host: "codex", script: { ...extensionScript("builtin:package", true, false), source: "builtin" }, canDelete: false },
+    { host: "claude", script: extensionScript("user:package", true, true), canDelete: false },
+  ] as const;
+  for (const { host, script, canDelete } of cases) {
+    const h = extensionHarness();
+    const nodes = elements(h.render("ScriptRow", { host, script, globalEnabled: true, actions: h.actions }));
+    const remove = nodes.find((node) => node.type === "MenuItem" && elementText(node).includes("删除"));
+    assert.equal(Boolean(remove), canDelete, `${host} ${script.key}`);
+    const checkbox = nodes.find((node) => node.type === "input");
+    assert.equal(Boolean(checkbox?.props.disabled), "missing" in script && script.missing === true);
+    if (remove) {
+      remove.props.onClick();
+      assert.deepEqual(h.calls, [["deleteUserScript", script.key]]);
+    }
+  }
+});
+
+type ReloadOperation = {
+  operationId: string;
+  ownerEpoch: string;
+  allowPage: boolean;
+  phase: string;
+};
+
+function reloadFlowHarness(responses: Record<string, unknown[]>) {
+  const requests: Array<{ command: string; payload: Record<string, unknown> | undefined }> = [];
+  const pending = { current: null as ReloadOperation | null };
+  const queue = { current: Promise.resolve() };
+  const state = {
+    pending: null as ReloadOperation | null,
+    settings: extensionActionResult(true),
+    market: {
+      status: "ok",
+      market: { scripts: [] as Array<Record<string, unknown>>, packages: [] },
+      user_scripts: extensionActionResult(true).user_scripts,
+    },
+    launch: { appPath: "" },
+  };
+  let context: vm.Context;
+  context = vm.createContext({
+    pendingUserScriptReload: pending,
+    userScriptReloadQueue: queue,
+    settings: state.settings,
+    t: (value: string) => value,
+    tf: (value: string, args: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
+    run: async (operation: () => Promise<unknown>) => operation(),
+    call: async (command: string, payload?: Record<string, unknown>) => {
+      requests.push({ command, payload });
+      const items = responses[command];
+      assert.ok(items?.length, `unexpected command ${command}`);
+      return await items.shift();
+    },
+    setPendingReload: (value: ReloadOperation | null) => { state.pending = value; },
+    setSettings: (value: typeof state.settings | ((current: typeof state.settings) => typeof state.settings)) => {
+      state.settings = typeof value === "function" ? value(state.settings) : value;
+      context.settings = state.settings;
+    },
+    setScriptMarket: (value: typeof state.market | ((current: typeof state.market) => typeof state.market)) => {
+      state.market = typeof value === "function" ? value(state.market) : value;
+    },
+    setSettingsForm: () => undefined,
+    setActiveTool: () => undefined,
+    setLaunchForm: (update: (current: typeof state.launch) => typeof state.launch) => { state.launch = update(state.launch); },
+    normalizeSettings: (value: unknown) => value,
+    visibleActiveTool: (value: unknown) => value,
+    showResultNotice: () => undefined,
+    appConfirm: async () => true,
+  });
+  const names = [
+    "refreshSettings", "refreshScriptMarket", "refreshUserScriptInventory", "reloadUserScripts",
+    "setUserScriptEnabled", "deleteUserScript",
+  ];
+  vm.runInContext(transpile([
+    functionSource("isSuccessStatus"),
+    functionSource("syncMarketInstalledState"),
+    ...names.map((name) => `const ${declaration(name).getText(app)}; globalThis.${name} = ${name};`),
+  ].join("\n")), context);
+  return { context, pending, state, requests };
+}
+
+function renderReloadButton(h: ReturnType<typeof reloadFlowHarness>, host: ExtensionHost = "codex") {
+  const ui = extensionHarness();
+  let clicked: Promise<void> | undefined;
+  const actions = new Proxy(ui.actions, {
+    get: (target, key: string) => key === "reloadUserScripts"
+      ? () => { clicked = h.context.reloadUserScripts(); return clicked; }
+      : Reflect.get(target, key),
+  });
+  const nodes = elements(ui.render("UserScriptsScreen", {
+    ...extensionScreenProps(ui, host),
+    settings: h.state.settings,
+    market: h.state.market,
+    reloadPending: h.state.pending !== null,
+    actions,
+  }));
+  const button = nodes.find((node) => node.type === "button" && /重载拓展|查询重载状态/.test(elementText(node)));
+  return { button, clicked: () => clicked };
+}
+
+test("待确认重载跨清单、设置、市场刷新及页面切换保留，同编号查询到终态后清除", async () => {
+  const operation: ReloadOperation = Object.freeze({
+    operationId: "operation-1", ownerEpoch: "owner-1", allowPage: true, phase: "unknown",
+  });
+  const base = extensionActionResult(true);
+  const unknown = { ...base, status: "failed", user_scripts: Object.freeze({ ...base.user_scripts, reloadOperation: operation }) };
+  const settings = extensionActionResult(false);
+  const inventory = extensionActionResult(true);
+  const fallback = { ...base, status: "failed" };
+  const applied = { ...base, user_scripts: { ...base.user_scripts, reloadOperation: { ...operation, phase: "applied" } } };
+  const market = { status: "ok", market: { scripts: [], packages: [] }, user_scripts: extensionActionResult(false).user_scripts };
+  const h = reloadFlowHarness({
+    reload_user_scripts: [unknown, null, fallback, applied],
+    load_settings: [settings],
+    refresh_script_market: [market],
+    refresh_user_script_inventory: [inventory],
+  });
+
+  await h.context.reloadUserScripts();
+  assert.equal(h.pending.current, operation);
+  assert.equal(h.state.pending, operation);
+  assert.equal(elementText(renderReloadButton(h).button), "查询重载状态");
+  await h.context.refreshSettings(true);
+  assert.equal(h.state.settings, settings);
+  await h.context.refreshScriptMarket(true);
+  assert.equal(h.state.market, market);
+  assert.equal(h.state.settings.user_scripts, market.user_scripts);
+  assert.equal(h.state.settings.settings, settings.settings);
+  await h.context.refreshUserScriptInventory();
+  assert.equal(h.state.settings, inventory);
+  assert.equal(h.state.pending, operation);
+  assert.equal(renderReloadButton(h, "claude").button, undefined);
+  assert.equal(elementText(renderReloadButton(h).button), "查询重载状态", "重新挂载页面后仍显示待确认");
+  assert.match(text, /reloadPending=\{pendingReload !== null\}/);
+
+  await h.context.reloadUserScripts();
+  assert.equal(h.requests.filter((entry) => entry.command === "reload_user_scripts")[1].payload?.operation, operation);
+  assert.equal(h.state.pending, operation, "调用没有返回结果时不能清掉待确认编号");
+  await h.context.reloadUserScripts();
+  assert.equal(h.requests.filter((entry) => entry.command === "reload_user_scripts")[2].payload?.operation, operation);
+  assert.equal(h.state.pending, operation, "缺少操作的失败响应不能清掉待确认编号");
+  assert.equal(elementText(renderReloadButton(h).button), "查询重载状态");
+  const view = renderReloadButton(h);
+  assert.ok(view.button);
+  view.button.props.onClick();
+  assert.ok(view.clicked());
+  await view.clicked();
+  const reloads = h.requests.filter((entry) => entry.command === "reload_user_scripts");
+  assert.equal(reloads[3].payload?.operation, operation);
+  assert.equal(h.state.pending, null);
+  assert.equal(h.pending.current, null);
+  assert.equal(elementText(renderReloadButton(h).button), "热重载拓展");
+  assert.equal(unknown.user_scripts.reloadOperation, operation, "不修改后端返回对象");
+});
+
+test("启停和删除触发的清单刷新不抹去待确认操作", async () => {
+  for (const action of ["set_user_script_enabled", "delete_user_script"]) {
+    const operation: ReloadOperation = { operationId: `operation-${action}`, ownerEpoch: "owner-2", allowPage: true, phase: "unknown" };
+    const base = extensionActionResult(true);
+    const unknown = { ...base, status: "failed", user_scripts: { ...base.user_scripts, reloadOperation: operation } };
+    const inventory = extensionActionResult(false);
+    const terminal = { ...base, user_scripts: { ...base.user_scripts, reloadOperation: { ...operation, phase: "applied" } } };
+    const h = reloadFlowHarness({
+      [action]: [base],
+      reload_user_scripts: [unknown, terminal],
+      refresh_user_script_inventory: [inventory],
+    });
+    if (action === "set_user_script_enabled") await h.context.setUserScriptEnabled("user:both", false, "codex");
+    else await h.context.deleteUserScript("user:both");
+    assert.deepEqual(h.requests.map((entry) => entry.command), [action, "reload_user_scripts", "refresh_user_script_inventory"]);
+    assert.equal(h.state.settings, inventory);
+    assert.equal(h.pending.current, operation);
+    assert.equal(elementText(renderReloadButton(h).button), "查询重载状态");
+    await h.context.reloadUserScripts();
+    assert.equal(h.requests.at(-1)?.payload?.operation, operation);
+    assert.equal(h.state.pending, null);
+  }
+});
+
+test("并发重载排队读取最新待确认编号，并在各终态清除", async () => {
+  for (const phase of ["applied", "failed", "blocked", "degraded", "rejected"]) {
+    const operation: ReloadOperation = { operationId: `operation-${phase}`, ownerEpoch: "owner-3", allowPage: true, phase: "unknown" };
+    const base = extensionActionResult(true);
+    const unknown = { ...base, status: "failed", user_scripts: { ...base.user_scripts, reloadOperation: operation } };
+    const terminal = { ...base, user_scripts: { ...base.user_scripts, reloadOperation: { ...operation, phase } } };
+    let release!: (value: unknown) => void;
+    const delayed = new Promise((resolve) => { release = resolve; });
+    const h = reloadFlowHarness({ reload_user_scripts: [delayed, terminal] });
+    const first = h.context.reloadUserScripts();
+    const second = h.context.reloadUserScripts();
+    await Promise.resolve();
+    assert.equal(h.requests.length, 1, "前一操作未返回时不发第二个重载");
+    release(unknown);
+    await first;
+    await second;
+    assert.equal(h.requests[0].payload?.operation, null);
+    assert.equal(h.requests[1].payload?.operation, operation);
+    assert.equal(h.state.pending, null, phase);
+    assert.equal(h.pending.current, null, phase);
+  }
 });
 
 test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision，保留其它草稿", async () => {

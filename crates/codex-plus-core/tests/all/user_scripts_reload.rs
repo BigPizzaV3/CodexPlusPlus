@@ -2,6 +2,108 @@ use codex_plus_core::user_scripts::{BOOTSTRAP_SCRIPT, SkipStartClaim, UserScript
 use serde_json::json;
 use std::{fs, process::Command};
 
+#[tokio::test]
+async fn cancelled_native_submit_queries_the_original_operation_before_retrying() {
+    use codex_plus_core::user_script_control::{self as control, ControlAction, ControlIdentity};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_dir = temp.path().join("state");
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"),
+    );
+    let identity = ControlIdentity::new(&state_dir, 49152, &manager).unwrap();
+    let epoch = control::new_owner_epoch();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let handler_events = events.clone();
+    let (submitted_tx, submitted_rx) = tokio::sync::oneshot::channel();
+    let submitted_tx = Mutex::new(Some(submitted_tx));
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let handler_epoch = epoch.clone();
+    let handler = Arc::new(move |action| {
+        let (action_name, id) = match action {
+            ControlAction::Submit(payload) => ("submit", payload["operationId"].as_str().unwrap().to_owned()),
+            ControlAction::Status(id) | ControlAction::StatusWithVerification(id, _) => ("status", id),
+        };
+        handler_events.lock().unwrap().push((action_name, id.clone()));
+        if action_name == "submit" {
+            if let Some(sender) = submitted_tx.lock().unwrap().take() {
+                let _ = sender.send(());
+            }
+            let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
+        }
+        Ok(json!({
+            "reloadOperation": { "operationId": id, "ownerEpoch": handler_epoch,
+                "allowPage": true, "sourceDocumentId": null, "phase": "applied", "active": false, "revision": "current" },
+            "desiredRevision": "current"
+        }))
+    });
+    let _server = control::start_owner(identity, epoch, handler).unwrap();
+    let first_state = state_dir.clone();
+    let first_manager = manager.clone();
+    let first = tokio::spawn(async move {
+        codex_plus_core::user_scripts::reload_native_scripts(&first_state, 49152, &first_manager, true, None).await
+    });
+    tokio::time::timeout(Duration::from_secs(3), submitted_rx).await.unwrap().unwrap();
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(3),
+        codex_plus_core::user_scripts::reload_native_scripts(&state_dir, 49152, &manager, true, None),
+    ).await;
+    let _ = release_tx.send(());
+    let result = second.unwrap().unwrap();
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].0, "submit");
+    assert_eq!(events[1].0, "status");
+    assert_eq!(events[0].1, events[1].1);
+    assert_eq!(result["reloadOperation"]["phase"], "applied");
+}
+
+#[tokio::test]
+async fn native_owner_change_keeps_the_original_operation_unconfirmed() {
+    use codex_plus_core::user_script_control::{self as control, ControlIdentity};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_dir = temp.path().join("state");
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"),
+    );
+    let identity = ControlIdentity::new(&state_dir, 49153, &manager).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let handler = Arc::new(move |_| {
+        handler_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({}))
+    });
+    let _server = control::start_owner(identity, control::new_owner_epoch(), handler).unwrap();
+    let old_epoch = control::new_owner_epoch();
+    let id = control::new_operation_id(&old_epoch);
+    let reference = json!({
+        "operationId": id, "ownerEpoch": old_epoch, "allowPage": true,
+        "phase": "unknown", "needsSubmit": false
+    });
+    let first = codex_plus_core::user_scripts::reload_native_scripts(
+        &state_dir, 49153, &manager, true, Some(&reference),
+    ).await.unwrap();
+    let second = codex_plus_core::user_scripts::reload_native_scripts(
+        &state_dir, 49153, &manager, true, None,
+    ).await.unwrap();
+    for result in [first, second] {
+        assert_eq!(result["reloadOperation"]["operationId"], id);
+        assert_eq!(result["reloadOperation"]["ownerEpoch"], old_epoch);
+        assert_eq!(result["reloadOperation"]["phase"], "unknown");
+        assert_eq!(result["reloadOperation"]["active"], true);
+        assert_eq!(result["reloadOperation"]["needsSubmit"], false);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn global_switch_preserves_individual_script_choices_after_reload() {
     let temp = tempfile::tempdir().unwrap();
@@ -555,6 +657,74 @@ assert.equal(status.scripts['user:plain.js'].manifest, null);
     assert!(!config.scripts.contains_key("user:hello"));
     assert!(!user.join("hello").exists());
     assert!(trash.join("hello/codexpp.json").exists());
+}
+
+#[test]
+fn independent_managers_see_package_deletion_and_keep_unrelated_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    let config = temp.path().join("config.json");
+    write_package(&user, "demo", json!({ "id": "demo", "renderer": "main.js" }));
+    fs::write(user.join("demo/main.js"), "window.deletedPackageMarker = true;").unwrap();
+    let first = UserScriptManager::new(temp.path().join("builtin"), &user, &config);
+    let second = UserScriptManager::new(temp.path().join("builtin"), &user, &config);
+
+    first.set_script_enabled("user:demo", true).unwrap();
+    second.set_script_enabled("user:keep.js", false).unwrap();
+    let (before, before_revision) = first.reload_snapshot().unwrap();
+    assert!(before.contains("window.deletedPackageMarker = true;"));
+
+    let trash = temp.path().join("trash");
+    let after_delete = second.delete_user_script_with_trash("user:demo", &trash).unwrap();
+    assert!(!after_delete.scripts.contains_key("user:demo"));
+    assert_eq!(after_delete.scripts.get("user:keep.js"), Some(&false));
+    assert!(!user.join("demo").exists());
+    assert_eq!(
+        fs::read_to_string(trash.join("demo/main.js")).unwrap(),
+        "window.deletedPackageMarker = true;"
+    );
+
+    let (after, after_revision) = first.reload_snapshot().unwrap();
+    assert!(!after.contains("window.deletedPackageMarker = true;"));
+    assert_ne!(before_revision, after_revision);
+    first.set_script_enabled("user:keep.js", true).unwrap();
+    let persisted = second.load_config();
+    assert!(!persisted.scripts.contains_key("user:demo"));
+    assert_eq!(persisted.scripts.get("user:keep.js"), Some(&true));
+}
+
+#[test]
+fn package_trash_creation_failure_preserves_package_and_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    let config = temp.path().join("config.json");
+    let manifest = json!({ "id": "demo", "renderer": "main.js" });
+    write_package(&user, "demo", manifest.clone());
+    fs::write(user.join("demo/main.js"), "window.keptPackageMarker = true;").unwrap();
+    let first = UserScriptManager::new(temp.path().join("builtin"), &user, &config);
+    let second = UserScriptManager::new(temp.path().join("builtin"), &user, &config);
+    first.set_script_enabled("user:demo", true).unwrap();
+    first.set_script_enabled("user:keep.js", false).unwrap();
+    let before = fs::read(&config).unwrap();
+
+    let blocker = temp.path().join("not-a-directory");
+    fs::write(&blocker, "unchanged").unwrap();
+    let error = second
+        .delete_user_script_with_trash("user:demo", &blocker.join("trash"))
+        .unwrap_err();
+    assert!(error.to_string().contains("拓展包移进废纸篓失败"));
+    assert_eq!(fs::read(&config).unwrap(), before);
+    assert_eq!(fs::read_to_string(&blocker).unwrap(), "unchanged");
+    assert_eq!(
+        fs::read_to_string(user.join("demo/codexpp.json")).unwrap(),
+        manifest.to_string()
+    );
+    assert_eq!(
+        fs::read_to_string(user.join("demo/main.js")).unwrap(),
+        "window.keptPackageMarker = true;"
+    );
+    let (bundle, _) = first.reload_snapshot().unwrap();
+    assert!(bundle.contains("window.keptPackageMarker = true;"));
 }
 
 #[test]
