@@ -446,12 +446,25 @@ fn enable_inspect_fuse_file(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// 副本里打包成 asar 的本地界面（新版 Claude，#2884）：没有 ion-dist 目录、只有 ion-dist.asar 时返回它。
+/// 副本里打包成 asar 的本地界面（新版 Claude，#2884）：ion-dist 目录里没有真实界面时返回 ion-dist.asar。
+/// 新版在 asar 旁边留了个只有占位 index.html 的 ion-dist 目录（#2943），不能凭 index.html 判定。
 #[cfg(any(target_os = "windows", test))]
 fn packed_ion_asar(copy_exe: &Path) -> Option<PathBuf> {
     let resources = copy_exe.parent()?.join("resources");
     let asar = resources.join("ion-dist.asar");
-    (!resources.join("ion-dist").join("index.html").is_file() && asar.is_file()).then_some(asar)
+    (!ion_dir_has_ui(&resources.join("ion-dist")) && asar.is_file()).then_some(asar)
+}
+
+/// 与 build-copy.py 的 `ion_dir_has_ui` 同口径：index.html 加 assets 下至少一个 .js。
+#[cfg(any(target_os = "windows", test))]
+fn ion_dir_has_ui(ion: &Path) -> bool {
+    fn has_js(dir: &Path) -> bool {
+        fs::read_dir(dir).into_iter().flatten().flatten().any(|entry| {
+            let path = entry.path();
+            if path.is_dir() { has_js(&path) } else { path.extension().is_some_and(|ext| ext == "js") }
+        })
+    }
+    ion.join("index.html").is_file() && has_js(&ion.join("assets"))
 }
 
 /// 内置中文词表，按 `i18n` 下的相对路径给出。
@@ -1637,10 +1650,50 @@ mod tests {
         // 只关第 4 位（asar 完整性），inspect 等其他位不动。
         assert_eq!(fs::read(&exe).unwrap(), fake_electron_binary("010101011"));
         verify_packed_ion_copy(&exe).unwrap();
-        // 目录形态的老版本不走这里。
+        // #2943：ion-dist 目录只有占位 index.html（没有 assets 脚本）时仍走 asar。
         fs::create_dir_all(resources.join("ion-dist")).unwrap();
         fs::write(resources.join("ion-dist").join("index.html"), "<head></head>").unwrap();
+        assert_eq!(packed_ion_asar(&exe), Some(resources.join("ion-dist.asar")));
+        // 目录形态的老版本（目录里有真实界面脚本）不走这里。
+        fs::create_dir_all(resources.join("ion-dist/assets/chunks")).unwrap();
+        fs::write(resources.join("ion-dist/assets/chunks/a.js"), js).unwrap();
         assert!(packed_ion_asar(&exe).is_none());
+    }
+
+    /// #2943：macOS 走 build-copy.py。占位 ion-dist 目录 + 真 ion-dist.asar 时要选 asar；
+    /// 目录里有真实界面时保持原行为走目录。直接调用脚本里的 `ion_asar_for`，机器上没有 python3 时跳过。
+    #[test]
+    fn build_copy_py_prefers_asar_over_placeholder_ion_dir() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/claude-localization/build-copy.py");
+        let probe = r#"
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("build_copy", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+found = module.ion_asar_for(pathlib.Path(sys.argv[2]))
+print(found.name if found else "dir")
+"#;
+        let run = |app: &Path| -> Option<String> {
+            let output = std::process::Command::new("python3").arg("-I").arg("-c").arg(probe).arg(&script).arg(app).output().ok()?;
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Claude.app");
+        let resources = app.join("Contents/Resources");
+        fs::create_dir_all(resources.join("ion-dist")).unwrap();
+        fs::write(resources.join("ion-dist/index.html"), "<head></head>").unwrap();
+        fs::write(resources.join("ion-dist.asar"), b"asar").unwrap();
+        let Some(placeholder) = run(&app) else { return; };
+        assert_eq!(placeholder, "ion-dist.asar");
+        // 两边都有真实内容时保持原行为：走目录。
+        fs::create_dir_all(resources.join("ion-dist/assets")).unwrap();
+        fs::write(resources.join("ion-dist/assets/index.js"), "x").unwrap();
+        assert_eq!(run(&app).unwrap(), "dir");
+        // 只有占位目录、没有 asar 时也走目录（随后照旧报不兼容）。
+        fs::remove_file(resources.join("ion-dist/assets/index.js")).unwrap();
+        fs::remove_file(resources.join("ion-dist.asar")).unwrap();
+        assert_eq!(run(&app).unwrap(), "dir");
     }
 
     #[test]

@@ -23,11 +23,16 @@ function Get-Sha256Hex([string]$path) {
 }
 
 function Find-Ion([string]$root) {
-  foreach ($candidate in @((Join-Path $root 'resources\ion-dist'), (Join-Path $root 'ion-dist'))) {
-    if (Test-Path (Join-Path $candidate 'index.html')) { return $candidate }
-  }
   # 新版 Claude 把本地界面打包成 ion-dist.asar（#2884）：词表注入与校验由 Codex++ 完成。
-  if (Test-Path -LiteralPath (Join-Path $root 'resources\ion-dist.asar') -PathType Leaf) { return $null }
+  $packed = Test-Path -LiteralPath (Join-Path $root 'resources\ion-dist.asar') -PathType Leaf
+  foreach ($candidate in @((Join-Path $root 'resources\ion-dist'), (Join-Path $root 'ion-dist'))) {
+    if (-not (Test-Path (Join-Path $candidate 'index.html'))) { continue }
+    # asar 旁边的 ion-dist 可能只是占位页（#2943）：assets 下没有脚本时交给 asar 分支。
+    $assets = Join-Path $candidate 'assets'
+    $hasUi = (Test-Path -LiteralPath $assets -PathType Container) -and (Get-ChildItem -LiteralPath $assets -Filter '*.js' -Recurse -File | Select-Object -First 1)
+    if ($hasUi -or -not $packed) { return $candidate }
+  }
+  if ($packed) { return $null }
   throw "找不到 Claude 本地界面 ion-dist"
 }
 

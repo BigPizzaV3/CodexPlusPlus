@@ -78,10 +78,18 @@ def ion_for(app):
     return next((path for path in candidates if path.is_dir()), candidates[0])
 
 
+def ion_dir_has_ui(path):
+    """ion-dist 目录里是否有真正的本地界面：index.html 加 assets 下的前端脚本。
+    新版 Claude 在 ion-dist.asar 旁边留了个只有兼容占位 index.html 的 ion-dist 目录（#2943）。"""
+    assets = path / "assets"
+    return (path / "index.html").is_file() and assets.is_dir() and any(p.is_file() for p in assets.rglob("*.js"))
+
+
 def ion_asar_for(app):
-    """新版 Claude 把本地界面打包成 ion-dist.asar（#2884）；只在没有 ion-dist 目录时返回它。"""
+    """新版 Claude 把本地界面打包成 ion-dist.asar（#2884）；ion-dist 目录里有真实界面时仍走目录，
+    目录只是占位页（#2943）或不存在时返回 asar。"""
     root = root_for(app)
-    if any((path / "index.html").is_file() for path in (root / "Contents/Resources/ion-dist", root / "resources/ion-dist", root / "ion-dist")):
+    if any(ion_dir_has_ui(path) for path in (root / "Contents/Resources/ion-dist", root / "resources/ion-dist", root / "ion-dist")):
         return None
     for path in (root / "Contents/Resources/ion-dist.asar", root / "resources/ion-dist.asar"):
         if path.is_file():
