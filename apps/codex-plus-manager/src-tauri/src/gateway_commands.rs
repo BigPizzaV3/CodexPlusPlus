@@ -2268,6 +2268,14 @@ pub fn resume_agent_session(
 /// 最近一次打开的登录页地址：登录提示条上「复制登录链接」读它，方便用无痕窗口或别的浏览器打开（#2823）。
 static LAST_LOGIN_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// 清掉记住的登录地址：每次开始新登录时调用，避免提示条复制到上一次登录的旧链接。
+/// finish 阶段不能清——订阅 / Copilot 的登录网址是 start 阶段打开的，等待期间还要能复制。
+fn clear_login_url() {
+    if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+        *slot = None;
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginUrlPayload {
@@ -2397,7 +2405,10 @@ pub fn cancel_gateway_login() -> CommandResult<()> {
 
 #[cfg(test)]
 mod login_tests {
-    use super::{LoginOutcome, cancel_gateway_login, cancellable_login, login_slot};
+    use super::{
+        LAST_LOGIN_URL, LoginOutcome, cancel_gateway_login, cancellable_login, clear_login_url,
+        login_slot,
+    };
 
     /// 等后台登录任务登记好中止函数。
     fn wait_registered() {
@@ -2433,6 +2444,15 @@ mod login_tests {
             assert!(login_slot().is_none());
         });
     }
+
+    #[test]
+    fn clear_login_url_drops_the_remembered_address() {
+        if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+            *slot = Some("https://example.test/login".to_string());
+        }
+        clear_login_url();
+        assert!(LAST_LOGIN_URL.lock().unwrap().is_none());
+    }
 }
 
 /// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的供应商池。同一个账号再登录只更新 token。
@@ -2443,6 +2463,7 @@ pub async fn login_gateway_chatgpt(
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
+    clear_login_url();
     let outcome = cancellable_login(async move {
         let account = accounts::chatgpt_login(open_in_browser).await?;
         let store = GatewayStore::default();
@@ -2544,6 +2565,7 @@ fn add_account_provider(
 #[tauri::command]
 pub async fn start_gateway_copilot_login()
 -> CommandResult<Option<codex_plus_core::gateway::accounts::DeviceCode>> {
+    clear_login_url();
     match codex_plus_core::gateway::accounts::copilot_device_code().await {
         Ok(code) => {
             open_in_browser(&code.verification_uri);
@@ -2575,6 +2597,7 @@ pub async fn login_gateway_grok(
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
+    clear_login_url();
     let outcome = cancellable_login(async move {
         let tokens = accounts::grok_login(open_in_browser).await?;
         // 登录时还没有供应商（也就没有它的代理设置），走系统代理。
@@ -2598,6 +2621,7 @@ pub async fn login_gateway_chatgpt_api(
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
+    clear_login_url();
     let outcome = cancellable_login(async move {
         let state_dir = codex_plus_core::paths::default_app_state_dir();
         let account = accounts::chatgpt_api_login(&state_dir, open_in_browser).await?;
@@ -2638,6 +2662,9 @@ pub async fn start_gateway_subscription_login(
             SubscriptionLoginStartPayload { start: None },
         );
     };
+    // 导入本地凭据 / 粘贴凭据这类方式没有要打开的网址：先清掉上一次登录记住的地址，
+    // 否则等待条上的「复制登录链接」会拿到旧链接。
+    clear_login_url();
     let result = async {
         let http = codex_plus_core::http_client::proxied_client("")?;
         item.begin_login(&http, method, input.as_deref().unwrap_or_default())
