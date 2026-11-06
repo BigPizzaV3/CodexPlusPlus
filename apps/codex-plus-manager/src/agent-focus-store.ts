@@ -11,6 +11,7 @@ import {
   type AgentFocus,
   type FocusMode,
 } from "./agent-focus-model";
+import { announceBackendSettingsChanged } from "./settings-events";
 
 let sessionFallback: string | undefined;
 
@@ -52,7 +53,12 @@ function writeLocal(mode: FocusMode) {
  */
 export function backupAgentFocus(mode: FocusMode) {
   if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-    void invoke("set_manager_agent_focus", { mode }).catch(() => undefined);
+    // 后端直接改了 settings.json，版本号随之变化：广播给主界面重读，否则它表单里的旧版本号
+    // 会让紧接着的任何一次保存报 settings_revision_conflict（#2937：升级后首次打开就弹「调用失败」）。
+    // 不看返回状态：写入成功、回读失败时版本号也已经变了，重读一次没有副作用。
+    void invoke("set_manager_agent_focus", { mode })
+      .then(() => announceBackendSettingsChanged())
+      .catch(() => undefined);
   }
 }
 

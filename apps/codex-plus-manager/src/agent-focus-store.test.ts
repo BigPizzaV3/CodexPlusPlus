@@ -9,14 +9,16 @@ const source = ts.transpileModule(readFileSync(new URL("./agent-focus-store.ts",
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
-function harness(initial: string | null = null) {
+function harness(initial: string | null = null, options: { tauri?: boolean; invoke?: (command: string, args: unknown) => Promise<unknown> } = {}) {
   let stored = initial;
   let readFails = false;
   let writeFails = false;
   const events = new Map<string, Set<(event: { key?: string | null }) => void>>();
   const updates: unknown[] = [];
   const exports: Record<string, any> = {};
-  const window = {
+  const invoked: Array<{ command: string; args: unknown }> = [];
+  const window: Record<string, any> = {
+    ...(options.tauri ? { __TAURI_INTERNALS__: {} } : {}),
     location: { search: "" },
     localStorage: {
       getItem: () => { if (readFails) throw new Error("storage denied"); return stored; },
@@ -33,16 +35,27 @@ function harness(initial: string | null = null) {
       return true;
     },
   };
+  const eventClass = class {
+    type: string;
+    constructor(type: string) { this.type = type; }
+  };
+  const settingsEvents = {
+    BACKEND_SETTINGS_CHANGED_EVENT: "codex-plus:backend-settings-changed",
+    announceBackendSettingsChanged: () => window.dispatchEvent(new eventClass("codex-plus:backend-settings-changed")),
+  };
   vm.runInNewContext(source, {
     exports, window, URLSearchParams,
-    CustomEvent: class {
-      type: string;
-      constructor(type: string) { this.type = type; }
-    },
+    CustomEvent: eventClass,
     require: (name: string) => {
       if (name === "./agent-focus-model") return model;
       // #2902：备份到设置文件走 Tauri；测试里没有 __TAURI_INTERNALS__，不会真的调用。
-      if (name === "@tauri-apps/api/core") return { invoke: async () => undefined };
+      if (name === "@tauri-apps/api/core") return {
+        invoke: async (command: string, args: unknown) => {
+          invoked.push({ command, args });
+          return options.invoke ? options.invoke(command, args) : undefined;
+        },
+      };
+      if (name === "./settings-events") return settingsEvents;
       if (name === "react") return {
         useState: (read: () => unknown) => [read(), (value: unknown) => updates.push(value)],
         useEffect: (effect: () => unknown) => effect(),
@@ -54,6 +67,7 @@ function harness(initial: string | null = null) {
     store: exports,
     window,
     updates,
+    invoked,
     stored: () => stored,
     failReads: () => { readFails = true; },
     failWrites: (value = true) => { writeFails = value; },
@@ -163,4 +177,24 @@ test("启动判定：两边都没有、或设置文件读不到时才弹问卷�
   const p = harness(null);
   p.window.location.search = "?previewRoute=home";
   assert.equal(await p.store.resolveAgentFocusPrompt(async () => { throw new Error("不该读"); }), false);
+});
+
+test("备份进设置文件后广播设置已变，主界面据此同步版本号（#2937）", async () => {
+  const f = harness(null, { tauri: true, invoke: async () => ({ status: "ok" }) });
+  let changed = 0;
+  f.window.addEventListener("codex-plus:backend-settings-changed", () => { changed += 1; });
+  f.store.backupAgentFocus("all");
+  assert.equal(JSON.stringify(f.invoked), JSON.stringify([{ command: "set_manager_agent_focus", args: { mode: "all" } }]));
+  // 广播在写入完成之后：先于写入广播的话，主界面重读到的还是旧版本号。
+  assert.equal(changed, 0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(changed, 1);
+
+  // 调用失败（拿不到返回）时不广播，也不抛出。
+  const g = harness(null, { tauri: true, invoke: async () => { throw new Error("ipc down"); } });
+  let failedChanged = 0;
+  g.window.addEventListener("codex-plus:backend-settings-changed", () => { failedChanged += 1; });
+  g.store.backupAgentFocus("codex");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(failedChanged, 0);
 });

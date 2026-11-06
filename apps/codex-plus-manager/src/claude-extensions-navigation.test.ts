@@ -595,6 +595,8 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: true,
     claudeAppComputerUse: true,
     claudeAppBashTimeout: 900000,
+    // #2937：记下使用模式也由后端单独写入，表单要跟上，否则下一次整份保存会写回旧值。
+    managerAgentFocus: "enhance",
   };
   const draft = {
     revision: 3,
@@ -606,6 +608,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: false,
     claudeAppComputerUse: false,
     claudeAppBashTimeout: 60000,
+    managerAgentFocus: "",
     theme: "unsaved-theme",
     providerDraft: { model: "unsaved-model" },
   };

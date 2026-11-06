@@ -13,6 +13,7 @@ import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection } from "./cx-layou
 import type { HubLink } from "./hub-overview-model";
 import { t, tf } from "./i18n";
 import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
+import { announceBackendSettingsChanged } from "./settings-events";
 import "./ComputerUsePage.css";
 
 type CuTargetId = "claudeCode" | "claudeDesktop" | "codex" | "dsh" | "zcode" | "workBuddy" | "devin";
@@ -63,8 +64,8 @@ type CuMode = "tools" | "js";
  * 本页的几个开关（操作方式、审批策略、悬浮预览）由后端单独写进 settings.json，文件版本号会变。
  * 通知主界面同步，否则它表单里的旧版本号会让之后的设置保存报「已被其他操作更新」。
  */
-export const BACKEND_SETTINGS_CHANGED_EVENT = "codex-plus:backend-settings-changed";
-const announceSettingsChanged = () => window.dispatchEvent(new Event(BACKEND_SETTINGS_CHANGED_EVENT));
+export { BACKEND_SETTINGS_CHANGED_EVENT } from "./settings-events";
+const announceSettingsChanged = announceBackendSettingsChanged;
 type CuApprovedApp = { decision: string; mode?: string; displayName?: string; decidedAt?: number; source?: string };
 type CuLastClient = { name?: string; version?: string; elicitation?: boolean; at?: number };
 type CuApprovalState = {

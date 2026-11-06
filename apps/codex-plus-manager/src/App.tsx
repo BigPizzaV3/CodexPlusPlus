@@ -1998,8 +1998,8 @@ export function App() {
     }
   };
 
-  // Computer Use 和 Claude 增强页的开关由后端单独写进 settings.json：只合并这些键和版本号，
-  // 别处没保存的草稿保持不动；否则表单里的旧版本号会让之后的保存全部报冲突。
+  // Computer Use 和 Claude 增强页的开关、使用模式由后端单独写进 settings.json：只合并这些键和版本号，
+  // 别处没保存的草稿保持不动；否则表单里的旧版本号会让之后的保存全部报冲突（#2937）。
   useEffect(() => {
     const sync = async () => {
       const result = await run(() => call<SettingsResult>("load_settings"));
@@ -2011,6 +2011,8 @@ export function App() {
         for (const key of [
           "computerUseMode", "computerUseApproval", "computerUsePip",
           "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout",
+          // 使用模式也要带上：表单留着旧值，下一次整份保存会把刚记下的模式写回去。
+          "managerAgentFocus",
         ]) merged[key] = fresh[key];
         return merged as BackendSettings;
       });
