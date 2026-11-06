@@ -963,5 +963,21 @@ fn deepseek_metadata_carries_its_own_instructions_template() {
             template.contains("end your turn by sending a final message"),
             "{slug} 的提示词没有说明 commentary 不算结束本轮"
         );
+        // base_instructions 有值时生成链不会从 instructions_template 镜像
+        // （model_suffix.rs 只在它缺失时补），所以必须由条目自己给出，
+        // 否则 codex 读到的仍是克隆来的 gpt-5.5 文案。
+        let base = metadata
+            .entry
+            .get("base_instructions")
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("{slug} 必须自带 base_instructions"));
+        assert_eq!(
+            base, template,
+            "{slug} 的 base_instructions 必须与 instructions_template 一致"
+        );
+        assert!(
+            base.contains("end your turn by sending a final message"),
+            "{slug} 的 base_instructions 仍是旧文案，codex 实际读的是它"
+        );
     }
 }
