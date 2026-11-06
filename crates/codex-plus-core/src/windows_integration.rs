@@ -1133,6 +1133,8 @@ fn process_environment_address(handle: HANDLE) -> anyhow::Result<usize> {
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> BOOL;
+
     fn ReadProcessMemory(
         process_handle: HANDLE,
         base_address: *const core::ffi::c_void,
@@ -1140,6 +1142,25 @@ unsafe extern "system" {
         size: usize,
         bytes_read: *mut usize,
     ) -> i32;
+}
+
+/// 读取进程所属的 Windows 会话；已经退出的 PID 返回 `None`。
+///
+/// 该查询不需要打开进程句柄，停止主实例前先用它排除其他交互式会话，
+/// 避免无关用户的 `ChatGPT.exe` 因句柄权限或坏 argv 阻断当前实例。
+#[cfg(windows)]
+pub(crate) fn process_session_id(process_id: u32) -> anyhow::Result<Option<u32>> {
+    anyhow::ensure!(process_id != 0, "拒绝查询无效进程 PID");
+    let mut session_id = 0_u32;
+    if unsafe { ProcessIdToSessionId(process_id, &mut session_id).as_bool() } {
+        return Ok(Some(session_id));
+    }
+    let error = std::io::Error::last_os_error();
+    // ERROR_INVALID_PARAMETER：PID 已经退出或不再存在。
+    if error.raw_os_error() == Some(87) {
+        return Ok(None);
+    }
+    Err(error).context("无法读取进程 Windows 会话")
 }
 
 #[cfg(windows)]

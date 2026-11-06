@@ -27,7 +27,9 @@ struct StopContext {
 trait HeldMainProcess {
     fn id(&self) -> u32;
     fn alive(&self) -> Result<bool>;
-    fn possible_target(&self, context: &StopContext) -> Result<bool>;
+    /// `Some(false)` 表示已确认不是目标主进程；argv 无法解析时返回 `None`，
+    /// 让调用方先核对归属和 APPDATA 后再决定是否需要 fail closed。
+    fn possible_target(&self, context: &StopContext) -> Result<Option<bool>>;
     fn facts(&self) -> Result<ProcessFacts>;
     fn request_close(&self) -> Result<bool>;
     fn terminate(&self) -> Result<()>;
@@ -105,11 +107,19 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         None
     };
     let candidates = || -> Result<Vec<u32>> {
-        Ok(bounded_process_snapshot(65_536)?
-            .into_iter()
-            .filter(|process| process.exe_file.eq_ignore_ascii_case(expected_name))
-            .map(|process| process.process_id)
-            .collect())
+        let mut candidates = Vec::new();
+        for process in bounded_process_snapshot(65_536)? {
+            if !process.exe_file.eq_ignore_ascii_case(expected_name) {
+                continue;
+            }
+            if matches!(
+                crate::windows_integration::process_session_id(process.process_id)?,
+                Some(session_id) if session_id == context.owner.session_id
+            ) {
+                candidates.push(process.process_id);
+            }
+        }
+        Ok(candidates)
     };
     let stopped = capture_and_stop(
         candidates()?,
@@ -216,12 +226,16 @@ impl HeldMainProcess for crate::windows_integration::VerifiedStopProcess {
         self.is_alive()
     }
 
-    fn possible_target(&self, context: &StopContext) -> Result<bool> {
+    fn possible_target(&self, context: &StopContext) -> Result<Option<bool>> {
         let image = normalized_path(&self.image()?)?;
         if !image_matches(&context.executable, &image) {
-            return Ok(false);
+            return Ok(Some(false));
         }
-        Ok(!parsed_arguments(&self.arguments()?, &image)?.child)
+        let arguments = self.arguments()?;
+        Ok(match parsed_arguments(&arguments, &image) {
+            Ok(arguments) => Some(!arguments.child),
+            Err(_) => None,
+        })
     }
 
     fn facts(&self) -> Result<ProcessFacts> {
@@ -252,6 +266,7 @@ fn capture_and_stop<P: HeldMainProcess>(
 ) -> Result<usize> {
     let mut held = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut skipped_context = None;
     // 所有候选均持有句柄、完成核验后才允许首次终止；后续候选失败不会造成部分预先停止。
     for id in ids {
         anyhow::ensure!(id != 0 && seen.insert(id), "主实例快照包含无效或重复 PID");
@@ -263,11 +278,16 @@ fn capture_and_stop<P: HeldMainProcess>(
         let Some(facts) = candidate_facts(&process, context)? else {
             continue;
         };
-        if !target_matches(&facts, context)? {
-            if process.alive()? {
-                reject_skipped_owned_session(&facts, context)?;
+        match classify_target(&facts, context)? {
+            TargetClassification::Irrelevant | TargetClassification::Child => continue,
+            TargetClassification::Mismatch(reason) => {
+                if process.alive()? {
+                    reject_skipped_owned_session(&facts, context)?;
+                    skipped_context.get_or_insert(reason);
+                }
+                continue;
             }
-            continue;
+            TargetClassification::Main => {}
         }
         let Some(stoppable) = capture(id, true)
             .with_context(|| format!("无法取得 Codex 主进程 PID {id} 的停止权限"))?
@@ -282,10 +302,23 @@ fn capture_and_stop<P: HeldMainProcess>(
             .facts()
             .context("无法核验持有停止权限的 Codex 句柄")?;
         anyhow::ensure!(
-            stoppable.alive()? && current == facts && target_matches(&current, context)?,
+            stoppable.alive()?
+                && current == facts
+                && matches!(
+                    classify_target(&current, context)?,
+                    TargetClassification::Main
+                ),
             "获取停止权限时 Codex PID {id} 的实例身份发生变化"
         );
         held.push((stoppable, current));
+    }
+    if held.is_empty() {
+        if let Some(reason) = skipped_context {
+            anyhow::bail!(
+                "检测到 Codex 主进程，但其{}与当前停止上下文不一致，未结束任何进程",
+                reason
+            );
+        }
     }
     anyhow::ensure!(
         !context.debug_port_only || held.len() == 1,
@@ -364,11 +397,9 @@ fn candidate_facts<P: HeldMainProcess>(
     if !process.alive()? {
         return Ok(None);
     }
-    match process.possible_target(context) {
-        Ok(true) => {}
-        Ok(false) => return Ok(None),
-        Err(_) if !process.alive()? => return Ok(None),
-        Err(error) => return Err(error).context("无法筛选 Codex 主实例"),
+    match process.possible_target(context)? {
+        Some(false) => return Ok(None),
+        Some(true) | None => {}
     }
     match process.facts() {
         Ok(facts) => {
@@ -378,6 +409,13 @@ fn candidate_facts<P: HeldMainProcess>(
                     .is_none_or(|(_, birth)| facts.birth == birth),
                 "已接管的 Codex 监听进程创建身份发生变化"
             );
+            let image = normalized_path(&facts.image)?;
+            if !image_matches(&context.executable, &image) {
+                return Ok(None);
+            }
+            if facts.owner != context.owner {
+                return Ok(None);
+            }
             Ok(Some(facts))
         }
         Err(_) if !process.alive()? => Ok(None),
@@ -444,14 +482,25 @@ fn revalidate_held<P: HeldMainProcess>(
 }
 
 fn target_matches(facts: &ProcessFacts, context: &StopContext) -> Result<bool> {
+    Ok(matches!(
+        classify_target(facts, context)?,
+        TargetClassification::Main
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetClassification {
+    Irrelevant,
+    Child,
+    Mismatch(&'static str),
+    Main,
+}
+
+fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<TargetClassification> {
     anyhow::ensure!(facts.birth != 0, "缺少 Codex 进程创建身份");
     let image = normalized_path(&facts.image)?;
     if !image_matches(&context.executable, &image) || facts.owner != context.owner {
-        return Ok(false);
-    }
-    let arguments = parsed_arguments(&facts.arguments, &image)?;
-    if arguments.child {
-        return Ok(false);
+        return Ok(TargetClassification::Irrelevant);
     }
     let environment = &facts.environment;
     let app_data = environment
@@ -459,7 +508,11 @@ fn target_matches(facts: &ProcessFacts, context: &StopContext) -> Result<bool> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("无法核实目标 Codex APPDATA"))?;
     if normalized_path_text(app_data)? != context.app_data {
-        return Ok(false);
+        return Ok(TargetClassification::Mismatch("APPDATA"));
+    }
+    let arguments = parsed_arguments(&facts.arguments, &image)?;
+    if arguments.child {
+        return Ok(TargetClassification::Child);
     }
     let effective = effective_user_data(arguments.user_data, environment)?;
     if environment
@@ -467,13 +520,21 @@ fn target_matches(facts: &ProcessFacts, context: &StopContext) -> Result<bool> {
         .as_deref()
         .is_some_and(|value| !value.is_empty())
     {
-        return Ok(false);
+        return Ok(TargetClassification::Mismatch("agent 隔离标记"));
     }
     if context.debug_port_only {
         // MSIX 激活的命令行可以不带调试参数；授权来自已持有的真实监听者身份。
-        return Ok(context.listener_identity.is_some());
+        return Ok(if context.listener_identity.is_some() {
+            TargetClassification::Main
+        } else {
+            TargetClassification::Mismatch("已接管调试端口的监听身份")
+        });
     }
-    Ok(effective == context.user_data)
+    Ok(if effective == context.user_data {
+        TargetClassification::Main
+    } else {
+        TargetClassification::Mismatch("用户数据目录")
+    })
 }
 
 struct ParsedArguments {
@@ -511,18 +572,10 @@ fn parsed_launch_arguments(arguments: &[String]) -> Result<ParsedArguments> {
                 || key.eq_ignore_ascii_case("remote-debugging-port")
         }) {
             let key = key.unwrap();
-            let inline = argument.trim().split_once('=').map(|(_, value)| value);
-            let value = match inline {
-                Some(value) => value,
-                None => {
-                    index += 1;
-                    arguments
-                        .get(index)
-                        .filter(|value| super::windows_codex_switch_name(value).is_none())
-                        .map(String::as_str)
-                        .ok_or_else(|| anyhow::anyhow!("Codex 身份参数缺少值"))?
-                }
-            };
+            let (_, value) = argument
+                .trim()
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("Codex 身份参数必须使用 --key=value 形式"))?;
             anyhow::ensure!(!value.is_empty(), "Codex 身份参数为空");
             if key.eq_ignore_ascii_case("type") {
                 anyhow::ensure!(
@@ -703,13 +756,16 @@ mod tests {
             Ok(!self.0.terminated.get() || self.0.stubborn)
         }
 
-        fn possible_target(&self, context: &StopContext) -> Result<bool> {
+        fn possible_target(&self, context: &StopContext) -> Result<Option<bool>> {
             let facts = &self.0.facts[0];
             let image = normalized_path(&facts.image)?;
             if !image_matches(&context.executable, &image) {
-                return Ok(false);
+                return Ok(Some(false));
             }
-            Ok(!parsed_arguments(&facts.arguments, &image)?.child)
+            Ok(match parsed_arguments(&facts.arguments, &image) {
+                Ok(arguments) => Some(!arguments.child),
+                Err(_) => None,
+            })
         }
 
         fn facts(&self) -> Result<ProcessFacts> {
@@ -819,7 +875,7 @@ mod tests {
     #[test]
     fn default_context_preserves_argv_environment_and_agent_isolation() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let argument = facts(&["--user-data-dir", r"C:\test\isolated"]);
+        let argument = facts(&["--user-data-dir=C:\\test\\isolated"]);
         let mut environment = facts(&[]);
         environment.environment.user_data = Some(r"C:\test\isolated".to_owned());
         let mut agent = facts(&[]);
@@ -829,7 +885,26 @@ mod tests {
             .enumerate()
             .map(|(index, facts)| fake(index as u32 + 1, vec![facts], &events))
             .collect();
-        assert_eq!(stop(processes, &context(None)).unwrap(), 0);
+        assert!(stop(processes, &context(None)).is_err());
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn no_live_processes_are_idempotent() {
+        let events = Rc::new(RefCell::new(Vec::<u32>::new()));
+        assert_eq!(stop(Vec::new(), &context(None)).unwrap(), 0);
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn malformed_arguments_from_another_owner_are_ignored() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut unrelated = facts(&["--user-data-dir"]);
+        unrelated.owner.user_sid.push(9);
+        assert_eq!(
+            stop(vec![fake(1, vec![unrelated], &events)], &context(None)).unwrap(),
+            0
+        );
         assert!(events.borrow().is_empty());
     }
 
@@ -901,7 +976,6 @@ mod tests {
         let environment = facts(&[]).environment;
         for arguments in [
             vec![r"--user-data-dir=C:\test\custom"],
-            vec!["--user-data-dir", r"C:\test\custom"],
             vec![r"/USER-DATA-DIR=C:\test\custom"],
             vec![r"-user-data-dir=C:\test\custom"],
         ] {
@@ -1109,6 +1183,9 @@ mod tests {
     fn ambiguous_or_malformed_identity_arguments_fail_closed() {
         let cases = [
             vec!["--user-data-dir"],
+            vec!["--user-data-dir", r"C:\one"],
+            vec!["--remote-debugging-port", "52106"],
+            vec!["--type", "renderer"],
             vec!["--user-data-dir="],
             vec!["--user-data-dir=relative"],
             vec!["--user-data-dir=C:\\one", "--user-data-dir=C:\\one"],
@@ -1133,7 +1210,7 @@ mod tests {
 
     #[test]
     fn paths_with_spaces_use_the_existing_windows_argv_boundaries() {
-        let candidate = facts(&["--user-data-dir", r"C:\a path\an instance"]);
+        let candidate = facts(&[r"--user-data-dir=C:\a path\an instance"]);
         assert!(target_matches(&candidate, &context(Some(r"C:\a path\an instance"))).unwrap());
         assert_eq!(
             normalized_path_text(r"\\?\C:\A Path\Instance\").unwrap(),
@@ -1421,9 +1498,9 @@ mod tests {
             mode == "environment"
         );
         assert!(other.0.try_wait().unwrap().is_none());
-        assert_eq!(
-            stop_windows_main_codex_processes_and_wait(&executable, None).unwrap(),
-            0
+        assert!(
+            stop_windows_main_codex_processes_and_wait(&executable, None).is_err(),
+            "{mode}: a live Codex main process exists under another context"
         );
         if mode == "default" {
             let arguments = vec![format!("--user-data-dir={}", selected.display())];

@@ -2984,7 +2984,7 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         10,
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
-        || stop_main_codex_process(&request),
+        || stop_main_codex_process(&request).map(|_| ()),
         codex_plus_launcher::stop,
         wait_native_browser_shutdown,
     ) {
@@ -3090,33 +3090,48 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 /// 结束主 Codex 进程并确认退出。重启和「停止 Codex」共用。
-fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<()> {
+fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
     #[cfg(windows)]
     {
-        let settings = SettingsStore::default().load()?;
         let session = codex_plus_launcher::session_snapshot();
+        let needs_settings = (session.launch_extra_args.is_none() && !session.owned)
+            || (session.app_dir.is_none() && request.app_path.trim().is_empty());
+        let settings = needs_settings
+            .then(|| SettingsStore::default().load())
+            .transpose()?;
         // 设置可能在启动后被编辑；停止时沿用该会话真正使用过的参数。
         let launch_extra_args = session
             .launch_extra_args
             .as_deref()
-            .or_else(|| (!session.owned).then_some(settings.codex_extra_args.as_slice()));
+            .or_else(|| {
+                (!session.owned).then(|| {
+                    settings
+                        .as_ref()
+                        .map(|settings| settings.codex_extra_args.as_slice())
+                        .unwrap_or_default()
+                })
+            });
         let owned_debug_port = session.owned.then_some(session.debug_port).flatten();
         let app_dir = session.app_dir.or_else(|| {
             codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
                 (!request.app_path.trim().is_empty())
                     .then(|| Path::new(request.app_path.trim())),
-                Some(settings.codex_app_path.as_str()),
+                settings
+                    .as_ref()
+                    .map(|settings| settings.codex_app_path.as_str()),
             )
         });
         let app_dir = app_dir.ok_or_else(|| anyhow::anyhow!("无法核实 Codex 应用路径"))?;
         let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
-        codex_plus_core::watcher::stop_windows_main_codex_processes_with_args_and_wait(
+        return codex_plus_core::watcher::stop_windows_main_codex_processes_with_args_and_wait(
             &executable,
             owned_debug_port,
             launch_extra_args,
-        )?;
-        return Ok(());
+        );
     }
+    #[cfg(not(windows))]
+    let was_running = codex_plus_core::cdp::endpoint_available(request.debug_port)
+        || main_codex_running_without_debug_port();
     #[cfg(not(windows))]
     let debug_port = request.debug_port;
     #[cfg(target_os = "macos")]
@@ -3131,7 +3146,7 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<()> {
     #[cfg(not(windows))]
     anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
     #[cfg(not(windows))]
-    Ok(())
+    Ok(usize::from(was_running))
 }
 
 /// 主 Codex 开着却没带调试端口：从 Dock / Finder 等外部启动，调试端口探测不到它。
@@ -3193,21 +3208,32 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         "user_stopping",
         10,
     ));
+    let mut stopped_count = None;
     match stop_codex_plus_for_restart(
-        || stop_main_codex_process(&request),
+        || {
+            let count = stop_main_codex_process(&request)?;
+            stopped_count = Some(count);
+            Ok(())
+        },
         codex_plus_launcher::stop,
         wait_native_browser_shutdown,
     ) {
         Ok(_) => {
+            let stopped_count = stopped_count.unwrap_or_default();
+            let message = if stopped_count == 0 {
+                "Codex 没有在运行。"
+            } else {
+                "Codex 已停止。"
+            };
             let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
                 &request,
                 "stopped",
-                "Codex 已停止。",
+                message,
                 current_timestamp_ms(),
                 "user_stopped",
                 100,
             ));
-            ok("Codex 已停止。", json!({}))
+            ok(message, json!({ "stoppedCount": stopped_count }))
         }
         Err(error) => {
             let message = stop_failure_message(&error);
