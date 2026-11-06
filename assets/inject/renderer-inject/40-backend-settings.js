@@ -106,7 +106,7 @@
   }
 
   async function syncBackendSettingsFromHeartbeat() {
-    if (syncBackendSettingsInFlight) return;
+    if (syncBackendSettingsInFlight) return false;
     syncBackendSettingsInFlight = true;
     try {
       // 记下读之前的设置：loadBackendSettingsState 换成新对象，旧引用里还是上一次的值。
@@ -125,6 +125,7 @@
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
       }
+      return loaded;
     } finally {
       syncBackendSettingsInFlight = false;
     }
@@ -200,7 +201,7 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
-  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  /** 上次心跳成功读取的设置版本。 */
   let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
@@ -295,8 +296,11 @@
           || !codexPlusBackendSettingsLoaded
           || revision !== codexPlusBackendSettingsRevision;
         if (settingsStale) {
-          codexPlusBackendSettingsRevision = revision;
-          void syncBackendSettingsFromHeartbeat();
+          void syncBackendSettingsFromHeartbeat().then((loaded) => {
+            if (loaded && codexPlusBackendGeneration === window.__codexPlusBackendGeneration) {
+              codexPlusBackendSettingsRevision = revision;
+            }
+          }).catch(() => {});
         }
       } else {
         codexPlusBackendFailureCount += 1;

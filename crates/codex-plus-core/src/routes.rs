@@ -1126,6 +1126,7 @@ impl BridgeDataService for UnavailableDataService {
 fn settings_payload_value(
     mut settings: BackendSettings,
     codex_app_version: String,
+    is_multi_instance: bool,
 ) -> anyhow::Result<Value> {
     let managed_session_connection = managed_session_connection(&settings);
     let active_relay_session_provider = settings.active_relay_session_provider();
@@ -1138,6 +1139,7 @@ fn settings_payload_value(
     // 页面心跳比较这两项，发拓展事件 relayProfile/switched、modelCatalog/changed（见 40-backend-settings.js）。
     let active_relay_profile_public = public_active_relay_profile(&settings);
     let catalog_fingerprint = model_catalog_fingerprint(&settings);
+    let catalog_source_identity = model_catalog_source_identity(&settings);
     let mut value = serde_json::to_value(settings)?;
     fn remove_named_keys(value: &mut Value) {
         match value {
@@ -1187,6 +1189,8 @@ fn settings_payload_value(
         );
         object.insert("activeRelayProfilePublic".to_string(), active_relay_profile_public);
         object.insert("modelCatalogFingerprint".to_string(), Value::String(catalog_fingerprint));
+        object.insert("modelCatalogSourceIdentity".to_string(), Value::String(catalog_source_identity));
+        object.insert("codexMultiInstance".to_string(), Value::Bool(is_multi_instance));
         object.insert(
             "nativeFastLocalApiConfigured".to_string(),
             Value::Bool(native_fast.native_fast_local_api_configured),
@@ -1221,26 +1225,76 @@ fn public_active_relay_profile(settings: &BackendSettings) -> Value {
 fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
     use std::hash::{Hash, Hasher};
     let profile = settings.active_relay_profile();
-    let aggregate = settings
-        .active_aggregate_relay_profile()
-        .and_then(|aggregate| serde_json::to_string(&aggregate).ok())
-        .unwrap_or_default();
+    let aggregate = settings.active_aggregate_relay_profile();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (
-        settings.relay_profiles_enabled,
-        profile.id.as_str(),
-        profile.name.as_str(),
-        crate::relay_config::relay_profile_model(&profile),
-        profile.model_list.as_str(),
-        profile.model_windows.as_str(),
-        profile.model_auto_compact.as_str(),
-        profile.model_metadata.as_str(),
-        profile.context_window.as_str(),
-        profile.auto_compact_limit.as_str(),
-        aggregate,
-    )
+    let hash_profile = |profile: &crate::settings::RelayProfile,
+                        hasher: &mut std::collections::hash_map::DefaultHasher| {
+        (
+            profile.id.as_str(),
+            profile.name.as_str(),
+            profile.model.as_str(),
+            crate::relay_config::relay_profile_model(profile),
+            profile.model_list.as_str(),
+            profile.model_windows.as_str(),
+            profile.model_auto_compact.as_str(),
+            profile.model_metadata.as_str(),
+            profile.context_window.as_str(),
+            profile.auto_compact_limit.as_str(),
+            crate::official_login::is_official_login_profile(profile),
+            crate::relay_config::upstream_rejects_tool_search(profile),
+        )
+            .hash(&mut *hasher);
+        crate::relay_rotation::member_relay_ready(profile).hash(hasher);
+    };
+    settings.relay_profiles_enabled.hash(&mut hasher);
+    hash_profile(&profile, &mut hasher);
+    aggregate
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
         .hash(&mut hasher);
+    if let Some(aggregate) = aggregate {
+        for member in &aggregate.members {
+            member.relay_id.hash(&mut hasher);
+            let member_profile = settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == member.relay_id);
+            member_profile.is_some().hash(&mut hasher);
+            if let Some(member_profile) = member_profile {
+                hash_profile(member_profile, &mut hasher);
+            }
+        }
+    }
     format!("{:016x}", hasher.finish())
+}
+
+/// 只供内部载荷比较连接来源，不向第三方拓展暴露。
+fn model_catalog_source_identity(settings: &BackendSettings) -> String {
+    use sha2::{Digest, Sha256};
+
+    let profile = settings.active_relay_profile();
+    let base_url = crate::relay_config::relay_profile_base_url(&profile);
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-plus-model-catalog-source-v1\0");
+    for value in [
+        profile.id.as_str(),
+        base_url.as_str(),
+        match profile.protocol {
+            crate::settings::RelayProtocol::Responses => "responses",
+            crate::settings::RelayProtocol::ChatCompletions => "chatCompletions",
+            crate::settings::RelayProtocol::AnthropicMessages => "anthropicMessages",
+        },
+        match profile.relay_mode {
+            crate::settings::RelayMode::Official => "official",
+            crate::settings::RelayMode::MixedApi => "mixedApi",
+            crate::settings::RelayMode::PureApi => "pureApi",
+            crate::settings::RelayMode::Aggregate => "aggregate",
+        },
+    ] {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// `/settings/public`：拓展可读的设置子集。
@@ -1363,7 +1417,7 @@ mod dictation_privacy_tests {
     fn dictation_settings_bridge_removes_asr_key() {
         let mut settings = BackendSettings::default();
         settings.dictation.api_key = "fake-asr-private-key".to_string();
-        let result = settings_payload_value(settings, String::new()).unwrap();
+        let result = settings_payload_value(settings, String::new(), false).unwrap();
         assert!(result["dictation"].get("apiKey").is_none());
         assert_eq!(result["dictation"]["apiKeyConfigured"], true);
         assert!(!result.to_string().contains("fake-asr-private-key"));
@@ -1375,17 +1429,31 @@ mod dictation_privacy_tests {
         settings.relay_profiles[0].api_keys = vec![crate::settings::RelayApiKey {
             id: "backup".into(), name: "备用".into(), api_key: "fake-backup-secret".into(),
         }];
-        let result = settings_payload_value(settings, String::new()).unwrap();
+        let result = settings_payload_value(settings, String::new(), false).unwrap();
         assert!(result["relayProfiles"][0].get("apiKeys").is_none());
         assert!(!result.to_string().contains("fake-backup-secret"));
     }
+
+    #[test]
+    fn settings_bridge_reports_multi_instance_without_enabling_relay_switching() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles_enabled = false;
+        for is_multi_instance in [false, true] {
+            let result =
+                settings_payload_value(settings.clone(), String::new(), is_multi_instance).unwrap();
+            assert_eq!(result["codexMultiInstance"], is_multi_instance);
+            assert_eq!(result["relayProfilesEnabled"], false);
+            assert!(result["managedSessionConnection"].is_null());
+        }
+    }
+
     #[test]
     fn dictation_settings_bridge_applies_enhancement_switch_without_mutating_settings() {
         let mut settings = BackendSettings::default();
         settings.enhancements_enabled = false;
         settings.dictation.enabled = true;
         settings.dictation.api_key = "fake-asr-private-key".to_string();
-        let result = settings_payload_value(settings.clone(), String::new()).unwrap();
+        let result = settings_payload_value(settings.clone(), String::new(), false).unwrap();
         assert_eq!(result["dictation"]["enabled"], false);
         assert_eq!(result["dictation"]["apiKeyConfigured"], true);
         assert!(settings.dictation.enabled);
@@ -1399,7 +1467,11 @@ async fn settings_value(
 ) -> anyhow::Result<Value> {
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
-    settings_payload_value(settings, codex_app_version)
+    settings_payload_value(
+        settings,
+        codex_app_version,
+        std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").as_deref() == Some(std::ffi::OsStr::new("1")),
+    )
 }
 
 fn backend_status_value(

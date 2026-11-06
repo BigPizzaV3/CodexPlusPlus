@@ -365,7 +365,8 @@ pub async fn read_codex_model_catalog_from_home(
         models.extend(source_models);
         source_statuses.push(source_status);
     }
-    let (catalog_models, catalog_status) = models_from_config_model_catalog_json(home, &effective);
+    let (catalog_models, catalog_metadata, catalog_status) =
+        models_from_config_model_catalog_json(home, &effective);
     models.extend(catalog_models);
     if let Some(status) = catalog_status {
         source_statuses.push(status);
@@ -394,7 +395,10 @@ pub async fn read_codex_model_catalog_from_home(
         "not_configured"
     };
     let responses_api = preferred_responses_api_status(&source_statuses);
-    let model_metadata = model_ui_metadata_map(&models);
+    let mut model_metadata = model_ui_metadata_map(&models);
+    for (model, fields) in catalog_metadata {
+        model_metadata[model] = fields;
+    }
 
     json!({
         "status": status,
@@ -1163,10 +1167,10 @@ fn model_id_from_field<'a>(key: &str, value: &'a str) -> &'a str {
 fn models_from_config_model_catalog_json(
     home: &Path,
     effective: &HashMap<String, String>,
-) -> (Vec<String>, Option<Value>) {
+) -> (Vec<String>, Map<String, Value>, Option<Value>) {
     let raw_path = string_value(effective.get("model_catalog_json"));
     if raw_path.is_empty() {
-        return (Vec::new(), None);
+        return (Vec::new(), Map::new(), None);
     }
     let path = resolve_config_path(home, &raw_path);
     let safe_path = path.to_string_lossy().to_string();
@@ -1175,6 +1179,7 @@ fn models_from_config_model_catalog_json(
         Err(error) => {
             return (
                 Vec::new(),
+                Map::new(),
                 Some(json!({
                     "id": "config:model_catalog_json",
                     "type": "model_catalog_json",
@@ -1193,6 +1198,7 @@ fn models_from_config_model_catalog_json(
         Err(error) => {
             return (
                 Vec::new(),
+                Map::new(),
                 Some(json!({
                     "id": "config:model_catalog_json",
                     "type": "model_catalog_json",
@@ -1207,9 +1213,24 @@ fn models_from_config_model_catalog_json(
         }
     };
     let models = unique_strings(parse_model_catalog_json_models(&payload));
+    let metadata = payload["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| catalog_model_visible_in_api(entry))
+        .filter_map(|entry| {
+            let slug = entry.get("slug")?.as_str()?.trim();
+            if slug.is_empty() {
+                return None;
+            }
+            crate::model_suffix::model_ui_metadata_with_override(slug, Some(entry))
+                .map(|fields| (slug.to_string(), fields))
+        })
+        .collect();
     let count = models.len();
     (
         models,
+        metadata,
         Some(json!({
             "id": "config:model_catalog_json",
             "type": "model_catalog_json",

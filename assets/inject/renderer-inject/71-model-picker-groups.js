@@ -83,6 +83,21 @@
     stored: false,
   };
 
+  function codexPlusModelPickerCatalogChanged(options = {}) {
+    const state = codexPlusModelPickerGroupsState;
+    if (options.sourceChanged) {
+      state.providerNames.clear();
+      state.stored = true;
+      state.providerDirty = false;
+    }
+    state.defaultGroupId = "";
+    state.defaultProviderName = "";
+    state.signature = "";
+    state.catalogRetryAt = 0;
+    if (options.sourceChanged) codexPlusModelPickerPersist();
+    if (!state.disposed) codexPlusModelPickerSchedule(0);
+  }
+
   function codexPlusModelPickerText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")
@@ -114,10 +129,18 @@
 
   function codexPlusModelPickerStore() {
     if (codexPlusModelPickerGroupsState.stored) return;
+    const runtime = window.__codexPlusModelCatalogRuntime;
+    if (runtime && !runtime.source) return;
     codexPlusModelPickerGroupsState.stored = true;
+    if (runtime) {
+      codexPlusModelPickerGroupsState.providerNames.clear();
+      codexPlusModelPickerGroupsState.defaultGroupId = "";
+      codexPlusModelPickerGroupsState.defaultProviderName = "";
+    }
     try {
       const raw = window.localStorage?.getItem(codexPlusModelPickerGroupsStoreKey);
       const parsed = raw ? JSON.parse(raw) : null;
+      if (runtime && parsed?.source !== runtime.source) return;
       if (typeof parsed?.defaultGroupId === "string") {
         codexPlusModelPickerGroupsState.defaultGroupId = parsed.defaultGroupId;
       }
@@ -130,6 +153,8 @@
               name: value.name,
               parsed: value.parsed === true,
               groupId: typeof value.groupId === "string" ? value.groupId : "",
+              ...(typeof value.slug === "string" && value.slug ? { slug: value.slug } : {}),
+              ...(typeof value.displayName === "string" && value.displayName ? { displayName: value.displayName } : {}),
             });
           }
         }
@@ -139,6 +164,8 @@
 
   function codexPlusModelPickerPersist() {
     try {
+      const runtime = window.__codexPlusModelCatalogRuntime;
+      if (runtime && !runtime.source) return;
       const providers = {};
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
         providers[key] = value;
@@ -148,6 +175,7 @@
         JSON.stringify({
           providers,
           defaultGroupId: codexPlusModelPickerGroupsState.defaultGroupId || "",
+          ...(runtime ? { source: runtime.source } : {}),
         }),
       );
     } catch {}
@@ -159,14 +187,25 @@
    * `parsed` 表示这条是从行末尾 `（供应商）` 猜出来的；权威来源（目录侧
    * `codex_plus_group` / `description`）可以覆盖它，反过来不行。
    */
-  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "") {
+  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "", slug = "") {
     const key = codexPlusModelPickerNormalize(displayName);
     if (!key || !provider) return;
+    if (!parsed && groupId && slug) {
+      const modelKey = `model\u0000${slug}`;
+      const previous = codexPlusModelPickerGroupsState.providerNames.get(modelKey);
+      if (!previous || previous.name !== provider || previous.groupId !== groupId || previous.displayName !== displayName) {
+        codexPlusModelPickerGroupsState.providerNames.set(modelKey, {
+          name: provider, parsed: false, groupId, slug, displayName,
+        });
+        codexPlusModelPickerGroupsState.providerDirty = true;
+      }
+    }
     const existing = codexPlusModelPickerGroupsState.providerNames.get(key);
     if (existing && !existing.parsed && parsed) return;
     const id = groupId || (existing?.name === provider ? existing.groupId || "" : "");
-    if (existing && existing.name === provider && existing.parsed === !!parsed && (existing.groupId || "") === id) return;
-    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed, groupId: id });
+    const model = slug || existing?.slug || "";
+    if (existing && existing.name === provider && existing.parsed === !!parsed && (existing.groupId || "") === id && (existing.slug || "") === model) return;
+    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed, groupId: id, slug: model });
     codexPlusModelPickerGroupsState.providerDirty = true;
   }
 
@@ -179,14 +218,13 @@
    */
   function codexPlusModelPickerEnsureCatalog() {
     const state = codexPlusModelPickerGroupsState;
-    if (state.defaultGroupId) return;
     if (state.catalogPending) return;
     if (Date.now() < state.catalogRetryAt) return;
     const loaded = !!(codexModelCatalog?.models?.length || codexModelCatalog?.modelMetadata);
     if (loaded && typeof loadCodexModelCatalog !== "function") return;
     if (typeof loadCodexModelCatalog !== "function") return;
     state.catalogPending = true;
-    state.catalogRetryAt = Date.now() + 5000;
+    state.catalogRetryAt = Date.now() + 10000;
     Promise.resolve()
       .then(() => loadCodexModelCatalog(false))
       .catch(() => {})
@@ -207,7 +245,9 @@
   function codexPlusModelPickerDefaultGroupId() {
     const state = codexPlusModelPickerGroupsState;
     const direct = codexModelCatalog?.codex_plus_default_group_id;
-    if (typeof direct === "string" && direct.trim()) {
+    // 成功目录的显式空值代表取消默认成员；缺字段或请求失败仍沿用上次结果。
+    if (typeof direct === "string"
+        && (direct.trim() || ["ok", "not_applied"].includes(codexModelCatalog?.status))) {
       if (state.defaultGroupId !== direct.trim()) {
         state.defaultGroupId = direct.trim();
         state.providerDirty = true;
@@ -326,6 +366,19 @@
       .replace(/[^\p{L}\p{N}]+/gu, "");
   }
 
+  function codexPlusModelPickerNativeLabelKey(value) {
+    return `label\u0000${String(value || "").toLowerCase().replace(/^gpt[\s_-]*/u, "")
+      .replace(/[^\p{L}\p{N}\u200b-\u200d\u2060-\u206f]+/gu, "")}`;
+  }
+
+  function codexPlusModelPickerCatalogEntries() {
+    const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    if (!metadata || typeof metadata !== "object") return [];
+    return Array.isArray(codexModelCatalog?.models)
+      ? codexModelCatalog.models.map((slug) => [slug, metadata[slug]])
+      : Object.entries(metadata);
+  }
+
   /**
    * 目录里的键和选择器里的名字不一定逐字相同。
    *
@@ -353,20 +406,55 @@
     return aliases;
   }
 
+  function codexPlusModelPickerCanRestoreProvider(entry, remembered) {
+    if (!entry || typeof entry !== "object") return true;
+    if (Object.hasOwn(entry, "codex_plus_group_id") || Object.hasOwn(entry, "codex_plus_group")) return false;
+    const displayName = entry.displayName || entry.display_name;
+    const provider = providerNameOf(entry);
+    return !!remembered?.displayName && displayName === remembered.displayName
+      && (!provider || provider === remembered.name);
+  }
+
   /**
    * 权威归属：聚合目录里每个模型的 `description` 是 `上游 · 供应商`。
    * 命中后可以拿到聚合成员的真名（而不是从展示名尾部猜出来的供应商名）。
    */
   function codexPlusModelPickerCatalogProviderMap() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    const models = ["ok", "not_applied", "not_configured"].includes(codexModelCatalog?.status)
+      && Array.isArray(codexModelCatalog?.models) ? codexModelCatalog.models : null;
     const map = new Map();
     // 记下的归属只补当前快照缺的键：目录快照会被整体替换（重连 / 拉取超时返回空元数据），
     // 只认当前快照会让裸名模型在某一刻全部失去归属，落进一串空名分组（#2860）。
     // 缓存里的形状是 `{ name, parsed, groupId }`，这里换成读取方要的 `{ provider, groupId }`；
     // 从行尾后缀猜的（parsed）不补：那是别家同名模型的归属，套给裸名行会串组。
     const fillFromMemory = () => {
+      const complete = codexModelCatalog?.status === "ok" && modelMetadata
+        && Array.isArray(codexModelCatalog?.models)
+        && codexModelCatalog.models.every((slug) => modelMetadata?.[slug]
+          && (Object.hasOwn(modelMetadata[slug], "codex_plus_group_id")
+            || Object.hasOwn(modelMetadata[slug], "codex_plus_group")));
+      if (complete) return map;
+      const rememberedAliases = new Map();
       codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
-        if (map.has(key) || !value?.name || value.parsed) return;
+        if (!key.startsWith("model\u0000") || !value?.displayName || !value.groupId || value.parsed) return;
+        if (models && !models.includes(value.slug)) return;
+        if (!codexPlusModelPickerCanRestoreProvider(modelMetadata?.[value.slug], value)) return;
+        for (const alias of codexPlusModelPickerCatalogAliases(value.displayName, {}, value.slug)) {
+          if (!rememberedAliases.has(alias)) rememberedAliases.set(alias, value);
+          else if (rememberedAliases.get(alias)?.groupId !== value.groupId) rememberedAliases.set(alias, null);
+        }
+      });
+      rememberedAliases.forEach((value, key) => {
+        if (!map.has(key)) map.set(key, value ? { provider: value.name, groupId: value.groupId, parsed: false } : null);
+        else if (!value || map.get(key)?.groupId !== value.groupId) map.set(key, null);
+      });
+      codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
+        if (key.startsWith("model\u0000") || map.has(key) || !value?.name || value.parsed) return;
+        if (models && value.slug && !models.includes(value.slug)) return;
+        const current = value.slug && codexPlusModelPickerGroupsState.providerNames.get(`model\u0000${value.slug}`);
+        if (value.slug && !codexPlusModelPickerCanRestoreProvider(modelMetadata?.[value.slug], current)) return;
+        if (current?.displayName && !codexPlusModelPickerCatalogAliases(current.displayName, {}, value.slug).has(key)) return;
         map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
       });
       return map;
@@ -390,13 +478,16 @@
       for (const key of codexPlusModelPickerCatalogAliases(displayName, entry, slug)) {
         const remembered = map.get(key);
         // 权威来源可以覆盖行文本猜出来的；已经有权威值就不动。
-        if (!remembered || remembered.parsed) map.set(key, { provider, groupId, parsed: false });
+        if (!map.has(key) || remembered?.groupId === groupId) map.set(key, { provider, groupId, parsed: false });
+        else map.set(key, null);
       }
-      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId, slug);
     };
     const bySlug = new Map(entries);
     for (const slug of slugList) registerEntry(bySlug.get(slug), slug);
-    for (const [key, entry] of entries) registerEntry(entry, key);
+    if (!Array.isArray(codexModelCatalog?.models)) {
+      for (const [key, entry] of entries) registerEntry(entry, key);
+    }
     return fillFromMemory();
   }
 
@@ -410,9 +501,16 @@
    */
   function codexPlusModelPickerCatalogExactMap() {
     const map = new Map();
-    const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    if (!modelMetadata || typeof modelMetadata !== "object") return map;
-    const register = (entry) => {
+    const candidate = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
+    const modelMetadata = candidate && typeof candidate === "object" ? candidate : {};
+    const models = ["ok", "not_applied", "not_configured"].includes(codexModelCatalog?.status)
+      && Array.isArray(codexModelCatalog?.models) ? codexModelCatalog.models : null;
+    const setUnique = (key, value) => {
+      if (!key) return;
+      if (!map.has(key)) map.set(key, value);
+      else if (map.get(key)?.slug !== value.slug) map.set(key, null);
+    };
+    const register = (entry, slug) => {
       if (!entry || typeof entry !== "object") return;
       const displayName = entry.displayName || entry.display_name;
       if (typeof displayName !== "string" || !displayName) return;
@@ -421,25 +519,28 @@
         typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
       if (!provider || !groupId) return;
       // 在 Codex++ 里收藏过的模型（网关写的 `codex_plus_favorite`）：行尾画星标。
-      const value = { provider, groupId, favorite: entry.codex_plus_favorite === true };
+      const value = { slug, provider, groupId, favorite: entry.codex_plus_favorite === true };
+      map.set(`model\u0000${slug}`, value);
       // 原文键：网关关掉「模型名后带供应商」时，同名的几份只差末尾看不见的零宽字符，
       // 宽松归一化会把它们抹掉，必须先按原文比对。
       const rawKey = `raw\u0000${String(displayName).replace(/\s+/g, " ").trim()}`;
-      if (!map.has(rawKey)) map.set(rawKey, value);
+      setUnique(rawKey, value);
+      setUnique(codexPlusModelPickerNativeLabelKey(displayName), value);
       const fullKey = codexPlusModelPickerNormalizeLoose(displayName);
-      if (fullKey && !map.has(fullKey)) map.set(fullKey, value);
+      setUnique(fullKey, value);
       const split = codexPlusModelPickerSplitLabel(displayName);
       if (split.name && split.provider) {
         const pairKey = `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`;
-        if (!map.has(pairKey)) map.set(pairKey, value);
+        setUnique(pairKey, value);
       }
     };
-    const slugList = Array.isArray(codexModelCatalog?.models)
-      ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
-      : [];
-    const bySlug = new Map(Object.entries(modelMetadata));
-    for (const slug of slugList) register(bySlug.get(slug));
-    for (const entry of Object.values(modelMetadata)) register(entry);
+    for (const [slug, entry] of codexPlusModelPickerCatalogEntries()) register(entry, slug);
+    codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
+      if (!key.startsWith("model\u0000") || !value?.slug || !value.groupId || value.parsed) return;
+      if (models && !models.includes(value.slug)) return;
+      if (!codexPlusModelPickerCanRestoreProvider(modelMetadata[value.slug], value)) return;
+      register({ displayName: value.displayName, codex_plus_group: value.name, codex_plus_group_id: value.groupId }, value.slug);
+    });
     return map;
   }
 
@@ -484,6 +585,22 @@
     return codexPlusModelPickerRowIdentity(row)?.text || "";
   }
 
+  function codexPlusModelPickerRowModel(row) {
+    const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata || {};
+    const models = codexModelCatalog?.models;
+    const key = Object.keys(row).find((name) => name.startsWith("__reactFiber$"));
+    for (let fiber = key && row[key], depth = 0; fiber && depth < 16; depth++, fiber = fiber.return) {
+      const props = fiber.memoizedProps || {};
+      if (typeof props.onSelectModel === "function" && Array.isArray(props.models)) break;
+      for (const value of [fiber.key, props.model, props.model?.model, props.model?.id, props.value, props.item?.model]) {
+        if (typeof value === "string" && (Object.hasOwn(metadata, value)
+            || (Array.isArray(models) && models.includes(value))
+            || codexPlusModelPickerGroupsState.providerNames.has(`model\u0000${value}`))) return value;
+      }
+    }
+    return "";
+  }
+
   /**
    * 把行切成 `{ row, label, name, provider, groupId }`。
    * 已打过补丁的行直接读我们留下的标记，避免反复解析。
@@ -491,6 +608,14 @@
   function codexPlusModelPickerRows(list) {
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
+    const providerIds = new Map();
+    const rememberProviderId = (entry) => {
+      if (!entry?.provider || !entry.groupId) return;
+      if (!providerIds.has(entry.provider)) providerIds.set(entry.provider, entry.groupId);
+      else if (providerIds.get(entry.provider) !== entry.groupId) providerIds.set(entry.provider, null);
+    };
+    exact.forEach(rememberProviderId);
+    providers.forEach(rememberProviderId);
     const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     // 每轮算一次：逐行调用在目录失效时会退化成「行数 × 目录条目数」。
     const defaultProviderName = codexPlusModelPickerDefaultProviderName();
@@ -499,7 +624,12 @@
     items.forEach((row) => {
       const identity = codexPlusModelPickerRowIdentity(row);
       if (!identity?.groupable) return;
-      const split = codexPlusModelPickerSplitLabel(identity.text);
+      let split = codexPlusModelPickerSplitLabel(identity.text);
+      if (split.provider && !providerIds.has(split.provider)
+          && ![...codexPlusModelPickerGroupsState.providerNames.values()]
+            .some((value) => !value.parsed && value.name === split.provider)) {
+        split = { name: identity.text, provider: "" };
+      }
       if (split.provider) codexPlusModelPickerRememberProvider(split.name, split.provider, true);
       // 分组键：优先用「完整展示名」或「模型名 + 后缀供应商」做精确匹配。
       // 有后缀的行成员归属由后缀决定，不能再拿裸模型名去查目录——三家都发布
@@ -508,22 +638,24 @@
       const pairKey = split.provider
         ? `${codexPlusModelPickerNormalizeLoose(split.name)}\u0000${codexPlusModelPickerNormalizeLoose(split.provider)}`
         : "";
-      const exactKnown = exact.get(`raw\u0000${identity.text}`)
-        || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
-        || (pairKey ? exact.get(pairKey) : null);
+      const model = codexPlusModelPickerRowModel(row);
+      const exactKnown = model ? exact.get(`model\u0000${model}`)
+        : exact.get(`raw\u0000${identity.text}`)
+          || exact.get(codexPlusModelPickerNativeLabelKey(identity.text))
+          || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
+          || (pairKey ? exact.get(pairKey) : null);
       const known = exactKnown
-        || (!split.provider
+        || (!model && !split.provider
           ? providers.get(codexPlusModelPickerNormalizeStrict(split.name))
             || providers.get(codexPlusModelPickerNormalize(split.name))
           : null);
       const groupId = known?.groupId
-        || (split.provider ? `provider:${split.provider}` : defaultGroupId);
+        || (split.provider ? providerIds.get(split.provider) || "" : "");
       // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
-      const provider = exactKnown?.provider || split.provider || known?.provider || defaultProviderName;
-      const authoritativeGroupId = !!known?.groupId
-        || (split.provider ? true : !!defaultGroupId);
-      rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
+      const provider = exactKnown?.provider || split.provider || known?.provider || "";
+      const authoritativeGroupId = !!groupId;
+      rows.push({ row, label: identity.text, name: groupId ? split.name : identity.text, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
     });
     return rows;
   }
@@ -542,7 +674,7 @@
     // 取"裸名模型里出现最多的那个分组"：聚合的默认成员可能有几百个模型，
     // 偶尔混进一两个别的成员的裸名条目也不该把整组改姓。
     const counts = new Map();
-    for (const entry of Object.values(modelMetadata)) {
+    for (const [, entry] of codexPlusModelPickerCatalogEntries()) {
       if (!entry || typeof entry !== "object") continue;
       const displayName = entry.displayName || entry.display_name;
       if (typeof displayName !== "string" || !displayName) continue;
@@ -571,39 +703,28 @@
     return best || codexPlusModelPickerGroupsState.defaultProviderName || "";
   }
 
-  /** 权威 groupId 全局合组；无 ID 的旧行只做相邻回退，避免同名误合并。 */
+  /** 按权威 ID 合组；归属不明的行集中展示，保留原始标签。 */
   function codexPlusModelPickerGroups(rows, defaultProviderName = "") {
     const groups = [];
     const identified = new Map();
-    let legacy = null;
-    // 归属认不出的行（没有后缀、目录也查不到）全部收进同一个「其他供应商」组。
-    // 按相邻切段会被有名分组隔成好几段，几段共用一个 id：只有第一段有标题、点哪段都展开全部（#2860）。
     let unnamed = null;
     for (const entry of rows) {
       const key = entry.provider || "";
       const id = entry.authoritativeGroupId !== false && typeof entry.groupId === "string" ? entry.groupId.trim() : "";
       let group;
       if (id) {
-        legacy = null;
         group = identified.get(id);
         if (!group) {
           group = { key, id, name: entry.provider || defaultProviderName, entries: [] };
           identified.set(id, group);
           groups.push(group);
         }
-      } else if (!(entry.provider || defaultProviderName)) {
-        legacy = null;
+      } else {
         if (!unnamed) {
           unnamed = { key: "", id: "", name: "", entries: [] };
           groups.push(unnamed);
         }
         group = unnamed;
-      } else {
-        if (!legacy || legacy.key !== key) {
-          legacy = { key, id: `legacy:${groups.length}:${key}`, name: entry.provider || defaultProviderName, entries: [] };
-          groups.push(legacy);
-        }
-        group = legacy;
       }
       group.entries.push(entry);
     }
@@ -775,7 +896,7 @@
     const previous = state.activeGroupId;
     // React 可能刚换过行，点击时必须重新读取，不能使用创建按钮时的 DOM 快照。
     const groups = codexPlusModelPickerUniqueGroupIds(
-      codexPlusModelPickerGroups(codexPlusModelPickerRows(list), codexPlusModelPickerDefaultProviderName()),
+      codexPlusModelPickerGroups(codexPlusModelPickerRows(list)),
     );
     const group = groups.find((item) => item.id === groupId);
     state.activeGroupId = group?.id || "";
@@ -950,7 +1071,7 @@
     codexPlusModelPickerStore();
     const rows = codexPlusModelPickerRows(list);
     const groups = codexPlusModelPickerUniqueGroupIds(
-      codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
+      codexPlusModelPickerGroups(rows),
     );
     // 只有一个供应商时直接选模型，省去没有选择意义的供应商层。
     if (groups.length < 2) {
@@ -1048,7 +1169,7 @@
     if (!list) return false;
     const rows = codexPlusModelPickerRows(list);
     const groups = codexPlusModelPickerUniqueGroupIds(
-      codexPlusModelPickerGroups(rows, codexPlusModelPickerDefaultProviderName()),
+      codexPlusModelPickerGroups(rows),
     );
     if (groups.length < 2) return codexPlusModelPickerGroupsState.patchedLists.has(list);
     return codexPlusModelPickerFingerprint(groups) !== codexPlusModelPickerGroupsState.signature;
@@ -1179,6 +1300,7 @@
   // 轮询由内置拓展「模型分组」装上时启动（96-builtin-extensions.js），这里不再自启。
   window.__codexPlusModelPickerGroupsRuntime = {
     version: 2,
+    catalogChanged: codexPlusModelPickerCatalogChanged,
     sync: () => codexPlusModelPickerSchedule(0),
     scan: () => codexPlusModelPickerScan(),
     /** 测试与调试用：不打开菜单也能验证分组解析。 */
@@ -1217,7 +1339,7 @@
       const list = codexPlusModelPickerList(container.querySelector?.('[data-model-picker-view]') ? container : codexPlusModelPickerMenu() || container);
       if (!list) return [];
       return codexPlusModelPickerUniqueGroupIds(
-        codexPlusModelPickerGroups(codexPlusModelPickerRows(list), codexPlusModelPickerDefaultProviderName()),
+        codexPlusModelPickerGroups(codexPlusModelPickerRows(list)),
       ).map((group) => ({ id: group.id, name: group.name, count: group.entries.length, isDefault: !!group.isDefault, entryGroupIds: [...new Set(group.entries.map((entry) => entry.groupId))].slice(0, 2) }));
     },
     dispose() {

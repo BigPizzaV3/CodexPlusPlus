@@ -522,7 +522,10 @@ it("目录条目按别名匹配，且只用它补分组 id、不用它决定显�
   // 网关把同名模型的后几家写成 `名字（供应商 id）`，标题要显示打过码的完整账号名；别名命中仍不决定归属。
   assert.match(source, /const provider = exactKnown\?\.provider \|\| split\.provider \|\| known\?\.provider/);
   // 先按原文比（网关关掉「模型名后带供应商」时同名几份只差零宽字符），再按宽松归一化比。
-  assert.match(source, /const exactKnown = exact\.get\(`raw\\u0000\$\{identity\.text\}`\)\s*\|\| exact\.get\(codexPlusModelPickerNormalizeLoose\(identity\.text\)\)/);
+  const rows = functionSource(source, "codexPlusModelPickerRows");
+  assert.match(rows, /exact\.get\(`model\\u0000\$\{model\}`\)/);
+  assert.match(rows, /exact\.get\(`raw\\u0000\$\{identity\.text\}`\)/);
+  assert.match(rows, /codexPlusModelPickerNativeLabelKey\(identity\.text\)/);
   assert.match(source, /const rawKey = `raw\\u0000\$\{String\(displayName\)/);
   // 组内任意一行命中默认分组即认定该组是默认（裸名行的 id 可能来自目录）。
   assert.match(source, /group\.entries\.some\(\(entry\) => entry\.groupId === defaultGroupId/);
@@ -623,6 +626,39 @@ it("认不出归属的行收进同一个「其他供应商」组，不被有名�
   assert.equal(unnamed.length, 1, "无名的行只能有一个分组");
   assert.equal(unnamed[0].entries.length, 3);
   assert.equal(groups.length, 3);
+});
+
+it("同一权威分组即使在列表里交错也只生成一个入口", async () => {
+  const source = await readShard();
+  const groupsOf = new Function(
+    `${functionSource(source, "codexPlusModelPickerGroups")}\nreturn codexPlusModelPickerGroups;`,
+  )() as (rows: unknown[]) => Array<{ id: string; name: string; entries: Array<{ name: string }> }>;
+  const groups = groupsOf([
+    { name: "group-1", provider: "模型组", groupId: "groups", authoritativeGroupId: true },
+    { name: "hanhe-1", provider: "寒鹤", groupId: "hanhe", authoritativeGroupId: true },
+    { name: "group-2", provider: "模型组", groupId: "groups", authoritativeGroupId: true },
+    { name: "fusheng-1", provider: "浮生", groupId: "fusheng", authoritativeGroupId: true },
+    { name: "hanhe-2", provider: "寒鹤", groupId: "hanhe", authoritativeGroupId: true },
+    { name: "group-3", provider: "模型组", groupId: "groups", authoritativeGroupId: true },
+  ]);
+  assert.deepEqual(groups.map(group => [group.name, group.entries.map(entry => entry.name)]), [
+    ["模型组", ["group-1", "group-2", "group-3"]],
+    ["寒鹤", ["hanhe-1", "hanhe-2"]],
+    ["浮生", ["fusheng-1"]],
+  ]);
+});
+
+it("同名但不同权威身份不能被合并，无法确认的条目也不猜测身份", async () => {
+  const source = await readShard();
+  const groupsOf = new Function(
+    `${functionSource(source, "codexPlusModelPickerGroups")}\nreturn codexPlusModelPickerGroups;`,
+  )() as (rows: unknown[]) => Array<{ id: string; entries: Array<{ name: string }> }>;
+  const groups = groupsOf([
+    { name: "one", provider: "同名", groupId: "id-a", authoritativeGroupId: true },
+    { name: "unknown", provider: "同名", groupId: "", authoritativeGroupId: false },
+    { name: "two", provider: "同名", groupId: "id-b", authoritativeGroupId: true },
+  ]);
+  assert.deepEqual(groups.map(group => group.entries.map(entry => entry.name)), [["one"], ["unknown"], ["two"]]);
 });
 
 it("目录快照缺元数据时用记下的权威归属兜底，后缀猜出来的不套给裸名行（#2860）", async () => {

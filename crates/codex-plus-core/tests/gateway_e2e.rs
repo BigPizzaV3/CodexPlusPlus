@@ -696,6 +696,39 @@ async fn gateway_end_to_end() {
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["group/group", "deepseek-v4-pro", "glm-5.3"]);
 
+    // Codex 的公开列表直接验证条目、顺序和去重：错误的额外裸模型不能
+    // 借默认组或默认供应商获得伪归属。
+    let mut codex_binding = binding("group/group", "cpx-gw-codex-e2e");
+    codex_binding.extra_models = vec![
+        "deepseek-v4-pro".into(),
+        "deepseek-v4-pro".into(),
+        "declared-only".into(),
+    ];
+    gateway.bindings.insert("codex".into(), codex_binding);
+    save(&gateway);
+    let models = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/gw/codex/v1/models"))
+        .header("x-api-key", "cpx-gw-codex-e2e")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let ids = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec!["group/group", "deepseek-v4-pro", "glm-5.3", "declared-only"]
+    );
+    assert_eq!(ids.iter().filter(|id| **id == "deepseek-v4-pro").count(), 1);
+    gateway.bindings.remove("codex");
+    save(&gateway);
+
     // Claude Desktop：非 Claude 模型换成数字别名，真实名字在 display_name 里。
     gateway.bindings.insert(
         "claude-desktop".into(),
