@@ -21,7 +21,11 @@ for(const late of [false,true])check(`viewer ${late?'late':'initial'}: chrome pa
  if(late){await page.evaluate(markup=>document.body.insertAdjacentHTML('beforeend',markup),viewer());await page.$eval('#composer',n=>document.getElementById('target').append(n));await settle(page);}
  await colors(page,'#open',45);await colors(page,'#tools',45);await colors(page,'#composer',54);
  const r=await rect(page,'#photo');near(pixel(await shot(page),r[0]+50,r[1]+50),[220,40,50],'image remains untinted');
- assert.ok(await page.$eval('#pen',n=>n.hasAttribute('data-codex-plus-image-paint')),'pen housing painted');
+ assert.equal(await page.$eval('#pen',n=>n.hasAttribute('data-codex-plus-image-paint')),false,'translucent pen housing keeps native alpha');
+ await page.$eval('#pen',n=>n.style.background='#282828');await settle(page);
+ assert.ok(await page.$eval('#pen',n=>n.hasAttribute('data-codex-plus-image-paint')),'opaque pen housing is painted');
+ await page.$eval('#pen',n=>n.style.background='rgb(40 40 40 / .95)');await settle(page);
+ assert.equal(await page.$eval('#pen',n=>n.hasAttribute('data-codex-plus-image-paint')),false,'returning to alpha releases the extra paint');
  await page.locator('#editor').fill('Image question');await page.$eval('#button',n=>n.onclick=()=>window.clicked=true);await page.locator('#button').click();assert.ok(await page.evaluate(()=>window.clicked));
  await page.$eval('#tools',n=>n.style.background='#eeeeee');await settle(page);await colors(page,'#tools',238);
  await page.$eval('#viewer',n=>n.style.transform='translateX(-30px)');await settle(page);await colors(page,'#open',45);
@@ -77,11 +81,19 @@ for (const motion of ["transition", "animation"]) {
       @keyframes moveViewer{to{transform:translateX(-80px)}}`, viewer());
     await page.$eval("#target", (node, markup) => node.innerHTML = markup, composer);
     await configure(page, { dataUrl: assets.pattern, opacity: .3 });
-    await page.$eval("#viewer", (node, kind) => {
+    await page.$eval("#viewer", async (node, kind) => {
+      const ended = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`${kind} did not finish`)), 3000);
+        node.addEventListener(`${kind}end`, () => {
+          clearTimeout(timeout);
+          resolve();
+        }, { once: true });
+      });
       if (kind === "transition") node.style.transform = "translateX(-80px)";
       else node.style.animation = "moveViewer .15s linear forwards";
+      await ended;
     }, motion);
-    await page.waitForTimeout(300);
+    await settle(page);
     const position = await paintPosition(page);
     assert.equal(position.actual, position.expected, "paint follows final animated geometry");
     await colors(page, "#composer", 54);

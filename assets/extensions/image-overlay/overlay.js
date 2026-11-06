@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 34 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 35 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -540,16 +540,33 @@
     const popupBackgroundKey = node => Array.from(node.style)
       .filter(name => name.startsWith("background") || name === "color")
       .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";");
+    // 与普通宿主卡片保持一致：只补画全覆盖不透明材质，避免给透出的父层再叠一张壁纸。
+    const opaqueColor = value => value !== "transparent" && !/rgba\(|hsla\(|\//.test(value);
+    const hasLocalMaterial = paint => {
+      if (paint.backgroundClip === "text") return false;
+      if (paint.backgroundImage === "none") return opaqueColor(paint.backgroundColor);
+      if (!paint.backgroundImage.includes("gradient(") || /url\(/.test(paint.backgroundImage)) return false;
+      if (opaqueColor(paint.backgroundColor)) return true;
+      return !/transparent|rgba\(|hsla\(|\//.test(paint.backgroundImage) &&
+        ["auto", "auto auto", "100% 100%"].includes(paint.backgroundSize) &&
+        paint.backgroundRepeat === "repeat";
+    };
+    // 弱引用记录候选表面的祖先，包括当前透明/尚未获得宿主身份的候选。
+    // 无关流式文字的 class/style 变化不需要查询子树，也不遍历 records。
+    const localSurfaceAncestors = new WeakSet();
+    const trackLocalSurfaceAncestors = node => {
+      for (let parent = node.parentElement; parent; parent = parent.parentElement)
+        localSurfaceAncestors.add(parent);
+    };
     const isLocalSurface = node => {
       const viewerSurface = isViewerSurface(node);
       if (!(viewerSurface || node.matches(surfaceSelector)) || owned(node) || inactivePanel(node) ||
         node.closest(`${editorSelector}, ${pageSelector}`) || node.matches(topControlSelector) ||
         (!viewerSurface && (node.closest(viewerSelector) || !node.parentElement?.closest(`${footerSelector}, ${topControlSelector}`)))) return false;
-      const paint = computed(node);
-      return paint.backgroundImage !== "none" || paint.backgroundColor !== "transparent" &&
-        !/(?:rgba\([^)]*,|\/)\s*0\s*\)$/.test(paint.backgroundColor);
+      return hasLocalMaterial(computed(node));
     };
     const addSurface = node => {
+      trackLocalSurfaceAncestors(node);
       if (!isLocalSurface(node)) {
         const previous = records.get(node);
         if (previous?.localSurface) { removeMedia(node, previous); visit(node); }
@@ -572,6 +589,8 @@
         if (record.localSurface && tree.childElementCount && tree.contains(node)) candidates.add(node);
       let changed = false;
       for (const node of candidates) {
+        // 新发现的透明候选也要登记；后续祖先主题变化才有机会使它获得补画资格。
+        if (node.matches(surfaceSelector) || isViewerSurface(node)) trackLocalSurfaceAncestors(node);
         if (isLocalSurface(node) === !!records.get(node)?.localSurface) continue;
         addSurface(node);
         changed = true;
@@ -964,7 +983,9 @@
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
-        if (node !== root && node !== document.body && refreshLocalSurfaces(node)) changed = true;
+        if (node !== root && node !== document.body &&
+          (localSurfaceAncestors.has(node) || node.matches(`${surfaceSelector}, ${viewerSurfaceSelector}, ${footerSelector}, ${topControlSelector}, [data-in-progress-fixed-content], .tortilla-gallery`)) &&
+          refreshLocalSurfaces(node)) changed = true;
         if (node.matches(toolbarSelector)) {
           // 原生容器可能在子控件已挂载后才声明工具栏身份。
           if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); pruneNeeded = true; changed = true; }
@@ -1576,7 +1597,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 34, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 35, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

@@ -72,7 +72,10 @@ need no private Git commits. CODEX_OVERLAY_BASELINE optionally selects a local
 revision for comparisons. Cached-backdrop allocation, batched stylesheet commits
 and pending-scan coalescing have explicit work-count assertions.
 
-PR CI runs the six image suites serially on Windows with the runner's Edge.
+The independent image-overlay-regressions.yml workflow runs the six image suites
+serially on Windows with the runner's Edge. Pull requests and main pushes trigger
+it only for assets/extensions/image-overlay/**, scripts/*image*, or the workflow
+itself; workflow_dispatch remains available for manual verification.
 Playwright, Sharp and PNGJS are pinned in a temporary directory, outside project
 dependencies. Successful cases also check that overlay teardown releases its observers and attributes.
 CI sets CODEX_TEST_SWIFTSHADER=1 to use a consistent ANGLE compositing backend.
@@ -84,3 +87,18 @@ its native reference, rather than relying on a fixed delay.
 Its captureStream source uses a CPU canvas context to avoid Chromium switching
 the first frame from I420 to BGRA. The native video must match the source color
 and remain a playing, active stream before overlay comparisons run.
+
+Local interaction and viewer surfaces follow #2931's conservative material policy:
+opaque colors and full-coverage opaque gradients can receive local wallpaper.
+Alpha colors (including modern slash-alpha syntax), transparent/partial gradients
+and image backgrounds retain native rendering. Painting a full rectangle over
+these would add wallpaper where the parent's existing layer should remain visible;
+per-pixel alpha reconstruction is outside this change. A translucent pen housing
+therefore stays native, while switching it to an opaque color enables local paint.
+
+Streaming regression: 30 registered cards alongside 20 frames of text, class and
+inline-style mutations must cause zero queries and zero style reads. Candidate
+ancestors are tracked weakly so unrelated subtrees skip discovery; transparent
+candidates, late host identity and reparenting still respond to ancestor themes.
+Viewer geometry tests wait for native transition/animation completion before
+asserting alignment instead of assuming a fixed 300 ms delay is sufficient.
