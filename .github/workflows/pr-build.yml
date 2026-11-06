@@ -40,6 +40,7 @@ jobs:
         shell: pwsh
         env:
           CODEX_OVERLAY_TEST_OUTPUT: ${{ runner.temp }}/image-overlay-evidence
+          CODEX_TEST_SWIFTSHADER: "1"
         run: >-
           node --test --test-concurrency=1
           scripts/test-image-overlay.cjs

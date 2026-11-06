@@ -6,6 +6,10 @@ const { execFileSync } = require("node:child_process");
 const { chromium } = require("playwright");
 const sharp = require("sharp");
 const { PNG } = require("pngjs");
+// 无 GPU 的 CI 仍走确定的 ANGLE 合成路径，避免纯软件 SVG 边缘与分层后的栅格化不一致。
+const browserOptions = { channel: process.env.CODEX_TEST_BROWSER || "msedge",
+  executablePath: process.env.CODEX_TEST_BROWSER_PATH, headless: true,
+  args: process.env.CODEX_TEST_SWIFTSHADER === "1" ? ["--use-gl=angle", "--use-angle=swiftshader"] : [] };
 const repo = path.resolve(__dirname, "..");
 // 背景图引擎现在在官方拓展包里（assets/extensions/image-overlay/overlay.js）；拆包之前的基线在 renderer-inject.js 里。
 const engineFile = "assets/extensions/image-overlay/overlay.js";
@@ -33,9 +37,7 @@ async function start() {
   assets.pattern = "data:image/png;base64," + (await sharp(Buffer.from(
     '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#2850c8"/><path d="M0 0H60V60H0Z" fill="#c85a28"/></svg>'
   )).png().toBuffer()).toString("base64");
-  browser = await chromium.launch({ channel: process.env.CODEX_TEST_BROWSER || "msedge",
-    executablePath: process.env.CODEX_TEST_BROWSER_PATH,
-    headless: true, ignoreDefaultArgs: ["--hide-scrollbars"] });
+  browser = await chromium.launch({ ...browserOptions, ignoreDefaultArgs: ["--hide-scrollbars"] });
 }
 const settle = page => page.waitForTimeout(100);
 const shot = async page => PNG.sync.read(await page.screenshot());
@@ -134,4 +136,4 @@ function check(name, run, viewport = { width: 800, height: 600 }, pageOptions = 
     } finally { await page.close(); }
   });
 }
-module.exports = { assert, assets, bitmap, check, chromium, configure, css, delta, html, injection, near, pixel, rect, settle, sharp, shot };
+module.exports = { assert, assets, bitmap, browserOptions, check, chromium, configure, css, delta, html, injection, near, pixel, rect, settle, sharp, shot };

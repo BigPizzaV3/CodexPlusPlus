@@ -75,3 +75,9 @@ and pending-scan coalescing have explicit work-count assertions.
 PR CI runs the six image suites serially on Windows with the runner's Edge.
 Playwright, Sharp and PNGJS are pinned in a temporary directory, outside project
 dependencies. Successful cases also check that overlay teardown releases its observers and attributes.
+CI sets CODEX_TEST_SWIFTSHADER=1 to use a consistent ANGLE compositing backend.
+Pure software rendering changes 12 antialiased SVG edge pixels at zoom 0.8 on
+both the unchanged upstream baseline and this patch. This backend selection keeps
+the full-frame comparison and its original tolerance; it does not exclude SVGs.
+The composite fixture waits for the first presented video frame before capturing
+its native reference, rather than relying on a fixed delay.

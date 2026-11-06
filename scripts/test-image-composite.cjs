@@ -1,4 +1,4 @@
-const { assert, chromium, sharp, shot: snapshot, pixel, near: assertNear, configure: configureOverlay } = require("./image-overlay-fixture.cjs");
+const { assert, browserOptions, chromium, sharp, shot: snapshot, pixel, near: assertNear, configure: configureOverlay } = require("./image-overlay-fixture.cjs");
 // Pixel comparisons against the original upstream overlay, not selector coverage.
 const fs = require("node:fs");
 const path = require("node:path");
@@ -54,23 +54,28 @@ const fixture = (theme, photo, gif, zoom = 1) => `<!doctype html><html><head><st
   <div id="preview" role="dialog"><div data-testid="image-preview-dismiss-area"><img src="${photo}"></div></div></div></body></html>`;
 async function prepare(page, html) {
   await page.setContent(html);
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const shadow = document.querySelector("#shadow").attachShadow({mode:"open"});
     shadow.innerHTML = "<style>div{background:#563a66;color:white;height:40px}</style><div>Native file-tree shadow rows</div>";
     const canvas = document.querySelector("#canvas");
     canvas.getContext("2d").fillStyle = "#19b450";
     canvas.getContext("2d").fillRect(0,0,64,64);
     window.testStream = canvas.captureStream(10);
-    document.querySelector("#video").srcObject = window.testStream;
+    const video = document.querySelector("#video");
+    // 必须在首帧提交给合成器后采 native 基线；固定等待在 CI 上可能只拍到空背景。
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("video first frame timed out")), 10000);
+      video.requestVideoFrameCallback(() => { clearTimeout(timeout); resolve(); });
+      video.srcObject = window.testStream;
+      video.play().catch(error => { clearTimeout(timeout); reject(error); });
+    });
   });
-  await page.waitForTimeout(150);
 }
 async function main() {
   const wall = await bitmap({r:40,g:80,b:200,alpha:1},160,90);
   const photo = await bitmap({r:220,g:40,b:50,alpha:1});
   const gif = await bitmap({r:30,g:180,b:60,alpha:1},80,80,"gif");
-  const browser = await chromium.launch({channel:process.env.CODEX_TEST_BROWSER || "msedge",
-    executablePath:process.env.CODEX_TEST_BROWSER_PATH,headless:true});
+  const browser = await chromium.launch(browserOptions);
   console.log(JSON.stringify({ browser: browser.version(), platform: process.platform }));
   try {
     for (const theme of ["dark","light"]) for (const width of (process.env.CODEX_COMPOSITE_FITS_ONLY?[]:[480,1088])) for (const zoom of [.8,1,1.25]) {
