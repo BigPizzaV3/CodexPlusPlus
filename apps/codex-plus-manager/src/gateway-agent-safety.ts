@@ -74,6 +74,7 @@ export function diagnosticEvidenceLabel(code: string): string {
     unsupportedConfig: "此配置暂无法验证",
     endpoint_match: "与网关配置一致",
     credential_match: "与网关配置一致",
+    credential_sealed: "凭据已由系统安全存储加密保存",
     selection_match: "与网关配置一致",
     managed_config_match: "与网关配置一致",
     config_missing: "配置缺失",

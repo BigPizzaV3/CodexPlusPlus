@@ -598,3 +598,79 @@ fn codex_official_identity_requires_the_gateway_as_its_next_hop() {
             .contains("private-config-key")
     );
 }
+
+#[test]
+fn claude_desktop_sealed_gateway_key_is_not_reported_as_changed() {
+    // #2927：Claude Desktop 启动时把明文网关凭据用系统安全存储（Windows DPAPI）封存成 `__seal…` 写回原文件。
+    let fixture = fixture();
+    let agent = ToolId::Unknown("claude-desktop".into());
+    enable_binding(&fixture.ctx, &agent, binding()).unwrap();
+    let path = (agents::spec("claude-desktop").unwrap().config_path)(&fixture.ctx.agent_env);
+    let connected: Value =
+        agents::files::parse_jsonc(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let token = fixture.ctx.gateway.load().unwrap().bindings["claude-desktop"]
+        .token
+        .clone();
+    assert_eq!(connected["inferenceGatewayApiKey"], json!(token));
+    let inspect_with = |key: &str, base_url: Option<&str>| {
+        let mut value = connected.clone();
+        value["inferenceGatewayApiKey"] = json!(key);
+        if let Some(base_url) = base_url {
+            value["inferenceGatewayBaseUrl"] = json!(base_url);
+        }
+        write(&path, &value.to_string());
+        inspect(
+            &fixture.ctx,
+            &agent,
+            &fixture.ctx.gateway.load().unwrap(),
+            true,
+            &ActivitySnapshot::default(),
+        )
+    };
+
+    // 明文且与绑定一致。
+    let plain = inspect_with(&token, None);
+    assert_eq!(
+        plain.state, "awaitingTraffic",
+        "{:?}",
+        plain.config_evidence
+    );
+    assert!(has_code(&plain, "credential_match"));
+    assert!(!has_code(&plain, "credential_sealed"));
+
+    // 被宿主封存：不算改动，单列证据，也不回显密文。
+    let sealed_blob = format!(
+        "__seal{}",
+        "QUFBQU5DTW5kOHdCRmRFUmpIb0F3RS9DbCtzQkFBQUE".repeat(12)
+    );
+    let sealed = inspect_with(&sealed_blob, None);
+    assert_eq!(
+        sealed.state, "awaitingTraffic",
+        "{:?}",
+        sealed.config_evidence
+    );
+    assert!(has_code(&sealed, "credential_sealed"));
+    assert!(!has_code(&sealed, "credential_changed"));
+    assert!(
+        !serde_json::to_string(&sealed)
+            .unwrap()
+            .contains(&sealed_blob[6..40])
+    );
+
+    // 封存不掩盖地址被改掉。
+    let moved = inspect_with(
+        &sealed_blob,
+        Some("http://127.0.0.1:15721/gw/claude-desktop"),
+    );
+    assert_eq!(moved.state, "configChanged");
+    assert!(has_code(&moved, "credential_sealed"));
+    assert!(has_code(&moved, "endpoint_port_mismatch"));
+
+    // 被改成其它明文、或只剩个前缀：照常判为凭据已改变。
+    for other in ["sk-someone-else", "__seal"] {
+        let changed = inspect_with(other, None);
+        assert_eq!(changed.state, "configChanged", "{other}");
+        assert!(has_code(&changed, "credential_changed"), "{other}");
+        assert!(!has_code(&changed, "credential_sealed"), "{other}");
+    }
+}

@@ -61,7 +61,7 @@ test("预览授权绑定Agent与非空token；文件状态和未知诊断证据�
   assert.equal(diagnosticErrorLabel("authInvalid"), "认证已失效");
   assert.equal(diagnosticErrorLabel("unrecognized_error"), "错误原因待确认");
   for (const code of [
-    "endpoint_match", "credential_match", "selection_match", "managed_config_match", "config_missing", "config_unreadable",
+    "endpoint_match", "credential_match", "credential_sealed", "selection_match", "managed_config_match", "config_missing", "config_unreadable",
     "config_invalid", "config_unverified", "unsupported_agent", "endpoint_missing", "endpoint_invalid", "endpoint_changed",
     "endpoint_host_mismatch", "endpoint_port_mismatch", "endpoint_path_mismatch", "selection_changed", "credential_changed", "managed_config_changed",
   ]) assert.notEqual(diagnosticEvidenceLabel(code), "诊断信息待确认", `后端证据码 ${code} 应有可读文案`);

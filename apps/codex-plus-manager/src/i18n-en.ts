@@ -3396,6 +3396,7 @@ export const EN_PLAIN: Record<string, string> = {
   "无法解析": "Cannot parse",
   "本地凭据已改变": "Local credential changed",
   "本地凭据缺失": "Local credential missing",
+  "凭据已由系统安全存储加密保存": "Credential sealed by the system secure storage",
   "无法获取断开预览": "Could not load the disconnect preview",
   "操作未完成，请重新获取预览后再确认。": "The operation did not complete. Refresh the preview before confirming again.",
   "正在检查文件与还原差异…": "Checking files and restoration changes…",
