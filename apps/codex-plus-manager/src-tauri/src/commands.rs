@@ -1921,8 +1921,9 @@ fn load_multi_instance_manifest_with_probes(
     // 「未知」，停止也会拒绝写回执，用户就被卡住（#2904）。这里只按记录里的 PID +
     // 创建身份确认那一代进程确已退出、worker 已退出、数据目录与端口无人使用（两次），
     // 才把这条过期记录标为已停止并丢弃失效身份；任何一步不确定都保持原样，不结束任何进程。
-    let orphaned = instance.status != "stopped"
-        && !multi_instance_orphaned_identities(&instance).is_empty()
+    // 重启前已停止、清单仍留着旧身份的记录同样适用（#2940）：否则列表一直「未知」，
+    // 重新启动也因身份对不上无法确认旧实例已释放。
+    let orphaned = !multi_instance_orphaned_identities(&instance).is_empty()
         && orphan_absent(&instance).unwrap_or(false)
         && orphan_absent(&instance).unwrap_or(false);
     if orphaned {
@@ -1985,6 +1986,9 @@ fn load_multi_instance_manifest_with_probes(
 ///
 /// 身份与清单一致时返回空，交给原有核验路径；身份不属于本实例本代、缺少 PID 或
 /// 创建身份时同样返回空——没有可靠依据就不清理。
+///
+/// 已停止的记录只在清单本身还留着对不上的身份时才需要核验（#2940）：这种记录在列表里
+/// 会一直显示「未知」，也挡住重新启动；清单无身份的已停止记录本来就显示已停止，不用碰。
 fn multi_instance_orphaned_identities(
     instance: &CodexMultiInstance,
 ) -> Vec<&codex_plus_core::multi_worker::CodexInstanceIdentity> {
@@ -1992,7 +1996,7 @@ fn multi_instance_orphaned_identities(
         || instance.instance_id == "main"
         || instance.instance_id.is_empty()
         || instance.generation == 0
-        || instance.status == "stopped"
+        || instance.status == "stopped" && instance.identity.is_none()
         || instance
             .identity
             .as_ref()
@@ -14373,9 +14377,17 @@ model_reasoning_effort = "high"
         // 修复前的表现：身份对不上就一直是「未知」。
         assert_eq!(multi_instance_snapshot_status(&orphan, false), "unknown");
 
+        // 已停止但清单仍留着对不上的旧身份（#2940）：同样需要核验清理。
         let mut stopped = orphan.clone();
         stopped.status = "stopped".into();
+        assert_eq!(multi_instance_orphaned_identities(&stopped).len(), 2);
+        // 已停止且清单无身份：本来就显示已停止，不再核验。
+        stopped.identity = None;
         assert!(multi_instance_orphaned_identities(&stopped).is_empty());
+        // 已停止且身份仍与清单一致：交给原有路径。
+        let mut stopped_ready = ready.clone();
+        stopped_ready.status = "stopped".into();
+        assert!(multi_instance_orphaned_identities(&stopped_ready).is_empty());
 
         let mut main = orphan.clone();
         main.is_main = true;
@@ -14460,6 +14472,129 @@ model_reasoning_effort = "high"
         assert!(multi_instance_relaunch_is_safe_with(&again, |_| {
             panic!("identity was dropped after confirmed exit")
         }));
+    }
+
+    /// 模拟 #2940：重启前实例已停止（清单 status stopped / running false / pid null），
+    /// 但清单与回执里仍留着旧身份；重启后安装路径变了，身份对不上清单。
+    fn stopped_orphaned_multi_instance_fixture(root: &Path) -> CodexMultiInstance {
+        let mut instance = stopped_multi_instance_fixture(root);
+        instance.status = "stopped".into();
+        instance.running = false;
+        instance.pid = None;
+        instance.worker_birth_id = None;
+        instance.app_path = Some(
+            root.join("Codex-removed-version.app")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        save_multi_instance_manifest(root, &instance).unwrap();
+        instance
+    }
+
+    #[test]
+    fn stopped_record_with_stale_identity_is_cleared_and_shown_stopped() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = stopped_orphaned_multi_instance_fixture(temp.path());
+        // 修复前的表现：清单已停止，列表却一直是「未知」，重新启动也不放行。
+        assert_eq!(multi_instance_snapshot_status(&original, false), "unknown");
+        assert!(!multi_instance_relaunch_is_safe_with(
+            &original,
+            stale_multi_instance_is_absent
+        ));
+
+        let probes = std::cell::Cell::new(0);
+        let current = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("mismatched identity must not use the regular probe"),
+            |instance| {
+                assert_eq!(instance.identity, original.identity);
+                probes.set(probes.get() + 1);
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(probes.get(), 2);
+        assert_eq!(current.status, "stopped");
+        assert!(!current.running);
+        assert_eq!(current.identity, None);
+        assert_eq!(current.pid, None);
+        assert_eq!(multi_instance_snapshot_status(&current, false), "stopped");
+        assert!(!multi_instance_is_running(&current));
+
+        let receipt = load_multi_launch_result(temp.path()).unwrap();
+        assert_eq!(receipt.status, "stopped");
+        assert!(receipt.identity.is_none() && receipt.pid.is_none());
+        assert!(multi_instance_stopped_receipt_matches(&current, &receipt));
+
+        // 再读一次不再探测；「结束实例」最后写回执的一步成功，重新启动放行。
+        let again = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("already synchronized"),
+            |_| panic!("already synchronized"),
+        )
+        .unwrap();
+        assert_eq!(multi_instance_snapshot_status(&again, false), "stopped");
+        finish_multi_instance_cleanup(temp.path(), &again, Ok(()), |_| Ok(true)).unwrap();
+        assert!(multi_instance_relaunch_is_safe_with(&again, |_| {
+            panic!("identity was dropped after confirmed exit")
+        }));
+    }
+
+    #[test]
+    fn stopped_record_with_stale_identity_stays_untouched_while_exit_is_uncertain() {
+        for failed_probe in [0, 1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let original = stopped_orphaned_multi_instance_fixture(temp.path());
+            let manifest = std::fs::read(multi_instance_manifest_path(temp.path())).unwrap();
+            let receipt = std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap();
+            let probes = std::cell::Cell::new(0);
+            let current = load_multi_instance_manifest_with_probes(
+                temp.path(),
+                |_| panic!("stopped records never use the regular probe"),
+                |_| {
+                    probes.set(probes.get() + 1);
+                    if failed_probe == 0 {
+                        anyhow::bail!("query denied");
+                    }
+                    // 旧身份那一代进程仍在（PID 未复用）、数据目录或端口仍被占用。
+                    Ok(probes.get() != failed_probe)
+                },
+            )
+            .unwrap();
+            assert_eq!(current.identity, original.identity);
+            assert_eq!(multi_instance_snapshot_status(&current, false), "unknown");
+            assert_eq!(
+                std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+                manifest
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap(),
+                receipt
+            );
+        }
+    }
+
+    #[test]
+    fn stopped_record_with_matching_identity_is_not_reprobed() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut instance = stopped_multi_instance_fixture(temp.path());
+        instance.status = "stopped".into();
+        instance.running = false;
+        instance.pid = None;
+        instance.worker_birth_id = None;
+        save_multi_instance_manifest(temp.path(), &instance).unwrap();
+        let manifest = std::fs::read(multi_instance_manifest_path(temp.path())).unwrap();
+        let current = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("already stopped"),
+            |_| panic!("identity still matches the manifest"),
+        )
+        .unwrap();
+        assert_eq!(current.identity, instance.identity);
+        assert_eq!(
+            std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+            manifest
+        );
     }
 
     #[test]
