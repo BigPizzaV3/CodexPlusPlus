@@ -1205,7 +1205,6 @@ async fn gateway_end_to_end() {
         .bearer_auth("cpx-gw-codex-e2e")
         .header("session-id", "explicit-child")
         .header("x-codex-parent-thread-id", "inherit-parent-0")
-        .header("x-openai-subagent", "collab_spawn")
         .header("x-codex-turn-metadata", json!({"thread_id":"explicit-child","turn_id":"turn","parent_thread_id":"inherit-parent-0","parent_turn_id":"turn"}).to_string())
         .json(&json!({"model":"inherit-a/gpt-6.1-sol","input":[]}))
         .send().await.unwrap();

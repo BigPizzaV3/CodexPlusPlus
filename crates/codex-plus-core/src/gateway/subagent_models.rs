@@ -160,6 +160,7 @@ struct Identity {
     parent: String,
     parent_turn: String,
     child: bool,
+    native_spawn: bool,
 }
 
 impl Identity {
@@ -194,9 +195,9 @@ impl Identity {
             Ok(value)
         };
         let parent = checked(header("x-codex-parent-thread-id"), "parent_thread_id")?;
-        let child = !parent.is_empty()
-            || header("x-openai-subagent") == Some("collab_spawn")
+        let native_spawn = header("x-openai-subagent") == Some("collab_spawn")
             || metadata["subagent_kind"] == "thread_spawn";
+        let child = !parent.is_empty() || native_spawn;
         let thread = checked(headers.thread_id, "thread_id")?;
         let thread = if thread.is_empty() {
             checked(headers.session_id, "thread_id")?
@@ -209,8 +210,66 @@ impl Identity {
             parent,
             parent_turn: checked(None, "parent_turn_id")?,
             child,
+            native_spawn,
         })
     }
+}
+
+struct PersistedNativeSpawn {
+    parent: String,
+}
+
+fn persisted_native_spawn(
+    sqlite_home: &Path,
+    thread: &str,
+) -> anyhow::Result<Option<PersistedNativeSpawn>> {
+    if thread.is_empty() {
+        return Ok(None);
+    }
+    for path in crate::codex_sqlite::codex_session_db_paths_in_home(sqlite_home) {
+        let Ok(database) =
+            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
+            continue;
+        };
+        if database.busy_timeout(Duration::from_millis(500)).is_err() {
+            continue;
+        }
+        if let Ok(Some(parent)) = database
+            .query_row(
+                "SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id=?1",
+                [thread],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        {
+            return Ok(Some(PersistedNativeSpawn { parent }));
+        }
+        let Ok(Some(source)) = database
+            .query_row(
+                "SELECT source FROM threads WHERE id=?1",
+                [thread],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        else {
+            continue;
+        };
+        let Ok(source) = serde_json::from_str::<Value>(&source) else {
+            continue;
+        };
+        let Some(thread_spawn) = source.pointer("/subagent/thread_spawn") else {
+            continue;
+        };
+        let parent = thread_spawn
+            .get("parent_thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return Ok(Some(PersistedNativeSpawn { parent }));
+    }
+    Ok(None)
 }
 
 fn recorded_model(
@@ -319,7 +378,7 @@ fn patch_spawn_tools(tools: &mut Value, model: &str, native: bool) {
                 .unwrap_or("")
                 .trim_end();
             tool["description"] = Value::String(format!(
-                "{original}\n{POLICY_MARKER} 子智能体默认继承父回合模型身份 {model}，创建时可省略 model；需要主动切换时请明确指定完整供应商/模型或 group/ 聚合组。"
+                "{original}\n{POLICY_MARKER} 原生 spawn_agent 不要传 model；子智能体默认继承父回合完整模型身份 {model}，包括 group/ 聚合组，不要按当前默认模型改写供应商。"
             ));
         }
     }
@@ -442,7 +501,7 @@ fn decide_at(
     let Some(binding) = gateway.active_binding(agent) else {
         return Ok(Decision::default());
     };
-    let identity = match Identity::read(headers) {
+    let mut identity = match Identity::read(headers) {
         Ok(identity) => identity,
         Err(_) => {
             report("invalid_metadata");
@@ -455,6 +514,15 @@ fn decide_at(
             return Ok(Decision::default());
         }
     };
+    if let Some(spawn) = persisted_native_spawn(sqlite_home, &identity.thread)? {
+        if !identity.parent.is_empty() && identity.parent != spawn.parent {
+            bail!("子智能体持久化父回合与请求身份不一致");
+        }
+        if identity.parent.is_empty() {
+            identity.parent = spawn.parent;
+        }
+        identity.native_spawn = true;
+    }
     if identity.child
         && [
             &identity.thread,
@@ -475,8 +543,9 @@ fn decide_at(
         report("invalid_child_identity");
         bail!("子智能体不能把自己声明为父回合");
     }
-    let explicit =
-        identity.child && route::has_explicit_model_identity(gateway, binding, requested);
+    let explicit = identity.child
+        && !identity.native_spawn
+        && route::has_explicit_model_identity(gateway, binding, requested);
     let key = identity_key(path, home, sqlite_home, &identity.thread, &identity.turn);
     let pending = (!identity.child || explicit).then(|| begin_record(&key));
     let parent = identity_key(
@@ -599,7 +668,8 @@ fn record_decision(
         .as_secs() as i64;
     let fallback = if identity.child
         && !explicit
-        && recorded_model(&database, &scope, &identity.thread, &identity.turn)?.is_none()
+        && (identity.native_spawn
+            || recorded_model(&database, &scope, &identity.thread, &identity.turn)?.is_none())
         && recorded_model(&database, &scope, &identity.parent, &identity.parent_turn)?.is_none()
     {
         if barrier != 0 {
@@ -621,6 +691,46 @@ fn record_decision(
             bail!("子智能体父回合身份与已记录的身份不一致");
         }
     }
+    if identity.child && !explicit && identity.native_spawn {
+        if let Some((saved_model, _, _, saved_kind, saved_barrier)) = &saved {
+            if *saved_barrier != barrier {
+                let parent = recorded_model(
+                    &transaction,
+                    &scope,
+                    &identity.parent,
+                    &identity.parent_turn,
+                )?;
+                if !parent.is_some_and(|(parent_model, _, _, parent_kind, parent_barrier)| {
+                    parent_barrier == barrier
+                        && parent_model.as_str() == saved_model.as_str()
+                        && parent_kind.as_str() == saved_kind.as_str()
+                }) {
+                    bail!("子回合模型登记在故障后尚未重新确认");
+                }
+            }
+        }
+    }
+    let saved = if identity.child && !explicit && identity.native_spawn {
+        let keep_saved = match saved.as_ref() {
+            Some((_, _, _, saved_kind, _)) => {
+                let parent = recorded_model(
+                    &transaction,
+                    &scope,
+                    &identity.parent,
+                    &identity.parent_turn,
+                )?;
+                parent.is_none_or(|(_, _, _, parent_kind, _)| {
+                saved_kind.is_empty()
+                    || parent_kind.is_empty()
+                    || saved_kind == &parent_kind
+                })
+            }
+            None => false,
+        };
+        if keep_saved { saved } else { None }
+    } else {
+        saved
+    };
     let (model, kind) = if identity.child && !explicit {
         if let Some((model, _, _, kind, saved_barrier)) = saved {
             if saved_barrier != barrier {
