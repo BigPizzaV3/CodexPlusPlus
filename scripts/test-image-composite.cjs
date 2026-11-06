@@ -58,8 +58,10 @@ async function prepare(page, html) {
     const shadow = document.querySelector("#shadow").attachShadow({mode:"open"});
     shadow.innerHTML = "<style>div{background:#563a66;color:white;height:40px}</style><div>Native file-tree shadow rows</div>";
     const canvas = document.querySelector("#canvas");
-    canvas.getContext("2d").fillStyle = "#19b450";
-    canvas.getContext("2d").fillRect(0,0,64,64);
+    // 固定 captureStream 的源帧颜色路径；加速 canvas 首帧可能是 I420，后续变为 BGRA。
+    const context = canvas.getContext("2d", {willReadFrequently:true});
+    context.fillStyle = "#19b450";
+    context.fillRect(0,0,64,64);
     window.testStream = canvas.captureStream(10);
     const video = document.querySelector("#video");
     // 必须在首帧提交给合成器后采 native 基线；固定等待在 CI 上可能只拍到空背景。
@@ -84,7 +86,10 @@ async function main() {
       page.on("pageerror",error => errors.push(error.message));
       await prepare(page,fixture(theme,photo,gif,zoom));
       const native = await snapshot(page);
-      const nativeVideo=await page.$eval("#video", video=>({quality:video.getVideoPlaybackQuality().totalVideoFrames,ready:video.readyState}));
+      const nativeVideo=await at(page,"#video");
+      if(nativeVideo.x+nativeVideo.width/2<width)
+        assertNear(pixel(native,nativeVideo.x+nativeVideo.width/2,nativeVideo.y+nativeVideo.height/2),[25,180,80],"native video matches source canvas");
+      assert.ok(await page.$eval("#video",video=>!video.paused&&video.srcObject.active),"video remains a playing stream");
       await reference(page,wall,"stretch",.2);
       const baseline = await snapshot(page);
       await page.$eval("#upstream-reference",node=>node.remove());
@@ -126,26 +131,6 @@ async function main() {
       for(const id of ["#photo","#gif","#canvas","#video","#browser"]){
         const r=await at(page,id);
         if(r.x+r.width/2<width){
-          if(id==="#video"){
-            const center={x:r.x+r.width/2,y:r.y+r.height/2};
-            const actualPixel=pixel(actual,center.x,center.y),nativePixel=pixel(native,center.x,center.y);
-            if(actualPixel.some((value,i)=>Math.abs(value-nativePixel[i])>1)){
-              await page.evaluate(()=>window.__codexPlusImageOverlayCleanup?.(true));
-              const afterCleanup=await snapshot(page);
-              await page.$eval("#video",video=>video.style.transform="translateZ(0)");
-              const compositedNative=await snapshot(page);
-              await configure(page,wall);
-              const compositedActual=await snapshot(page);
-              console.log(JSON.stringify({theme,width,zoom,nativeVideo,center,actualPixel,nativePixel,
-                afterCleanup:pixel(afterCleanup,center.x,center.y),compositedNative:pixel(compositedNative,center.x,center.y),
-                compositedActual:pixel(compositedActual,center.x,center.y)}));
-              if(out){
-                fs.mkdirSync(out,{recursive:true});
-                for(const [name,frame] of Object.entries({native,actual,afterCleanup,compositedNative,compositedActual}))
-                  await sharp(frame.data,{raw:{width:frame.width,height:frame.height,channels:4}}).png().toFile(path.join(out,`video-${theme}-${width}-${zoom}-${name}.png`));
-              }
-            }
-          }
           assertNear(pixel(actual,r.x+r.width/2,r.y+r.height/2),pixel(native,r.x+r.width/2,r.y+r.height/2),id);
         }
       }

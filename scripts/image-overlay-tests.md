@@ -81,3 +81,6 @@ both the unchanged upstream baseline and this patch. This backend selection keep
 the full-frame comparison and its original tolerance; it does not exclude SVGs.
 The composite fixture waits for the first presented video frame before capturing
 its native reference, rather than relying on a fixed delay.
+Its captureStream source uses a CPU canvas context to avoid Chromium switching
+the first frame from I420 to BGRA. The native video must match the source color
+and remain a playing, active stream before overlay comparisons run.
