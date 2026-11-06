@@ -11965,9 +11965,9 @@
   function modelResponseIsComplete(result, params) {
     if (!params || typeof params !== "object") return false;
     if (modelRequestCursor(params) !== null) return false;
-    if (!modelResponseHasPagination(result)) return true;
-    if ("nextCursor" in result && result.nextCursor !== null) return false;
-    if ("next_cursor" in result && result.next_cursor !== null) return false;
+    // Codex 原生模型菜单只请求首页（cursor=null、limit=100），即使网关目录
+    // 超过 100 条带有 nextCursor，也要把本机目录补进这一页，避免后面的
+    // 供应商和模型组被整页截掉。分页游标仍由 Codex 自己继续处理。
     return true;
   }
 

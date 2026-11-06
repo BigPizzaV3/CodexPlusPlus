@@ -576,13 +576,13 @@ it("refreshes and restores unfiltered local names, metadata and sets", async () 
   assert.deepEqual([...container.available_models], ["native"]);
 });
 
-it("patches only complete MCP and app-server model responses", async () => {
+it("patches the first MCP and app-server model page even when it has a next cursor", async () => {
   const r = runtime();
   await load(r, ["a/custom"]);
   r.api.installMessages();
   for (const [cursor, nextCursor, shouldPatch] of [
     [null, null, true],
-    [null, "next", false],
+    [null, "next", true],
     ["previous", null, false],
   ] as const) {
     const id = `${cursor}-${nextCursor}`;
@@ -596,6 +596,26 @@ it("patches only complete MCP and app-server model responses", async () => {
     r.api.patchAppResult("model/list", appResult, "local", { cursor });
     assert.deepEqual(appResult.data.map(entry => entry.model), [shouldPatch ? "a/custom" : "native"]);
   }
+});
+
+it("adds all local models to a native first page containing more than 100 entries", async () => {
+  const models = Array.from({ length: 101 }, (_, index) => `provider/model-${index + 1}`);
+  const r = runtime();
+  await load(r, models);
+  r.api.installMessages();
+  const request = { id: "over-100", method: "model/list",
+    params: { hostId: "local", cursor: null, limit: 100 } };
+  r.emit("codex-message-from-view", { detail: { type: "mcp-request", request } });
+  const response = {
+    type: "mcp-response",
+    message: {
+      id: request.id,
+      result: { data: models.slice(0, 100).map(model => ({ model })), nextCursor: "page-2" },
+    },
+  };
+  assert.equal(r.api.patchMcp(response), true);
+  assert.equal(response.message.result.data.length, 101);
+  assert.deepEqual(response.message.result.data.map(entry => entry.model), models);
 });
 
 it("does not infer a first page from an older listener or a reused request id", async () => {

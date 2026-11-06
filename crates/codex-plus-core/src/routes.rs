@@ -1270,15 +1270,31 @@ fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
 
 /// 只供内部载荷比较连接来源，不向第三方拓展暴露。
 fn model_catalog_source_identity(settings: &BackendSettings) -> String {
-    use std::hash::{BuildHasher, Hash, Hasher};
-    static SOURCE_HASHER: std::sync::OnceLock<std::collections::hash_map::RandomState> =
-        std::sync::OnceLock::new();
+    use sha2::{Digest, Sha256};
+
     let profile = settings.active_relay_profile();
-    let mut hasher = SOURCE_HASHER.get_or_init(Default::default).build_hasher();
-    profile.id.hash(&mut hasher);
-    crate::relay_config::relay_profile_base_url(&profile).hash(&mut hasher);
-    crate::relay_config::relay_profile_api_key(&profile).hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let base_url = crate::relay_config::relay_profile_base_url(&profile);
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-plus-model-catalog-source-v1\0");
+    for value in [
+        profile.id.as_str(),
+        base_url.as_str(),
+        match profile.protocol {
+            crate::settings::RelayProtocol::Responses => "responses",
+            crate::settings::RelayProtocol::ChatCompletions => "chatCompletions",
+            crate::settings::RelayProtocol::AnthropicMessages => "anthropicMessages",
+        },
+        match profile.relay_mode {
+            crate::settings::RelayMode::Official => "official",
+            crate::settings::RelayMode::MixedApi => "mixedApi",
+            crate::settings::RelayMode::PureApi => "pureApi",
+            crate::settings::RelayMode::Aggregate => "aggregate",
+        },
+    ] {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// `/settings/public`：拓展可读的设置子集。

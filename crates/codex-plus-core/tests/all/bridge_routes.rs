@@ -10,7 +10,7 @@ use codex_plus_core::routes::{
     CoreRuntimeService, evaluate_extension_cdp, handle_bridge_request,
 };
 use codex_plus_core::agent_pet;
-use codex_plus_core::settings::{BackendSettings, RelayProfile};
+use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -284,6 +284,13 @@ async fn internal_catalog_source_identity_tracks_connection_without_public_expos
     assert_eq!(first["modelCatalogSourceIdentity"], same["modelCatalogSourceIdentity"]);
     let mut changed = settings.clone();
     changed.relay_profiles[0].api_keys[0].api_key = "secret-b".into();
+    assert_eq!(
+        identity,
+        read(changed, "/settings/get").await["modelCatalogSourceIdentity"],
+        "changing credentials must not clear same-source grouping memory"
+    );
+    let mut changed = settings.clone();
+    changed.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
     assert_ne!(identity, read(changed, "/settings/get").await["modelCatalogSourceIdentity"]);
     let mut changed = settings.clone();
     changed.relay_profiles[0].config_contents.clear();

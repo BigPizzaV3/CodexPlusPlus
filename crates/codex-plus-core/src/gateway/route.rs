@@ -313,7 +313,7 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
             models.push(model);
         }
     }
-    models.sort_by_key(|model| {
+    models.sort_by_cached_key(|model| {
         let index = block(model);
         (index != default_block, index)
     });
@@ -479,7 +479,7 @@ pub(crate) fn codex_model_route(
     Some((index, upstream.clone(), providers))
 }
 
-/// 仅供目录补全：沿用请求路由的默认供应商兜底，空组仍不可路由。
+/// 仅供目录补全：只返回能够确认归属的模型成员，未知声明不猜默认供应商。
 pub(crate) fn codex_model_members(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
@@ -487,13 +487,10 @@ pub(crate) fn codex_model_members(
 ) -> Vec<(RelayProfile, String)> {
     let members = model_entry_members(gateway, binding, model);
     if !members.is_empty() || group_for(gateway, model).is_some() {
-        return members;
+        members
+    } else {
+        Vec::new()
     }
-    let default = binding_default_model(gateway, binding);
-    model_entry_members(gateway, binding, &default)
-        .into_iter()
-        .map(|(relay, _)| (relay, model.to_string()))
-        .collect()
 }
 
 /// 绑定的默认模型：绑定里写了就用它，否则用池里第一个供应商的默认模型。
@@ -2320,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_binding_models_keep_declared_models_in_their_provider_block() {
+    fn codex_binding_models_keep_known_declared_models_in_their_provider_block() {
         let gateway = gateway("kimi-k3");
         let mut binding = gateway.binding(&ToolId::Claude).unwrap().clone();
         binding.extra_models = vec![
@@ -2329,10 +2326,11 @@ mod tests {
             "declared-only".into(),
         ];
         let models = codex_binding_models(&gateway, &binding);
-        assert_eq!(&models[..2], ["kimi-k3", "declared-only"]);
+        assert_eq!(&models[..2], ["kimi-k3", "ds/deepseek-v4-pro"]);
         assert!(models.windows(3).any(|block| {
             block == ["ds/deepseek-v4-pro", "deepseek-v4-flash", "ds/private"]
         }));
+        assert_eq!(models.last().map(String::as_str), Some("declared-only"));
         assert_eq!(
             models
                 .iter()
@@ -2446,7 +2444,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_catalog_fallback_does_not_change_general_member_queries() {
+    fn codex_catalog_does_not_guess_a_provider_for_unknown_declared_models() {
         let mut gateway = gateway("group/private");
         gateway.groups.push(group(
             "private",
@@ -2457,10 +2455,7 @@ mod tests {
         binding.extra_models.push("unlisted".into());
         let binding = binding.clone();
         let relays = binding_pool_relays(&gateway, &binding);
-        assert_eq!(
-            codex_model_route(&gateway, &binding, &relays, "unlisted"),
-            Some((0, "unlisted".into(), 1))
-        );
+        assert_eq!(codex_model_route(&gateway, &binding, &relays, "unlisted"), None);
         assert!(model_entry_members(&gateway, &binding, "unlisted").is_empty());
         assert!(codex_model_members(&gateway, &binding, "group/empty").is_empty());
         assert_eq!(
@@ -2474,10 +2469,7 @@ mod tests {
             .members
             .push(member("kimi/third"));
         let relays = binding_pool_relays(&gateway, &binding);
-        assert_eq!(
-            codex_model_route(&gateway, &binding, &relays, "unlisted"),
-            Some((0, "unlisted".into(), 2))
-        );
+        assert_eq!(codex_model_route(&gateway, &binding, &relays, "unlisted"), None);
         assert_eq!(
             routed(&gateway, "unlisted"),
             vec![
