@@ -329,6 +329,13 @@ fn eligible(metadata: &Metadata, now: SystemTime) -> bool {
         .is_some_and(|age| age >= MIN_AGE)
 }
 
+/// 给用户看的路径：家目录经过 canonicalize，Windows 上会带 `\\?\` 前缀（#2937），显示时去掉。
+fn shown(path: &Path) -> String {
+    crate::paths::strip_verbatim_prefix(path)
+        .display()
+        .to_string()
+}
+
 fn scan(home: &Path, roots: Vec<CacheRoot>, now: SystemTime) -> Result<CachePlan> {
     let scan_id = uuid::Uuid::new_v4().to_string();
     let mut plan = CachePlan {
@@ -350,13 +357,13 @@ fn scan(home: &Path, roots: Vec<CacheRoot>, now: SystemTime) -> Result<CachePlan
         if !safe_path(home, &root.path) {
             plan.report
                 .warnings
-                .push(format!("已跳过不安全的目录：{}", root.path.display()));
+                .push(format!("已跳过不安全的目录：{}", shown(&root.path)));
             continue;
         }
         if root.cleanable && protected_path(home, &root.path) {
             plan.report
                 .warnings
-                .push(format!("已跳过受保护的目录：{}", root.path.display()));
+                .push(format!("已跳过受保护的目录：{}", shown(&root.path)));
             continue;
         }
         let id = plan.roots.len().to_string();
@@ -364,7 +371,7 @@ fn scan(home: &Path, roots: Vec<CacheRoot>, now: SystemTime) -> Result<CachePlan
             id,
             app: root.app.clone(),
             kind: root.kind.into(),
-            path: root.path.display().to_string(),
+            path: shown(&root.path),
             total_bytes: 0,
             eligible_bytes: 0,
             eligible_files: 0,
@@ -409,7 +416,7 @@ fn walk(
     }
     if *visited >= MAX_ENTRIES || depth > 32 {
         if depth > 32 {
-            warnings.push(format!("目录层级过深，已跳过：{}", path.display()));
+            warnings.push(format!("目录层级过深，已跳过：{}", shown(path)));
         }
         return;
     }
@@ -417,7 +424,7 @@ fn walk(
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            warnings.push(format!("读取失败：{}：{error}", path.display()));
+            warnings.push(format!("读取失败：{}：{error}", shown(path)));
             return;
         }
     };
@@ -441,7 +448,7 @@ fn walk(
                             depth + 1,
                         ),
                         Err(error) => {
-                            warnings.push(format!("目录读取失败：{}：{error}", path.display()))
+                            warnings.push(format!("目录读取失败：{}：{error}", shown(path)))
                         }
                     }
                     if *visited >= MAX_ENTRIES {
@@ -449,7 +456,7 @@ fn walk(
                     }
                 }
             }
-            Err(error) => warnings.push(format!("目录读取失败：{}：{error}", path.display())),
+            Err(error) => warnings.push(format!("目录读取失败：{}：{error}", shown(path))),
         }
     } else if metadata.is_file() {
         group.total_bytes = group.total_bytes.saturating_add(metadata.len());
@@ -561,7 +568,7 @@ impl CachePlan {
                 }
                 Err(error) => result
                     .failures
-                    .push(format!("{}：{error}", file.path.display())),
+                    .push(format!("{}：{error}", shown(&file.path))),
             }
         }
         Ok(result)
@@ -659,6 +666,30 @@ mod tests {
         let roots = discover_roots(&home, &home.join(".codex")).unwrap();
         let plan = scan(&home, roots, SystemTime::now()).unwrap();
         (temp, plan)
+    }
+
+    #[test]
+    fn displayed_paths_drop_windows_verbatim_prefix() {
+        // #2937：家目录 canonicalize 后在 Windows 上是 `\\?\C:\…`，界面不该露出这个前缀。
+        assert_eq!(
+            shown(Path::new(r"\\?\C:\Users\me\.codex\cache")),
+            r"C:\Users\me\.codex\cache"
+        );
+        assert_eq!(
+            shown(Path::new(r"\\?\UNC\server\share\cache")),
+            r"\\server\share\cache"
+        );
+        assert_eq!(
+            shown(Path::new("/Users/me/.codex/cache")),
+            "/Users/me/.codex/cache"
+        );
+        let (_temp, plan) = fixture();
+        assert!(
+            plan.report
+                .groups
+                .iter()
+                .all(|group| !group.path.starts_with(r"\\?\"))
+        );
     }
 
     #[test]

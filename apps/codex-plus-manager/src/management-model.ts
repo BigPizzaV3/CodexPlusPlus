@@ -17,8 +17,9 @@ export function matchesManagementQuery(values: string[], query: string): boolean
 export function normalizeProjectPath(cwd: string): string {
   const path = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
   if (/^\/\/[?.]\/UNC\//i.test(path)) return `//${path.slice(8)}`;
-  if (/^\/\/[?.]\/[A-Za-z]:(?:\/|$)/.test(path)) return path.slice(4);
-  return path;
+  const plain = /^\/\/[?.]\/[A-Za-z]:(?:\/|$)/.test(path) ? path.slice(4) : path;
+  // 盘符统一大写：VS Code 里起的 Claude Code 等会把 cwd 记成 `c:\…`，和 Codex 的 `C:\…` 是同一个目录（#2937）。
+  return /^[a-z]:(?:\/|$)/.test(plain) ? plain[0].toUpperCase() + plain.slice(1) : plain;
 }
 export function sessionGroups(sessions: ManagedSession[], mode: "project" | "time", now = Date.now()) {
   const sorted = [...sessions].sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0));

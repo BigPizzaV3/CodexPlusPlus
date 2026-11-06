@@ -26,6 +26,20 @@ const PENDING_MANAGER_NAVIGATION_FILE: &str = "pending-manager-navigation.json";
 /// 挪到指定位置，不依赖任何平台特有的家目录语义。
 pub const STATE_DIR_ENV: &str = "CODEX_PLUS_STATE_DIR";
 
+/// 去掉 Windows canonicalize 带上的 `\\?\` verbatim 前缀（`\\?\UNC\` 换回 `\\`）。
+/// 用于交给外部进程或显示给用户的路径，内部比较仍可用 canonicalize 的原始结果。
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        // 只处理盘符路径；`\\?\Volume{...}` 之类去掉前缀就不是合法路径了。
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// 解析显式状态目录覆盖；未设置或设置为空时返回 `None`。
 pub fn state_dir_override_from(value: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let value = value?;
