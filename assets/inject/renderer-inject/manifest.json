@@ -36,6 +36,11 @@
       "lines": 77
     },
     {
+      "name": "32-thread-goal.js",
+      "description": "多窗口会话目标设置与修改转发到原生 owner",
+      "lines": 17
+    },
+    {
       "name": "33-offline-auto-review.js",
       "description": "拿不到远程功能开关时补开「替我审批」（#2817）",
       "lines": 81
