@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 33 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 34 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -452,9 +452,10 @@
         resizeObserver.unobserve(surface);
     };
     // 祖先样式变化（class/style 突变、过渡/动画结束）后，只标记待查，统一在 render 里读样式。
-    const invalidatePaintChains = target => {
+    const invalidatePaintChains = (target, viewerOnly = false) => {
       let found = false;
       for (const node of paintedNodes) {
+        if (viewerOnly && !isViewerSurface(node)) continue;
         const paint = records.get(node)?.paint;
         if (!paint || target !== paint.surface && !target.contains(paint.surface)) continue;
         paint.chainDirty = true;
@@ -551,7 +552,7 @@
     const addSurface = node => {
       if (!isLocalSurface(node)) {
         const previous = records.get(node);
-        if (previous?.localSurface) removeMedia(node, previous);
+        if (previous?.localSurface) { removeMedia(node, previous); visit(node); }
         return;
       }
       add(node, true);
@@ -562,6 +563,20 @@
         if (child !== node && node.contains(child) && !record.localSurface &&
           !child.matches(`${composerSelector}, ${headerSelector}, ${topControlSelector}`)) removeMedia(child, record);
       registerPaint(node);
+    };
+    // 宿主身份和继承的主题变量都会改变后代表面资格；仅扫描变更子树，已登记且资格不变的表面不重建。
+    const refreshLocalSurfaces = tree => {
+      const candidates = new Set([tree, ...(tree.childElementCount
+        ? queryAll(tree, `${surfaceSelector}, ${viewerSurfaceSelector}`) : [])]);
+      for (const [node, record] of records)
+        if (record.localSurface && tree.childElementCount && tree.contains(node)) candidates.add(node);
+      let changed = false;
+      for (const node of candidates) {
+        if (isLocalSurface(node) === !!records.get(node)?.localSurface) continue;
+        addSurface(node);
+        changed = true;
+      }
+      return changed;
     };
     const addComposer = node => {
       if (isViewerSurface(node)) { addSurface(node); return; }
@@ -798,6 +813,7 @@
     });
     const resizeObserver = new ResizeObserver(entries => {
       let changed = false;
+      let viewerChanged = false;
       for (const { target } of entries) {
         for (const [footer, record] of footers)
           if (record.scroller === target && updateFooter(footer, record)) writeRules();
@@ -807,9 +823,10 @@
         if (record) record.box = null;
         const painted = paintObservers.get(target);
         if (painted) paintsDirty.add(painted);
+        viewerChanged ||= !!painted && isViewerSurface(painted);
         changed ||= !!(control || record || painted);
       }
-      if (changed && !previewVisible) schedule();
+      if (changed && (!previewVisible || viewerChanged)) schedule();
     });
     const removeControl = (node, control) => {
       control.filter?.remove();
@@ -947,6 +964,7 @@
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
+        if (node !== root && node !== document.body && refreshLocalSurfaces(node)) changed = true;
         if (node.matches(toolbarSelector)) {
           // 原生容器可能在子控件已挂载后才声明工具栏身份。
           if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); pruneNeeded = true; changed = true; }
@@ -968,6 +986,7 @@
           const key = themeKey(node);
           if (themeInputs.get(node) !== key) {
             themeInputs.set(node, key);
+            if (refreshLocalSurfaces(node)) changed = true;
             refreshPopupTheme();
             for (const surface of paintedNodes) if (surface.matches(headerSelector)) registerPaint(surface);
           }
@@ -1415,8 +1434,8 @@
     // 侧栏开合等带过渡的 translate 在结束时才落定；不逐帧跟随，只在结束后重算一次。
     const onPaintMotionEnd = event => {
       const target = event.target;
-      if (target?.nodeType !== 1 || previewVisible || owned(target)) return;
-      if (invalidatePaintChains(target)) schedule();
+      if (target?.nodeType !== 1 || owned(target)) return;
+      if (invalidatePaintChains(target, previewVisible)) schedule();
     };
     const onScroll = event => {
       if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
@@ -1557,7 +1576,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 33, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 34, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

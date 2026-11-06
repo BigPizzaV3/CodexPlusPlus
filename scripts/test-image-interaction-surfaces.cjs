@@ -46,6 +46,53 @@ check('late rail, transparent variant, theme change and reparenting do not doubl
   (await samples(page,await shot(page))).forEach((c,i)=>near(c,expected([238,238,238])[i],'moved to timeline, one blend'));
 });
 
+for (const host of ["progress", "footer", "dialog", "gallery"]) {
+  check(`late ${host} ancestor identity discovers and retires descendant paint`, async page => {
+    const progress = host === "progress";
+    const cardAttributes = progress || host === "gallery"
+      ? 'class="rounded-3xl border bg-surface-elevated-secondary"' : "data-codex-approval-surface";
+    const outerAttributes = progress || host === "gallery" ? "data-thread-scroll-footer" : "";
+    await html(page, css, `<div style="position:relative" ${outerAttributes}><div id="host">${card(cardAttributes)}</div></div>`);
+    await configure(page, { dataUrl: assets.pattern, opacity: .3 });
+    const painted = () => page.$eval("#card", node => node.hasAttribute("data-codex-plus-image-paint"));
+    assert.equal(await painted(), false, "no local paint before ancestor identity");
+    const attribute = host === "progress" ? "data-in-progress-fixed-content"
+      : host === "footer" ? "data-thread-scroll-footer" : host === "dialog" ? "role" : "class";
+    await page.$eval("#host", (node, { attribute, host }) =>
+      node.setAttribute(attribute, host === "dialog" ? "dialog" : host === "gallery" ? "tortilla-gallery" : ""), { attribute, host });
+    await settle(page);
+    assert.equal(await painted(), true, "ancestor identity discovers existing descendants");
+    (await samples(page, await shot(page))).forEach((color, i) => near(color, expected([45,45,45])[i]));
+    await page.$eval("#host", (node, attribute) => node.removeAttribute(attribute), attribute);
+    await settle(page);
+    assert.equal(await painted(), false, "removing ancestor identity releases local paint");
+    const photo = await rect(page, "#photo");
+    near(pixel(await shot(page), photo[0] + 15, photo[1] + 15), [220,40,50], "retired boundary preserves native media");
+  });
+}
+
+check("ancestor theme and CSS variables reevaluate transparent nested cards", async page => {
+  await html(page, css + `#composer{height:200px;background:#363636}
+    #card{background:var(--card,transparent)}.dark #card{background:var(--card,#2d2d2d)}`,
+    `<div id="host" data-thread-scroll-footer>${composer}</div>`);
+  await page.$eval("#composer", (node, markup) => node.innerHTML = markup, card("data-composer-rail-item"));
+  await configure(page, { dataUrl: assets.pattern, opacity: .3 });
+  const painted = () => page.$eval("#card", node => node.hasAttribute("data-codex-plus-image-paint"));
+  assert.equal(await painted(), false, "transparent card uses the composer's paint");
+  await page.$eval("body", node => node.classList.add("dark"));
+  await settle(page);
+  assert.equal(await painted(), true, "ancestor class reveals an opaque card");
+  (await samples(page, await shot(page))).forEach((color, i) => near(color, expected([45,45,45])[i]));
+  await page.$eval("body", node => node.style.setProperty("--card", "transparent"));
+  await settle(page);
+  assert.equal(await painted(), false, "inherited transparency releases the second paint");
+  (await samples(page, await shot(page))).forEach((color, i) => near(color, expected([54,54,54])[i]));
+  await page.$eval("body", node => node.style.setProperty("--card", "#eeeeee"));
+  await settle(page);
+  assert.equal(await painted(), true, "inherited opaque color restores paint");
+  (await samples(page, await shot(page))).forEach((color, i) => near(color, expected([238,238,238])[i]));
+});
+
 check('progress capsule uses its own background inside animated portal',async page=>{
   await html(page,css,`<div id="host" data-thread-scroll-footer><div data-in-progress-fixed-content style="transform:translateY(0)">${card('class="rounded-3xl border bg-surface-elevated-secondary"')}</div>${composer}</div>`);
   await configure(page,{dataUrl:assets.pattern,opacity:.3});
