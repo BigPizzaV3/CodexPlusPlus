@@ -482,7 +482,7 @@ pub(crate) fn merge_selected_auth(live: &str, selected: Option<&str>) -> anyhow:
 /// Save the choice before publishing auth, with the settings store's conditional rollback.
 pub fn set_native_auth_selection(account_ref: Option<&str>) -> anyhow::Result<()> {
     let home = crate::codex_home::default_codex_home_dir();
-    let _guard = crate::official_login::native_auth_write_guard(&home)?;
+    let _guard = crate::official_login::native_auth_selection_write_guard()?;
     let settings_store = SettingsStore::default();
     let mut settings = settings_store.load()?;
     let auth_path = home.join("auth.json");

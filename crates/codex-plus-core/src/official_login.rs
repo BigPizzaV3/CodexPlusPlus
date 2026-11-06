@@ -452,11 +452,40 @@ fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
 
 pub(crate) fn native_auth_write_guard(
     home: &Path,
-) -> anyhow::Result<Option<tokio::sync::MutexGuard<'static, ()>>> {
+) -> anyhow::Result<Option<NativeAuthWriteGuard>> {
     if !crate::native_auth::is_default_home(home) {
         return Ok(None);
     }
-    refresh_lock().try_lock().map(Some)
+    let publication = native_auth_publication_lock();
+    let refresh = if SettingsStore::default().load()?.native_auth_selection.is_some() {
+        Some(try_native_auth_refresh_guard()?)
+    } else {
+        None
+    };
+    Ok(Some(NativeAuthWriteGuard { _publication: publication, _refresh: refresh }))
+}
+
+pub(crate) struct NativeAuthWriteGuard {
+    _refresh: Option<tokio::sync::MutexGuard<'static, ()>>,
+    _publication: std::sync::MutexGuard<'static, ()>,
+}
+
+// 短发布锁与慢网络刷新分开；首次显式选择不能被已开始的旧模式写入覆盖。
+fn native_auth_publication_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(Mutex::default).lock().unwrap_or_else(|error| error.into_inner())
+}
+
+pub(crate) fn native_auth_selection_write_guard(
+) -> anyhow::Result<NativeAuthWriteGuard> {
+    let publication = native_auth_publication_lock();
+    let refresh = try_native_auth_refresh_guard()?;
+    Ok(NativeAuthWriteGuard { _publication: publication, _refresh: Some(refresh) })
+}
+
+fn try_native_auth_refresh_guard(
+) -> anyhow::Result<tokio::sync::MutexGuard<'static, ()>> {
+    refresh_lock().try_lock()
         .map_err(|_| anyhow::anyhow!("官方凭据正在刷新，暂未切换原生登录，请稍后重试"))
 }
 
@@ -982,6 +1011,7 @@ fn auth_with_tokens(
 
 /// 借给 Codex 的账号由网关刷新后，新一代 token 也写回 Codex 的 auth.json（只在仍是同一账号时）。
 fn persist_live_login(codex_home: &Path, expected_auth: &str, updated_auth: &str) {
+    let _publication = native_auth_publication_lock();
     let path = codex_home.join("auth.json");
     let result = (|| -> anyhow::Result<()> {
         let contents = std::fs::read_to_string(&path)?;
@@ -1063,10 +1093,58 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn native_switch_cannot_publish_while_a_refresh_holds_the_lock() {
+    async fn legacy_writes_bypass_refresh_lock_but_first_explicit_selection_does_not() {
+        let _settings_guard = crate::paths::settings_path_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        struct RestoreSettingsPath(Option<std::path::PathBuf>);
+        impl Drop for RestoreSettingsPath {
+            fn drop(&mut self) {
+                crate::paths::set_settings_path_for_tests(self.0.take());
+            }
+        }
+        let settings_path = temp.path().join("settings.json");
+        let _restore = RestoreSettingsPath(crate::paths::set_settings_path_for_tests(
+            Some(settings_path.clone()),
+        ));
+        let store = SettingsStore::default();
+        let mut settings = crate::settings::BackendSettings::default();
+        store.save(&settings).unwrap();
+        let before = std::fs::read(&settings_path).unwrap();
         let _refresh = refresh_lock().lock().await;
         let home = crate::codex_home::default_codex_home_dir();
+        assert!(native_auth_write_guard(&home).unwrap().is_some());
+        for account in [Some("first-explicit-account"), None] {
+            assert!(crate::native_auth::set_native_auth_selection(account).is_err());
+            assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        }
+        settings = store.load().unwrap();
+        settings.native_auth_selection = Some(crate::settings::NativeAuthSelection::None);
+        store.save(&settings).unwrap();
         assert!(native_auth_write_guard(&home).is_err());
+        settings = store.load().unwrap();
+        settings.native_auth_selection = Some(crate::settings::NativeAuthSelection::Account {
+            account_ref: "explicit-account".into(),
+        });
+        store.save(&settings).unwrap();
+        assert!(native_auth_write_guard(&home).is_err());
+        assert!(native_auth_write_guard(temp.path()).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn first_native_selection_waits_until_a_legacy_publication_finishes() {
+        let _refresh = refresh_lock().lock().await;
+        let legacy = native_auth_publication_lock();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            finished_tx.send(native_auth_selection_write_guard().is_err()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(finished_rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        drop(legacy);
+        assert!(finished_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap());
+        worker.join().unwrap();
     }
 
     #[tokio::test]

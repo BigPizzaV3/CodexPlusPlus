@@ -886,6 +886,10 @@ fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider
 
 impl GatewayStore {
     pub fn default_path() -> PathBuf {
+        #[cfg(test)]
+        if let Some(path) = TEST_PATH.with(|path| path.borrow().clone()) {
+            return path;
+        }
         crate::paths::default_app_state_dir().join(STORE_FILE)
     }
 
@@ -936,6 +940,28 @@ impl GatewayStore {
                 .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
         };
         lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct GatewayPathTestScope(Option<PathBuf>);
+
+#[cfg(test)]
+impl GatewayPathTestScope {
+    pub(crate) fn new(directory: &Path) -> Self {
+        Self(TEST_PATH.with(|path| path.replace(Some(directory.join(STORE_FILE)))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for GatewayPathTestScope {
+    fn drop(&mut self) {
+        TEST_PATH.with(|path| path.replace(self.0.take()));
     }
 }
 

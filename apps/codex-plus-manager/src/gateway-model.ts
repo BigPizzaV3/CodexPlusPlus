@@ -903,7 +903,7 @@ export function quotaWindowFresh(quota: ProviderQuota, window: QuotaWindow, nowM
 
 /** 与后端相同的本地预检；后端返回值还包含同账号别名的更严格策略。 */
 export function subscriptionBlockReason(entry: GatewayPoolEntry, nowMs = Date.now()): string | null {
-  if (entry.account !== "chatgpt") return null;
+  if (entry.account !== "chatgpt" || !entry.subscriptionPolicy) return null;
   const policy = normalizeSubscriptionPolicy(entry.subscriptionPolicy);
   if (policy.defaultUsedPercentLimit === 0) return "订阅额度已用上限设为 0%，已停止新请求";
   const unknown = (text: string) => policy.unknownUsage === "allow" ? null : text;

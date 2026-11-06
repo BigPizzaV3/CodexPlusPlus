@@ -37,7 +37,6 @@ import { windowSummary } from "./ProviderWindowsDialog";
 import { filterModels, pickerOutcome, pickerRows, type PickerRow } from "./provider-sync-model";
 import "./ProviderFormDialog.css";
 import { SubscriptionPolicyFields } from "./SubscriptionPolicyFields";
-import { normalizeSubscriptionPolicy } from "./subscription-policy";
 
 export type ProviderFormState = { mode: "preset"; preset: GatewayPreset } | { mode: "custom" } | { mode: "edit"; entry: GatewayPoolEntry };
 
@@ -72,8 +71,7 @@ export function ProviderFormDialog({
   const subscriptionEditing = form.mode === "edit" && form.entry.account === "chatgpt";
   const preset = form.mode === "preset" ? form.preset : null;
   const [draft, setDraft] = useState<ProviderDraft>(() => {
-    const initial = form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset);
-    return subscriptionEditing ? { ...initial, subscriptionPolicy: normalizeSubscriptionPolicy(initial.subscriptionPolicy) } : initial;
+    return form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset);
   });
   // 价格在供应商池的详情里按模型编辑；新添加时按公开价格表给每个模型悄悄填上（查不到的不填）。
   const autoPrice = useRef(!editing && !hasPrice(draft));

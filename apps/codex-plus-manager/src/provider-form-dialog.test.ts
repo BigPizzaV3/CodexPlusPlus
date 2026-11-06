@@ -28,12 +28,12 @@ function find(tree: Element, predicate: (element: Element) => boolean): Element 
   return found;
 }
 
-function harness(official = true) {
+function harness(official = true, configured = true) {
   const secret = "synthetic-refresh-token-not-for-the-form";
   const entry = Object.assign({
     id: "official-account", name: "Account A", baseUrl: official ? "" : "https://api.example.com/v1", protocol: "responses" as const,
     official, account: official ? "chatgpt" : "", models: ["model-a"], keyCount: 0,
-    proxy: "", subscriptionPolicy: { windowUsedPercentLimits: { "43200": 91 } },
+    proxy: "", subscriptionPolicy: configured ? { windowUsedPercentLimits: { "43200": 91 } } : undefined,
     quota: { windowsComplete: true, updatedAtMs: Date.now(),
       windows: [{ windowMinutes: 10080, usedPercent: 20, resetsAtMs: null }] },
   }, { authContents: secret, officialAccountRef: "canonical-account" });
@@ -183,6 +183,16 @@ test("官方账号真实表单拒绝空名称和无协议代理，程序化提�
   assert.equal(find(tree, element => element.type === "Button" && element.props.type === "submit").props.disabled, false);
   submit(tree);
   assert.equal(f.saved.length, 1);
+});
+
+test("旧官方账号仅改名不会自动创建订阅拦截策略", () => {
+  const f = harness(true, false);
+  let tree = f.render();
+  field(tree, "名称").props.onChange({ currentTarget: { value: "Renamed legacy account" } });
+  tree = f.render();
+  submit(tree);
+  assert.equal(f.saved.length, 1);
+  assert.equal("subscriptionPolicy" in gateway.providerInput(f.saved[0]), false);
 });
 
 test("普通API供应商真实表单保持连接和Key编辑，不加入代理或订阅额度字段", () => {

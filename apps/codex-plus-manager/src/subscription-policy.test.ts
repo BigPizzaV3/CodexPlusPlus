@@ -115,6 +115,12 @@ test("旧账号没有策略或旧授权为false时仍可请求，未知用量仅
   const entry = account();
   entry.subscriptionPolicy = undefined;
   assert.equal(subscriptionBlockReason(entry, 1000), null);
+  entry.quota = { updatedAtMs: 1000, officialAllowed: false,
+    windows: [{ windowMinutes: 300, usedPercent: 100, resetsAtMs: 1000000 }] };
+  entry.subscriptionBlockReason = "stale policy response";
+  assert.equal(subscriptionBlockReason(entry, 1000), null);
+  entry.quota = undefined;
+  entry.subscriptionBlockReason = undefined;
   for (const permitted of [false, true]) {
     const legacy = { ...defaultSubscriptionPolicy(), permitted };
     entry.subscriptionPolicy = legacy;

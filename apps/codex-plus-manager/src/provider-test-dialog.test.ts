@@ -225,9 +225,9 @@ test("ChatGPT和其他订阅账号不需要消费授权开关", async () => {
   }
 });
 
-test("5h或7d用尽时真实测试弹窗禁用提交，程序化提交也不发请求", () => {
+test("显式配置策略后5h或7d用尽时禁用测试，程序化提交也不发请求", () => {
   for (const windowMinutes of [300, 10080]) {
-    const f = harness({ account: "chatgpt", quota: {
+    const f = harness({ account: "chatgpt", policy: defaultSubscriptionPolicy(), quota: {
       updatedAtMs: Date.now(), windowsComplete: true, officialAllowed: true,
       windows: [{ windowMinutes, usedPercent: 100, resetsAtMs: null }],
     } });

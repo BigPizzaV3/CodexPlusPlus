@@ -1434,6 +1434,57 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn unconfigured_exhausted_subscription_keeps_api_failover_candidates() {
+        use base64::Engine;
+        use crate::gateway::quota::{ProviderQuota, QuotaWindow, record_for_relay};
+        use crate::gateway::store::SubscriptionPolicy;
+
+        let model = "legacy-quota-failover-model";
+        let mut official = provider("legacy-quota-subscription", model);
+        official.relay.relay_mode = RelayMode::Official;
+        official.relay.base_url.clear();
+        official.relay.api_key.clear();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"iss": "https://auth.openai.com", "sub": "legacy-quota-failover"})
+                .to_string(),
+        );
+        official.relay.auth_contents = serde_json::json!({"tokens": {
+            "id_token": format!("header.{claims}.signature"),
+            "access_token": "legacy-quota-access",
+            "account_id": "legacy-quota-workspace"
+        }}).to_string();
+        record_for_relay(&official.relay, ProviderQuota {
+            windows: vec![QuotaWindow {
+                used_percent: 100.0,
+                resets_at_ms: Some(u64::MAX),
+                ..Default::default()
+            }],
+            updated_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            official_allowed: Some(false),
+            ..Default::default()
+        });
+        let mut gateway = gateway("group/legacy-quota-failover");
+        gateway.providers = vec![official, provider("legacy-quota-api", model)];
+        gateway.groups = vec![group(
+            "legacy-quota-failover",
+            GroupMode::InOrder,
+            vec![member(&format!("legacy-quota-subscription/{model}")), member(&format!("legacy-quota-api/{model}"))],
+        )];
+        assert_eq!(
+            routed(&gateway, "group/legacy-quota-failover"),
+            [
+                ("legacy-quota-subscription".into(), model.into()),
+                ("legacy-quota-api".into(), model.into())
+            ]
+        );
+        gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
+        assert!(resolve_plan(
+            &gateway, &ToolId::Claude, "group/legacy-quota-failover", None,
+        ).is_err(), "only an explicitly configured stop policy may stop API failover");
+    }
+
     fn pair(relay: &str, model: &str) -> (String, String) {
         (relay.to_string(), model.to_string())
     }

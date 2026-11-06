@@ -221,11 +221,10 @@ fn action_rank(action: &SubscriptionLimitAction) -> u8 {
     }
 }
 
-fn shared_policy(gateway: &GatewaySettings, relay: &RelayProfile) -> SubscriptionPolicy {
-    let mut policy = gateway.provider(&relay.id)
-        .and_then(|provider| provider.subscription_policy.clone()).unwrap_or_default();
+fn shared_policy(gateway: &GatewaySettings, relay: &RelayProfile) -> Option<SubscriptionPolicy> {
+    let mut policy = gateway.provider(&relay.id)?.subscription_policy.clone()?;
     let Some(scope) = crate::native_auth::account_scope(&relay.auth_contents) else {
-        return policy;
+        return Some(policy);
     };
     for alias in &gateway.providers {
         if !alias.enabled || !crate::official_login::member_uses_official_login_transport(&alias.relay)
@@ -262,7 +261,7 @@ fn shared_policy(gateway: &GatewaySettings, relay: &RelayProfile) -> Subscriptio
                 .min(other.default_used_percent_limit.unwrap_or(100)),
         );
     }
-    policy
+    Some(policy)
 }
 
 /// A local admission decision only: this neither reserves official quota nor changes native auth.
@@ -286,7 +285,9 @@ fn dispatch_decision_at(
         status,
         message: format!("ChatGPT 订阅账号「{}」：{reason}", relay.name),
     };
-    let policy = shared_policy(gateway, relay);
+    let Some(policy) = shared_policy(gateway, relay) else {
+        return Ok(());
+    };
     let unknown = |reason: &str| {
         if matches!(
             &policy.unknown_usage,
@@ -342,21 +343,18 @@ fn dispatch_decision_at(
     Ok(())
 }
 
-/// 剩余比例（0–1），已重置但尚未确认恢复的窗口不假定满额。
+/// 剩余比例（0–1），保持旧版排序：已过重置时间的窗口按满额算，不代替派发准入检查。
 pub fn remaining(relay_id: &str) -> Option<f64> {
     get(relay_id).map(|quota| remaining_at(&quota, now_ms()))
 }
 
 pub fn remaining_at(quota: &ProviderQuota, now_ms: u64) -> f64 {
-    if quota.official_allowed == Some(false) {
-        return 0.0;
-    }
     quota
         .windows
         .iter()
         .map(|window| {
             if window.resets_at_ms.is_some_and(|reset| reset <= now_ms) {
-                0.0
+                1.0
             } else {
                 (1.0 - window.used_percent / 100.0).clamp(0.0, 1.0)
             }
@@ -743,49 +741,15 @@ pub async fn watch(store: GatewayStore) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-
-    fn default_gateway_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(Mutex::default)
-    }
-
-    struct DefaultGatewaySnapshot {
-        path: PathBuf,
-        previous: Option<Vec<u8>>,
-    }
-
-    impl DefaultGatewaySnapshot {
-        fn install(relay: &RelayProfile) -> Self {
-            let path = GatewayStore::default_path();
-            let previous = std::fs::read(&path).ok();
-            let provider = serde_json::from_value(json!({
-                "source": "login:chatgpt",
-                "relay": relay,
-            }))
-            .unwrap();
-            GatewayStore::default()
-                .save(&GatewaySettings {
-                    providers: vec![provider],
-                    ..GatewaySettings::default()
-                })
-                .unwrap();
-            Self { path, previous }
-        }
-    }
-
-    impl Drop for DefaultGatewaySnapshot {
-        fn drop(&mut self) {
-            match self.previous.as_deref() {
-                Some(bytes) => {
-                    let _ = std::fs::write(&self.path, bytes);
-                }
-                None => {
-                    let _ = std::fs::remove_file(&self.path);
-                }
-            }
-        }
+    fn canonical_gateway_fixture(
+        relay: &RelayProfile,
+    ) -> (tempfile::TempDir, super::super::store::GatewayPathTestScope) {
+        let directory = tempfile::tempdir().unwrap();
+        let scope = super::super::store::GatewayPathTestScope::new(directory.path());
+        let mut gateway = GatewaySettings::default();
+        add_subscription(&mut gateway, relay, None);
+        GatewayStore::default().save(&gateway).unwrap();
+        (directory, scope)
     }
 
     fn subscription_relay(id: &str, subject: &str) -> RelayProfile {
@@ -853,8 +817,24 @@ mod tests {
         assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
         record_for_relay(&relay, reading(0.0, 1_000, 2_000));
         assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
-        gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
+        let mut exhausted = reading(100.0, 1_000, 2_000);
+        exhausted.official_allowed = Some(false);
+        record_for_relay(&relay, exhausted);
         assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
+        let alias = subscription_relay("quota-legacy-alias", "quota-legacy");
+        add_subscription(&mut gateway, &alias, Some(SubscriptionPolicy {
+            default_used_percent_limit: Some(0),
+            ..SubscriptionPolicy::default()
+        }));
+        assert!(dispatch_decision_at(&gateway, &relay, 1_000).is_ok());
+        assert_eq!(dispatch_decision_at(&gateway, &alias, 1_000).unwrap_err().status, 429);
+        let mut available = reading(0.0, 1_001, 2_000);
+        available.windows_complete = true;
+        available.official_allowed = Some(true);
+        record_for_relay(&relay, available);
+        gateway.providers.pop();
+        gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
+        assert!(dispatch_decision_at(&gateway, &relay, 1_001).is_ok());
         let legacy: SubscriptionPolicy = serde_json::from_value(json!({"permitted": false})).unwrap();
         assert_eq!(legacy, SubscriptionPolicy::default());
         assert!(serde_json::to_value(&legacy).unwrap().get("permitted").is_none());
@@ -1104,9 +1084,10 @@ mod tests {
             "取最紧的窗口"
         );
         assert!(
-            remaining_at(&quota, 70_000) == 0.0,
-            "重置后的额度未知，不假定满额"
+            (remaining_at(&quota, 70_000) - 0.195).abs() < 1e-9,
+            "已重置5h按满额排序，仍受未重置7d限制"
         );
+        assert_eq!(remaining_at(&reading(100.0, 1_000, 2_000), 2_000), 1.0);
         assert!(from_codex_headers(&HeaderMap::new(), 0).is_none());
     }
 
@@ -1312,8 +1293,7 @@ mod tests {
         let a = subscription_relay("quota-prefetch-a", "quota-prefetch");
         let mut b = subscription_relay("quota-prefetch-b", "quota-prefetch");
         b.official_account_ref = a.id.clone();
-        let _default_gateway_lock = default_gateway_test_lock().lock().unwrap();
-        let _canonical = DefaultGatewaySnapshot::install(&a);
+        let _canonical = canonical_gateway_fixture(&a);
         assert!(crate::official_login::member_uses_official_login_transport(&b));
         let calls = AtomicUsize::new(0);
         let fetch = || async {
@@ -1405,8 +1385,7 @@ mod tests {
         let a = subscription_relay("quota-ttl-a", "quota-ttl");
         let mut b = subscription_relay("quota-ttl-b", "quota-ttl");
         b.official_account_ref = a.id.clone();
-        let _default_gateway_lock = default_gateway_test_lock().lock().unwrap();
-        let _canonical = DefaultGatewaySnapshot::install(&a);
+        let _canonical = canonical_gateway_fixture(&a);
         assert!(crate::official_login::member_uses_official_login_transport(&b));
         let mut gateway = GatewaySettings::default();
         for (relay, seconds) in [(&a, 600), (&b, 30)] {
