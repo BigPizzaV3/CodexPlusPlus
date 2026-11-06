@@ -440,26 +440,59 @@ fn native_preview(
     };
     let projected = match projected {
         Ok(Some(files)) => files,
-        Ok(None) => {
+        projected => {
             result.can_disconnect = false;
-            match codex_full_switch_target(settings, binding) {
+            // Codex 的存档投影给不出结果（没存档、要切回聚合供应商、存档损坏）时，真实断开
+            // 走的是完整切换到直连供应商：在隔离副本里跑同一套切换，把结果文件读回来做 diff。
+            let full_switch = (*agent == ToolId::Codex)
+                .then(|| codex_full_switch_target(settings, binding))
+                .flatten();
+            match full_switch {
                 Some(target) => {
-                    result.warnings.push(
-                        "接入前没有留下实时存档（或要切回的是聚合供应商），没法逐项预览改动；断开会把 Codex 完整切换到下面这个直连供应商，切换前会备份当前配置。".into(),
-                    );
                     result.full_switch = Some(target);
+                    match apply::preview_codex_disconnect_apply(&copied, binding) {
+                        Ok(files) => {
+                            result.warnings.push(
+                                "接入前没有留下实时存档（或要切回的是聚合供应商）：以下是在隔离环境里按「完整切换到直连供应商」预演出的改动，断开前会备份当前配置。"
+                                    .into(),
+                            );
+                            for (copied_path, after) in files {
+                                // 预演在隔离副本里生成的新绝对路径（如 model_catalog_json
+                                // 指针）换回真实 home，再与实时文件对比。
+                                let after = after.map(|text| {
+                                    text.replace(
+                                        copied.codex_home.to_string_lossy().as_ref(),
+                                        ctx.codex_home.to_string_lossy().as_ref(),
+                                    )
+                                });
+                                if let Some((path, _)) =
+                                    live_files.iter().find(|(_, dest)| *dest == copied_path)
+                                {
+                                    let before = sources.read(path)?;
+                                    add_file(
+                                        result,
+                                        path,
+                                        before.as_deref(),
+                                        after.as_deref(),
+                                    );
+                                }
+                            }
+                        }
+                        Err(_) => result.warnings.push(
+                            "接入前没有留下实时存档（或要切回的是聚合供应商），也没能在隔离环境里预演切换；断开会把 Codex 完整切换到下面这个直连供应商，切换前会备份当前配置。"
+                                .into(),
+                        ),
+                    }
                 }
+                None if *agent == ToolId::Codex && projected.is_ok() => result.warnings.push(
+                    "Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。"
+                        .into(),
+                ),
                 None => result.warnings.push(
-                    "Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。".into(),
+                    "隔离预演未能完成还原；原配置未被修改，请检查可切回的供应商和恢复存档。"
+                        .into(),
                 ),
             }
-            return Ok(());
-        }
-        Err(_) => {
-            result.can_disconnect = false;
-            result.warnings.push(
-                "隔离预演未能完成还原；原配置未被修改，请检查可切回的供应商和恢复存档。".into(),
-            );
             return Ok(());
         }
     };
@@ -1146,23 +1179,56 @@ mod tests {
     }
 
     #[test]
-    fn codex_without_stash_refuses_an_inaccurate_preview() {
+    fn codex_without_stash_previews_the_real_full_switch() {
         let fixture = fixture();
         codex_direct(&fixture.ctx);
         enable_binding(&fixture.ctx, &ToolId::Codex, binding()).unwrap();
-        // 没有实时存档（旧版接入、或存档丢了）：不给不准的逐项预览。
+        // 没有实时存档（旧版接入、或存档丢了）：在隔离副本里跑真实的完整切换，按结果出差异。
         std::fs::remove_file(fixture.ctx.backup_root.join("codex-before-gateway.json")).ok();
         let settings = fixture.ctx.settings.load().unwrap();
+        let live_before: Vec<(String, Option<String>)> = ["config.toml", "auth.json"]
+            .iter()
+            .map(|name| {
+                let path = fixture.ctx.codex_home.join(name);
+                (name.to_string(), restore::read_optional(&path).unwrap())
+            })
+            .collect();
         let before = snapshot(fixture.temp.path());
         let result = preview(&fixture.ctx, &settings, &ToolId::Codex).unwrap();
         assert!(!result.can_disconnect);
-        assert!(result.files.is_empty());
-        // 但说清楚会完整切换到哪个直连供应商，由用户确认后走完整切换。
         assert_eq!(
             result.full_switch,
             Some(FullSwitchTarget { relay_id: "direct".into(), name: "Direct".into() })
         );
         assert_eq!(snapshot(fixture.temp.path()), before);
+        // 预演给出的 diff 与真实断开写出的内容一致，且不泄露隔离副本的临时路径。
+        assert!(!result.files.is_empty(), "完整切换的预演应给出文件差异");
+        for file in &result.files {
+            assert!(
+                !file.diff.contains("codexplus-disconnect-preview"),
+                "{} 的 diff 不应带隔离目录路径",
+                file.path
+            );
+        }
+        apply::disable_binding(&fixture.ctx, &settings, &ToolId::Codex).unwrap();
+        for file in &result.files {
+            let name = Path::new(&file.path)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let live_before = live_before
+                .iter()
+                .find(|(n, _)| *n == name)
+                .and_then(|(_, text)| text.clone());
+            let after = restore::read_optional(Path::new(&file.path)).unwrap();
+            assert_eq!(
+                file.diff,
+                text_diff(live_before.as_deref(), after.as_deref()),
+                "{name} 的预演 diff 应与真实断开一致"
+            );
+        }
     }
 
     #[test]

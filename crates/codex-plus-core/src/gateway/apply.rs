@@ -1304,6 +1304,23 @@ pub(crate) fn preview_codex_stashed_restore(
     ]))
 }
 
+/// 存档投影给不出逐项结果时（没存档、或要切回聚合供应商）：在隔离副本里跑真实的
+/// [`restore_codex`]，把断开后的实时文件读回来。预览与真实断开走同一份逻辑，
+/// 看到什么就是断开会写什么；只在 `ctx` 指向隔离副本时使用。
+pub(crate) fn preview_codex_disconnect_apply(
+    ctx: &ApplyContext,
+    binding: &AgentBinding,
+) -> anyhow::Result<Vec<(PathBuf, Option<String>)>> {
+    restore_codex(ctx, binding)?;
+    CODEX_LIVE_FILES
+        .iter()
+        .map(|name| {
+            let path = ctx.codex_home.join(name);
+            stash::read_optional(&path).map(|text| (path, text))
+        })
+        .collect()
+}
+
 /// 把托管供应商放进直连模式的列表并切过去（已经在用时只刷新它的配置）。
 ///
 /// 实时配置被别的工具改过、与直连模式的记录对不上（直连模式里切换会弹「实时配置冲突」）时，
