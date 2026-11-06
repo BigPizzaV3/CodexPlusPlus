@@ -1,0 +1,62 @@
+name: Image overlay regressions
+
+on:
+  pull_request:
+    paths:
+      - 'assets/extensions/image-overlay/**'
+      - 'scripts/*image*'
+      - '.github/workflows/image-overlay-regressions.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'assets/extensions/image-overlay/**'
+      - 'scripts/*image*'
+      - '.github/workflows/image-overlay-regressions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image-overlay-regressions:
+    name: Image overlay regressions
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install browser-test dependencies
+        shell: pwsh
+        run: |
+          # 不写项目依赖；使用 runner 自带的 Edge，和 Windows 实机验收一致。
+          npm install --prefix "$env:RUNNER_TEMP/image-overlay-tests" --no-save --package-lock=false playwright@1.62.1 sharp@0.35.5 pngjs@7.0.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "NODE_PATH=$env:RUNNER_TEMP/image-overlay-tests/node_modules" >> $env:GITHUB_ENV
+
+      - name: Wallpaper pixels, native boundaries and lifecycle
+        shell: pwsh
+        env:
+          CODEX_OVERLAY_TEST_OUTPUT: ${{ runner.temp }}/image-overlay-evidence
+          CODEX_TEST_SWIFTSHADER: "1"
+        run: >-
+          node --test --test-concurrency=1
+          scripts/test-image-overlay.cjs
+          scripts/test-image-native-surfaces.cjs
+          scripts/test-image-native-media.cjs
+          scripts/test-image-composite.cjs
+          scripts/test-image-interaction-surfaces.cjs
+          scripts/test-image-viewer-surfaces.cjs
+
+      - name: Upload wallpaper comparison evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-overlay-failure
+          path: ${{ runner.temp }}/image-overlay-evidence
+          if-no-files-found: ignore
