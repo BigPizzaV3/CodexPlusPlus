@@ -472,6 +472,96 @@ async fn requests_go_through_the_providers_own_proxy() {
 }
 
 #[tokio::test]
+async fn official_catalog_and_probe_negotiate_one_version_despite_an_old_native_cache() {
+    use base64::Engine;
+    use codex_plus_core::gateway::apply;
+    use codex_plus_core::settings::{RelayMode, RelayProfile};
+
+    let _isolated = super::common::IsolatedTestState::new();
+    struct Environment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for Environment {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+    for cached_version in ["0.124.0", "0.170.2"] {
+        let temp = tempfile::tempdir().unwrap();
+        let (listener, base) = listen().await;
+        let _environment = Environment(
+            ["CODEX_HOME", "CODEX_PLUS_STATE_DIR", "CODEX_PLUS_OFFICIAL_BASE_URL"]
+                .into_iter().map(|name| (name, std::env::var_os(name))).collect(),
+        );
+        unsafe {
+            std::env::set_var("CODEX_HOME", temp.path());
+            std::env::set_var("CODEX_PLUS_STATE_DIR", temp.path().join(".codex-session-delete"));
+            std::env::set_var("CODEX_PLUS_OFFICIAL_BASE_URL", &base);
+        }
+        let cache = json!({"client_version": cached_version, "models": []}).to_string();
+        std::fs::write(temp.path().join("models_cache.json"), &cache).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({"exp": now + 3600, "iss": "https://auth.openai.com", "sub": "probe-version"})
+                .to_string(),
+        );
+        let relay = RelayProfile {
+            id: "probe-official-version".into(),
+            name: "Official version fixture".into(),
+            relay_mode: RelayMode::Official,
+            protocol: RelayProtocol::Responses,
+            model: "gpt-6.1-sol".into(),
+            model_list: "gpt-6.1-sol".into(),
+            gateway_proxy: Some("direct".into()),
+            auth_contents: json!({"auth_mode": "chatgpt", "codex_plus_gateway": true, "tokens": {
+                "access_token": format!("header.{claims}.signature"),
+                "id_token": format!("header.{claims}.signature"),
+                "refresh_token": "synthetic-refresh", "account_id": "synthetic-workspace"
+            }}).to_string(),
+            ..RelayProfile::default()
+        };
+        let store = GatewayStore::default();
+        let (mut gateway, id) = apply::add_provider(&store, relay, "login:chatgpt", None).unwrap();
+        gateway.providers[0].proxy = "direct".into();
+        store.save(&gateway).unwrap();
+        let mut relay = gateway.provider(&id).unwrap().relay.clone();
+        relay.gateway_proxy = Some("direct".into());
+        let upstream = tokio::spawn(serve(listener, vec![
+            reply(200, "application/json", json!({"models": [{"slug": "gpt-6.1-sol"}]}).to_string()),
+            reply(200, "text/event-stream", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"),
+        ]));
+        let (models, _) = codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&relay).await.unwrap();
+        assert_eq!(models, ["gpt-6.1-sol"]);
+        let result = probe_provider(&BackendSettings::default(), &gateway, &relay.id, "gpt-6.1-sol", None).await.unwrap();
+        assert!(result.ok, "{result:?}");
+        let seen = tokio::time::timeout(Duration::from_secs(5), upstream).await.unwrap().unwrap();
+        let version = codex_plus_core::gateway::chatgpt_backend::codex_version(temp.path());
+        if cached_version == "0.124.0" {
+            assert_ne!(version, cached_version);
+        } else {
+            assert_eq!(version, cached_version);
+        }
+        assert!(seen[0].request_line.contains(&format!("client_version={version}")));
+        for request in &seen {
+            assert_eq!(request.header("version").as_deref(), Some(version.as_str()));
+            assert!(request.header("user-agent").unwrap().starts_with(&format!("codex_cli_rs/{version} ")));
+            assert_eq!(request.header("chatgpt-account-id").as_deref(), Some("synthetic-workspace"));
+        }
+        assert_eq!(seen[1].body["model"], "gpt-6.1-sol");
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("models_cache.json")).unwrap(),
+            cache
+        );
+    }
+}
+
+#[tokio::test]
 async fn connection_failures_and_timeouts_are_reported() {
     // 连不上：端口上没人监听。
     let (listener, base) = listen().await;
