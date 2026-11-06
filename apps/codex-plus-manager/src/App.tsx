@@ -162,7 +162,7 @@ import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldSho
 import { AgentFocusDialog } from "./AgentFocusDialog";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
-import { backupAgentFocus, needAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
+import { backupAgentFocus, needAgentFocusPrompt, resolveAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
@@ -1767,10 +1767,33 @@ export function App() {
   const [setupOpen, setSetupOpen] = useState(initialSetupOpen);
   // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
   const agentFocus = useAgentFocus();
-  const [agentFocusOpen, setAgentFocusOpen] = useState(needAgentFocusPrompt);
+  // 问卷等设置文件读回来再决定弹不弹（#2936）：本地存储为空不等于没选过，设置文件里可能记着。
+  const [agentFocusOpen, setAgentFocusOpen] = useState(false);
+  // 判定期间入门清单也先不出，免得它先闪一下再被问卷盖住。
+  const [agentFocusChecking, setAgentFocusChecking] = useState(needAgentFocusPrompt);
+  useEffect(() => {
+    if (!agentFocusChecking) return;
+    let disposed = false;
+    void resolveAgentFocusPrompt(async () => {
+      // 单独读一次设置：常规的设置加载排在网络请求之后，要等好几秒。
+      const result = await invoke<SettingsResult>("load_settings");
+      return isSuccessStatus(result.status) ? result.settings.managerAgentFocus : undefined;
+    }).then((ask) => {
+      if (disposed) return;
+      if (ask) setAgentFocusOpen(true);
+      setAgentFocusChecking(false);
+    });
+    return () => { disposed = true; };
+    // 只在启动时判定一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const cancelAgentFocus = useCallback(() => {
     setAgentFocusOpen(false);
-    if (!agentFocus) setSetupOpen(false);
+    if (!agentFocus) {
+      // 第一次问时点「稍后设置」：按全部功能记下（和没选时的显示一样），之后启动不再追问，设置里随时可改（#2936）。
+      saveAgentFocus("all");
+      setSetupOpen(false);
+    }
   }, [agentFocus]);
   // 本地存储丢了使用模式、设置文件里还记着时补回来，问卷不再每次启动都弹（#2902）。
   const settingsLoaded = Boolean(settings);
@@ -5009,7 +5032,7 @@ export function App() {
             : routeTitle(navAliasRoute[route] ?? route);
 
   // 入门清单放在侧栏底部（参照 Cursor 的 Getting Started 卡片）：平时收成一张进度卡，点开在上方展开清单。
-  const setupCard = setupOpen && !agentFocusOpen ? (
+  const setupCard = setupOpen && !agentFocusOpen && !agentFocusChecking ? (
           <OnboardingSetup
             focus={agentFocus}
             codexInstalled={overview ? overview.codex_app.status === "found" : null}

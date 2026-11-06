@@ -130,3 +130,37 @@ test("本地已有有效选择时以本地为准，不被设置文件覆盖（#2
   assert.equal(f.store.restoreAgentFocusFromSettings("all"), false);
   assert.equal(model.parseAgentFocus(f.stored()), "codex");
 });
+
+test("启动判定：设置文件里有值就补回、不弹问卷，且在读回之前不先下结论（#2936）", async () => {
+  // 本地存储为空（例如 WebView2 本地存储损坏），设置文件里记着：不弹。
+  const f = harness(null);
+  let settled = false;
+  let release!: (value: string) => void;
+  const pending = f.store.resolveAgentFocusPrompt(() => new Promise<string>((resolve) => { release = resolve; }))
+    .then((ask: boolean) => { settled = true; return ask; });
+  await Promise.resolve();
+  assert.equal(settled, false, "设置没读回来之前不能先判定要弹");
+  release("codex");
+  assert.equal(await pending, false);
+  assert.equal(model.parseAgentFocus(f.stored()), "codex");
+
+  // 本地已有有效选择：不读设置文件，直接不弹。
+  const g = harness(model.serializeAgentFocus("enhance"));
+  let loaded = false;
+  assert.equal(await g.store.resolveAgentFocusPrompt(async () => { loaded = true; return "all"; }), false);
+  assert.equal(loaded, false);
+  assert.equal(model.parseAgentFocus(g.stored()), "enhance");
+});
+
+test("启动判定：两边都没有、或设置文件读不到时才弹问卷（#2936）", async () => {
+  const f = harness(null);
+  assert.equal(await f.store.resolveAgentFocusPrompt(async () => ""), true);
+  const g = harness(null);
+  assert.equal(await g.store.resolveAgentFocusPrompt(async () => { throw new Error("load failed"); }), true);
+  const h = harness(null);
+  assert.equal(await h.store.resolveAgentFocusPrompt(async () => "bogus"), true);
+  // 预览模式不弹，也不读设置。
+  const p = harness(null);
+  p.window.location.search = "?previewRoute=home";
+  assert.equal(await p.store.resolveAgentFocusPrompt(async () => { throw new Error("不该读"); }), false);
+});

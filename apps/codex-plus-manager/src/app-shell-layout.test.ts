@@ -539,7 +539,7 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
   // 使用模式问卷先弹，答完才进引导。
   assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} onCancel=\{cancelAgentFocus\} \/> : null\}/);
   assert.match(app, /\{tourOpen && !agentFocusOpen \? <OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/> : null\}/);
-  assert.match(app, /setupOpen && !agentFocusOpen \? \(\s*<OnboardingSetup/);
+  assert.match(app, /setupOpen && !agentFocusOpen && !agentFocusChecking \? \(\s*<OnboardingSetup/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
   assert.match(functionSource("initialSetupOpen"), /has\("previewRoute"\)/);
   assert.match(functionSource("initialSetupOpen"), /shouldShowSetup\(/);
