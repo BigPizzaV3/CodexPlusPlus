@@ -927,3 +927,62 @@ fn kimi_builtin_metadata_disables_search_tool() {
         serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
     assert_eq!(catalog["models"][0]["supports_search_tool"], false);
 }
+
+#[test]
+fn deepseek_metadata_carries_its_own_instructions_template() {
+    // 第三方模型克隆 bundled 模板首条（gpt-5.5）补齐字段；DeepSeek 条目若不带
+    // model_messages.instructions_template，就会继承 gpt-5.5 的提示词。那份提示词
+    // 没有 commentary / final 通道规则，模型会把"我接下来要做 X"当成一轮的结束：
+    // Codex 只在回复带工具调用时才继续下一轮，于是任务在每段说明后中断。
+    // DeepSeek 官方 setup 脚本的提示词写明了两通道规则，这里必须随条目下发。
+    for slug in [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+        "deepseek-flash",
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-pro-0813",
+        "deepseek-v4-flash-vision",
+        "deepseek-v4-flash-vision-exp",
+    ] {
+        let metadata =
+            builtin_model_metadata(slug).unwrap_or_else(|| panic!("{slug} 应有内置元数据"));
+        let template = metadata
+            .entry
+            .get("model_messages")
+            .and_then(|messages| messages.get("instructions_template"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| {
+                panic!("{slug} 必须自带 instructions_template，不能继承 gpt-5.5 的")
+            });
+        assert!(
+            template.contains("`commentary` channel") && template.contains("`final` channel"),
+            "{slug} 的提示词缺少 commentary/final 两通道规则"
+        );
+        assert!(
+            template.contains("end your turn by sending a final message"),
+            "{slug} 的提示词没有说明 commentary 不算结束本轮"
+        );
+        // 官方文案里的弯引号（’ “ ”）按 UTF-8 写入；曾被按 Latin-1 误解码成 â 乱码。
+        assert!(
+            !template.contains('\u{e2}') && template.contains("user’s request"),
+            "{slug} 的提示词含编码乱码"
+        );
+        // base_instructions 有值时生成链不会从 instructions_template 镜像
+        // （model_suffix.rs 只在它缺失时补），所以必须由条目自己给出，
+        // 否则 codex 读到的仍是克隆来的 gpt-5.5 文案。
+        let base = metadata
+            .entry
+            .get("base_instructions")
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("{slug} 必须自带 base_instructions"));
+        assert_eq!(
+            base, template,
+            "{slug} 的 base_instructions 必须与 instructions_template 一致"
+        );
+        assert!(
+            base.contains("end your turn by sending a final message"),
+            "{slug} 的 base_instructions 仍是旧文案，codex 实际读的是它"
+        );
+    }
+}
