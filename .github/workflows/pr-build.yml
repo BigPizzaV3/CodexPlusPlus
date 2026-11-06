@@ -38,6 +38,8 @@ jobs:
 
       - name: Wallpaper pixels, native boundaries and lifecycle
         shell: pwsh
+        env:
+          CODEX_OVERLAY_TEST_OUTPUT: ${{ runner.temp }}/image-overlay-evidence
         run: >-
           node --test --test-concurrency=1
           scripts/test-image-overlay.cjs
@@ -46,6 +48,14 @@ jobs:
           scripts/test-image-composite.cjs
           scripts/test-image-interaction-surfaces.cjs
           scripts/test-image-viewer-surfaces.cjs
+
+      - name: Upload wallpaper comparison evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-overlay-failure
+          path: ${{ runner.temp }}/image-overlay-evidence
+          if-no-files-found: ignore
 
   windows-artifacts:
     name: Windows artifacts

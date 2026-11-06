@@ -71,6 +71,7 @@ async function main() {
   const gif = await bitmap({r:30,g:180,b:60,alpha:1},80,80,"gif");
   const browser = await chromium.launch({channel:process.env.CODEX_TEST_BROWSER || "msedge",
     executablePath:process.env.CODEX_TEST_BROWSER_PATH,headless:true});
+  console.log(JSON.stringify({ browser: browser.version(), platform: process.platform }));
   try {
     for (const theme of ["dark","light"]) for (const width of (process.env.CODEX_COMPOSITE_FITS_ONLY?[]:[480,1088])) for (const zoom of [.8,1,1.25]) {
       const page = await browser.newPage({viewport:{width,height:900}});
@@ -86,13 +87,28 @@ async function main() {
       const mediaBoxes = await page.evaluate(() => [...document.querySelectorAll("img,video,canvas,[data-browser-sidebar-webview]")]
         .map(node=>{const r=node.getBoundingClientRect();return {l:r.left-1,t:r.top-1,r:r.right+1,b:r.bottom+1};}));
       let ordinary = 0, mismatch = 0, maxError = 0;
+      const differences = [];
       for(let y=0;y<actual.height;y++)for(let x=0;x<actual.width;x++){
         if(mediaBoxes.some(r=>x>=r.l&&x<=r.r&&y>=r.t&&y<=r.b))continue;
         const offset=(y*actual.width+x)*4;
         ordinary++;
         const error=Math.max(...[0,1,2].map(c=>Math.abs(actual.data[offset+c]-baseline.data[offset+c])));
         maxError=Math.max(maxError,error);
-        if(error>1)mismatch++;
+        if(error>1){
+          mismatch++;
+          if(differences.length<24)differences.push({x,y,actual:pixel(actual,x,y),expected:pixel(baseline,x,y),native:pixel(native,x,y)});
+        }
+      }
+      if(mismatch){
+        const elements=await page.evaluate(points=>points.map(({x,y})=>({x,y,elements:document.elementsFromPoint(x,y)
+          .filter(n=>!n.closest('[data-codex-plus-ext]')).slice(0,4).map(n=>({tag:n.tagName,id:n.id,class:n.className}))})),differences);
+        console.log(JSON.stringify({theme,width,zoom,mismatch,maxError,differences,elements}));
+        if(out){
+          fs.mkdirSync(out,{recursive:true});
+          for(const [name,frame] of Object.entries({native,baseline,actual}))
+            await sharp(frame.data,{raw:{width:frame.width,height:frame.height,channels:4}}).png().toFile(path.join(out,`failure-${theme}-${width}-${zoom}-${name}.png`));
+          fs.writeFileSync(path.join(out,"failure.json"),JSON.stringify({browser:browser.version(),theme,width,zoom,mismatch,maxError,differences,elements},null,2));
+        }
       }
       assert.equal(mismatch,0,`${theme}/${width}/${zoom}: ordinary full-frame mismatches=${mismatch}, max=${maxError}`);
       const remove=await at(page,"#remove");
