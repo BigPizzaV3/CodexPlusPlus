@@ -12,9 +12,11 @@ accepts CODEX_TEST_BROWSER_PATH or CODEX_TEST_BROWSER (default: msedge).
   composition, frozen-JavaScript scrolling and native view-transition snapshots.
 - node scripts/test-image-interaction-surfaces.cjs: shared request/approval cards,
   legacy shells, rails, tips and progress capsules in footer/dialog/timeline hosts;
-  late identity, nested backgrounds, transparent variants and reparenting.
+  late ancestor identity, inherited theme variables, nested backgrounds,
+  transparent variants and reparenting.
 - node scripts/test-image-viewer-surfaces.cjs: image-viewer chrome and composer
-  migration, native image pixels, editing/clicking, transforms and viewport resize.
+  migration, native image pixels, editing/clicking, intrinsic editor resize,
+  transition/animation completion, transforms and viewport resize.
 - node scripts/test-image-composite.cjs: whole-frame comparison against the original
   fixed-DIV wallpaper, ordinary iframe/shadow content, video/canvas and resource lifetime.
 - node scripts/test-background-resume.cjs: scan scheduler suspension and coalescing.
@@ -69,3 +71,7 @@ Sidebar comparison embeds the frozen upstream per-row algorithm; ordinary runs
 need no private Git commits. CODEX_OVERLAY_BASELINE optionally selects a local
 revision for comparisons. Cached-backdrop allocation, batched stylesheet commits
 and pending-scan coalescing have explicit work-count assertions.
+
+PR CI runs the six image suites serially on Windows with the runner's Edge.
+Playwright, Sharp and PNGJS are pinned in a temporary directory, outside project
+dependencies. Successful cases also check that overlay teardown releases its observers and attributes.
