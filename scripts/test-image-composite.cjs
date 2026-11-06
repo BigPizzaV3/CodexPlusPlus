@@ -84,6 +84,7 @@ async function main() {
       page.on("pageerror",error => errors.push(error.message));
       await prepare(page,fixture(theme,photo,gif,zoom));
       const native = await snapshot(page);
+      const nativeVideo=await page.$eval("#video", video=>({quality:video.getVideoPlaybackQuality().totalVideoFrames,ready:video.readyState}));
       await reference(page,wall,"stretch",.2);
       const baseline = await snapshot(page);
       await page.$eval("#upstream-reference",node=>node.remove());
@@ -125,6 +126,26 @@ async function main() {
       for(const id of ["#photo","#gif","#canvas","#video","#browser"]){
         const r=await at(page,id);
         if(r.x+r.width/2<width){
+          if(id==="#video"){
+            const center={x:r.x+r.width/2,y:r.y+r.height/2};
+            const actualPixel=pixel(actual,center.x,center.y),nativePixel=pixel(native,center.x,center.y);
+            if(actualPixel.some((value,i)=>Math.abs(value-nativePixel[i])>1)){
+              await page.evaluate(()=>window.__codexPlusImageOverlayCleanup?.(true));
+              const afterCleanup=await snapshot(page);
+              await page.$eval("#video",video=>video.style.transform="translateZ(0)");
+              const compositedNative=await snapshot(page);
+              await configure(page,wall);
+              const compositedActual=await snapshot(page);
+              console.log(JSON.stringify({theme,width,zoom,nativeVideo,center,actualPixel,nativePixel,
+                afterCleanup:pixel(afterCleanup,center.x,center.y),compositedNative:pixel(compositedNative,center.x,center.y),
+                compositedActual:pixel(compositedActual,center.x,center.y)}));
+              if(out){
+                fs.mkdirSync(out,{recursive:true});
+                for(const [name,frame] of Object.entries({native,actual,afterCleanup,compositedNative,compositedActual}))
+                  await sharp(frame.data,{raw:{width:frame.width,height:frame.height,channels:4}}).png().toFile(path.join(out,`video-${theme}-${width}-${zoom}-${name}.png`));
+              }
+            }
+          }
           assertNear(pixel(actual,r.x+r.width/2,r.y+r.height/2),pixel(native,r.x+r.width/2,r.y+r.height/2),id);
         }
       }
