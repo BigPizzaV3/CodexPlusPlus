@@ -16,7 +16,7 @@ const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
 });
 const preview = (token = "snapshot-1"): GatewayDisconnectPreview => ({
   agent: "opencode", previewToken: token, canDisconnect: true, warnings: ["保留接入后修改的字段"],
-  files: [{ path: "/test/opencode.jsonc", kind: "modify", diff: "-  \"key\": \"[hidden]\"\n+  // 用户注释", redacted: true }],
+  files: [{ path: "/test/opencode.jsonc", kind: "modify", diff: "-  \"apiKey\": \"sk-old-secret\"\n+  // 用户注释" }],
 });
 
 test("无请求只表示待验证；配置、helper、上游失败分别显示且保留旧drift兼容", () => {
@@ -183,7 +183,7 @@ async function ready(dialog: ReturnType<typeof harness>, value = preview()) {
   return dialog.render();
 }
 
-test("断开前等待预览；保留字段警告、文件diff与脱敏状态可读", async () => {
+test("断开前等待预览；保留字段警告、文件diff按原文可读", async () => {
   const dialog = harness();
   let tree = dialog.render();
   assert.equal(button(tree, "断开并还原").props.disabled, true);
@@ -193,8 +193,7 @@ test("断开前等待预览；保留字段警告、文件diff与脱敏状态可�
   assert.match(text(tree), /OpenCode 将恢复接入前的设置，以下为要改回的项/);
   assert.match(text(tree), /保留接入后修改的字段/);
   assert.match(text(tree), /\/test\/opencode.jsonc/);
-  assert.match(text(tree), /敏感值已隐藏/);
-  assert.match(text(tree), /\[hidden\]/);
+  assert.match(text(tree), /sk-old-secret/);
   assert.match(text(tree), /用户注释/);
   assert.equal(elements(tree).find((element) => element.props.role === "dialog")?.props["aria-modal"], "true");
 });

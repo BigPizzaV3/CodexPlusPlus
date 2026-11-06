@@ -184,7 +184,6 @@ export type GatewayDisconnectFile = {
   path: string;
   kind: "modify" | "remove" | "create";
   diff: string;
-  redacted: boolean;
 };
 
 export type GatewayDisconnectPreview = {

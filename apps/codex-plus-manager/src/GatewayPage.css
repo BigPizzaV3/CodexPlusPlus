@@ -4196,15 +4196,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   color: var(--gw-mute);
 }
 
-.gw-portal .gw-disconnect-redacted {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0 0 8px;
-  color: var(--gw-mute);
-  font-size: 11px;
-}
-
 .gw-portal .gw-disconnect-diff {
   max-height: 340px;
   margin: 0;

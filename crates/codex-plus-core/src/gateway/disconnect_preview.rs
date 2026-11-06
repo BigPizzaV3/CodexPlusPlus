@@ -1,14 +1,13 @@
 //! 断开前的只读预览。通用 Agent 直接计算还原结果，原生 Agent 只在私有副本里预演。
-//! 返回给界面的 diff 只含安全字段名，不包含配置值、注释或认证内容。
+//! 返回给界面的 diff 是配置原文的逐行差异（含配置值与注释），由用户确认后才执行。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::Serialize;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::agents::{self, files::AgentStash};
@@ -20,7 +19,12 @@ use crate::tools::ToolId;
 use crate::tools::claude::ClaudeContext;
 
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_DIFF_FIELDS: usize = 500;
+/// 参与逐行 diff 的单侧最大行数；超过则不做 LCS，按整体删除 + 新增展示。
+const MAX_DIFF_SOURCE_LINES: usize = 800;
+/// diff 输出的最大行数；超出截断。
+const MAX_DIFF_OUTPUT_LINES: usize = 800;
+/// 每处变更前后保留的上下文行数。
+const DIFF_CONTEXT_LINES: usize = 2;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +55,6 @@ pub struct DisconnectFile {
     pub path: String,
     pub kind: DisconnectFileKind,
     pub diff: String,
-    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -180,7 +183,7 @@ pub fn preview(
         preview_token: String::new(),
         files: Vec::new(),
         warnings: vec![
-            "预览仅展示字段变更；所有配置值、注释和认证内容均已隐藏。".into(),
+            "预览展示配置文件原文差异，密钥等敏感值也一并可见。".into(),
             "断开还会更新 Codex++ 的绑定、供应商记录与恢复存档，这些内部状态不在配置 diff 中。"
                 .into(),
         ],
@@ -514,46 +517,15 @@ fn add_file(
             (Some(_), None) => DisconnectFileKind::Remove,
             _ => DisconnectFileKind::Modify,
         },
-        diff: field_diff(path, before, after),
-        redacted: true,
+        diff: text_diff(before, after),
     });
 }
 
-fn parsed_config(path: &Path, text: Option<&str>) -> Option<Value> {
-    let Some(text) = text else {
-        return Some(Value::Object(Default::default()));
-    };
-    if text.trim().is_empty() {
-        return Some(Value::Object(Default::default()));
-    }
-    if path.file_name().is_some_and(|name| name == "auth.json") {
-        return None;
-    }
-    agents::files::parse_jsonc(text).ok().or_else(|| {
-        toml::from_str::<toml::Value>(text)
-            .ok()
-            .and_then(|value| serde_json::to_value(value).ok())
-    })
-}
-
-fn field_diff(path: &Path, before: Option<&str>, after: Option<&str>) -> String {
-    let mut removed = Vec::new();
-    let mut added = Vec::new();
-    match (parsed_config(path, before), parsed_config(path, after)) {
-        (Some(old), Some(new)) if old != new => {
-            changed_fields("$", Some(&old), Some(&new), &mut removed, &mut added);
-        }
-        _ => {
-            if before.is_some() {
-                removed.push("[当前文件内容与格式已隐藏]".into());
-            }
-            if after.is_some() {
-                added.push("[还原文件内容与格式已隐藏]".into());
-            }
-        }
-    }
+/// 原文逐行 diff：有差异的行按原文展示（含配置值），每处变更保留前后
+/// `DIFF_CONTEXT_LINES` 行上下文，不相邻的变更块之间用 `@@` 分隔。
+fn text_diff(before: Option<&str>, after: Option<&str>) -> String {
     let mut diff = format!(
-        "--- {}\n+++ {}\n@@ -1,{} +1,{} @@\n",
+        "--- {}\n+++ {}\n",
         if before.is_some() {
             "current"
         } else {
@@ -564,144 +536,106 @@ fn field_diff(path: &Path, before: Option<&str>, after: Option<&str>) -> String 
         } else {
             "/dev/null"
         },
-        removed.len(),
-        added.len()
     );
-    for line in removed {
-        diff.push('-');
-        diff.push_str(&line);
-        diff.push('\n');
+    let old: Vec<&str> = before.map(|text| text.lines().collect()).unwrap_or_default();
+    let new: Vec<&str> = after.map(|text| text.lines().collect()).unwrap_or_default();
+    let ops = diff_ops(&old, &new);
+    if ops.iter().all(|op| matches!(op, DiffOp::Keep(_))) {
+        // 文本不同但行序列相同：只差在末尾换行。
+        diff.push_str("(仅末尾换行不同)\n");
+        return diff;
     }
-    for line in added {
-        diff.push('+');
-        diff.push_str(&line);
-        diff.push('\n');
-    }
+    diff.push_str(&render_diff(&ops));
     diff
 }
 
-fn changed_fields(
-    path: &str,
-    before: Option<&Value>,
-    after: Option<&Value>,
-    removed: &mut Vec<String>,
-    added: &mut Vec<String>,
-) {
-    if before == after || removed.len().max(added.len()) >= MAX_DIFF_FIELDS {
-        return;
-    }
-    if let (Some(Value::Object(old)), Some(Value::Object(new))) = (before, after) {
-        let keys: BTreeSet<_> = old.keys().chain(new.keys()).collect();
-        for (index, key) in keys.into_iter().enumerate() {
-            let name = safe_field_name(key)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("[field{}]", index + 1));
-            changed_fields(
-                &format!("{path}.{name}"),
-                old.get(key),
-                new.get(key),
-                removed,
-                added,
-            );
-        }
-        return;
-    }
-    if before.is_some() {
-        removed.push(format!("{path} = [当前值已隐藏]"));
-    }
-    if after.is_some() {
-        added.push(format!("{path} = [恢复值已隐藏]"));
-    }
+enum DiffOp<'a> {
+    Keep(&'a str),
+    Remove(&'a str),
+    Add(&'a str),
 }
 
-fn safe_field_name(key: &str) -> Option<&str> {
-    const SAFE: &[&str] = &[
-        "env",
-        "model",
-        "models",
-        "provider",
-        "providers",
-        "model_provider",
-        "model_providers",
-        "default",
-        "defaultModel",
-        "default_model",
-        "baseURL",
-        "baseUrl",
-        "base_url",
-        "apiBase",
-        "apiBaseUrl",
-        "apiKey",
-        "api_key",
-        "api_backend",
-        "apiProvider",
-        "apiModelId",
-        "api_key_helper",
-        "apiKeyHelper",
-        "auth",
-        "token",
-        "apiToken",
-        "name",
-        "id",
-        "options",
-        "openai",
-        "anthropic",
-        "codexplus",
-        "codex-plus-gateway",
-        "custom",
-        "config",
-        "settings",
-        "endpoints",
-        "models_base_url",
-        "wire_api",
-        "requires_openai_auth",
-        "experimental_bearer_token",
-        "http_headers",
-        "env_http_headers",
-        "openai_base_url",
-        "model_catalog_json",
-        "model_reasoning_effort",
-        "context_window",
-        "contextWindow",
-        "model_context_window",
-        "model_auto_compact_token_limit",
-        "max_tokens",
-        "maxTokens",
-        "temperature",
-        "stream",
-        "headers",
-        "Authorization",
-        "authorization",
-        "timeout",
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_MODEL",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_FABLE_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "ANTHROPIC_SMALL_FAST_MODEL",
-        "OPENAI_BASE_URL",
-        "OPENAI_API_KEY",
-        "OPENAI_MODEL",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "GEMINI_API_BASE_URL",
-        "selectedModel",
-        "selectedProvider",
-        "currentProvider",
-        "currentModel",
-        "modelId",
-        "providerId",
-        "reasoningEffort",
-        "reasoning_effort",
-        "features",
-        "ui",
-        "theme",
-        "yolo",
-    ];
-    SAFE.contains(&key).then_some(key)
+/// LCS 逐行对齐；任一侧超 `MAX_DIFF_SOURCE_LINES` 时退化为整体替换，避免平方级内存。
+fn diff_ops<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<DiffOp<'a>> {
+    if old.len() > MAX_DIFF_SOURCE_LINES || new.len() > MAX_DIFF_SOURCE_LINES {
+        return old
+            .iter()
+            .map(|line| DiffOp::Remove(line))
+            .chain(new.iter().map(|line| DiffOp::Add(line)))
+            .collect();
+    }
+    let width = new.len() + 1;
+    let mut table = vec![0u32; (old.len() + 1) * width];
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            table[i * width + j] = if old[i] == new[j] {
+                table[(i + 1) * width + j + 1] + 1
+            } else {
+                table[(i + 1) * width + j].max(table[i * width + j + 1])
+            };
+        }
+    }
+    let mut ops = Vec::with_capacity(old.len() + new.len());
+    let (mut i, mut j) = (0, 0);
+    while i < old.len() && j < new.len() {
+        if old[i] == new[j] {
+            ops.push(DiffOp::Keep(old[i]));
+            i += 1;
+            j += 1;
+        } else if table[(i + 1) * width + j] >= table[i * width + j + 1] {
+            ops.push(DiffOp::Remove(old[i]));
+            i += 1;
+        } else {
+            ops.push(DiffOp::Add(new[j]));
+            j += 1;
+        }
+    }
+    ops.extend(old[i..].iter().map(|line| DiffOp::Remove(line)));
+    ops.extend(new[j..].iter().map(|line| DiffOp::Add(line)));
+    ops
+}
+
+fn render_diff(ops: &[DiffOp]) -> String {
+    // 标出要展示的行：每个变更行加上前后上下文行。
+    let mut shown = vec![false; ops.len()];
+    for (index, op) in ops.iter().enumerate() {
+        if matches!(op, DiffOp::Keep(_)) {
+            continue;
+        }
+        let start = index.saturating_sub(DIFF_CONTEXT_LINES);
+        let end = (index + DIFF_CONTEXT_LINES).min(ops.len() - 1);
+        for mark in &mut shown[start..=end] {
+            *mark = true;
+        }
+    }
+    let mut out = String::new();
+    let mut emitted = 0usize;
+    let mut hidden = false;
+    for (index, op) in ops.iter().enumerate() {
+        if !shown[index] {
+            hidden = true;
+            continue;
+        }
+        if hidden {
+            out.push_str("@@\n");
+            emitted += 1;
+            hidden = false;
+        }
+        let (prefix, line) = match op {
+            DiffOp::Keep(line) => (" ", *line),
+            DiffOp::Remove(line) => ("-", *line),
+            DiffOp::Add(line) => ("+", *line),
+        };
+        out.push_str(prefix);
+        out.push_str(line);
+        out.push('\n');
+        emitted += 1;
+        if emitted >= MAX_DIFF_OUTPUT_LINES {
+            out.push_str("… 差异过长，已截断\n");
+            break;
+        }
+    }
+    out
 }
 
 struct Sandbox {
@@ -788,7 +722,7 @@ mod tests {
     use crate::gateway::agents::files::{AgentStash, FileSet};
     use crate::gateway::apply::{ProviderInput, create_provider, enable_binding};
     use crate::settings::{RelayMode, RelayProtocol};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     struct Fixture {
         temp: tempfile::TempDir,
@@ -899,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_preview_matches_restore_without_writing_and_hides_all_values() {
+    fn generic_preview_matches_restore_without_writing_and_shows_all_values() {
         let fixture = fixture();
         let before = "{\n // fake-comment-secret\n \"model\": \"mine\",\n \"apiKey\": \"fake-original-secret\",\n \"baseURL\": \"https://user:fake-url-secret@example.test/v1?token=fake-query-secret\",\n \"fake-field-secret\": \"fake-unknown-secret\"\n}\n";
         let path = generic(&fixture, Some(before));
@@ -913,10 +847,10 @@ mod tests {
         assert!(result.can_disconnect);
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files[0].kind, DisconnectFileKind::Modify);
-        assert!(result.files[0].redacted);
         assert_eq!(snapshot(fixture.temp.path()), snapshot_before);
         let encoded = serde_json::to_string(&result).unwrap();
-        for secret in [
+        // 文件原文差异：当前值与还原值（含注释）都展示。
+        for shown in [
             "fake-comment-secret",
             "fake-original-secret",
             "fake-url-secret",
@@ -924,10 +858,11 @@ mod tests {
             "fake-field-secret",
             "fake-unknown-secret",
             "fake-client-secret",
-            "fake-provider-secret",
         ] {
-            assert!(!encoded.contains(secret));
+            assert!(encoded.contains(shown), "diff 应展示 {shown}");
         }
+        // 网关内部的供应商密钥不写入 Agent 配置，不属于文件 diff。
+        assert!(!encoded.contains("fake-provider-secret"));
         assert!(!encoded.contains("fingerprint"));
         assert!(!encoded.contains(&result.fingerprint));
         let current = fs::read_to_string(&path).unwrap();
@@ -941,7 +876,7 @@ mod tests {
         assert_eq!(actual, before);
         assert_eq!(
             result.files[0].diff,
-            field_diff(&path, Some(&current), Some(&actual))
+            text_diff(Some(&current), Some(&actual))
         );
     }
 
@@ -958,7 +893,7 @@ mod tests {
         let second = preview(&fixture.ctx, &BackendSettings::default(), &agent).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
         assert_eq!(second.files[0].kind, DisconnectFileKind::Modify);
-        assert!(!second.files[0].diff.contains("fake-new-comment"));
+        assert!(second.files[0].diff.contains("fake-new-comment"));
     }
 
     #[test]
@@ -1036,7 +971,7 @@ mod tests {
             assert!(result.can_disconnect, "{:?}", result.warnings);
             assert_eq!(snapshot(fixture.temp.path()), before);
             assert!(
-                !serde_json::to_string(&result)
+                serde_json::to_string(&result)
                     .unwrap()
                     .contains("fake-native-secret")
             );
@@ -1045,7 +980,7 @@ mod tests {
             assert_eq!(result.files.len(), 1);
             assert_eq!(
                 result.files[0].diff,
-                field_diff(&path, Some(&current), actual.as_deref())
+                text_diff(Some(&current), actual.as_deref())
             );
         }
     }
@@ -1200,8 +1135,8 @@ mod tests {
         assert!(result.can_disconnect, "{:?}", result.warnings);
         assert_eq!(snapshot(fixture.temp.path()), before);
         let encoded = serde_json::to_string(&result).unwrap();
-        assert!(!encoded.contains("fake-refreshed-token"));
-        assert!(!encoded.contains("fake-direct-secret"));
+        assert!(encoded.contains("fake-refreshed-token"));
+        assert!(encoded.contains("fake-direct-secret"));
         apply::disable_binding(ctx, &settings, &ToolId::Codex).unwrap();
         for (path, expected) in projected {
             assert_eq!(restore::read_optional(&path).unwrap(), expected);
@@ -1289,7 +1224,7 @@ mod tests {
         assert!(result.can_disconnect, "{:?}", result.warnings);
         assert_eq!(snapshot(fixture.temp.path()), before);
         assert!(
-            !serde_json::to_string(&result)
+            serde_json::to_string(&result)
                 .unwrap()
                 .contains("fake-new-loaned-token")
         );
@@ -1352,28 +1287,39 @@ mod tests {
     }
 
     #[test]
-    fn field_diff_never_contains_unknown_field_names_or_values() {
-        let diff = field_diff(
-            Path::new("config.json"),
+    fn text_diff_shows_full_lines_including_values() {
+        let diff = text_diff(
             Some(
-                r#"{"fake-secret-field":"fake-secret","env":{"OPENAI_API_KEY":"fake-old-key"},"base_url":"https://user:password@example.test?token=query-secret"}"#,
+                "model = \"old\"\napi_key = \"fake-old-key\"\nkeep = 1\n",
             ),
             Some(
-                r#"{"fake-new-secret-field":"fake-new-secret","env":{"OPENAI_API_KEY":"fake-new-key"},"base_url":"https://user:new-password@example.test?token=another-secret"}"#,
+                "model = \"new\"\napi_key = \"fake-new-key\"\nkeep = 1\n",
             ),
         );
-        for secret in [
-            "fake-",
-            "user:",
-            "password",
-            "query-secret",
-            "another-secret",
-        ] {
-            assert!(!diff.contains(secret));
-        }
-        assert!(diff.contains("OPENAI_API_KEY"));
-        assert!(diff.contains("base_url"));
-        assert!(diff.contains("[field"));
+        assert!(diff.contains("--- current\n+++ restored\n"));
+        assert!(diff.contains("-model = \"old\""));
+        assert!(diff.contains("+model = \"new\""));
+        assert!(diff.contains("-api_key = \"fake-old-key\""));
+        assert!(diff.contains("+api_key = \"fake-new-key\""));
+        assert!(diff.contains(" keep = 1"));
+        // 相距超过上下文的变更分块展示，中间用 @@ 分隔。
+        let spaced = text_diff(
+            Some("a = \"old\"\nb = 1\nc = 1\nd = 1\ne = 1\nf = 1\ng = 1\nz = \"old\"\n"),
+            Some("a = \"new\"\nb = 1\nc = 1\nd = 1\ne = 1\nf = 1\ng = 1\nz = \"new\"\n"),
+        );
+        assert!(spaced.contains("@@\n"));
+        assert!(!spaced.contains(" d = 1"));
+        // 整文件新增 / 删除按 /dev/null 头展示。
+        assert_eq!(
+            text_diff(None, Some("a = 1\n")),
+            "--- /dev/null\n+++ restored\n+a = 1\n"
+        );
+        assert_eq!(
+            text_diff(Some("a = 1\n"), None),
+            "--- current\n+++ /dev/null\n-a = 1\n"
+        );
+        // 只差末尾换行时给出说明而不是空 diff。
+        assert!(text_diff(Some("a = 1"), Some("a = 1\n")).contains("仅末尾换行"));
     }
 
     #[test]
