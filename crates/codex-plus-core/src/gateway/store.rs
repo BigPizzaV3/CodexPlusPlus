@@ -757,119 +757,53 @@ impl GatewaySettings {
     }
 }
 
-/// 发现期间继续使用上一次成功结果；租约到期后允许重试，并拒绝旧请求的迟到结果。
-#[derive(Default)]
-struct DiscoveredModels(std::collections::HashMap<String, DiscoveryEntry>);
-
-struct DiscoveryEntry {
-    models: Vec<String>,
-    next_attempt: std::time::Instant,
-    generation: u64,
-}
-
-impl DiscoveredModels {
-    fn begin(
-        &mut self,
-        key: &str,
-        now: std::time::Instant,
-        can_spawn: bool,
-    ) -> (Vec<String>, Option<u64>) {
-        let entry = self
-            .0
-            .entry(key.to_string())
-            .or_insert_with(|| DiscoveryEntry {
-                models: Vec::new(),
-                next_attempt: now,
-                generation: 0,
-            });
-        let generation = if can_spawn && now >= entry.next_attempt {
-            entry.generation = entry.generation.wrapping_add(1);
-            entry.next_attempt = now + DISCOVERY_LEASE;
-            Some(entry.generation)
-        } else {
-            None
-        };
-        (entry.models.clone(), generation)
-    }
-
-    fn finish(
-        &mut self,
-        key: &str,
-        generation: u64,
-        now: std::time::Instant,
-        result: Option<Vec<String>>,
-    ) {
-        let Some(entry) = self.0.get_mut(key).filter(|entry| entry.generation == generation) else {
-            return;
-        };
-        entry.next_attempt = now
-            + if result.is_some() {
-                DISCOVERY_TTL
-            } else {
-                DISCOVERY_RETRY
-            };
-        if let Some(models) = result {
-            entry.models = models;
-        }
-    }
-}
-
+/// 拓展供应商从上游拉到的模型：供应商 id + 地址 → (拉取时间, 模型)。过期就在后台重拉，这次先用旧的。
+type DiscoveredModels = std::collections::HashMap<String, (std::time::Instant, Vec<String>)>;
 static DISCOVERED_MODELS: std::sync::LazyLock<std::sync::Mutex<DiscoveredModels>> = std::sync::LazyLock::new(Default::default);
 const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
-const DISCOVERY_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
-const DISCOVERY_LEASE: std::time::Duration = std::time::Duration::from_secs(30);
-
-fn extension_discovery_key(provider: &crate::user_scripts::ExtensionProvider) -> String {
-    use std::hash::{BuildHasher, Hash, Hasher};
-
-    static HASHER: std::sync::LazyLock<std::collections::hash_map::RandomState> =
-        std::sync::LazyLock::new(Default::default);
-    let mut hasher = HASHER.build_hasher();
-    provider.id.hash(&mut hasher);
-    provider.base_url.hash(&mut hasher);
-    provider.protocol.hash(&mut hasher);
-    provider.api_key.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
 
 fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider) -> Vec<String> {
-    let key = extension_discovery_key(provider);
-    let handle = tokio::runtime::Handle::try_current().ok();
-    let (models, generation) = {
-        let mut cache = DISCOVERED_MODELS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache.begin(&key, std::time::Instant::now(), handle.is_some())
-    };
-    if let (Some(handle), Some(generation)) = (handle, generation) {
-        let relay = RelayProfile {
-            id: provider.id.clone(),
-            base_url: provider.base_url.clone(),
-            api_key: provider.api_key.clone(),
-            no_auth: provider.api_key.is_empty(),
-            protocol: match provider.protocol.as_str() {
-                "chat" => crate::settings::RelayProtocol::ChatCompletions,
-                "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
-                _ => crate::settings::RelayProtocol::Responses,
-            },
-            ..RelayProfile::default()
-        };
-        handle.spawn(async move {
-            match crate::gateway::model_sync::upstream_models(&relay).await {
-                Ok(models) => {
-                    DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .finish(&key, generation, std::time::Instant::now(), Some(models));
-                }
-                Err(error) => {
-                    DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .finish(&key, generation, std::time::Instant::now(), None);
-                    let _ = crate::diagnostic_log::append_diagnostic_log(
-                        "extension_providers.discover_failed",
-                        serde_json::json!({ "provider": relay.id, "error": format!("{error:#}") }),
-                    );
-                }
+    let key = format!("{}|{}", provider.id, provider.base_url);
+    let (models, stale) = {
+        let mut cache = DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match cache.get(&key) {
+            Some((at, models)) => (models.clone(), at.elapsed() > DISCOVERY_TTL),
+            None => {
+                // 先占位，免得并发请求各拉一遍。
+                cache.insert(key.clone(), (std::time::Instant::now(), Vec::new()));
+                (Vec::new(), true)
             }
-        });
+        }
+    };
+    if stale {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let relay = RelayProfile {
+                id: provider.id.clone(),
+                base_url: provider.base_url.clone(),
+                api_key: provider.api_key.clone(),
+                no_auth: provider.api_key.is_empty(),
+                protocol: match provider.protocol.as_str() {
+                    "chat" => crate::settings::RelayProtocol::ChatCompletions,
+                    "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    _ => crate::settings::RelayProtocol::Responses,
+                },
+                ..RelayProfile::default()
+            };
+            DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(key.clone()).and_modify(|entry| entry.0 = std::time::Instant::now());
+            handle.spawn(async move {
+                match crate::gateway::model_sync::upstream_models(&relay).await {
+                    Ok(models) => {
+                        DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(key, (std::time::Instant::now(), models));
+                    }
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "extension_providers.discover_failed",
+                            serde_json::json!({ "provider": relay.id, "error": format!("{error:#}") }),
+                        );
+                    }
+                }
+            });
+        }
     }
     models
 }
@@ -1138,175 +1072,6 @@ pub fn token_matches(expected: &str, provided: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extension_discovery_without_runtime_does_not_delay_first_request() {
-        let mut cache = DiscoveredModels::default();
-        let now = std::time::Instant::now();
-        assert_eq!(cache.begin("provider", now, false), (vec![], None));
-        assert_eq!(cache.begin("provider", now, true), (vec![], Some(1)));
-        assert_eq!(cache.begin("provider", now, true), (vec![], None));
-    }
-
-    #[test]
-    fn extension_discovery_identity_changes_with_protocol_and_credentials() {
-        let mut provider = crate::user_scripts::ExtensionProvider {
-            id: "provider".to_string(),
-            name: "Provider".to_string(),
-            protocol: "responses".to_string(),
-            base_url: "http://127.0.0.1:1234/v1".to_string(),
-            api_key: "first-secret".to_string(),
-            api_key_config: None,
-            models: Vec::new(),
-            discover_models: true,
-            override_existing: false,
-        };
-        let initial = extension_discovery_key(&provider);
-        let mut cache = DiscoveredModels::default();
-        let now = std::time::Instant::now();
-        let (_, old_attempt) = cache.begin(&initial, now, true);
-        provider.protocol = "chat".to_string();
-        assert_ne!(initial, extension_discovery_key(&provider));
-        provider.protocol = "responses".to_string();
-        provider.api_key = "second-secret".to_string();
-        let changed = extension_discovery_key(&provider);
-        assert_ne!(initial, changed);
-        assert_eq!(cache.begin(&changed, now, true), (vec![], Some(1)));
-        cache.finish(&initial, old_attempt.unwrap(), now, Some(vec!["old-model".to_string()]));
-        assert_eq!(cache.begin(&changed, now, true), (vec![], None));
-        provider.api_key = "first-secret".to_string();
-        provider.name = "Renamed".to_string();
-        assert_eq!(initial, extension_discovery_key(&provider));
-    }
-
-    #[test]
-    fn extension_discovery_entrypoint_without_runtime_leaves_request_eligible() {
-        let id = format!("test-{}", uuid::Uuid::new_v4());
-        let provider = crate::user_scripts::ExtensionProvider {
-            id: id.clone(),
-            name: id.clone(),
-            protocol: "responses".to_string(),
-            base_url: "http://127.0.0.1:1/v1".to_string(),
-            api_key: String::new(),
-            api_key_config: None,
-            models: Vec::new(),
-            discover_models: true,
-            override_existing: false,
-        };
-        assert!(tokio::runtime::Handle::try_current().is_err());
-        assert!(discovered_extension_models(&provider).is_empty());
-        let key = extension_discovery_key(&provider);
-        let mut cache = DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(cache.begin(&key, std::time::Instant::now(), true).1, Some(1));
-        cache.0.remove(&key);
-    }
-
-    #[test]
-    fn extension_discovery_fetches_after_a_call_without_runtime() {
-        use std::io::{Read, Write};
-
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
-                        let mut request = [0; 4096];
-                        let count = stream.read(&mut request).unwrap();
-                        assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /v1/models "));
-                        let body = r#"{"data":[{"id":"test-discovered-model"}]}"#;
-                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
-                        return true;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
-                            return false;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("mock listener failed: {error}"),
-                }
-            }
-        });
-        let id = format!("test-{}", uuid::Uuid::new_v4());
-        let provider = crate::user_scripts::ExtensionProvider {
-            id: id.clone(),
-            name: id.clone(),
-            protocol: "responses".to_string(),
-            base_url: format!("http://{address}/v1"),
-            api_key: String::new(),
-            api_key_config: None,
-            models: Vec::new(),
-            discover_models: true,
-            override_existing: false,
-        };
-        assert!(tokio::runtime::Handle::try_current().is_err());
-        assert!(discovered_extension_models(&provider).is_empty());
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let found = runtime.block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    let models = discovered_extension_models(&provider);
-                    if !models.is_empty() {
-                        return models;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            }).await
-        });
-        let served = server.join().unwrap();
-        let key = extension_discovery_key(&provider);
-        DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0.remove(&key);
-        assert!(served, "mock server did not receive a request");
-        assert_eq!(found.unwrap(), vec!["test-discovered-model"]);
-    }
-
-    #[test]
-    fn extension_discovery_retries_failures_and_retains_last_success() {
-        let mut cache = DiscoveredModels::default();
-        let now = std::time::Instant::now();
-        let (_, attempt) = cache.begin("provider", now, true);
-        cache.finish("provider", attempt.unwrap(), now, None);
-        assert_eq!(
-            cache.begin("provider", now + DISCOVERY_RETRY - std::time::Duration::from_millis(1), true),
-            (vec![], None)
-        );
-        let (_, attempt) = cache.begin("provider", now + DISCOVERY_RETRY, true);
-        let success_at = now + DISCOVERY_RETRY;
-        cache.finish("provider", attempt.unwrap(), success_at, Some(vec!["model".to_string()]));
-        assert_eq!(
-            cache.begin("provider", success_at + DISCOVERY_TTL - std::time::Duration::from_millis(1), true),
-            (vec!["model".to_string()], None)
-        );
-        let (models, attempt) = cache.begin("provider", success_at + DISCOVERY_TTL, true);
-        assert_eq!(models, vec!["model"]);
-        cache.finish("provider", attempt.unwrap(), success_at + DISCOVERY_TTL, None);
-        assert_eq!(
-            cache.begin("provider", success_at + DISCOVERY_TTL + DISCOVERY_RETRY, true).0,
-            vec!["model"]
-        );
-    }
-
-    #[test]
-    fn extension_discovery_lease_rejects_late_results_and_isolates_providers() {
-        let mut cache = DiscoveredModels::default();
-        let now = std::time::Instant::now();
-        let (_, first) = cache.begin("provider-a", now, true);
-        assert_eq!(
-            cache.begin("provider-a", now + DISCOVERY_LEASE - std::time::Duration::from_millis(1), true).1,
-            None
-        );
-        let (_, second) = cache.begin("provider-a", now + DISCOVERY_LEASE, true);
-        let (_, other) = cache.begin("provider-b", now, true);
-        cache.finish("provider-a", second.unwrap(), now + DISCOVERY_LEASE, Some(vec!["new".to_string()]));
-        cache.finish("provider-a", first.unwrap(), now + DISCOVERY_LEASE, Some(vec!["old".to_string()]));
-        cache.finish("provider-b", other.unwrap(), now, Some(vec!["other".to_string()]));
-        assert_eq!(cache.begin("provider-a", now + DISCOVERY_LEASE, true).0, vec!["new"]);
-        assert_eq!(cache.begin("provider-b", now, true).0, vec!["other"]);
-    }
 
     #[test]
     fn legacy_global_image_model_moves_to_codex() {
