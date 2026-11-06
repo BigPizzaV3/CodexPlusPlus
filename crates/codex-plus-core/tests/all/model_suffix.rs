@@ -963,6 +963,11 @@ fn deepseek_metadata_carries_its_own_instructions_template() {
             template.contains("end your turn by sending a final message"),
             "{slug} 的提示词没有说明 commentary 不算结束本轮"
         );
+        // 官方文案里的弯引号（’ “ ”）按 UTF-8 写入；曾被按 Latin-1 误解码成 â 乱码。
+        assert!(
+            !template.contains('\u{e2}') && template.contains("user’s request"),
+            "{slug} 的提示词含编码乱码"
+        );
         // base_instructions 有值时生成链不会从 instructions_template 镜像
         // （model_suffix.rs 只在它缺失时补），所以必须由条目自己给出，
         // 否则 codex 读到的仍是克隆来的 gpt-5.5 文案。
