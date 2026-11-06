@@ -78,6 +78,16 @@ it only for assets/extensions/image-overlay/**, scripts/*image*, or the workflow
 itself; workflow_dispatch remains available for manual verification.
 Playwright, Sharp and PNGJS are pinned in a temporary directory, outside project
 dependencies. Successful cases also check that overlay teardown releases its observers and attributes.
+
+Native annotation attachment pills (`data-composer-attachment-pill`), Sonner
+notification cards (`.codex-toast-area [data-sonner-toast] .alert-root`) and native
+`Tooltip-*` surfaces have patterned wallpaper pixel checks. Opaque tooltip backing
+receives the configured wallpaper strength rather than attenuating an already
+blended underlay. Native alpha backing stays unpainted while tooltip contents stay
+above the wallpaper. The tests also exercise material/theme changes, late semantic
+attributes, generic/native tooltip transitions, notification clicks and icon colors.
+Unrelated extension-owned widgets remain excluded; the usage-statusline's browser
+`title` tooltip is outside the native-surface adaptation.
 CI sets CODEX_TEST_SWIFTSHADER=1 to use a consistent ANGLE compositing backend.
 Pure software rendering changes 12 antialiased SVG edge pixels at zoom 0.8 on
 both the unchanged upstream baseline and this patch. This backend selection keeps

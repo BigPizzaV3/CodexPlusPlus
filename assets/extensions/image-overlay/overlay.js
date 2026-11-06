@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 35 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 36 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -77,7 +77,9 @@
     const footerAttribute = "data-codex-plus-image-footer-gutter";
     const footerSelector = "[data-thread-scroll-footer]";
     // 原生共享卡片没有全部暴露 data 属性（例如旧 optionPicker），保留其外壳组合匹配。
+    const nativeTooltipSelector = '[role="tooltip"]:is([class^="Tooltip-"], [class*=" Tooltip-"])';
     const surfaceSelector = [
+      "[data-composer-attachment-pill]", ".codex-toast-area [data-sonner-toast] .alert-root", nativeTooltipSelector,
       "[data-codex-composer-request-navigation]", "[data-codex-approval-surface]", "[data-composer-rail-item]",
       ".flex.flex-col.overflow-hidden.rounded-3xl.border.bg-surface-elevated-secondary",
       "[data-in-progress-fixed-content] .rounded-3xl.border.bg-surface-elevated-secondary",
@@ -116,6 +118,7 @@
     const nativeRules = `
       [${scopeAttribute}] { isolation:auto!important;z-index:auto!important;will-change:auto!important; }
       [${browserPortalAttribute}] { z-index:${wallpaperLayer + 1}!important; }
+      ${popupPortalSelector}[${browserPortalAttribute}] { z-index:${wallpaperLayer + 2}!important; }
       [${scopeAttribute}^="identity"] { transform:none!important; }
       [${scopeAttribute}="identity-flow"] { position:relative!important; }
       [${containmentAttribute}] { contain:none!important; }
@@ -330,7 +333,8 @@
           return;
         }
       }
-      let browserPortal = node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
+      let browserPortal = node.matches(nativeTooltipSelector) ? node.closest(popupPortalSelector)
+        : node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
       if (node.matches(browserSelector)) {
         for (let parent = node.parentElement; !browserPortal && parent && parent !== root; parent = parent.parentElement) {
           const paint = computed(parent);
@@ -560,16 +564,27 @@
     };
     const isLocalSurface = node => {
       const viewerSurface = isViewerSurface(node);
+      const nativeTooltip = node.matches(nativeTooltipSelector);
       if (!(viewerSurface || node.matches(surfaceSelector)) || owned(node) || inactivePanel(node) ||
-        node.closest(`${editorSelector}, ${pageSelector}`) || node.matches(topControlSelector) ||
-        (!viewerSurface && (node.closest(viewerSelector) || !node.parentElement?.closest(`${footerSelector}, ${topControlSelector}`)))) return false;
-      return hasLocalMaterial(computed(node));
+        node.closest(`${editorSelector}, ${pageSelector}`) || (!nativeTooltip && node.matches(topControlSelector)) ||
+        (!viewerSurface && (node.closest(viewerSelector) || !nativeTooltip &&
+          !node.parentElement?.closest(`${composerSelector}, ${footerSelector}, ${topControlSelector}`)))) return false;
+      // 即使 tooltip 本身半透明，也要保留前景层；只决定是否补画，不让文字落回全屏壁纸下面。
+      return nativeTooltip || hasLocalMaterial(computed(node));
     };
     const addSurface = node => {
       trackLocalSurfaceAncestors(node);
+      // 同一节点可能先是普通 popup，稍后才挂上原生 tooltip 类名；先释放旧 alpha 规则再读材质。
+      if (node.matches(nativeTooltipSelector) && popups.has(node)) removePopup(node, popups.get(node));
       if (!isLocalSurface(node)) {
         const previous = records.get(node);
         if (previous?.localSurface) { removeMedia(node, previous); visit(node); }
+        return;
+      }
+      if (node.matches(nativeTooltipSelector) && !hasLocalMaterial(computed(node))) {
+        const previous = records.get(node);
+        if (previous?.paint) removeMedia(node, previous);
+        add(node, true);
         return;
       }
       add(node, true);
@@ -591,7 +606,10 @@
       for (const node of candidates) {
         // 新发现的透明候选也要登记；后续祖先主题变化才有机会使它获得补画资格。
         if (node.matches(surfaceSelector) || isViewerSurface(node)) trackLocalSurfaceAncestors(node);
-        if (isLocalSurface(node) === !!records.get(node)?.localSurface) continue;
+        const localSurface = isLocalSurface(node);
+        const tooltipMaterialChanged = localSurface && node.matches(nativeTooltipSelector) &&
+          !!records.get(node)?.paint !== hasLocalMaterial(computed(node));
+        if (localSurface === !!records.get(node)?.localSurface && !tooltipMaterialChanged) continue;
         addSurface(node);
         changed = true;
       }
@@ -668,6 +686,10 @@
     };
     const addNativePopup = node => {
       if (owned(node) || node.closest(viewerSelector) || node.closest(pageSelector)) return;
+      // 原生 tooltip 的不透明底色单独补画；仅降低底色 alpha 会把底下已混合的壁纸再次衰减。
+      const tooltip = node.matches(nativeTooltipSelector) ? node :
+        node.matches('[data-radix-popper-content-wrapper]') ? node.querySelector(nativeTooltipSelector) : null;
+      if (tooltip) { addSurface(tooltip); return; }
       const composerOverlay = node.matches(composerOverlaySelector);
       const parent = node.parentElement;
       // The roleless composer menu uses a translated positioning wrapper.
@@ -984,7 +1006,7 @@
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
         if (node !== root && node !== document.body &&
-          (localSurfaceAncestors.has(node) || node.matches(`${surfaceSelector}, ${viewerSurfaceSelector}, ${footerSelector}, ${topControlSelector}, [data-in-progress-fixed-content], .tortilla-gallery`)) &&
+          (localSurfaceAncestors.has(node) || node.matches(`${surfaceSelector}, ${viewerSurfaceSelector}, ${footerSelector}, ${topControlSelector}, [data-in-progress-fixed-content], [data-sonner-toast], .tortilla-gallery`)) &&
           refreshLocalSurfaces(node)) changed = true;
         if (node.matches(toolbarSelector)) {
           // 原生容器可能在子控件已挂载后才声明工具栏身份。
@@ -1578,7 +1600,7 @@
       themeInputs.set(root, themeKey(root));
       if (document.body) themeInputs.set(document.body, themeKey(document.body));
       mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-in-progress-fixed-content", "data-image-preview-composer", "data-image-preview-toolbar"] });
+        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-composer-attachment-pill", "data-sonner-toast", "data-in-progress-fixed-content", "data-image-preview-composer", "data-image-preview-toolbar"] });
       for (const [target, event, handler, capture] of events)
         target.addEventListener(event, handler, { capture, passive: true });
       // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
@@ -1597,7 +1619,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 35, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 36, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;
