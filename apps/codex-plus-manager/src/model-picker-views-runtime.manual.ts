@@ -348,6 +348,47 @@ export const pickerViewScenarios: Array<{
         assert.equal(await page.locator(`[data-codex-plus-model-group-id="${id}"]`).count(), 1);
         assert.equal(await page.locator(`[data-codex-plus-model-group="${id}"]:visible`).count(), count);
       }
+      const layout = await page.evaluate(() => {
+        const headers = [...document.querySelectorAll<HTMLElement>("[data-codex-plus-model-group-id]")]
+          .map(header => ({
+            id: header.getAttribute("data-codex-plus-model-group-id"),
+            top: header.getBoundingClientRect().top,
+            bottom: header.getBoundingClientRect().bottom,
+          })).sort((a, b) => a.top - b.top);
+        const rows = [...document.querySelectorAll<HTMLElement>("[data-codex-plus-model-group]")]
+          .map(row => ({
+            id: row.getAttribute("data-codex-plus-model-group"),
+            top: row.getBoundingClientRect().top,
+            bottom: row.getBoundingClientRect().bottom,
+          }));
+        return { headers, rows };
+      });
+      assert.equal(layout.headers.length, 4);
+      for (const [index, header] of layout.headers.entries()) {
+        const rows = layout.rows.filter((row: any) => row.id === header.id);
+        assert.equal(rows.length, 5, `row count for ${header.id}`);
+        const nextTop = layout.headers[index + 1]?.top ?? Infinity;
+        for (const row of rows) {
+          assert.ok(row.top >= header.bottom && row.bottom <= nextTop,
+            `${header.id} row must appear between its own header and the next group`);
+        }
+      }
+      await page.locator('[data-codex-plus-model-group-id="provider-hanhe"]').click();
+      assert.equal(await page.locator('[data-codex-plus-model-group="provider-hanhe"]:visible').count(), 0);
+      assert.equal(await page.locator('[data-codex-plus-model-group="provider-fusheng"]:visible').count(), 5);
+      const collapsedLayout = await page.evaluate(() => ({
+        hanheBottom: document.querySelector<HTMLElement>('[data-codex-plus-model-group-id="provider-hanhe"]')!
+          .getBoundingClientRect().bottom,
+        fushengTop: document.querySelector<HTMLElement>('[data-codex-plus-model-group-id="provider-fusheng"]')!
+          .getBoundingClientRect().top,
+        fushengBottom: document.querySelector<HTMLElement>('[data-codex-plus-model-group-id="provider-fusheng"]')!
+          .getBoundingClientRect().bottom,
+        rowTops: [...document.querySelectorAll<HTMLElement>('[data-codex-plus-model-group="provider-fusheng"]')]
+          .map(row => row.getBoundingClientRect().top),
+      }));
+      assert.ok(collapsedLayout.fushengTop >= collapsedLayout.hanheBottom);
+      assert.ok(collapsedLayout.rowTops.every((top: number) => top >= collapsedLayout.fushengBottom),
+        "Fusheng rows must remain below their own header when Hanhe is collapsed");
       await assertNativeRowsUntouched(page);
     },
   },
