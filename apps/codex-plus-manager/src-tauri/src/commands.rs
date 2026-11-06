@@ -8310,10 +8310,29 @@ pub fn set_relay_feature(
     }
 }
 
+// 同步 tauri 命令跑在主线程上，Windows 下主线程就是 WebView2 的界面线程：读日志、
+// 生成诊断报告（要枚举进程、探 helper 和调试端口，各带 1 秒超时）期间整个窗口都不响应，
+// 进「日志与诊断」时就会卡一下（#2922）。这几个命令都放到阻塞线程池里做。
 #[tauri::command]
-pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
+pub async fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    read_latest_logs_at(&path, request)
+    let lines = request.lines;
+    let task_path = path.clone();
+    match tauri::async_runtime::spawn_blocking(move || read_latest_logs_at(&task_path, request))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("读取日志失败：{error}"),
+            LogsPayload {
+                path: path.to_string_lossy().to_string(),
+                text: String::new(),
+                lines,
+                truncated: false,
+                file_size: 0,
+            },
+        ),
+    }
 }
 
 fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPayload> {
@@ -8342,9 +8361,14 @@ fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPa
 }
 
 #[tauri::command]
-pub fn clear_logs() -> CommandResult<LogsPayload> {
+pub async fn clear_logs() -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    match codex_plus_core::diagnostic_log::clear_diagnostic_log() {
+    // 清理要拿日志全局锁，别在界面线程上等。
+    let cleared =
+        tauri::async_runtime::spawn_blocking(codex_plus_core::diagnostic_log::clear_diagnostic_log)
+            .await
+            .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())));
+    match cleared {
         Ok(()) => ok(
             "日志已清理。",
             LogsPayload {
@@ -8369,13 +8393,16 @@ pub fn clear_logs() -> CommandResult<LogsPayload> {
 }
 
 #[tauri::command]
-pub fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
-    ok(
-        "诊断报告已生成。",
-        DiagnosticsPayload {
-            report: diagnostics_report(),
-        },
-    )
+pub async fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
+    match tauri::async_runtime::spawn_blocking(diagnostics_report).await {
+        Ok(report) => ok("诊断报告已生成。", DiagnosticsPayload { report }),
+        Err(error) => failed(
+            &format!("生成诊断报告失败：{error}"),
+            DiagnosticsPayload {
+                report: String::new(),
+            },
+        ),
+    }
 }
 
 #[tauri::command]
