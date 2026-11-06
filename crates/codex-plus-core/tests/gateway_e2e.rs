@@ -601,7 +601,25 @@ async fn gateway_end_to_end() {
     );
     // 路由动态：最近一次请求先试 bad（502）再由 good 回答，计数里有换过上游和 Agent 收到的错误。
     {
-        let activity = codex_plus_core::gateway::activity::snapshot();
+        // 客户端读到 EOF 时，服务端可能尚未返回并 drop InFlight；等待清理完成，
+        // 不把客户端收完响应当作服务端清理完成的同步信号。超时仍报错，防止漏清理被掩盖。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let activity = loop {
+            let activity = codex_plus_core::gateway::activity::snapshot();
+            let claude = activity
+                .agents
+                .iter()
+                .find(|agent| agent.agent == "claude")
+                .expect("claude 有路由动态");
+            if claude.in_flight.is_empty() {
+                break activity;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "响应转发完后应清空正在回答状态，等待 5 秒后仍未清理：{claude:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
         let claude = activity
             .agents
             .iter()
