@@ -29,6 +29,7 @@ use crate::launcher::{DefaultLaunchHooks, LaunchHooks};
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
 const RESIDENT_HELPER_THREAD: &str = "codex-plus-resident-helper";
+const RESIDENT_HELPER_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 /// 管理器重启/更新后旧进程可能还没放开监听：短暂重试等它让位，而不是直接
 /// 放弃常驻（否则这次启动会退回「会话 helper」，Codex 退出后又没人监听了）。
@@ -113,6 +114,7 @@ fn start_helper(port: u16) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let thread = std::thread::Builder::new()
         .name(RESIDENT_HELPER_THREAD.to_string())
+        .stack_size(RESIDENT_HELPER_STACK_SIZE)
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()

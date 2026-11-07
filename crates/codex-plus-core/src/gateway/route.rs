@@ -1193,6 +1193,34 @@ fn resolve_plan_with(
     if relays.is_empty() {
         bail!("网关的供应商池里没有供应商提供模型 {model}");
     }
+    let mut gate = crate::gateway::quota::DispatchGate::default();
+    let mut permitted = Vec::new();
+    let mut blocked = None;
+    for (relay, model) in relays {
+        match gate.check(gateway, &relay) {
+            Ok(()) => permitted.push((relay, model)),
+            Err(error) => {
+                let stop = matches!(
+                    &error.action,
+                    &crate::gateway::store::SubscriptionLimitAction::Stop
+                );
+                blocked = Some(error);
+                if stop {
+                    break;
+                }
+            }
+        }
+    }
+    if permitted.is_empty() {
+        if let Some(error) = blocked {
+            return Err(error.into());
+        }
+    }
+    let preferred = preferred.filter(|(relay_id, preferred_model)| {
+        permitted
+            .iter()
+            .any(|(relay, model)| &relay.id == relay_id && model == preferred_model)
+    });
     if mapped_to_default && advance && should_log_model_rewrite(agent.as_str(), requested_model.trim()) {
         // 请求的模型池里没人提供，按「未知模型」策略整个改发到默认模型的供应商（#2874）。
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1201,8 +1229,8 @@ fn resolve_plan_with(
                 "agent": agent.as_str(),
                 "requestedModel": requested_model.trim(),
                 "model": model,
-                "provider": relays.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
-                "providerId": relays.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
+                "provider": permitted.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
+                "providerId": permitted.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
                 "hint": "请求的模型不在网关供应商池里（或所在供应商已关闭），已按「未知模型」策略改发到默认模型；可在网关的 Agent 接入设置里改成原样转发",
             }),
         );
@@ -1218,7 +1246,7 @@ fn resolve_plan_with(
     let cooldown_off = crate::extension_gateway::builtin_replaced("builtin:key-cooldown");
     let breaker_off = crate::extension_gateway::builtin_replaced("builtin:key-breaker");
     let rate_limit_off = crate::extension_gateway::builtin_replaced("builtin:local-rate-limit");
-    for (relay, upstream_model) in relays {
+    for (relay, upstream_model) in permitted {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
         // 限速满了的 Key 照样进候选：是否跳过、排队由候选循环在发请求时按实时名额决定。
@@ -1323,6 +1351,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            subscription_policy: None,
             relay: RelayProfile {
                 id: id.to_string(),
                 name: id.to_string(),
@@ -1403,6 +1432,57 @@ mod tests {
             .into_iter()
             .map(|candidate| (candidate.relay.id, candidate.upstream_model))
             .collect()
+    }
+
+    #[test]
+    fn unconfigured_exhausted_subscription_keeps_api_failover_candidates() {
+        use base64::Engine;
+        use crate::gateway::quota::{ProviderQuota, QuotaWindow, record_for_relay};
+        use crate::gateway::store::SubscriptionPolicy;
+
+        let model = "legacy-quota-failover-model";
+        let mut official = provider("legacy-quota-subscription", model);
+        official.relay.relay_mode = RelayMode::Official;
+        official.relay.base_url.clear();
+        official.relay.api_key.clear();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"iss": "https://auth.openai.com", "sub": "legacy-quota-failover"})
+                .to_string(),
+        );
+        official.relay.auth_contents = serde_json::json!({"tokens": {
+            "id_token": format!("header.{claims}.signature"),
+            "access_token": "legacy-quota-access",
+            "account_id": "legacy-quota-workspace"
+        }}).to_string();
+        record_for_relay(&official.relay, ProviderQuota {
+            windows: vec![QuotaWindow {
+                used_percent: 100.0,
+                resets_at_ms: Some(u64::MAX),
+                ..Default::default()
+            }],
+            updated_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            official_allowed: Some(false),
+            ..Default::default()
+        });
+        let mut gateway = gateway("group/legacy-quota-failover");
+        gateway.providers = vec![official, provider("legacy-quota-api", model)];
+        gateway.groups = vec![group(
+            "legacy-quota-failover",
+            GroupMode::InOrder,
+            vec![member(&format!("legacy-quota-subscription/{model}")), member(&format!("legacy-quota-api/{model}"))],
+        )];
+        assert_eq!(
+            routed(&gateway, "group/legacy-quota-failover"),
+            [
+                ("legacy-quota-subscription".into(), model.into()),
+                ("legacy-quota-api".into(), model.into())
+            ]
+        );
+        gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
+        assert!(resolve_plan(
+            &gateway, &ToolId::Claude, "group/legacy-quota-failover", None,
+        ).is_err(), "only an explicitly configured stop policy may stop API failover");
     }
 
     fn pair(relay: &str, model: &str) -> (String, String) {
@@ -1973,8 +2053,10 @@ mod tests {
                 window_minutes: Some(300),
                 used_percent: used,
                 resets_at_ms: None,
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 0,
+            ..ProviderQuota::default()
         };
         let mut gateway = gateway("group/usage-pin");
         gateway.providers.extend([
@@ -2126,8 +2208,10 @@ mod tests {
                 window_minutes: Some(300),
                 used_percent: used,
                 resets_at_ms: None,
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 0,
+            ..ProviderQuota::default()
         };
         record("q-low", quota(90.0));
         record("q-empty", quota(100.0));

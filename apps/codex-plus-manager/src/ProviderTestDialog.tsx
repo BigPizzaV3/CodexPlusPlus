@@ -10,7 +10,7 @@ import { CheckCircle2, Loader2, X, XCircle, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, tf } from "./i18n";
 import { AppSelect } from "./AppSelect";
-import { maskAccountName, type GatewayPoolEntry } from "./gateway-model";
+import { maskAccountName, maskAccountText, subscriptionBlockReason, type GatewayPoolEntry } from "./gateway-model";
 import { Avatar } from "./gateway-ui";
 import { useEscapeLayer } from "./use-escape-layer";
 import { formatProbeMs, probeHints, probeWireLabel, type ProviderProbeResult } from "./provider-test";
@@ -28,6 +28,7 @@ export function ProviderTestDialog({
   lockModel = false,
   onStart,
   onResult,
+  onEditSubscription,
   onClose,
 }: {
   entry: GatewayPoolEntry;
@@ -37,8 +38,10 @@ export function ProviderTestDialog({
   lockModel?: boolean;
   onStart?: () => void;
   onResult?: (result: ProviderProbeResult) => void;
+  onEditSubscription?: () => void;
   onClose: () => void;
 }) {
+  const subscriptionBlocked = subscriptionBlockReason(entry);
   const imageModels = (entry.imageModels ?? []).map((model) => model.toLowerCase());
   const models = entry.models.filter((model) => !imageModels.includes(model.toLowerCase()));
   if (initialModel && !models.includes(initialModel)) models.unshift(initialModel);
@@ -70,7 +73,7 @@ export function ProviderTestDialog({
   }, []);
 
   const start = async () => {
-    if (!model || runningRef.current) return;
+    if (!model || runningRef.current || subscriptionBlockReason(entry)) return;
     const current = ++seq.current;
     runningRef.current = true;
     onStart?.();
@@ -144,6 +147,7 @@ export function ProviderTestDialog({
               </div>
             ) : null}
             <p className="pf-note">{t("按这家的协议、代理和 Key 发送，让模型只回一个词；最多等 60 秒。")}</p>
+            {subscriptionBlocked ? <p className="pf-note" data-tone="error">{t(maskAccountText(subscriptionBlocked))}</p> : null}
           </section>
 
           {running ? (
@@ -199,12 +203,15 @@ export function ProviderTestDialog({
 
         <footer className="pf-foot">
           <span className="pf-error">{error}</span>
+          {subscriptionBlocked && onEditSubscription ? (
+            <Button onClick={() => { close(); onEditSubscription(); }} size="sm" type="button" variant="ghost">{t("设置订阅额度")}</Button>
+          ) : null}
           {running ? (
             <Button onClick={cancel} size="sm" type="button" variant="ghost">{t("取消测试")}</Button>
           ) : (
             <Button onClick={close} size="sm" type="button" variant="ghost">{t("关闭")}</Button>
           )}
-          <Button disabled={running || !model} size="sm" type="submit">
+          <Button disabled={running || !model || Boolean(subscriptionBlocked)} size="sm" type="submit">
             <Zap className="h-3.5 w-3.5" />
             {result || error ? t("再测一次") : t("开始测试")}
           </Button>

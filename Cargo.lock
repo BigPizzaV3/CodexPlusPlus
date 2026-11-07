@@ -550,6 +550,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "tokio",
  "toml_edit 0.22.27",
 ]
 

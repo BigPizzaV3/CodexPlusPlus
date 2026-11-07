@@ -403,6 +403,8 @@ pub fn run() {
             gateway_commands::reset_gateway_key_health,
             gateway_commands::create_gateway_provider,
             gateway_commands::update_gateway_provider,
+            gateway_commands::get_native_auth_state,
+            gateway_commands::set_native_auth_account,
             gateway_commands::add_gateway_provider_key,
             gateway_commands::replace_gateway_provider_key,
             gateway_commands::delete_gateway_provider_key,

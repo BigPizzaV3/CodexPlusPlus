@@ -163,9 +163,9 @@ export function GatewayPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 路由页定时刷新供应商状态：静默读取，不占用 busy，也不弹错误。
+  // 订阅额度在后台预取；供应商页也要及时收到首次查询和授权后的结果。
   useEffect(() => {
-    if (tab !== "routing") return;
+    if (tab !== "routing" && tab !== "providers") return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       const started = gatewayGeneration();

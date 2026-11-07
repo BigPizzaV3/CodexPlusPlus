@@ -11,7 +11,7 @@ const hint = (text: string, args: string[] = []): ProbeHint => ({ text, args });
 /** `test_gateway_provider` 的结果（与 Rust 的 `ProbeResult` 一一对应）。 */
 export type ProviderProbeResult = {
   ok: boolean;
-  /** 失败的大类：auth / not_found / rate_limited / quota / timeout / connect / server / client / stream / other；成功时为空。 */
+  /** 失败的大类：subscription_policy / auth / not_found / rate_limited / quota / timeout / connect / server / client / stream / other；成功时为空。 */
   category: string;
   /** 上游的 HTTP 状态码；没收到响应时为空。 */
   httpStatus: number | null;
@@ -53,6 +53,8 @@ export function probeKeyHint(result: Pick<ProviderProbeResult, "keyName" | "keyT
 export function probeHints(result: ProviderProbeResult, account = false): ProbeHint[] {
   if (result.ok) return [];
   switch (result.category) {
+    case "subscription_policy":
+      return [hint("订阅额度策略阻止了测试：请检查使用上限和官方额度是否已刷新。")];
     case "auth": {
       const hints = [account
         ? hint("登录凭据无效或已过期：请在详情底部点「重新登录」。")

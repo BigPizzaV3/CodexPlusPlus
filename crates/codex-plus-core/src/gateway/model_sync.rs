@@ -590,6 +590,7 @@ mod tests {
             upstream_gone: vec!["x".into()],
             models_checked_at_ms: 1,
             newapi_access: None,
+            subscription_policy: None,
             upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: "p".into(),
@@ -639,6 +640,7 @@ mod tests {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 1,
             newapi_access: None,
+            subscription_policy: None,
             upstream_meta: Default::default(),
             relay,
             extra: Default::default(),

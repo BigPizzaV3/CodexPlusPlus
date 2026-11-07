@@ -266,31 +266,9 @@ pub fn chatgpt_relay(account: &ChatGptAccount, models: &[String]) -> RelayProfil
 /// 两份 ChatGPT 登录凭据（auth.json 结构）是不是同一个人的同一个账号。
 /// Team / Business 工作区的成员共用 chatgpt_account_id，只比它会把另一个成员的登录覆盖掉，
 /// 所以还要比 ID token 里的用户（sub，没有再看 chatgpt_user_id、邮箱）。
-/// 两边都读不出用户时只能按账号 id 认；只有一边读得出时当作不同的人。
+/// 身份不完整时只接受同一代完整 token；只有一边读得出身份时当作不同的人。
 pub fn same_chatgpt_login(left: &str, right: &str) -> bool {
-    let account_id = crate::official_login::chatgpt_account_id_from_auth_contents;
-    let left_account = account_id(left);
-    if left_account.is_empty() || left_account != account_id(right) {
-        return false;
-    }
-    chatgpt_login_user(left) == chatgpt_login_user(right)
-}
-
-/// 凭据里 ID token 标识的用户；读不出时为 None。
-fn chatgpt_login_user(auth_contents: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(auth_contents).ok()?;
-    let claims = jwt_claims(value.pointer("/tokens/id_token")?.as_str()?);
-    [
-        claims.get("sub"),
-        claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_user_id"),
-        claims.get("email"),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(Value::as_str)
-    .map(str::trim)
-    .find(|user| !user.is_empty())
-    .map(str::to_string)
+    crate::native_auth::same_account(left, right)
 }
 
 /// 跑一次 ChatGPT 浏览器登录：在 1455 端口等回调，换 token。`open_browser` 负责打开登录页。
@@ -2271,7 +2249,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = crate::gateway::store::GatewayStore::at(temp.path().join("gateway.json"));
         let account = account_from_tokens(
-            &json!({ "access_token": "old-at", "refresh_token": "old-rt", "id_token": "" }),
+            &json!({
+                "access_token": "old-at",
+                "refresh_token": "old-rt",
+                "id_token": jwt(json!({
+                    "sub": "test-user",
+                    "https://api.openai.com/auth": { "chatgpt_account_id": "acc-1" }
+                }))
+            }),
         )
         .unwrap();
         let mut relay = chatgpt_relay(&account, &["gpt-6.1-sol".to_string()]);
@@ -2293,20 +2278,32 @@ mod tests {
                 upstream_gone: Vec::new(),
                 models_checked_at_ms: 0,
                 newapi_access: None,
+            subscription_policy: None,
                 upstream_meta: Default::default(),
                 relay,
                 extra: Default::default(),
             });
         store.save(&gateway).unwrap();
-        crate::official_login::persist_gateway_login(
-            &store, "chatgpt", "new-at", "new-rt", "acc-9",
-        );
+        let saved = store.load().unwrap();
+        let expected = saved
+            .provider("chatgpt")
+            .unwrap()
+            .relay
+            .auth_contents
+            .clone();
+        let mut updated_value: Value = serde_json::from_str(&expected).unwrap();
+        updated_value["tokens"]["access_token"] = json!("new-at");
+        updated_value["tokens"]["refresh_token"] = json!("new-rt");
+        let updated = updated_value.to_string();
+        assert!(crate::official_login::persist_gateway_login(
+            &store, "chatgpt", &expected, &updated,
+        ).unwrap());
         let saved = store.load().unwrap();
         let auth: Value =
             serde_json::from_str(&saved.provider("chatgpt").unwrap().relay.auth_contents).unwrap();
         assert_eq!(auth["tokens"]["access_token"], "new-at");
         assert_eq!(auth["tokens"]["refresh_token"], "new-rt");
-        assert_eq!(auth["tokens"]["account_id"], "acc-9");
+        assert_eq!(auth["tokens"]["account_id"], "acc-1");
         assert_eq!(auth[GATEWAY_OWNED_MARKER], true, "标记保留");
     }
 
@@ -2665,6 +2662,7 @@ mod tests {
                 upstream_gone: Vec::new(),
                 models_checked_at_ms: 0,
                 newapi_access: None,
+            subscription_policy: None,
                 upstream_meta: Default::default(),
                 relay,
                 extra: Default::default(),
@@ -2837,7 +2835,7 @@ mod tests {
             &alice,
             &login("user-a", "a@team.com", "ws-2")
         ));
-        // 没有 sub 时按邮箱认。
+        // 没有 sub 时只有同一代 access/refresh 会话才视为同一账号。
         assert!(same_chatgpt_login(
             &login("", "a@team.com", "ws-1"),
             &login("", "a@team.com", "ws-1")

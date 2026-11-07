@@ -390,9 +390,10 @@ test("全应用不用系统原生的确认 / 提示 / 输入框，统一用 app-
   assert.match(app, /<AppDialogHost \/>/);
 });
 
-test("供应商的价格与代理在供应商池详情里编辑，添加 / 编辑弹窗只管连接、Key 与模型", () => {
+test("普通供应商的价格与代理在详情里编辑，官方账号可在编辑弹窗设置代理", () => {
   const form = readFileSync(new URL("./ProviderFormDialog.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(form, /t\("价格"\)|t\("代理"\)|priceInput: event|proxy: event/);
+  assert.doesNotMatch(form, /t\("价格"\)|t\("代理"\)|priceInput: event/);
+  assert.match(form, /subscriptionEditing[\s\S]*t\("HTTP 代理"\)/);
   const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   assert.match(providers, /"save_gateway_provider_extras"/);
   assert.match(providers, /<ProviderExtrasDialog/);

@@ -171,8 +171,10 @@ fn quota_view_distinguishes_missing_cache_from_zero_usage() {
                 window_minutes: Some(300),
                 used_percent: 0.0,
                 resets_at_ms: Some(100),
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 10,
+            ..ProviderQuota::default()
         })
     });
     assert_eq!(

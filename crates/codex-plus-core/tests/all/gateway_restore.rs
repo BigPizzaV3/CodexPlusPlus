@@ -50,6 +50,7 @@ fn fixture(port: u16) -> Fixture {
             model_prices: None,
             proxy: None,
             strip_image_generation_tool: None,
+            subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
         },

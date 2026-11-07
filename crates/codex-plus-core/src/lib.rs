@@ -65,6 +65,7 @@ pub mod model_pricing;
 pub mod model_suffix;
 pub mod models;
 pub mod multi_worker;
+pub mod native_auth;
 pub mod native_browser;
 pub mod native_browser_connection;
 pub(crate) mod native_fast;

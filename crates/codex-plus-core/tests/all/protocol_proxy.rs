@@ -5010,6 +5010,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
     let _lock = settings_path_test_lock();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
 
     let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -5108,6 +5109,9 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
         ..BackendSettings::default()
     };
 
+    let store = codex_plus_core::settings::SettingsStore::default();
+    store.save(&settings).unwrap();
+
     let result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
         settings,
@@ -5140,6 +5144,18 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
         token_request.contains("refresh_token=official-refresh"),
         "{token_request}"
     );
+
+    let persisted = store
+        .load()
+        .unwrap()
+        .relay_profiles
+        .into_iter()
+        .find(|profile| profile.id == "proxy-official-401")
+        .unwrap();
+    let auth: serde_json::Value = serde_json::from_str(&persisted.auth_contents).unwrap();
+    assert_eq!(auth["tokens"]["access_token"], "refreshed-access");
+    assert_eq!(auth["tokens"]["refresh_token"], "refreshed-refresh");
+    assert_eq!(auth["tokens"]["account_id"], "acct-official");
 }
 
 #[tokio::test]

@@ -286,6 +286,7 @@ pub fn relay_profile_from_ccs(
         protocol: provider.protocol,
         relay_mode: RelayMode::PureApi,
         official_mix_api_key: false,
+          official_account_ref: String::new(),
         no_auth: false,
         hide_official_usage_alert: false,
         test_model: String::new(),

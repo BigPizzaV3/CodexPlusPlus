@@ -182,7 +182,7 @@ test("订阅登录不占全局 busy，可取消：关掉验证码弹窗即取消
     const start = commands.indexOf(`pub async fn ${name}(`);
     const body = commands.slice(start, commands.indexOf("\n}\n", start));
     assert.match(body, /cancellable_login\(async move \{/, name);
-    assert.match(body, /login_response\(outcome\)/, name);
+    assert.match(body, /login_response\(outcome, &before\)\.await/, name);
   }
 });
 
