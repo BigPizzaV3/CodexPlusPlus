@@ -24,6 +24,7 @@ import {
   memberStatus,
   modelDispatch,
   modelDisplay,
+  qualifiedProvider,
   prettyModelName,
   modelRoutable,
   parseContextWindow,
@@ -130,6 +131,31 @@ test("模型选择器：每个供应商一组，路由组作为 group/ 模型在
   // 编辑路由组时不能选它自己；挑选排除的供应商不出现。
   assert.equal(pickerSections(payload(), "", initials, [], "daily").some((section) => section.key === "group"), false);
   assert.deepEqual(pickerSections(payload(), "", initials, ["deepseek"]).map((section) => section.key), ["provider:glm", "group"]);
+});
+
+test("默认模型选择保留供应商身份，旧裸名与共享选择器保留原样", () => {
+  const data = payload();
+  const item = pickerSections(data, "", initials)[0].items[0];
+  assert.equal(item.model, "deepseek-v4-pro");
+  assert.equal(item.providerModel, "deepseek/deepseek-v4-pro");
+  const saved = bindingFromDraft({ ...draftFromBinding(undefined), model: item.providerModel! }, undefined);
+  data.pool[1].models.push("deepseek-v4-pro");
+  assert.equal(saved.model, "deepseek/deepseek-v4-pro");
+  assert.deepEqual(modelDisplay(data, saved.model), { title: "DeepSeek-V4-Pro", sub: "DeepSeek", group: false });
+  assert.equal(modelDisplay(data, "deepseek-v4-pro").auto, true);
+  assert.equal(draftFromBinding({ ...blankBinding(), model: "deepseek-v4-pro" }).model, "deepseek-v4-pro");
+});
+
+test("完整含斜杠的模型名优先于供应商前缀", () => {
+  const data = payload();
+  data.pool[1].models.push("deepseek/deepseek-v4-pro");
+  assert.equal(qualifiedProvider(data, "deepseek/deepseek-v4-pro"), null);
+  assert.equal(modelDisplay(data, "deepseek/deepseek-v4-pro").sub, "GLM");
+  assert.equal(qualifiedProvider(data, "DEEPSEEK/DEEPSEEK-V4-PRO"), null);
+  assert.equal(qualifiedProvider(data, "deepseek/deepseek-v4-pro", ["glm"])?.entry.id, "deepseek");
+  data.pool[1].enabled = false;
+  assert.equal(qualifiedProvider(data, "DEEPSEEK/deepseek-v4-pro")?.entry.id, "deepseek");
+  assert.equal(qualifiedProvider(data, "group/daily"), null);
 });
 
 test("模型显示：模型名 + 提供它的供应商；<供应商>/<模型> 拆开；路由组显示组名", () => {

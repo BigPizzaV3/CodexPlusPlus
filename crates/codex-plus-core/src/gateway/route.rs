@@ -253,7 +253,7 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
 }
 
 /// Codex 的模型列表：每家供应商的模型都列在它自己名下，Codex 选择器里按供应商分组时每组都完整。
-/// - 只有一家提供的模型：裸模型名（只有这一家，等于固定发给它）；
+/// - 只有一家提供的模型：通常用裸模型名；固定到该供应商的默认模型沿用带前缀的名称；
 /// - 多家都提供的模型：每家各列一份 `<供应商 id>/<模型>`（固定发给那一家）；打开「多家自动切换」
 ///   （`auto_models`）时再单独列一份裸模型名：按池顺序依次尝试各家，出错换下一家；
 /// - 最后是有成员的模型组。
@@ -284,6 +284,8 @@ pub fn codex_pool_models_led_by(
 /// Codex 模型列表按分组切成的几块：每家一块、多家自动切换一块、模型组一块（空块不要）。
 fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Vec<String>> {
     let relays = binding_pool_relays(gateway, binding);
+    let default_model = binding_default_model(gateway, binding);
+    let pinned_default = qualified_in(&relays, &default_model);
     let mut seen: Vec<String> = Vec::new();
     let mut fresh = |entry: &str| {
         if seen.iter().any(|known| known.eq_ignore_ascii_case(entry)) {
@@ -311,8 +313,19 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
                 {
                     shared.push(model);
                 }
-            } else if !unlisted.contains(&model.to_ascii_lowercase()) && fresh(&model) {
-                block.push(model);
+            } else if !unlisted.contains(&model.to_ascii_lowercase()) {
+                let entry = match &pinned_default {
+                    Some((provider, upstream))
+                        if provider.id.eq_ignore_ascii_case(&relay.id)
+                            && upstream.eq_ignore_ascii_case(&model) =>
+                    {
+                        &default_model
+                    }
+                    _ => &model,
+                };
+                if fresh(entry) {
+                    block.push(entry.to_string());
+                }
             }
         }
         blocks.push(block);

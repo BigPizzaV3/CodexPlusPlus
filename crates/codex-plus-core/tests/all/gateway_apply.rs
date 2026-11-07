@@ -478,6 +478,70 @@ fn codex_enable_switches_to_managed_gateway_profile_and_disable_switches_back() 
     assert_eq!(binding.restore.codex_previous_relay_id, "direct");
 }
 
+#[test]
+fn codex_catalog_keeps_single_provider_qualified_default_grouped_once() {
+    let fixture = fixture(57394);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    let mut selected = binding();
+    selected.model = "deepseek/deepseek-v4-pro".into();
+    enable_binding(ctx, &ToolId::Codex, selected).unwrap();
+
+    let catalog = codex_catalog(ctx);
+    let models = catalog["models"].as_array().unwrap();
+    let matching: Vec<_> = models.iter().filter(|item| {
+        matches!(item["slug"].as_str(), Some("deepseek/deepseek-v4-pro" | "deepseek-v4-pro"))
+    }).collect();
+    assert_eq!(matching.len(), 1, "{matching:?}");
+    assert_eq!(matching[0]["slug"], "deepseek/deepseek-v4-pro");
+    assert_eq!(matching[0]["codex_plus_group_id"], "deepseek");
+    assert_eq!(matching[0]["codex_plus_group"], "DeepSeek");
+}
+
+#[test]
+fn pinned_default_survives_a_new_provider_and_bare_default_keeps_its_meaning() {
+    use codex_plus_core::gateway::route::{codex_pool_models, resolve_plan};
+
+    let fixture = fixture(57394);
+    let mut gateway = fixture.ctx.gateway.load().unwrap();
+    let mut selected = binding();
+    selected.enabled = true;
+    selected.model = "deepseek/deepseek-v4-pro".into();
+    gateway.bindings.insert("codex".into(), selected.clone());
+
+    let models = codex_pool_models(&gateway, &selected);
+    assert!(models.contains(&selected.model));
+    assert!(!models.contains(&"deepseek-v4-pro".to_string()));
+
+    let mut mirror = gateway.providers[0].clone();
+    mirror.relay.id = "mirror".into();
+    gateway.providers.push(mirror);
+    gateway.auto_models = true;
+    let models = codex_pool_models(&gateway, &selected);
+    assert!(models.contains(&selected.model));
+    assert!(models.contains(&"mirror/deepseek-v4-pro".to_string()));
+    assert!(models.contains(&"deepseek-v4-pro".to_string()));
+    let pinned = resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).unwrap();
+    assert_eq!(pinned.candidates.len(), 1);
+    assert_eq!(pinned.candidates[0].relay.id, "deepseek");
+    let bare = resolve_plan(&gateway, &ToolId::Codex, "deepseek-v4-pro", None).unwrap();
+    assert_eq!(bare.candidates.len(), 2);
+
+    gateway.auto_models = false;
+    assert!(!codex_pool_models(&gateway, &selected).contains(&"deepseek-v4-pro".to_string()));
+    let bare = resolve_plan(&gateway, &ToolId::Codex, "deepseek-v4-pro", None).unwrap();
+    assert_eq!(bare.candidates.len(), 2);
+
+    selected.model = "deepseek-v4-pro".into();
+    gateway.providers.pop();
+    let models = codex_pool_models(&gateway, &selected);
+    assert!(models.contains(&"deepseek-v4-pro".to_string()));
+    assert!(!models.contains(&"deepseek/deepseek-v4-pro".to_string()));
+}
+
 /// 网关模式给 Codex 的模型目录与直连模式的按模型聚合一样：显示名、推理档位、按供应商分组，
 /// 模型组单独一组。没有内置元数据的模型（第三方的 claude-*）也要有推理档位。
 #[test]

@@ -928,7 +928,7 @@ function PanelAgentRow({
           head={head}
           onPick={(item) => {
             setOpen(false);
-            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.model }, binding) });
+            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.providerModel ?? item.model }, binding) });
           }}
           onPickOwn={(item) => {
             setOpen(false);
@@ -938,6 +938,7 @@ function PanelAgentRow({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
+          pinProvider
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
         />
       </Floating>

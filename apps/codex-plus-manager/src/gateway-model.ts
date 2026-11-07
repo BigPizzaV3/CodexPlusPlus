@@ -508,6 +508,7 @@ export function agentModels(payload: GatewayPayload | null, exclude: string[] = 
 /** `<供应商 id>/<模型>` 里的供应商（必须是 Agent 能用的）。 */
 export function qualifiedProvider(payload: GatewayPayload | null, model: string, exclude: string[] = []): { entry: GatewayPoolEntry; model: string } | null {
   if (model.startsWith(GROUP_MODEL_PREFIX)) return null;
+  if (servingProviders(payload, model, exclude).length) return null;
   const index = model.indexOf("/");
   if (index <= 0 || !model.slice(index + 1).trim()) return null;
   const prefix = model.slice(0, index).toLowerCase();
@@ -605,6 +606,8 @@ export function rememberAgentNames(agents: Array<{ agent: string; name: string }
 export type PickerItem = {
   /** 选中后写进绑定的模型名。 */
   model: string;
+  /** 从供应商名下选默认模型时用于保留供应商身份。 */
+  providerModel?: string;
   label: string;
   sub: string;
   avatar: string;
@@ -649,7 +652,7 @@ export function pickerSections(
         if (multi && !shared.some((known) => known.toLowerCase() === model.toLowerCase())) shared.push(model);
         const value = multi ? `${entry.id}/${model}` : model;
         if (unlisted.has(value.toLowerCase())) return [];
-        return [{ model: value, label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name) }];
+        return [{ model: value, providerModel: `${entry.id}/${model}`, label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name) }];
       });
     if (items.length) sections.push({ key: `provider:${entry.id}`, title: maskAccountName(entry.name), avatar: avatar(entry.name), items });
   }

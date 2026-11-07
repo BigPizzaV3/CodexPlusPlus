@@ -17,6 +17,8 @@ import {
   visibleOwnModels,
   pickerSections,
   providerEnabled,
+  qualifiedProvider,
+  servingProviders,
   validateDraft,
   type BindingDraft,
   type GatewayAgentId,
@@ -189,7 +191,7 @@ function AgentRow({
   // 在选择器里选模型：已接入时直接改默认模型，未接入时选完即接入。
   const pick = (item: PickerItem) => {
     setPickerOpen(false);
-    void save({ ...draft, model: item.model });
+    void save({ ...draft, model: item.providerModel ?? item.model });
   };
   // 已接入时先预览还原差异，确认后才断开并选择直连模型。
   const pickOwn = async (item: PickerItem) => {
@@ -704,6 +706,7 @@ export function ModelList({
   own,
   ownAgent,
   onPickOwn,
+  pinProvider = false,
 }: {
   payload: GatewayPayload | null;
   exclude: string[];
@@ -715,6 +718,7 @@ export function ModelList({
   /** Agent 的显示名，自带模型的说明里用。 */
   ownAgent?: string;
   onPickOwn?: (item: PickerItem) => void;
+  pinProvider?: boolean;
 }) {
   const nav = useContext(GatewayNavContext);
   const [query, setQuery] = useState("");
@@ -741,13 +745,25 @@ export function ModelList({
     const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup), ownPickerSection(ownList, query, avatarOf));
     // 手输的模型 ID（custom）不属于哪一家，按供应商筛选时也留着。
     if (sectionOnly) return all.filter((section) => section.key === sectionOnly || section.key === "custom");
-    if (!favoritesOnly) return all;
+    if (!favoritesOnly) {
+      const current = selectedModel.trim();
+      if (pinProvider && !sectionOnly && !query.trim() && current && modelDisplay(payload, current, exclude).auto &&
+          !all.some((section) => section.items.some((item) => item.model.toLowerCase() === current.toLowerCase()))) {
+        all.unshift({
+          key: "current",
+          title: "当前选择",
+          avatar: "",
+          items: [{ model: current, label: modelDisplay(payload, current, exclude).title, sub: "按供应商池顺序尝试", avatar: "" }],
+        });
+      }
+      return all;
+    }
     // 收藏的是池里的模型；Agent 自带的同名模型不算。
     return all
       .filter((section) => section.key !== "own")
       .map((section) => ({ ...section, items: section.items.filter((item) => isFavoriteModel(favorites, item.model, payload)) }))
       .filter((section) => section.items.length);
-  }, [payload, query, exclude, favoritesOnly, sectionOnly, favorites, skipGroup, ownList]);
+  }, [payload, query, exclude, favoritesOnly, sectionOnly, favorites, skipGroup, ownList, selectedModel, pinProvider]);
   const toggleFavorite = (model: string) => {
     const next = toggleFavoriteModel(favorites, model, payload);
     setFavorites(next);
@@ -760,7 +776,8 @@ export function ModelList({
   };
   const isSelected = (item: PickerItem) => {
     const current = item.direct ? ownList?.current ?? "" : selectedModel;
-    return Boolean(current) && item.model.toLowerCase() === current.toLowerCase();
+    return Boolean(current) && (item.model.toLowerCase() === current.toLowerCase() ||
+      Boolean(item.providerModel && qualifiedProvider(payload, current, exclude) && item.providerModel.toLowerCase() === current.toLowerCase()));
   };
   const choose = (item: PickerItem) => (item.direct && onPickOwn ? onPickOwn(item) : onPick(item));
 
@@ -799,8 +816,8 @@ export function ModelList({
         {sections.map((section) => (
           <section className="gw-mp-section" data-section={section.key} key={section.key}>
             <div className="gw-mp-heading">
-              {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar name={section.title} size="sm" />}
-              <span>{section.key === "group" || section.key === "custom" || section.key === "auto" ? t(section.title) : section.title}</span>
+              {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" || section.key === "current" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar name={section.title} size="sm" />}
+              <span>{section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title}</span>
               {section.key === "group" && nav.openModelGroups ? (
                 <button className="gw-mp-manage" onClick={nav.openModelGroups} type="button">{t("管理")}</button>
               ) : null}
@@ -809,21 +826,24 @@ export function ModelList({
             {section.items.map((item) => {
               const selected = isSelected(item);
               const favorite = isFavoriteModel(favorites, item.model, payload);
+              const candidate = item.providerModel ?? (item.custom ? item.model : "");
+              const ambiguous = Boolean(pinProvider && candidate && servingProviders(payload, candidate, exclude).length);
               return (
                 <div
                   aria-selected={selected}
+                  aria-disabled={ambiguous || undefined}
                   className="gw-mp-item"
                   data-direct={item.direct ? true : undefined}
                   data-selected={selected}
                   key={item.model}
-                  onClick={() => choose(item)}
-                  onKeyDown={(event) => { if (event.key === "Enter") choose(item); }}
+                  onClick={() => { if (!ambiguous) choose(item); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" && !ambiguous) choose(item); }}
                   role="option"
                   tabIndex={0}
                 >
                   <span className="gw-mp-text">
                     <strong title={item.model}>{item.label}</strong>
-                    {item.custom ? <small>{t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
+                    {ambiguous ? <small>{t("模型 ID 与已有模型名冲突，无法固定到此供应商")}</small> : item.custom ? <small>{t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{section.key === "current" ? t(item.sub) : item.sub}</small> : null}
                   </span>
                   {item.direct ? (
                     <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>
@@ -1008,6 +1028,7 @@ function ModelPicker({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
+          pinProvider
           selectedModel={selectedModel}
         />
       </Floating>
