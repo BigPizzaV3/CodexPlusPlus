@@ -465,8 +465,10 @@ fn resolve_context_token_estimate(
 // ── VLM API call ──────────────────────────────────────────────────────
 
 /// VLM HTTP 请求超时：测试中用短超时以便 wiremock 触发超时路径。
+/// 本地 VLM（如 Ollama 上的 qwen3-vl）在 CPU 上推理一张大图可能超过 30 秒，
+/// 超时值要给本地部署留余量；整体仍受 ANALYZE_ALL_TIMEOUT 约束。
 #[cfg(not(test))]
-const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 #[cfg(test)]
 const VLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -890,8 +892,10 @@ pub async fn analyze_all(
     let outcomes: Vec<Option<Result<String, String>>> =
         std::mem::take(&mut *outcomes.lock().unwrap());
 
-    // 按 batch 原始顺序收集结果（None 视为失败）。
+    // 按 batch 原始顺序收集结果（None 视为失败），同时保留一条底层错误
+    // 供 fail-closed 日志定位（超时 / HTTP 状态 / 上游报错正文）。
     let mut success_count = 0usize;
+    let mut last_error: Option<String> = None;
     let mut results: Vec<Option<String>> = Vec::with_capacity(batch_count);
     for outcome in &outcomes {
         match outcome {
@@ -899,12 +903,21 @@ pub async fn analyze_all(
                 success_count += 1;
                 results.push(Some(text.clone()));
             }
-            _ => results.push(None),
+            Some(Err(e)) => {
+                last_error = Some(e.clone());
+                results.push(None);
+            }
+            None => results.push(None),
         }
     }
 
     if success_count == 0 {
-        return Err("all VLM calls failed (fail-closed: images preserved)".to_string());
+        let mut detail = "all VLM calls failed (fail-closed: images preserved)".to_string();
+        if let Some(e) = last_error {
+            detail.push_str(": ");
+            detail.push_str(&e);
+        }
+        return Err(detail);
     }
 
     Ok(results)
@@ -1174,7 +1187,7 @@ pub(crate) async fn strip_image_blocks_with_context(
         vlm_config: &VlmConfig,
         descriptions: &mut std::collections::BTreeMap<usize, String>,
         msg_idx: usize,
-    ) -> Result<(), ()> {
+    ) -> Result<(), String> {
         if round_urls.is_empty() {
             return Ok(());
         }
@@ -1200,7 +1213,7 @@ pub(crate) async fn strip_image_blocks_with_context(
                 }
                 Ok(())
             }
-            Err(_) => Err(()),
+            Err(e) => Err(e),
         }
     }
 
@@ -1226,16 +1239,19 @@ pub(crate) async fn strip_image_blocks_with_context(
         {
             return Err(VlmPreprocessError::MissingConfiguration);
         }
-        if analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx)
-            .await
-            .is_err()
+        if let Err(vlm_err) =
+            analyze_and_inject(&round_urls, vlm_config, &mut descriptions, *msg_idx).await
         {
-            // 当前轮 VLM 全部失败 → fail-closed。
+            // 当前轮 VLM 全部失败 → fail-closed。底层错误（超时 / HTTP 状态 /
+            // 上游报错）脱敏截断后写入诊断日志，供「日志与诊断」页排查。
+            let detail = redact_secrets(&vlm_err, &vlm_config.api_key);
+            let detail: String = detail.chars().take(500).collect();
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "vlm_current_round_fail_closed",
                 json!({
                     "round_url_count": round_urls.len(),
                     "is_current": true,
+                    "error": detail,
                 }),
             );
             return Err(VlmPreprocessError::AnalysisFailed);
@@ -2594,6 +2610,33 @@ mod tests {
         let result = analyze_all(&["https://example.com/img.png".to_string()], &config).await;
 
         assert!(result.is_err(), "all 500 should return Err (fail-closed)");
+    }
+
+    /// 全部失败时 Err 要带上底层错误详情（HTTP 状态/上游报错），
+    /// 供诊断日志定位超时、模型名错误等具体原因（issue #2954）。
+    #[tokio::test]
+    async fn analyze_all_error_includes_upstream_detail() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("model not found"))
+            .mount(&mock_server)
+            .await;
+
+        let config = VlmConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+        };
+
+        let err = analyze_all(&["https://example.com/img.png".to_string()], &config)
+            .await
+            .expect_err("all 500 should return Err");
+        assert!(
+            err.contains("VLM API 500") && err.contains("model not found"),
+            "error should carry upstream detail, got: {err}"
+        );
     }
 
     /// 部分失败：仅 1 次 200，其余 500 → Ok + Some/None 混合。
