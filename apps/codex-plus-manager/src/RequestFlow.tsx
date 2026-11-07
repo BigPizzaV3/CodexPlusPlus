@@ -7,7 +7,7 @@ import "./flow-provider-colors.css";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { t, tf } from "./i18n";
-import { agentName, formatElapsed, formatTokens, maskAccountName, relativeTime } from "./gateway-model";
+import { agentName, formatElapsed, formatTokens, groupDisplayName, maskAccountName, relativeTime, type GatewayPayload } from "./gateway-model";
 import { AgentIcon } from "./gateway-ui";
 import { clockTime, flowAgent, flowElapsed, flowStatus, returningLinks, type FlowEntry } from "./request-flow-model";
 import "./RequestFlow.css";
@@ -52,11 +52,13 @@ export function useRequestFlow(intervalMs: number, limit = 30): { entries: FlowE
  * 左边一条状态竖条（进行中闪、成功绿、失败红）；中间上行是实际用的模型，下行 Agent · 供应商 · 输入/输出 token；
  * 右边上行是耗时（进行中的实时走秒），下行是多久以前。
  */
-export function FlowRequestRow({ entry, now = Date.now() }: { entry: FlowEntry; now?: number }) {
+export function FlowRequestRow({ entry, payload, now = Date.now() }: { entry: FlowEntry; payload: GatewayPayload | null; now?: number }) {
   const status = flowStatus(entry);
   const agent = flowAgent(entry);
   const relay = maskAccountName(entry.relayName || entry.relayId || "");
-  const model = entry.upstreamModel || entry.model || "—";
+  const requested = groupDisplayName(payload, entry.model) ?? entry.model;
+  const upstream = groupDisplayName(payload, entry.upstreamModel ?? "") ?? entry.upstreamModel;
+  const model = upstream || requested || "—";
   const remapped = Boolean(entry.upstreamModel && entry.model && entry.upstreamModel !== entry.model);
   const when = relativeTime(entry.startedAtMs || entry.timestampMs, now);
   const tokens = entry.usage
@@ -69,9 +71,9 @@ export function FlowRequestRow({ entry, now = Date.now() }: { entry: FlowEntry; 
     <span className="rf-row" data-status={status} title={clockTime(entry.startedAtMs || entry.timestampMs)}>
       <span className="rf-rail" />
       <span className="rf-main">
-        <span className="rf-model" title={remapped ? `${entry.model} → ${entry.upstreamModel}` : model}>
+        <span className="rf-model" title={remapped ? `${requested} → ${upstream}` : model}>
           {model}
-          {remapped ? <small>{tf("由 {0} 转来", [entry.model])}</small> : null}
+          {remapped ? <small>{tf("由 {0} 转来", [requested])}</small> : null}
         </span>
         <span className="rf-sub">
           <AgentIcon agent={agent} className="rf-agent-icon" />

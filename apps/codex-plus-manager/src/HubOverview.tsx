@@ -266,7 +266,7 @@ function FeedRow({ entry, record, payload }: { entry: FlowEntry; record: RouteRe
   return (
     <li data-open={open}>
       <button aria-expanded={open} className="hub-flow-toggle" disabled={!record} onClick={() => setOpen(!open)} type="button">
-        <FlowRequestRow entry={entry} />
+        <FlowRequestRow entry={entry} payload={payload} />
         <ChevronDown aria-hidden className="hub-feed-chevron h-3.5 w-3.5" />
       </button>
       {open && record ? (

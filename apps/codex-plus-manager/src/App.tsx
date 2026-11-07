@@ -150,7 +150,7 @@ import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -6015,6 +6015,7 @@ function WeixinConnectScreen({
   onCopyQr: (url: string) => void;
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState("");
+  const gatewayPayload = useGatewayPayload(10_000);
   const [catalog, setCatalog] = useState<WeixinConnectCatalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -6267,12 +6268,12 @@ function WeixinConnectScreen({
                   ariaLabel={t("模型")}
                   onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
                   options={[
-                    { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${inheritedModel})` : ""}` },
+                    { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${groupDisplayName(gatewayPayload, inheritedModel) ?? catalog?.modelMetadata?.[inheritedModel]?.displayName ?? inheritedModel})` : ""}` },
                     ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
                       value: form.weixinConnectModel,
-                      label: `${form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
+                      label: `${groupDisplayName(gatewayPayload, form.weixinConnectModel) ?? form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
                     }] : []),
-                    ...models.map((model) => ({ value: model, label: catalog?.modelMetadata?.[model]?.displayName || model })),
+                    ...models.map((model) => ({ value: model, label: groupDisplayName(gatewayPayload, model) ?? (catalog?.modelMetadata?.[model]?.displayName || model) })),
                   ]}
                   value={form.weixinConnectModel}
                 />
@@ -6452,6 +6453,7 @@ function OverviewScreen({
   onOpenList: (kind: "sessions" | "requestLog", agent: DashboardAgent) => void;
   actions: Actions;
 }) {
+  const gatewayPayload = useGatewayPayload(10_000);
   const health = healthItems(overview);
   const tool = toolEntries.find((entry) => entry.id === activeTool);
   const normalized = normalizeSettings(form);
@@ -6505,7 +6507,7 @@ function OverviewScreen({
     { label: t("24 小时请求"), value: recent ? recent.total : "—" },
     { label: t("成功率"), value: recent?.successRate == null ? "—" : `${Math.round(recent.successRate * 100)}%`, tone: recent?.failed ? "warn" : "ok" },
     { label: t("平均耗时"), value: recent?.avgDurationMs == null ? "—" : `${(recent.avgDurationMs / 1000).toFixed(1)}s` },
-    { label: t("常用模型"), value: recent?.topModel ?? "—", mono: false },
+    { label: t("常用模型"), value: groupDisplayName(gatewayPayload, recent?.topModel ?? "") ?? recent?.topModel ?? "—", mono: false },
   ];
   const { CxBadge, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
   // 健康检查：一张卡一行一项。有问题的项排前面、带橙色 / 红色标签；正常的收成一行「其余 N 项正常」，点开再看。
@@ -7006,6 +7008,7 @@ function requestLogErrorSummary(error: string): string {
 }
 
 function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeInitialAgent }: { initialAgent?: "all" | "codex" | "claude" | "grok"; initialFocus?: RequestLogFocus; onConsumeInitialAgent?: () => void }) {
+  const payload = useGatewayPayload(10_000);
   const [entries, setEntries] = useState<RequestLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -7151,6 +7154,8 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
       return [
         entry.model,
         entry.upstreamModel,
+        groupDisplayName(payload, entry.model),
+        groupDisplayName(payload, entry.upstreamModel),
         entry.relayName,
         entry.path,
         entry.threadId ?? "",
@@ -7161,7 +7166,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         .toLowerCase()
         .includes(needle);
     });
-  }, [entries, filter, query, sessionFilter, agentScope]);
+  }, [entries, filter, query, sessionFilter, agentScope, payload]);
 
   // 工具条：搜索 + 自动刷新开关（关掉时旁边出现手动刷新）+ 三点菜单（清空日志，确认框保留）；
   // 下面一行：状态胶囊在左，Agent / 时间 / 会话三个下拉在右；表格一张卡，占满剩下的高度。
@@ -7257,7 +7262,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
           ) : null}
           {modelFilter ? (
             <button className="request-log-chip" onClick={() => setModelFilter("")} title={t("去掉这个筛选")} type="button">
-              {tf("模型：{0}", [modelFilter])}
+              {tf("模型：{0}", [groupDisplayName(payload, modelFilter) ?? modelFilter])}
               <X aria-hidden="true" className="h-3 w-3" />
             </button>
           ) : null}
@@ -7285,7 +7290,10 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                 <span>{t("费用")}</span>
                 <span>{t("耗时")}</span>
               </div>
-              {filtered.map((entry) => (
+              {filtered.map((entry) => {
+                const model = groupDisplayName(payload, entry.model) ?? entry.model;
+                const upstream = groupDisplayName(payload, entry.upstreamModel) ?? entry.upstreamModel;
+                return (
                 <Fragment key={entry.id}>
                   <button
                     aria-expanded={expanded === entry.id}
@@ -7316,11 +7324,11 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                       <AgentGlyph agent={requestLogAgent(entry)} />
                       {maskAccountName(entry.relayName) || "-"}
                     </span>
-                    <span className="request-log-ellipsis" title={entry.upstreamModel ? `${entry.model} → ${entry.upstreamModel}` : entry.model}>
+                    <span className="request-log-ellipsis" title={entry.upstreamModel ? `${model} → ${upstream}` : model}>
                       {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
-                      {entry.model || "-"}
+                      {model || "-"}
                       {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
-                        <small> → {entry.upstreamModel}</small>
+                        <small> → {upstream}</small>
                       ) : null}
                     </span>
                     <span
@@ -7395,7 +7403,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                         </div>
                         <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
                         <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
-                        <div><dt>{t("上游模型")}</dt><dd>{entry.upstreamModel || "-"}</dd></div>
+                        <div><dt>{t("上游模型")}</dt><dd>{upstream || "-"}</dd></div>
                         <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (entry.state === "running" ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
                         <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
                         <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
@@ -7427,7 +7435,8 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                     </div>
                   ) : null}
                 </Fragment>
-              ))}
+                );
+              })}
             </div>
         ) : entries.length ? (
           <CxEmpty title={t("没有匹配当前筛选条件的请求。")} />

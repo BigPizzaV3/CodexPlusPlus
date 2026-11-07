@@ -20,6 +20,7 @@ import {
   activeSponsorIds,
   gatewayPresets,
   groupModelId,
+  groupDisplayName,
   memberLabel,
   memberStatus,
   modelDispatch,
@@ -156,6 +157,34 @@ test("模型组改名：显示与选择器副标签跟随当前名称，路由 I
   data.groups[0].name = "工作模型";
   assert.deepEqual(modelDisplay(data, model), { title: "工作模型", sub: "group/工作模型", group: true });
   assert.equal(pickerSections(data, "工作模型", initials).find((section) => section.key === "group")?.items[0].model, model);
+});
+
+test("多个组连续改名及复用旧名：显示按稳定 ID 解析，历史记录不被改写", () => {
+  const data = withActivity();
+  data.groups.push({ ...data.groups[0], id: "second", name: "Second" });
+  const record = data.activity!.agents[0].last!;
+  record.requestedModel = "group/daily";
+  const before = JSON.stringify(record);
+  for (const names of [["First renamed", "Second renamed"], ["Second", "First renamed"], ["相同名称", "相同名称"]]) {
+    data.groups.forEach((group, index) => { group.name = names[index]; });
+    data.groups.forEach((group, index) => {
+      const id = groupModelId(group.id);
+      assert.equal(groupDisplayName(data, id), names[index]);
+      assert.equal(groupDisplayName(data, id.toUpperCase()), names[index]);
+      assert.equal(modelDisplay(data, id).title, names[index]);
+      assert.equal(memberLabel(data, id), names[index]);
+      const item = pickerSections(data, "", initials).find((section) => section.key === "group")!.items.find((item) => item.model === id)!;
+      assert.equal(item.label, names[index]);
+      assert.equal(item.sub, `group/${names[index]}`);
+    });
+    const narrative = routeNarrative("claude", record, data);
+    assert.equal(narrative[0].args[1], names[0]);
+    assert.equal(narrative[0].args[2], names[0]);
+    assert.equal(JSON.stringify(record), before);
+  }
+  assert.equal(groupDisplayName(data, "deepseek-v4-pro"), undefined);
+  assert.equal(groupDisplayName(data, "group/deleted"), undefined);
+  assert.equal(groupDisplayName(null, "group/daily"), undefined);
 });
 
 test("模型名显示成正式写法，只影响显示", () => {

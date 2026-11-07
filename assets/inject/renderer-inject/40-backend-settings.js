@@ -116,6 +116,10 @@
       if (loaded) {
         syncOfficialUsagePolicy();
         const next = previous ? codexPlusBackendSettingsSnapshot() : null;
+        if (previous?.modelCatalogFingerprint && next?.modelCatalogFingerprint
+            && previous.modelCatalogFingerprint !== next.modelCatalogFingerprint) {
+          await loadCodexModelCatalog(true);
+        }
         // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
         emitCodexPlusSettingsLoaded("heartbeat", previous && next && typeof codexPlusChangedBackendSettingKeys === "function"
           ? codexPlusChangedBackendSettingKeys(previous, next)

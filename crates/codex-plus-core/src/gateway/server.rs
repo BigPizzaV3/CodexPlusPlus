@@ -790,7 +790,7 @@ async fn handle_gemini_models(
     let body = json!({
         "models": models.iter().map(|model| json!({
             "name": format!("models/{model}"),
-            "displayName": model,
+            "displayName": route::model_display_name(gateway, model),
             "supportedGenerationMethods": ["generateContent", "streamGenerateContent", "countTokens"],
         })).collect::<Vec<_>>(),
     });
@@ -1333,7 +1333,7 @@ async fn handle_models(
             "data": models.iter().map(|model| json!({
                 "type": "model",
                 "id": model,
-                "display_name": model,
+                "display_name": route::model_display_name(gateway, model),
                 "created_at": "2026-01-01T00:00:00Z"
             })).collect::<Vec<_>>(),
             "has_more": false,
@@ -1355,7 +1355,7 @@ async fn handle_models(
                         "id": id,
                         "object": "model",
                         "type": "model",
-                        "display_name": model,
+                        "display_name": route::model_display_name(gateway, model),
                         "created": 0,
                         "created_at": "2026-01-01T00:00:00Z",
                         "owned_by": "codex-plus"
@@ -1381,7 +1381,7 @@ async fn handle_models(
                 "id": model,
                 "object": "model",
                 "type": "model",
-                "display_name": model,
+                "display_name": route::model_display_name(gateway, model),
                 "created": 0,
                 "created_at": "2026-01-01T00:00:00Z",
                 "owned_by": "codex-plus"
@@ -1416,6 +1416,97 @@ pub fn exposed_models(gateway: &GatewaySettings, agent: &ToolId) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::store::{AgentBinding, GatewayGroup, GroupMember};
+    use tokio::io::AsyncReadExt;
+
+    async fn models_response(gateway: &GatewaySettings, agent: &ToolId, gemini: bool) -> Value {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        if gemini {
+            handle_gemini_models(&mut server, gateway, agent)
+                .await
+                .unwrap();
+        } else {
+            handle_models(&mut server, gateway, agent).await.unwrap();
+        }
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    }
+
+    #[tokio::test]
+    async fn renamed_groups_refresh_all_model_list_display_fields_without_changing_ids() {
+        let mut gateway = GatewaySettings::default();
+        for id in ["聚合供应商-1", "second"] {
+            gateway.groups.push(GatewayGroup {
+                id: id.to_string(),
+                name: id.to_string(),
+                members: vec![GroupMember {
+                    model: "gpt-6.1-sol".to_string(),
+                    weight: 1,
+                }],
+                ..GatewayGroup::default()
+            });
+        }
+        for id in ["claude", "claude-desktop", "opencode", "gemini-cli"] {
+            gateway.bindings.insert(
+                id.to_string(),
+                AgentBinding {
+                    model: "gpt-6.1-sol".to_string(),
+                    ..AgentBinding::default()
+                },
+            );
+        }
+        for names in [
+            ["6.1 Sol", "工作组"],
+            ["日常编码", "备用 Sol"],
+            ["Sol again", "另一个组"],
+        ] {
+            for (group, name) in gateway.groups.iter_mut().zip(names) {
+                group.name = name.to_string();
+            }
+            for agent in [
+                ToolId::Claude,
+                ToolId::Unknown("claude-desktop".to_string()),
+                ToolId::Unknown("opencode".to_string()),
+                ToolId::Unknown("gemini-cli".to_string()),
+            ] {
+                let gemini = agent.as_str() == "gemini-cli";
+                let response = models_response(&gateway, &agent, gemini).await;
+                let rows = response[if gemini { "models" } else { "data" }]
+                    .as_array()
+                    .unwrap();
+                for (model, name) in [
+                    ("gpt-6.1-sol".to_string(), "gpt-6.1-sol"),
+                    (gateway.groups[0].model_id(), names[0]),
+                    (gateway.groups[1].model_id(), names[1]),
+                ] {
+                    let id = if gemini {
+                        format!("models/{model}")
+                    } else if agent.as_str() == "claude-desktop" {
+                        route::claude_desktop_alias(&model, false)
+                    } else {
+                        model
+                    };
+                    let row = rows
+                        .iter()
+                        .find(|row| row[if gemini { "name" } else { "id" }] == id)
+                        .unwrap();
+                    assert_eq!(
+                        row[if gemini {
+                            "displayName"
+                        } else {
+                            "display_name"
+                        }],
+                        name
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn gateway_paths_split_into_agent_and_tail() {
