@@ -1,0 +1,6 @@
+ca/
+.cache/
+*.log
+# 本地录制含账号标识、资源凭据和历史元数据，不随源码提交。
+mock/bootstrap.json
+mock/api/conversations.json
