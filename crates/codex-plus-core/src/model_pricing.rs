@@ -237,6 +237,13 @@ pub fn cache_path() -> PathBuf {
     crate::paths::default_app_state_dir().join("cache").join("model-prices.json")
 }
 
+/// 只读本地缓存的价格表（不管新鲜度）：给「顺手展示价格」的调用方用，不触发下载；
+/// 没有缓存或缓存损坏时返回 None，由调用方决定是否后台预热。
+pub fn cached_catalog() -> Option<PriceCatalog> {
+    let text = std::fs::read_to_string(cache_path()).ok()?;
+    PriceCatalog::parse(&text).ok()
+}
+
 /// 价格表与它的获取时间（毫秒）。`refresh` 为真时忽略缓存时效、强制重新下载。
 pub async fn load_catalog(refresh: bool) -> anyhow::Result<(PriceCatalog, u64)> {
     let path = cache_path();

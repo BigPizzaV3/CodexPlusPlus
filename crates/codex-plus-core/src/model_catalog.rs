@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::settings::{RelayProfile, SettingsStore};
+use crate::settings::{BackendSettings, RelayProfile, SettingsStore};
 use serde_json::{Map, Value, json};
 
 const BASE_URL_ENV_KEYS: &[&str] = &[
@@ -44,6 +44,7 @@ struct CodexConfig {
 pub async fn read_codex_model_catalog() -> Value {
     let home = codex_home_dir();
     let settings_path = crate::paths::default_settings_path();
+    let mut loaded_settings = None;
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
             let profile = settings.active_relay_profile();
@@ -58,8 +59,9 @@ pub async fn read_codex_model_catalog() -> Value {
                 .and_then(Value::as_array)
                 .map_or(false, |m| !m.is_empty())
             {
-                return catalog;
+                return model_catalog_with_prices(catalog, Some(&settings));
             }
+            loaded_settings = Some(settings);
         }
     }
     let env = std::env::vars_os()
@@ -88,7 +90,116 @@ pub async fn read_codex_model_catalog() -> Value {
             });
         }
     };
-    read_codex_model_catalog_from_home(&home, &env, client).await
+    let catalog = read_codex_model_catalog_from_home(&home, &env, client).await;
+    model_catalog_with_prices(catalog, loaded_settings.as_ref())
+}
+
+/// 给目录里每个模型附上公开价格表的单价（`codex_plus_price`），前端模型选择器按它画价格条。
+/// 只读本地缓存的价格表，不阻塞路由；没有缓存时后台预热，本次不带价格。
+fn model_catalog_with_prices(mut catalog: Value, settings: Option<&BackendSettings>) -> Value {
+    apply_model_price_overlay(&mut catalog, settings);
+    catalog
+}
+
+fn apply_model_price_overlay(catalog: &mut Value, settings: Option<&BackendSettings>) {
+    let catalog_provider = catalog
+        .get("model_provider")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let Some(metadata) = catalog
+        .get_mut("modelMetadata")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    if metadata.is_empty() {
+        return;
+    }
+    let Some(prices) = crate::model_pricing::cached_catalog() else {
+        warm_price_catalog();
+        return;
+    };
+    overlay_prices(metadata, &prices, |group_id| {
+        group_base_url(settings, &catalog_provider, group_id)
+    });
+}
+
+/// 模型归属供应商的请求地址：聚合条目用成员的 base_url 查成员自己的价目，
+/// 其他（单供应商目录、官方目录）落到目录级 `model_provider` 对应的 profile。
+fn group_base_url(
+    settings: Option<&BackendSettings>,
+    catalog_provider: &str,
+    group_id: &str,
+) -> String {
+    let wanted = if group_id.trim().is_empty() {
+        catalog_provider.trim()
+    } else {
+        group_id.trim()
+    };
+    if wanted.is_empty() {
+        return String::new();
+    }
+    settings
+        .and_then(|settings| {
+            settings
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == wanted)
+        })
+        .map(|profile| profile.base_url.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// 条目对应的上游模型名：聚合成员的 slug 是 `cpx-<成员>/<上游>`，剥掉成员前缀；
+/// 默认成员的 slug 本来就是裸名，`[1M]` 这类窗口后缀交给查价的候选名处理。
+fn entry_upstream_model<'a>(slug: &'a str, group_id: &str) -> &'a str {
+    if group_id.trim().is_empty() {
+        return slug;
+    }
+    let prefix = crate::aggregate_catalog::aggregate_model_id(group_id, "");
+    slug.strip_prefix(&prefix).unwrap_or(slug)
+}
+
+fn overlay_prices(
+    metadata: &mut Map<String, Value>,
+    prices: &crate::model_pricing::PriceCatalog,
+    base_url_for: impl Fn(&str) -> String,
+) {
+    for (slug, entry) in metadata.iter_mut() {
+        let Some(entry) = entry.as_object_mut() else { continue };
+        let group_id = entry
+            .get("codex_plus_group_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let upstream = entry_upstream_model(slug, group_id);
+        let Some(found) = prices.lookup(&base_url_for(group_id), upstream) else {
+            continue;
+        };
+        entry.insert(
+            "codex_plus_price".to_string(),
+            json!({
+                "input": found.input,
+                "cachedInput": found.cached_input,
+                "output": found.output,
+                "currency": found.currency,
+                "provider": found.provider_name,
+                "source": "models.dev"
+            }),
+        );
+    }
+}
+
+/// 缓存缺失时后台拉一次价格表：本次响应不带价格，下次打开选择器就有了。
+fn warm_price_catalog() {
+    static WARMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WARMING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        let _ = crate::model_pricing::load_catalog(false).await;
+        WARMING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
 }
 
 fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
@@ -1764,5 +1875,83 @@ mod model_fetch_tests {
         );
         assert!(lower.contains("chatgpt-account-id: acct-1"), "{request}");
         assert!(lower.contains("originator: codex_cli_rs"), "{request}");
+    }
+}
+
+#[cfg(test)]
+mod price_overlay_tests {
+    use super::*;
+
+    const PRICES: &str = r#"{
+      "deepseek": { "id": "deepseek", "name": "DeepSeek", "api": "https://api.deepseek.com",
+        "models": { "deepseek-chat": { "id": "deepseek-chat", "cost": { "input": 0.27, "output": 1.1, "cache_read": 0.07 } } } },
+      "anthropic": { "id": "anthropic", "name": "Anthropic",
+        "models": { "claude-sonnet-4-5": { "id": "claude-sonnet-4-5", "cost": { "input": 3, "output": 15 } } } },
+      "zhipuai": { "id": "zhipuai", "name": "Zhipu AI", "api": "https://open.bigmodel.cn/api/paas/v4",
+        "models": { "glm-4.6": { "id": "glm-4.6", "cost": { "input": 0.6, "output": 2.2 } } } }
+    }"#;
+
+    fn prices() -> crate::model_pricing::PriceCatalog {
+        crate::model_pricing::PriceCatalog::parse(PRICES).unwrap()
+    }
+
+    fn settings() -> BackendSettings {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![
+            RelayProfile {
+                id: "deepseek".to_string(),
+                base_url: "https://api.deepseek.com/v1".to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: "glm".to_string(),
+                base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+                ..RelayProfile::default()
+            },
+        ];
+        settings
+    }
+
+    #[test]
+    fn aggregate_entries_lookup_with_member_base_url_and_bare_upstream() {
+        let settings = settings();
+        let mut catalog = json!({
+            "model_provider": "agg",
+            "modelMetadata": {
+                "cpx-deepseek/deepseek-chat": { "codex_plus_group_id": "deepseek" },
+                "cpx-glm/glm-4.6": { "codex_plus_group_id": "glm" },
+                "deepseek-chat": { "codex_plus_group_id": "deepseek" },
+                "cpx-glm/claude-sonnet-4-5": { "codex_plus_group_id": "glm" },
+                "unknown-model": { "codex_plus_group_id": "deepseek" },
+                "no-group": {}
+            }
+        });
+        let catalog_provider = catalog["model_provider"].as_str().unwrap().to_string();
+        let metadata = catalog["modelMetadata"].as_object_mut().unwrap();
+        overlay_prices(metadata, &prices(), |group_id| {
+            group_base_url(Some(&settings), &catalog_provider, group_id)
+        });
+        let entry = &catalog["modelMetadata"]["cpx-deepseek/deepseek-chat"]["codex_plus_price"];
+        assert_eq!((entry["input"].as_f64(), entry["output"].as_f64()), (Some(0.27), Some(1.1)));
+        assert_eq!(entry["provider"].as_str(), Some("DeepSeek"));
+        // 默认成员的裸名 slug 一样能查到，上游名不会被成员前缀卡住。
+        assert!(catalog["modelMetadata"]["deepseek-chat"]["codex_plus_price"].is_object());
+        // 成员前缀剥掉后按供应商地址查：glm 的 claude 走 zhipu 价目查不到就退回原厂提示价。
+        let resold = &catalog["modelMetadata"]["cpx-glm/claude-sonnet-4-5"]["codex_plus_price"];
+        assert_eq!(resold["provider"].as_str(), Some("Anthropic"));
+        assert!(catalog["modelMetadata"]["unknown-model"].get("codex_plus_price").is_none());
+        // 没有分组归属的条目按目录级 model_provider 找 profile，找不到就按名猜。
+        assert!(catalog["modelMetadata"]["no-group"].get("codex_plus_price").is_none());
+    }
+
+    #[test]
+    fn entry_upstream_strips_only_member_prefix() {
+        let group = "deepseek";
+        assert_eq!(
+            entry_upstream_model("cpx-deepseek/anthropic/claude-sonnet-4-5", group),
+            "anthropic/claude-sonnet-4-5"
+        );
+        assert_eq!(entry_upstream_model("deepseek-chat", group), "deepseek-chat");
+        assert_eq!(entry_upstream_model("cpx-other/x", ""), "cpx-other/x");
     }
 }
