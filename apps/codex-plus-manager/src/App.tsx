@@ -115,7 +115,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
-import { rebaseSettingsEdits } from "./settings-rebase";
+import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase";
 import {
   contextEntriesByKind,
   dedupeContextEntryList,
@@ -1907,13 +1907,52 @@ export function App() {
     [settings, settingsForm],
   );
 
+  /// 保存撞上 settings_revision_conflict（后台 token 刷新等抢先写盘）时自动恢复：
+  /// 拉最新设置，把本次提交的编辑 rebase 上去、合并外部轮换的登录 token 后重试一次；
+  /// 再次冲突或读取失败返回 null，由调用方按原逻辑抛错、保留草稿。
+  const retrySaveSettingsAfterConflict = async <T,>(
+    args: Record<string, unknown> | undefined,
+    snapshot: BackendSettings | undefined,
+  ): Promise<T | null> => {
+    const previous = settingsRef.current?.settings;
+    if (!snapshot || !previous) return null;
+    let latest: SettingsResult;
+    try {
+      latest = await invoke<SettingsResult>("load_settings");
+    } catch {
+      return null;
+    }
+    if (!latest || !isSuccessStatus(latest.status)) return null;
+    const base = normalizeSettings(previous);
+    const fresh = normalizeSettings(latest.settings);
+    const merged = mergeRotatedAuthContents(
+      rebaseSettingsEdits(normalizeSettings(snapshot), base, fresh),
+      base,
+      fresh,
+    );
+    try {
+      const retried = await invoke<T>("save_settings", {
+        ...args,
+        settings: merged,
+        expectedRevision: merged.revision || "",
+      });
+      const response = retried as { message?: string };
+      if (response?.message?.includes("settings_revision_conflict")) return null;
+      return retried;
+    } catch {
+      return null;
+    }
+  };
+
   const call = <T,>(command: string, args?: Record<string, unknown>) => {
     const snapshot = args?.settings as BackendSettings | undefined;
     return invoke<T>(command, command === "save_settings"
       ? { ...args, expectedRevision: snapshot?.revision || "" }
-      : args).then((result) => {
+      : args).then(async (result) => {
         const response = result as { message?: string };
         if (command === "save_settings" && response?.message?.includes("settings_revision_conflict")) {
+          const recovered = await retrySaveSettingsAfterConflict<T>(args, snapshot);
+          if (recovered !== null) return recovered;
           // 所有保存调用都保留当前草稿，不能把失败响应当成新表单回填。
           throw new Error(response.message);
         }
