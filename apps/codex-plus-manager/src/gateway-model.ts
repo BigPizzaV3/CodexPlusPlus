@@ -664,7 +664,7 @@ export function pickerSections(
   if (autoItems.length) sections.push({ key: "auto", title: "自动组", avatar: "", items: autoItems });
   const groups = payload.groups
     .filter((group) => group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id)))
-    .map((group) => ({ model: groupModelId(group.id), label: group.name, sub: groupModelId(group.id), avatar: avatar(group.name) }));
+    .map((group) => ({ model: groupModelId(group.id), label: group.name, sub: `${GROUP_MODEL_PREFIX}${group.name}`, avatar: avatar(group.name) }));
   if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
   const typed = rawQuery.trim();
   if (typed && !/\s/.test(typed) && !modelRoutable(payload, typed, exclude)) {
@@ -719,7 +719,7 @@ export function modelDisplay(payload: GatewayPayload | null, model: string, excl
   const title = model.trim() || agentModels(payload, exclude)[0] || "";
   if (title.startsWith(GROUP_MODEL_PREFIX)) {
     const group = payload?.groups.find((item) => groupModelId(item.id) === title);
-    return { title: group?.name ?? title, sub: title, group: true };
+    return { title: group?.name ?? title, sub: group ? `${GROUP_MODEL_PREFIX}${group.name}` : title, group: true };
   }
   const qualified = qualifiedProvider(payload, title, exclude);
   if (qualified) return { title: prettyModelName(qualified.model), sub: maskAccountName(qualified.entry.name), group: false };

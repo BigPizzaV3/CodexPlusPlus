@@ -121,7 +121,7 @@ test("模型选择器：每个供应商一组，路由组作为 group/ 模型在
   const all = pickerSections(payload(), "", initials);
   assert.deepEqual(all.map((section) => section.key), ["provider:deepseek", "provider:glm", "group"]);
   assert.deepEqual(all[0].items.map((item) => item.model), ["deepseek-v4-pro", "deepseek-v4-flash"]);
-  assert.deepEqual(all[2].items[0], { model: "group/daily", label: "Daily", sub: "group/daily", avatar: "DA" });
+  assert.deepEqual(all[2].items[0], { model: "group/daily", label: "Daily", sub: "group/Daily", avatar: "DA" });
   assert.deepEqual(pickerSections(payload(), "flash", initials)[0].items.map((item) => item.model), ["deepseek-v4-flash"]);
   const custom = pickerSections(payload(), "kimi-k3", initials).at(-1);
   assert.equal(custom?.key, "custom");
@@ -136,11 +136,26 @@ test("模型显示：模型名 + 提供它的供应商；<供应商>/<模型> �
   assert.deepEqual(modelDisplay(payload(), ""), { title: "DeepSeek-V4-Pro", sub: "DeepSeek", group: false });
   assert.deepEqual(modelDisplay(payload(), "glm-5.3"), { title: "GLM-5.3", sub: "GLM", group: false });
   assert.deepEqual(modelDisplay(payload(), "deepseek/deepseek-v4-flash"), { title: "DeepSeek-V4-Flash", sub: "DeepSeek", group: false });
-  assert.deepEqual(modelDisplay(payload(), "group/daily"), { title: "Daily", sub: "group/daily", group: true });
+  assert.deepEqual(modelDisplay(payload(), "group/daily"), { title: "Daily", sub: "group/Daily", group: true });
   assert.equal(memberLabel(payload(), "deepseek/deepseek-v4-flash"), "DeepSeek · DeepSeek-V4-Flash");
   assert.equal(memberLabel(payload(), "group/daily"), "Daily");
   assert.equal(groupModelId("daily"), "group/daily");
   assert.equal(slugify(" 系统 默认 "), "系统-默认");
+});
+
+test("模型组改名：显示与选择器副标签跟随当前名称，路由 ID 保持不变", () => {
+  const data = payload();
+  data.groups[0].id = "聚合供应商-1";
+  data.groups[0].name = "6.1 Sol";
+  const model = "group/聚合供应商-1";
+  assert.deepEqual(modelDisplay(data, model), { title: "6.1 Sol", sub: "group/6.1 Sol", group: true });
+  const item = pickerSections(data, "6.1 Sol", initials).find((section) => section.key === "group")?.items[0];
+  assert.deepEqual(item, { model, label: "6.1 Sol", sub: "group/6.1 Sol", avatar: "6." });
+  assert.ok(agentModels(data).includes(model));
+  assert.equal(memberLabel(data, model), "6.1 Sol");
+  data.groups[0].name = "工作模型";
+  assert.deepEqual(modelDisplay(data, model), { title: "工作模型", sub: "group/工作模型", group: true });
+  assert.equal(pickerSections(data, "工作模型", initials).find((section) => section.key === "group")?.items[0].model, model);
 });
 
 test("模型名显示成正式写法，只影响显示", () => {

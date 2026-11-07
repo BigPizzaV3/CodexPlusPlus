@@ -9,6 +9,7 @@ import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, d
 import {
   agentModels,
   agentPoolProviders,
+  GROUP_MODEL_PREFIX,
   bindingFromDraft,
   draftFromBinding,
   modelDisplay,
@@ -822,7 +823,7 @@ export function ModelList({
                   tabIndex={0}
                 >
                   <span className="gw-mp-text">
-                    <strong title={item.model}>{item.label}</strong>
+                    <strong title={item.model.startsWith(GROUP_MODEL_PREFIX) ? item.sub : item.model}>{item.label}</strong>
                     {item.custom ? <small>{t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
                   </span>
                   {item.direct ? (
