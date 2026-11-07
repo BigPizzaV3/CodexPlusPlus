@@ -1918,6 +1918,7 @@ export const EN_PLAIN: Record<string, string> = {
   "关掉后，新添加的供应商默认不给这个 Agent 用；添加时仍可手动勾选。": "When off, newly added providers are not used by this agent by default; you can still tick it when adding.",
   "添加供应商时自动加入": "Auto-join new providers",
   "自定义模型 ID": "Custom model ID",
+  "{0} 个自定义候选": "{0} custom options",
   "用默认（不经 Codex++）": "Use default (bypass Codex++)",
   "直连，不经 Codex++": "Direct, not via Codex++",
   "断开并直连": "Disconnect and go direct",

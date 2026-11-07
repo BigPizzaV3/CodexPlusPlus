@@ -738,8 +738,9 @@ export function ModelList({
   const listRef = useRef<HTMLDivElement>(null);
   const ownList = onPickOwn ? own : null;
   const sections = useMemo(() => {
-    const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup), ownPickerSection(ownList, query, avatarOf));
-    // 手输的模型 ID（custom）不属于哪一家，按供应商筛选时也留着。
+    const ownSection = ownPickerSection(ownList, query, avatarOf);
+    const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup, sectionOnly, Boolean(ownSection && (!sectionOnly || sectionOnly === "own"))), ownSection);
+    // custom 已在生成时限定目标供应商。
     if (sectionOnly) return all.filter((section) => section.key === sectionOnly || section.key === "custom");
     if (!favoritesOnly) return all;
     // 收藏的是池里的模型；Agent 自带的同名模型不算。
@@ -769,6 +770,7 @@ export function ModelList({
     [payload, exclude, skipGroup, ownList],
   );
   const total = sections.reduce((sum, section) => sum + section.items.length, 0);
+  const customCount = sections.find((section) => section.key === "custom")?.items.length ?? 0;
 
   // 排版：搜索 + 一排横向筛选在上；列表每个模型两行（模型名 / 供应商）；「默认」「断开」这类操作在底部。
   return (
@@ -777,7 +779,7 @@ export function ModelList({
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
           <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
-          <em>{tf("{0} 个", [total])}</em>
+          <em>{customCount ? tf("{0} 个自定义候选", [customCount]) : tf("{0} 个", [total])}</em>
         </label>
         <div className="gw-mp-filters">
           <button data-active={scope === "all"} onClick={() => { setScope("all"); setQuery(""); if (listRef.current) listRef.current.scrollTop = 0; }} type="button">{t("全部")}</button>
@@ -823,7 +825,7 @@ export function ModelList({
                 >
                   <span className="gw-mp-text">
                     <strong title={item.model}>{item.label}</strong>
-                    {item.custom ? <small>{t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
+                    {item.custom ? <small>{item.sub} · {t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
                   </span>
                   {item.direct ? (
                     <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>

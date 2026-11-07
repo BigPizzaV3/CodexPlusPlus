@@ -209,7 +209,8 @@ test("「挑选」弹层挂在 body 上，紧凑规则用 .gw-portal 前缀", ()
 test("模型选择器顶部的供应商按钮是筛选，不是滚动到那一段", () => {
   const source = read("GatewayAgents.tsx");
   assert.match(source, /onClick=\{\(\) => pickScope\(\{ section: section\.key \}\)\}/);
-  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly \|\| section\.key === "custom"\)/);
+  assert.match(source, /pickerSections\(payload, query, avatarOf, exclude, skipGroup, sectionOnly,/);
+  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly \|\| section\.key === "custom"\)/, "自定义组由 pickerSections 按供应商限定");
   assert.doesNotMatch(source, /scrollTop = node\.offsetTop/);
 });
 
