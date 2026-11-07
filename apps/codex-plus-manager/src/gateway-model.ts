@@ -1161,9 +1161,10 @@ const GATEWAY_EXTRA_PRESETS: GatewayPreset[] = [
  */
 export const SPONSORS: Array<{ id: string; expiresAt: string }> = [
   { id: "jojocode-max", expiresAt: "2029-06-15" },
-  { id: "runapi", expiresAt: "2026-11-07" },
+  { id: "runapi", expiresAt: "2026-12-07" },
   { id: "apikeyfun", expiresAt: "2026-11-22" },
   { id: "cccccc-api", expiresAt: "2026-12-01" },
+  { id: "tokenmy", expiresAt: "2026-11-20" },
 ];
 
 /** 本地日期（YYYY-MM-DD），与到期日按天比较。 */

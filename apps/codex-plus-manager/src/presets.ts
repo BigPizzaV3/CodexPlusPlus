@@ -246,6 +246,17 @@ export const PRESETS: ProviderPreset[] = [
     model: "",
   },
   {
+    id: "tokenmy",
+    name: "TokenMy",
+    websiteUrl: "https://agent.tokenmy.ai",
+    apiKeyUrl: "https://agent.tokenmy.ai",
+    category: "aggregator",
+    baseUrl: "https://agent.tokenmy.ai/v1",
+    protocol: "responses",
+    // 模型留空：添加时「从上游获取」或手填。
+    model: "",
+  },
+  {
     id: "novita",
     name: "Novita AI",
     category: "aggregator",
