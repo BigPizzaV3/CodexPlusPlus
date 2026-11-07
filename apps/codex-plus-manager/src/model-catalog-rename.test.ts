@@ -187,6 +187,7 @@ function runtime(initial = catalog({ "group/stable": "Before rename" }), include
     window.renameHarness = {
       heartbeat: syncBackendSettingsFromHeartbeat,
       patch: codexPlusModelPickerPatch,
+      refresh: runCodexModelWhitelistRefreshPass,
       rows: codexPlusModelPickerRows,
       syncRecents: codexPlusModelPickerSyncRecents,
       recents: codexPlusModelPickerRecents,
@@ -332,6 +333,75 @@ test("legacy recents migrate by the previous catalog identity when another group
   await app.harness.heartbeat();
   assert.equal(app.harness.recents()[0].slug, "group/original");
   assert.equal(app.harness.recents()[0].label, "New name");
+});
+
+test("native hover descriptions recover from late query discovery and stale responses for every renamed group", async () => {
+  const names = { "group/first": "6.1 Sol", "group/second": "6.1 Terra", "group/third": "Another" };
+  const app = runtime(catalog(names), true);
+  app.api.setBackendSettings({ codexAppModelWhitelistUnlock: true });
+  const stale = Object.entries(names).map(([model, displayName]) => Object.freeze({
+    model, displayName, description: `${model} · 模型组`, hidden: false,
+  }));
+  const ordinary = Object.freeze({ model: "provider/model", displayName: "Ordinary", description: "Ordinary description" });
+  const response = () => Object.freeze({ data: Object.freeze([...stale, ordinary]), nextCursor: "next" });
+  const queries = [
+    ["models", "list", "local", "apikey", 100],
+    ["models", "list", "local", "no-auth", 100],
+    ["models", "list", "remote", "apikey", 100],
+    ["models", "list", "local", "team", { accountId: "team" }],
+    ["other", "list", "local", "apikey", 100],
+  ].map((queryKey) => ({ queryKey, state: { data: response(), dataUpdatedAt: 123 } }));
+  let writes = 0;
+  const queryClient = {
+    invalidateQueries: async () => {},
+    getQueryCache: () => ({
+      findAll: (filters: { queryKey: unknown[]; predicate(query: typeof queries[number]): boolean }) =>
+        queries.filter((query) => filters.queryKey.every((part, index) => query.queryKey[index] === part) && filters.predicate(query)),
+    }),
+    setQueryData(queryKey: unknown[], data: typeof queries[number]["state"]["data"], options: { updatedAt: number }) {
+      const query = queries.find((entry) => entry.queryKey === queryKey)!;
+      assert.equal(options.updatedAt, query.state.dataUpdatedAt, "display sync preserves network freshness");
+      query.state.data = data;
+      writes += 1;
+    },
+  };
+  try {
+    // 第一次目录发布时 React 查询客户端尚未挂载，显示名也早已正确。
+    await app.api.loadModelCatalog(true);
+    app.window.document.documentElement.__reactContainer$native = { memoizedProps: { client: queryClient } };
+    app.harness.refresh();
+    assert.equal(writes, 2, "both existing local non-team caches refresh without a request wrapper");
+    for (const query of queries.slice(0, 2)) {
+      for (const [index, [model, displayName]] of Object.entries(names).entries()) {
+        assert.equal(query.state.data.data[index].model, model);
+        assert.equal(query.state.data.data[index].displayName, displayName);
+        assert.equal(query.state.data.data[index].description, `${displayName} · 模型组`);
+        assert.equal(stale[index].description, `${model} · 模型组`, "old descriptors stay immutable");
+      }
+      assert.equal(query.state.data.data[3], ordinary);
+      assert.equal(query.state.data.nextCursor, "next");
+    }
+    for (const query of queries.slice(2)) assert.equal(query.state.data.data[0], stale[0]);
+    app.harness.refresh();
+    assert.equal(writes, 2, "unchanged metadata does not republish");
+
+    // 未包装的旧原生响应晚到；下一轮真实刷新入口必须再次修正描述。
+    queries[0].state.data = response();
+    app.harness.refresh();
+    assert.equal(writes, 3);
+    const renamed = { "group/first": "Final Sol", "group/second": "6.1 Sol", "group/third": "6.1 Sol" };
+    app.change(catalog(renamed));
+    await app.harness.heartbeat();
+    for (const query of queries.slice(0, 2)) {
+      for (const [index, [model, displayName]] of Object.entries(renamed).entries()) {
+        assert.equal(query.state.data.data[index].model, model);
+        assert.equal(query.state.data.data[index].description, `${displayName} · 模型组`);
+      }
+    }
+    assert.equal(writes, 5, "all group identities update even when old names are reused or shared");
+  } finally {
+    app.window.__codexPlusModelPickerGroupsRuntime.dispose();
+  }
 });
 
 test("restart cannot associate an old recent without a stable identity with a reused name", async () => {

@@ -137,6 +137,7 @@
         codexModelCatalog = catalog;
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
+        syncCodexPlusGroupModelQueries();
         scheduleCodexModelWhitelistRefresh();
         if (groupNamesChanged && codexPlusModelUnlockEnabled()) {
           const client = findCodexQueryClient();
@@ -174,6 +175,35 @@
       : null;
     const value = exact || (matchedKey ? metadata[matchedKey] : null);
     return value && typeof value === "object" ? value : null;
+  }
+
+  function syncCodexPlusGroupModelQueries() {
+    if (!codexPlusModelUnlockEnabled()) return;
+    const client = findCodexQueryClient();
+    if (!client) return;
+    const queries = client.getQueryCache().findAll({
+      queryKey: ["models", "list", "local"],
+      predicate: (query) => query.queryKey[3] !== "team",
+    });
+    for (const query of queries) {
+      const response = query.state.data;
+      if (!Array.isArray(response?.data)) continue;
+      let changed = false;
+      const models = response.data.map((model) => {
+        if (!model.model.startsWith("group/")) return model;
+        const metadata = codexPlusModelMetadata(model.model);
+        if (!metadata) return model;
+        const next = { ...model };
+        for (const key of ["displayName", "description"]) {
+          if (typeof metadata[key] === "string" && metadata[key]) next[key] = metadata[key];
+        }
+        if (next.displayName === model.displayName && next.description === model.description) return model;
+        changed = true;
+        return next;
+      });
+      // 原生悬停和输入框都订阅此缓存；发布新对象，并保留网络请求的更新时间。
+      if (changed) client.setQueryData(query.queryKey, { ...response, data: models }, { updatedAt: query.state.dataUpdatedAt });
+    }
   }
 
   function modelReasoningEfforts(modelName) {
@@ -1192,6 +1222,7 @@
   function runCodexModelWhitelistRefreshPass() {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
     try {
+      syncCodexPlusGroupModelQueries();
       patchStatsigModelWhitelist();
       installAppServerModelRequestPatch();
     } catch (error) {
