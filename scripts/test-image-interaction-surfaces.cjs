@@ -16,6 +16,60 @@ const card = attrs => `<div id="card" ${attrs}><div id="content"><img id="photo"
 const samples = async (page, frame) => { const r = await rect(page, '#card'); return [300,500].map(x => pixel(frame,x,r[1]+155)); };
 const expected = color => [[200,90,40],[40,80,200]].map(w => w.map((v,i)=>Math.round(v*.3+color[i]*.7)));
 
+// 原生滚动按钮在 footer 的零高定位容器内，通过独立 translate 属性水平居中。
+const scrollButton = '<button id="jump" class="group/scroll-to-bottom" type="button" aria-label="Scroll to bottom" aria-hidden="false"><svg width="20" height="20"><path d="M10 3V16M4 10L10 16L16 10" fill="none" stroke="white" stroke-width="2"/></svg></button>';
+const scrollButtonCss = `#transcript{height:300px;overflow:auto}#messages{height:1200px}
+  #footer{position:absolute;bottom:40px;width:100%;height:80px;z-index:20;pointer-events:none}
+  #anchor{position:relative;height:0}#jump{position:absolute;right:50%;bottom:24px;translate:50%;z-index:30;
+    display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;
+    box-sizing:border-box;border:1px solid #555;border-radius:50%;background:var(--jump-bg,#111);pointer-events:auto}
+  #jump[aria-hidden="true"]{opacity:0;pointer-events:none}`;
+const scrollButtonPage = page => html(page, scrollButtonCss,
+  `<div id="transcript" class="thread-scroll-container"><div id="messages">Messages</div></div><div id="footer" data-thread-scroll-footer><div id="anchor">${scrollButton}</div></div>`);
+const checkScrollButtonPixels = async page => {
+  const r = await rect(page, '#jump'), frame = await shot(page);
+  for (const [index, offset] of [8,24].entries()) near(pixel(frame,r[0]+offset,r[1]+8),expected([17,17,17])[index],'scroll button backing');
+  near(pixel(frame,r[0]+16,r[1]+12),[255,255,255],'native arrow stays untinted');
+};
+
+check('scroll-to-bottom button paints wallpaper without changing geometry or clicks', async page => {
+  await scrollButtonPage(page);
+  const before = await rect(page, '#jump');
+  await page.$eval('#jump',n=>n.onclick=()=>{const scroll=document.getElementById('transcript');scroll.scrollTop=scroll.scrollHeight;n.setAttribute('aria-hidden','true');n.tabIndex=-1;});
+  await configure(page,{dataUrl:assets.pattern,opacity:.3});
+  await checkScrollButtonPixels(page);
+  assert.deepEqual(await rect(page,'#jump'),before,'native centering and size are preserved');
+  await page.locator('#jump').hover(); await checkScrollButtonPixels(page);
+  await page.locator('#jump').focus(); await checkScrollButtonPixels(page);
+  await page.keyboard.press('Enter'); await settle(page);
+  assert.equal(await page.$eval('#transcript',n=>n.scrollTop),900,'keyboard activation still reaches the last message');
+  assert.equal(await page.$eval('#jump',n=>getComputedStyle(n).opacity),'0','native hidden state is preserved');
+  await page.$eval('#jump',n=>{n.setAttribute('aria-hidden','false');n.removeAttribute('tabindex');});await settle(page);
+  await checkScrollButtonPixels(page);
+  await page.locator('#jump').click();
+  assert.equal(await page.$eval('#jump',n=>n.getAttribute('aria-hidden')),'true','pointer activation still works');
+});
+
+check('scroll-to-bottom late identity, material changes and remount preserve native behavior', async page => {
+  await scrollButtonPage(page);
+  await page.$eval('#jump',n=>n.className='');
+  await configure(page,{dataUrl:assets.pattern,opacity:.3});
+  await page.$eval('#jump',n=>n.className='group/scroll-to-bottom');await settle(page);
+  await checkScrollButtonPixels(page);
+  await page.$eval('#footer',n=>n.style.setProperty('--jump-bg','rgba(17,17,17,.4)'));await settle(page);
+  assert.equal(await page.$eval('#jump',n=>n.hasAttribute('data-codex-plus-image-paint')),false,'translucent native material is not painted twice');
+  await page.$eval('#footer',n=>n.style.removeProperty('--jump-bg'));await settle(page);
+  await checkScrollButtonPixels(page);
+  await page.$eval('#jump',n=>n.className='');await settle(page);
+  assert.equal(await page.$eval('#jump',n=>n.hasAttribute('data-codex-plus-image-paint')),false,'removed identity releases paint');
+  await page.$eval('#anchor',(n,markup)=>n.innerHTML=markup,scrollButton);await settle(page);
+  await checkScrollButtonPixels(page);
+  await page.$eval('#anchor',n=>n.setAttribute('data-codex-plus-ext','fixture-extension'));await settle(page);
+  // 重新挂载到拓展所有的容器，不能把第三方控件也纳入原生适配。
+  await page.$eval('#anchor',(n,markup)=>n.innerHTML=markup,scrollButton);await settle(page);
+  assert.equal(await page.$eval('#jump',n=>n.hasAttribute('data-codex-plus-image-paint')),false,'extension-owned controls stay excluded');
+});
+
 // 2026-11-07 原生组件：QAOE 附件按钮、Sonner 中的 alert-root、Radix 上下文 tooltip。
 // 用同坐标全屏壁纸的像素作参考，避免把“挂上标记”误当成正确合成。
 for (const kind of ["annotation", "archive-toast", "context-tooltip"]) check(`native ${kind} receives full wallpaper strength`, async page => {
