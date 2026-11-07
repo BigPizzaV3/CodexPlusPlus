@@ -1722,7 +1722,8 @@
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
       return { status: "failed", message: "桥接不可用，请重启启动器", bridgeFailure: true };
     }
-    if (options.timeoutMs > 0 && window.__codexSessionDeleteBridge.supportsTimeout !== true) {
+    const legacyTimeout = options.timeoutMs > 0 && window.__codexSessionDeleteBridge.supportsTimeout !== true;
+    if (legacyTimeout && !options.allowLegacyTimeout) {
       return { status: "failed", message: "当前桥接不支持有界请求", code: "bridge_timeout_unsupported" };
     }
     function bridgeWithBackendTimeout(path, payload) {
@@ -1765,7 +1766,30 @@
         });
         return fallback;
       }
-      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload, options);
+      let bridgeResult;
+      if (legacyTimeout) {
+        const callbacks = window.__codexSessionDeleteCallbacks;
+        const before = window.__codexSessionDeleteSeq;
+        const request = window.__codexSessionDeleteBridge(path, payload);
+        const id = window.__codexSessionDeleteSeq === before + 1 ? String(window.__codexSessionDeleteSeq) : null;
+        const callback = id ? callbacks?.get(id) : null;
+        let timer;
+        try {
+          bridgeResult = await Promise.race([
+            request,
+            new Promise((resolve) => {
+              timer = setTimeout(() => resolve({
+                status: "failed", message: "桥接请求超时", timeout: true, bridgeFailure: true,
+              }), options.timeoutMs);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+          if (callback && callbacks.get(id) === callback) callbacks.delete(id);
+        }
+      } else {
+        bridgeResult = await window.__codexSessionDeleteBridge(path, payload, options);
+      }
       if (bridgeResult?.bridgeFailure) recordCodexPlusBridgeFailure();
       else recordCodexPlusBridgeSuccess();
       return bridgeResult;

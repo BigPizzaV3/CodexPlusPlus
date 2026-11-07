@@ -636,17 +636,30 @@ mod tests {
         let old_id = new_operation_id(&old_epoch);
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = calls.clone();
-        let _server = start_owner(identity, new_owner_epoch(), Arc::new(move |_| {
+        let new_epoch = new_owner_epoch();
+        let handler_epoch = new_epoch.clone();
+        let _server = start_owner(identity, new_epoch.clone(), Arc::new(move |action| {
+            let ControlAction::Submit(payload) = action else { unreachable!() };
             counted.fetch_add(1, Ordering::SeqCst);
-            unreachable!("旧 epoch 不得送入新 owner")
+            Ok(json!({
+                "reloadOperation": { "operationId": payload["operationId"], "ownerEpoch": handler_epoch,
+                    "allowPage": true, "sourceDocumentId": null, "phase": "applied", "active": false, "revision": "current" },
+                "desiredRevision": "current",
+            }))
         })).unwrap();
         let inventory = crate::user_scripts::reload_native_scripts(temp.path(), 9325, &manager, true, Some(&json!({
             "operationId": old_id, "ownerEpoch": old_epoch, "allowPage": true, "phase": "unknown",
         }))).await.unwrap();
         assert_eq!(inventory["reloadOperation"]["phase"], "unknown");
         assert_eq!(inventory["reloadOperation"]["active"], true);
+        assert_eq!(inventory["reloadOperation"]["previousOutcome"], "unknown");
         assert_eq!(inventory["reloadOperation"]["operationId"], old_id);
         assert_eq!(inventory["reloadOperation"]["ownerEpoch"], old_epoch);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let next = crate::user_scripts::reload_native_scripts(temp.path(), 9325, &manager, true, None).await.unwrap();
+        assert_eq!(next["reloadOperation"]["phase"], "unknown");
+        assert_eq!(next["reloadOperation"]["operationId"], old_id);
+        assert_eq!(next["reloadOperation"]["ownerEpoch"], old_epoch);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 

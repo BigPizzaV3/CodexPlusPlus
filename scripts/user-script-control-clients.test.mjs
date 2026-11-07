@@ -11,6 +11,7 @@ assert.ok(start > 0 && end > start);
 const client = source.slice(start, end);
 const epoch = "a".repeat(32);
 const storageKey = "__codexPlusPendingUserScriptReloadV1";
+const legacyStorageKey = "__codexPlusPendingLegacyUserScriptReloadV1";
 
 function createMemoryStorage() {
   const values = new Map();
@@ -199,6 +200,21 @@ function createRealBridgeHarness(onRequest = () => {}, { storage = createMemoryS
     onRequest(request, reply);
   };
   const installBridge = () => vm.runInContext(bridgeScript, context);
+  const installLegacyBridge = () => vm.runInContext(`(() => {
+    window.__codexSessionDeleteCallbacks = new Map();
+    window.__codexSessionDeleteSeq = 0;
+    window.__codexSessionDeleteResolve = (id, result) => {
+      const callback = window.__codexSessionDeleteCallbacks.get(id);
+      if (!callback) return;
+      window.__codexSessionDeleteCallbacks.delete(id);
+      callback.resolve(result);
+    };
+    window.__codexSessionDeleteBridge = (path, payload) => new Promise((resolve) => {
+      const id = String(++window.__codexSessionDeleteSeq);
+      window.__codexSessionDeleteCallbacks.set(id, { resolve });
+      window.codexSessionDeleteV2(JSON.stringify({ id, path, payload }));
+    });
+  })();`, context);
   const installClient = () => vm.runInContext(`(() => {
     let codexPlusUserScripts = {};
     let codexPlusUserScriptsLoaded = false;
@@ -212,7 +228,7 @@ function createRealBridgeHarness(onRequest = () => {}, { storage = createMemoryS
   })();`, context);
   installBridge();
   installClient();
-  return { clock, calls, toasts, window, reply, installBridge, installClient };
+  return { clock, calls, toasts, window, reply, installBridge, installLegacyBridge, installClient };
 }
 
 test("real bridge cleans callbacks and timers on response, rejection, and synchronous binding failure", async () => {
@@ -483,9 +499,12 @@ test("an explicitly unsupported owner falls back to legacy reload, but a missing
     oldBridgeCalls++;
     return new Promise(() => {});
   };
-  await oldBridge.window.__testClient.reload();
+  const pending = oldBridge.window.__testClient.reload();
+  await oldBridge.clock.advance(6000);
+  await pending;
   assert.ok(oldBridge.toasts.some((message) => message.includes("无法确认启动器重载能力")));
-  assert.equal(oldBridgeCalls, 0);
+  assert.equal(oldBridgeCalls, 2);
+  assert.equal(oldBridge.calls.some((request) => request.path === "/user-scripts/reload"), false);
 });
 
 test("a capability response without the document fence falls back to legacy reload", async () => {
@@ -514,6 +533,74 @@ test("a capability response without the versioned submit route falls back to leg
   assert.equal(h.calls.some((request) => request.path.startsWith("/user-scripts/reload-operation")), false);
   assert.equal(h.calls.filter((request) => request.path === "/user-scripts/reload").length, 1);
   assert.equal(h.window.sessionStorage.getItem(storageKey), null);
+});
+
+test("the real legacy bridge can complete an explicitly unsupported capability fallback", async () => {
+  const h = createRealBridgeHarness((request, reply) => {
+    if (request.payload.capabilities) return reply(request, { status: "failed", message: "Unknown bridge path" });
+    if (request.path === "/user-scripts/reload" || request.path === "/user-scripts/list") {
+      return reply(request, { scripts: [] });
+    }
+  });
+  h.installLegacyBridge();
+  await h.window.__testClient.reload();
+  assert.deepEqual(h.calls.map((request) => request.path), [
+    "/user-scripts/reload-status", "/user-scripts/reload", "/user-scripts/list",
+  ]);
+  assert.equal(h.window.__codexSessionDeleteCallbacks.size, 0);
+  assert.equal(h.window.sessionStorage.getItem(legacyStorageKey), null);
+});
+
+test("a legacy bridge capability timeout removes its callback and never falls back", async () => {
+  const h = createRealBridgeHarness();
+  h.installLegacyBridge();
+  const pending = h.window.__testClient.reload();
+  await h.clock.advance(6000);
+  await pending;
+  assert.equal(h.calls.some((request) => request.path === "/user-scripts/reload"), false);
+  assert.equal(h.window.__codexSessionDeleteCallbacks.size, 0);
+  assert.equal(h.clock.timers.size, 0);
+});
+
+test("legacy timeout cannot trigger another reload during queued or later demands", async () => {
+  const h = createRealBridgeHarness((request, reply) => {
+    if (request.payload.capabilities) return reply(request, { status: "failed", message: "Unknown bridge path" });
+    if (request.path === "/user-scripts/list") return reply(request, { scripts: [] });
+  });
+  const first = h.window.__testClient.reload();
+  await h.clock.flush();
+  const second = h.window.__testClient.reload();
+  await h.clock.advance(6000);
+  await Promise.all([first, second]);
+  const later = h.window.__testClient.reload();
+  await h.clock.advance(3000);
+  await later;
+  assert.equal(h.calls.filter((request) => request.path === "/user-scripts/reload").length, 1);
+  assert.ok(h.window.sessionStorage.getItem(legacyStorageKey));
+  assert.ok(h.toasts.some((message) => message.includes("结果待确认")));
+});
+
+test("an unconfirmed legacy reload also blocks a later versioned submission", async () => {
+  let upgraded = false;
+  const h = createRealBridgeHarness((request, reply) => {
+    if (request.payload.capabilities) {
+      return reply(request, upgraded
+        ? { capabilities: { operationProtocol: 1, documentFence: true, fencedSubmitV1: true }, ownerEpoch: epoch }
+        : { status: "failed", message: "Unknown bridge path" });
+    }
+    if (request.path === "/user-scripts/reload-operation-v1") {
+      return reply(request, applied(request.payload.operationId));
+    }
+    if (request.path === "/user-scripts/list") return reply(request, { scripts: [] });
+  });
+  const first = h.window.__testClient.reload();
+  await h.clock.advance(3000);
+  await first;
+  upgraded = true;
+  await h.window.__testClient.reload();
+  assert.equal(h.calls.filter((request) => request.path === "/user-scripts/reload").length, 1);
+  assert.equal(h.calls.some((request) => request.path === "/user-scripts/reload-operation-v1"), false);
+  assert.ok(h.window.sessionStorage.getItem(legacyStorageKey));
 });
 
 test("an old host after handshake cannot trigger a legacy reload or clear the reference", async () => {
@@ -779,7 +866,7 @@ test("after navigation not_found is retried only with the original source docume
   assert.equal(storage.getItem(storageKey), null);
 });
 
-test("a changed owner never receives an old operation and its reference is retained", async () => {
+test("a changed owner does not make an unknown old operation safe to resubmit", async () => {
   const storage = createMemoryStorage();
   const reference = {
     operationId: `${epoch}-18bcfe56800-${"b".repeat(32)}`,
@@ -787,8 +874,15 @@ test("a changed owner never receives an old operation and its reference is retai
   };
   storage.setItem(storageKey, JSON.stringify(reference));
   const h = createRealBridgeHarness((request, reply) => {
+    if (request.payload.capabilities) return reply(request, {
+      capabilities: { operationProtocol: 1, documentFence: true, fencedSubmitV1: true }, ownerEpoch: "c".repeat(32),
+    });
     if (request.path === "/user-scripts/reload-status") return reply(request, {
-      reloadOperation: { operationId: reference.operationId, ownerEpoch: "c".repeat(32), phase: "rejected" },
+      reloadOperation: { operationId: reference.operationId, ownerEpoch: "c".repeat(32), phase: "rejected", active: false },
+    });
+    if (request.path === "/user-scripts/reload-operation-v1") return reply(request, {
+      reloadOperation: { ...request.payload, phase: "applied", active: false, revision: "current" },
+      desiredRevision: "current",
     });
     if (request.path === "/user-scripts/list") return reply(request, { scripts: [] });
   }, { storage, documentId: "document-new" });
@@ -798,8 +892,12 @@ test("a changed owner never receives an old operation and its reference is retai
   assert.equal(h.calls[0].payload.operationId, reference.operationId);
   assert.equal(h.calls.some((request) => request.path === "/user-scripts/reload-operation-v1"), false);
   assert.deepEqual(JSON.parse(storage.getItem(storageKey)), reference);
-  assert.equal(h.window.__codexPlusReloadState.pending.phase, "unknown");
+  assert.equal(h.window.__codexPlusReloadState.pending.phase, "owner_changed");
   assert.ok(h.toasts.some((message) => message.includes("原重载结果无法确认")));
+  await h.window.__testClient.reload();
+  assert.equal(h.calls.some((request) => request.path === "/user-scripts/reload-operation-v1"), false);
+  assert.deepEqual(JSON.parse(storage.getItem(storageKey)), reference);
+  assert.equal(h.window.__codexPlusReloadState.pending.phase, "owner_changed");
 });
 
 test("a terminal response without owner identity is not trusted", async () => {

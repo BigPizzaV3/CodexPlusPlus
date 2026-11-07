@@ -6266,6 +6266,8 @@
     : (window.__codexPlusReloadState ||= { pending: codexPlusPendingReload, task: null, demand: 0 });
   const codexPlusReloadRequestTimeoutMs = 3000;
   const codexPlusReloadStorageKey = "__codexPlusPendingUserScriptReloadV1";
+  const codexPlusLegacyReloadStorageKey = "__codexPlusPendingLegacyUserScriptReloadV1";
+  const codexPlusUnknownReloadRecovery = "请完全退出 Codex 和 Codex++ 后打开新页面，恢复原页面可能保留待确认记录";
   const codexPlusReloadTerminalPhases = ["applied", "failed", "blocked", "degraded", "rejected"];
 
   function codexPlusReloadReference(operation) {
@@ -6367,7 +6369,9 @@
 
   async function refreshUserScriptsAfterReload() {
     try {
-      const result = await loadUserScripts("/user-scripts/list", {}, { timeoutMs: codexPlusReloadRequestTimeoutMs });
+      const result = await loadUserScripts("/user-scripts/list", {}, {
+        timeoutMs: codexPlusReloadRequestTimeoutMs, allowLegacyTimeout: true,
+      });
       if (result?.status !== "failed") return;
     } catch {}
     showToast("拓展清单暂时无法刷新，请稍后重试", { type: "error" });
@@ -6377,7 +6381,9 @@
   async function codexPlusReloadHandshake() {
     let hello;
     try {
-      hello = await postJson("/user-scripts/reload-status", { capabilities: true }, { timeoutMs: codexPlusReloadRequestTimeoutMs });
+      hello = await postJson("/user-scripts/reload-status", { capabilities: true }, {
+        timeoutMs: codexPlusReloadRequestTimeoutMs, allowLegacyTimeout: true,
+      });
     } catch {}
     if (hello?.capabilities?.operationProtocol === 1 && hello.capabilities.documentFence === true
         && hello.capabilities.fencedSubmitV1 === true
@@ -6391,6 +6397,17 @@
   }
 
   async function runUserScriptsAfterChange() {
+    try {
+      if (window.sessionStorage.getItem(codexPlusLegacyReloadStorageKey) !== null) {
+        showToast(`旧版重载结果待确认；${codexPlusUnknownReloadRecovery}`, { type: "error" });
+        await codexPlusReloadState.refresh();
+        return;
+      }
+    } catch {
+      showToast("无法读取旧版重载记录，本次未提交重载", { type: "error" });
+      await codexPlusReloadState.refresh();
+      return;
+    }
     const stored = readCodexPlusReloadReference();
     if (stored.error || (stored.reference && codexPlusReloadState.pending
         && !sameCodexPlusReloadReference(stored.reference, codexPlusReloadState.pending))) {
@@ -6402,6 +6419,11 @@
       codexPlusReloadState.pending = { ...stored.reference, phase: "unknown" };
     }
     let operation = codexPlusReloadState.pending;
+    if (operation?.phase === "owner_changed") {
+      showToast(`启动器实例已变化，原重载结果无法确认；${codexPlusUnknownReloadRecovery}`, { type: "error" });
+      await codexPlusReloadState.refresh();
+      return;
+    }
     let verifiedEpoch = null;
     let verificationId = crypto.randomUUID().replaceAll("-", "");
     const deadline = Date.now() + 20000;
@@ -6412,14 +6434,24 @@
         if (hello.error) { problem = hello.error; break; }
         if (hello.legacyFallback) {
           try {
+            if (window.sessionStorage.getItem(codexPlusLegacyReloadStorageKey) !== null) {
+              throw new Error(`旧版重载结果待确认；${codexPlusUnknownReloadRecovery}`);
+            }
+            window.sessionStorage.setItem(codexPlusLegacyReloadStorageKey, "pending");
+            if (window.sessionStorage.getItem(codexPlusLegacyReloadStorageKey) !== "pending") {
+              throw new Error("无法保存旧版重载记录，本次未提交重载");
+            }
             const result = await postJson("/user-scripts/reload", {}, {
               timeoutMs: Math.max(1, Math.min(codexPlusReloadRequestTimeoutMs, deadline - Date.now())),
+              allowLegacyTimeout: true,
             });
-            if (!result?.scripts) {
-              problem = `旧版用户脚本重载失败：${result?.message || "结果无法确认"}`;
+            if (result?.status !== "failed" && Array.isArray(result?.scripts)) {
+              window.sessionStorage.removeItem(codexPlusLegacyReloadStorageKey);
+            } else {
+              problem = `旧版重载结果待确认；${codexPlusUnknownReloadRecovery}`;
             }
           } catch (error) {
-            problem = `旧版用户脚本重载失败：${error?.message || "结果无法确认"}`;
+            problem = error?.message || `旧版重载结果待确认；${codexPlusUnknownReloadRecovery}`;
           }
           if (problem) showToast(problem, { type: "error" });
           await codexPlusReloadState.refresh();
@@ -6445,7 +6477,7 @@
           const hello = await codexPlusReloadHandshake();
           if (hello.error) { problem = hello.error; break; }
           if (hello.ownerEpoch !== operation.ownerEpoch) {
-            operation = { ...operation, phase: "unknown" };
+            operation = { ...operation, phase: hello.ownerEpoch ? "owner_changed" : "unknown" };
             problem = "启动器实例已变化，原重载结果无法确认，未向新实例提交";
             break;
           }
@@ -6463,9 +6495,9 @@
           : await postJson("/user-scripts/reload-status", { operationId: operation.operationId, verificationId }, options);
         // 提交响应丢失时先查询，同编号未登记才允许幂等重投。
         const received = result?.reloadOperation;
-        if (received?.operationId === operation.operationId && typeof received.ownerEpoch === "string"
-            && received.ownerEpoch !== operation.ownerEpoch) {
-          operation = { ...operation, phase: "unknown" };
+        if (received?.operationId === operation.operationId && /^[a-f0-9]{32}$/.test(received.ownerEpoch || "")
+            && received.ownerEpoch !== operation.ownerEpoch && received.active === false) {
+          operation = { ...operation, phase: "owner_changed" };
           problem = "启动器实例已变化，原重载结果无法确认，未向新实例提交";
           break;
         }
@@ -10752,7 +10784,8 @@
       sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
       return { status: "failed", message: "桥接不可用，请重启启动器", bridgeFailure: true };
     }
-    if (options.timeoutMs > 0 && window.__codexSessionDeleteBridge.supportsTimeout !== true) {
+    const legacyTimeout = options.timeoutMs > 0 && window.__codexSessionDeleteBridge.supportsTimeout !== true;
+    if (legacyTimeout && !options.allowLegacyTimeout) {
       return { status: "failed", message: "当前桥接不支持有界请求", code: "bridge_timeout_unsupported" };
     }
     function bridgeWithBackendTimeout(path, payload) {
@@ -10795,7 +10828,30 @@
         });
         return fallback;
       }
-      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload, options);
+      let bridgeResult;
+      if (legacyTimeout) {
+        const callbacks = window.__codexSessionDeleteCallbacks;
+        const before = window.__codexSessionDeleteSeq;
+        const request = window.__codexSessionDeleteBridge(path, payload);
+        const id = window.__codexSessionDeleteSeq === before + 1 ? String(window.__codexSessionDeleteSeq) : null;
+        const callback = id ? callbacks?.get(id) : null;
+        let timer;
+        try {
+          bridgeResult = await Promise.race([
+            request,
+            new Promise((resolve) => {
+              timer = setTimeout(() => resolve({
+                status: "failed", message: "桥接请求超时", timeout: true, bridgeFailure: true,
+              }), options.timeoutMs);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+          if (callback && callbacks.get(id) === callback) callbacks.delete(id);
+        }
+      } else {
+        bridgeResult = await window.__codexSessionDeleteBridge(path, payload, options);
+      }
       if (bridgeResult?.bridgeFailure) recordCodexPlusBridgeFailure();
       else recordCodexPlusBridgeSuccess();
       return bridgeResult;

@@ -506,8 +506,15 @@ impl ReloadOwner {
                         self.finish_on_target_change(id, prepare_sent, mutation_confirmed);
                         return;
                     }
-                    if snapshot(manager).await.ok().map(|snapshot| snapshot.1) != Some(revision.clone()) {
-                        break;
+                    match snapshot(manager).await {
+                        Ok((_, current_revision)) if current_revision == revision => {}
+                        Ok(_) => break,
+                        Err(error) => {
+                            self.update(id, "degraded", json!({
+                                "reason": format!("页面脚本已执行，但无法确认当前拓展快照：{error:#}")
+                            }));
+                            return;
+                        }
                     }
                     self.finish(id, "scripts", probe, manager).await;
                     return;
@@ -858,6 +865,16 @@ process.stdout.write(JSON.stringify(observed));
     }
 
     #[tokio::test]
+    async fn snapshot_error_after_apply_reports_the_completed_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = exercise_changed_snapshot(dir.path(), "invalid_after_apply").await;
+        assert_eq!(result.0["phase"], "degraded");
+        assert!(result.0["reason"].as_str().unwrap().contains("页面脚本已执行"));
+        assert_eq!(result.1, 1);
+        assert_eq!(result.2, 1);
+    }
+
+    #[tokio::test]
     async fn lost_cleanup_response_is_confirmed_without_repeating_cleanup() {
         let dir = tempfile::tempdir().unwrap();
         let result = exercise_changed_snapshot(dir.path(), "lost_prepare").await;
@@ -985,6 +1002,7 @@ process.stdout.write(JSON.stringify(observed));
         let evaluator_manager = manager.clone();
         let operation = Arc::new(Mutex::new(None::<Value>));
         let invalid = after_prepare == "invalid";
+        let invalid_after_apply = after_prepare == "invalid_after_apply";
         let change_after_apply = after_prepare == "target_after_apply";
         let lost_prepare = after_prepare == "lost_prepare";
         let deferred_prepare = after_prepare == "deferred_prepare";
@@ -1010,7 +1028,7 @@ process.stdout.write(JSON.stringify(observed));
                             if old_cleanup.fetch_add(1, Ordering::SeqCst) == 0 {
                                 if invalid {
                                     std::fs::write(&config, "{invalid").unwrap();
-                                } else if !change_after_apply && !lost_prepare && !deferred_prepare && !lost_apply {
+                                } else if !invalid_after_apply && !change_after_apply && !lost_prepare && !deferred_prepare && !lost_apply {
                                     std::fs::write(&script, "window.fixtureVersion = 'new';").unwrap();
                                 }
                             }
@@ -1029,7 +1047,7 @@ process.stdout.write(JSON.stringify(observed));
                             }
                             Ok(prepared)
                         } else if expression.contains("const operation = runtime.applyOperation") {
-                            assert!(expression.contains(if change_after_apply || lost_prepare || deferred_prepare || lost_apply {
+                            assert!(expression.contains(if invalid_after_apply || change_after_apply || lost_prepare || deferred_prepare || lost_apply {
                                 "window.fixtureVersion = 'old';"
                             } else {
                                 "window.fixtureVersion = 'new';"
@@ -1039,6 +1057,9 @@ process.stdout.write(JSON.stringify(observed));
                             applied.as_mut().unwrap()["phase"] = json!("verifying");
                             if change_after_apply {
                                 std::fs::write(&script, "window.fixtureVersion = 'new';").unwrap();
+                            }
+                            if invalid_after_apply {
+                                std::fs::write(&config, "{invalid").unwrap();
                             }
                             if lost_apply {
                                 anyhow::bail!("模拟应用已执行但 CDP 响应超时");

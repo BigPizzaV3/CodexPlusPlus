@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2685
+      "lines": 2717
     },
     {
       "name": "41-extension-detail.js",
@@ -68,7 +68,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1908
+      "lines": 1932
     },
     {
       "name": "61-plugin-market-ui.js",

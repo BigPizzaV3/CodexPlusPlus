@@ -192,7 +192,10 @@ pub async fn reload_native_scripts(
             Err(error) if error.downcast_ref::<control::OwnerChanged>().is_some() => {
                 operation["phase"] = json!("unknown");
                 operation["active"] = json!(true);
-                operation["reason"] = json!(format!("{error:#}"));
+                operation["previousOutcome"] = json!("unknown");
+                operation["reason"] = json!(format!(
+                    "{error:#}；请完全退出 Codex 和 Codex++ 后打开新页面，恢复原页面可能保留待确认记录"
+                ));
                 *pending = Some(operation.clone());
                 return reload_inventory(manager, operation);
             }
@@ -456,7 +459,14 @@ struct BackendSnapshotBytes {
     entry: PathBuf,
     config: Value,
     http: bool,
-    files: Vec<(String, Vec<u8>)>,
+    files: Vec<SnapshotPackageFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotPackageFile {
+    path: String,
+    bytes: Vec<u8>,
+    executable: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2062,7 +2072,10 @@ impl UserScriptManager {
                             entry: backend.strip_prefix(root)?.to_path_buf(),
                             config: package.config.clone(),
                             http: package.backend_http,
-                            files: files.into_iter().map(|(name, bytes)| (name.strip_prefix(&prefix).unwrap_or(&name).to_string(), bytes)).collect(),
+                            files: files.into_iter().map(|mut file| {
+                                file.path = file.path.strip_prefix(&prefix).unwrap_or(&file.path).to_string();
+                                file
+                            }).collect(),
                         });
                         for name in &package.backend_provides {
                             if !services.iter().any(|(existing, _)| existing == name) {
@@ -2110,8 +2123,13 @@ impl UserScriptManager {
             let directory = {
                 let _guard = self.config_lock.lock().unwrap();
                 let _file_guard = self.config_file_lock()?;
-                let retained = fs::read_dir(parent)?.filter_map(Result::ok)
-                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix)).take(4).count();
+                let mut retained = 0;
+                for entry in fs::read_dir(parent)? {
+                    if entry?.file_name().to_string_lossy().starts_with(&prefix) {
+                        retained += 1;
+                        if retained == 4 { break; }
+                    }
+                }
                 anyhow::ensure!(retained < 4, "后台快照目录尚有未释放的活动代或清理失败记录，未继续创建副本");
                 let directory = parent.join(format!("{prefix}{}", uuid::Uuid::new_v4().simple()));
                 crate::user_script_control::create_private_directory(&directory)?;
@@ -2123,9 +2141,9 @@ impl UserScriptManager {
                 fs::create_dir(&root)?;
                 staged.directories.push(root.clone());
                 let mut known_directories = BTreeSet::from([root.clone()]);
-                for (relative, bytes) in backend.files {
-                    validate_package_relative_path(&relative)?;
-                    let path = root.join(&relative);
+                for source in backend.files {
+                    validate_package_relative_path(&source.path)?;
+                    let path = root.join(&source.path);
                     let mut pending = Vec::new();
                     let mut ancestor = path.parent().context("后台快照路径缺少父目录")?;
                     while !known_directories.contains(ancestor) {
@@ -2141,8 +2159,14 @@ impl UserScriptManager {
                     use std::io::Write;
                     let mut file = fs::OpenOptions::new().create_new(true).write(true).open(&path)?;
                     staged.files.push(path.clone());
-                    file.write_all(&bytes)?;
+                    file.write_all(&source.bytes)?;
                     let mut permissions = file.metadata()?.permissions();
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        permissions.set_mode((permissions.mode() & !0o222) | source.executable);
+                    }
+                    #[cfg(not(unix))]
                     permissions.set_readonly(true);
                     file.set_permissions(permissions)?;
                 }
@@ -2493,14 +2517,14 @@ const RELOAD_PACKAGE_MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 
 /// 包内模块可以动态引用文件，不能只读取 backend.script 入口或猜测 import 语法。
 /// 纳入整个包（含 node_modules），.git 作为版本控制元数据排除；包外运行依赖不在快照契约内。
-fn snapshot_package_sources(root: &std::path::Path, key: &str) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+fn snapshot_package_sources(root: &std::path::Path, key: &str) -> anyhow::Result<Vec<SnapshotPackageFile>> {
     struct Budget { entries: usize, bytes: usize }
     fn visit(
         root: &std::path::Path,
         path: &std::path::Path,
         key: &str,
         ancestors: &mut BTreeSet<PathBuf>,
-        sources: &mut BTreeMap<String, Vec<u8>>,
+        sources: &mut BTreeMap<String, SnapshotPackageFile>,
         budget: &mut Budget,
     ) -> anyhow::Result<()> {
         use std::io::Read;
@@ -2533,17 +2557,25 @@ fn snapshot_package_sources(root: &std::path::Path, key: &str) -> anyhow::Result
             budget.bytes = budget.bytes.checked_add(bytes.len()).context("拓展快照大小溢出")?;
             anyhow::ensure!(budget.bytes <= RELOAD_PACKAGE_MAX_BYTES, "拓展 {key} 的快照总量超过 64 MiB，未执行热重载");
             let relative = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
-            sources.insert(format!("{key}\0{relative}"), bytes);
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111
+            };
+            #[cfg(not(unix))]
+            let executable = 0;
+            let path = format!("{key}\0{relative}");
+            sources.insert(path.clone(), SnapshotPackageFile { path, bytes, executable });
         }
         Ok(())
     }
     let root = root.canonicalize()?;
     let mut sources = BTreeMap::new();
     visit(&root, &root, key, &mut BTreeSet::new(), &mut sources, &mut Budget { entries: 0, bytes: 0 })?;
-    Ok(sources.into_iter().collect())
+    Ok(sources.into_values().collect())
 }
 
-fn snapshot_revision(bundle: &str, backends: &[(String, Vec<u8>)]) -> String {
+fn snapshot_revision(bundle: &str, backends: &[SnapshotPackageFile]) -> String {
     // Bundle text can contain extension secrets. Never expose an unsalted
     // digest that could be used to test guesses against those values.
     static KEY: std::sync::OnceLock<[u8; 64]> = std::sync::OnceLock::new();
@@ -2562,11 +2594,12 @@ fn snapshot_revision(bundle: &str, backends: &[(String, Vec<u8>)]) -> String {
     inner.update(inner_key);
     inner.update((bundle.len() as u64).to_be_bytes());
     inner.update(bundle.as_bytes());
-    for (key, bytes) in backends {
-        inner.update((key.len() as u64).to_be_bytes());
-        inner.update(key.as_bytes());
-        inner.update((bytes.len() as u64).to_be_bytes());
-        inner.update(bytes);
+    for file in backends {
+        inner.update((file.path.len() as u64).to_be_bytes());
+        inner.update(file.path.as_bytes());
+        inner.update(file.executable.to_be_bytes());
+        inner.update((file.bytes.len() as u64).to_be_bytes());
+        inner.update(&file.bytes);
     }
     let mut outer = Sha256::new();
     outer.update(outer_key);
@@ -4464,6 +4497,51 @@ fn current_unix_timestamp_string() -> String {
 #[cfg(test)]
 mod runtime_status_tests {
     use super::*;
+
+    #[test]
+    fn snapshot_revision_tracks_executable_permissions() {
+        let mut file = SnapshotPackageFile {
+            path: "user:demo\0helper".into(),
+            bytes: b"same contents".to_vec(),
+            executable: 0,
+        };
+        let first = snapshot_revision("bundle", &[file.clone()]);
+        file.executable = 0o100;
+        assert_ne!(first, snapshot_revision("bundle", &[file]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_backend_preserves_executable_bits_without_write_access() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let user = temp.path().join("user");
+        let package = user.join("demo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join(EXTENSION_MANIFEST_FILE),
+            r#"{"id":"demo","renderer":"main.js","backend":{"script":"backend.js"}}"#).unwrap();
+        fs::write(package.join("main.js"), "window.demo = true").unwrap();
+        fs::write(package.join("backend.js"), "module.exports = {}").unwrap();
+        let helper = package.join("helper");
+        fs::write(&helper, "#!/bin/sh\nprintf helper-ok").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o751)).unwrap();
+
+        let manager = UserScriptManager::new(temp.path().join("builtin"), user, temp.path().join("config.json"));
+        let (_, revision) = manager.reload_snapshot().unwrap();
+        let snapshot = manager.stage_backend_snapshot(&revision).unwrap();
+        let staged_helper = snapshot.entries["user:demo"].script.parent().unwrap().join("helper");
+        let mode = fs::metadata(&staged_helper).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111);
+        assert_eq!(mode & 0o222, 0);
+        let output = std::process::Command::new(&staged_helper).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"helper-ok");
+
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_ne!(manager.reload_snapshot().unwrap().1, revision);
+        assert!(manager.stage_backend_snapshot(&revision).is_err());
+    }
 
     #[test]
     fn snapshot_cleanup_runs_outside_the_current_thread_runtime() {
