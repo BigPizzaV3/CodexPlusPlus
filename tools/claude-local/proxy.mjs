@@ -402,7 +402,7 @@ function mockApi(req, res, url) {
   if (method === "GET" && p === "/api/desktop/features") {
     return json(res, { features: {
       "1291166712": {
-        value: { enabled: true }, on: true, off: false, source: "force",
+        value: { enabled: true, appScopedEnabled: true }, on: true, off: false, source: "force",
         experiment: null, experimentResult: null,
       },
     } });

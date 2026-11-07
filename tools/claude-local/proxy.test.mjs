@@ -174,12 +174,21 @@ test("local mock accounts do not request identity verification", async () => {
 test("Desktop receives the native Computer Use rollout without enabling permissions", async () => {
   const result = await request("/api/desktop/features", { host: "claude.ai" });
   assert.equal(result.status, 200);
-  assert.deepEqual(result.body.features["1291166712"].value, { enabled: true });
+  assert.equal(result.body.features["1291166712"].value.enabled, true);
   assert.equal(result.body.features["1291166712"].on, true);
   assert.equal(result.body.features["1291166712"].off, false);
   assert.equal(result.body.features["1291166712"].source, "force");
   assert.deepEqual(Object.keys(result.body.features), ["1291166712"]);
   assert.equal(result.body.chicagoEnabled, undefined);
+});
+
+test("Desktop exposes the separate background-mode capability without selecting a user mode", async () => {
+  const result = await request("/api/desktop/features", { host: "claude.ai" });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.features["1291166712"].value, {
+    enabled: true, appScopedEnabled: true,
+  });
+  assert.equal(result.body.chicagoPreferredMode, undefined);
 });
 
 test("account settings receive deletion eligibility and trusted-device lists", async () => {

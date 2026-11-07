@@ -367,7 +367,8 @@ MFA 仅提供本地模拟账号的 GET 状态，不修改真实账号的双重�
 原生桌面的 `/api/desktop/features` 要求已经求值的 GrowthBook `features` 对象。
 普通布尔 flags 会触发 `response body has no valid features object`，继而将计算机使用
 判为 `not_enabled`。本地 mock 仅提供 `1291166712`（chicago_config）的
-`value:{enabled:true},on:true,off:false,source:"force"`，不顺带打开其他实验功能。
+`value:{enabled:true,appScopedEnabled:true},on:true,off:false,source:"force"`，
+不顺带打开其他实验功能。
 
 此响应适用于本地代理的 1p 桌面链路；真正的 3p 模式会过滤该远端 flag。
 客户端仍检查平台、合规限制、用户 `chicagoEnabled` 偏好，以及真实的 macOS
@@ -377,3 +378,10 @@ MFA 仅提供本地模拟账号的 GET 状态，不修改真实账号的双重�
 离线复用当前客户端的原始解析、Zod 校验及 rollout 函数对照：旧响应为
 `parse-error`，新响应为 `success` 且 rollout 开放；`chicagoEnabled=false` 时仍不
 启用实际执行。字符串 `enabled:"true"` 仍被拒绝，过期配置仍失效。
+
+后台模式另读同一配置中的 `appScopedEnabled`，仅有 `enabled:true` 时仍会显示
+“您的账户尚未启用后台模式”。补齐后原生 `computerUseAppScoped` 可通过检查，
+实际后台工具也由这个字段控制；客户端的系统版本及配置有效期检查保留不变。
+不修改用户 `chicagoPreferredMode`，当前选中的“后台/完全控制”仍由用户决定。
+真实 Claude.app 刷新后，后台选项由禁用恢复为可选，并显示已选中“后台”；
+辅助功能和屏幕录制仍显示已授予。未通过此检查执行实际后台操作。
