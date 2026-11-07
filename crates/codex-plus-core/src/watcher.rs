@@ -6,6 +6,13 @@ use std::time::Duration;
 
 #[cfg(windows)]
 pub use crate::windows_integration::WindowsProcessInfo;
+#[cfg(any(windows, test))]
+mod windows_main_stop;
+#[cfg(windows)]
+pub use windows_main_stop::{
+    stop_windows_main_codex_processes_and_wait,
+    stop_windows_main_codex_processes_with_args_and_wait,
+};
 
 pub const WATCHER_INTERVAL_SECONDS: f64 = 3.0;
 pub const CDP_PROBE_TIMEOUT_SECONDS: f64 = 0.5;
@@ -21,6 +28,17 @@ pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Ru
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexPlusPlusWatcher.lnk";
 /// macOS 开机启动用的 LaunchAgent 标签；plist 文件名即 `<标签>.plist`。
 pub const MACOS_WATCHER_LABEL: &str = "com.bigpizzav3.codexplusplus.watcher";
+
+/// Windows Chromium 接受多种 switch 前缀，比较名称时还须忽略 ASCII 大小写。
+pub fn windows_codex_switch_name(argument: &str) -> Option<&str> {
+    let argument = argument.trim();
+    let switch = argument
+        .strip_prefix("--")
+        .or_else(|| argument.strip_prefix('-'))
+        .or_else(|| argument.strip_prefix('/'))?;
+    let name = switch.split('=').next()?;
+    (!name.is_empty()).then_some(name)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatcherInstallPlan {
