@@ -585,7 +585,34 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
     assert_eq!(model("claude-opus-5-5")["display_name"], "Claude-Opus-5-5");
     let group = model("group/daily");
     assert_eq!(group["display_name"], "Daily");
+    assert_eq!(group["description"], "Daily · 模型组");
     assert_eq!(group["codex_plus_group"], "模型组");
+
+    let (_, renamed_id) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: "daily".into(),
+            name: "6.1 Sol".into(),
+            mode: GroupMode::InOrder,
+            members: vec![GroupMember {
+                model: "claude-opus-5-5".into(),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(renamed_id, "daily");
+    refresh_enabled(ctx).unwrap();
+    let renamed_catalog = codex_catalog(ctx);
+    let renamed_group = renamed_catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "group/daily")
+        .unwrap_or_else(|| panic!("目录里没有重命名后的 group/daily：{renamed_catalog}"));
+    assert_eq!(renamed_group["display_name"], "6.1 Sol");
+    assert_eq!(renamed_group["description"], "6.1 Sol · 模型组");
 
     // 注入层读的模型元数据（托管供应商的 model_metadata）同样给出推理档位与分组。
     let settings = ctx.settings.load().unwrap();

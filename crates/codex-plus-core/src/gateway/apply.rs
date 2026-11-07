@@ -473,7 +473,10 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
                 fields.insert("additional_speed_tiers".into(), json!([]));
             }
             fields.insert("display_name".into(), json!(group.name));
-            fields.insert("description".into(), json!(format!("{model} · 模型组")));
+            fields.insert(
+                "description".into(),
+                json!(format!("{} · 模型组", group.name)),
+            );
             fields.insert("codex_plus_group".into(), json!("模型组"));
             fields.insert("codex_plus_group_id".into(), json!(CODEX_GROUPS_GROUP_ID));
             if codex_favorite(gateway, &relays, &model) {
