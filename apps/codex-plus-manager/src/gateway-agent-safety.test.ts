@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady, fullSwitchReady } from "./gateway-agent-safety.ts";
+import { disabledGroup } from "./gateway-model.ts";
 import type { GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
 
 const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
@@ -280,7 +281,7 @@ test("断开并直连明确预览范围，携带相同确认token", async () => 
   assert.equal(dialog.closeCount(), 0, "卸载后的结果不再次触发关闭");
 });
 
-function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) {
+function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false, group?: { disabled: boolean }) {
   const sourceFile = ts.createSourceFile("TrayPanel.tsx", readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8"), ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
   const component = sourceFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "PanelAgentRow");
   assert.ok(component);
@@ -308,10 +309,11 @@ function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) 
       if (!(index in hooks)) hooks[index] = { current: initial };
       return hooks[index];
     },
-    AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown", Check: "Check",
+    AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown", Check: "Check", AlertTriangle: "AlertTriangle",
     Floating: "Floating", ModelList: "ModelList", AgentDisconnectDialog: "AgentDisconnectDialog",
-    draftFromBinding: () => ({ model: "gpt", poolExclude: [] }),
-    modelDisplay: () => ({ title: "GPT" }),
+    draftFromBinding: () => ({ model: group ? "group/daily" : "gpt", poolExclude: [] }),
+    disabledGroup,
+    modelDisplay: (_payload: unknown, model: string) => ({ title: model === "group/daily" ? "Daily" : "GPT" }),
     ownCurrent: () => null,
     visibleOwnModels: () => [],
     agentModels: () => [],
@@ -325,12 +327,29 @@ function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) 
       cursor = 0;
       return exports.PanelAgentRow({
         agent: { ...agent(), enabled: connected, requiresDisconnectPreview },
-        payload: null,
+        payload: group ? { groups: [{ id: "daily", name: "Daily", disabled: group.disabled }], gateway: { bindings: {} } } : null,
         onRun: async (command: string, args: Record<string, unknown>) => { calls.push({ command, args }); return true; },
       }) as Element;
     },
   };
 }
+
+test("托盘在模型组停用时显示回退模型，重新启用后恢复原组", () => {
+  const group = { disabled: true };
+  const tray = renderTrayAgent(true, false, group);
+  let tree = tray.render();
+  let picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
+  assert.match(text(picker), /GPT/);
+  assert.equal(picker.props.title, "原模型组「Daily」已停用，当前使用 GPT");
+  assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "gpt");
+
+  group.disabled = false;
+  tree = tray.render();
+  picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
+  assert.match(text(picker), /Daily/);
+  assert.equal(picker.props.title, undefined);
+  assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "group/daily");
+});
 
 test("托盘已连接Agent的默认与直连选择共用预览确认，未连接直连保持直接切换", async () => {
   const tray = renderTrayAgent(true);
