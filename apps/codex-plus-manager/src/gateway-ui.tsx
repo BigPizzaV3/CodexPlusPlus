@@ -139,7 +139,7 @@ export function Avatar({ name, baseUrl = "", size = "md", plain = false }: { nam
   const url = key ? BRAND_ICON_URLS[key] : undefined;
   if (key && url) {
     return (
-      <span className="gw-avatar gw-avatar-brand" data-size={size} title={maskAccountName(name)}>
+      <span className="gw-avatar gw-avatar-brand" data-brand={key} data-size={size} title={maskAccountName(name)}>
         {brandIconIsColor(key) ? <img alt="" src={url} /> : <i className="gw-mono-icon" style={{ "--gw-icon": `url("${url}")` } as CSSProperties} />}
       </span>
     );

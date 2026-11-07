@@ -722,6 +722,13 @@ export function ModelList({
   const [scope, setScope] = useState<"all" | "favorites" | { section: string }>("all");
   const favoritesOnly = scope === "favorites";
   const sectionOnly = typeof scope === "object" ? scope.section : null;
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
+  const [closedSearchSections, setClosedSearchSections] = useState<string[]>([]);
+  const searching = Boolean(query.trim());
+  const providersBySection = useMemo(
+    () => new Map((payload?.pool ?? []).map((provider) => [`provider:${provider.id}`, provider] as const)),
+    [payload?.pool],
+  );
   // 收藏存在网关里（Codex 的选择器也要显示）；旧版存在本窗口的 localStorage，网关里还没有时沿用并迁过去。
   const stored = payload?.gateway.favoriteModels;
   const [favorites, setFavorites] = useState<string[]>(() => (stored && stored.length ? stored : loadFavorites()));
@@ -756,6 +763,10 @@ export function ModelList({
   const pickScope = (next: "all" | "favorites" | { section: string }) => {
     const same = typeof next === "object" ? sectionOnly === next.section : scope === next;
     setScope(same ? "all" : next);
+    if (typeof next === "object" && !same) {
+      setOpenSections((current) => ({ ...current, [next.section]: true }));
+      setClosedSearchSections((current) => current.filter((key) => key !== next.section));
+    }
     if (listRef.current) listRef.current.scrollTop = 0;
   };
   const isSelected = (item: PickerItem) => {
@@ -776,7 +787,7 @@ export function ModelList({
       <div className="gw-mp-top">
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
-          <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
+          <input autoFocus onChange={(event) => { setQuery(event.currentTarget.value); setClosedSearchSections([]); }} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
           <em>{tf("{0} 个", [total])}</em>
         </label>
         <div className="gw-mp-filters">
@@ -784,7 +795,7 @@ export function ModelList({
           <button data-active={favoritesOnly} onClick={() => pickScope("favorites")} type="button"><Star className="h-3 w-3" />{t("收藏")}</button>
           {filters.map((section) => (
             <button data-active={sectionOnly === section.key} key={section.key} onClick={() => pickScope({ section: section.key })} title={section.key === "group" || section.key === "auto" ? t(section.title) : section.title} type="button">
-              {section.key === "group" ? <Waypoints className="h-3 w-3" /> : section.key === "auto" ? <Shuffle className="h-3 w-3" /> : <Avatar name={section.title} size="sm" />}
+              {section.key === "group" ? <Waypoints className="h-3 w-3" /> : section.key === "auto" ? <Shuffle className="h-3 w-3" /> : <Avatar baseUrl={providersBySection.get(section.key)?.baseUrl} name={providersBySection.get(section.key)?.name ?? section.title} size="sm" />}
               <span>{section.key === "group" || section.key === "auto" ? t(section.title) : section.title.split(" · ")[0]}</span>
             </button>
           ))}
@@ -796,17 +807,34 @@ export function ModelList({
             {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先到「供应商」里添加。")}
           </div>
         ) : null}
-        {sections.map((section) => (
+        {sections.map((section) => {
+          const provider = providersBySection.get(section.key);
+          const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? !section.key.startsWith("provider:");
+          return (
           <section className="gw-mp-section" data-section={section.key} key={section.key}>
             <div className="gw-mp-heading">
-              {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar name={section.title} size="sm" />}
-              <span>{section.key === "group" || section.key === "custom" || section.key === "auto" ? t(section.title) : section.title}</span>
+              <button
+                aria-expanded={expanded}
+                className="gw-mp-heading-toggle"
+                onClick={() => {
+                  if (searching) {
+                    setClosedSearchSections((current) => expanded ? [...current, section.key] : current.filter((key) => key !== section.key));
+                  } else {
+                    setOpenSections((current) => ({ ...current, [section.key]: !expanded }));
+                  }
+                }}
+                type="button"
+              >
+                <ChevronRight aria-hidden="true" className="gw-mp-heading-arrow h-3.5 w-3.5" data-open={expanded} />
+                {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar baseUrl={provider?.baseUrl} name={provider?.name ?? section.title} size="sm" />}
+                <span className="gw-mp-heading-name">{section.key === "group" || section.key === "custom" || section.key === "auto" ? t(section.title) : section.title}</span>
+                <em>{section.items.length}</em>
+              </button>
               {section.key === "group" && nav.openModelGroups ? (
                 <button className="gw-mp-manage" onClick={nav.openModelGroups} type="button">{t("管理")}</button>
               ) : null}
-              <em>{section.items.length}</em>
             </div>
-            {section.items.map((item) => {
+            {expanded ? section.items.map((item) => {
               const selected = isSelected(item);
               const favorite = isFavoriteModel(favorites, item.model, payload);
               return (
@@ -842,9 +870,10 @@ export function ModelList({
                   {selected ? <Check className="gw-mp-check h-4 w-4" /> : null}
                 </div>
               );
-            })}
+            }) : null}
           </section>
-        ))}
+          );
+        })}
       </div>
       {head ? <div className="gw-mp-foot">{head}</div> : null}
     </div>
