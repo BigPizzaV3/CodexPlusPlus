@@ -234,7 +234,7 @@ function AgentRow({
         className="gw-agent-row cx-row"
         data-clickable={connected}
         onClick={(event) => {
-          if (!connected || (event.target as HTMLElement).closest("button, a, input")) return;
+          if (!connected || !event.currentTarget.contains(event.target as HTMLElement) || (event.target as HTMLElement).closest("button, a, input")) return;
           onToggleExpand();
         }}
       >
