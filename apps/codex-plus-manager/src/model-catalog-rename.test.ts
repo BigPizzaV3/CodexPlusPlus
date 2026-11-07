@@ -139,7 +139,7 @@ function catalog(names: Record<string, string>) {
   };
 }
 
-function runtime(initial = catalog({ "group/stable": "Before rename" }), includeBuiltins = false) {
+function runtime(initial = catalog({ "group/stable": "Before rename" }), includeBuiltins = false, loadEarly = false) {
   const store = new Map<string, string>();
   // 已记住默认供应商、且已有价格的网关目录，原先不会再由菜单兜底请求刷新。
   store.set("codexPlus.modelPicker.collapsedGroups.v1", JSON.stringify({ defaultGroupId: "remembered-provider", providers: {} }));
@@ -178,7 +178,10 @@ function runtime(initial = catalog({ "group/stable": "Before rename" }), include
     },
   };
   context.window = context; context.globalThis = context;
-  vm.runInNewContext(`${includeBuiltins ? installed : prefix}
+  const source = includeBuiltins ? installed : prefix;
+  const pickerInstall = `  registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-model-picker-groups"]');`;
+  vm.runInNewContext(`${loadEarly ? source.replace(pickerInstall, `window.earlyCatalogLoad = loadCodexModelCatalog(true);\n${pickerInstall}`) : source}
+    ${includeBuiltins ? "" : "function findCodexQueryClient() { return null; }"}
     function syncOfficialUsagePolicy() {}
     function refreshConversationViewControls() {}
     window.renameHarness = {
@@ -202,7 +205,7 @@ function runtime(initial = catalog({ "group/stable": "Before rename" }), include
     relayProfilesEnabled: true, codexAppModelWhitelistUnlock: false, activeRelayId: "codex-plus-gateway",
     modelCatalogFingerprint: fingerprint, relayProfiles: [{ id: "codex-plus-gateway", relayMode: "pureApi" }],
   });
-  api.setModelCatalog(initial);
+  if (!loadEarly) api.setModelCatalog(initial);
   return {
     window: context, api, store, paths, harness: context.renameHarness,
     change(next: typeof initial) { current = next; fingerprint = "after"; },
@@ -257,6 +260,70 @@ test("installed picker and native model/list use the renamed group after a setti
   app.harness.patch(reopened);
   assert.equal(refreshedRow.querySelector(".codex-plus-model-group-own-label")?.textContent, "After rename");
 });
+
+for (const loadEarly of [false, true]) {
+  test(`generated catalog ${loadEarly ? "first load before 95" : "heartbeat"} refetches active native composer models`, async () => {
+    const next = catalog({ "group/stable": "After rename" });
+    const app = runtime(loadEarly ? next : catalog({ "group/stable": "Before rename" }), true, loadEarly);
+    const composer = new Element("button");
+    composer.textContent = "Before rename";
+    let requests = 0;
+    class Client {
+      hostId = "local";
+      async sendRequest(_method: string, _params: unknown) {
+        requests += 1;
+        return { data: [{ model: "group/stable", displayName: "Before rename" }], nextCursor: null };
+      }
+    }
+    app.api.setBackendSettings({ codexAppModelWhitelistUnlock: true });
+    app.window.__codexPlusAppServerClientClass = Client;
+    assert.equal(app.api.installAppServerClientPrototypePatch(), true);
+    const native = new Client();
+    const queries = [
+      { queryKey: ["models", "list", "local", "apikey", 100, "provider", "catalog.json"], active: true },
+      { queryKey: ["models", "list", "remote", "apikey", 100], active: true },
+      { queryKey: ["models", "list", "local", "team", { accountId: "team" }], active: true },
+      { queryKey: ["models", "list", "local", "no-auth", 100], active: false },
+    ].map((query) => ({ ...query, invalidated: false, state: { data: { data: [{ model: "group/stable", displayName: "Before rename" }] } } }));
+    let invalidations = 0;
+    let refetched = Promise.resolve();
+    const queryClient = {
+      getQueryCache: () => ({ findAll: () => queries }),
+      setQueryData() {},
+      invalidateQueries(filters: { queryKey: string[]; predicate(query: typeof queries[number]): boolean }) {
+        invalidations += 1;
+        assert.deepEqual(Array.from(filters.queryKey), ["models", "list", "local"]);
+        refetched = Promise.all(queries.map(async (query) => {
+          if (!filters.queryKey.every((part, index) => query.queryKey[index] === part) || !filters.predicate(query)) return;
+          query.invalidated = true;
+          if (!query.active) return;
+          query.state.data = await native.sendRequest("model/list", { includeHidden: true, cursor: null, limit: 100 });
+          composer.textContent = query.state.data.data.find((model) => model.model === "group/stable")!.displayName;
+        })).then(() => {});
+        return refetched;
+      },
+    };
+    // 通过最终产物的 95 React 根查找器发现客户端，而非替换发现函数。
+    app.window.document.documentElement.__reactContainer$native = { memoizedProps: { client: queryClient } };
+    try {
+      if (loadEarly) await app.window.earlyCatalogLoad;
+      else {
+        app.change(next);
+        await app.harness.heartbeat();
+      }
+      await refetched;
+      assert.equal(invalidations, 1);
+      assert.equal(requests, 1, "only the active local non-team query refetches through the installed native wrapper");
+      assert.equal(composer.textContent, "After rename");
+      assert.equal(queries[0].state.data.data[0].model, "group/stable");
+      assert.deepEqual(queries.map((query) => query.invalidated), [true, false, false, true]);
+      await app.api.loadModelCatalog(true);
+      assert.equal(invalidations, 1, "the unchanged catalog does not repeatedly invalidate native queries");
+    } finally {
+      app.window.__codexPlusModelPickerGroupsRuntime.dispose();
+    }
+  });
+}
 
 test("legacy recents migrate by the previous catalog identity when another group takes the old name", async () => {
   const app = runtime(catalog({ "group/original": "Old name", "group/other": "Other name" }));

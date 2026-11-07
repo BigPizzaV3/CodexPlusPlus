@@ -11503,11 +11503,27 @@
           }
         }
         if (codexModelCatalogPromise !== request) return codexModelCatalog;
+        const previousMetadata = codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata || {};
+        const nextMetadata = catalog.modelMetadata || catalog.model_metadata || {};
+        const groupNamesChanged = Object.entries(nextMetadata).some(([model, metadata]) =>
+          model.startsWith("group/") && metadata?.displayName !== previousMetadata[model]?.displayName);
         window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.(codexModelCatalog, catalog);
         codexModelCatalog = catalog;
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
+        if (groupNamesChanged && codexPlusModelUnlockEnabled()) {
+          const client = findCodexQueryClient();
+          if (client) {
+            // 原生输入框也读取这份查询；让活跃查询重新取数并通知 React，不能只改菜单文字。
+            void client.invalidateQueries({
+              queryKey: ["models", "list", "local"],
+              predicate: (query) => query.queryKey[3] !== "team",
+            }).catch((error) => {
+              sendCodexPlusDiagnostic("model_catalog_query_refresh_failed", { error: String(error?.message || error) });
+            });
+          }
+        }
         return codexModelCatalog;
       })
       .catch((error) => {
