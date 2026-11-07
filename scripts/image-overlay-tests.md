@@ -88,6 +88,12 @@ above the wallpaper. The tests also exercise material/theme changes, late semant
 attributes, generic/native tooltip transitions, notification clicks and icon colors.
 Unrelated extension-owned widgets remain excluded; the usage-statusline's browser
 `title` tooltip is outside the native-surface adaptation.
+
+The native `group/scroll-to-bottom` button is also checked for wallpaper pixels,
+independent CSS translate centering, untinted arrow content, hover/focus, keyboard
+and pointer activation, hide/show cycles, late identity, material changes and
+remounts. Extension-owned controls with the same class remain excluded.
+
 CI sets CODEX_TEST_SWIFTSHADER=1 to use a consistent ANGLE compositing backend.
 Pure software rendering changes 12 antialiased SVG edge pixels at zoom 0.8 on
 both the unchanged upstream baseline and this patch. This backend selection keeps
