@@ -21,6 +21,7 @@ mod claude_ion_asar;
 pub mod claude_hooks;
 pub mod claude_localization;
 pub mod codex_app_state;
+pub mod config_doctor;
 pub mod codex_home;
 pub mod codex_local_storage;
 pub mod codex_sqlite;

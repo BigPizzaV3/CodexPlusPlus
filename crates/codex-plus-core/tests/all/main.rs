@@ -33,6 +33,7 @@ mod cdp_bridge;
 mod codex_app_state;
 mod codex_sqlite;
 mod composer_readiness;
+mod config_doctor;
 mod diagnostic_log;
 mod dsh_plugins;
 mod extension_codex;

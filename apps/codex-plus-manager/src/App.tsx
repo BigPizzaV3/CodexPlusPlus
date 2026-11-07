@@ -131,6 +131,7 @@ import {
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
+import { ConfigDoctorPanel } from "./ConfigDoctorPanel";
 import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
@@ -11767,6 +11768,7 @@ function useLightweightModeSetting() {
   return { enabled, saving, error, toggle };
 }
 
+
 /// 整体设置页（最左侧齿轮）。
 ///
 /// 只放与当前 Agent 无关的应用级选项，内容不随 Agent 切换而变。
@@ -11848,6 +11850,7 @@ function GlobalSettingsScreen({
           </CxCard>
         </CxSection>
       </div>
+      <ConfigDoctorPanel />
       <div className="cx-set-group" id="app-settings-config">
         <CxSection title={t("配置备份与迁移")}>
           <CxCard>
@@ -15741,6 +15744,7 @@ function appSettingsSections() {
   return [
     { id: "app-settings-general", label: t("基础设置") },
     { id: "app-settings-config", label: t("配置文件") },
+    { id: "app-settings-doctor", label: t("配置体检") },
     { id: "app-settings-update", label: t("版本与更新") },
     { id: "app-settings-about", label: t("关于") },
     { id: "app-settings-logs", label: t("日志") },
@@ -16893,6 +16897,7 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
   const entries: SettingsNavEntry[] = [
     { key: "general", label: t("通用"), icon: Settings, route: "settings", sections: ["app-settings-general"], group: "app", keywords: "theme mode tour 主题 模式 引导 托盘" },
     { key: "config", label: t("配置文件"), icon: FileCode2, route: "settings", sections: ["app-settings-config"], group: "app", keywords: "backup import export 备份 导入 导出 路径" },
+    { key: "doctor", label: t("配置体检"), icon: Stethoscope, route: "settings", sections: ["app-settings-doctor"], group: "app", keywords: "doctor ai config check health 体检 检查 诊断 配置" },
     { key: "update", label: t("版本与更新"), icon: Download, route: "settings", sections: ["app-settings-update"], group: "app", keywords: "update version 更新 版本" },
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },

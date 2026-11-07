@@ -1,0 +1,37 @@
+/* 「AI 配置体检」分栏。规则带 `.shell` 前缀，保证正式版里不被 styles.css 的通用规则盖掉。
+   颜色只取主题 token（深浅色自动跟随）：--card / --border / --muted / --status-* / --radius-*。 */
+:root .shell .config-doctor-key { font-size:12px; color:hsl(var(--muted-foreground)); font-variant-numeric:tabular-nums; }
+:root .shell .config-doctor-select { min-width:168px; }
+/* 来源三选一（胶囊，复用 .tp-tabs 的按钮样式）：卡片顶部一排 + 一行来源说明。 */
+:root .shell .config-doctor-source { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-bottom:1px solid hsl(var(--border)); }
+:root .shell .config-doctor-source-pills { flex-wrap:wrap; }
+:root .shell .config-doctor-source-pills button:disabled { opacity:.6; cursor:default; }
+:root .shell .config-doctor-source-note { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }
+:root .shell .config-doctor-source-line { flex:1; min-width:0; overflow-wrap:anywhere; }
+:root .shell .config-doctor-source-warn { flex:1 1 100%; margin:0; color:hsl(var(--status-warning)); }
+:root .shell .config-doctor-fields { display:flex; flex-direction:column; gap:10px; padding:12px 14px; border-top:1px solid hsl(var(--border)); }
+:root .shell .config-doctor-field { display:flex; flex-direction:column; gap:4px; }
+:root .shell .config-doctor-field > span { font-size:12px; color:hsl(var(--muted-foreground)); }
+:root .shell .config-doctor-notice { margin-top:8px; padding:8px 12px; border:1px solid hsl(var(--border)); border-radius:var(--radius-md); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+:root .shell .config-doctor-notice.is-ok { background:hsl(var(--muted)); }
+:root .shell .config-doctor-notice.is-error { color:hsl(var(--status-error)); border-color:hsl(var(--status-error) / .45); }
+:root .shell .config-doctor-time { font-size:12px; color:hsl(var(--muted-foreground)); font-variant-numeric:tabular-nums; }
+:root .shell .config-doctor-hint { margin-top:8px; font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }
+:root .shell .config-doctor-group { display:flex; flex-direction:column; border-top:1px solid hsl(var(--border)); }
+:root .shell .config-doctor-group-head { display:flex; align-items:center; gap:6px; padding:8px 14px 4px; font-size:11.5px; color:hsl(var(--muted-foreground)); }
+:root .shell .config-doctor-group-count { padding:0 6px; border-radius:999px; background:hsl(var(--muted)); font-variant-numeric:tabular-nums; }
+:root .shell .config-doctor-finding { display:flex; flex-direction:column; gap:3px; padding:6px 14px 10px; }
+:root .shell .config-doctor-finding-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+:root .shell .config-doctor-finding-head strong { font-size:13px; font-weight:500; color:hsl(var(--foreground)); }
+:root .shell .config-doctor-finding p { margin:0; font-size:12px; line-height:1.6; color:hsl(var(--muted-foreground)); overflow-wrap:anywhere; }
+:root .shell .config-doctor-finding[data-level="error"] .config-doctor-finding-head strong { color:hsl(var(--status-error)); }
+:root .shell .config-doctor-finding[data-level="warn"] .config-doctor-finding-head strong { color:hsl(var(--status-warning)); }
+:root .shell .config-doctor-finding[data-level="error"] .config-doctor-fix { color:hsl(var(--status-error) / .85); }
+:root .shell .config-doctor-fix { color:hsl(var(--foreground) / .75); }
+:root .shell .config-doctor-ai { margin-top:10px; }
+:root .shell .config-doctor-privacy { display:flex; align-items:center; gap:8px; margin-top:10px; padding:8px 12px; border:1px solid hsl(var(--border)); border-radius:var(--radius-md); background:hsl(var(--muted) / .5); font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); }
+:root .shell .config-doctor-privacy > span { flex:1; min-width:0; }
+:root .shell .config-doctor-privacy > svg { width:14px; height:14px; flex:none; color:hsl(var(--status-success)); }
+:root .shell .config-doctor-privacy-close { display:inline-flex; flex:none; padding:2px; border:0; border-radius:var(--radius-sm); background:transparent; color:hsl(var(--muted-foreground)); cursor:pointer; }
+:root .shell .config-doctor-privacy-close:hover { background:hsl(var(--accent)); color:hsl(var(--accent-foreground)); }
+:root .shell .config-doctor-privacy-close svg { width:13px; height:13px; }

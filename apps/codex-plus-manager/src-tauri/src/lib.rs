@@ -5,6 +5,7 @@ mod agent_mcp_commands;
 mod auto_takeover;
 pub mod commands;
 mod computer_use_commands;
+mod config_doctor_commands;
 mod cu_pip;
 mod dsh_plugin_commands;
 mod extension_community_commands;
@@ -337,6 +338,7 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::stop_codex_plus,
             commands::load_settings,
+            config_doctor_commands::config_doctor_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,

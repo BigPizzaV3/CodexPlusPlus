@@ -515,14 +515,16 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   assert.match(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
   assert.match(app, /if \(settingsFocus\) setSettingsSections\(settingsSectionsFor\(settingsFocus\)\);/);
   const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
-  for (const id of ["app-settings-general", "app-settings-config", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
+  for (const id of ["app-settings-general", "app-settings-config", "app-settings-doctor", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
     assert.ok(entries.includes(`"${id}"`), `${id} 要归到某个设置分类`);
   }
   assert.match(app, /if \(target === "about"\) setSettingsFocus\("app-settings-update"\);/);
   assert.ok(app.indexOf("<GlobalSettingsScreen") < app.indexOf("<AboutScreen"));
   const ids = [...text.slice(text.indexOf("function appSettingsSections"), text.indexOf("function AppSettingsFocus")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(ids.length, 6);
-  for (const id of ids) assert.match(text, new RegExp(`id="${id}"`));
+  assert.equal(ids.length, 7);
+  // 「配置体检」的分组卡片由 ConfigDoctorPanel 自带，其余都在 App.tsx 里。
+  const sections = `${text}\n${readSource("./ConfigDoctorPanel.tsx")}`;
+  for (const id of ids) assert.match(sections, new RegExp(`id="${id}"`));
 });
 
 test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
