@@ -227,7 +227,8 @@ PerformAction(send_message)                StreamTimeline（长连接）
   分页接口需要对应的空列表结构，例如 `{items:[],data:[],next_cursor:null,has_more:false}`。
   `/oauth_tokens` 要求顶层数组，`/cowork_plugin_metadata` 要求对象字典，不能套用分页结构；
   详见下方 2026-11-08 的修正与回归验证。
-- `/i18n/*.json` 上游 302 回 HTML → 客户端 parse 报错；mock 直接回 `{}`。
+- `/i18n/*.json` 上游 302 回 HTML → 客户端 parse 报错；改用完整本地词表，
+  `/s/` 短 ID 和 `dynamic` 词表分别处理（见下方 2026-11-08 修正）。
 - **`activeOrganization` 决定套餐显示**：bootstrap 里为 null → 界面显示 "Free plan"、
   Pro/Max 模型全部锁「升级」、Code tab 提示 "isn't included in your plan"。
   需要把它设为 org 副本（含 `rate_limit_tier`/`billing_type`/`subscription_management`）。
@@ -322,3 +323,57 @@ Desktop `content.entries` 兼容、授权实例列表、插件元数据字典、
 
 另一个实测 ZodError 来自 `/cowork_plugin_metadata`：它要求按插件 ID 索引的
 对象字典，空结果应为 `{}`，而不是分页结构。已修正并用真实客户端校验器确认。
+
+### 已选中文但主界面仍是英文
+
+语言设置和 bootstrap 已是 `zh-Hans`，问题在词表：`/i18n/s/zh-Hans.json`
+曾回退到 app.asar 的 825 项桌面壳词表，主界面的短 ID 无法匹配。
+现复用仓库 `assets/claude-localization/catalogs/` 的完整词表，叠加本机录制与
+本地覆盖；对 `/s/` 按客户端规则为唯一的 10 字符 ID 补 6 字符别名，保留长 ID
+及已存在的短 ID。`/dynamic/` 独立读取动态词表，不再混入桌面壳词条。
+
+真实 Claude.app 重载后，侧边栏、Code 工具栏、输入区与设置页均已显示中文。
+品牌名称及词表尚未覆盖的新文案仍可能保留原文。
+
+### 本地账号的身份验证提示
+
+设置页收到 `/api/organizations/:org/kyc_status` 的空对象时，会把缺失的状态
+判为未完成验证。本地 mock 现明确返回 `{status:"not_required",should_poll:false}`，
+由原生组件隐藏提示。仅修改本地模拟接口，不提交身份材料、不修改真实账号的验证状态。
+
+### 常规、账户、账单和 Artifacts 页崩溃
+
+真实客户端日志分别指向以下响应契约，不能统一用 `{}` 兜底：
+
+| 页面 | 接口 | 必需结构 |
+| --- | --- | --- |
+| 常规 | `/api/organizations/:org/notification/preferences` | `preferences.feature_preference`、`effective_preferences`、`push_reachability` |
+| 账户 | `/api/account/deletion-allowed` | `deletable:false,reasons:[],display_message:null` |
+| 账户 | `/api/auth/trusted_devices` | `devices:[]` |
+| 账户 | `/api/auth/mfa` | `mfa_enrolled:false,methods:[]` |
+| 账户 | `/api/auth/sessions/list-active` | `data:[],pagination:{has_more:false,total:0}` |
+| 账单 | `/api/stripe/:org/invoices` | `invoices:[],next_page:null` |
+| Artifacts | `/api/organizations/:org/user_artifacts` | `artifacts:[]` |
+| Artifacts | `/api/organizations/:org/user_artifacts/count` | `count:0` |
+| Artifacts | `/api/frame/frames`、`/api/frame/frames/external` | `frames:[]` |
+
+通知偏好支持 GET/PATCH，按组织隔离并按功能、渠道合并，保留显式关闭的 `false`。
+仅保存在代理进程内存，重启会重置，不会订阅真实通知。账户删除仍不开放，
+MFA 仅提供本地模拟账号的 GET 状态，不修改真实账号的双重验证。
+回归测试覆盖真实 CONNECT/TLS 请求、并发首次更新、非法请求输入及原型属性名。
+
+### 计算机使用的原生功能入口
+
+原生桌面的 `/api/desktop/features` 要求已经求值的 GrowthBook `features` 对象。
+普通布尔 flags 会触发 `response body has no valid features object`，继而将计算机使用
+判为 `not_enabled`。本地 mock 仅提供 `1291166712`（chicago_config）的
+`value:{enabled:true},on:true,off:false,source:"force"`，不顺带打开其他实验功能。
+
+此响应适用于本地代理的 1p 桌面链路；真正的 3p 模式会过滤该远端 flag。
+客户端仍检查平台、合规限制、用户 `chicagoEnabled` 偏好，以及真实的 macOS
+辅助功能和屏幕录制权限。没有修改部署模式、系统权限或客户端二进制，也不伪造
+权限已授权。入口可用不等于已完成权限配置或工具执行的端到端验证。
+
+离线复用当前客户端的原始解析、Zod 校验及 rollout 函数对照：旧响应为
+`parse-error`，新响应为 `success` 且 rollout 开放；`chicagoEnabled=false` 时仍不
+启用实际执行。字符串 `enabled:"true"` 仍被拒绝，过期配置仍失效。

@@ -151,29 +151,52 @@ const i18nMap = (() => {
   return m;
 })();
 
-function cachedI18n(pathname) {
-  const f = i18nMap.get(pathname);
-  if (!f) return null;
+function readI18n(file) {
+  if (!file) return {};
   try {
-    const b = fs.readFileSync(f);
-    return b.toString("utf8").trimStart().startsWith("{") ? b : null;
+    const catalog = JSON.parse(fs.readFileSync(file, "utf8"));
+    return catalog && !Array.isArray(catalog) && typeof catalog === "object" &&
+      Object.values(catalog).every((value) => typeof value === "string") ? catalog : {};
   } catch {
-    return null;
+    return {};
   }
 }
 
-// 优先用 app.asar 解包出来的本地字典（tools/claude-local/i18n/<locale>.json），
-// 对 /i18n/、/i18n/s/、/i18n/dynamic/ 一律按 locale 文件名回同一套词表。
+// app.asar 的词表只覆盖桌面壳；主界面需要完整 Web 词表。
 const I18N_DIR = path.join(here, "i18n");
+const WEB_I18N_DIR = path.resolve(here, "../../assets/claude-localization/catalogs");
+const i18nResponses = new Map();
 function localI18n(pathname) {
-  const base = path.basename(pathname);
-  if (!/^[a-zA-Z-]+\.json$/.test(base)) return null;
-  try {
-    const b = fs.readFileSync(path.join(I18N_DIR, base));
-    return b.toString("utf8").trimStart().startsWith("{") ? b : null;
-  } catch {
-    return null;
+  const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
+  if (!match) return null;
+  if (i18nResponses.has(pathname)) return i18nResponses.get(pathname);
+  const [, kind, locale] = match;
+  const base = `${locale}.json`;
+  const catalog = kind === "dynamic" ? {
+    ...readI18n(path.join(WEB_I18N_DIR, "dynamic", base)),
+    ...readI18n(i18nMap.get(pathname)),
+  } : {
+    ...readI18n(path.join(I18N_DIR, base)),
+    ...readI18n(path.join(WEB_I18N_DIR, base)),
+    ...readI18n(i18nMap.get(`/i18n/${base}`)),
+    ...readI18n(path.join(WEB_I18N_DIR, `${locale}.overrides.json`)),
+    ...(kind === "s" ? readI18n(i18nMap.get(pathname)) : {}),
+  };
+  if (kind === "s") {
+    // 与客户端 cI() 一致：仅为无冲突的长 ID 补短别名，并保留已有短 ID。
+    const prefixes = new Map();
+    for (const id of Object.keys(catalog)) {
+      if (!/^[A-Za-z0-9+/]{10}$/.test(id)) continue;
+      const short = id.slice(0, 6);
+      prefixes.set(short, prefixes.has(short) ? null : id);
+    }
+    for (const [short, id] of prefixes) {
+      if (id !== null && !Object.hasOwn(catalog, short)) catalog[short] = catalog[id];
+    }
   }
+  const body = Buffer.from(JSON.stringify(catalog));
+  i18nResponses.set(pathname, body);
+  return body;
 }
 
 // ── 工具 ─────────────────────────────────────────────────────
@@ -191,6 +214,7 @@ function json(res, obj, code = 200) {
 }
 
 const CONV_STATE = new Map();
+const NOTIFICATION_SETTINGS = new Map();
 let DEVICE_ROW = null; // Code 模式注册的设备行 {id, k, ...}
 
 function ensureConv(uuid) {
@@ -368,6 +392,86 @@ function mockApi(req, res, url) {
   // Code 设置页直接对响应调用 filter，已连接实例必须返回顶层数组。
   if (method === "GET" && /^\/api\/oauth\/organizations\/[^/]+\/oauth_tokens$/.test(p)) {
     return json(res, []);
+  }
+
+  // 本地模拟账号不需要身份验证；空对象会被设置页判为尚未完成验证。
+  if (method === "GET" && /^\/api\/organizations\/[^/]+\/kyc_status$/.test(p)) {
+    return json(res, { status: "not_required", should_poll: false });
+  }
+  // 原生桌面使用已求值的 GrowthBook 结果；用户开关和系统权限仍由客户端检查。
+  if (method === "GET" && p === "/api/desktop/features") {
+    return json(res, { features: {
+      "1291166712": {
+        value: { enabled: true }, on: true, off: false, source: "force",
+        experiment: null, experimentResult: null,
+      },
+    } });
+  }
+
+  // 账户页会直接读取 reasons.length；本地后端不开放账号删除。
+  if (method === "GET" && p === "/api/account/deletion-allowed") {
+    return json(res, { deletable: false, reasons: [], display_message: null });
+  }
+  if (method === "GET" && p === "/api/auth/trusted_devices") {
+    return json(res, { devices: [] });
+  }
+  if (method === "GET" && p === "/api/auth/mfa") {
+    return json(res, { mfa_enrolled: false, methods: [] });
+  }
+  if (method === "GET" && p === "/api/auth/sessions/list-active") {
+    return json(res, { data: [], pagination: { has_more: false, total: 0 } });
+  }
+  if (method === "GET" && /^\/api\/stripe\/[^/]+\/invoices$/.test(p)) {
+    return json(res, { invoices: [], next_page: null });
+  }
+  if (method === "GET" && /^\/api\/organizations\/[^/]+\/user_artifacts$/.test(p)) {
+    return json(res, { artifacts: [] });
+  }
+  if (method === "GET" && /^\/api\/organizations\/[^/]+\/user_artifacts\/count$/.test(p)) {
+    return json(res, { count: 0 });
+  }
+  if (method === "GET" && /^\/api\/frame\/frames(?:\/external)?$/.test(p)) {
+    return json(res, { frames: [] });
+  }
+  const notifications = p.match(/^\/api\/organizations\/([^/]+)\/notification\/preferences$/);
+  if (notifications && (method === "GET" || method === "PATCH")) {
+    const org = notifications[1];
+    const state = NOTIFICATION_SETTINGS.get(org) ?? {
+      preferences: { feature_preference: {} },
+      effective_preferences: {},
+      push_reachability: {
+        has_active_channel: false, platforms: [], most_recent_token_refresh: null,
+      },
+    };
+    NOTIFICATION_SETTINGS.set(org, state);
+    if (method === "GET") return json(res, state);
+    return readBody(req, (body) => {
+      let patch;
+      try { patch = JSON.parse(body.toString("utf8"))?.preferences?.feature_preference; } catch {}
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+        return json(res, { error: "Invalid notification preferences" }, 400);
+      }
+      // 按功能和渠道合并，保留未修改项以及显式关闭的 false。
+      for (const [feature, channels] of Object.entries(patch)) {
+        if (!channels || typeof channels !== "object" || Array.isArray(channels)) continue;
+        for (const channel of ["push", "email"]) {
+          const key = `enable_${channel}`;
+          if (typeof channels[key] !== "boolean") continue;
+          const previous = Object.hasOwn(state.preferences.feature_preference, feature)
+            ? state.preferences.feature_preference[feature] : {};
+          const effective = Object.hasOwn(state.effective_preferences, feature)
+            ? state.effective_preferences[feature] : {};
+          state.preferences.feature_preference = {
+            ...state.preferences.feature_preference, [feature]: { ...previous, [key]: channels[key] },
+          };
+          state.effective_preferences = {
+            ...state.effective_preferences,
+            [feature]: { ...effective, [key]: channels[key], [`${channel}_source`]: "explicit" },
+          };
+        }
+      }
+      return json(res, state);
+    });
   }
 
   // 分页/列表类接口：客户端会 flatMap 取 .items/.data，回 {} 会出 [undefined] 元素
@@ -641,7 +745,7 @@ function mockApi(req, res, url) {
   if (/\/feature|flags|eligib/.test(p)) {
     return json(res, BOOTSTRAP.feature_flags);
   }
-  // 未知 API：给空对象，避免前端报错
+  // 未知 API 兜底；有结构要求的接口必须在上方单独实现。
   return json(res, {});
 }
 
@@ -876,10 +980,9 @@ function handle(req, res, hostHeader) {
 
   if (url.pathname.startsWith("/edge-api/")) return mockEdgeApi(req, res, url);
 
-  // i18n：上游被区域封锁（302 → app-unavailable-in-region），不能透传；
-  // 改用 .cache 里录制过的真实字典（按路径匹配、忽略 ?v= 版本号），取不到才回空 dict。
+  // i18n：复用仓库与本机录制词表，短 ID 和动态词表按各自契约返回。
   if (MODE !== "passthrough" && url.pathname.startsWith("/i18n/")) {
-    const hit = cachedI18n(url.pathname) ?? localI18n(url.pathname);
+    const hit = localI18n(url.pathname);
     if (hit) {
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
