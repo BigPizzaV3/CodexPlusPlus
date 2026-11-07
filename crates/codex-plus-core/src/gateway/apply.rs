@@ -923,6 +923,57 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
         })
 }
 
+/// 接入前对账 auth.json 里的 ChatGPT 登录：若它属于池里某个已停用的网关自有账号，
+/// 那份 token 多半是过期代际——留着它启动 Codex 只会弹官方登录门，而用户要的其实是
+/// 纯 API Key 模式。把这种登录从 auth.json 里拿掉（OPENAI_API_KEY 等其余字段不动）。
+/// 不属于池里任何账号的登录视为用户自己登的，不碰。
+fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> bool {
+    let path = ctx.codex_home.join("auth.json");
+    let live = std::fs::read_to_string(&path).unwrap_or_default();
+    let account = serde_json::from_str::<Value>(&live)
+        .ok()
+        .and_then(|auth| {
+            auth.pointer("/tokens/account_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let owner = (!account.is_empty()).then(|| {
+        gateway.providers.iter().find(|provider| {
+            crate::official_login::is_gateway_owned_login(&provider.relay)
+                && crate::official_login::chatgpt_account_id_from_auth_contents(
+                    &provider.relay.auth_contents,
+                ) == account
+        })
+    });
+    if let Some(Some(provider)) = owner.filter(|entry| entry.is_some_and(|p| !p.enabled))
+        && let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&live)
+    {
+        let removed = object.remove("tokens").is_some()
+            | object.remove("auth_mode").is_some()
+            | object.remove("last_refresh").is_some();
+        if removed {
+            let result = crate::settings::atomic_write(
+                &path,
+                format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&Value::Object(object)).unwrap_or_default()
+                )
+                .as_bytes(),
+            );
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                if result.is_ok() {
+                    "gateway.stale_lent_login_stripped"
+                } else {
+                    "gateway.stale_lent_login_strip_failed"
+                },
+                serde_json::json!({ "provider": provider.relay.id }),
+            );
+        }
+    }
+    codex_signed_in(&ctx.codex_home)
+}
+
 /// 接入网关前 Codex 实时配置的副本。只在实时配置与直连模式的记录对不上时才存：
 /// 那时直连模式没法从它自己的记录还原，断开时据此还原网关改过的键（见 [`restore_codex_files`]）。
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, Deserialize)]
@@ -1270,7 +1321,7 @@ fn write_codex(
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();
     // Codex 自己没登录、池里有网关登录的 ChatGPT 账号：借给 Codex，让它以官方身份接入。
     // WSL 模式下不用官方身份（见 [`codex_gateway_profile_on`]），也就不借。
-    let signed_in = codex_signed_in(&ctx.codex_home);
+    let signed_in = reconcile_codex_sign_in(ctx, gateway);
     let lend = (!signed_in
         && wsl_host.is_none()
         && crate::native_auth::selection_allows_auto_lend(&settings))

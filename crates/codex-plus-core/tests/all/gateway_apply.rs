@@ -1080,7 +1080,97 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
 }
 
-/// #2760：网关供应商可以设成「不使用代理（直连）」：存成 `direct`（不分大小写），
+/// 借出的 ChatGPT 账号在池里被停用后，auth.json 里残留的登录态要在下一次接入/刷新
+/// 时被清掉：Codex 回到纯 API Key 模式，而不是带着过期代际的 token 弹官方登录门。
+#[test]
+fn disabled_pool_account_login_is_stripped_from_codex_auth() {
+    use base64::Engine;
+    let fixture = fixture(57403);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut direct = codex_plus_core::provider_import::pool_relay_profile(
+        "直连",
+        "https://api.direct.test/v1",
+        "sk-direct",
+        RelayProtocol::Responses,
+        "gpt-direct",
+        "gpt-direct",
+        &[],
+    )
+    .unwrap();
+    direct.id = "direct".into();
+    direct.relay_mode = RelayMode::PureApi;
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut direct).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    seeded.relay_profiles = vec![direct];
+    seeded.active_relay_id = "direct".into();
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings,
+        &ctx.codex_home,
+        seeded,
+        "",
+    )
+    .unwrap();
+    let auth_path = ctx.codex_home.join("auth.json");
+    let read_auth = || -> Value {
+        serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap_or_default())
+            .unwrap_or(Value::Null)
+    };
+
+    let id_token = format!(
+        "e30.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({
+                "sub": "pool-user",
+                "https://api.openai.com/auth": { "chatgpt_account_id": "acc-pool" }
+            }).to_string()
+        )
+    );
+    let chatgpt = RelayProfile {
+        name: "ChatGPT Pro".into(),
+        relay_mode: RelayMode::Official,
+        protocol: RelayProtocol::Responses,
+        auth_contents: json!({
+            "auth_mode": "chatgpt",
+            "codex_plus_gateway": true,
+            "tokens": { "id_token": id_token, "access_token": "at-1", "refresh_token": "rt-1", "account_id": "acc-pool" }
+        })
+        .to_string(),
+        model_list: "gpt-6.1-sol".into(),
+        ..RelayProfile::default()
+    };
+    let (_, pool_id) =
+        codex_plus_core::gateway::apply::add_provider(&ctx.gateway, chatgpt, "login:chatgpt", None)
+            .unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    assert_eq!(read_auth()["tokens"]["account_id"], "acc-pool", "已借出");
+
+    // 用户在供应商池里停用了这个账号。
+    ctx.gateway
+        .update(|gateway| {
+            let provider = gateway
+                .providers
+                .iter_mut()
+                .find(|provider| provider.relay.id == pool_id)
+                .unwrap();
+            provider.enabled = false;
+            Ok(())
+        })
+        .unwrap();
+
+    // 池变动后重写开着的 Agent 配置：auth.json 里的残留登录被清掉。
+    codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap();
+    let auth = read_auth();
+    assert!(auth.get("tokens").is_none(), "停用账号的登录被清掉");
+    assert!(auth.get("auth_mode").is_none());
+    assert!(auth.get("last_refresh").is_none());
+    // 网关那份不受影响：凭据还在供应商快照里。
+    let pool = ctx.gateway.load().unwrap();
+    let pool_auth: Value =
+        serde_json::from_str(&pool.provider(&pool_id).unwrap().relay.auth_contents).unwrap();
+    assert_eq!(pool_auth["tokens"]["account_id"], "acc-pool");
+}
 /// 解析出的代理就是它（不退回系统代理或进程级代理），建 client 时关掉所有代理。
 #[test]
 fn gateway_provider_proxy_can_be_direct() {
