@@ -57,3 +57,7 @@ stepfun-*-stall-bugreport.md
 
 # 2026-10 官网改版草稿，已被 site/ 的正式实现取代，暂留本地不入库
 /site-next/
+
+# 本地工具与缓存，不随源码提交
+/tools/claude-local/
+/.wrangler/
