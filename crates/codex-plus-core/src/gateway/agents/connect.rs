@@ -28,16 +28,7 @@ pub fn wiring(
     port: u16,
 ) -> Wiring {
     let default_model = route::binding_default_model(gateway, binding);
-    let mut ids = vec![default_model.clone()];
-    for model in route::pool_models(gateway, binding)
-        .into_iter()
-        .chain(binding.declared_models())
-    {
-        if !model.is_empty() && !ids.contains(&model) {
-            ids.push(model);
-        }
-    }
-    let models = ids
+    let models = route::binding_exposed_models(gateway, binding)
         .into_iter()
         .filter(|model| !model.is_empty())
         .map(|model| ModelEntry {
@@ -48,7 +39,7 @@ pub fn wiring(
         })
         .collect();
     let small_model = Some(binding.claude_roles.haiku.trim())
-        .filter(|model| !model.is_empty())
+        .filter(|model| !model.is_empty() && !route::is_disabled_group_model(gateway, model))
         .map(str::to_string)
         .unwrap_or_else(|| default_model.clone());
     Wiring {

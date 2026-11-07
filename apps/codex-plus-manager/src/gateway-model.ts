@@ -4,6 +4,7 @@
  * 模型名三种写法：裸模型名（池里提供它的供应商依次尝试）、`<供应商 id>/<模型>`、`group/<组 id>`。
  */
 import { PRESETS } from "./presets.ts";
+import { modelSlugFromRowName } from "./model-metadata.ts";
 import { normalizeSubscriptionPolicy, type SubscriptionPolicy, type SubscriptionPolicyInput } from "./subscription-policy.ts";
 
 /** 内置三个之外，通用 Agent 的 id 由后端的规格表决定（如 "opencode"）。 */
@@ -136,6 +137,7 @@ export type GroupMember = { model: string; weight: number };
 export type GatewayGroupEntry = {
   id: string;
   name: string;
+  disabled?: boolean;
   mode: GroupMode;
   sticky?: GroupSticky;
   members: GroupMember[];
@@ -470,6 +472,11 @@ export function groupModelId(id: string): string {
   return `${GROUP_MODEL_PREFIX}${id}`;
 }
 
+export function disabledGroup(payload: GatewayPayload | null, model: string): GatewayGroupEntry | undefined {
+  const key = modelSlugFromRowName(model).toLowerCase();
+  return payload?.groups.find((group) => group.disabled && groupModelId(group.id).toLowerCase() === key);
+}
+
 /** 名字 → 短名，与后端 `slugify` 一致（只用于预览，真正的 id 由后端生成）。 */
 export function slugify(name: string): string {
   const slug = name.trim().toLowerCase().replace(/[\s_/]+/g, "-").replace(/^-+|-+$/g, "");
@@ -492,7 +499,8 @@ export function agentModels(payload: GatewayPayload | null, exclude: string[] = 
   // 按小写去重；用 Set 查重，池大时轮询刷新也不会 O(n²)。
   const seen = new Set<string>();
   for (const entry of agentPoolProviders(payload, exclude)) {
-    for (const model of entry.models) {
+    for (const listed of entry.models) {
+      const model = disabledGroup(payload, listed) ? `${entry.id}/${listed}` : listed;
       const key = model.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -500,7 +508,7 @@ export function agentModels(payload: GatewayPayload | null, exclude: string[] = 
     }
   }
   for (const group of payload?.groups ?? []) {
-    if (group.members.length) models.push(groupModelId(group.id));
+    if (!group.disabled && group.members.length) models.push(groupModelId(group.id));
   }
   return models;
 }
@@ -517,16 +525,18 @@ export function qualifiedProvider(payload: GatewayPayload | null, model: string,
 
 /** 模型名能否在池里路由。 */
 export function modelRoutable(payload: GatewayPayload | null, model: string, exclude: string[] = []): boolean {
+  if (disabledGroup(payload, model)) return false;
   const lower = model.trim().toLowerCase();
   return agentModels(payload, exclude).some((known) => known.toLowerCase() === lower) || qualifiedProvider(payload, model.trim(), exclude) !== null;
 }
 
 /** 表单校验：返回错误文案（中文原文，界面再翻译），没问题返回 null。 */
-export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null): string | null {
+export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string): string | null {
   if (payload) {
     if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
     const model = draft.model.trim();
-    if (model && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+    const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
+    if (model && !retainedDisabledModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
   }
   const window = parseContextWindow(draft.contextWindow);
   if (window !== null && (!Number.isFinite(window) || window < 1_000)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
@@ -645,9 +655,10 @@ export function pickerSections(
     const items = entry.models
       .filter((model) => providerHit || matches(query, model))
       .flatMap((model) => {
+        const groupDisabled = Boolean(disabledGroup(payload, model));
         const multi = servingProviders(payload, model, exclude).length > 1;
-        if (multi && !shared.some((known) => known.toLowerCase() === model.toLowerCase())) shared.push(model);
-        const value = multi ? `${entry.id}/${model}` : model;
+        if (multi && !groupDisabled && !shared.some((known) => known.toLowerCase() === model.toLowerCase())) shared.push(model);
+        const value = multi || groupDisabled ? `${entry.id}/${model}` : model;
         if (unlisted.has(value.toLowerCase())) return [];
         return [{ model: value, label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name) }];
       });
@@ -663,11 +674,11 @@ export function pickerSections(
     }));
   if (autoItems.length) sections.push({ key: "auto", title: "自动组", avatar: "", items: autoItems });
   const groups = payload.groups
-    .filter((group) => group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id)))
+    .filter((group) => !group.disabled && group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id)))
     .map((group) => ({ model: groupModelId(group.id), label: group.name, sub: groupModelId(group.id), avatar: avatar(group.name) }));
   if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
   const typed = rawQuery.trim();
-  if (typed && !/\s/.test(typed) && !modelRoutable(payload, typed, exclude)) {
+  if (typed && !/\s/.test(typed) && !disabledGroup(payload, typed) && !modelRoutable(payload, typed, exclude)) {
     sections.push({
       key: "custom",
       title: "自定义模型",
@@ -1632,7 +1643,7 @@ export function unlistedModels(payload: GatewayPayload | null): Set<string> {
       if (model && !model.includes("*") && !model.startsWith(GROUP_MODEL_PREFIX)) hidden.add(model.toLowerCase());
     }
   };
-  for (const group of payload?.groups ?? []) if (group.hideMembers) add(group);
+  for (const group of payload?.groups ?? []) if (!group.disabled && group.hideMembers) add(group);
   if (payload?.gateway.autoModels !== false) {
     for (const group of payload?.autoGroups ?? []) if (group.hideMembers && !group.hidden) add(group);
   }

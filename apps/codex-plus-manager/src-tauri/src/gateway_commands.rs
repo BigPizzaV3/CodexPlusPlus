@@ -4,7 +4,7 @@
 //! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
 
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -614,6 +614,12 @@ fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     result
 }
 
+fn refresh_group_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    let saved = result?;
+    apply::refresh_enabled(&context()).context("模型组设置已保存，但 Agent 配置刷新失败")?;
+    Ok(saved)
+}
+
 /// 界面每隔几秒轮询一次：读设置、gateway.json、检查各 Agent 配置漂移都是文件 IO，
 /// 放到阻塞线程池里做，不占主线程。返回格式不变。
 #[tauri::command]
@@ -1086,18 +1092,43 @@ pub fn save_gateway_provider_metadata(
 }
 
 /// 自动组卡片上的设置（模式、会话固定、隐藏成员、手动选中的成员、隐藏整个自动组）。和默认一样时记录会被删掉。
+#[derive(Deserialize)]
+pub struct AutoGroupInput {
+    #[serde(flatten)]
+    settings: codex_plus_core::gateway::store::AutoGroupSettings,
+    #[serde(default)]
+    hidden: Option<bool>,
+}
+
 #[tauri::command]
 pub fn save_gateway_auto_group(
     model: String,
-    settings: codex_plus_core::gateway::store::AutoGroupSettings,
+    settings: AutoGroupInput,
 ) -> CommandResult<Option<GatewayPayload>> {
     respond(
         "自动组已保存。",
-        "保存自动组失败",
-        refresh_agents(apply::save_auto_group(
+        "自动组更新未完全完成",
+        refresh_group_agents(apply::save_auto_group_with_hidden(
             &GatewayStore::default(),
             &model,
-            settings,
+            settings.settings,
+            settings.hidden,
+        )),
+    )
+}
+
+#[tauri::command]
+pub fn set_gateway_auto_group_enabled(
+    model: String,
+    enabled: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "自动组已保存。",
+        "自动组更新未完全完成",
+        refresh_group_agents(apply::set_auto_group_enabled(
+            &GatewayStore::default(),
+            &model,
+            enabled,
         )),
     )
 }
@@ -1839,8 +1870,21 @@ fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow
 pub fn save_gateway_group(group: GroupInput) -> CommandResult<Option<GatewayPayload>> {
     respond(
         "模型组已保存。",
-        "保存模型组失败",
-        refresh_agents(apply::save_group(&GatewayStore::default(), &group)),
+        "模型组更新未完全完成",
+        refresh_group_agents(apply::save_group(&GatewayStore::default(), &group)),
+    )
+}
+
+#[tauri::command]
+pub fn set_gateway_group_enabled(id: String, enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "模型组已保存。",
+        "模型组更新未完全完成",
+        refresh_group_agents(apply::set_group_enabled(
+            &GatewayStore::default(),
+            &id,
+            enabled,
+        )),
     )
 }
 
@@ -2009,6 +2053,30 @@ fn parse_version(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_version;
+
+    #[test]
+    fn auto_group_input_separates_optional_hidden_from_other_settings() {
+        use codex_plus_core::gateway::store::GroupMode;
+        use serde_json::json;
+
+        let input: super::AutoGroupInput = serde_json::from_value(json!({
+            "mode": "manual",
+            "hidden": true,
+            "hideMembers": true,
+            "pick": "provider/model",
+            "futureField": 3
+        }))
+        .unwrap();
+        assert_eq!(input.hidden, Some(true));
+        assert_eq!(input.settings.mode, GroupMode::Manual);
+        assert!(input.settings.hide_members);
+        assert_eq!(input.settings.pick, "provider/model");
+        assert_eq!(input.settings.extra["futureField"], 3);
+        assert!(!input.settings.extra.contains_key("hidden"));
+
+        let input: super::AutoGroupInput = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(input.hidden, None);
+    }
 
     #[test]
     fn cli_version_is_the_first_dotted_number() {

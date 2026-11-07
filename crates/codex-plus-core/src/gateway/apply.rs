@@ -107,7 +107,7 @@ pub fn claude_gateway_provider(
     let default_model = binding_default_model(gateway, binding);
     let role = |value: &str| {
         let (slug, _) = crate::model_suffix::parse_model_suffix(value.trim());
-        if slug.trim().is_empty() {
+        if slug.trim().is_empty() || route::is_disabled_group_model(gateway, &slug) {
             default_model.clone()
         } else {
             slug.trim().to_string()
@@ -196,7 +196,7 @@ fn agent_gateway_profile(
         route::pool_models(gateway, binding)
     };
     for model in pool.into_iter().chain(binding.declared_models()) {
-        if !models.contains(&model) {
+        if !route::is_disabled_group_model(gateway, &model) && !models.contains(&model) {
             models.push(model);
         }
     }
@@ -235,6 +235,11 @@ fn write_agent_config(
 ) -> anyhow::Result<Option<String>> {
     // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
     let gateway = ctx.gateway.load()?.with_extension_providers();
+    if route::is_disabled_group_model(&gateway, &binding.model)
+        && binding_default_model(&gateway, binding).is_empty()
+    {
+        bail!("默认模型组已停用，且没有其他可用模型");
+    }
     match agent {
         ToolId::Claude => {
             // 还没指向网关：先把 settings.json 原样存一份，断开时据此还原（见 [`restore_claude`]）。
@@ -2209,7 +2214,7 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
         match write_agent_config(ctx, &agent, binding) {
             Ok(_) => count += 1,
             Err(error) => {
-                first_error.get_or_insert(error);
+                first_error.get_or_insert(error.context(format!("刷新 {} 失败", agent.as_str())));
             }
         }
     }
@@ -3588,6 +3593,9 @@ pub struct GroupInput {
     pub sticky: GroupSticky,
     #[serde(default)]
     pub members: Vec<GroupMember>,
+    /// 省略时保留已有组的状态，新组默认启用。
+    #[serde(default)]
+    pub disabled: Option<bool>,
     /// 隐藏成员：组里的模型不再单独出现在 Agent 的模型列表里。
     #[serde(default)]
     pub hide_members: bool,
@@ -3602,6 +3610,24 @@ pub fn save_group(
     input: &GroupInput,
 ) -> anyhow::Result<(GatewaySettings, String)> {
     store.update(|gateway| save_group_in(gateway, input))
+}
+
+/// 只更新模型组开关，避免使用旧界面快照覆盖其它设置。
+pub fn set_group_enabled(
+    store: &GatewayStore,
+    id: &str,
+    enabled: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        let group = gateway
+            .groups
+            .iter_mut()
+            .find(|group| group.id == id)
+            .ok_or_else(|| anyhow::anyhow!("模型组不存在：{id}"))?;
+        group.disabled = !enabled;
+        Ok(())
+    })?;
+    Ok(gateway)
 }
 
 fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::Result<String> {
@@ -3634,6 +3660,9 @@ fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::R
     let mut group = GatewayGroup {
         id: id.clone(),
         name: name.to_string(),
+        disabled: input.disabled.unwrap_or_else(|| {
+            gateway.group(&id).is_some_and(|existing| existing.disabled)
+        }),
         mode: input.mode,
         sticky: input.sticky,
         members,
@@ -3658,17 +3687,52 @@ pub fn save_auto_group(
     model: &str,
     settings: AutoGroupSettings,
 ) -> anyhow::Result<GatewaySettings> {
+    let hidden = settings.hidden;
+    save_auto_group_with_hidden(store, model, settings, Some(hidden))
+}
+
+/// `hidden` 省略时保留当前状态，避免其它窗口的设置修改覆盖开关。
+pub fn save_auto_group_with_hidden(
+    store: &GatewayStore,
+    model: &str,
+    settings: AutoGroupSettings,
+    hidden: Option<bool>,
+) -> anyhow::Result<GatewaySettings> {
     let key = model.trim().to_ascii_lowercase();
     if key.is_empty() {
         bail!("没有指定自动组的模型");
     }
     let (gateway, _) = store.update(|gateway| {
         let mut settings = settings;
+        settings.hidden = hidden.unwrap_or_else(|| {
+            gateway.auto_groups.get(&key).is_some_and(|current| current.hidden)
+        });
         settings.pick = settings.pick.trim().to_string();
         if settings == AutoGroupSettings::default() {
             gateway.auto_groups.remove(&key);
         } else {
             gateway.auto_groups.insert(key.clone(), settings);
+        }
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
+/// 只更新自动组开关，保留当前模式、成员设置和未知字段。
+pub fn set_auto_group_enabled(
+    store: &GatewayStore,
+    model: &str,
+    enabled: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let key = model.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        bail!("没有指定自动组的模型");
+    }
+    let (gateway, ()) = store.update(|gateway| {
+        let settings = gateway.auto_groups.entry(key.clone()).or_default();
+        settings.hidden = !enabled;
+        if *settings == AutoGroupSettings::default() {
+            gateway.auto_groups.remove(&key);
         }
         Ok(())
     })?;
@@ -3703,6 +3767,59 @@ mod tests {
     use crate::settings::{
         AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, RelaySessionProvider,
     };
+
+    #[test]
+    fn group_switches_preserve_latest_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        let group = GatewayGroup {
+            id: "daily".into(),
+            name: "Daily updated".into(),
+            mode: GroupMode::Rotate,
+            sticky: GroupSticky::Session,
+            members: vec![GroupMember {
+                model: "provider/new-model".into(),
+                weight: 3,
+            }],
+            hide_members: true,
+            pick: "provider/new-model".into(),
+            extra: serde_json::from_value(json!({ "futureField": 3 })).unwrap(),
+            ..GatewayGroup::default()
+        };
+        let auto = AutoGroupSettings {
+            mode: GroupMode::Manual,
+            sticky: GroupSticky::Session,
+            hide_members: true,
+            pick: "provider/new-model".into(),
+            extra: serde_json::from_value(json!({ "futureField": 4 })).unwrap(),
+            ..AutoGroupSettings::default()
+        };
+        store.update(|gateway| {
+            gateway.groups.push(group.clone());
+            gateway.auto_groups.insert("shared".into(), auto.clone());
+            Ok(())
+        }).unwrap();
+
+        let mut disabled_group = group.clone();
+        disabled_group.disabled = true;
+        let gateway = set_group_enabled(&store, "daily", false).unwrap();
+        assert_eq!(gateway.groups[0], disabled_group);
+        let gateway = set_group_enabled(&store, "daily", true).unwrap();
+        assert_eq!(gateway.groups[0], group);
+        assert!(set_group_enabled(&store, "missing", false).is_err());
+
+        let mut hidden_auto = auto.clone();
+        hidden_auto.hidden = true;
+        let gateway = set_auto_group_enabled(&store, "Shared", false).unwrap();
+        assert_eq!(gateway.auto_groups["shared"], hidden_auto);
+        let gateway = set_auto_group_enabled(&store, "Shared", true).unwrap();
+        assert_eq!(gateway.auto_groups["shared"], auto);
+
+        let gateway = set_auto_group_enabled(&store, "new-model", false).unwrap();
+        assert!(gateway.auto_groups["new-model"].hidden);
+        let gateway = set_auto_group_enabled(&store, "new-model", true).unwrap();
+        assert!(!gateway.auto_groups.contains_key("new-model"));
+    }
 
     #[test]
     fn catalog_ui_fields_keep_fast_tiers_and_drop_bulky_fields() {

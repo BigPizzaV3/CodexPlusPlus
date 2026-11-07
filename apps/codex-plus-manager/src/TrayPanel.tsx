@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   Activity,
+  AlertTriangle,
   ChartColumn,
   Radio,
   Check,
@@ -43,6 +44,7 @@ import {
   agentModels,
   agentName,
   bindingFromDraft,
+  disabledGroup,
   costText,
   draftFromBinding,
   formatMoney,
@@ -893,7 +895,14 @@ function PanelAgentRow({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
-  const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  const inactive = disabledGroup(payload, draft.model);
+  const effectiveModel = agent.enabled && inactive ? agent.defaultModel : draft.model;
+  const display = inactive && agent.enabled && !effectiveModel
+    ? { title: "", sub: "", group: false }
+    : modelDisplay(payload, effectiveModel, draft.poolExclude);
+  const inactiveHint = inactive && agent.enabled
+    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);
   const head = (
@@ -916,10 +925,11 @@ function PanelAgentRow({
     <div className="tp-agent">
       <AgentIcon agent={agent.agent} className="gw-agent-icon" />
       <strong>{agent.name}</strong>
-      <button aria-expanded={open} className="gw-picker-button tp-agent-picker" onClick={() => setOpen(!open)} ref={buttonRef} type="button">
+      <button aria-expanded={open} className="gw-picker-button tp-agent-picker" onClick={() => setOpen(!open)} ref={buttonRef} title={inactiveHint} type="button">
         {!agent.enabled ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
-        <span>{agent.enabled ? display.title : own ?? t("默认")}</span>
+        <span>{agent.enabled ? display.title || t("未设置") : own ?? t("默认")}</span>
         {agent.enabled ? <AutoTag view={display} /> : null}
+        {inactiveHint ? <AlertTriangle aria-label={inactiveHint} className="h-3.5 w-3.5" role="img" /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => setOpen(false)} open={open} width={340}>
@@ -938,7 +948,7 @@ function PanelAgentRow({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
-          selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
+          selectedModel={agent.enabled ? effectiveModel || agentModels(payload, draft.poolExclude)[0] || "" : ""}
         />
       </Floating>
       {disconnectTarget ? (
