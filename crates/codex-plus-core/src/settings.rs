@@ -1244,6 +1244,10 @@ pub struct BackendSettings {
     /// 自动审批入口被隐藏；审批请求本身走当前供应商。默认关。
     #[serde(rename = "codexAppOfflineAutoReview", default)]
     pub codex_app_offline_auto_review: bool,
+    /// Statsig 界面增强：强制几项远程开关（隐藏升级/额度推销、放宽网络与流式超时、补开记忆）。
+    /// 只改本机界面与超时参数，服务端能力不变。默认关。
+    #[serde(rename = "codexAppStatsigOverrides", default)]
+    pub codex_app_statsig_overrides: bool,
     /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
     /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
     #[serde(rename = "managerAgentFocus", default)]
@@ -1553,6 +1557,7 @@ impl Default for BackendSettings {
             codex_app_native_predictions: false,
             codex_app_third_party_reasoning_collapse: false,
             codex_app_offline_auto_review: false,
+            codex_app_statsig_overrides: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
@@ -3000,6 +3005,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativePredictions");
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
+    merge_bool_setting(target, source, "codexAppStatsigOverrides");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
     {

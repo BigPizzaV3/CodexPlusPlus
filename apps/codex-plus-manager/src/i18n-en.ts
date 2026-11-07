@@ -2690,6 +2690,8 @@ export const EN_PLAIN: Record<string, string> = {
   "类型": "Type",
   "粘贴修复": "Paste fix",
   "强制中文界面": "Force Chinese UI",
+  "Statsig 界面增强": "Statsig UI enhancements",
+  "强制打开几项界面侧的远程开关：隐藏升级与额度推销提示、放宽网络重试与流式超时、补开记忆的 Statsig 开关。只影响本机界面与超时参数，云端能力与配额不受影响；关闭后重新启动 Codex 生效。": "Force a few client-side remote switches: hide upgrade and quota upsells, relax network retry and streaming timeouts, and turn on the Statsig switch for memories. Only local UI and timeout values change; cloud capabilities and quotas are unaffected. Restart Codex after turning this off.",
   "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。": "Force the built-in zh-CN locale pack in the Codex app so the UI does not fall back to English when Statsig or the VPN is unreachable. Fully applies after restarting Codex.",
   "容量错误自动重试": "Auto-retry on capacity errors",
   "模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。": "Automatically clicks Retry when the selected model is at capacity. Codex only auto-retries four times on its own, spaced by a 10/30/120/300 second countdown, and then leaves a manual button; when enabled, Codex++ takes over immediately without waiting for that countdown.",

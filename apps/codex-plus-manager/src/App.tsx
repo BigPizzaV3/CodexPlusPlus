@@ -515,6 +515,8 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppThirdPartyReasoningCollapse: boolean;
   /** 拿不到远程功能开关（国内网络）时补开「替我审批」入口（#2817），默认关。 */
   codexAppOfflineAutoReview: boolean;
+  /** Statsig 界面增强：隐藏升级推销、放宽网络超时、补开记忆，默认关。 */
+  codexAppStatsigOverrides: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
@@ -1597,6 +1599,7 @@ const defaultSettings: BackendSettings = {
   codexAppNativePredictions: false,
   codexAppThirdPartyReasoningCollapse: false,
   codexAppOfflineAutoReview: false,
+  codexAppStatsigOverrides: false,
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,

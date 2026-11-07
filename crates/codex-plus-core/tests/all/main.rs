@@ -139,6 +139,7 @@ mod skill_github_live;
 mod skills_lifecycle;
 mod ssh_remote_loopback;
 mod standalone_quota_settings;
+mod statsig_overrides;
 mod tool_shards;
 mod typing_effect_settings;
 mod ui_issue_regressions;

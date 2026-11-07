@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2810
+      "lines": 2813
     },
     {
       "name": "20-menu.js",
@@ -44,6 +44,11 @@
       "name": "33-offline-auto-review.js",
       "description": "拿不到远程功能开关时补开「替我审批」（#2817），及 Statsig 离线补数据的通用部分",
       "lines": 108
+    },
+    {
+      "name": "34-statsig-overrides.js",
+      "description": "Statsig 界面增强：升级推销、网络超时、记忆开关的客户端覆盖",
+      "lines": 133
     },
     {
       "name": "40-backend-settings.js",
@@ -178,7 +183,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 421
+      "lines": 422
     },
     {
       "name": "96-paste-fix.js",
