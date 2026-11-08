@@ -2093,7 +2093,7 @@ export const EN_PLAIN: Record<string, string> = {
     "Inspect proxy requests: status, model, retries, token usage, and cache hits",
   "最近 {0} 条代理请求，含状态、模型、重试与 token 用量":
     "Latest {0} proxy requests with status, model, retries, and token usage",
-  "搜索模型 / 供应商 / 路径 / 错误": "Search model / provider / path / error",
+  "搜索模型 / 供应商 / 路径 / 错误 / 状态码": "Search model / provider / path / error / status code",
   "状态筛选": "Status filter",
   "自动刷新": "Auto refresh",
   "清空": "Clear",
