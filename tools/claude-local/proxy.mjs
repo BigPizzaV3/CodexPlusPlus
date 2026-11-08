@@ -857,6 +857,8 @@ function handle(req, res, hostHeader) {
       ) {
         res.writeHead(200, {
           ...meta.headers,
+          // 主界面从 claude.ai 跨域导入 CDN 模块，本地副本也必须保留公开资源的 CORS 契约。
+          "access-control-allow-origin": "*",
           "content-length": body.length,
           "cache-control": "no-store",
         });

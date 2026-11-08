@@ -93,7 +93,7 @@ async function request(pathname, { host, body, method = body === undefined ? "GE
   }
 }
 
-async function requestText(host, pathname) {
+async function requestText(host, pathname, headers = {}) {
   const connect = http.request({
     hostname: "127.0.0.1", port: proxyPort, method: "CONNECT", path: `${host}:443`,
   });
@@ -110,7 +110,7 @@ async function requestText(host, pathname) {
   try {
     const result = await new Promise((resolve, reject) => {
       const req = https.request({
-        hostname: host, path: pathname, method: "GET", headers: { connection: "close" }, agent,
+        hostname: host, path: pathname, method: "GET", headers: { ...headers, connection: "close" }, agent,
       });
       req.on("error", reject);
       req.on("response", (response) => {
@@ -119,6 +119,7 @@ async function requestText(host, pathname) {
         response.on("data", (chunk) => chunks.push(chunk));
         response.on("end", () => resolve({
           status: response.statusCode,
+          headers: response.headers,
           body: Buffer.concat(chunks).toString("utf8"),
         }));
       });
@@ -331,9 +332,15 @@ after(async () => {
   }
 });
 
-test("mock mode serves the patched Claude dictation asset from the local cache", async () => {
-  const result = await requestText("assets-proxy.anthropic.com", dictationAssetPath);
+test("mock mode serves the patched dictation module with the CDN cross-origin contract", async () => {
+  const result = await requestText("assets-proxy.anthropic.com", dictationAssetPath, {
+    origin: "https://claude.ai",
+  });
   assert.equal(result.status, 200);
+  assert.equal(result.headers["access-control-allow-origin"], "*");
+  assert.match(result.headers["content-type"], /^text\/javascript\b/);
+  assert.equal(result.headers["cache-control"], "no-store");
+  assert.equal(Number(result.headers["content-length"]), Buffer.byteLength(result.body));
   assert.match(result.body, /D=125e3/);
   assert.doesNotMatch(result.body, /D=2e3/);
 });
