@@ -1892,8 +1892,10 @@ fn agent_config_path(agent: &ToolId) -> String {
         ToolId::Codex => codex_plus_core::gateway::agents::AgentEnv::current().display(
             &codex_plus_core::relay_config::default_codex_home_dir().join("config.toml"),
         ),
-        ToolId::Claude => "~/.claude/settings.json".to_string(),
-        ToolId::Grok => "~/.grok/config.toml".to_string(),
+        ToolId::Claude => codex_plus_core::gateway::agents::AgentEnv::current()
+            .display(&codex_plus_core::tools::default_claude_home_dir().join("settings.json")),
+        ToolId::Grok => codex_plus_core::gateway::agents::AgentEnv::current()
+            .display(&codex_plus_core::grok_config::default_grok_home_dir().join("config.toml")),
         other => match codex_plus_core::gateway::agents::spec(other.as_str()) {
             Some(spec) => {
                 let env = codex_plus_core::gateway::agents::AgentEnv::current();
@@ -2009,6 +2011,60 @@ fn parse_version(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_version;
+
+    #[test]
+    fn agent_config_paths_follow_the_write_directories() {
+        use codex_plus_core::gateway::agents::AgentEnv;
+        use codex_plus_core::tools::ToolId;
+
+        const CHILD: &str = "CODEX_PLUS_TEST_AGENT_CONFIG_PATHS";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            let env = AgentEnv::current();
+            let claude = env.expand(&super::agent_config_path(&ToolId::Claude));
+            let grok = env.expand(&super::agent_config_path(&ToolId::Grok));
+            assert!(
+                claude == codex_plus_core::tools::default_claude_home_dir().join("settings.json")
+            );
+            assert!(
+                grok == codex_plus_core::grok_config::default_grok_home_dir().join("config.toml")
+            );
+            if mode == "custom" {
+                assert!(
+                    claude
+                        == std::path::PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").unwrap())
+                            .join("settings.json")
+                );
+                assert!(
+                    grok == std::path::PathBuf::from(std::env::var_os("GROK_HOME").unwrap())
+                        .join("config.toml")
+                );
+            }
+            println!("agent config paths checked");
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        for mode in ["default", "custom"] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "gateway_commands::tests::agent_config_paths_follow_the_write_directories",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .env_remove("GROK_HOME");
+            if mode == "custom" {
+                child
+                    .env("CLAUDE_CONFIG_DIR", temp.path().join("claude config"))
+                    .env("GROK_HOME", temp.path().join("grok config"));
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("agent config paths checked"));
+        }
+    }
 
     #[test]
     fn cli_version_is_the_first_dotted_number() {
