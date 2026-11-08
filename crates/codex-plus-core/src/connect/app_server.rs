@@ -1190,6 +1190,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dynamic_tool_specs_use_consistent_canonical_format() {
+        let tools = json!([
+            super::super::controls::session_tool_spec(),
+            attachment_tool_spec()
+        ]);
+
+        for tool in tools.as_array().unwrap() {
+            assert_eq!(tool["type"], "function");
+            assert!(tool["name"].is_string());
+            assert!(tool["description"].is_string());
+            assert!(tool["inputSchema"].is_object());
+        }
+    }
+
+    #[test]
     fn turn_params_preserve_text_and_encode_local_images_without_tools() {
         let config = AppServerConfig {
             executable: "unused".into(),
@@ -1263,6 +1278,7 @@ mod tests {
                 Some("thread/start") => {
                     let tools = message["params"]["dynamicTools"].as_array().unwrap();
                     assert_eq!(tools.len(), if enabled { 2 } else { 1 });
+                    assert!(tools.iter().all(|tool| tool["type"] == "function"));
                     assert!(
                         tools
                             .iter()

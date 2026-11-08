@@ -13,7 +13,7 @@ import {
   formatElapsed,
   groupModeDescription,
   groupModeLabel,
-  groupModelId,
+  GROUP_MODEL_PREFIX,
   groupStickyDescription,
   groupStickyLabel,
   isPattern,
@@ -25,7 +25,6 @@ import {
   patternMatches,
   prettyModelName,
   speedOf,
-  slugify,
   type GatewayGroupEntry,
   type GatewayPayload,
   type GatewayResult,
@@ -251,15 +250,12 @@ const STICKY_OPTIONS: GroupSticky[] = ["cache", "session", "off"];
 function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
   const [editing, setEditing] = useState<GatewayGroupEntry | "new" | null>(null);
   const [query, setQuery] = useState("");
-  const [showHidden, setShowHidden] = useState(false);
   const autoOn = payload?.gateway.autoModels !== false;
   const needle = query.trim().toLowerCase();
   const hit = (group: GatewayGroupEntry) =>
     !needle || group.name.toLowerCase().includes(needle) || group.members.some((member) => member.model.toLowerCase().includes(needle));
   const mine = (payload?.groups ?? []).filter(hit);
   const autos = (payload?.autoGroups ?? []).filter(hit);
-  const visibleAutos = autos.filter((group) => !group.hidden);
-  const hiddenAutos = autos.filter((group) => group.hidden);
   // 自动组默认折叠（多家都有的模型一多就是一长串）；自己还没建组、或正在搜索时直接展开。
   const [autosOpen, setAutosOpen] = useState<boolean | null>(null);
   const autosShown = autosOpen ?? ((payload?.groups ?? []).length === 0 || Boolean(needle));
@@ -274,7 +270,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
     const next = { ...group, ...patch };
     void run(`auto:${group.id}`, "save_gateway_auto_group", {
       model: group.name,
-      settings: { mode: next.mode, sticky: next.sticky ?? "cache", hidden: next.hidden, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "" },
+      settings: { mode: next.mode, sticky: next.sticky ?? "cache", hideMembers: next.hideMembers ?? false, pick: next.pick ?? "" },
     }, t("保存自动组"), true);
   };
   const remove = async (group: GatewayGroupEntry) => {
@@ -326,6 +322,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
           onChange={(patch) => saveMine(group, patch)}
           onDelete={() => void remove(group)}
           onEdit={() => setEditing(group)}
+          onToggleEnabled={() => void run(`group:${group.id}`, "set_gateway_group_enabled", { id: group.id, enabled: Boolean(group.disabled) }, t("保存组"), true)}
           payload={payload}
         />
       ))}
@@ -336,7 +333,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
             <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
             {t("自动组")}
           </button>
-          <em>{visibleAutos.length}</em>
+          <em>{autos.length}</em>
         </SectionLabel>
       ) : null}
       {!autosShown ? null : <>
@@ -353,35 +350,19 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
         </div>
       ) : null}
       {autoOn
-        ? visibleAutos.map((group) => (
+        ? autos.map((group) => (
           <GroupCard
             auto
             busy={busy}
             group={group}
             key={group.id}
             onChange={(patch) => saveAuto(group, patch)}
-            onHide={() => saveAuto(group, { hidden: true })}
+            onToggleEnabled={() => void run(`auto:${group.id}`, "set_gateway_auto_group_enabled", { model: group.name, enabled: group.hidden }, t("保存自动组"), true)}
             onReset={group.customized ? () => void run(`auto:${group.id}`, "save_gateway_auto_group", { model: group.name, settings: {} }, t("恢复默认"), true) : undefined}
             payload={payload}
           />
         ))
         : null}
-      {autoOn && hiddenAutos.length ? (
-        <div className="gw-hidden-autos">
-          <button className="gw-text-button" onClick={() => setShowHidden(!showHidden)} type="button">
-            {showHidden ? t("收起已隐藏的") : tf("已隐藏 {0} 个", [hiddenAutos.length])}
-          </button>
-          {showHidden
-            ? hiddenAutos.map((group) => (
-              <div className="gw-hidden-auto" key={group.id}>
-                <strong>{prettyModelName(group.name)}</strong>
-                <code>{group.name}</code>
-                <button className="gw-text-button strong" disabled={busy !== null} onClick={() => saveAuto(group, { hidden: false })} type="button">{t("恢复")}</button>
-              </div>
-            ))
-            : null}
-        </div>
-      ) : null}
       </>}
 
       {editing ? (
@@ -411,7 +392,7 @@ function GroupCard({
   onChange,
   onEdit,
   onDelete,
-  onHide,
+  onToggleEnabled,
   onReset,
 }: {
   group: GatewayGroupEntry;
@@ -421,7 +402,7 @@ function GroupCard({
   onChange: (patch: Partial<GatewayGroupEntry>) => void;
   onEdit?: () => void;
   onDelete?: () => void;
-  onHide?: () => void;
+  onToggleEnabled: () => void;
   onReset?: () => void;
 }) {
   const manual = group.mode === "manual";
@@ -433,7 +414,7 @@ function GroupCard({
         <span className="gw-route-group-icon">{auto ? <Shuffle className="h-4 w-4" /> : <Waypoints className="h-4 w-4" />}</span>
         <div className="gw-route-group-title">
           <strong>{auto ? prettyModelName(group.name) : group.name}</strong>
-          <code className="gw-chip" title={t("Agent 里选这个名字就走这个组")}>{auto ? group.name : groupModelId(group.id)}</code>
+          <code className="gw-chip" title={auto ? t("Agent 里选这个名字就走这个组") : t("模型组")}>{auto ? group.name : `${GROUP_MODEL_PREFIX}${group.name}`}</code>
           {auto ? <span className="gw-pill gw-pill-outline">{t("自动")}</span> : null}
         </div>
         <div className="gw-route-group-controls">
@@ -454,17 +435,19 @@ function GroupCard({
             title={manual ? t("手动模式只用选中的那个成员，不需要会话固定") : undefined}
             value={group.sticky ?? "cache"}
           />
-          {/* 次要操作收进三点菜单：隐藏成员（打勾）、编辑、恢复默认、隐藏这个自动组、删除。路由方式的含义在下拉选项的说明里。 */}
+          {/* 次要操作收进三点菜单。 */}
           <Menu label={t("组操作")}>
             <MenuItem checked={group.hideMembers === true} disabled={disabled} onClick={() => onChange({ hideMembers: !group.hideMembers })}>
               <span title={t("打开后，组里的模型不再单独出现在 Agent 的模型列表里，只能通过这个组来选；直接写名字仍然能用。")}>{t("隐藏成员")}</span>
             </MenuItem>
             {onEdit ? <MenuItem disabled={disabled} onClick={onEdit}>{t("编辑")}</MenuItem> : null}
             {onReset ? <MenuItem disabled={disabled} onClick={onReset}><span title={t("回到依次、缓存期内固定、不隐藏成员")}>{t("恢复默认")}</span></MenuItem> : null}
-            {onHide ? <MenuItem disabled={disabled} onClick={onHide}><span title={t("这个自动组不再出现在 Agent 里，不带供应商的模型名按供应商池的顺序依次尝试")}>{t("隐藏这个组")}</span></MenuItem> : null}
             {onDelete ? <MenuItem danger disabled={disabled} onClick={onDelete}>{t("删除")}</MenuItem> : null}
           </Menu>
         </div>
+        <span className="gw-route-group-switch" title={t("启用模型组")}>
+          <Switch disabled={disabled} label={tf("启用模型组 {0}", [group.name])} on={auto ? !(group as AutoGroupEntry).hidden : !group.disabled} onToggle={onToggleEnabled} />
+        </span>
       </header>
       <ol className="gw-route-members" data-manual={manual}>
         {group.members.map((member, index) => (
@@ -519,7 +502,7 @@ function RouteMember({
       {target ? <Avatar baseUrl={target.entry.baseUrl} name={target.entry.name} size="sm" /> : view.group ? <Waypoints className="gw-picker-glyph h-4 w-4" /> : <Shuffle className="gw-picker-glyph h-4 w-4" />}
       <span className="gw-route-member-name">
         <strong>{target ? maskAccountName(shortProviderName(target.entry.name)) : view.title}</strong>
-        <small>{target ? prettyModelName(target.model) : member.model}</small>
+        <small>{target ? prettyModelName(target.model) : view.group ? view.sub : member.model}</small>
       </span>
       {mode === "weighted" ? <span className="gw-route-member-weight">{tf("权重 {0}", [member.weight])}</span> : null}
       {status ? <span className="gw-route-member-status" data-state={status.state}><MemberStatusLabel status={status} /></span> : null}
@@ -608,7 +591,7 @@ function GroupEditor({
         </header>
         <div className="gw-modal-body">
           <label className="gw-field">
-            <span>{t("名称")} <small>{group ? groupModelId(group.id) : name.trim() ? groupModelId(slugify(name)) : ""}</small></span>
+            <span>{t("名称")} <small>{name.trim() ? `${GROUP_MODEL_PREFIX}${name.trim()}` : ""}</small></span>
             <Input autoFocus onChange={(event) => setName(event.currentTarget.value)} placeholder={t("例如 日常编码")} value={name} />
           </label>
           <div className="gw-field">

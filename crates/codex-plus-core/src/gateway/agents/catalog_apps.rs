@@ -436,13 +436,14 @@ fn zed_path(env: &AgentEnv) -> PathBuf {
 
 fn zed_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
     let models: Vec<Value> = wiring
-        .model_ids()
-        .map(|id| {
-            let window = window_of(wiring, id);
+        .models
+        .iter()
+        .map(|entry| {
+            let window = window_of(wiring, &entry.id);
             let output = output_limit(window);
             json!({
-                "name": id,
-                "display_name": id,
+                "name": entry.id,
+                "display_name": entry.display_name,
                 // Zed 的 max_tokens 是提示词与回复共用的窗口。
                 "max_tokens": window + output,
                 "max_output_tokens": output,
@@ -640,14 +641,15 @@ fn copilot_chat_vendor(extensions: &Path) -> &'static str {
 fn vscode_group(wiring: &Wiring, vendor: &str) -> Value {
     let url = chat_url(wiring);
     let models: Vec<Value> = wiring
-        .model_ids()
-        .map(|id| {
-            let window = window_of(wiring, id);
+        .models
+        .iter()
+        .map(|entry| {
+            let window = window_of(wiring, &entry.id);
             // VS Code 把输出预算从窗口里扣掉，留足提示词的空间。
             let output = (window / 4).clamp(1, 8_192);
             let mut model = json!({
-                "id": id,
-                "name": id,
+                "id": entry.id,
+                "name": entry.display_name,
                 "url": url,
                 "toolCalling": true,
                 "vision": false,
@@ -994,7 +996,8 @@ fn copilot_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
         .unwrap_or_default();
     let url = chat_url(wiring);
     let mut models = Map::new();
-    for id in wiring.model_ids() {
+    for entry in &wiring.models {
+        let id = &entry.id;
         let window = window_of(wiring, id);
         models.insert(
             id.to_string(),
@@ -1003,7 +1006,7 @@ fn copilot_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
                 "isRegistered": !hidden.iter().any(|hidden| hidden == id),
                 "isCustomModel": true,
                 "modelCapabilities": {
-                    "name": id,
+                    "name": entry.display_name,
                     "maxInputTokens": window,
                     "maxOutputTokens": (window / 4).clamp(1, 16_000),
                     "toolCalling": true,
@@ -1040,12 +1043,13 @@ fn pencil_path(env: &AgentEnv) -> PathBuf {
 
 fn pencil_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
     let models: Vec<Value> = wiring
-        .model_ids()
-        .map(|id| {
-            let window = window_of(wiring, id);
+        .models
+        .iter()
+        .map(|entry| {
+            let window = window_of(wiring, &entry.id);
             json!({
-                "id": id,
-                "name": id,
+                "id": entry.id,
+                "name": entry.display_name,
                 "reasoning": false,
                 "input": ["text"],
                 "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -1163,11 +1167,12 @@ fn raycast_path(env: &AgentEnv) -> PathBuf {
 
 fn raycast_entry(wiring: &Wiring) -> Value {
     let models: Vec<Value> = wiring
-        .model_ids()
-        .map(|id| {
+        .models
+        .iter()
+        .map(|entry| {
             let mut model = json!({
-                "id": id,
-                "name": id,
+                "id": entry.id,
+                "name": entry.display_name,
                 "abilities": {
                     "temperature": { "supported": true },
                     "vision": { "supported": false },
@@ -1176,7 +1181,7 @@ fn raycast_entry(wiring: &Wiring) -> Value {
                     "reasoning_effort": { "supported": false },
                 },
             });
-            if let Some(window) = wiring.window(id) {
+            if let Some(window) = entry.context_window {
                 model["context"] = json!(window);
             }
             model
@@ -1353,8 +1358,9 @@ fn t3_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Resul
         "customModels".to_string(),
         Value::Array(
             wiring
-                .model_ids()
-                .map(|id| json!({ "slug": id, "name": id }))
+                .models
+                .iter()
+                .map(|entry| json!({ "slug": entry.id, "name": entry.display_name }))
                 .collect(),
         ),
     );
@@ -1585,14 +1591,15 @@ fn openclaw_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
     provider.insert("api".to_string(), json!("openai-completions"));
     // OpenClaw 的配置校验很严：只写它认识的键；用户在条目里加的键（headers、maxTokens 等）保留。
     let models: Vec<Value> = wiring
-        .model_ids()
-        .map(|id| {
+        .models
+        .iter()
+        .map(|entry| {
             json!({
-                "id": id,
-                "name": id,
+                "id": entry.id,
+                "name": entry.display_name,
                 "reasoning": false,
                 "input": ["text"],
-                "contextWindow": window_of(wiring, id),
+                "contextWindow": window_of(wiring, &entry.id),
             })
         })
         .collect();
@@ -1669,11 +1676,13 @@ mod tests {
             models: vec![
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
+                    display_name: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
                     reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
+                    display_name: "group/daily".to_string(),
                     context_window: None,
                     reasoning_levels: Vec::new(),
                 },

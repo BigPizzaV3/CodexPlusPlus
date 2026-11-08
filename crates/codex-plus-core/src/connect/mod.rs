@@ -311,6 +311,13 @@ pub async fn run_weixin_connect_with_outbound(
                     server.close().await;
                 }
             }
+            let typing_ticket = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.start_typing(&message.from_user_id, &message.context_token),
+            )
+            .await
+            .ok()
+            .and_then(|result| result.ok());
             let result = process_weixin_message(
                 &client,
                 &app_config,
@@ -330,39 +337,47 @@ pub async fn run_weixin_connect_with_outbound(
                 server.close().await;
             }
 
+            if !stop.load(Ordering::SeqCst) {
+                match result {
+                    Ok(()) => {
+                        state.mark_processed(&message_key);
+                        update_status(&status, &config, |current| {
+                            current.state = "running".to_string();
+                            current.message = outbound.status_message("最近一条微信消息已处理。");
+                            current.last_peer_id = message.from_user_id.clone();
+                            current.last_message_at_ms = now_ms();
+                            current.processed_messages = current.processed_messages.saturating_add(1);
+                        });
+                    }
+                    Err(error) => {
+                        app_server = None;
+                        state.mark_processed(&message_key);
+                        let _ = client
+                            .send_text_chunks(
+                                &message.from_user_id,
+                                &weixin_failure_reply(&error.to_string()),
+                                &message.context_token,
+                            )
+                            .await;
+                        update_status(&status, &config, |current| {
+                            current.state = "retrying".to_string();
+                            current.message = format!("处理微信消息失败，等待下一条消息重试：{error}");
+                            current.last_peer_id = message.from_user_id.clone();
+                            current.last_message_at_ms = now_ms();
+                        });
+                    }
+                }
+            }
+            if let Some(typing_ticket) = typing_ticket {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    client.stop_typing(&message.from_user_id, &typing_ticket),
+                )
+                .await;
+            }
             if stop.load(Ordering::SeqCst) {
                 app_server = None;
                 break;
-            }
-
-            match result {
-                Ok(()) => {
-                    state.mark_processed(&message_key);
-                    update_status(&status, &config, |current| {
-                        current.state = "running".to_string();
-                        current.message = outbound.status_message("最近一条微信消息已处理。");
-                        current.last_peer_id = message.from_user_id.clone();
-                        current.last_message_at_ms = now_ms();
-                        current.processed_messages = current.processed_messages.saturating_add(1);
-                    });
-                }
-                Err(error) => {
-                    app_server = None;
-                    state.mark_processed(&message_key);
-                    let _ = client
-                        .send_text_chunks(
-                            &message.from_user_id,
-                            &weixin_failure_reply(&error.to_string()),
-                            &message.context_token,
-                        )
-                        .await;
-                    update_status(&status, &config, |current| {
-                        current.state = "retrying".to_string();
-                        current.message = format!("处理微信消息失败，等待下一条消息重试：{error}");
-                        current.last_peer_id = message.from_user_id.clone();
-                        current.last_message_at_ms = now_ms();
-                    });
-                }
             }
             store.save(&state)?;
         }

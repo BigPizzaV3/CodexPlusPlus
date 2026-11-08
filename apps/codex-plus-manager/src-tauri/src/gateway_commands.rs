@@ -4,7 +4,7 @@
 //! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
 
 use anyhow::Context;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -614,6 +614,12 @@ fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     result
 }
 
+fn refresh_group_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    let saved = result?;
+    apply::refresh_enabled(&context()).context("模型组设置已保存，但 Agent 配置刷新失败")?;
+    Ok(saved)
+}
+
 /// 界面每隔几秒轮询一次：读设置、gateway.json、检查各 Agent 配置漂移都是文件 IO，
 /// 放到阻塞线程池里做，不占主线程。返回格式不变。
 #[tauri::command]
@@ -1012,7 +1018,12 @@ pub fn save_gateway_image_model(
                     .insert(agent.as_str().to_string(), model.to_string());
             }
             Ok(())
-        })
+        })?;
+        if agent == ToolId::Codex {
+            apply::refresh_enabled(&context())
+                .context("生图模型已保存，但应用 Codex 配置失败")?;
+        }
+        Ok(())
     });
     respond("生图模型已保存。", "保存生图模型失败", result)
 }
@@ -1086,18 +1097,43 @@ pub fn save_gateway_provider_metadata(
 }
 
 /// 自动组卡片上的设置（模式、会话固定、隐藏成员、手动选中的成员、隐藏整个自动组）。和默认一样时记录会被删掉。
+#[derive(Deserialize)]
+pub struct AutoGroupInput {
+    #[serde(flatten)]
+    settings: codex_plus_core::gateway::store::AutoGroupSettings,
+    #[serde(default)]
+    hidden: Option<bool>,
+}
+
 #[tauri::command]
 pub fn save_gateway_auto_group(
     model: String,
-    settings: codex_plus_core::gateway::store::AutoGroupSettings,
+    settings: AutoGroupInput,
 ) -> CommandResult<Option<GatewayPayload>> {
     respond(
         "自动组已保存。",
-        "保存自动组失败",
-        refresh_agents(apply::save_auto_group(
+        "自动组更新未完全完成",
+        refresh_group_agents(apply::save_auto_group_with_hidden(
             &GatewayStore::default(),
             &model,
-            settings,
+            settings.settings,
+            settings.hidden,
+        )),
+    )
+}
+
+#[tauri::command]
+pub fn set_gateway_auto_group_enabled(
+    model: String,
+    enabled: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "自动组已保存。",
+        "自动组更新未完全完成",
+        refresh_group_agents(apply::set_auto_group_enabled(
+            &GatewayStore::default(),
+            &model,
+            enabled,
         )),
     )
 }
@@ -1841,8 +1877,21 @@ fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow
 pub fn save_gateway_group(group: GroupInput) -> CommandResult<Option<GatewayPayload>> {
     respond(
         "模型组已保存。",
-        "保存模型组失败",
-        refresh_agents(apply::save_group(&GatewayStore::default(), &group)),
+        "模型组更新未完全完成",
+        refresh_group_agents(apply::save_group(&GatewayStore::default(), &group)),
+    )
+}
+
+#[tauri::command]
+pub fn set_gateway_group_enabled(id: String, enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "模型组已保存。",
+        "模型组更新未完全完成",
+        refresh_group_agents(apply::set_group_enabled(
+            &GatewayStore::default(),
+            &id,
+            enabled,
+        )),
     )
 }
 
@@ -1874,9 +1923,11 @@ pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<Gatewa
             .arg("-R")
             .arg(&path)
             .status()?;
+        // 展开的路径可能含正斜杠，资源管理器需要 Windows 分隔符。
         #[cfg(target_os = "windows")]
         let status = std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
+            .arg("/select,")
+            .arg(path.components().collect::<std::path::PathBuf>())
             .status()?;
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let status = std::process::Command::new("xdg-open")
@@ -1894,8 +1945,10 @@ fn agent_config_path(agent: &ToolId) -> String {
         ToolId::Codex => codex_plus_core::gateway::agents::AgentEnv::current().display(
             &codex_plus_core::relay_config::default_codex_home_dir().join("config.toml"),
         ),
-        ToolId::Claude => "~/.claude/settings.json".to_string(),
-        ToolId::Grok => "~/.grok/config.toml".to_string(),
+        ToolId::Claude => codex_plus_core::gateway::agents::AgentEnv::current()
+            .display(&codex_plus_core::tools::default_claude_home_dir().join("settings.json")),
+        ToolId::Grok => codex_plus_core::gateway::agents::AgentEnv::current()
+            .display(&codex_plus_core::grok_config::default_grok_home_dir().join("config.toml")),
         other => match codex_plus_core::gateway::agents::spec(other.as_str()) {
             Some(spec) => {
                 let env = codex_plus_core::gateway::agents::AgentEnv::current();
@@ -2011,6 +2064,84 @@ fn parse_version(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_version;
+
+    #[test]
+    fn agent_config_paths_follow_the_write_directories() {
+        use codex_plus_core::gateway::agents::AgentEnv;
+        use codex_plus_core::tools::ToolId;
+
+        const CHILD: &str = "CODEX_PLUS_TEST_AGENT_CONFIG_PATHS";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            let env = AgentEnv::current();
+            let claude = env.expand(&super::agent_config_path(&ToolId::Claude));
+            let grok = env.expand(&super::agent_config_path(&ToolId::Grok));
+            assert!(
+                claude == codex_plus_core::tools::default_claude_home_dir().join("settings.json")
+            );
+            assert!(
+                grok == codex_plus_core::grok_config::default_grok_home_dir().join("config.toml")
+            );
+            if mode == "custom" {
+                assert!(
+                    claude
+                        == std::path::PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").unwrap())
+                            .join("settings.json")
+                );
+                assert!(
+                    grok == std::path::PathBuf::from(std::env::var_os("GROK_HOME").unwrap())
+                        .join("config.toml")
+                );
+            }
+            println!("agent config paths checked");
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        for mode in ["default", "custom"] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "gateway_commands::tests::agent_config_paths_follow_the_write_directories",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .env_remove("GROK_HOME");
+            if mode == "custom" {
+                child
+                    .env("CLAUDE_CONFIG_DIR", temp.path().join("claude config"))
+                    .env("GROK_HOME", temp.path().join("grok config"));
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("agent config paths checked"));
+        }
+    }
+
+    #[test]
+    fn auto_group_input_separates_optional_hidden_from_other_settings() {
+        use codex_plus_core::gateway::store::GroupMode;
+        use serde_json::json;
+
+        let input: super::AutoGroupInput = serde_json::from_value(json!({
+            "mode": "manual",
+            "hidden": true,
+            "hideMembers": true,
+            "pick": "provider/model",
+            "futureField": 3
+        }))
+        .unwrap();
+        assert_eq!(input.hidden, Some(true));
+        assert_eq!(input.settings.mode, GroupMode::Manual);
+        assert!(input.settings.hide_members);
+        assert_eq!(input.settings.pick, "provider/model");
+        assert_eq!(input.settings.extra["futureField"], 3);
+        assert!(!input.settings.extra.contains_key("hidden"));
+
+        let input: super::AutoGroupInput = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(input.hidden, None);
+    }
 
     #[test]
     fn cli_version_is_the_first_dotted_number() {

@@ -183,7 +183,7 @@ export type BuiltinModelMetadataEntry = {
 // 规范 slug 与行名永远对不上（issue #2279 回归）。
 // 这里集中放一处，四个入口（内置预填、parseModelMetadataDocument、
 // synchronize*、metadataMatchesBuiltin）共用，避免各自实现再次分叉。
-const MODEL_SUFFIX_PATTERN = /^(.*?)\[(\d+(?:[KkMm])?)\]$/;
+const MODEL_SUFFIX_PATTERN = /^(.*?)\[\s*(\d+(?:[KkMm])?)\s*\]$/;
 
 export type ModelRowIdentity = {
   rawName: string;
@@ -197,7 +197,7 @@ export function parseModelRowName(rowName: string): ModelRowIdentity {
   const rawName = rowName;
   const trimmed = rowName.trim();
   const match = MODEL_SUFFIX_PATTERN.exec(trimmed);
-  const suffixWindow = match ? suffixWindowTokens(match[2]) : null;
+  const suffixWindow = match?.[1].trim() ? suffixWindowTokens(match[2]) : null;
   const canonicalSlug = match && suffixWindow !== null ? match[1].trim() : trimmed;
   return {
     rawName,

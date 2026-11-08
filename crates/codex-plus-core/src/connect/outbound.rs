@@ -678,7 +678,7 @@ impl AttachmentCalls {
 
 pub(super) fn attachment_tool_spec() -> Value {
     json!({
-        "name": ATTACHMENT_TOOL,
+        "type": "function", "name": ATTACHMENT_TOOL,
         "description": "将当前工作区中的图片或文件回传给当前微信用户。用户请求接收文件时实际调用本工具；不得只回复本地路径。kind=image 显示图片，kind=file 发送文件。",
         "inputSchema": {
             "type": "object", "properties": {

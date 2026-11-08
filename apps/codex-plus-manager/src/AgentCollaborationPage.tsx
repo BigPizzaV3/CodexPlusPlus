@@ -6,6 +6,8 @@ import { AppSelect } from "./AppSelect";
 import { Switch } from "./gateway-ui";
 import { CxBadge, CxBanner, CxCard, CxRow, CxSection } from "./cx-layout";
 import { agentQueueState, DEFAULT_MAX_CONCURRENT_TASKS_LIMIT, normalizeConcurrency } from "./agent-collaboration-queue";
+import { groupDisplayName } from "./gateway-model";
+import { useGatewayPayload } from "./gateway-store";
 import { t, tf } from "./i18n";
 import "./AgentCollaborationPage.css";
 
@@ -83,6 +85,7 @@ const formatTime = (value: number) => Number.isFinite(value) && value > 0
   : "—";
 
 export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: string } = {}) {
+  const payload = useGatewayPayload(10_000);
   /** 子 Agent 列表里展开的那一个（空 = 全部收起）。 */
   const [openAgentId, setOpenAgentId] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -433,7 +436,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
           const stateText = !savedPath ? "路径尚未保存" : availability?.recovered ? "已保存的路径已失效（桌面版更新后版本目录会变化），本次自动使用当前 CLI；清空路径保存可一直自动查找" : available === true ? "已找到 CLI 文件" : availability?.configuredMissing ? "已保存的路径不存在；清空路径保存可自动查找，或重新填写" : available === false ? "未找到 CLI 文件" : agent.executable.trim() ? "已配置，执行任务时验证" : "留空自动查找已安装的 CLI";
           const stateTone = available === false || availability?.configuredMissing ? "warn" : available === true && !availability?.recovered ? "ok" : availability?.recovered ? "warn" : "neutral";
           const expanded = agent.enabled && openAgentId === agent.id;
-          const summary = [agent.model.trim() || (agent.id === "deepseek" ? "" : t("默认模型")), agent.maxConcurrentTasks > 1 ? tf("同时 {0} 个", [agent.maxConcurrentTasks]) : ""].filter(Boolean).join(" · ");
+          const summary = [groupDisplayName(payload, agent.model) ?? (agent.model.trim() || (agent.id === "deepseek" ? "" : t("默认模型"))), agent.maxConcurrentTasks > 1 ? tf("同时 {0} 个", [agent.maxConcurrentTasks]) : ""].filter(Boolean).join(" · ");
           return <div className="cx-collab-agent" data-open={expanded || undefined} key={agent.id}>
             <CxRow
               badges={agent.enabled || available === false ? <CxBadge tone={stateTone} title={stateText}>{available === true && !availability?.recovered ? "已找到 CLI" : available === false ? "未找到 CLI" : availability?.recovered ? "已自动改用当前 CLI" : !savedPath ? "未保存" : "待验证"}</CxBadge> : null}

@@ -75,6 +75,7 @@ test("heartbeat reports changed keys and relay events for settings changed outsi
   const context: any = vm.createContext({
     codexPlusSettings: () => ({ conversationView: false }),
     syncOfficialUsagePolicy: () => {}, renderCodexPlusMenu: () => {}, syncCodexPlusBackendToggleButtons: () => {},
+    loadCodexModelCatalog: async () => {},
     codexPlusEmitExtensionEvent: (event: string, [detail]: unknown[]) => events.push([event, detail]),
     codexPlusBackendSettingsLoaded: false,
     codexPlusBackendSettings: {},
@@ -112,4 +113,35 @@ test("heartbeat reports changed keys and relay events for settings changed outsi
   next = { modelCatalogFingerprint: "f3" };
   await context.syncBackendSettingsFromHeartbeat();
   assert.deepEqual(events.map(([event]) => event), ["settings/loaded", "modelCatalog/changed"]);
+});
+
+test("heartbeat forces a native model catalog refresh only when its fingerprint changes", async () => {
+  const source = fragment("40-backend-settings.js");
+  const refreshes: boolean[] = [];
+  let fingerprint = "before";
+  let loaded = true;
+  const context: any = vm.createContext({
+    codexPlusBackendSettingsLoaded: true,
+    codexPlusBackendSettings: { modelCatalogFingerprint: fingerprint },
+    codexPlusSettings: () => ({ conversationView: false }),
+    syncOfficialUsagePolicy: () => {}, renderCodexPlusMenu: () => {},
+    syncCodexPlusBackendToggleButtons: () => {}, emitCodexPlusSettingsLoaded: () => {},
+    loadCodexModelCatalog: async (force: boolean) => { refreshes.push(force); },
+  });
+  context.loadBackendSettingsState = async () => {
+    if (loaded) context.codexPlusBackendSettings = { modelCatalogFingerprint: fingerprint };
+    return loaded;
+  };
+  vm.runInContext(source.slice(source.indexOf("  let syncBackendSettingsInFlight"), source.indexOf("  async function setBackendSetting(")), context);
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, []);
+  fingerprint = "after";
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, [true]);
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, [true]);
+  loaded = false;
+  fingerprint = "unavailable";
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, [true]);
 });

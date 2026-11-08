@@ -350,6 +350,9 @@ fn default_weight() -> u32 {
 pub struct GatewayGroup {
     pub id: String,
     pub name: String,
+    /// 停用后保留配置，但不再出现在模型列表或参与路由。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
     #[serde(default, deserialize_with = "lenient")]
     pub mode: GroupMode,
     #[serde(default, deserialize_with = "lenient")]

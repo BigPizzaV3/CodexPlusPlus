@@ -51,6 +51,8 @@ pub enum AgentWire {
 pub struct ModelEntry {
     /// 网关里的模型名：`<供应商 id>/<模型>`、裸模型名或 `group/<组 id>`。
     pub id: String,
+    /// 当前显示名，模型组改名不改变请求 ID。
+    pub display_name: String,
     /// 上下文窗口（供应商池里写了的才有）。
     pub context_window: Option<u64>,
     /// 思考档位（由低到高，模型组取成员的并集）；没有资料时为空。

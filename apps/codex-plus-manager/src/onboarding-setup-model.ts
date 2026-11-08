@@ -80,10 +80,11 @@ function probeCandidates(payload: GatewayPayload, model: string, exclude: string
   };
   const expand = (value: string, visiting: string[]) => {
     const target = value.trim();
-    const group = target.startsWith(GROUP_MODEL_PREFIX)
+    const group = target.toLowerCase().startsWith(GROUP_MODEL_PREFIX)
       ? payload.groups.find((item) => item.id.toLowerCase() === target.slice(GROUP_MODEL_PREFIX.length).toLowerCase())
       : activeAutoGroup(payload, target);
     if (group) {
+      if (group.disabled) return;
       // 与后端一致，组最多嵌套四层；手动模式只尝试选中的成员。
       if (visiting.length >= 4 || visiting.includes(group.id)) return;
       const members = group.mode === "manual"
@@ -92,7 +93,7 @@ function probeCandidates(payload: GatewayPayload, model: string, exclude: string
       for (const member of members) expand(member.model, [...visiting, group.id]);
       return;
     }
-    if (target.startsWith(GROUP_MODEL_PREFIX)) return;
+    if (target.toLowerCase().startsWith(GROUP_MODEL_PREFIX)) return;
     if (isPattern(target)) {
       for (const entry of providers) for (const upstream of entry.models) {
         const qualified = `${entry.id}/${upstream}`;
@@ -117,6 +118,7 @@ function probeCandidates(payload: GatewayPayload, model: string, exclude: string
 function groupConfiguration(group: GatewayGroupEntry) {
   return {
     id: group.id,
+    disabled: group.disabled === true,
     mode: group.mode,
     sticky: group.sticky ?? "cache",
     pick: group.pick ?? "",

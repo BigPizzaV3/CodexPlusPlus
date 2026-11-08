@@ -26,6 +26,7 @@ function settingsContext() {
     codexAppStepwiseEnabled: true,
     codexAppAnswerOutlineEnabled: true,
     codexAppPetRealMouseLook: true,
+    codexAppReportedUsageCompaction: true,
   };
   const context = vm.createContext({
     codexPlusBackendSettings: backend,
@@ -49,6 +50,7 @@ const gated = {
   stepwise: "stepwise",
   answerOutline: "answer-outline",
   petRealMouseLook: "pet-real-mouse",
+  reportedUsageCompaction: "reported-usage-compaction",
 };
 
 test("停用的内置拓展让对应设置项在功能侧读成关，其余不受影响", () => {

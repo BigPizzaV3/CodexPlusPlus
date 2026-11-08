@@ -11,7 +11,7 @@ test("总览「最近请求」是真实请求列表，对得上路由记录的�
   assert.match(hub, /onNavigate\("requestLog"\)/);
   assert.doesNotMatch(hub, /gatewayRouting/);
   assert.match(hub, /useRequestFlow\(FLOW_REFRESH_MS\)/);
-  assert.match(hub, /<FlowRequestRow entry=\{entry\} \/>/);
+  assert.match(hub, /<FlowRequestRow entry=\{entry\} payload=\{payload\} \/>/);
   assert.match(hub, /routeNarrative\(agent, record, payload\)/);
 });
 

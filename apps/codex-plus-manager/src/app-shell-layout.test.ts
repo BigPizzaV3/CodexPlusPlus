@@ -216,7 +216,7 @@ test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算
   // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
   assert.match(screen, /const agentScope = codexOnly \? "codex" : agentFilter;/);
   assert.match(screen, /agentScope !== "all" && requestLogAgent\(entry\) !== agentScope/);
-  assert.match(screen, /\[entries, filter, query, sessionFilter, agentScope\]/);
+  assert.match(screen, /\[entries, filter, query, sessionFilter, agentScope, payload\]/);
   assert.match(functionSource("requestLogAgent"), /return entry\.agent \|\| "codex";/);
 });
 

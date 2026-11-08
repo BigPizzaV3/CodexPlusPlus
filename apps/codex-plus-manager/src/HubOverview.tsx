@@ -62,7 +62,7 @@ export function useTodayUsage(): UsageSummary | null {
 /** 单色品牌图标用 mask 着色，深浅主题下都跟随文字颜色。 */
 export function AgentGlyph({ agent, className = "" }: { agent: string; className?: string }) {
   const url = AGENT_ICONS[agent];
-  if (url && agentIconIsColor(agent)) return <img alt="" className={`hub-agent-glyph hub-agent-glyph-plain ${className}`} src={url} />;
+  if (url && agentIconIsColor(agent)) return <img alt="" className={`hub-agent-glyph hub-agent-glyph-plain ${className}`} data-agent-icon={agent} src={url} />;
   // 没有打包图标的通用 Agent：名字首字母，不画空的遮罩方块。
   if (!url) return <i aria-hidden="true" className={`hub-agent-glyph hub-agent-glyph-plain gw-agent-letter ${className}`}>{(agentName(agent).trim()[0] ?? "?").toUpperCase()}</i>;
   return <i aria-hidden="true" className={`hub-agent-glyph ${className}`} style={url ? ({ "--hub-icon": `url("${url}")` } as CSSProperties) : undefined} />;
@@ -266,7 +266,7 @@ function FeedRow({ entry, record, payload }: { entry: FlowEntry; record: RouteRe
   return (
     <li data-open={open}>
       <button aria-expanded={open} className="hub-flow-toggle" disabled={!record} onClick={() => setOpen(!open)} type="button">
-        <FlowRequestRow entry={entry} />
+        <FlowRequestRow entry={entry} payload={payload} />
         <ChevronDown aria-hidden className="hub-feed-chevron h-3.5 w-3.5" />
       </button>
       {open && record ? (

@@ -34,6 +34,7 @@ fn final_upstream() -> crate::protocol_proxy::UpstreamProxyResponse {
         wire_api: crate::protocol_proxy::UpstreamWireApi::Responses,
         compaction: false,
         native_compaction_passthrough: false,
+        upstream_reasoning_included: false,
         buffered_body: None,
         stream_prefix: Vec::new(),
         request_trace: Some(trace),

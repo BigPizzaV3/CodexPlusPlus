@@ -115,7 +115,7 @@ export function agentIconIsColor(agent: string): boolean {
 export function AgentIcon({ agent, className = "" }: { agent: string; className?: string }) {
   if (agent === "codex") return <img alt="" className={className} src={AGENT_ICONS.codexApp} />;
   const url = AGENT_ICONS[agent];
-  if (url && agentIconIsColor(agent)) return <img alt="" className={className} src={url} />;
+  if (url && agentIconIsColor(agent)) return <img alt="" className={className} data-agent-icon={agent} src={url} />;
   // 通用 Agent 没有打包图标：用名字首字母。
   if (!url) return <i aria-hidden="true" className={`${className} gw-agent-letter`.trim()}>{(agentName(agent).trim()[0] ?? "?").toUpperCase()}</i>;
   return <i aria-hidden="true" className={`${className} gw-agent-mono`.trim()} style={url ? ({ "--gw-agent-icon": `url("${url}")` } as CSSProperties) : undefined} />;
@@ -139,7 +139,7 @@ export function Avatar({ name, baseUrl = "", size = "md", plain = false }: { nam
   const url = key ? BRAND_ICON_URLS[key] : undefined;
   if (key && url) {
     return (
-      <span className="gw-avatar gw-avatar-brand" data-size={size} title={maskAccountName(name)}>
+      <span className="gw-avatar gw-avatar-brand" data-brand={key} data-size={size} title={maskAccountName(name)}>
         {brandIconIsColor(key) ? <img alt="" src={url} /> : <i className="gw-mono-icon" style={{ "--gw-icon": `url("${url}")` } as CSSProperties} />}
       </span>
     );
