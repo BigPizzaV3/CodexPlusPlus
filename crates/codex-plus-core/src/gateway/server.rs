@@ -544,6 +544,7 @@ fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
         wire_api: UpstreamWireApi::Responses,
         compaction: false,
         native_compaction_passthrough: false,
+        upstream_reasoning_included: false,
         buffered_body: Some(
             serde_json::to_vec(&json!({
                 "error": { "type": "rate_limit_error", "code": "gateway_keys_cooling", "message": cooling_message(wait) }

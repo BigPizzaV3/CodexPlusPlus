@@ -2691,6 +2691,8 @@ export const EN_PLAIN: Record<string, string> = {
   "粘贴修复": "Paste fix",
   "强制中文界面": "Force Chinese UI",
   "Statsig 界面增强": "Statsig UI enhancements",
+  "按上报用量判断压缩（实验）": "Use reported usage for compaction (experimental)",
+  "仅对 Codex App 和 CLI 中已经经过本地代理的请求生效，按上报用量判断压缩，不改 usage，也不自动启用代理。开关变更在下一次响应后生效；旧会话首次响应前仍可能按原估算触发压缩。": "Only applies to Codex App and CLI requests already routed through the local proxy. Uses reported usage for compaction without changing usage or enabling the proxy. Switch changes take effect after the next response; older conversations may still compact from the original estimate before their first response.",
   "强制打开几项界面侧的远程开关：隐藏升级与额度推销提示、放宽网络重试与流式超时、补开记忆的 Statsig 开关。只影响本机界面与超时参数，云端能力与配额不受影响；关闭后重新启动 Codex 生效。": "Force a few client-side remote switches: hide upgrade and quota upsells, relax network retry and streaming timeouts, and turn on the Statsig switch for memories. Only local UI and timeout values change; cloud capabilities and quotas are unaffected. Restart Codex after turning this off.",
   "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。": "Force the built-in zh-CN locale pack in the Codex app so the UI does not fall back to English when Statsig or the VPN is unreachable. Fully applies after restarting Codex.",
   "容量错误自动重试": "Auto-retry on capacity errors",

@@ -183,6 +183,18 @@
       "restart": true
     },
     {
+      "key": "codexAppReportedUsageCompaction",
+      "builtin": "reported-usage-compaction",
+      "group": "chat",
+      "control": "bool",
+      "title": "按上报用量判断压缩（实验）",
+      "description": "仅对 Codex App 和 CLI 中已经经过本地代理的请求生效，按上报用量判断压缩，不改 usage，也不自动启用代理。开关变更在下一次响应后生效；旧会话首次响应前仍可能按原估算触发压缩。",
+      "surfaces": [
+        "manager",
+        "codex"
+      ]
+    },
+    {
       "key": "codexAppSessionDelete",
       "builtin": "session-delete",
       "group": "chat",
