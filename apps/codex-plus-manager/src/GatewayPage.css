@@ -1342,6 +1342,21 @@ span.gw-popover-check {
   object-fit: contain;
 }
 
+.dark .gw-avatar-brand[data-brand="kimi-color"] img,
+.dark img[data-agent-icon="kimi-code"] {
+  content: url("./assets/providers/kimi-color-dark.svg");
+}
+
+.dark .gw-avatar-brand[data-brand="qoder-color"] img,
+.dark img[data-agent-icon="qoder"],
+.dark img[data-agent-icon="qoder-cn"] {
+  content: url("./assets/providers/qoder-color-dark.svg");
+}
+
+.dark .gw-avatar-brand[data-brand="longcat-color"] img {
+  content: url("./assets/providers/longcat-color-dark.svg");
+}
+
 .gw-avatar[data-size="lg"] {
   width: 36px;
   height: 36px;
@@ -2224,9 +2239,9 @@ span.gw-avatar[data-size] {
 }
 
 .gw-portal .gw-mp-filters button[data-active="true"] {
-  border-color: transparent;
-  background: var(--gw-ink);
-  color: hsl(var(--popover));
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.1);
+  color: var(--gw-ink);
 }
 
 .gw-portal .gw-mp-list {
@@ -2320,8 +2335,23 @@ span.gw-avatar[data-size] {
   color: var(--gw-ink);
 }
 
-.dark .gw-portal .gw-mp .gw-avatar-brand[data-brand="kimi-color"] {
-  background: #e9edf2;
+.gw-portal .gw-mp .gw-mp-filters .gw-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  font-size: 8px;
+  letter-spacing: 0;
+}
+
+.gw-portal .gw-mp .gw-mp-filters .gw-avatar-brand {
+  background: transparent;
+  box-shadow: none;
+}
+
+.gw-portal .gw-mp .gw-mp-filters .gw-avatar-brand img,
+.gw-portal .gw-mp .gw-mp-filters .gw-avatar-brand .gw-mono-icon {
+  width: 100%;
+  height: 100%;
 }
 
 .gw-portal .gw-mp-item:hover,

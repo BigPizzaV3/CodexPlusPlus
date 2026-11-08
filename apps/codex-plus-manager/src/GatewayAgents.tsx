@@ -637,6 +637,7 @@ export function Floating({
   open,
   onClose,
   width,
+  minHeight = 0,
   children,
   className = "",
 }: {
@@ -644,6 +645,7 @@ export function Floating({
   open: boolean;
   onClose: () => void;
   width: number;
+  minHeight?: number;
   children: ReactNode;
   className?: string;
 }) {
@@ -660,6 +662,10 @@ export function Floating({
       const above = rect.top - 18;
       const upward = below < 320 && above > below;
       const maxHeight = Math.min(520, upward ? above : below);
+      if (maxHeight < minHeight) {
+        setPosition({ left, width: panelWidth, top: 12, maxHeight: Math.min(520, window.innerHeight - 24) });
+        return;
+      }
       setPosition(upward
         ? { left, width: panelWidth, bottom: window.innerHeight - rect.top + 6, maxHeight }
         : { left, width: panelWidth, top: rect.bottom + 6, maxHeight });
@@ -671,7 +677,7 @@ export function Floating({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, anchorRef, width]);
+  }, [open, anchorRef, width, minHeight]);
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent) => {
@@ -726,7 +732,7 @@ export function ModelList({
   const [closedSearchSections, setClosedSearchSections] = useState<string[]>([]);
   const searching = Boolean(query.trim());
   const providersBySection = useMemo(
-    () => new Map((payload?.pool ?? []).map((provider) => [`provider:${provider.id}`, provider] as const)),
+    () => new Map<string, GatewayPayload["pool"][number]>((payload?.pool ?? []).map((provider) => [`provider:${provider.id}`, provider])),
     [payload?.pool],
   );
   // 收藏存在网关里（Codex 的选择器也要显示）；旧版存在本窗口的 localStorage，网关里还没有时沿用并迁过去。
@@ -1028,7 +1034,7 @@ function ModelPicker({
         {showDefault || own ? null : <AutoTag view={display} />}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
-      <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => onOpenChange(false)} open={open} width={560}>
+      <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => onOpenChange(false)} open={open} width={560}>
         <ModelList
           exclude={draft.poolExclude}
           head={head}
@@ -1089,7 +1095,7 @@ function TierPicker({
         {display ? <AutoTag view={display} /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
-      <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => setOpen(false)} open={open} width={520}>
+      <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => setOpen(false)} open={open} width={520}>
         <ModelList
           exclude={exclude}
           head={head}

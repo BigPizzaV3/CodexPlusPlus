@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { BRAND_ICON_KEYS, brandIconIsColor, brandIconKey } from "./provider-brands.ts";
 
@@ -22,4 +22,12 @@ test("按名字或地址识别厂商图标", () => {
 test("规则里用到的图标都已打包", () => {
   const files = new Set(readdirSync(new URL("./assets/providers/", import.meta.url)).map((name) => name.replace(/\.svg$/, "")));
   for (const key of BRAND_ICON_KEYS) assert.ok(files.has(key), key);
+});
+
+test("深色变体只替换文字色，保留品牌原有颜色", () => {
+  for (const key of ["kimi", "qoder", "longcat"]) {
+    const original = readFileSync(new URL(`./assets/providers/${key}-color.svg`, import.meta.url), "utf8");
+    const dark = readFileSync(new URL(`./assets/providers/${key}-color-dark.svg`, import.meta.url), "utf8");
+    assert.equal(dark.trim(), original.replaceAll("currentColor", "#D9DDE3").trim(), key);
+  }
 });

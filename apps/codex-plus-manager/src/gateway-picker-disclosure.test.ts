@@ -137,3 +137,55 @@ test("供应商筛选展开目标；搜索展开匹配项，清空后恢复手�
   assert.equal(heading(tree, "provider:a").props["aria-expanded"], true);
   assert.equal(heading(tree, "provider:b").props["aria-expanded"], true);
 });
+
+test("空间不足时模型选择器使用窗口高度，普通浮层保持锚点定位", () => {
+  const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("GatewayAgents.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+  const component = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "Floating");
+  assert.ok(component);
+  const compiled = ts.transpileModule(component.getText(file), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const hooks: any[] = [];
+  let cursor = 0;
+  const exports: Record<string, any> = {};
+  const viewport = { innerWidth: 364, innerHeight: 320, addEventListener: () => {}, removeEventListener: () => {} };
+  vm.runInNewContext(compiled, {
+    exports,
+    require: () => ({ jsx: (type: unknown, props: Record<string, any>) => ({ type, props }) }),
+    useRef: (initial: unknown) => {
+      const index = cursor++;
+      if (!(index in hooks)) hooks[index] = { current: initial };
+      return hooks[index];
+    },
+    useState: (initial: unknown) => {
+      const index = cursor++;
+      if (!(index in hooks)) hooks[index] = initial;
+      return [hooks[index], (value: unknown) => { hooks[index] = value; }];
+    },
+    useLayoutEffect: (effect: () => unknown) => effect(),
+    useEffect: () => {},
+    useEscapeLayer: () => {},
+    createPortal: (element: Element) => element,
+    document: { body: {} },
+    window: viewport,
+  });
+  const anchorRef = { current: { getBoundingClientRect: () => ({ top: 150, bottom: 180, right: 300 }) } };
+  const render = (minHeight?: number) => {
+    const props = { anchorRef, open: true, onClose: () => {}, width: 340, minHeight };
+    cursor = 0;
+    exports.Floating(props);
+    cursor = 0;
+    return exports.Floating(props) as Element;
+  };
+  let panel = render(180);
+  assert.equal(panel.props.style.top, 12);
+  assert.equal(panel.props.style.maxHeight, 296);
+  viewport.innerHeight = 550;
+  panel = render(180);
+  assert.equal(panel.props.style.top, 186);
+  viewport.innerHeight = 320;
+  panel = render();
+  assert.equal(panel.props.style.bottom, 176);
+  assert.equal(panel.props.style.maxHeight, 132);
+});
