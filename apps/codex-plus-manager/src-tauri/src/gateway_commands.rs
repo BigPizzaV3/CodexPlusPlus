@@ -1872,9 +1872,11 @@ pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<Gatewa
             .arg("-R")
             .arg(&path)
             .status()?;
+        // 展开的路径可能含正斜杠，资源管理器需要 Windows 分隔符。
         #[cfg(target_os = "windows")]
         let status = std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
+            .arg("/select,")
+            .arg(path.components().collect::<std::path::PathBuf>())
             .status()?;
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let status = std::process::Command::new("xdg-open")
