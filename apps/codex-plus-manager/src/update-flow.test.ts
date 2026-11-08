@@ -29,7 +29,7 @@ test("actual update check keeps About data, never prompts in the background, and
   const updates: unknown[] = [];
   const prompts: unknown[] = [];
   const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
-  notifications.setPreferences({ autoCheck: true, skippedVersion: "" });
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "", autoDownload: true });
   const pending = { current: null };
   let response: any = release;
   const check = handler("checkUpdate", {
@@ -65,7 +65,7 @@ test("actual update check keeps About data, never prompts in the background, and
 
 test("a manual check reuses an in-flight background request and overrides today's mute", async () => {
   const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
-  notifications.setPreferences({ autoCheck: true, skippedVersion: "" });
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "", autoDownload: true });
   notifications.muteToday();
   const prompts: unknown[] = [];
   let requests = 0;
@@ -93,7 +93,7 @@ test("background checks load saved preferences first, honor auto-check off and s
   const notices: unknown[] = [];
   let requests = 0;
   let loads = 0;
-  let saved = { autoCheck: false, skippedVersion: "" };
+  let saved = { autoCheck: false, skippedVersion: "", autoDownload: true };
   let response: any = release;
   const check = handler("checkUpdate", {
     // 后台自动下载另有用例；这里只看检查与提示。
@@ -114,7 +114,7 @@ test("background checks load saved preferences first, honor auto-check off and s
   assert.equal(requests, 1, "manual checks ignore the auto-check switch");
   assert.deepEqual(prompts, [release]);
 
-  saved = { autoCheck: true, skippedVersion: "v1.11.0" };
+  saved = { autoCheck: true, skippedVersion: "v1.11.0", autoDownload: true };
   notifications.setPreferences(saved);
   await check(true);
   assert.equal(requests, 2);
@@ -185,9 +185,12 @@ test("有可用更新时自动下载：只下载不安装，下好后标记已�
   const calls: Array<[string, unknown]> = [];
   const states: unknown[] = [];
   let updateState: any = release;
+  const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "", autoDownload: true });
   const download = handler("downloadUpdateInBackground", {
     releaseOf: handler("releaseOf", {}),
-    settingsRef: { current: { settings: { updateAutoDownload: true } } },
+    updateNotifications: { current: notifications },
+    ensureUpdatePreferences: async () => { throw new Error("preferences should already be loaded"); },
     updateDownloadPending: { current: null }, updateInstallPending: { current: false }, updateDownloadPromise: { current: null },
     setUpdateDownload: (value: unknown) => states.push(value),
     setUpdate: (updater: (current: unknown) => unknown) => { updateState = updater(updateState); },
@@ -208,9 +211,12 @@ test("有可用更新时自动下载：只下载不安装，下好后标记已�
   assert.equal(calls.length, 0);
 
   // 关掉「有可用更新时自动下载」：不下载。
+  const offNotifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  offNotifications.setPreferences({ autoCheck: true, skippedVersion: "", autoDownload: false });
   const off = handler("downloadUpdateInBackground", {
     releaseOf: handler("releaseOf", {}),
-    settingsRef: { current: { settings: { updateAutoDownload: false } } },
+    updateNotifications: { current: offNotifications },
+    ensureUpdatePreferences: async () => { throw new Error("preferences should already be loaded"); },
     updateDownloadPending: { current: null }, updateInstallPending: { current: false }, updateDownloadPromise: { current: null },
     setUpdateDownload: () => {}, setUpdate: () => {}, listen: async () => () => {},
     call: async (command: string) => { calls.push([command, null]); return { status: "ok" }; },
@@ -218,4 +224,34 @@ test("有可用更新时自动下载：只下载不安装，下好后标记已�
   });
   await off(release);
   assert.equal(calls.length, 0);
+});
+
+test("启动时设置未加载：后台下载先读偏好，关掉自动下载就不下载", async () => {
+  const calls: string[] = [];
+  const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
+  let loads = 0;
+  const download = handler("downloadUpdateInBackground", {
+    releaseOf: handler("releaseOf", {}),
+    updateNotifications: { current: notifications },
+    ensureUpdatePreferences: async () => {
+      loads++;
+      notifications.setPreferences({ autoCheck: true, skippedVersion: "", autoDownload: false });
+    },
+    updateDownloadPending: { current: null }, updateInstallPending: { current: false }, updateDownloadPromise: { current: null },
+    setUpdateDownload: () => {}, setUpdate: () => {}, listen: async () => () => {},
+    call: async (command: string) => { calls.push(command); return { status: "ok" }; },
+    isSuccessStatus: () => true, stringifyError: String,
+  });
+  await download(release);
+  assert.equal(loads, 1, "未读到偏好时先读一次设置");
+  assert.equal(calls.length, 0, "关掉自动下载后启动检查不再下载");
+});
+
+test("downloadUpdateInBackground 只依据已加载的更新偏好，不再直接读设置草稿", () => {
+  const start = source.indexOf("const downloadUpdateInBackground");
+  const finish = source.indexOf("const performUpdate", start);
+  assert.ok(start >= 0 && finish > start);
+  const body = source.slice(start, finish);
+  assert.ok(body.includes("autoDownloadEnabled()"));
+  assert.ok(!body.includes("settingsRef.current?.settings.updateAutoDownload"));
 });

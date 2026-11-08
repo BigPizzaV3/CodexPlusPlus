@@ -733,6 +733,7 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
   const localDiscovery = payload.gateway.localLoginDiscovery === true;
+  const subagentFollow = payload.gateway.subagentModelFollowRequest === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
   const listen = `http://127.0.0.1:${payload.port}`;
   const copy = (key: string, value: string) => {
@@ -828,6 +829,18 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
               label={t("发现本机已登录的订阅账号")}
               on={localDiscovery}
               onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+          <CxRow
+            detail={t("默认让子智能体继承父回合的模型和供应商，避免被悄悄换到别家；打开后按 Codex 实际请求的模型发送，例如 code review 指定了别的模型。")}
+            title={t("子智能体使用自己请求的模型")}
+            tooltip={t("默认让子智能体继承父回合的模型和供应商，避免被悄悄换到别家；打开后按 Codex 实际请求的模型发送，例如 code review 指定了别的模型。")}
+          >
+            <Switch
+              disabled={busy !== null}
+              label={t("子智能体使用自己请求的模型")}
+              on={subagentFollow}
+              onToggle={() => void run("subagentModel", "save_gateway_subagent_model_policy", { followRequest: !subagentFollow }, t("保存子智能体模型策略"), true)}
             />
           </CxRow>
         </CxCard>

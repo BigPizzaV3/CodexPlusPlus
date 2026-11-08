@@ -15,13 +15,16 @@ export type UpdatePreferences = {
   autoCheck: boolean;
   /** 「跳过此版本」记下的版本；该版本及更低版本不再自动提示。空串表示没有跳过。 */
   skippedVersion: string;
+  /** 有可用更新时自动下载安装包。 */
+  autoDownload: boolean;
 };
 
-/** 从后端设置里取出更新提醒偏好；旧设置缺键时按默认（自动检查、不跳过）。 */
-export function updatePreferencesFrom(settings: { updateAutoCheck?: boolean; updateSkippedVersion?: string } | null | undefined): UpdatePreferences {
+/** 从后端设置里取出更新提醒偏好；旧设置缺键时按默认（自动检查、不跳过、自动下载）。 */
+export function updatePreferencesFrom(settings: { updateAutoCheck?: boolean; updateSkippedVersion?: string; updateAutoDownload?: boolean } | null | undefined): UpdatePreferences {
   return {
     autoCheck: settings?.updateAutoCheck !== false,
     skippedVersion: (settings?.updateSkippedVersion ?? "").trim(),
+    autoDownload: settings?.updateAutoDownload !== false,
   };
 }
 
@@ -67,12 +70,17 @@ export class UpdateNotifications {
   }
 
   setPreferences(preferences: UpdatePreferences): void {
-    this.preferences = { autoCheck: preferences.autoCheck, skippedVersion: preferences.skippedVersion.trim() };
+    this.preferences = { autoCheck: preferences.autoCheck, skippedVersion: preferences.skippedVersion.trim(), autoDownload: preferences.autoDownload };
   }
 
   /** 是否允许后台自动检查；读不到设置时按默认开启。 */
   autoCheckEnabled(): boolean {
     return this.preferences?.autoCheck !== false;
+  }
+
+  /** 是否允许后台自动下载安装包；读不到设置时按默认开启。 */
+  autoDownloadEnabled(): boolean {
+    return this.preferences?.autoDownload !== false;
   }
 
   shouldPrompt(update: UpdateCandidate, manual = false, now = new Date()): boolean {
@@ -105,7 +113,7 @@ export class UpdateNotifications {
 
   /** 「跳过此版本」：本次会话立即生效；持久化由调用方写入后端设置。 */
   skipVersion(version: string): void {
-    this.preferences = { autoCheck: this.autoCheckEnabled(), skippedVersion: version.trim() };
+    this.preferences = { autoCheck: this.autoCheckEnabled(), skippedVersion: version.trim(), autoDownload: this.autoDownloadEnabled() };
   }
 
   muteToday(now = new Date()): void {

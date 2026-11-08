@@ -498,6 +498,11 @@ fn decide_at(
     if *agent != ToolId::Codex {
         return Ok(Decision::default());
     }
+    // #2987：打开「子智能体使用自己请求的模型」后不做继承处理——不改写 `request.model`，
+    // 也不往 spawn 工具描述注入继承指引；在任何登记 / sqlite 读取之前直接放行。
+    if gateway.subagent_model_follow_request {
+        return Ok(Decision::default());
+    }
     let Some(binding) = gateway.active_binding(agent) else {
         return Ok(Decision::default());
     };
