@@ -16,9 +16,12 @@ export type GroupSticky = "cache" | "session" | "off";
 
 export type ClaudeRoleModels = { opus: string; sonnet: string; haiku: string; subagent: string };
 
+export type DefaultModelSelection = { providerId: string; upstreamModel: string; providerSource: string; providerRemoved?: boolean };
+
 export type AgentBinding = {
   enabled: boolean;
   model: string;
+  defaultModelSelection?: DefaultModelSelection | null;
   extraModels: string[];
   claudeRoles: ClaudeRoleModels;
   unknownModel: UnknownModelPolicy;
@@ -440,12 +443,16 @@ export function splitModels(text: string): string[] {
 }
 
 /** 表单 → 提交给后端的绑定。token 与恢复现场由后端维护，这里沿用旧值。 */
-export function bindingFromDraft(draft: BindingDraft, previous: AgentBinding | undefined): AgentBinding {
+export function bindingFromDraft(draft: BindingDraft, previous: AgentBinding | undefined, item?: PickerItem): AgentBinding {
   const base = previous ?? blankBinding();
   const window = parseContextWindow(draft.contextWindow);
+  const model = draft.model.trim();
   return {
     ...base,
-    model: draft.model.trim(),
+    model,
+    defaultModelSelection: item
+      ? item.defaultModelSelection ?? null
+      : model.toLowerCase() === base.model.trim().toLowerCase() ? base.defaultModelSelection ?? null : null,
     extraModels: splitModels(draft.extraModels),
     claudeRoles: {
       opus: draft.opus.trim(),
@@ -608,6 +615,7 @@ export type PickerItem = {
   model: string;
   /** 从供应商名下选默认模型时用于保留供应商身份。 */
   providerModel?: string;
+  defaultModelSelection?: DefaultModelSelection;
   label: string;
   sub: string;
   avatar: string;
@@ -652,7 +660,12 @@ export function pickerSections(
         if (multi && !shared.some((known) => known.toLowerCase() === model.toLowerCase())) shared.push(model);
         const value = multi ? `${entry.id}/${model}` : model;
         if (unlisted.has(value.toLowerCase())) return [];
-        return [{ model: value, providerModel: `${entry.id}/${model}`, label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name) }];
+        return [{
+          model: value,
+          providerModel: `${entry.id}/${model}`,
+          defaultModelSelection: { providerId: entry.id, upstreamModel: model, providerSource: entry.source ?? "" },
+          label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name),
+        }];
       });
     if (items.length) sections.push({ key: `provider:${entry.id}`, title: maskAccountName(entry.name), avatar: avatar(entry.name), items });
   }
@@ -677,6 +690,7 @@ export function pickerSections(
       avatar: "",
       items: providers.slice(0, 6).map((entry) => ({
         model: `${entry.id}/${typed}`,
+        defaultModelSelection: { providerId: entry.id, upstreamModel: typed, providerSource: entry.source ?? "" },
         label: typed,
         sub: maskAccountName(entry.name),
         avatar: avatar(entry.name),
@@ -709,7 +723,7 @@ export function ownPickerSection(own: OwnModels | null | undefined, rawQuery: st
 }
 
 /** `auto`：多家都有的模型的裸名，按池顺序在这几家之间自动切换（`sub` 是这几家，按尝试顺序）。 */
-export type ModelView = { title: string; sub: string; group: boolean; auto?: boolean };
+export type ModelView = { title: string; sub: string; group: boolean; auto?: boolean; issue?: "conflict" | "unavailable" };
 
 /** 提供这个模型的供应商（Agent 能用的、按池顺序）。 */
 export function servingProviders(payload: GatewayPayload | null, model: string, exclude: string[] = []): GatewayPoolEntry[] {
@@ -718,8 +732,22 @@ export function servingProviders(payload: GatewayPayload | null, model: string, 
 }
 
 /** 一个模型名在按钮上的显示：模型名 + 提供它的供应商；模型组显示组名。空串用池里第一个模型。 */
-export function modelDisplay(payload: GatewayPayload | null, model: string, exclude: string[] = []): ModelView {
+export function modelDisplay(payload: GatewayPayload | null, model: string, exclude: string[] = [], selection?: DefaultModelSelection | null): ModelView {
   const title = model.trim() || agentModels(payload, exclude)[0] || "";
+  if (selection && title.toLowerCase() === `${selection.providerId}/${selection.upstreamModel}`.toLowerCase()) {
+    const provider = payload?.pool.find((entry) => entry.id === selection.providerId);
+    const unavailable = selection.providerRemoved || !provider || !providerEnabled(provider) || exclude.includes(provider.id)
+      || (provider.source ?? "") !== selection.providerSource;
+    const conflict = title.startsWith(GROUP_MODEL_PREFIX) || title.includes("*") || servingProviders(payload, title, exclude).length > 0;
+    if (unavailable || conflict) {
+      return {
+        title: prettyModelName(selection.upstreamModel),
+        sub: provider ? maskAccountName(provider.name) : selection.providerId,
+        group: false,
+        issue: unavailable ? "unavailable" : "conflict",
+      };
+    }
+  }
   if (title.startsWith(GROUP_MODEL_PREFIX)) {
     const group = payload?.groups.find((item) => groupModelId(item.id) === title);
     return { title: group?.name ?? title, sub: title, group: true };

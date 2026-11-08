@@ -543,6 +543,199 @@ fn pinned_default_survives_a_new_provider_and_bare_default_keeps_its_meaning() {
 }
 
 #[test]
+fn selected_provider_default_rejects_a_later_native_name_collision() {
+    use codex_plus_core::gateway::route::{preview_plan, resolve_plan};
+
+    let fixture = fixture(57394);
+    let mut gateway = fixture.ctx.gateway.load().unwrap();
+    let mut selected = serde_json::to_value(binding()).unwrap();
+    selected["enabled"] = json!(true);
+    selected["model"] = json!("deepseek/deepseek-v4-pro");
+    selected["defaultModelSelection"] = json!({
+        "providerId": "deepseek",
+        "upstreamModel": "deepseek-v4-pro",
+        "providerSource": "preset:deepseek"
+    });
+    let selected: AgentBinding = serde_json::from_value(selected).unwrap();
+    gateway.bindings.insert("codex".into(), selected.clone());
+
+    let before = resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).unwrap();
+    assert_eq!(before.candidates[0].relay.id, "deepseek");
+    assert_eq!(before.candidates[0].upstream_model, "deepseek-v4-pro");
+
+    let mut other = gateway.providers[0].clone();
+    other.relay.id = "other".into();
+    other.relay.model = selected.model.clone();
+    other.relay.model_list = selected.model.clone();
+    gateway.providers.push(other);
+
+    let error = resolve_plan(&gateway, &ToolId::Codex, &selected.model, None)
+        .expect_err("明确选择的默认模型不能被同名原生模型静默改派");
+    assert!(error.to_string().contains("冲突"), "{error:#}");
+    assert!(preview_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
+
+    let mut legacy = serde_json::to_value(selected).unwrap();
+    legacy.as_object_mut().unwrap().remove("defaultModelSelection");
+    let legacy: AgentBinding = serde_json::from_value(legacy).unwrap();
+    gateway.bindings.insert("codex".into(), legacy);
+    let native = resolve_plan(&gateway, &ToolId::Codex, "deepseek/deepseek-v4-pro", None)
+        .unwrap();
+    assert_eq!(native.candidates[0].relay.id, "other");
+    assert_eq!(native.candidates[0].upstream_model, "deepseek/deepseek-v4-pro");
+}
+
+#[test]
+fn selected_provider_default_rejects_an_existing_collision_before_writing() {
+    let fixture = fixture(57394);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let config_before = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+    let binding_before = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();
+
+    ctx.gateway.update(|gateway| {
+        let mut other = gateway.providers[0].clone();
+        other.relay.id = "other".into();
+        other.relay.model = "deepseek/deepseek-v4-pro".into();
+        other.relay.model_list = other.relay.model.clone();
+        gateway.providers.push(other);
+        Ok(())
+    }).unwrap();
+    let mut selected = serde_json::to_value(binding_before.clone()).unwrap();
+    selected["model"] = json!("deepseek/deepseek-v4-pro");
+    selected["defaultModelSelection"] = json!({
+        "providerId": "deepseek",
+        "upstreamModel": "deepseek-v4-pro",
+        "providerSource": "preset:deepseek"
+    });
+    let error = enable_binding(ctx, &ToolId::Codex, serde_json::from_value(selected).unwrap())
+        .expect_err("不能保存有歧义的默认模型");
+    assert!(error.to_string().contains("冲突"), "{error:#}");
+    assert_eq!(std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap(), config_before);
+    assert_eq!(ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap(), &binding_before);
+}
+
+#[test]
+fn selected_provider_default_rejects_unavailable_provider_and_unknown_fallback() {
+    use codex_plus_core::gateway::route::resolve_plan;
+    use codex_plus_core::gateway::store::UnknownModelPolicy;
+
+    let fixture = fixture(57394);
+    let mut gateway = fixture.ctx.gateway.load().unwrap();
+    let mut selected = serde_json::to_value(binding()).unwrap();
+    selected["enabled"] = json!(true);
+    selected["model"] = json!("deepseek/deepseek-v4-pro");
+    selected["defaultModelSelection"] = json!({
+        "providerId": "deepseek",
+        "upstreamModel": "deepseek-v4-pro",
+        "providerSource": "preset:deepseek"
+    });
+    let mut selected: AgentBinding = serde_json::from_value(selected).unwrap();
+    let mut mirror = gateway.providers[0].clone();
+    mirror.relay.id = "mirror".into();
+    gateway.providers.push(mirror);
+    gateway.providers[0].enabled = false;
+    gateway.bindings.insert("codex".into(), selected.clone());
+    assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
+    assert!(resolve_plan(&gateway, &ToolId::Codex, "unknown", None).is_err());
+
+    selected.unknown_model = UnknownModelPolicy::Passthrough;
+    gateway.bindings.insert("codex".into(), selected.clone());
+    assert!(resolve_plan(&gateway, &ToolId::Codex, "unknown", None).is_err());
+
+    gateway.providers[0].enabled = true;
+    selected.pool_exclude.push("deepseek".into());
+    gateway.bindings.insert("codex".into(), selected.clone());
+    assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
+
+    selected.pool_exclude.clear();
+    gateway.providers[0].source = "extension:replacement".into();
+    gateway.bindings.insert("codex".into(), selected.clone());
+    assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
+}
+
+#[test]
+fn selected_provider_default_does_not_silently_move_after_delete_and_recreate() {
+    use codex_plus_core::gateway::route::resolve_plan;
+
+    let fixture = fixture(57394);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput { name: "Mirror".into(), ..deepseek_input() },
+        "preset:mirror",
+        None,
+    ).unwrap();
+    let mut selected = serde_json::to_value(binding()).unwrap();
+    selected["model"] = json!("deepseek/deepseek-v4-pro");
+    selected["defaultModelSelection"] = json!({
+        "providerId": "deepseek",
+        "upstreamModel": "deepseek-v4-pro",
+        "providerSource": "preset:deepseek"
+    });
+    enable_binding(ctx, &ToolId::Codex, serde_json::from_value(selected.clone()).unwrap()).unwrap();
+    let after_delete = delete_provider(&ctx.gateway, "deepseek").unwrap();
+    assert!(
+        resolve_plan(&after_delete, &ToolId::Codex, "", None).is_err(),
+        "删除明确选择的供应商后不能静默使用另一家"
+    );
+    let (recreated, id) = create_provider(&ctx.gateway, &deepseek_input(), "preset:deepseek", None).unwrap();
+    assert_eq!(id, "deepseek");
+    assert!(
+        resolve_plan(&recreated, &ToolId::Codex, "", None).is_err(),
+        "同 ID、同来源的重建不能自动继承旧选择"
+    );
+    let reselected = enable_binding(ctx, &ToolId::Codex, serde_json::from_value(selected).unwrap())
+        .unwrap();
+    let plan = resolve_plan(&reselected, &ToolId::Codex, "", None).unwrap();
+    assert_eq!(plan.candidates[0].relay.id, "deepseek");
+}
+
+#[test]
+fn selected_provider_default_rejects_a_real_extension_override() {
+    use codex_plus_core::gateway::route::resolve_plan;
+    use codex_plus_core::user_scripts::UserScriptManager;
+
+    let fixture = fixture(57394);
+    let mut gateway = fixture.ctx.gateway.load().unwrap();
+    let mut selected = serde_json::to_value(binding()).unwrap();
+    selected["enabled"] = json!(true);
+    selected["model"] = json!("deepseek/deepseek-v4-pro");
+    selected["defaultModelSelection"] = json!({
+        "providerId": "deepseek",
+        "upstreamModel": "deepseek-v4-pro",
+        "providerSource": "preset:deepseek"
+    });
+    gateway.bindings.insert("codex".into(), serde_json::from_value(selected).unwrap());
+    assert!(resolve_plan(&gateway, &ToolId::Codex, "", None).is_ok());
+
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("user/swap");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("codexpp.json"), json!({
+        "id": "swap",
+        "name": "swap",
+        "providers": [{
+            "id": "deepseek",
+            "baseUrl": "http://127.0.0.1:9000/v1",
+            "models": ["deepseek-v4-pro"],
+            "override": true
+        }]
+    }).to_string()).unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("user_scripts.json"),
+    );
+    let overridden = gateway.with_extension_providers_from(&manager);
+    assert_eq!(overridden.provider("deepseek").unwrap().source, "extension:swap");
+    let error = resolve_plan(&overridden, &ToolId::Codex, "", None)
+        .expect_err("拓展覆盖不能静默继承本地供应商的选择");
+    assert!(error.to_string().contains("来源已变化"), "{error:#}");
+}
+
+#[test]
 fn codex_rejects_unwritable_pinned_default_without_changing_existing_config() {
     let control = fixture(57393);
     let original = "m".repeat(248);

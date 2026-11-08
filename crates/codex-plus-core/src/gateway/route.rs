@@ -735,6 +735,40 @@ fn declared_by_any(relays: &[&RelayProfile], model: &str) -> bool {
     relays.iter().any(|relay| serves(relay, model))
 }
 
+/// 新选择的默认模型与原生模型名重叠时，请求字符串不足以区分两者。
+pub(super) fn check_selected_default(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> anyhow::Result<()> {
+    let Some(selection) = &binding.default_model_selection else {
+        return Ok(());
+    };
+    let selected = format!("{}/{}", selection.provider_id, selection.upstream_model);
+    if !model.eq_ignore_ascii_case(&selected)
+        || !binding_default_model(gateway, binding).eq_ignore_ascii_case(&selected)
+    {
+        return Ok(());
+    }
+    gateway
+        .provider(&selection.provider_id)
+        .filter(|provider| {
+            !selection.provider_removed
+                && provider.enabled
+                && !binding.pool_exclude.contains(&provider.relay.id)
+                && provider.source == selection.provider_source
+        })
+        .context("所选默认模型的供应商不可用或来源已变化，请重新选择默认模型")?;
+    let relays = binding_pool_relays(gateway, binding);
+    if model.starts_with(GROUP_MODEL_PREFIX)
+        || is_pattern(model)
+        || declared_by_any(&relays, model)
+    {
+        bail!("默认模型 {model} 与其他模型名称冲突，请重新选择默认模型");
+    }
+    Ok(())
+}
+
 /// 删除供应商 `id` 后，模型组成员 `member` 是不是还指向别的东西（不该跟着删）：
 /// 只有以 `<id>/` 开头的成员才可能指向它；其中剩下的供应商把整串声明成模型名的、
 /// 或是通配符且还能匹配到剩下的模型的，保留。`remaining` 是删掉之后的池（不看开关）。
@@ -1165,6 +1199,7 @@ fn resolve_plan_with(
     let default_model = binding_default_model(gateway, binding);
     let (model, mapped_to_default) =
         effective_model_detailed(gateway, binding, &default_model, requested_model);
+    check_selected_default(gateway, binding, &model)?;
     let conversation = conversation
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1191,6 +1226,7 @@ fn resolve_plan_with(
     }
     if relays.is_empty() && group_id.is_none() {
         // 原样转发的未知模型：交给默认模型所在的供应商。
+        check_selected_default(gateway, binding, &default_model)?;
         relays = expand_model(
             gateway,
             binding,

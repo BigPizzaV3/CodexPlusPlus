@@ -444,6 +444,18 @@ pub struct GatewayRestoreState {
     pub extra: Map<String, Value>,
 }
 
+/// 用户在供应商名下选中的默认模型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultModelSelection {
+    pub provider_id: String,
+    pub upstream_model: String,
+    #[serde(default)]
+    pub provider_source: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub provider_removed: bool,
+}
+
 /// 一个 Agent 的网关绑定。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -454,6 +466,9 @@ pub struct AgentBinding {
     /// 为空时用池里第一个供应商的默认模型。
     #[serde(default)]
     pub model: String,
+    /// 用户明确从供应商下选择的默认模型；旧绑定没有该记录。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model_selection: Option<DefaultModelSelection>,
     /// 额外暴露给 Agent 的模型（每行一个，可带 `[1M]` 窗口后缀）。
     #[serde(default)]
     pub extra_models: Vec<String>,
@@ -499,6 +514,7 @@ impl Default for AgentBinding {
         Self {
             enabled: false,
             model: String::new(),
+            default_model_selection: None,
             extra_models: Vec::new(),
             claude_roles: ClaudeRoleModels::default(),
             unknown_model: UnknownModelPolicy::default(),

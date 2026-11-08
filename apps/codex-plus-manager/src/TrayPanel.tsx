@@ -893,7 +893,7 @@ function PanelAgentRow({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
-  const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  const display = modelDisplay(payload, draft.model, draft.poolExclude, binding?.defaultModelSelection);
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);
   const head = (
@@ -928,7 +928,7 @@ function PanelAgentRow({
           head={head}
           onPick={(item) => {
             setOpen(false);
-            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.providerModel ?? item.model }, binding) });
+            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.providerModel ?? item.model }, binding, item) });
           }}
           onPickOwn={(item) => {
             setOpen(false);
@@ -940,6 +940,7 @@ function PanelAgentRow({
           payload={payload}
           pinProvider
           selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
+          selectedModelSelection={binding?.defaultModelSelection}
         />
       </Floating>
       {disconnectTarget ? (

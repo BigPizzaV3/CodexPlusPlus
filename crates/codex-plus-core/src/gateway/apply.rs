@@ -235,6 +235,7 @@ fn write_agent_config(
 ) -> anyhow::Result<Option<String>> {
     // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
     let gateway = ctx.gateway.load()?.with_extension_providers();
+    route::check_selected_default(&gateway, binding, &binding_default_model(&gateway, binding))?;
     match agent {
         ToolId::Claude => {
             // 还没指向网关：先把 settings.json 原样存一份，断开时据此还原（见 [`restore_claude`]）。
@@ -3517,9 +3518,20 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
         for binding in gateway.bindings.values_mut() {
             binding.pool_exclude.retain(|excluded| excluded != id);
             binding.extra_models.retain(|model| outlives(model));
+            let selected_removed = binding.default_model_selection.as_mut().is_some_and(|selection| {
+                let selected = format!("{}/{}", selection.provider_id, selection.upstream_model);
+                if selection.provider_id == id && binding.model.trim().eq_ignore_ascii_case(&selected) {
+                    selection.provider_removed = true;
+                    true
+                } else {
+                    false
+                }
+            });
+            if !selected_removed && !outlives(&binding.model) {
+                binding.model.clear();
+            }
             let roles = &mut binding.claude_roles;
             for field in [
-                &mut binding.model,
                 &mut binding.auto_review_model,
                 &mut binding.title_model,
                 &mut roles.opus,

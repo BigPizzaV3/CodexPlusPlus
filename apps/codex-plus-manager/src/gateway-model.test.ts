@@ -146,6 +146,30 @@ test("默认模型选择保留供应商身份，旧裸名与共享选择器保�
   assert.equal(draftFromBinding({ ...blankBinding(), model: "deepseek-v4-pro" }).model, "deepseek-v4-pro");
 });
 
+test("明确选择的供应商模型保存来源，冲突时不显示成其他供应商", () => {
+  const data = payload();
+  data.pool[0].source = "preset:deepseek";
+  const item = pickerSections(data, "", initials)[0].items[0];
+  assert.deepEqual(item.defaultModelSelection, {
+    providerId: "deepseek",
+    upstreamModel: "deepseek-v4-pro",
+    providerSource: "preset:deepseek",
+  });
+  const draft = { ...draftFromBinding(undefined), model: item.providerModel! };
+  const saved = bindingFromDraft(draft, undefined, item);
+  assert.deepEqual(saved.defaultModelSelection, item.defaultModelSelection);
+  data.pool[1].models.push(saved.model);
+  const view = modelDisplay(data, saved.model, [], saved.defaultModelSelection);
+  assert.equal(view.title, "DeepSeek-V4-Pro");
+  assert.equal(view.sub, "DeepSeek");
+  assert.equal(view.issue, "conflict");
+  assert.equal(modelDisplay(data, saved.model).sub, "GLM", "旧绑定继续按完整原生名称显示");
+  assert.equal(bindingFromDraft({ ...draftFromBinding(saved), model: "group/daily" }, saved).defaultModelSelection, null);
+  const removed = { ...saved.defaultModelSelection!, providerRemoved: true };
+  assert.equal(modelDisplay(data, saved.model, [], removed).issue, "unavailable", "同 ID 供应商重建后仍需重新选择");
+  assert.deepEqual(bindingFromDraft(draft, saved, item).defaultModelSelection, item.defaultModelSelection, "重新选择后恢复有效状态");
+});
+
 test("完整含斜杠的模型名优先于供应商前缀", () => {
   const data = payload();
   data.pool[1].models.push("deepseek/deepseek-v4-pro");

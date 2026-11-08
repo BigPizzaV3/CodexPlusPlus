@@ -21,6 +21,7 @@ import {
   servingProviders,
   validateDraft,
   type BindingDraft,
+  type DefaultModelSelection,
   type GatewayAgentId,
   type GatewayAgentView,
   type GatewayPayload,
@@ -178,20 +179,20 @@ function AgentRow({
 
   const isClaude = agent.agent === "claude";
   const connected = agent.enabled;
-  const save = (next: BindingDraft, updateDraft = true) => {
+  const save = (next: BindingDraft, updateDraft = true, item?: PickerItem) => {
     if (updateDraft) setDraft(next);
     const error = validateDraft(next, payload);
     if (error) {
       void notify(t("还不能接入"), t(error), "warning");
       return Promise.resolve(false);
     }
-    return run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding) }, t("保存网关绑定"), connected);
+    return run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
   };
   const disconnect = () => setDisconnectTarget("disconnect");
   // 在选择器里选模型：已接入时直接改默认模型，未接入时选完即接入。
   const pick = (item: PickerItem) => {
     setPickerOpen(false);
-    void save({ ...draft, model: item.providerModel ?? item.model }, false);
+    void save({ ...draft, model: item.providerModel ?? item.model }, false, item);
   };
   // 已接入时先预览还原差异，确认后才断开并选择直连模型。
   const pickOwn = async (item: PickerItem) => {
@@ -700,6 +701,7 @@ export function ModelList({
   payload,
   exclude,
   selectedModel,
+  selectedModelSelection,
   head,
   skipGroup,
   onPick,
@@ -711,6 +713,7 @@ export function ModelList({
   payload: GatewayPayload | null;
   exclude: string[];
   selectedModel: string;
+  selectedModelSelection?: DefaultModelSelection | null;
   head?: ReactNode;
   skipGroup?: string;
   onPick: (item: PickerItem) => void;
@@ -776,6 +779,13 @@ export function ModelList({
   };
   const isSelected = (item: PickerItem) => {
     const current = item.direct ? ownList?.current ?? "" : selectedModel;
+    if (!item.direct && selectedModelSelection && current.toLowerCase() ===
+        `${selectedModelSelection.providerId}/${selectedModelSelection.upstreamModel}`.toLowerCase()) {
+      return !selectedModelSelection.providerRemoved
+        && item.defaultModelSelection?.providerId === selectedModelSelection.providerId
+        && item.defaultModelSelection.upstreamModel.toLowerCase() === selectedModelSelection.upstreamModel.toLowerCase()
+        && item.defaultModelSelection.providerSource === selectedModelSelection.providerSource;
+    }
     return Boolean(current) && (item.model.toLowerCase() === current.toLowerCase() ||
       Boolean(item.providerModel && qualifiedProvider(payload, current, exclude) && item.providerModel.toLowerCase() === current.toLowerCase()));
   };
@@ -988,7 +998,8 @@ function ModelPicker({
   onDisconnect: () => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  const selection = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.defaultModelSelection;
+  const display = modelDisplay(payload, draft.model, draft.poolExclude, selection);
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);
   const showDefault = !connected && !draft.model && !own;
@@ -1030,6 +1041,7 @@ function ModelPicker({
           payload={payload}
           pinProvider
           selectedModel={selectedModel}
+          selectedModelSelection={selection}
         />
       </Floating>
     </div>

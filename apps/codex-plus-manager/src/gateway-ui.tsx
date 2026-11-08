@@ -262,5 +262,9 @@ export function ModelViewGlyph({ view }: { view: ModelView }) {
 
 /** 模型名后的「自动」小标签：多家自动切换时显示，悬停列出按顺序尝试的几家。 */
 export function AutoTag({ view }: { view: ModelView }) {
+  if (view.issue) {
+    const label = view.issue === "conflict" ? "模型名冲突" : "供应商不可用";
+    return <em className="gw-auto-tag" title={t("请重新选择默认模型")}>{t(label)}</em>;
+  }
   return view.auto ? <em className="gw-auto-tag" title={view.sub}>{t("自动")}</em> : null;
 }
