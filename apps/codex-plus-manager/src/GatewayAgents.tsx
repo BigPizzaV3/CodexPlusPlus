@@ -178,8 +178,8 @@ function AgentRow({
 
   const isClaude = agent.agent === "claude";
   const connected = agent.enabled;
-  const save = (next: BindingDraft) => {
-    setDraft(next);
+  const save = (next: BindingDraft, updateDraft = true) => {
+    if (updateDraft) setDraft(next);
     const error = validateDraft(next, payload);
     if (error) {
       void notify(t("还不能接入"), t(error), "warning");
@@ -191,7 +191,7 @@ function AgentRow({
   // 在选择器里选模型：已接入时直接改默认模型，未接入时选完即接入。
   const pick = (item: PickerItem) => {
     setPickerOpen(false);
-    void save({ ...draft, model: item.providerModel ?? item.model });
+    void save({ ...draft, model: item.providerModel ?? item.model }, false);
   };
   // 已接入时先预览还原差异，确认后才断开并选择直连模型。
   const pickOwn = async (item: PickerItem) => {

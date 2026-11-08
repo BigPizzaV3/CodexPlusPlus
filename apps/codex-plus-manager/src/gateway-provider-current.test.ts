@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import vm from "node:vm";
 import { isFavoriteModel, modelDisplay, ownPickerSection, pickerSections, type GatewayPayload, type OwnModels, type PickerSection } from "./gateway-model.ts";
 
 const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -44,4 +45,63 @@ test("自带同名模型不遮住按供应商池路由的当前选择", () => {
   );
   assert.ok(sections.some((section) => section.key === "own"));
   assert.equal(sections.find((section) => section.key === "current")?.items[0].model, "example-model");
+});
+
+test("选择默认模型保存失败时保持已保存的显示", async () => {
+  const agentRow = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "AgentRow");
+  assert.ok(agentRow);
+  const compiled = ts.transpileModule(`export ${agentRow.getText(file)}`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const hooks: any[] = [];
+  let cursor = 0;
+  let finish!: (saved: boolean) => void;
+  const saved = new Promise<boolean>((resolve) => { finish = resolve; });
+  const calls: any[] = [];
+  const exports: Record<string, any> = {};
+  const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+  vm.runInNewContext(compiled, {
+    exports,
+    require: () => ({ jsx, jsxs: jsx, Fragment: "Fragment" }),
+    useState: (initial: any) => {
+      const index = cursor++;
+      if (!(index in hooks)) hooks[index] = typeof initial === "function" ? initial() : initial;
+      return [hooks[index], (value: any) => { hooks[index] = value; }];
+    },
+    useEffect: () => {},
+    draftFromBinding: (binding: any) => ({ model: binding.model, poolExclude: [] }),
+    bindingFromDraft: (draft: unknown) => draft,
+    validateDraft: () => null,
+    agentDiagnosticPresentation: () => ({ tone: "pending", badge: "", reconnect: false }),
+    agentStatusText: () => "",
+    agentModels: () => [],
+    canReconnectAgent: () => true,
+    t: (value: string) => value,
+    tf: (value: string) => value,
+    CxStatusIcon: "CxStatusIcon", AgentIcon: "AgentIcon", CxBadge: "CxBadge",
+    ModelPicker: "ModelPicker", Switch: "Switch", ChevronRight: "ChevronRight",
+    AgentDetail: "AgentDetail", AgentDisconnectDialog: "AgentDisconnectDialog",
+  });
+  const render = () => {
+    cursor = 0;
+    return exports.AgentRow({
+      agent: { agent: "codex", name: "Codex", enabled: true },
+      payload: { gateway: { bindings: { codex: { model: "provider/saved" } } } },
+      busy: null, expanded: false, onToggleExpand: () => {}, onManage: () => {},
+      run: (...args: any[]) => { calls.push(args); return saved; },
+      notify: async () => {},
+    });
+  };
+  const elements = (element: any): any[] => {
+    if (!element || typeof element !== "object") return [];
+    if (Array.isArray(element)) return element.flatMap(elements);
+    return [element, ...elements(element.props?.children)];
+  };
+  const picker = () => elements(render()).find((element) => element.type === "ModelPicker");
+  picker().props.onPick({ model: "next", providerModel: "provider/next" });
+  assert.equal(calls[0][2].binding.model, "provider/next");
+  assert.equal(picker().props.draft.model, "provider/saved");
+  finish(false);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(picker().props.draft.model, "provider/saved");
 });

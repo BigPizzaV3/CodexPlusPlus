@@ -542,6 +542,105 @@ fn pinned_default_survives_a_new_provider_and_bare_default_keeps_its_meaning() {
     assert!(!models.contains(&"deepseek/deepseek-v4-pro".to_string()));
 }
 
+#[test]
+fn codex_rejects_unwritable_pinned_default_without_changing_existing_config() {
+    let control = fixture(57393);
+    let original = "m".repeat(248);
+    std::fs::create_dir_all(&control.ctx.codex_home).unwrap();
+    control
+        .ctx
+        .gateway
+        .update(|gateway| {
+            gateway.providers[0].relay.model = original.clone();
+            gateway.providers[0].relay.model_list = original.clone();
+            Ok(())
+        })
+        .unwrap();
+    let mut bare = binding();
+    bare.model = original.clone();
+    enable_binding(&control.ctx, &ToolId::Codex, bare).unwrap();
+    let config = std::fs::read_to_string(control.ctx.codex_home.join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed.get("model").and_then(toml::Value::as_str),
+        Some(original.as_str())
+    );
+
+    let mut selected = binding();
+    selected.model = format!("deepseek/{original}");
+    let error = enable_binding(&control.ctx, &ToolId::Codex, selected).unwrap_err();
+    assert!(error.to_string().contains("默认模型无法写入 Codex 配置"));
+    assert_eq!(
+        std::fs::read_to_string(control.ctx.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(
+        control
+            .ctx
+            .gateway
+            .load()
+            .unwrap()
+            .binding(&ToolId::Codex)
+            .unwrap()
+            .model,
+        original
+    );
+}
+
+#[test]
+fn codex_accepts_writable_pinned_defaults_at_the_byte_boundary() {
+    for original in ["m".repeat(247), "界".repeat(82)] {
+        let fixture = fixture(57394);
+        std::fs::create_dir_all(&fixture.ctx.codex_home).unwrap();
+        fixture
+            .ctx
+            .gateway
+            .update(|gateway| {
+                gateway.providers[0].relay.model = original.clone();
+                gateway.providers[0].relay.model_list = original.clone();
+                Ok(())
+            })
+            .unwrap();
+        let mut selected = binding();
+        selected.model = format!("deepseek/{original}");
+        assert!(selected.model.len() <= 256);
+        enable_binding(&fixture.ctx, &ToolId::Codex, selected.clone()).unwrap();
+        let config = std::fs::read_to_string(fixture.ctx.codex_home.join("config.toml")).unwrap();
+        let config: toml::Value = toml::from_str(&config).unwrap();
+        assert_eq!(
+            config.get("model").and_then(toml::Value::as_str),
+            Some(selected.model.as_str())
+        );
+    }
+}
+
+#[test]
+fn codex_rejects_a_pinned_default_with_an_unwritable_provider_id() {
+    let fixture = fixture(57394);
+    fixture
+        .ctx
+        .gateway
+        .update(|gateway| {
+            gateway.providers[0].relay.id = "deep\\seek".into();
+            Ok(())
+        })
+        .unwrap();
+    let mut selected = binding();
+    selected.model = "deep\\seek/deepseek-v4-pro".into();
+    let error = enable_binding(&fixture.ctx, &ToolId::Codex, selected).unwrap_err();
+    assert!(error.to_string().contains("默认模型无法写入 Codex 配置"));
+    assert!(!fixture.ctx.codex_home.join("config.toml").exists());
+    assert!(
+        fixture
+            .ctx
+            .gateway
+            .load()
+            .unwrap()
+            .binding(&ToolId::Codex)
+            .is_none()
+    );
+}
+
 /// 网关模式给 Codex 的模型目录与直连模式的按模型聚合一样：显示名、推理档位、按供应商分组，
 /// 模型组单独一组。没有内置元数据的模型（第三方的 claude-*）也要有推理档位。
 #[test]

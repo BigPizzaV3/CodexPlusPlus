@@ -1330,6 +1330,11 @@ fn write_codex(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
 ) -> anyhow::Result<()> {
+    if crate::relay_config::sanitize_relay_model_name(&binding_default_model(gateway, binding))
+        .is_none()
+    {
+        bail!("默认模型无法写入 Codex 配置：模型 ID 过长或包含不支持的内容");
+    }
     let mut settings = ctx.settings.load()?;
     if !settings.relay_profiles_enabled {
         bail!("Codex 的供应商配置总开关已关闭，无法接入网关：请在 Codex++ 的「供应商列表」里打开「配置切换」");
@@ -3703,6 +3708,79 @@ mod tests {
     use crate::settings::{
         AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, RelaySessionProvider,
     };
+
+    #[test]
+    fn codex_rejects_unwritable_default_from_an_overriding_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("user/swap");
+        std::fs::create_dir_all(&package).unwrap();
+        let invalid_model = "m".repeat(257);
+        std::fs::write(
+            package.join("codexpp.json"),
+            json!({
+                "id": "swap",
+                "name": "swap",
+                "providers": [{
+                    "id": "local",
+                    "baseUrl": "http://127.0.0.1:9000/v1",
+                    "models": [invalid_model],
+                    "override": true
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let manager = crate::user_scripts::UserScriptManager::new(
+            temp.path().join("builtin"),
+            temp.path().join("user"),
+            temp.path().join("user_scripts.json"),
+        );
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(
+            serde_json::from_value(json!({
+                "relay": RelayProfile {
+                    id: "local".into(),
+                    model: "safe-model".into(),
+                    model_list: "safe-model".into(),
+                    ..RelayProfile::default()
+                }
+            }))
+            .unwrap(),
+        );
+        let binding = AgentBinding::default();
+        assert_eq!(binding_default_model(&gateway, &binding), "safe-model");
+        let gateway = gateway.with_extension_providers_from(&manager);
+        assert_eq!(binding_default_model(&gateway, &binding), invalid_model);
+
+        let state = temp.path().join("state");
+        let home = temp.path().join("codex");
+        std::fs::create_dir_all(&home).unwrap();
+        let config = "model = \"untouched\"\n";
+        std::fs::write(home.join("config.toml"), config).unwrap();
+        let ctx = ApplyContext {
+            gateway: GatewayStore::at(state.join("gateway.json")),
+            claude: ClaudeContext {
+                store_path: state.join("claude-providers.json"),
+                claude_home: temp.path().join("claude"),
+                backup_root: state.join("backups"),
+            },
+            grok_home: temp.path().join("grok"),
+            codex_home: home.clone(),
+            settings: SettingsStore::new(state.join("settings.json")),
+            backup_root: state.join("backups"),
+            port: 57394,
+            agent_env: crate::gateway::agents::AgentEnv::at(temp.path().join("home")),
+        };
+        let error = write_codex(&ctx, &gateway, &binding).unwrap_err();
+        assert!(
+            error.to_string().contains("默认模型无法写入 Codex 配置"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("config.toml")).unwrap(),
+            config
+        );
+    }
 
     #[test]
     fn catalog_ui_fields_keep_fast_tiers_and_drop_bulky_fields() {
