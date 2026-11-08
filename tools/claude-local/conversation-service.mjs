@@ -5,11 +5,12 @@
 //     → application/connect+proto，响应是 [flag][len][protobuf] 帧序列，flag 0x02 结束帧。
 //   - unary（其余）→ application/proto，响应是裸 protobuf 消息。
 //
-// 会话状态存在内存里（convStore 由 proxy.mjs 提供），重启即清空——PoC 可接受。
+// 会话状态由 proxy.mjs 提供；受管运行时按变更保存，完成一轮后立即落盘。
 
 import crypto from "node:crypto";
 import http from "node:http";
 import https from "node:https";
+import { gatewayModel, gatewayTarget, runtimeConfig } from "./runtime.mjs";
 import {
   decode, get, asStr, asMsg, asInt, ld, vi,
   requestMessages, frame, endFrame,
@@ -21,45 +22,40 @@ import {
   sendAndSettleResponse,
 } from "./rpc.mjs";
 
-// ── 网关（magpie：本机 Anthropic Messages 兼容端点） ──────────
-const GATEWAY_URL = process.env.CLAUDE_LOCAL_GATEWAY_URL || "http://127.0.0.1:3425";
-const GATEWAY_MODEL = process.env.CLAUDE_LOCAL_GATEWAY_MODEL || "claude-sonnet-4-6";
-const GATEWAY_KEY = process.env.CLAUDE_LOCAL_GATEWAY_KEY || "magpie";
+const runtime = runtimeConfig();
 
 /**
  * 调网关拿一轮回复的文本增量。
  * 返回 {next} 迭代器：{done:false,value:string} / {done:true}，出错 throw。
  */
-function anthropicStream(prompt, signal) {
+function anthropicStream(messages, model, signal) {
   const queue = [];
   let notify = null;
   let done = false, failed = null;
   const push = (v) => { queue.push(v); const n = notify; notify = null; n?.(); };
   const payload = JSON.stringify({
-    model: GATEWAY_MODEL, max_tokens: 4096, stream: true,
-    messages: [{ role: "user", content: prompt }],
+    model: gatewayModel(runtime, model), max_tokens: 4096, stream: true, messages,
   });
-  const u = new URL(`${GATEWAY_URL}/v1/messages`);
+  const u = gatewayTarget(runtime, "/v1/messages");
   const lib = u.protocol === "https:" ? https : http;
   const req = lib.request(
     {
       hostname: u.hostname, port: u.port || (u.protocol === "https:" ? 443 : 80),
       path: u.pathname + u.search,
-      method: "POST", rejectUnauthorized: false,
+      method: "POST", timeout: 300000,
       headers: {
         "content-type": "application/json",
-        "x-api-key": GATEWAY_KEY,
-        authorization: `Bearer ${GATEWAY_KEY}`,
+        "x-api-key": runtime.key,
+        authorization: `Bearer ${runtime.key}`,
         "anthropic-version": "2023-06-01",
         accept: "text/event-stream",
       },
     },
     (res) => {
       if (res.statusCode >= 400) {
-        let errBody = "";
-        res.on("data", (c) => { errBody += c.toString("utf8"); });
+        res.resume();
         res.on("end", () => {
-          failed = new Error(`gateway HTTP ${res.statusCode}: ${errBody.slice(0, 200)}`);
+          failed = new Error(`gateway HTTP ${res.statusCode}`);
           done = true; const n = notify; notify = null; n?.();
         });
         return;
@@ -77,13 +73,14 @@ function anthropicStream(prompt, signal) {
           let d; try { d = JSON.parse(data); } catch { continue; }
           if (d.type === "content_block_delta" && d.delta?.type === "text_delta") push(d.delta.text);
           else if (d.type === "message_stop") push({ end: true });
-          else if (d.type === "error") failed = new Error(d.error?.message || "gateway error");
+          else if (d.type === "error") failed = new Error("gateway stream error");
         }
       });
       res.on("end", () => { done = true; const n = notify; notify = null; n?.(); });
       res.on("error", (e) => { failed = e; done = true; const n = notify; notify = null; n?.(); });
     },
   );
+  req.on("timeout", () => req.destroy(new Error("gateway timeout")));
   req.on("error", (e) => { failed = e; done = true; const n = notify; notify = null; n?.(); });
   if (signal) signal.addEventListener("abort", () => { try { req.destroy(); } catch {} });
   req.end(payload);
@@ -105,8 +102,8 @@ function anthropicStream(prompt, signal) {
   };
 }
 
-async function* gatewayDeltas(prompt) {
-  const it = anthropicStream(prompt);
+async function* gatewayDeltas(messages, model, signal) {
+  const it = anthropicStream(messages, model, signal);
   for (;;) {
     const r = await it.next();
     if (r.done) return;
@@ -117,7 +114,7 @@ async function* gatewayDeltas(prompt) {
 // ── 服务 ─────────────────────────────────────────────────────
 // deps: ensureConv(id) -> conv；listConvs() -> conv[]；log(...)
 // conv 约定字段：uuid/name/created_at/updated_at/turns[]/nextIndex/leafMessageId
-export function createConversationService({ ensureConv, listConvs, log }) {
+export function createConversationService({ ensureConv, listConvs, log, onChange = () => {} }) {
   /** convId -> {res, convId, frames, closed, hb} */
   const streams = new Map();
 
@@ -169,6 +166,7 @@ export function createConversationService({ ensureConv, listConvs, log }) {
     const convMsg = includeConversation
       ? conversation({
           id: conv.uuid,
+          model: conv.model,
           title: conv.name && conv.name !== "New conversation" ? conv.name : undefined,
           status: conv.turns.some((t) => !t.complete) ? 2 : 1, // RUNNING / IDLE
           leaf,
@@ -186,6 +184,7 @@ export function createConversationService({ ensureConv, listConvs, log }) {
   function convProto(c) {
     return conversation({
       id: c.uuid,
+      model: c.model,
       title: c.name && c.name !== "New conversation" ? c.name : undefined,
       status: c.turns?.some((t) => !t.complete) ? 2 : 1,
       leaf: c.leafMessageId || undefined,
@@ -196,11 +195,14 @@ export function createConversationService({ ensureConv, listConvs, log }) {
 
   // ── 跑一轮回复：running 快照 → 逐 delta append → 完成快照 ──
   const replying = new Set();
+  const controllers = new Map();
   async function ensureReply(conv) {
     const turn = conv.turns.find((t) => !t.complete && !t.replyStarted);
     if (!turn || replying.has(turn.asstId)) return;
     replying.add(turn.asstId);
     turn.replyStarted = true;
+    const controller = new AbortController();
+    controllers.set(turn.asstId, controller);
     try {
       const stream = () => streams.get(conv.uuid);
       // running 快照（全量实体，幂等）
@@ -208,22 +210,32 @@ export function createConversationService({ ensureConv, listConvs, log }) {
       if (s0) writeEvent(s0, streamEvent({ update: buildStateUpdate(conv) }));
       let failed = null;
       try {
-        for await (const delta of gatewayDeltas(turn.prompt)) {
+        const messages = [];
+        for (const previous of conv.turns) {
+          messages.push({ role: "user", content: previous.prompt });
+          if (previous === turn) break;
+          if (previous.text) messages.push({ role: "assistant", content: previous.text });
+        }
+        for await (const delta of gatewayDeltas(messages, turn.model, controller.signal)) {
+          if (turn.complete) break;
           turn.text += delta;
+          onChange();
           const s = stream();
           if (s) writeEvent(s, streamEvent({ append: contentBlockAppend(turn.blockId, delta) }));
         }
       } catch (e) {
-        failed = e;
+        failed = controller.signal.aborted && turn.stopReason === "userCanceled" ? null : e;
       }
       turn.complete = true;
-      turn.stopReason = failed ? "error" : "endTurn";
-      if (failed) turn.text += `\n\n[网关错误：${failed.message}]`;
+      turn.stopReason = turn.stopReason === "userCanceled" ? turn.stopReason : failed ? "error" : "endTurn";
+      if (failed && turn.stopReason !== "userCanceled") turn.text += `\n\n[网关错误：${failed.message}]`;
       conv.updated_at = new Date().toISOString();
+      onChange(true);
       // 完成快照：本轮的 message/block 置 complete + stop_reason，conversation 回 IDLE
       const upd = conversationUpdate({
         conv: conversation({
           id: conv.uuid,
+          model: conv.model,
           title: conv.name !== "New conversation" ? conv.name : undefined,
           status: 1, leaf: turn.asstId,
           created: conv.created_at ? new Date(conv.created_at) : undefined,
@@ -251,6 +263,7 @@ export function createConversationService({ ensureConv, listConvs, log }) {
       if (next) ensureReply(conv).catch((e) => log?.(`reply error: ${e.message}`));
     } finally {
       replying.delete(turn.asstId);
+      controllers.delete(turn.asstId);
     }
   }
 
@@ -278,13 +291,16 @@ export function createConversationService({ ensureConv, listConvs, log }) {
       groupId: `dgrp_${asstId}`,
       blockId: `cblk_${asstId}`,
       text: "", complete: false, stopReason: null, created: now, replyStarted: false,
+      model: gatewayModel(runtime, send.model || conv.model),
     };
     conv.nextIndex += 2;
     conv.turns.push(turn);
     conv.leafMessageId = turn.asstId;
+    conv.model = turn.model;
     if (!conv.name || conv.name === "New conversation") conv.name = titleFromPrompt(send.text);
     conv.updated_at = now.toISOString();
-    log?.(`send conv=${conv.uuid} human=${turn.humanId} asst=${turn.asstId} prompt=${JSON.stringify(send.text).slice(0, 60)}`);
+    onChange(true);
+    log?.("Recorded a local conversation turn");
     return turn;
   }
 
@@ -299,6 +315,7 @@ export function createConversationService({ ensureConv, listConvs, log }) {
       text: asStr(get(sm, 3)) ?? "",
       parentMessageId: asStr(get(sm, 5)),
       inputMode: asInt(get(sm, 6)),
+      model: asStr(get(asMsg(get(sm, 7)), 2)),
     };
   };
 
@@ -359,7 +376,7 @@ export function createConversationService({ ensureConv, listConvs, log }) {
       }
 
       case "PerformAction": {
-        if (process.env.CLAUDE_LOCAL_DEBUG) {
+        if (process.env.CLAUDE_LOCAL_DEBUG && !runtime.managed) {
           const dump = (fs, d = 0) => fs.map((f) => `${" ".repeat(d)}f${f.no}/w${f.wire}=${f.wire === 2 ? `<${f.val.length}B>` : f.val}`).join("\n");
           log?.(`PA req fields:\n${dump(reqMsg)}`);
           const hf = asMsg(get(reqMsg, 1));
@@ -372,14 +389,22 @@ export function createConversationService({ ensureConv, listConvs, log }) {
         const conv = convId ? ensureConv(convId) : null;
         const send = parseSendMessage(reqMsg);
         const stopField = get(reqMsg, 3); // stop_generation
+        const selectedModel = get(reqMsg, 27); // SetConversationModel.model.identifier
         if (conv && send) {
           recordSend(conv, send);
           ensureReply(conv).catch((e) => log?.(`reply error: ${e.message}`));
+        } else if (conv && selectedModel) {
+          conv.model = gatewayModel(runtime, asStr(get(asMsg(get(asMsg(selectedModel), 1)), 2)));
+          onChange(true);
+          const stream = streams.get(convId);
+          if (stream) writeEvent(stream, streamEvent({ update: buildStateUpdate(conv) }));
         } else if (conv && stopField) {
           const turn = conv.turns.find((t) => !t.complete);
           if (turn) {
             turn.complete = true;
             turn.stopReason = "userCanceled";
+            controllers.get(turn.asstId)?.abort();
+            onChange(true);
             const s = streams.get(convId);
             if (s) writeEvent(s, streamEvent({ update: buildStateUpdate(conv) }));
             log?.(`stop conv=${convId}`);
@@ -401,6 +426,7 @@ export function createConversationService({ ensureConv, listConvs, log }) {
             assistantMessageId: asStr(get(sm, 2)),
             text: asStr(get(sm, 3)) ?? "",
             parentMessageId: asStr(get(sm, 5)),
+            model: asStr(get(asMsg(get(sm, 7)), 2)),
           });
           await ensureReply(conv);
           const ack = mutationAck({ sessionId: header.sessionId, version: header.version, applied: true });

@@ -154,13 +154,14 @@ export const ts = (d = new Date()) =>
   Buffer.concat([i64(1, BigInt(Math.floor(d.getTime() / 1000))), vi(2, d.getMilliseconds() * 1e6)]);
 
 /** Conversation{id,title,status,current_leaf_message_id,created_at,updated_at} */
-export function conversation({ id, title, status = 1, leaf, created, updated }) {
+export function conversation({ id, title, status = 1, leaf, created, updated, model }) {
   return Buffer.concat([
     ld(1, id),
     title ? ld(2, title) : Buffer.alloc(0),
     status ? vi(3, status) : Buffer.alloc(0),
     created ? ld(4, ts(created)) : Buffer.alloc(0),
     updated ? ld(5, ts(updated)) : Buffer.alloc(0),
+    model ? ld(6, ld(2, model)) : Buffer.alloc(0),
     leaf ? ld(7, leaf) : Buffer.alloc(0),
   ]);
 }

@@ -25,8 +25,58 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
+import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelList, modelSelectors, runtimeConfig } from "./runtime.mjs";
+import { createOfficialAssets } from "./official-assets.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const runtime = runtimeConfig();
+const officialAssets = runtime.managed
+  ? createOfficialAssets(process.env.CLAUDE_LOCAL_DESKTOP_RESOURCES)
+  : null;
+const LOCALIZATION_SHIM_PATH = "/__codex_plus/claude-localization.js";
+const localizationShim = runtime.managed && runtime.localization
+  ? fs.readFileSync(path.join(here, "page-shim.js"))
+  : null;
+
+function addLocalizationShim(html, officialLocales) {
+  if (!localizationShim) return html;
+  const head = /<head\b[^>]*>/i.exec(html);
+  const headEnd = /<\/head\s*>/i.exec(html);
+  if (!head || !headEnd || head.index >= headEnd.index) {
+    throw new Error("Claude Desktop official shell has no supported localization injection point");
+  }
+  const contentStart = head.index + head[0].length;
+  const headContent = html.slice(contentStart, headEnd.index);
+  const existingMeta = /<meta\b[^>]*\bname=(["'])i18n-catalogs\1[^>]*>/i.exec(headContent);
+  const existingValue = existingMeta?.[0].match(/\bdata-i18n-catalogs=(["'])(.*?)\1/i)?.[2] ?? "";
+  const catalogs = new Map();
+  for (const entry of existingValue.split(",")) {
+    const match = entry.trim().match(/^([\w-]+):([\w-]+)\.([\w-]+)$/);
+    if (match) catalogs.set(match[1], `${match[2]}.${match[3]}`);
+  }
+  for (const locale of officialLocales) {
+    if (!catalogs.has(locale)) catalogs.set(locale, "1.1.1");
+  }
+  catalogs.set("zh-Hans", catalogs.get("zh-Hans") ?? "1.1.1");
+  const catalogValue = [...catalogs]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([locale, versions]) => `${locale}:${versions}`)
+    .join(",");
+  const meta = `<meta name="i18n-catalogs" data-i18n-catalogs="${catalogValue}">`;
+  const withoutMeta = existingMeta
+    ? headContent.replace(existingMeta[0], "")
+    : headContent;
+  const firstScript = /<script\b/i.exec(withoutMeta);
+  const additions = `${meta}${localizationShim && !html.includes(`src="${LOCALIZATION_SHIM_PATH}"`)
+    ? `<script src="${LOCALIZATION_SHIM_PATH}"></script>`
+    : ""}`;
+  const insertAt = firstScript ? firstScript.index : withoutMeta.length;
+  return `${html.slice(0, contentStart)}${withoutMeta.slice(0, insertAt)}${additions}${withoutMeta.slice(insertAt)}${html.slice(headEnd.index)}`;
+}
+
+const officialShell = runtime.managed
+  ? addLocalizationShim(officialAssets.indexHtml, officialAssets.i18nLocales)
+  : null;
 const args = process.argv.slice(2);
 const arg = (name, fallback) => {
   const i = args.indexOf(`--${name}`);
@@ -40,8 +90,9 @@ const CA_DIR = arg("ca", path.join(here, "ca"));
 const APP_STATE_DIR = process.env.CODEX_PLUS_STATE_DIR || path.join(os.homedir(), ".codex-session-delete");
 const CACHE_DIR = process.env.CLAUDE_LOCAL_CACHE_DIR || path.join(here, ".cache");
 const LOG = arg("log", "1") !== "0";
-const GATEWAY_URL = process.env.CLAUDE_LOCAL_GATEWAY_URL || "http://127.0.0.1:3425";
-const GATEWAY_KEY = process.env.CLAUDE_LOCAL_GATEWAY_KEY || "magpie";
+const READY_FILE = process.env.CLAUDE_LOCAL_READY_FILE;
+const INSTANCE_ID = process.env.CLAUDE_LOCAL_INSTANCE_ID || crypto.randomUUID();
+const STATE_FILE = process.env.CLAUDE_LOCAL_STATE_FILE;
 const DICTATION_WS_PATH = "/api/ws/speech_to_text/voice_stream";
 const DICTATION_HELPER_PATH = "/dictation/claude-stream";
 const MAX_DICTATION_WS_CONNECTIONS = 4;
@@ -50,6 +101,13 @@ const MAX_DICTATION_WS_IDLE_MS = 130_000;
 const MAX_DICTATION_WS_DURATION_MS = 16 * 60_000;
 const DICTATION_ALLOWED_HOSTS = new Set(["claude.ai", "claude.com", "api.anthropic.com"]);
 const DICTATION_ALLOWED_ORIGINS = new Set(["https://claude.ai", "https://claude.com"]);
+let lastClientAt = null;
+let listeningPort = PORT;
+let persistenceWarning = null;
+
+if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) throw new Error("Invalid Claude local proxy port");
+if (runtime.managed && (!READY_FILE || !STATE_FILE)) throw new Error("Managed Claude requires runtime state paths");
+if (runtime.managed && !officialAssets) throw new Error("Managed Claude requires the original Claude Desktop resources path");
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -79,7 +137,7 @@ const ACCOUNT = {
     "claude_code",
     "cowork",
   ],
-  settings: { locale: "zh-CN", theme: "system" },
+  settings: { ...(runtime.localization ? { locale: "zh-Hans" } : {}), theme: "system" },
 };
 
 const ORG = {
@@ -104,6 +162,15 @@ const ORG = {
   ],
   billing_type: "stripe_subscription",
   is_personal: true,
+  settings: {},
+  visibility_status: "active",
+  parent_organization_uuid: null,
+  rate_limit_tier: "default_claude_max_20x",
+  analytics_subscription_plan: "claude_max",
+  has_hosted_code_environments: false,
+  claude_ai_bootstrap_models_config: runtime.models.map((model) => ({
+    model, name: model, description: "", paprika_modes: [], thinking_modes: [], hard_limit: 200000,
+  })),
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -127,9 +194,16 @@ const BOOTSTRAP = {
     ].map((k) => [k, true]),
   ),
 };
+BOOTSTRAP.feature_flags.computer_use = runtime.computerUse;
+BOOTSTRAP.feature_flags.computer_use_rollout = runtime.computerUse;
+if (!runtime.computerUse) {
+  ACCOUNT.capabilities = ACCOUNT.capabilities.filter((name) => name !== "computer_use");
+  ORG.capabilities = ORG.capabilities.filter((name) => name !== "computer_use");
+}
 
 // 读取录制到的真实 bootstrap 作为模板（capture.mjs 产出）
 function loadRecordedBootstrap() {
+  if (runtime.managed) return null;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
       if (!f.endsWith(".json")) continue;
@@ -148,6 +222,7 @@ const RECORDED_BOOTSTRAP = loadRecordedBootstrap();
 // i18n 字典：.cache 里录制过的真实翻译文件（url 形如 claude.ai/i18n/s/zh-Hans.json?v=...）
 const i18nMap = (() => {
   const m = new Map(); // pathname -> abs body file
+  if (runtime.managed) return m;
   try {
     for (const f of fs.readdirSync(CACHE_DIR)) {
       if (!f.endsWith(".json")) continue;
@@ -175,19 +250,22 @@ function readI18n(file) {
 
 // app.asar 的词表只覆盖桌面壳；主界面需要完整 Web 词表。
 const I18N_DIR = path.join(here, "i18n");
-const WEB_I18N_DIR = path.resolve(here, "../../assets/claude-localization/catalogs");
+const WEB_I18N_DIR = process.env.CLAUDE_LOCAL_WEB_I18N_DIR || path.resolve(here, "../../assets/claude-localization/catalogs");
 const i18nResponses = new Map();
 function localI18n(pathname) {
   const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
   if (!match) return null;
   if (i18nResponses.has(pathname)) return i18nResponses.get(pathname);
-  const [, kind, locale] = match;
+  const [, kind, requestedLocale] = match;
+  const locale = runtime.localization || requestedLocale === "zh-CN"
+    ? "zh-Hans"
+    : requestedLocale;
   const base = `${locale}.json`;
   const catalog = kind === "dynamic" ? {
     ...readI18n(path.join(WEB_I18N_DIR, "dynamic", base)),
     ...readI18n(i18nMap.get(pathname)),
   } : {
-    ...readI18n(path.join(I18N_DIR, base)),
+    ...(!runtime.managed ? readI18n(path.join(I18N_DIR, base)) : {}),
     ...readI18n(path.join(WEB_I18N_DIR, base)),
     ...readI18n(i18nMap.get(`/i18n/${base}`)),
     ...readI18n(path.join(WEB_I18N_DIR, `${locale}.overrides.json`)),
@@ -224,9 +302,45 @@ function json(res, obj, code = 200) {
   res.end(body);
 }
 
+function health() {
+  return {
+    instanceId: INSTANCE_ID, pid: process.pid, port: listeningPort, mode: MODE,
+    lastClientAt, ...(persistenceWarning ? { warning: persistenceWarning } : {}),
+  };
+}
+
+let readyWriteTimer;
+function writeReady() {
+  if (!READY_FILE) return;
+  const temporary = `${READY_FILE}.${process.pid}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(READY_FILE), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(temporary, `${JSON.stringify(health())}\n`, { mode: 0o600 });
+    fs.renameSync(temporary, READY_FILE);
+    fs.chmodSync(READY_FILE, 0o600);
+  } catch {
+    console.error("Claude local readiness could not be saved");
+  }
+}
+
+function noteClient() {
+  lastClientAt = now();
+  if (!readyWriteTimer) {
+    readyWriteTimer = setTimeout(() => {
+      readyWriteTimer = undefined;
+      writeReady();
+    }, 500);
+    readyWriteTimer.unref();
+  }
+}
+
 const CONV_STATE = new Map();
 const NOTIFICATION_SETTINGS = new Map();
 let DEVICE_ROW = null; // Code 模式注册的设备行 {id, k, ...}
+const stateStore = createStateStore(STATE_FILE, CONV_STATE, NOTIFICATION_SETTINGS, (warning) => {
+  persistenceWarning = warning;
+  console.error(warning);
+});
 
 function ensureConv(uuid) {
   if (!CONV_STATE.has(uuid)) {
@@ -241,7 +355,9 @@ function ensureConv(uuid) {
       turns: [],
       nextIndex: 0,
       leafMessageId: null,
+      model: runtime.model,
     });
+    stateStore.changed();
   }
   return CONV_STATE.get(uuid);
 }
@@ -251,6 +367,7 @@ const conversationService = createConversationService({
   ensureConv,
   listConvs: () => [...CONV_STATE.values()],
   log,
+  onChange: (flush) => flush ? stateStore.flush() : stateStore.changed(),
 });
 
 function pushMessage(conv, msg) {
@@ -269,6 +386,7 @@ function pushMessage(conv, msg) {
   conv.chat_messages.push(m);
   conv.current_leaf_message_uuid = m.uuid;
   conv.updated_at = now();
+  stateStore.changed();
   return m;
 }
 
@@ -293,8 +411,67 @@ const FAKE_ACCOUNT = {
 function fakeAccount() {
   return {
     ...FAKE_ACCOUNT,
+    tagged_id: `acct_${ACCOUNT.uuid}`,
+    email_address: ACCOUNT.email,
+    display_name: ACCOUNT.name,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_verified: true,
+    age_is_verified: true,
+    is_anonymous: false,
+    onboarding_complete: true,
+    workspace_memberships: [],
+    invites: [],
+    never_accepted_legal_document_types: [],
+    accepted_clickwrap_versions: {},
+    display_avatar: null,
+    settings: { ...ACCOUNT.settings },
     memberships: [{ uuid: "11111111-2222-4333-8444-555555555556", organization: ORG, role: "admin", status: "active", seat_tier: "full_member", created_at: "2025-01-01T00:00:00Z" }],
     memberships_incomplete: false,
+  };
+}
+
+function localUserAccess() {
+  return {
+    features: [],
+    account_features: [],
+    organization_permissions: [],
+    core_skill_names: [],
+    code_execution_network_egress_enabled: false,
+    code_execution_network_egress_template: "",
+    code_execution_network_egress_settable: "disabled",
+    artifacts_setting_blocks_classic_sharing: false,
+    classic_sharing_block_reason: null,
+  };
+}
+
+function localBootstrap() {
+  return {
+    ...BOOTSTRAP,
+    account: fakeAccount(),
+    user: fakeAccount(),
+    activeOrganization: ORG,
+    resolved_org_uuid: ORG.uuid,
+    locale: runtime.localization ? "zh-Hans" : "en-US",
+    org_statsig: { user: {}, values: {}, values_hash: "local" },
+    org_feature_flags: { user: {}, values: {}, values_hash: "local" },
+    org_growthbook: { features: {}, hashing_algorithm: "fnv", user: {} },
+    intercom_account_hash: null,
+    intercom_user_jwt: null,
+    server_localizations: null,
+    system_prompts: null,
+    current_user_access: localUserAccess(),
+    ...modelSelectors(runtime),
+    memory_mode: "melange",
+    classic_mode_available: false,
+    melange_available: false,
+    claude_ai_available_models: { models: runtime.models.map((model) => ({ model_id: model, minimum_tier: "free" })) },
+    personalized_greeting: null,
+    hold_notice: null,
+    served_copy: {},
+    gated_messages: { messages: {}, gates: [], locale: runtime.localization ? "zh-Hans" : "en-US" },
+    gated_imports: {},
+    ...(officialAssets ? { gated_imports_build_id: officialAssets.buildId } : {}),
   };
 }
 
@@ -302,7 +479,7 @@ function mockEdgeApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   if (p.includes("/edge-api/bootstrap")) {
     const fakeFile = path.join(here, "mock", "bootstrap.json");
-    const body = fs.existsSync(fakeFile)
+    const body = !runtime.managed && fs.existsSync(fakeFile)
       ? fs.readFileSync(fakeFile, "utf8")
       : null;
     if (body) {
@@ -321,11 +498,17 @@ function mockEdgeApi(req, res, url) {
       return res.end(body);
     }
     const base = RECORDED_BOOTSTRAP ?? {};
+    res.setHeader("set-cookie", [
+      `org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
+      `active_org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
+      `lastActiveOrg=${ORG.uuid}; Path=/; SameSite=Lax`,
+      `sessionKey=${ACCOUNT.uuid}-local-session; Path=/; HttpOnly; Secure; SameSite=None`,
+    ]);
     return json(res, {
-      ...base,
+      ...localBootstrap(), ...base,
       account: fakeAccount(),
       activeOrganization: ORG,
-      locale: base.locale ?? "zh-Hans",
+      locale: base.locale ?? (runtime.localization ? "zh-Hans" : "en-US"),
       intercom_account_hash: null,
       intercom_user_jwt: null,
     });
@@ -339,6 +522,7 @@ let REST_CONV_TEMPLATE = null;
 function convToRest(c) {
   if (!REST_CONV_TEMPLATE) {
     try {
+      if (runtime.managed) throw new Error("Managed mode uses synthetic data");
       const f = path.join(here, "mock", "api", "conversations.json");
       REST_CONV_TEMPLATE = JSON.parse(fs.readFileSync(f, "utf8")).data[0] ?? {};
     } catch { REST_CONV_TEMPLATE = {}; }
@@ -350,7 +534,7 @@ function convToRest(c) {
     id: c.uuid,
     name: c.name || "New conversation",
     summary: c.name || "New conversation",
-    model: "claude-local",
+    model: c.model || runtime.model,
     created_at: c.created_at,
     updated_at: c.updated_at,
     current_leaf_message_uuid: c.leafMessageId || null,
@@ -372,7 +556,9 @@ function mockApi(req, res, url) {
   if (/\/chat_conversations_v2$/.test(p) && method === "GET") {
     const f = path.join(here, "mock", "api", "conversations.json");
     let base = { data: [], has_more: false };
-    try { base = JSON.parse(fs.readFileSync(f, "utf8")); } catch {}
+    if (!runtime.managed) {
+      try { base = JSON.parse(fs.readFileSync(f, "utf8")); } catch {}
+    }
     const dynamic = [...CONV_STATE.values()].map(convToRest);
     const seen = new Set(dynamic.map((c) => c.uuid));
     const merged = [...dynamic, ...(base.data ?? []).filter((c) => !seen.has(c.uuid))];
@@ -394,8 +580,34 @@ function mockApi(req, res, url) {
   for (const [re, slug] of apiMap) {
     if (re.test(p)) {
       const f = path.join(here, "mock", "api", `${slug}.json`);
-      if (fs.existsSync(f)) {
+      if (!runtime.managed && fs.existsSync(f)) {
         try { return json(res, JSON.parse(fs.readFileSync(f, "utf8"))); } catch {}
+      }
+      if (runtime.managed) {
+        const synthetic = {
+          reflections_settings: { time_alert_daily_minutes: null, quiet_hours: null },
+          claude_code_user_settings: {
+            userId: ACCOUNT.uuid, version: 1, lastModified: "2026-01-01T00:00:00Z",
+            checksum: "local-1", content: { entries: {} },
+          },
+          mcp_servers: [],
+          memory_settings: {
+            enabled_saffron: null, enabled_saffron_search: false, enabled_melange: null,
+            memory_mode: "melange", classic_mode_available: false,
+            melange_available: false, melange_imported_at: null,
+          },
+          account_profile: {
+            work_function: "", conversation_preferences: null, cowork_global_instructions: null,
+            cowork_instructions_union: false, conversation_preferences_cloud_max_chars: 10000,
+            conversation_preferences_over_cloud_max_chars: false,
+            locale: runtime.localization ? "zh-Hans" : "en-US", onboarding_topics: [], science_fields: [],
+            avatar: null, pixel_avatar: null, avatar_image_url: null, display_avatar: null,
+          },
+          trial_status: { eligible: false, in_trial: false, trial_status: null },
+          skills: { skills: [] },
+          experiences: { experiences: [], rules: { global: { rate_limit: null, cooldown: null }, placements: {}, tiers: {} } },
+        };
+        return json(res, synthetic[slug]);
       }
     }
   }
@@ -413,7 +625,8 @@ function mockApi(req, res, url) {
   if (method === "GET" && p === "/api/desktop/features") {
     return json(res, { features: {
       "1291166712": {
-        value: { enabled: true, appScopedEnabled: true }, on: true, off: false, source: "force",
+        value: { enabled: runtime.computerUse, appScopedEnabled: runtime.computerUse && runtime.backgroundMode },
+        on: runtime.computerUse, off: !runtime.computerUse, source: "force",
         experiment: null, experimentResult: null,
       },
     } });
@@ -481,6 +694,7 @@ function mockApi(req, res, url) {
           };
         }
       }
+      stateStore.changed();
       return json(res, state);
     });
   }
@@ -580,8 +794,10 @@ function mockApi(req, res, url) {
 
   // 当前用户访问权限（app 用它判断能否进入主界面 + 套餐判定）
   if (/\/api\/bootstrap\/[^/]+\/current_user_access$/.test(p)) {
-    let base = {};
-    try { base = JSON.parse(fs.readFileSync(path.join(here, "mock", "bootstrap.json"), "utf8")).current_user_access ?? {}; } catch {}
+    let base = localUserAccess();
+    if (!runtime.managed) {
+      try { base = JSON.parse(fs.readFileSync(path.join(here, "mock", "bootstrap.json"), "utf8")).current_user_access ?? base; } catch {}
+    }
     return json(res, {
       ...base,
       has_access: true,
@@ -610,8 +826,9 @@ function mockApi(req, res, url) {
   }
 
   if (p === "/api/bootstrap" || p === "/api/account" || p === "/api/account_profile") {
-    return json(res, BOOTSTRAP);
+    return json(res, runtime.managed ? localBootstrap() : BOOTSTRAP);
   }
+  if (/^\/api\/bootstrap\/[^/]+\/app_start$/.test(p)) return json(res, localBootstrap());
   if (p === "/api/organizations") {
     return json(res, { organizations: [ORG], data: [ORG], items: [ORG] });
   }
@@ -667,7 +884,7 @@ function mockApi(req, res, url) {
       const prompt = typeof body.prompt === "string" ? body.prompt : "";
       const human = body.turn_message_uuids?.human_message_uuid || crypto.randomUUID();
       const asst = body.turn_message_uuids?.assistant_message_uuid || crypto.randomUUID();
-      const model = process.env.GATEWAY_MODEL || "claude-sonnet-4-6";
+      const model = gatewayModel(runtime, body.model || process.env.GATEWAY_MODEL);
       const sendEv = (ev, obj) => {
         res.write(`event: ${ev}\ndata: ${JSON.stringify(obj)}\n\n`);
       };
@@ -691,18 +908,21 @@ function mockApi(req, res, url) {
         model,
         max_tokens: 2048,
         stream: true,
-        messages: [{ role: "user", content: prompt }],
+        messages: conv ? conv.chat_messages.map((message) => ({
+          role: message.sender === "human" ? "user" : "assistant", content: message.text,
+        })) : [{ role: "user", content: prompt }],
       });
-      const greq = https.request(
+      const target = gatewayTarget(runtime, "/v1/messages");
+      const greq = (target.protocol === "https:" ? https : http).request(
         {
-          host: "127.0.0.1",
-          port: 3425,
-          path: "/v1/messages",
+          hostname: target.hostname,
+          port: target.port || (target.protocol === "https:" ? 443 : 80),
+          path: target.pathname + target.search,
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-api-key": "magpie",
-            authorization: "Bearer magpie",
+            "x-api-key": runtime.key,
+            authorization: `Bearer ${runtime.key}`,
             "anthropic-version": "2023-06-01",
             accept: "text/event-stream",
           },
@@ -725,6 +945,7 @@ function mockApi(req, res, url) {
               } else if (d.type === "message_stop") {
                 if (conv && !conv.chat_messages.some((m) => m.uuid === asst)) {
                   pushMessage(conv, { uuid: asst, sender: "assistant", parent: human, text: acc, stop_reason: "end_turn" });
+                  stateStore.flush();
                 }
                 sendEv("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" } });
                 sendEv("message_stop", { type: "message_stop" });
@@ -772,6 +993,35 @@ function readBody(req, cb) {
   req.on("error", () => cb(Buffer.alloc(0)));
 }
 
+function forwardGateway(req, res, requestPath, raw) {
+  let body = raw;
+  const requested = new URL(requestPath, "http://localhost");
+  if (req.method === "POST" && requested.pathname === "/v1/messages") {
+    try { body = gatewayBody(runtime, raw); }
+    catch { return json(res, { error: "Invalid model request" }, 400); }
+  }
+  const target = gatewayTarget(runtime, requestPath);
+  const headers = {
+    ...req.headers, host: target.host, "content-length": body.length,
+    "x-api-key": runtime.key, authorization: `Bearer ${runtime.key}`,
+  };
+  for (const key of ["proxy-connection", "accept-encoding", "connection", "cookie", "transfer-encoding"]) delete headers[key];
+  const up = (target.protocol === "https:" ? https : http).request({
+    hostname: target.hostname, port: target.port || (target.protocol === "https:" ? 443 : 80),
+    path: target.pathname + target.search, method: req.method, headers, timeout: 300000,
+  }, (response) => {
+    res.writeHead(response.statusCode, response.headers);
+    response.pipe(res);
+  });
+  up.on("timeout", () => up.destroy(new Error("gateway timeout")));
+  up.on("error", () => {
+    if (res.headersSent) return res.destroy();
+    json(res, { type: "error", error: { type: "api_error", message: "Local gateway unavailable" } }, 502);
+  });
+  req.once("aborted", () => up.destroy());
+  up.end(body);
+}
+
 function proxyUpstream(req, res, url) {
   const cacheKey = `${url.host}${url.pathname}${url.search}`;
   const cp = cachePathFor(cacheKey);
@@ -797,7 +1047,7 @@ function proxyUpstream(req, res, url) {
       up.on("end", () => {
         const body = Buffer.concat(chunks);
         const ok = up.statusCode >= 200 && up.statusCode < 400;
-        if (ok && req.method === "GET") {
+        if (ok && req.method === "GET" && !runtime.managed) {
           fs.writeFileSync(cp, body);
           fs.writeFileSync(
             metaPath,
@@ -811,8 +1061,8 @@ function proxyUpstream(req, res, url) {
   );
   upstreamReq.on("timeout", () => upstreamReq.destroy(new Error("upstream timeout")));
   upstreamReq.on("error", (err) => {
-    // 上游不可达：回退缓存
-    if (fs.existsSync(cp) && fs.existsSync(metaPath)) {
+    // 独立受管 profile 不回放历史缓存；静态回退只来自当前安装的官方资源包。
+    if (!runtime.managed && fs.existsSync(cp) && fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
       const body = fs.readFileSync(cp);
       res.writeHead(meta.status || 200, { ...meta.headers, "content-length": body.length });
@@ -828,15 +1078,134 @@ function proxyUpstream(req, res, url) {
 }
 
 // ── 请求处理 ─────────────────────────────────────────────────
-const demoHtml = fs.readFileSync(path.join(here, "demo", "index.html"));
+const demoHtml = MODE === "demo" ? fs.readFileSync(path.join(here, "demo", "index.html")) : null;
 
 function handle(req, res, hostHeader) {
   const host = hostHeader || "claude.ai";
   const url = new URL(req.url, `https://${host}`);
-  log(`${req.method} ${url.pathname}${url.search}`);
+  noteClient();
+  log(`${req.method} ${url.pathname}`);
+
+  const hostName = url.hostname.toLowerCase();
+  const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  if (runtime.managed && isMainClaudeHost && url.pathname.startsWith("/__codex_plus/")) {
+    if (
+      url.pathname !== LOCALIZATION_SHIM_PATH ||
+      !localizationShim ||
+      !["GET", "HEAD"].includes(req.method)
+    ) {
+      res.writeHead(404, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      return res.end();
+    }
+    const headers = {
+      "content-type": "text/javascript; charset=utf-8",
+      "content-length": localizationShim.length,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    };
+    res.writeHead(200, headers);
+    return res.end(req.method === "HEAD" ? undefined : localizationShim);
+  }
+
+  const cdnI18nPrefix = "/claude-ai/v2/i18n/";
+  const localI18nPath = isMainClaudeHost
+    ? url.pathname
+    : hostName === "assets-proxy.anthropic.com" && url.pathname.startsWith(cdnI18nPrefix)
+      ? url.pathname.slice("/claude-ai/v2".length)
+      : null;
+  if (
+    runtime.managed &&
+    runtime.localization &&
+    localI18nPath?.startsWith("/i18n/") &&
+    ["GET", "HEAD"].includes(req.method)
+  ) {
+    const body = localI18n(localI18nPath);
+    const headers = {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": body.length,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    };
+    if (hostName === "assets-proxy.anthropic.com") headers["access-control-allow-origin"] = "*";
+    res.writeHead(200, headers);
+    return res.end(req.method === "HEAD" ? undefined : body);
+  }
+
+  const officialResourcePath = (() => {
+    if (!runtime.managed || !["GET", "HEAD"].includes(req.method)) return null;
+    const mapI18nPath = (pathname) => {
+      const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
+      if (!match) return pathname;
+      if (runtime.localization) return null;
+      return `/i18n/${match[1] === "dynamic" ? "dynamic/" : ""}${match[2]}.json`;
+    };
+    if (isMainClaudeHost && (
+      url.pathname.startsWith("/assets/") ||
+      url.pathname.startsWith("/audio/") ||
+      url.pathname.startsWith("/i18n/") && !runtime.localization ||
+      url.pathname.startsWith("/images/") ||
+      ["/client-shell-v1.html", "/favicon-internal.ico", "/favicon-staging.ico", "/favicon.ico",
+        "/frame-connect.html", "/frame-manage.html", "/frame-shell.html", "/scc.json",
+        "/third-party-notices.txt"].includes(url.pathname)
+    )) return mapI18nPath(url.pathname);
+    const cdnPrefix = "/claude-ai/v2/";
+    if (hostName === "assets-proxy.anthropic.com" && url.pathname.startsWith(cdnPrefix)) {
+      const pathname = `/${url.pathname.slice(cdnPrefix.length)}`;
+      if (
+        pathname.startsWith("/assets/") ||
+        pathname.startsWith("/audio/") ||
+        pathname.startsWith("/i18n/") && !runtime.localization ||
+        pathname.startsWith("/images/") ||
+        ["/client-shell-v1.html", "/favicon-internal.ico", "/favicon-staging.ico", "/favicon.ico",
+          "/frame-connect.html", "/frame-manage.html", "/frame-shell.html", "/scc.json",
+          "/third-party-notices.txt"].includes(pathname)
+      ) return mapI18nPath(pathname);
+    }
+    return null;
+  })();
+  if (officialResourcePath) {
+    const resource = officialAssets.read(officialResourcePath);
+    if (!resource) {
+      if (hostName !== "assets-proxy.anthropic.com") {
+        res.writeHead(404, { "cache-control": "no-store" });
+        return res.end();
+      }
+    } else {
+      const headers = {
+        "content-type": resource.contentType,
+        "content-length": resource.body.length,
+        "cache-control": resource.isHtml ? "no-cache" : "public, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+      };
+      if (hostName === "assets-proxy.anthropic.com") headers["access-control-allow-origin"] = "*";
+      if (req.method === "HEAD") {
+        res.writeHead(200, headers);
+        return res.end();
+      }
+      res.writeHead(200, headers);
+      return res.end(resource.body);
+    }
+  }
+
+  // Fresh受管profile直接使用安装包内同一版本的官方SPA和静态资源，不依赖旧HTML录制缓存。
+  if (
+    runtime.managed &&
+    MODE === "mock" &&
+    isMainClaudeHost &&
+    req.method === "GET" &&
+    !path.extname(url.pathname) &&
+    !/^\/(?:api|edge-api|v1|claudeai-rpc)(?:\/|$)/.test(url.pathname)
+  ) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": Buffer.byteLength(officialShell),
+      "cache-control": "no-cache",
+    });
+    return res.end(officialShell);
+  }
 
   if (
-    MODE === "mock" &&
+    MODE === "mock" && runtime.voiceInput &&
     req.method === "GET" &&
     url.hostname.toLowerCase() === "assets-proxy.anthropic.com" &&
     (
@@ -942,68 +1311,13 @@ function handle(req, res, hostHeader) {
         );
       }
       if (req.method === "GET" && /^\/v1\/models/.test(url.pathname)) {
-        return json(res, {
-          data: [
-            { id: "claude-sonnet-4-6", type: "model", display_name: "Claude Sonnet 4.6", created_at: "2025-01-01T00:00:00Z" },
-            { id: "claude-opus-4-6", type: "model", display_name: "Claude Opus 4.6", created_at: "2025-01-01T00:00:00Z" },
-          ],
-          has_more: false,
-          first_id: "claude-sonnet-4-6",
-          last_id: "claude-opus-4-6",
-        });
+        return json(res, modelList(runtime));
       }
       // 用户自定义 API 网关（reclaude2api / ccbobi.com 等）：桌面端会多发 diagnostics
       // 等字段，严格 schema 的网关会 400。剥掉已知不兼容字段后转发到真 host。
-      if (req.method === "POST" && /^\/v1\/messages/.test(url.pathname) && !/(^|\.)anthropic\.com$/i.test(host)) {
-        return readBody(req, (raw) => {
-          let body = raw;
-          try {
-            const j = JSON.parse(raw.toString("utf8"));
-            delete j.diagnostics;
-            delete j.metadata?.diagnostics;
-            body = Buffer.from(JSON.stringify(j));
-          } catch {}
-          const target = new URL(url.pathname + url.search, `https://${host}`);
-          const headers = { ...req.headers, host: target.host, "content-length": body.length };
-          delete headers["proxy-connection"];
-          delete headers["accept-encoding"];
-          const up = https.request(
-            { hostname: target.hostname, port: 443, path: target.pathname + target.search, method: "POST", headers, timeout: 300000 },
-            (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); },
-          );
-          up.on("timeout", () => up.destroy(new Error("timeout")));
-          up.on("error", (e) => { res.writeHead(502); res.end(String(e.message)); });
-          up.end(body);
-        });
-      }
       // 真正的模型调用：转发到本地 Anthropic 兼容网关（流式原样透传）
-      if (req.method === "POST" && /^\/v1\/messages/.test(url.pathname)) {
-        const gw = new URL(GATEWAY_URL);
-        const headers = { ...req.headers, host: gw.host, "x-api-key": GATEWAY_KEY, authorization: `Bearer ${GATEWAY_KEY}` };
-        delete headers["content-length"];
-        delete headers["accept-encoding"];
-        const up = http.request(
-          { hostname: gw.hostname, port: gw.port || 80, path: url.pathname + url.search, method: "POST", headers, timeout: 300000 },
-          (r) => {
-            if (r.statusCode >= 400) {
-              const chunks = [];
-              r.on("data", (c) => chunks.push(c));
-              r.on("end", () => {
-                const body = Buffer.concat(chunks);
-                log(`gateway ${r.statusCode} ${url.pathname}: ${body.slice(0, 300)}`);
-                res.writeHead(r.statusCode, { ...r.headers, "content-length": body.length });
-                res.end(body);
-              });
-              return;
-            }
-            res.writeHead(r.statusCode, r.headers);
-            r.pipe(res);
-          },
-        );
-        up.on("timeout", () => up.destroy(new Error("gateway timeout")));
-        up.on("error", (e) => { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: `local gateway: ${e.message}` } })); });
-        req.pipe(up);
-        return;
+      if (req.method === "POST" && url.pathname === "/v1/messages") {
+        return readBody(req, (raw) => forwardGateway(req, res, url.pathname + url.search, raw));
       }
     }
     const target = new URL(url.pathname + url.search, `https://${host}`);
@@ -1031,7 +1345,7 @@ function handle(req, res, hostHeader) {
   if (url.pathname.startsWith("/edge-api/")) return mockEdgeApi(req, res, url);
 
   // i18n：复用仓库与本机录制词表，短 ID 和动态词表按各自契约返回。
-  if (MODE !== "passthrough" && url.pathname.startsWith("/i18n/")) {
+  if (MODE !== "passthrough" && runtime.localization && url.pathname.startsWith("/i18n/")) {
     const hit = localI18n(url.pathname);
     if (hit) {
       res.writeHead(200, {
@@ -1101,7 +1415,7 @@ function handle(req, res, hostHeader) {
       conversationService
         .handle(method, req, res, Buffer.concat(raw))
         .catch((e) => {
-          log(`RPC ${method} error: ${e.message}`);
+          log(`RPC ${method} error${runtime.managed ? "" : `: ${e.message}`}`);
           try {
             if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
             res.end(`rpc error: ${e.message}\n`);
@@ -1124,7 +1438,7 @@ function handle(req, res, hostHeader) {
   }
 
   // mock 模式：静态资源优先走本地缓存，避免被上游按地区 302
-  if (MODE !== "passthrough" && req.method === "GET") {
+  if (MODE !== "passthrough" && !runtime.managed && req.method === "GET") {
     const key = `${host}${url.pathname}${url.search}`;
     const cp = cachePathFor(key);
     if (fs.existsSync(cp) && fs.existsSync(`${cp}.json`)) {
@@ -1237,7 +1551,8 @@ function responseUpgradeHeaders(response) {
 function handleDictationUpgrade(req, clientSocket, head) {
   const language = dictationLanguage(req.url || "");
   if (language === null) return rejectUpgrade(clientSocket, "404 Not Found", "not found");
-  if (MODE !== "mock") return rejectUpgrade(clientSocket, "503 Service Unavailable", "local dictation is unavailable");
+  if (MODE !== "mock" || !runtime.voiceInput) return rejectUpgrade(clientSocket, "503 Service Unavailable", "local dictation is unavailable");
+  noteClient();
   if (!isClaudeHostname(req.headers.host)) return rejectUpgrade(clientSocket, "403 Forbidden", "forbidden");
   if (req.headers.origin) {
     let origin;
@@ -1379,31 +1694,23 @@ inner.on("upgrade", handleDictationUpgrade);
 // 剥掉桌面端多发、上游网关不认的字段后转给本地 magpie。
 const outer = http.createServer((req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
-  const gw = new URL(GATEWAY_URL);
-  const fwd = (body) => {
-    const headers = { ...req.headers, host: gw.host, "content-length": body.length };
-    delete headers["proxy-connection"];
-    delete headers["accept-encoding"];
-    delete headers["connection"];
-    const up = http.request(
-      { hostname: gw.hostname, port: gw.port || 80, path: u.pathname + u.search, method: req.method, headers, timeout: 300000 },
-      (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); },
-    );
-    up.on("timeout", () => up.destroy(new Error("timeout")));
-    up.on("error", (e) => { res.writeHead(502); res.end(String(e.message)); });
-    up.end(body);
-  };
+  if (runtime.managed && req.headers.origin !== undefined) return json(res, { error: "Browser origins are not allowed" }, 403);
+  if (req.method === "GET" && u.pathname === "/__codex_claude_local/health") return json(res, health());
+  if (runtime.managed) {
+    const bearer = typeof req.headers.authorization === "string" && req.headers.authorization.startsWith("Bearer ")
+      ? req.headers.authorization.slice(7) : "";
+    const supplied = typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"] : bearer;
+    const actual = Buffer.from(supplied);
+    const expected = Buffer.from(runtime.key);
+    if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+      return json(res, { error: "Local gateway authorization required" }, 403);
+    }
+  }
+  noteClient();
+  const fwd = (body) => forwardGateway(req, res, u.pathname + u.search, body);
+  if (req.method === "GET" && u.pathname === "/v1/models") return json(res, modelList(runtime));
   if (req.method === "POST" && u.pathname === "/v1/messages") {
-    return readBody(req, (raw) => {
-      try {
-        const j = JSON.parse(raw.toString("utf8"));
-        delete j.diagnostics;
-        if (j.metadata) delete j.metadata.diagnostics;
-        return fwd(Buffer.from(JSON.stringify(j)));
-      } catch {
-        return fwd(raw);
-      }
-    });
+    return readBody(req, fwd);
   }
   // 会话 apiHost=127.0.0.1:8899 时，托管设置/policy 也会打到这里：本地 mock，别转 magpie
   if (/^\/api\/claude_cli\/bootstrap/.test(u.pathname)) {
@@ -1424,9 +1731,12 @@ const outer = http.createServer((req, res) => {
   return readBody(req, fwd);
 });
 
-const MITM_HOSTS = /(^|\.)(claude\.ai|claude\.com|anthropic\.com|ccbobi\.com)$/i;
+const MITM_HOSTS = runtime.managed
+  ? /(^|\.)(claude\.ai|claude\.com|anthropic\.com)$/i
+  : /(^|\.)(claude\.ai|claude\.com|anthropic\.com|ccbobi\.com)$/i;
 
 outer.on("connect", (req, clientSocket, head) => {
+  noteClient();
   clientSocket.on("error", () => {});
   const [host, port = "443"] = req.url.split(":");
   // 非 claude 域名：TCP 直通，不终止 TLS（保证 CDN / 其他服务不受影响）
@@ -1453,6 +1763,29 @@ outer.on("connect", (req, clientSocket, head) => {
 });
 
 outer.listen(PORT, "127.0.0.1", () => {
-  console.log(`claude-local proxy: 127.0.0.1:${PORT}  mode=${MODE}  upstream=${UPSTREAM}`);
-  console.log(`CA: ${path.join(CA_DIR, "ca.pem")}`);
+  listeningPort = outer.address().port;
+  writeReady();
+  console.log(`claude-local proxy: 127.0.0.1:${listeningPort}  mode=${MODE}`);
 });
+
+const clientSockets = new Set();
+outer.on("connection", (socket) => {
+  clientSockets.add(socket);
+  socket.once("close", () => clientSockets.delete(socket));
+});
+let stopping = false;
+function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  clearTimeout(readyWriteTimer);
+  stateStore.flush();
+  outer.close(() => process.exit(0));
+  for (const socket of clientSockets) socket.destroy();
+  setTimeout(() => process.exit(0), 1000).unref();
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+if (runtime.managed) {
+  process.stdin.on("end", shutdown);
+  process.stdin.resume();
+}

@@ -1,5 +1,46 @@
 # claude-local：Claude Desktop 本地兼容后端（PoC）
 
+## Codex++ 受管运行
+
+受管模式使用原版 Claude Desktop，通过 `--proxy-server` 连接本地服务，不制作或改写
+Claude 安装包。代理、证书、缓存和会话数据由 Codex++ 放在独立状态目录管理；
+原版普通启动不会自动获得这条代理连接。
+
+`CLAUDE_LOCAL_MANAGED=1` 启用受管协议。运行时只需要已跟踪的 Node 模块和中文词表，
+不读取仓库中的 `mock/`、本机录制 bootstrap、录制词表或 `vendor/`。网页静态资源仍需
+由原版客户端及可访问的上游提供；合成接口数据不包含动态资源的私有访问值。
+受管模式从当前安装包只读提供官方 SPA；启用本地化时，仅在代理返回的 HTML 中、首个
+官方脚本执行前加载同源 `page-shim.js`，引导官方前端采用中文词表，不改写 Claude.app。
+
+| 环境变量 | 用途 |
+| --- | --- |
+| `CLAUDE_LOCAL_GATEWAY_URL` / `_KEY` / `_MODEL` | Codex++ 网关根地址、本地凭据和默认模型，受管模式必填 |
+| `CLAUDE_LOCAL_GATEWAY_MODELS` | JSON 字符串数组，列出可选的供应商/模型 ID |
+| `CLAUDE_LOCAL_GATEWAY_SMALL_MODEL` | 轻量任务模型，未配置时使用默认模型 |
+| `CLAUDE_LOCAL_WEB_I18N_DIR` | 随应用打包的完整中文词表 |
+| `CLAUDE_LOCAL_CACHE_DIR` | 本地代理缓存，听写补丁也写入此目录 |
+| `CLAUDE_LOCAL_STATE_FILE` | 会话和通知设置文件；原子写入、权限为 `0600` |
+| `CLAUDE_LOCAL_READY_FILE` / `_INSTANCE_ID` | 本次启动的就绪回执和实例标识 |
+| `CLAUDE_LOCAL_LOCALIZATION` / `_VOICE_INPUT` / `_COMPUTER_USE` / `_BACKGROUND_MODE` | 各能力的独立开关，`0` 关闭、`1` 开启 |
+
+受管启动支持 `--port 0`，监听后写入
+`{instanceId,pid,port,mode,lastClientAt}` 回执，不包含网关凭据。
+`GET /__codex_claude_local/health` 返回同一身份及最近客户端连接时间；
+健康轮询自身不更新该时间。直接 HTTP 模型请求需要本地网关凭据，并拒绝浏览器
+`Origin` 请求；HTTPS 的原版客户端链路仍由本地接口处理。
+
+模型选择器的合成配置来自可用模型列表，RPC 的 `SendMessage.model` 和
+`SetConversationModel` 会保留实际选择；多轮聊天将已完成历史一起发给网关。
+未知的原生默认模型使用配置的默认模型，固定 Haiku 轻量模型使用轻量任务配置。
+代理重启后恢复会话和通知偏好，中断的回复标记为结束，不自动重发。
+受管进程收到标准输入 EOF 或 `SIGTERM` 时保存状态并关闭监听。
+
+受管契约测试：
+
+```bash
+node --test tools/claude-local/managed.test.mjs
+```
+
 目标：**不要账号，模型走自己的 API，但客户端功能完整。**
 
 做法不是伪造会话，而是**自己当服务端**：

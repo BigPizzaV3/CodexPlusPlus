@@ -19,6 +19,7 @@ pub mod cdp;
 #[cfg(any(target_os = "windows", test))]
 mod claude_ion_asar;
 pub mod claude_hooks;
+pub mod claude_local_backend;
 pub mod claude_localization;
 pub mod codex_app_state;
 pub mod config_doctor;

@@ -595,6 +595,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: true,
     claudeAppComputerUse: true,
     claudeAppBashTimeout: 900000,
+    claudeDesktopLocal: { enabled: true, model: "claude-test", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
     // #2937：记下使用模式也由后端单独写入，表单要跟上，否则下一次整份保存会写回旧值。
     managerAgentFocus: "enhance",
   };
@@ -608,6 +609,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: false,
     claudeAppComputerUse: false,
     claudeAppBashTimeout: 60000,
+    claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: false, computerUse: false, backgroundMode: false },
     managerAgentFocus: "",
     theme: "unsaved-theme",
     providerDraft: { model: "unsaved-model" },

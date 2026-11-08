@@ -14,8 +14,19 @@ const source = ts.transpileModule(component.getText(app), {
 
 type Element = { type: string; props: Record<string, any> };
 type Memo = { status: unknown; autoDetected: boolean };
+const localReady = {
+  status: "ok", supported: true, sourceApp: "/Applications/Claude.app", version: "1.2.3",
+  claudeRunning: false, running: false, connected: false, port: null,
+  caReady: true, caTrusted: true, nodeAvailable: true, dictationReady: true,
+  config: { enabled: false, model: "claude-test", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
+  models: ["claude-test", "gpt-test"], warning: null, needsRestart: false,
+};
 /** memo 对应模块级的 claudeLocalizationMemo：传同一个对象模拟「Codex++ 运行期间再次进入页面」。 */
-function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: unknown = {}) {
+function harness(
+  memo: Memo = { status: null, autoDetected: false },
+  cuStatus: unknown = {},
+  options: { localMemo?: Memo; openAdvanced?: boolean } = {},
+) {
   const hooks: any[] = [];
   /** 页头槽位：createPortal 渲染进来的元素记在这里，用来断言「启动增强版」在右上角。 */
   const topbarSlot = { portal: null as unknown };
@@ -37,8 +48,8 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
     if (typeof cleanup === "function") cleanups.set(index, cleanup);
   };
   const context = vm.createContext({
-    React: { createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck", "Menu", "MenuItem"].map((name) => [name, name])),
+    React: { Fragment: "Fragment", createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight"].map((name) => [name, name])),
     // 页面骨架组件（cx-layout）按名字渲染成占位元素。
     AgentCx: new Proxy({}, { get: (_target, name) => String(name) }),
     t: (text: string) => text,
@@ -46,6 +57,8 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
     clearTimeout: (id: number) => timers.delete(id),
     clampNumber: (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value))),
     claudeLocalizationMemo: memo,
+    claudeLocalMemo: options.localMemo ?? { status: localReady, autoDetected: true },
+    announceBackendSettingsChanged: () => {},
     listen: () => Promise.resolve(() => {}),
     document: { querySelector: (selector: string) => (selector === "[data-topbar-actions]" ? topbarSlot : null) },
     createPortal: (child: unknown, target: typeof topbarSlot) => { target.portal = child; return null; },
@@ -71,9 +84,22 @@ function harness(memo: Memo = { status: null, autoDetected: false }, cuStatus: u
     useLayoutEffect: effectHook,
   });
   vm.runInContext(`${source}\nglobalThis.render = ClaudeLocalizationScreen;`, context);
+  let initiallyRendered = false;
   return {
     calls,
-    render: () => { cursor = 0; return context.render() as Element; },
+    render: () => {
+      cursor = 0;
+      let page = context.render() as Element;
+      if (!initiallyRendered && options.openAdvanced !== false) {
+        initiallyRendered = true;
+        findElements(page, "details")[0].props.onToggle({ currentTarget: { open: true } });
+        cursor = 0;
+        page = context.render() as Element;
+        cursor = 0;
+        page = context.render() as Element;
+      }
+      return page;
+    },
     /** 最近一次渲染时 portal 进页头的元素。 */
     topbar: () => topbarSlot.portal as Element | null,
     unmount: () => cleanups.forEach((cleanup) => cleanup()),
@@ -104,6 +130,14 @@ function inputs(element: any): Element[] {
     ...(element.type === "input" || element.type === "Input" ? [element] : []),
     ...inputs(element.props.children),
   ];
+}
+function findElements(element: any, type: string): Element[] {
+  if (element == null || typeof element !== "object") return [];
+  if (Array.isArray(element)) return element.flatMap((item) => findElements(item, type));
+  return [...(element.type === type ? [element] : []), ...findElements(element.props.children, type)];
+}
+function enhancedLaunch(screen: ReturnType<typeof harness>) {
+  return buttons(screen.render()).find((button) => button.props.title === "启动增强版" || button.props.title === "制作副本并启动增强版")!;
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ready = {
@@ -172,21 +206,25 @@ test("检查副本失败或检测超时保留最后有效状态，同时显示�
   assert.equal(buttons(page).find((button) => text(button) === "检测 Claude")!.props.disabled, false);
 });
 
-test("「启动增强版」放在页头右上角（与 Codex 的启动按钮同位），页面主体里不再重复", async () => {
-  const screen = harness();
+test("原版启动放在页头，默认不探测或制作增强副本", async () => {
+  const localMemo: Memo = { status: null, autoDetected: false };
+  const screen = harness(undefined, {}, { localMemo, openAdvanced: false });
   // 槽位在 layout effect 里取到，React 会在绘制前同步重渲染；harness 手动再渲染一次。
   screen.render();
   let page = screen.render();
-  const launch = () => buttons(screen.topbar()).find((button) => text(button) === "启动增强版");
+  const launch = () => buttons(screen.topbar()).find((button) => text(button) === "启动 Claude");
   assert.ok(launch(), "启动按钮必须 portal 进 [data-topbar-actions]");
-  assert.equal(buttons(page).some((button) => text(button) === "启动增强版"), false, "页面主体里不应再有启动按钮");
+  assert.equal(buttons(page).some((button) => text(button) === "启动 Claude"), false, "页面主体里不应再有原版启动按钮");
   assert.equal(launch()!.props.disabled, true, "检测结果回来前不能启动");
-  screen.calls[0].resolve(ready);
+  assert.equal(screen.calls[0].command, "claude_local_status");
+  screen.calls[0].resolve(localReady);
   await tick();
   page = screen.render();
   assert.equal(launch()!.props.disabled, false);
   launch()!.props.onClick();
-  assert.equal(screen.calls[1].command, "claude_localization_action");
+  assert.equal(screen.calls[1].command, "claude_local_action");
+  assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "launch" }));
+  assert.equal(screen.calls.some((call) => call.command.startsWith("claude_localization")), false);
   screen.render();
   assert.ok(buttons(screen.topbar()).some((button) => text(button) === "启动中…"));
 });
@@ -259,7 +297,7 @@ test("Cowork 适配警告不覆盖启动成功状态，其他增强保持可用"
   const screen = harness({ status: { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } }, autoDetected: true });
   screen.render();
   screen.render();
-  screen.topbar()!.props.onClick();
+  enhancedLaunch(screen).props.onClick();
   screen.calls[0].resolve({ ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true }, bashTimeoutWarning: "不支持的 Cowork Bash 参数校验结构" });
   await tick();
   const page = screen.render();
@@ -297,13 +335,14 @@ test("启动后自动确认并撤下顶部黄字提示，每次启动重新确�
     bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
   const screen = harness({ status: ready, autoDetected: true });
   screen.render(); screen.render();
-  screen.topbar()!.props.onClick();
+  enhancedLaunch(screen).props.onClick();
   screen.calls[0].resolve(pendingStatus);
   await tick();
   let page = screen.render();
   assert.match(text(page), /已准备，暂未确认/);
   assert.ok(text(page).indexOf("已准备，暂未确认") < text(page).indexOf("重新制作增强版"));
-  assert.ok(JSON.stringify(page).indexOf("claude-l10n-warning") < JSON.stringify(page).indexOf("claude-l10n-actions"));
+  const advanced = findElements(page, "details")[0];
+  assert.ok(JSON.stringify(advanced).indexOf("claude-l10n-warning") < JSON.stringify(advanced).indexOf("claude-l10n-actions"));
   assert.equal(screen.timerCount(), 1);
   inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!.props.onChange({ currentTarget: { value: "456" } });
   screen.runTimer();
@@ -314,7 +353,7 @@ test("启动后自动确认并撤下顶部黄字提示，每次启动重新确�
   assert.doesNotMatch(text(page), /已准备，暂未确认/);
   assert.equal(inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!.props.value, "456");
   assert.equal(screen.timerCount(), 0);
-  screen.topbar()!.props.onClick();
+  enhancedLaunch(screen).props.onClick();
   screen.calls[2].resolve(pendingStatus);
   await tick();
   page = screen.render();
@@ -328,7 +367,7 @@ test("重新启动时，上一次尚在返回的确认不能撤下本次启动�
   const screen = harness({ status: pendingStatus, autoDetected: true });
   screen.render(); screen.render();
   screen.runTimer();
-  screen.topbar()!.props.onClick();
+  enhancedLaunch(screen).props.onClick();
   assert.match(text(screen.render()), /已准备，暂未确认/, "启动过程中保留提示，不能提前撤下");
   screen.calls[1].resolve(pendingStatus);
   await tick(); screen.render();
@@ -454,11 +493,11 @@ test("Bash 秒数允许清空后重输，失焦才显示规范值并保存数字
   }
 });
 
-test("还没制作增强版时，右上角「启动增强版」先制作再启动，一步完成；制作失败就不启动", async () => {
+test("仅手动启动可选增强版时先制作副本；制作失败就不启动", async () => {
   const unprepared = { ...ready, prepared: false, copyVersion: "" };
   const screen = harness({ status: unprepared, autoDetected: true });
   screen.render(); screen.render();
-  const launch = () => buttons(screen.topbar()).find((button) => /启动增强版|制作中…|启动中…/.test(text(button)))!;
+  const launch = () => enhancedLaunch(screen);
   assert.equal(launch().props.disabled, false, "没制作也能直接点启动");
   launch().props.onClick();
   assert.equal(JSON.stringify(screen.calls[0].args[0]), JSON.stringify({ action: "prepare" }));
@@ -470,9 +509,154 @@ test("还没制作增强版时，右上角「启动增强版」先制作再启�
 
   const failing = harness({ status: unprepared, autoDetected: true });
   failing.render(); failing.render();
-  buttons(failing.topbar())[0].props.onClick();
+  enhancedLaunch(failing).props.onClick();
   failing.calls[0].resolve({ status: "failed", message: "制作失败", data: {} });
   await tick();
   assert.equal(failing.calls.length, 1, "制作失败不能继续启动");
   assert.match(text(failing.render()), /制作失败/);
+});
+
+test("启动模式下拉独立保存 3p 与完整功能配置，两条原版启动均不制作副本", async () => {
+  const screen = harness(undefined, {}, { openAdvanced: false });
+  const mode = () => findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!;
+  assert.equal(mode().props.value, "3p");
+  assert.equal(inputs(screen.render()).some((item) => item.props["aria-label"] === "本地原生听写"), false);
+  mode().props.onChange({ currentTarget: { value: "full" } });
+  assert.equal(screen.calls[0].command, "claude_local_configure");
+  const fullConfig = (screen.calls[0].args[0] as { config: typeof localReady.config }).config;
+  assert.deepEqual(structuredClone(fullConfig), { ...localReady.config, enabled: true });
+  screen.calls[0].resolve({ ...localReady, config: fullConfig });
+  await tick();
+  assert.equal(mode().props.value, "full");
+  assert.ok(inputs(screen.render()).some((item) => item.props["aria-label"] === "本地原生听写"));
+  screen.topbar()!.props.onClick();
+  assert.equal(screen.calls[1].command, "claude_local_action");
+  assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "launch" }));
+  screen.calls[1].resolve({ ...localReady, config: fullConfig });
+  await tick();
+  mode().props.onChange({ currentTarget: { value: "3p" } });
+  const threePConfig = (screen.calls[2].args[0] as { config: typeof localReady.config }).config;
+  assert.equal(threePConfig.enabled, false);
+  screen.calls[2].resolve({ ...localReady, config: threePConfig });
+  await tick(); screen.render();
+  screen.topbar()!.props.onClick();
+  assert.equal(screen.calls[3].command, "claude_local_action");
+  assert.equal(screen.calls.some((call) => call.command.startsWith("claude_localization")), false);
+});
+
+test("原版启动与模式保存失败保留配置，不自动回退增强副本", async () => {
+  const memo: Memo = { status: localReady, autoDetected: true };
+  const screen = harness(undefined, {}, { localMemo: memo, openAdvanced: false });
+  screen.render(); screen.render();
+  screen.topbar()!.props.onClick();
+  screen.calls[0].resolve({ status: "failed", message: "本地服务启动失败", data: {} });
+  await tick();
+  assert.match(text(screen.render()), /本地服务启动失败/);
+  assert.equal(screen.topbar()!.props.disabled, false);
+  const mode = findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!;
+  mode.props.onChange({ currentTarget: { value: "full" } });
+  screen.calls[1].reject(new Error("配置写入失败"));
+  await tick();
+  assert.match(text(screen.render()), /配置写入失败/);
+  assert.equal(findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!.props.value, "3p");
+  assert.equal(memo.status, localReady);
+  assert.equal(screen.calls.some((call) => call.command.startsWith("claude_localization")), false);
+});
+
+test("完整功能模式的默认模型与四项能力分别保存，不修改增强版开关或代点系统权限", async () => {
+  const saved = { ...localReady, config: { ...localReady.config, enabled: true } };
+  const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
+  const model = findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "Claude 默认模型")!;
+  assert.match(text(model), /claude-test.*gpt-test/);
+  model.props.onChange({ currentTarget: { value: "gpt-test" } });
+  let config = (screen.calls[0].args[0] as { config: typeof saved.config }).config;
+  assert.equal(config.model, "gpt-test");
+  screen.calls[0].resolve({ ...saved, config });
+  await tick();
+  for (const [index, label, key] of [
+    [1, "本地界面汉化", "localization"],
+    [2, "本地原生听写", "voiceInput"],
+    [3, "本地电脑控制", "computerUse"],
+    [4, "本地后台模式", "backgroundMode"],
+  ] as const) {
+    const toggle = inputs(screen.render()).find((item) => item.props["aria-label"] === label)!;
+    toggle.props.onChange({ currentTarget: { checked: !config[key] } });
+    const next = (screen.calls[index].args[0] as { config: typeof saved.config }).config;
+    assert.deepEqual(structuredClone(next), { ...config, [key]: !config[key] });
+    assert.equal(screen.calls[index].command, "claude_local_configure");
+    config = next;
+    screen.calls[index].resolve({ ...saved, config });
+    await tick();
+  }
+  assert.equal(screen.calls.length, 5);
+  assert.equal(screen.calls.some((call) => /permission|computer_use|claude_localization/.test(call.command)), false);
+});
+
+test("原版显示证书准备与信任操作，本地服务在线不冒充 Claude 已连接", async () => {
+  const saved = {
+    ...localReady, running: true, claudeRunning: true, connected: false,
+    caReady: false, caTrusted: false, dictationReady: false,
+    config: { ...localReady.config, enabled: true },
+    needsRestart: true, warning: "请确认客户端版本",
+  };
+  const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
+  let page = screen.render();
+  assert.match(text(page), /原版运行，未连接本地服务/);
+  assert.doesNotMatch(text(page), /本地模式已连接/);
+  assert.match(text(page), /完全退出 Claude 后重新启动/);
+  assert.match(text(page), /请确认客户端版本/);
+  assert.equal(buttons(page).find((button) => text(button) === "信任证书")!.props.disabled, true);
+  buttons(page).find((button) => text(button) === "准备证书")!.props.onClick();
+  assert.equal(JSON.stringify(screen.calls[0].args[0]), JSON.stringify({ action: "prepare" }));
+  screen.calls[0].resolve({ ...saved, caReady: true });
+  await tick();
+  page = screen.render();
+  buttons(page).find((button) => text(button) === "信任证书")!.props.onClick();
+  assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "trust" }));
+  screen.calls[1].resolve({ ...saved, caReady: true, caTrusted: true, connected: true, needsRestart: false, warning: null });
+  await tick();
+  assert.match(text(screen.render()), /本地模式已连接/);
+});
+
+test("原版检测跨挂载只自动一次，迟到检测不更新已卸载页面", async () => {
+  const memo: Memo = { status: null, autoDetected: false };
+  const screen = harness(undefined, {}, { localMemo: memo, openAdvanced: false });
+  screen.render();
+  assert.equal(screen.calls.length, 1);
+  buttons(screen.render()).find((button) => text(button) === "检测原版 Claude")!.props.onClick();
+  assert.equal(screen.calls.length, 1, "检测进行中不并发");
+  screen.unmount();
+  const changes = screen.changes();
+  screen.calls[0].resolve(localReady);
+  await tick();
+  assert.equal(screen.changes(), changes);
+  const again = harness(undefined, {}, { localMemo: memo, openAdvanced: false });
+  assert.match(text(again.render()), /原版版本 1.2.3/);
+  assert.equal(again.calls.length, 0);
+});
+
+test("原版轮询的旧结果不能覆盖新配置，卸载后清理轮询", async () => {
+  const saved = { ...localReady, running: true, claudeRunning: true, config: { ...localReady.config, enabled: true } };
+  const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
+  screen.render(); screen.render();
+  assert.equal(screen.timerCount(), 1);
+  screen.runTimer();
+  assert.equal(screen.calls[0].command, "claude_local_status");
+  const mode = findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!;
+  mode.props.onChange({ currentTarget: { value: "3p" } });
+  screen.render();
+  const config = (screen.calls[1].args[0] as { config: typeof saved.config }).config;
+  screen.calls[1].resolve({ ...saved, config });
+  await tick(); screen.render();
+  screen.calls[0].resolve(saved);
+  await tick();
+  assert.equal(findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!.props.value, "3p");
+  assert.equal(screen.timerCount(), 1);
+  screen.runTimer();
+  screen.unmount();
+  const changes = screen.changes();
+  screen.calls[2].resolve(saved);
+  await tick();
+  assert.equal(screen.changes(), changes);
+  assert.equal(screen.timerCount(), 0);
 });

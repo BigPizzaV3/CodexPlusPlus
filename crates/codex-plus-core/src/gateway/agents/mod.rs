@@ -132,6 +132,9 @@ pub fn all() -> &'static [&'static AgentSpec] {
 }
 
 pub fn spec(id: &str) -> Option<&'static AgentSpec> {
+    if id == catalog_apps::CLAUDE_DESKTOP_LOCAL.id {
+        return Some(&catalog_apps::CLAUDE_DESKTOP_LOCAL);
+    }
     all().iter().copied().find(|spec| spec.id == id)
 }
 
@@ -207,6 +210,19 @@ mod tests {
                 spec.id
             );
         }
+    }
+
+    #[test]
+    fn claude_local_gateway_route_is_not_a_config_managed_agent() {
+        let route = spec(catalog_apps::CLAUDE_DESKTOP_LOCAL.id).unwrap();
+        assert!(std::ptr::eq(
+            route,
+            &catalog_apps::CLAUDE_DESKTOP_LOCAL
+        ));
+        assert!(!all().iter().any(|entry| entry.id == route.id));
+        assert!(is_generic(&crate::tools::ToolId::Unknown(
+            route.id.to_string()
+        )));
     }
 }
 

@@ -44,6 +44,30 @@ fn is_zero_u64(value: &u64) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClaudeLocalSettings {
+    pub enabled: bool,
+    pub model: String,
+    pub localization: bool,
+    pub voice_input: bool,
+    pub computer_use: bool,
+    pub background_mode: bool,
+}
+
+impl Default for ClaudeLocalSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: String::new(),
+            localization: true,
+            voice_input: true,
+            computer_use: false,
+            background_mode: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
     pub id: String,
@@ -1169,6 +1193,9 @@ pub struct BackendSettings {
     // 默认开启：输入框上方的请求状态条（#2824），纯展示层；关掉后注入层停止轮询 /proxy-status。
     #[serde(rename = "codexAppProxyRequestStatus", default = "default_true")]
     pub codex_app_proxy_request_status: bool,
+    /// 原版 Claude 的本地兼容服务，与增强副本的开关独立，默认不接管启动。
+    #[serde(rename = "claudeDesktopLocal", default)]
+    pub claude_desktop_local: ClaudeLocalSettings,
     // 默认开启：只在受管副本的页面里加一个语音入口，识别走 Codex++ 自己的听写服务，
     // 不改官方应用、不动输入框已有内容；关掉只是没有入口，已运行的副本需重启才生效。
     #[serde(rename = "claudeAppVoiceInput", default = "default_true")]
@@ -1539,6 +1566,7 @@ impl Default for BackendSettings {
             codex_app_usage_status_line: true,
             usage_history_enabled: false,
             codex_app_proxy_request_status: true,
+            claude_desktop_local: ClaudeLocalSettings::default(),
             claude_app_voice_input: true,
             claude_app_localization: true,
             claude_app_extensions: false,

@@ -168,6 +168,7 @@ import { AgentDashboard, type DashboardAgent, type DashboardStat, type Dashboard
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
+import { announceBackendSettingsChanged } from "./settings-events";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type ExtensionHost } from "./extension-host-model";
@@ -469,6 +470,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppAutoTakeover: boolean;
   codexAppAutoTakeoverWhenActive: string;
   claudeAppExtensions?: boolean;
+  claudeDesktopLocal?: ClaudeLocalConfig;
   codexExtraArgs: string[];
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
@@ -1564,6 +1566,7 @@ const defaultSettings: BackendSettings = {
   codexAppPath: "",
   codexAppAutoTakeover: false,
   codexAppAutoTakeoverWhenActive: "defer",
+  claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
@@ -2058,7 +2061,7 @@ export function App() {
         const merged: Record<string, unknown> = { ...current, revision: fresh.revision };
         for (const key of [
           "computerUseMode", "computerUseApproval", "computerUsePip",
-          "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout",
+          "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout", "claudeDesktopLocal",
           // 使用模式也要带上：表单留着旧值，下一次整份保存会把刚记下的模式写回去。
           "managerAgentFocus",
         ]) merged[key] = fresh[key];
@@ -5189,7 +5192,7 @@ export function App() {
               <h1 title={route === "extension" ? undefined : routeSubtitle(navAliasRoute[route] ?? route, soloAgent)}>{pageTitle}</h1>
             </div>
             <div className="topbar-actions">
-              {/* data-topbar-actions：页面级操作的挂载点（TopbarActions / PageHeader），Claude 增强页把「启动增强版」portal 进来。 */}
+              {/* data-topbar-actions：页面级操作的挂载点（TopbarActions / PageHeader），Claude 页把原版启动按钮 portal 进来。 */}
               <div className="topbar-page-actions" data-topbar-actions />
               {/* 「启动 / 重启 Codex」：只在 Codex 的页面里放在标题右侧（#2744 / #2745）；
                   其它页面靠侧栏 Codex 行常驻的播放键启动，停止也在那里。 */}
@@ -16255,6 +16258,38 @@ type ClaudeBashTimeoutSettings = {
   maxSeconds: number;
 };
 
+type ClaudeLocalConfig = {
+  enabled: boolean;
+  model: string;
+  localization: boolean;
+  voiceInput: boolean;
+  computerUse: boolean;
+  backgroundMode: boolean;
+};
+
+type ClaudeLocalStatus = {
+  supported: boolean;
+  sourceApp: string;
+  version: string;
+  claudeRunning: boolean;
+  running: boolean;
+  connected: boolean;
+  port?: number | null;
+  caReady: boolean;
+  caTrusted: boolean;
+  nodeAvailable: boolean;
+  dictationReady: boolean;
+  config: ClaudeLocalConfig;
+  models: string[];
+  warning?: string | null;
+  needsRestart: boolean;
+};
+
+const claudeLocalMemo: {
+  status: CommandResult<ClaudeLocalStatus> | null;
+  autoDetected: boolean;
+} = { status: null, autoDetected: false };
+
 type ClaudeLocalizationStatus = {
   supported: boolean;
   sourceApp: string;
@@ -16293,9 +16328,14 @@ const claudeLocalizationMemo: {
 
 function ClaudeLocalizationScreen() {
   const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(claudeLocalizationMemo.status);
-  // 首次进入会自动检测：初值就标成检测中，免得第一帧先闪出「点击重试」。
-  const [busy, setBusy] = useState<string | null>(claudeLocalizationMemo.autoDetected ? null : "detect");
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [localStatus, setLocalStatus] = useState<CommandResult<ClaudeLocalStatus> | null>(claudeLocalMemo.status);
+  const [localBusy, setLocalBusy] = useState<string | null>(claudeLocalMemo.autoDetected ? null : "detect");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const localPending = useRef(false);
+  const localGeneration = useRef(0);
   /** 制作增强版时宿主推送的阶段进度（0-100）。 */
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
   const mounted = useRef(true);
@@ -16312,7 +16352,7 @@ function ClaudeLocalizationScreen() {
   const bashTimeoutSaving = useRef(false);
   const bashTimeoutQueued = useRef<ClaudeBashTimeoutSettings | null>(null);
   /**
-   * 页头右上角的操作槽：「启动增强版」放在和 Codex 页「启动 Codex」相同的位置。
+   * 页头右上角的操作槽：原版启动放在和 Codex 页「启动 Codex」相同的位置。
    * 页头与本页都按路由重建、同一次提交挂载，所以在 layout effect 里取，首帧绘制前就到位。
    */
   const [topbarSlot, setTopbarSlot] = useState<HTMLElement | null>(null);
@@ -16342,6 +16382,75 @@ function ClaudeLocalizationScreen() {
     }
     else setError(result.message);
   };
+  const acceptLocal = (result: CommandResult<ClaudeLocalStatus>) => {
+    if (result.status === "ok") claudeLocalMemo.status = result;
+    if (!mounted.current) return;
+    if (result.status === "ok") setLocalStatus(result);
+    else setLocalError(result.message);
+  };
+  const refreshLocal = async () => {
+    if (localPending.current) return;
+    localPending.current = true;
+    localGeneration.current++;
+    setLocalBusy("detect"); setLocalError(null);
+    try { acceptLocal(await invoke<CommandResult<ClaudeLocalStatus>>("claude_local_status")); }
+    catch (cause) { if (mounted.current) setLocalError(stringifyError(cause)); }
+    finally {
+      localPending.current = false;
+      if (mounted.current) setLocalBusy(null);
+    }
+  };
+  useEffect(() => {
+    if (claudeLocalMemo.autoDetected) return;
+    claudeLocalMemo.autoDetected = true;
+    void refreshLocal();
+  }, []);
+  const localAction = async (action: "launch" | "stop" | "trust" | "prepare") => {
+    if (localPending.current || pending.current) return;
+    localPending.current = true;
+    localGeneration.current++;
+    setLocalBusy(action); setLocalError(null);
+    try {
+      acceptLocal(await invoke<CommandResult<ClaudeLocalStatus>>("claude_local_action", { action }));
+    } catch (cause) { if (mounted.current) setLocalError(stringifyError(cause)); }
+    finally {
+      localPending.current = false;
+      if (mounted.current) setLocalBusy(null);
+    }
+  };
+  const configureLocal = async (config: ClaudeLocalConfig) => {
+    if (localPending.current || pending.current) return;
+    localPending.current = true;
+    localGeneration.current++;
+    setLocalBusy("configure"); setLocalError(null);
+    try {
+      const result = await invoke<CommandResult<ClaudeLocalStatus>>("claude_local_configure", { config });
+      acceptLocal(result);
+      if (result.status === "ok") announceBackendSettingsChanged();
+    } catch (cause) { if (mounted.current) setLocalError(stringifyError(cause)); }
+    finally {
+      localPending.current = false;
+      if (mounted.current) setLocalBusy(null);
+    }
+  };
+  useEffect(() => {
+    if ((!localStatus?.running && !localStatus?.claudeRunning) || localBusy !== null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const generation = localGeneration.current;
+    const poll = async () => {
+      try {
+        const result = await invoke<CommandResult<ClaudeLocalStatus>>("claude_local_status");
+        if (cancelled || !mounted.current || localPending.current || generation !== localGeneration.current) return;
+        if (result.status === "ok") acceptLocal(result);
+      } catch { /* 状态探测失败保留上次结果，手动检测仍可显示具体错误。 */ }
+      if (!cancelled && mounted.current && generation === localGeneration.current) {
+        timer = setTimeout(() => void poll(), 3000);
+      }
+    };
+    timer = setTimeout(() => void poll(), 3000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [localStatus?.running, localStatus?.claudeRunning, localBusy]);
   const refresh = async () => {
     if (pending.current) return;
     pending.current = true;
@@ -16355,10 +16464,10 @@ function ClaudeLocalizationScreen() {
     }
   };
   useEffect(() => {
-    if (claudeLocalizationMemo.autoDetected) return;
+    if (!advancedOpen || claudeLocalizationMemo.autoDetected) return;
     claudeLocalizationMemo.autoDetected = true;
     void refresh();
-  }, []);
+  }, [advancedOpen]);
   /**
    * Claude Desktop 是否已在 Computer Use 页接入 codex-plus-cu（含自定义目录）。
    * 和这里的电脑控制同时开会让同一个对话里出现两套工具，用来提示二选一；读不到时按未接入处理。
@@ -16375,7 +16484,7 @@ function ClaudeLocalizationScreen() {
       .catch(() => undefined);
   }, []);
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
-    if (pending.current) return false;
+    if (pending.current || localPending.current) return false;
     pending.current = true;
     statusGeneration.current++;
     setBusy(action); setError(null);
@@ -16411,7 +16520,7 @@ function ClaudeLocalizationScreen() {
     return succeeded;
   };
   const toggleVoiceInput = async (enabled: boolean) => {
-    if (pending.current) return;
+    if (pending.current || localPending.current) return;
     pending.current = true;
     statusGeneration.current++;
     setBusy("voiceInput"); setError(null);
@@ -16430,7 +16539,7 @@ function ClaudeLocalizationScreen() {
     }
   };
   const toggleComputerUse = async (enabled: boolean) => {
-    if (pending.current) return;
+    if (pending.current || localPending.current) return;
     pending.current = true;
     statusGeneration.current++;
     setBusy("computerUse"); setError(null);
@@ -16447,7 +16556,7 @@ function ClaudeLocalizationScreen() {
     }
   };
   const saveBashTimeout = async (next: ClaudeBashTimeoutSettings) => {
-    if (pending.current && !bashTimeoutSaving.current) return;
+    if (localPending.current || (pending.current && !bashTimeoutSaving.current)) return;
     bashTimeoutQueued.current = next;
     setBashTimeoutDraft(next);
     if (bashTimeoutSaving.current) return;
@@ -16485,7 +16594,7 @@ function ClaudeLocalizationScreen() {
     }
   };
   const toggleLocalization = async (enabled: boolean) => {
-    if (pending.current) return;
+    if (pending.current || localPending.current) return;
     pending.current = true;
     statusGeneration.current++;
     setBusy("localization"); setError(null);
@@ -16506,7 +16615,7 @@ function ClaudeLocalizationScreen() {
   const s = status;
   const bashTimeout = bashTimeoutDraft ?? s?.bashTimeout;
   useEffect(() => {
-    if (!s?.bashTimeoutPending || !s.running || busy !== null) return;
+    if (!advancedOpen || !s?.bashTimeoutPending || !s.running || busy !== null) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const generation = statusGeneration.current;
@@ -16532,8 +16641,8 @@ function ClaudeLocalizationScreen() {
     };
     timer = setTimeout(() => void poll(), 1000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [s?.bashTimeoutPending, s?.running, busy]);
-  // 原来是「制作 → 启动 → 开增强」三步：现在右上角一个「启动增强版」，没制作或需要更新时先自动制作再启动。
+  }, [advancedOpen, s?.bashTimeoutPending, s?.running, busy]);
+  // 只有明确点击可选的增强版启动，才允许制作副本。
   const needsPrepare = Boolean(s && (!s.prepared || s.needsRebuild));
   const canLaunch = Boolean(s?.supported && s.nodeAvailable && (s.prepared || needsPrepare));
   const launchEnhanced = async () => {
@@ -16557,21 +16666,127 @@ function ClaudeLocalizationScreen() {
         ? t("重新制作增强版")
         : t("制作增强版");
   const prepareHint = t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。");
+  const local = localStatus;
+  const localState = !local ? t("未检测")
+    : local.connected ? t("本地模式已连接")
+      : local.claudeRunning ? (local.config.enabled ? t("原版运行，未连接本地服务") : t("原版已运行"))
+        : local.running ? t("本地服务已就绪") : t("未启动");
+  const localTone = local?.connected ? "ok" : local?.config.enabled && local?.claudeRunning ? "warn" : "neutral";
+  const canLaunchOriginal = Boolean(local?.supported && (!local.config.enabled || local.nodeAvailable));
+  const localDisabled = localBusy !== null || busy !== null;
   return (
     <div className="claude-localization-page cx-page">
       {topbarSlot
         ? createPortal(
             <Button
-              disabled={busy !== null || !canLaunch}
-              onClick={() => void launchEnhanced()}
-              title={needsPrepare ? t("先制作增强版副本，完成后自动启动") : t("启动增强版")}
+              disabled={localDisabled || !canLaunchOriginal}
+              onClick={() => void localAction("launch")}
+              title={t("启动原版 Claude Desktop")}
             >
               <Rocket className="h-4 w-4" />
-              {busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动增强版")}
+              {localBusy === "launch" ? t("启动中…") : t("启动 Claude")}
             </Button>,
             topbarSlot,
           )
         : null}
+      {localError ? <div className="claude-l10n-error" role="alert">{localError}</div> : null}
+      {local?.warning ? <div className="claude-l10n-warning" role="status">{local.warning}</div> : null}
+      {local?.needsRestart ? <p className="claude-l10n-hint" role="status">{t("设置已保存，完全退出 Claude 后重新启动。")}</p> : null}
+      <CxCard className="claude-l10n-hero">
+        <CxRow
+          badges={<CxBadge tone={localTone}>{localBusy === "detect" ? t("检测中…") : localState}</CxBadge>}
+          detail={local
+            ? local.supported
+              ? `${t("原版版本")} ${local.version || t("未检测到")}`
+              : t("未检测到支持的 Claude Desktop")
+            : t("正在读取原版 Claude 状态")}
+          icon={<CxStatusIcon tone={local?.connected ? "ok" : "off"}><Rocket /></CxStatusIcon>}
+          title="Claude Desktop"
+        >
+          <div className="claude-l10n-actions">
+            {local?.running ? (
+              <button className="cx-secondary" disabled={localDisabled} onClick={() => void localAction("stop")} type="button">
+                <Square />{t("停止本地服务")}
+              </button>
+            ) : null}
+            <button className="cx-secondary" disabled={localDisabled} onClick={() => void refreshLocal()} type="button">
+              <RefreshCw />{t("检测原版 Claude")}
+            </button>
+          </div>
+        </CxRow>
+      </CxCard>
+      <CxSection className="claude-local-settings" title={t("启动设置")}>
+        <CxCard>
+          <CxRow detail={t("从这里启动后生效；已打开的 Claude 需完全退出重开。")} title={t("启动模式")}>
+            <select
+              aria-label={t("启动模式")}
+              disabled={localDisabled || !local?.supported}
+              onChange={(event) => {
+                if (local) void configureLocal({ ...local.config, enabled: event.currentTarget.value === "full" });
+              }}
+              value={local?.config.enabled ? "full" : "3p"}
+            >
+              <option value="3p">{t("3p 模式")}</option>
+              <option value="full">{t("完整功能模式")}</option>
+            </select>
+          </CxRow>
+          {local ? (
+              <CxRow title={t("默认模型")}>
+                <select
+                  aria-label={t("Claude 默认模型")}
+                  disabled={localDisabled || !local.models.length}
+                  onChange={(event) => void configureLocal({ ...local.config, model: event.currentTarget.value })}
+                  value={local.config.model}
+                >
+                  {!local.config.model ? <option value="">{local.models.length ? t("选择模型") : t("暂无可用模型")}</option> : null}
+                  {local.config.model && !local.models.includes(local.config.model) ? <option value={local.config.model}>{local.config.model}</option> : null}
+                  {local.models.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </CxRow>
+          ) : null}
+        </CxCard>
+        {local?.config.enabled ? (
+          <>
+            <CxCard>
+              <CxRow badges={<CxBadge tone={local.caTrusted ? "ok" : "neutral"}>{local.caTrusted ? t("已信任") : local.caReady ? t("未信任") : t("未准备")}</CxBadge>} title={t("本地证书")}>
+                <div className="claude-l10n-actions">
+                  {!local.caReady ? (
+                    <button className="cx-secondary" disabled={localDisabled} onClick={() => void localAction("prepare")} type="button"><PackageOpen />{t("准备证书")}</button>
+                  ) : null}
+                  {!local.caTrusted ? (
+                    <button className="cx-secondary" disabled={localDisabled || !local.caReady} onClick={() => void localAction("trust")} type="button"><ShieldCheck />{t("信任证书")}</button>
+                  ) : null}
+                </div>
+              </CxRow>
+              <CxRow badges={<CxBadge tone={local.dictationReady ? "ok" : "neutral"}>{local.dictationReady ? t("已就绪") : t("未就绪")}</CxBadge>} title={t("语音识别")} />
+              <CxRow badges={<CxBadge tone={local.nodeAvailable ? "ok" : "warn"}>{local.nodeAvailable ? t("已就绪") : t("缺少 Node.js")}</CxBadge>} title={t("运行环境")} />
+            </CxCard>
+            <CxCard className="claude-l10n-feature-grid">
+              {([
+                ["localization", "界面汉化", "本地界面汉化"],
+                ["voiceInput", "原生听写", "本地原生听写"],
+                ["computerUse", "电脑控制", "本地电脑控制"],
+                ["backgroundMode", "后台模式", "本地后台模式"],
+              ] as const).map(([key, label, ariaLabel]) => (
+                <label className="switch-row compact" key={key}>
+                  <input
+                    aria-label={t(ariaLabel)}
+                    checked={local.config[key]}
+                    disabled={localDisabled}
+                    onChange={(event) => void configureLocal({ ...local.config, [key]: event.currentTarget.checked })}
+                    type="checkbox"
+                  />
+                  <span><strong>{t(label)}</strong></span>
+                  <ToggleVisual />
+                </label>
+              ))}
+            </CxCard>
+          </>
+        ) : null}
+      </CxSection>
+      <details className="claude-local-advanced" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)} open={advancedOpen}>
+        <summary><ChevronRight className="h-4 w-4" />{t("增强副本（可选）")}</summary>
+        <fieldset className="claude-local-advanced-body" disabled={localBusy !== null}>
       {/* 顶部最多几条一次性的提示：检测中 / 未安装、错误、Bash 时限确认、制作进度。 */}
       {!s ? (
         <p className="claude-l10n-hint">
@@ -16615,8 +16830,11 @@ function ClaudeLocalizationScreen() {
           icon={<CxStatusIcon tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "off"}><PackageOpen /></CxStatusIcon>}
           title={t("受管增强版")}
         >
-          {/* 首次要制作时「制作增强版」是唯一的按钮；检查、重新检测、重新制作都收进三点菜单。 */}
+          {/* 增强副本仅在这里手动制作和启动；检查与重新检测收进菜单。 */}
           <div className="claude-l10n-actions">
+            <button className="cx-secondary" disabled={busy !== null || localBusy !== null || !canLaunch} onClick={() => void launchEnhanced()} title={needsPrepare ? t("制作副本并启动增强版") : t("启动增强版")} type="button">
+              <Rocket />{busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动增强版")}
+            </button>
             {needsPrepare || !s ? (
               <button className="cx-secondary" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={prepareHint} type="button">
                 <PackageOpen />
@@ -16801,6 +17019,8 @@ function ClaudeLocalizationScreen() {
           ) : null}
         </CxCard>
       </CxSection>
+        </fieldset>
+      </details>
     </div>
   );
 }
@@ -17756,7 +17976,7 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
-    claude: t("保留官方 Claude.app 原样，通过增强版为 Claude 应用增强功能"),
+    claude: t("启动原版 Claude Desktop，选择 3p 或完整功能模式"),
     relayEnvironment: t("旧版直连模式专用：目录外模型映射与供应商独立代理"),
     requestLog: t("所有 Agent 经 Codex++ 的请求：状态、模型、重试、token 用量与缓存命中"),
     sessions: t("Codex、Claude Code、Grok 的本地会话放在一起：在终端继续，Codex 会话还能删除、归档与修复"),

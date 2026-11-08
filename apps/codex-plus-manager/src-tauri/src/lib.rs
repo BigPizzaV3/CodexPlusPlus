@@ -346,6 +346,9 @@ pub fn run() {
             commands::download_dictation_local_model,
             commands::load_global_dictation_hotkey,
             commands::set_global_dictation_hotkey,
+            commands::claude_local_status,
+            commands::claude_local_configure,
+            commands::claude_local_action,
             commands::claude_localization_status,
             commands::claude_localization_bash_timeout_status,
             commands::claude_localization_action,
@@ -661,6 +664,7 @@ pub fn run() {
                         // 常驻本地代理只在 Codex++ 退出时停止；Codex 会话结束
                         // 不会关它（见 core::resident_helper）。
                         gateway_commands::restore_for_exit();
+                        codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
                         SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                         app.exit(0);
