@@ -4513,6 +4513,16 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
                     );
                 }
             };
+            if let Err(error) =
+                codex_plus_core::relay_config::migrate_managed_model_catalog_pointer_in_home(
+                    &home, &settings,
+                )
+            {
+                return failed(
+                    &format!("自动升级模型上下文配置失败：{error:#}"),
+                    fallback_settings_payload(),
+                );
+            }
             ok(
                 "设置已加载。",
                 SettingsPayload {

@@ -596,7 +596,13 @@ fn owned_catalog_path(home: &Path, aggregate: &str, pointer: &str) -> Option<std
         crate::relay_config::sanitize_catalog_filename(aggregate)
     );
     let prefix = format!("aggregate-{}-", aggregate_publication_key(aggregate));
-    (name == legacy || (name.starts_with(&prefix) && name.ends_with(".json"))).then_some(path)
+    let migrated_prefix = format!(
+        "{}-context-",
+        crate::relay_config::sanitize_catalog_filename(aggregate),
+    );
+    (name == legacy
+        || ((name.starts_with(&prefix) || name.starts_with(&migrated_prefix))
+            && name.ends_with(".json"))).then_some(path)
 }
 
 /// 聚合目录的指针写法必须和单供应商一致：原生 Windows 写绝对路径（#2529），
@@ -976,6 +982,46 @@ mod tests {
         let path=home.join("model-catalogs/agg.json");std::fs::write(&path,build_catalog_json(&loaded,&aggregate).unwrap()).unwrap();
         std::fs::write(home.join("config.toml"),format!("model_catalog_json = {:?}\n",path.to_str().unwrap())).unwrap();
         (temp,store,home)
+    }
+
+    #[test]
+    fn migrated_legacy_catalog_remains_owned_and_can_publish_later_changes() {
+        let (_temp, store, home) = publication_fixture();
+        let settings = store.load().unwrap();
+        let aggregate = active_model_aggregation(&settings).unwrap();
+        let legacy = home.join("model-catalogs/agg.json");
+        let mut catalog: Value =
+            serde_json::from_str(&std::fs::read_to_string(&legacy).unwrap()).unwrap();
+        for model in catalog["models"].as_array_mut().unwrap() {
+            model["max_context_window"] = model["context_window"].clone();
+        }
+        let legacy_bytes = serde_json::to_vec_pretty(&catalog).unwrap();
+        std::fs::write(&legacy, &legacy_bytes).unwrap();
+
+        assert!(crate::relay_config::migrate_managed_model_catalog_pointer_in_home(
+            &home, &settings
+        ).unwrap());
+        assert_eq!(catalog_summary(&home, &settings, &aggregate).unwrap()["applied"], true);
+        assert_eq!(std::fs::read(&legacy).unwrap(), legacy_bytes);
+        let mut next = settings;
+        next.relay_profiles[0].model_windows =
+            r#"{"deepseek-chat":"512K","deepseek-reasoner":"512K"}"#.to_string();
+        save_with_active_catalog_refresh(&store, &home, &next).unwrap();
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        let published = owned_catalog_path(
+            &home, &aggregate.id, &config_catalog_pointer(&config).unwrap()
+        ).unwrap();
+        let actual: Value = serde_json::from_slice(&std::fs::read(published).unwrap()).unwrap();
+        let loaded = store.load().unwrap();
+        let expected: Value =
+            serde_json::from_str(&build_catalog_json(&loaded, &aggregate).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+        for slug in ["cpx-deepseek/deepseek-chat", "cpx-deepseek/deepseek-reasoner"] {
+            let model = actual["models"].as_array().unwrap().iter()
+                .find(|model| model["slug"] == slug).unwrap();
+            assert_eq!(model["context_window"], 512_000);
+            assert!(model["max_context_window"].is_null());
+        }
     }
 
     #[test]
