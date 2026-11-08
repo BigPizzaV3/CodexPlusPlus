@@ -748,7 +748,7 @@ export function ModelList({
     if (!favoritesOnly) {
       const current = selectedModel.trim();
       if (pinProvider && !sectionOnly && !query.trim() && current && modelDisplay(payload, current, exclude).auto &&
-          !all.some((section) => section.items.some((item) => item.model.toLowerCase() === current.toLowerCase()))) {
+          !all.some((section) => section.items.some((item) => !item.direct && item.model.toLowerCase() === current.toLowerCase()))) {
         all.unshift({
           key: "current",
           title: "当前选择",
