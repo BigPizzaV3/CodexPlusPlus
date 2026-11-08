@@ -785,7 +785,7 @@ function GatewayTab({
             const tokens = entry.usage ? `${formatTokens(entry.usage.inputTokens)} → ${formatTokens(entry.usage.outputTokens)}` : "";
             return (
               <div className="tp-log" key={entry.id}>
-                <img alt="" src={AGENT_ICONS[agent === "codex" ? "codexApp" : agent] ?? AGENT_ICONS.codexApp} title={agentName(agent)} />
+                <img alt="" data-agent-icon={agent} src={AGENT_ICONS[agent === "codex" ? "codexApp" : agent] ?? AGENT_ICONS.codexApp} title={agentName(agent)} />
                 <div className="tp-log-main">
                   <strong>{entry.upstreamModel || entry.model || "—"}</strong>
                   <small>{[maskAccountName(entry.relayName ?? ""), tokens, entry.durationMs ? `${(entry.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ")}</small>
@@ -932,7 +932,7 @@ function PanelAgentRow({
         {inactiveHint ? <AlertTriangle aria-label={inactiveHint} className="h-3.5 w-3.5" role="img" /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
-      <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => setOpen(false)} open={open} width={340}>
+      <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => setOpen(false)} open={open} width={340}>
         <ModelList
           exclude={draft.poolExclude}
           head={head}

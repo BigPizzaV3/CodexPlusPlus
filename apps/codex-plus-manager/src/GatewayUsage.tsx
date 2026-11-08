@@ -227,7 +227,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
               >
                 <span className="gw-usage-name">
                   {split === "agent" ? (
-                    AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />
+                    AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" data-agent-icon={group.key} src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />
                   ) : (
                     <Avatar baseUrl={providerEntry?.baseUrl} name={group.label || "?"} size="sm" />
                   )}
