@@ -4518,9 +4518,9 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
                     &home, &settings,
                 )
             {
-                return failed(
-                    &format!("自动升级模型上下文配置失败：{error:#}"),
-                    fallback_settings_payload(),
+                log_manager_event(
+                    "manager.model_catalog_migration_failed",
+                    json!({ "message": format!("{error:#}") }),
                 );
             }
             ok(

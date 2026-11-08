@@ -4295,15 +4295,23 @@ pub fn migrate_managed_model_catalog_pointer_in_home(
     }
     let relative = if context_changed {
         // 旧目录可能正被其他进程读取，也可能是聚合目录的不可变发布产物。
+        let migrated_bytes = serde_json::to_vec_pretty(&catalog)?;
+        let digest = format!("{:x}", sha2::Sha256::digest(&migrated_bytes));
         let migrated = Path::new("model-catalogs").join(format!(
             "{}-context-{}.json",
             catalog_path.file_stem().unwrap().to_string_lossy(),
-            uuid::Uuid::new_v4(),
+            digest,
         ));
-        crate::settings::atomic_write(
-            &home.join(&migrated),
-            &serde_json::to_vec_pretty(&catalog)?,
-        ).context("发布升级后的模型目录失败")?;
+        let migrated_path = home.join(&migrated);
+        match std::fs::read(&migrated_path) {
+            Ok(existing) if existing == migrated_bytes => {}
+            Ok(_) => anyhow::bail!("已存在的升级模型目录内容不匹配"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::settings::atomic_write(&migrated_path, &migrated_bytes)
+                    .context("发布升级后的模型目录失败")?;
+            }
+            Err(error) => return Err(error).context("读取升级后的模型目录失败"),
+        }
         migrated
     } else {
         relative.to_path_buf()

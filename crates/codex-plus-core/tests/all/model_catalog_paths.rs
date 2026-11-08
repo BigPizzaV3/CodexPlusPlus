@@ -287,6 +287,10 @@ fn startup_migration_removes_legacy_ceilings_without_reapplying_the_profile() {
         assert!(!migrate_managed_model_catalog_pointer_in_home(home, &settings).unwrap());
         assert_eq!(std::fs::read_dir(home.join("model-catalogs")).unwrap().count(), 2);
         assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap(), migrated_config);
+        std::fs::write(home.join("config.toml"), &config).unwrap();
+        assert!(migrate_managed_model_catalog_pointer_in_home(home, &settings).unwrap());
+        assert_eq!(pointer(home), migrated_pointer);
+        assert_eq!(std::fs::read_dir(home.join("model-catalogs")).unwrap().count(), 2);
     }
 }
 
