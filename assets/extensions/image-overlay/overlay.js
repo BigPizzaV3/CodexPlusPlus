@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 36 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 37 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -79,6 +79,7 @@
     // 原生共享卡片没有全部暴露 data 属性（例如旧 optionPicker），保留其外壳组合匹配。
     const nativeTooltipSelector = '[role="tooltip"]:is([class^="Tooltip-"], [class*=" Tooltip-"])';
     const surfaceSelector = [
+      'button[class~="group/scroll-to-bottom"]',
       "[data-composer-attachment-pill]", ".codex-toast-area [data-sonner-toast] .alert-root", nativeTooltipSelector,
       "[data-codex-composer-request-navigation]", "[data-codex-approval-surface]", "[data-composer-rail-item]",
       ".flex.flex-col.overflow-hidden.rounded-3xl.border.bg-surface-elevated-secondary",
@@ -1619,7 +1620,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 36, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 37, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

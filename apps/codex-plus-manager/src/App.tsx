@@ -7161,6 +7161,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         entry.threadId ?? "",
         entry.error ?? "",
         entry.wireApi,
+        entry.statusCode || "",
       ]
         .join(" ")
         .toLowerCase()
@@ -7179,7 +7180,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   ];
   return (
     <div className="request-log-panel request-log-page cx-page">
-      <CxToolbar onQuery={setQuery} placeholder={t("搜索模型 / 供应商 / 路径 / 错误")} query={query}>
+      <CxToolbar onQuery={setQuery} placeholder={t("搜索模型 / 供应商 / 路径 / 错误 / 状态码")} query={query}>
         <span className="request-log-auto" title={t("每秒读取一次新请求")}>
           <Switch label={t("自动刷新")} on={autoRefresh} onToggle={() => setAutoRefresh(!autoRefresh)} />
           <span>{t("自动刷新")}</span>

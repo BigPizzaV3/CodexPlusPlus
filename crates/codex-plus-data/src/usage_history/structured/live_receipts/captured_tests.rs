@@ -64,6 +64,30 @@ fn versioned_retry_contract_survives_cache_reload_and_saved_proof_revalidation()
 }
 
 #[test]
+fn fallback_receipt_revalidates_original_model_after_cache_reload() {
+    let (root, mut cache, at) = fixture();
+    let mut record = request("fallback", at, -10, 10, 2, 3);
+    record.model = "supplier-a/model-a".into();
+    record.upstream_model = "model-a".into();
+    record.relay_id = "supplier-b".into();
+    record.relay_name = "Supplier B".into();
+    record.attempts = Some(2);
+    record.final_response_evidence = Some("final-response-v1".into());
+    cache.capture_proxy(&[record]).unwrap();
+    drop(cache);
+
+    let mut input = json!([receipt("live", at, 10, 2, 3)]);
+    input[0]["model"] = json!("supplier-a/model-a");
+    let proof = check(root.path(), &[], &input);
+    assert_eq!(proof[0]["provider"], "supplier-b");
+    assert_eq!(proof[0]["model"], "model-a");
+    for key in ["provider", "requestIds", "requestSignatures"] {
+        input[0][key] = proof[0][key].clone();
+    }
+    assert_eq!(check(root.path(), &[], &input), proof);
+}
+
+#[test]
 fn delayed_final_response_survives_cache_reload_and_retains_competitors() {
     let (root, mut cache, at) = fixture();
     let mut record = request("delayed", at, -63_925, 172115, 179, 171904);

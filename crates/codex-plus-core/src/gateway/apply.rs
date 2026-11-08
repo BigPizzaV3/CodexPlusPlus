@@ -107,7 +107,7 @@ pub fn claude_gateway_provider(
     let default_model = binding_default_model(gateway, binding);
     let role = |value: &str| {
         let (slug, _) = crate::model_suffix::parse_model_suffix(value.trim());
-        if slug.trim().is_empty() {
+        if slug.trim().is_empty() || route::is_disabled_group_model(gateway, &slug) {
             default_model.clone()
         } else {
             slug.trim().to_string()
@@ -196,7 +196,7 @@ fn agent_gateway_profile(
         route::pool_models(gateway, binding)
     };
     for model in pool.into_iter().chain(binding.declared_models()) {
-        if !models.contains(&model) {
+        if !route::is_disabled_group_model(gateway, &model) && !models.contains(&model) {
             models.push(model);
         }
     }
@@ -235,6 +235,11 @@ fn write_agent_config(
 ) -> anyhow::Result<Option<String>> {
     // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
     let gateway = ctx.gateway.load()?.with_extension_providers();
+    if route::is_disabled_group_model(&gateway, &binding.model)
+        && binding_default_model(&gateway, binding).is_empty()
+    {
+        bail!("默认模型组已停用，且没有其他可用模型");
+    }
     match agent {
         ToolId::Claude => {
             // 还没指向网关：先把 settings.json 原样存一份，断开时据此还原（见 [`restore_claude`]）。
@@ -370,7 +375,10 @@ pub fn codex_gateway_profile_on(
     crate::relay_config::normalize_relay_profile_for_storage(&mut profile)?;
     if !signed_in {
         // 归一化会把导入时的旧版供应商表换成 `custom`，声明要在它之后写上。
-        profile.config_contents = with_local_api_identity(&profile.config_contents)?;
+        profile.config_contents = with_local_api_identity(
+            &profile.config_contents,
+            crate::gateway::images::targets(gateway, &ToolId::Codex, None).is_ok(),
+        )?;
     }
     Ok(profile)
 }
@@ -378,7 +386,7 @@ pub fn codex_gateway_profile_on(
 /// 没登录 ChatGPT 时的托管供应商：显式写 `requires_openai_auth = false`，与直连模式手加的
 /// 纯 API 供应商一致。Codex 这时没有账号身份，原生 Fast 只认这个明确声明的本机 API 配置
 /// （见 [`crate::native_fast`]），缺这一行时 Fast 按钮整个不显示（#2746）。
-fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
+fn with_local_api_identity(contents: &str, image_generation: bool) -> anyhow::Result<String> {
     let mut doc = contents
         .parse::<toml_edit::DocumentMut>()
         .context("托管供应商配置不是合法 TOML")?;
@@ -394,6 +402,15 @@ fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
         .and_then(toml_edit::Item::as_table_mut)
         .context("托管供应商配置里没有传输供应商")?;
     table["requires_openai_auth"] = toml_edit::value(false);
+    if image_generation {
+        // 网关已经代理图片接口，不启用会把地址改到本地 helper 的直连生图开关。
+        let mut headers = toml_edit::InlineTable::new();
+        headers.insert(
+            crate::relay_config::PURE_API_IMAGE_GENERATION_HEADER,
+            "codex-plus-gateway-image-generation".into(),
+        );
+        table["http_headers"] = toml_edit::value(headers);
+    }
     Ok(doc.to_string())
 }
 
@@ -2004,8 +2021,8 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
             .unwrap_or(false)
 }
 
-/// Codex 开着网关时，托管供应商的会话身份要跟 Codex 的登录状态一致（登录了 ChatGPT 就保留官方身份）：
-/// 不一致（之后才登录 / 退出，或旧版写的）就重写一次。返回是否重写了。
+/// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
+/// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let gateway = ctx.gateway.load()?;
     let Some(binding) = gateway
@@ -2035,7 +2052,25 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let can_sign_in = codex_signed_in(&ctx.codex_home)
         || (crate::native_auth::selection_allows_auto_lend(&settings)
             && lendable_login(&gateway).is_some());
-    if keeps_login == can_sign_in {
+    let image_config_matches = if can_sign_in {
+        true
+    } else {
+        let config = std::fs::read_to_string(ctx.codex_home.join("config.toml"))?
+            .parse::<toml_edit::DocumentMut>()?;
+        let provider = config
+            .get("model_provider")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("openai");
+        let registered = config
+            .get("model_providers")
+            .and_then(|providers| providers.get(provider))
+            .and_then(|provider| provider.get("http_headers"))
+            .and_then(|headers| headers.get("x-openai-actor-authorization"))
+            .and_then(toml_edit::Item::as_str)
+            == Some("codex-plus-gateway-image-generation");
+        registered == crate::gateway::images::targets(&gateway, &ToolId::Codex, None).is_ok()
+    };
+    if keeps_login == can_sign_in && image_config_matches {
         return Ok(false);
     }
     write_codex(ctx, &gateway, &binding.clone())?;
@@ -2209,7 +2244,7 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
         match write_agent_config(ctx, &agent, binding) {
             Ok(_) => count += 1,
             Err(error) => {
-                first_error.get_or_insert(error);
+                first_error.get_or_insert(error.context(format!("刷新 {} 失败", agent.as_str())));
             }
         }
     }
@@ -3588,6 +3623,9 @@ pub struct GroupInput {
     pub sticky: GroupSticky,
     #[serde(default)]
     pub members: Vec<GroupMember>,
+    /// 省略时保留已有组的状态，新组默认启用。
+    #[serde(default)]
+    pub disabled: Option<bool>,
     /// 隐藏成员：组里的模型不再单独出现在 Agent 的模型列表里。
     #[serde(default)]
     pub hide_members: bool,
@@ -3602,6 +3640,24 @@ pub fn save_group(
     input: &GroupInput,
 ) -> anyhow::Result<(GatewaySettings, String)> {
     store.update(|gateway| save_group_in(gateway, input))
+}
+
+/// 只更新模型组开关，避免使用旧界面快照覆盖其它设置。
+pub fn set_group_enabled(
+    store: &GatewayStore,
+    id: &str,
+    enabled: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        let group = gateway
+            .groups
+            .iter_mut()
+            .find(|group| group.id == id)
+            .ok_or_else(|| anyhow::anyhow!("模型组不存在：{id}"))?;
+        group.disabled = !enabled;
+        Ok(())
+    })?;
+    Ok(gateway)
 }
 
 fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::Result<String> {
@@ -3634,6 +3690,9 @@ fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::R
     let mut group = GatewayGroup {
         id: id.clone(),
         name: name.to_string(),
+        disabled: input.disabled.unwrap_or_else(|| {
+            gateway.group(&id).is_some_and(|existing| existing.disabled)
+        }),
         mode: input.mode,
         sticky: input.sticky,
         members,
@@ -3658,17 +3717,52 @@ pub fn save_auto_group(
     model: &str,
     settings: AutoGroupSettings,
 ) -> anyhow::Result<GatewaySettings> {
+    let hidden = settings.hidden;
+    save_auto_group_with_hidden(store, model, settings, Some(hidden))
+}
+
+/// `hidden` 省略时保留当前状态，避免其它窗口的设置修改覆盖开关。
+pub fn save_auto_group_with_hidden(
+    store: &GatewayStore,
+    model: &str,
+    settings: AutoGroupSettings,
+    hidden: Option<bool>,
+) -> anyhow::Result<GatewaySettings> {
     let key = model.trim().to_ascii_lowercase();
     if key.is_empty() {
         bail!("没有指定自动组的模型");
     }
     let (gateway, _) = store.update(|gateway| {
         let mut settings = settings;
+        settings.hidden = hidden.unwrap_or_else(|| {
+            gateway.auto_groups.get(&key).is_some_and(|current| current.hidden)
+        });
         settings.pick = settings.pick.trim().to_string();
         if settings == AutoGroupSettings::default() {
             gateway.auto_groups.remove(&key);
         } else {
             gateway.auto_groups.insert(key.clone(), settings);
+        }
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
+/// 只更新自动组开关，保留当前模式、成员设置和未知字段。
+pub fn set_auto_group_enabled(
+    store: &GatewayStore,
+    model: &str,
+    enabled: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let key = model.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        bail!("没有指定自动组的模型");
+    }
+    let (gateway, ()) = store.update(|gateway| {
+        let settings = gateway.auto_groups.entry(key.clone()).or_default();
+        settings.hidden = !enabled;
+        if *settings == AutoGroupSettings::default() {
+            gateway.auto_groups.remove(&key);
         }
         Ok(())
     })?;
@@ -3703,6 +3797,59 @@ mod tests {
     use crate::settings::{
         AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, RelaySessionProvider,
     };
+
+    #[test]
+    fn group_switches_preserve_latest_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        let group = GatewayGroup {
+            id: "daily".into(),
+            name: "Daily updated".into(),
+            mode: GroupMode::Rotate,
+            sticky: GroupSticky::Session,
+            members: vec![GroupMember {
+                model: "provider/new-model".into(),
+                weight: 3,
+            }],
+            hide_members: true,
+            pick: "provider/new-model".into(),
+            extra: serde_json::from_value(json!({ "futureField": 3 })).unwrap(),
+            ..GatewayGroup::default()
+        };
+        let auto = AutoGroupSettings {
+            mode: GroupMode::Manual,
+            sticky: GroupSticky::Session,
+            hide_members: true,
+            pick: "provider/new-model".into(),
+            extra: serde_json::from_value(json!({ "futureField": 4 })).unwrap(),
+            ..AutoGroupSettings::default()
+        };
+        store.update(|gateway| {
+            gateway.groups.push(group.clone());
+            gateway.auto_groups.insert("shared".into(), auto.clone());
+            Ok(())
+        }).unwrap();
+
+        let mut disabled_group = group.clone();
+        disabled_group.disabled = true;
+        let gateway = set_group_enabled(&store, "daily", false).unwrap();
+        assert_eq!(gateway.groups[0], disabled_group);
+        let gateway = set_group_enabled(&store, "daily", true).unwrap();
+        assert_eq!(gateway.groups[0], group);
+        assert!(set_group_enabled(&store, "missing", false).is_err());
+
+        let mut hidden_auto = auto.clone();
+        hidden_auto.hidden = true;
+        let gateway = set_auto_group_enabled(&store, "Shared", false).unwrap();
+        assert_eq!(gateway.auto_groups["shared"], hidden_auto);
+        let gateway = set_auto_group_enabled(&store, "Shared", true).unwrap();
+        assert_eq!(gateway.auto_groups["shared"], auto);
+
+        let gateway = set_auto_group_enabled(&store, "new-model", false).unwrap();
+        assert!(gateway.auto_groups["new-model"].hidden);
+        let gateway = set_auto_group_enabled(&store, "new-model", true).unwrap();
+        assert!(!gateway.auto_groups.contains_key("new-model"));
+    }
 
     #[test]
     fn catalog_ui_fields_keep_fast_tiers_and_drop_bulky_fields() {
