@@ -11,6 +11,8 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import tls from "node:tls";
 import { fileURLToPath } from "node:url";
+import { startupAssets } from "./scripts/patch-dictation-start.mjs";
+import { facadeFixture, recorderFixture } from "./scripts/fixtures/dictation-start.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const gatewayRequests = [];
@@ -238,6 +240,20 @@ before(async () => {
     }),
     { mode: 0o600 },
   );
+  for (const [index, asset] of startupAssets.entries()) {
+    const cacheKey = asset.url.replace(/^https:\/\//, "");
+    const cacheName = crypto.createHash("sha1").update(cacheKey).digest("hex");
+    fs.writeFileSync(
+      path.join(dictationCacheDir, cacheName),
+      asset.patch(index === 0 ? recorderFixture : facadeFixture),
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(path.join(dictationCacheDir, `${cacheName}.json`), JSON.stringify({
+      status: 200,
+      headers: { "content-type": "text/javascript; charset=utf-8" },
+      url: cacheKey,
+    }), { mode: 0o600 });
+  }
   dictationFixture = http.createServer();
   dictationFixture.on("upgrade", (req, socket, head) => {
     dictationUpgrade = {
@@ -344,6 +360,21 @@ test("mock mode serves the patched dictation module with the CDN cross-origin co
   assert.match(result.body, /D=125e3/);
   assert.doesNotMatch(result.body, /D=2e3/);
 });
+
+for (const asset of startupAssets) {
+  test(`mock mode preserves CORS and exact startup patch for ${asset.name}`, async () => {
+    const result = await requestText("assets-proxy.anthropic.com", asset.pathname, {
+      origin: "https://claude.ai",
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.headers["access-control-allow-origin"], "*");
+    assert.match(result.headers["content-type"], /^text\/javascript\b/);
+    assert.equal(result.headers["cache-control"], "no-store");
+    assert.equal(Number(result.headers["content-length"]), Buffer.byteLength(result.body));
+    assert.deepEqual(asset.patch(result.body), Buffer.from(result.body));
+    assert.match(result.body, /codex-local-dictation-start-v1/);
+  });
+}
 
 test("Claude dictation websocket is authorized locally and forwards only bounded metadata", async () => {
   const clientFrame = websocketClientFrame("synthetic-pcm-frame");

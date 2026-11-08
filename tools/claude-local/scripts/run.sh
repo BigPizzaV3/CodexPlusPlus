@@ -33,6 +33,7 @@ fi
 if [ "$MODE" = "mock" ] && [ "$CLAUDE_RUNNING" -eq 0 ]; then
   echo "→ 为 mock 模式准备本地听写缓存"
   CLAUDE_LOCAL_MODE=mock node scripts/patch-dictation-drain.mjs --apply
+  CLAUDE_LOCAL_MODE=mock node scripts/patch-dictation-start.mjs --apply
 fi
 
 echo "→ 启动代理 127.0.0.1:$PORT (mode=$MODE)"

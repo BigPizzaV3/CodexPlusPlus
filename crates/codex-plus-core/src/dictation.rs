@@ -666,7 +666,7 @@ fn local_wav_samples(audio: &[u8]) -> Vec<f32> {
 
 fn spawn_local_recognizer_waiter<T: Send + 'static>(
     answer: std::sync::mpsc::Receiver<T>,
-    guards: Vec<OwnedSemaphorePermit>,
+    guards: Vec<Arc<OwnedSemaphorePermit>>,
 ) -> tokio::task::JoinHandle<Result<T, std::sync::mpsc::RecvError>> {
     tokio::task::spawn_blocking(move || {
         let result = answer.recv();
@@ -741,7 +741,7 @@ async fn transcribe_local_recording(
 async fn transcribe_local_recording_with_guard(
     settings: &DictationSettings,
     recording: Recording<'_>,
-    stream_guard: Option<OwnedSemaphorePermit>,
+    stream_guard: Option<Arc<OwnedSemaphorePermit>>,
 ) -> Result<Value, DictationError> {
     validate_local_wav(recording.audio)?;
     let language = match settings.language.trim() {
@@ -765,9 +765,8 @@ async fn transcribe_local_recording_with_guard(
             reply,
         })
         .map_err(|_| DictationError::new(500, "本地语音推理线程已停止"))?;
-    // Keep both permits inside the blocking waiter: aborting the socket future cannot
-    // free capacity while the non-cancellable recognizer is still decoding.
-    let mut guards = vec![recognizer_guard];
+    // 分段解码共享会话许可；断开 socket 也必须等不可取消的推理真正完成才释放容量。
+    let mut guards = vec![Arc::new(recognizer_guard)];
     if let Some(stream_guard) = stream_guard {
         guards.push(stream_guard);
     }
@@ -820,7 +819,7 @@ pub(crate) async fn transcribe_local_pcm16_with_guard(
     settings: &DictationSettings,
     pcm: &[u8],
     language: Option<&str>,
-    stream_guard: Option<OwnedSemaphorePermit>,
+    stream_guard: Option<Arc<OwnedSemaphorePermit>>,
 ) -> Result<String, DictationError> {
     ensure_local_sensevoice_available(settings)?;
     validate_local_pcm16(pcm)?;
@@ -1278,11 +1277,13 @@ mod tests {
     async fn aborted_local_waiter_keeps_stream_and_recognizer_slots_until_decode_finishes() {
         let stream_slots = Arc::new(Semaphore::new(1));
         let recognizer_slots = Arc::new(Semaphore::new(1));
-        let stream_guard = stream_slots.clone().try_acquire_owned().unwrap();
-        let recognizer_guard = recognizer_slots.clone().try_acquire_owned().unwrap();
+        let stream_guard = Arc::new(stream_slots.clone().try_acquire_owned().unwrap());
+        let recognizer_guard = Arc::new(recognizer_slots.clone().try_acquire_owned().unwrap());
         let (reply, answer) = std::sync::mpsc::channel::<()>();
-        let waiter = spawn_local_recognizer_waiter(answer, vec![stream_guard, recognizer_guard]);
+        let waiter =
+            spawn_local_recognizer_waiter(answer, vec![stream_guard.clone(), recognizer_guard]);
         drop(waiter);
+        drop(stream_guard);
 
         assert!(stream_slots.clone().try_acquire_owned().is_err());
         assert!(recognizer_slots.clone().try_acquire_owned().is_err());
@@ -1301,6 +1302,21 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn segmented_local_waiters_keep_the_session_slot_between_decodes() {
+        let slots = Arc::new(Semaphore::new(1));
+        let session = Arc::new(slots.clone().try_acquire_owned().unwrap());
+        for _ in 0..2 {
+            let (reply, answer) = std::sync::mpsc::channel();
+            let waiter = spawn_local_recognizer_waiter(answer, vec![session.clone()]);
+            reply.send(()).unwrap();
+            waiter.await.unwrap().unwrap();
+            assert!(slots.clone().try_acquire_owned().is_err());
+        }
+        drop(session);
+        assert!(slots.try_acquire_owned().is_ok());
     }
 
     #[tokio::test]

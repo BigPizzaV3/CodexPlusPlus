@@ -24,6 +24,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
+import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -838,7 +839,10 @@ function handle(req, res, hostHeader) {
     MODE === "mock" &&
     req.method === "GET" &&
     url.hostname.toLowerCase() === "assets-proxy.anthropic.com" &&
-    url.pathname === "/claude-ai/v2/assets/v1/c342ae4ef-ROR3Yba4.js" &&
+    (
+      url.pathname === "/claude-ai/v2/assets/v1/c342ae4ef-ROR3Yba4.js" ||
+      startupAssets.some((asset) => asset.pathname === url.pathname)
+    ) &&
     !url.search
   ) {
     const cacheKey = `${url.host}${url.pathname}`;
@@ -847,7 +851,9 @@ function handle(req, res, hostHeader) {
     if (fs.existsSync(cachedPath) && fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
       const body = fs.readFileSync(cachedPath);
-      const patched = body.includes(Buffer.from("D=125e3")) && !body.includes(Buffer.from("D=2e3"));
+      const patched = url.pathname === "/claude-ai/v2/assets/v1/c342ae4ef-ROR3Yba4.js"
+        ? body.includes(Buffer.from("D=125e3")) && !body.includes(Buffer.from("D=2e3"))
+        : isPatchedStartupAsset(url.pathname, body);
       if (
         meta.status === 200 &&
         meta.url === cacheKey &&

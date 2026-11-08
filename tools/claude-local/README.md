@@ -88,9 +88,14 @@ mock 模式启动时会从 Claude 的本地 Electron 缓存读取固定版本的
 
 ```bash
 node scripts/patch-dictation-drain.mjs --restore
+node scripts/patch-dictation-start.mjs --restore
 ```
 
-本地听写 helper 当前默认请求超时为 120 秒；helper 自身超时会先返回错误，客户端 drain 等待不会延长或重试 helper 请求。mock 模式启动使用 `--disable-http-cache`，确保客户端从本地代理读取该副本；passthrough 与 demo 不应用此补丁。启动脚本把 `CODEX_PLUS_STATE_DIR` 对齐到当前管理器实例：显式环境变量优先，其次是仓库内 `dist/local-build/Codex++.app` 对应的 `dist/local-build/state`，最后回退到 `$HOME/.codex-session-delete`。
+同一固定版本的听写启动补丁将动态模块加载限制为 15 秒、原生启动限制为 20 秒、`AudioContext.resume()` 限制为 5 秒。超时会取消当前启动并释放音频上下文；迟到的麦克风流沿原生 generation 检查释放，界面回到可重试状态。补丁只在 mock 模式从本地代理提供，不改安装包或系统麦克风权限。开发者控制台中的 `[Claude Local Dictation]` 与 `window.__codexPlusLocalDictationStatus` 只记录 pending / connecting / recording / finishing / idle / error 阶段及状态布尔值，不包含转写、音频或会话标识。
+
+本地 WebSocket 听写会在含语音的当前分段累计 4 秒音频后启动一次真实临时转写，继续说话时每累计 4 秒更新；检测到 600 毫秒停顿或当前分段达到 12 秒时提交该段文字。`CloseStream` 会排空已接收的音频，纯静音不会触发识别或生成文字。每次 WebSocket 会话上限为 16 分钟或累计 25 MiB 音频，达到任一上限即停止。
+
+通用 HTTP 转写接口的默认请求超时仍为 120 秒，这不代表 WebSocket 听写需要录制结束才开始识别。HTTP 请求自身超时会先返回错误，客户端 drain 等待不会延长或重试该请求。mock 模式启动使用 `--disable-http-cache`，确保客户端从本地代理读取该副本；passthrough 与 demo 不应用此补丁。启动脚本把 `CODEX_PLUS_STATE_DIR` 对齐到当前管理器实例：显式环境变量优先，其次是仓库内 `dist/local-build/Codex++.app` 对应的 `dist/local-build/state`，最后回退到 `$HOME/.codex-session-delete`。
 
 源码不包含本机录制的账号、会话模板和静态缓存；缺少录制时代理会使用内置占位数据。
 本文的真实界面验证基于本机已有录制，完整 UI 兼容性仍取决于本地接口数据与静态资源。
