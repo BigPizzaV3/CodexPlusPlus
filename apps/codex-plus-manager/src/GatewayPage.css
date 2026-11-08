@@ -2252,7 +2252,7 @@ span.gw-avatar[data-size] {
 }
 
 .gw-portal .gw-mp-section + .gw-mp-section {
-  border-top: 1px solid hsl(var(--border));
+  border-top: 1px solid hsl(var(--foreground) / 0.16);
 }
 
 .gw-portal .gw-mp-heading {
@@ -2332,6 +2332,8 @@ span.gw-avatar[data-size] {
 }
 
 .gw-portal .gw-mp .gw-avatar:not(.gw-avatar-brand) {
+  background: hsl(var(--accent));
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.16);
   color: var(--gw-ink);
 }
 
@@ -2341,6 +2343,11 @@ span.gw-avatar[data-size] {
   border-radius: 4px;
   font-size: 8px;
   letter-spacing: 0;
+}
+
+.gw-portal .gw-mp .gw-mp-filters .gw-avatar:not(.gw-avatar-brand) {
+  width: 18px;
+  font-size: 9px;
 }
 
 .gw-portal .gw-mp .gw-mp-filters .gw-avatar-brand {

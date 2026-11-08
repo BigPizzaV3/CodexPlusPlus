@@ -141,6 +141,32 @@ test("供应商筛选展开目标；搜索展开匹配项，清空后恢复手�
   assert.equal(heading(tree, "provider:b").props["aria-expanded"], true);
 });
 
+test("筛选按钮向辅助技术暴露当前选择", () => {
+  const view = picker();
+  const buttons = () => {
+    const filters = elements(view.render()).find((element) => element.props.className === "gw-mp-filters");
+    assert.ok(filters);
+    return elements(filters).filter((element) => element.type === "button");
+  };
+
+  let [all, favorites, provider] = buttons();
+  assert.equal(all.props["aria-pressed"], true);
+  assert.equal(favorites.props["aria-pressed"], false);
+  assert.equal(provider.props["aria-pressed"], false);
+
+  favorites.props.onClick();
+  [all, favorites, provider] = buttons();
+  assert.equal(all.props["aria-pressed"], false);
+  assert.equal(favorites.props["aria-pressed"], true);
+  assert.equal(provider.props["aria-pressed"], false);
+
+  provider.props.onClick();
+  [all, favorites, provider] = buttons();
+  assert.equal(all.props["aria-pressed"], false);
+  assert.equal(favorites.props["aria-pressed"], false);
+  assert.equal(provider.props["aria-pressed"], true);
+});
+
 test("收藏按钮的 Enter 不会触发模型选择，模型行的 Enter 仍可选择", () => {
   const picked: string[] = [];
   const view = picker((item) => picked.push(item.model));

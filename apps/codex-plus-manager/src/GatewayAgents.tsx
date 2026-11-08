@@ -800,11 +800,11 @@ export function ModelList({
           <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
           <em>{tf("{0} 个", [total])}</em>
         </label>
-        <div className="gw-mp-filters">
-          <button data-active={scope === "all"} onClick={() => { setScope("all"); setQuery(""); if (listRef.current) listRef.current.scrollTop = 0; }} type="button">{t("全部")}</button>
-          <button data-active={favoritesOnly} onClick={() => pickScope("favorites")} type="button"><Star className="h-3 w-3" />{t("收藏")}</button>
+        <div className="gw-mp-filters" onFocus={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
+          <button aria-pressed={scope === "all"} data-active={scope === "all"} onClick={() => { setScope("all"); setQuery(""); if (listRef.current) listRef.current.scrollTop = 0; }} type="button">{t("全部")}</button>
+          <button aria-pressed={favoritesOnly} data-active={favoritesOnly} onClick={() => pickScope("favorites")} type="button"><Star className="h-3 w-3" />{t("收藏")}</button>
           {filters.map((section) => (
-            <button data-active={sectionOnly === section.key} key={section.key} onClick={() => pickScope({ section: section.key })} title={section.key === "group" || section.key === "auto" ? t(section.title) : section.title} type="button">
+            <button aria-pressed={sectionOnly === section.key} data-active={sectionOnly === section.key} key={section.key} onClick={() => pickScope({ section: section.key })} title={section.key === "group" || section.key === "auto" ? t(section.title) : section.title} type="button">
               {section.key === "group" ? <Waypoints className="h-3 w-3" /> : section.key === "auto" ? <Shuffle className="h-3 w-3" /> : <Avatar baseUrl={providersBySection.get(section.key)?.baseUrl} name={providersBySection.get(section.key)?.name ?? section.title} size="sm" />}
               <span>{section.key === "group" || section.key === "auto" ? t(section.title) : section.title.split(" · ")[0]}</span>
             </button>
