@@ -84,6 +84,14 @@ scripts/test.sh     端到端自检
 .cache/             上游静态资源缓存（直通时写入）
 ```
 
+mock 模式启动时会从 Claude 的本地 Electron 缓存读取固定版本的听写客户端，并将本地副本的普通听写 drain 基准延长到 125 秒；`thinkAloud` 分支仍为 60 秒。补丁只写入本目录 `.cache/`，不修改 Claude 应用缓存；源版本不匹配时会停止启动。恢复本地副本：
+
+```bash
+node scripts/patch-dictation-drain.mjs --restore
+```
+
+本地听写 helper 当前默认请求超时为 120 秒；helper 自身超时会先返回错误，客户端 drain 等待不会延长或重试 helper 请求。mock 模式启动使用 `--disable-http-cache`，确保客户端从本地代理读取该副本；passthrough 与 demo 不应用此补丁。启动脚本把 `CODEX_PLUS_STATE_DIR` 对齐到当前管理器实例：显式环境变量优先，其次是仓库内 `dist/local-build/Codex++.app` 对应的 `dist/local-build/state`，最后回退到 `$HOME/.codex-session-delete`。
+
 源码不包含本机录制的账号、会话模板和静态缓存；缺少录制时代理会使用内置占位数据。
 本文的真实界面验证基于本机已有录制，完整 UI 兼容性仍取决于本地接口数据与静态资源。
 

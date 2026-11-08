@@ -10,11 +10,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::{
+    Message,
+    handshake::server::{Request as WebSocketRequest, create_response, write_response},
+    protocol::{CloseFrame, Role, WebSocketConfig},
+};
+
+const DICTATION_WS_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DICTATION_WS_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(16 * 60);
+const DICTATION_WS_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const DICTATION_WS_MAX_CONTROL_BYTES: usize = 16 * 1024;
+const DICTATION_WS_MAX_INPUT_BYTES: usize = crate::dictation::MAX_AUDIO_BODY_BYTES;
+const DICTATION_WS_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+const DICTATION_WS_MAX_FRAMES: usize = 65_536;
+static DICTATION_WS_SESSION_SLOTS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+
+fn try_acquire_dictation_ws_slot(
+    slots: Arc<tokio::sync::Semaphore>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ()> {
+    slots.try_acquire_owned().map_err(|_| ())
+}
 
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
@@ -2151,6 +2172,19 @@ pub(crate) async fn handle_helper_connection_on(
         stream.shutdown().await?;
         return Ok(());
     }
+    if path == "/dictation/claude-stream" {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let settings = crate::dictation::effective_settings(&settings);
+        return handle_local_dictation_websocket(
+            stream,
+            method,
+            raw_path,
+            &request_headers,
+            request.read_ahead,
+            &settings,
+        )
+        .await;
+    }
     // 浏览器里的网页能对 127.0.0.1 发「简单请求」（不触发预检），读不到答复，但请求照样执行、照样计费。
     // Agent 都不带 Origin；带了的模型 / 生图 / 转写请求一律拒绝，免得本地服务被网页拿去用池里的额度。
     if method == "POST"
@@ -3610,6 +3644,7 @@ async fn handle_dictation_connection(
                     400 => "Bad Request",
                     403 => "Forbidden",
                     413 => "Payload Too Large",
+                    429 => "Too Many Requests",
                     504 => "Gateway Timeout",
                     _ => "Bad Gateway",
                 };
@@ -3637,6 +3672,431 @@ async fn handle_dictation_connection(
     stream.write_all(&response).await?;
     stream.shutdown().await?;
     Ok(())
+}
+
+fn dictation_stream_language(raw_path: &str) -> Result<Option<String>, &'static str> {
+    let Some((path, query)) = raw_path.split_once('?') else {
+        return Ok(None);
+    };
+    if path != "/dictation/claude-stream" {
+        return Err("invalid path");
+    }
+    let Some(language) = query.strip_prefix("language=") else {
+        return Err("unsupported query");
+    };
+    if language.contains('&') || !matches!(language, "auto" | "zh" | "en" | "yue" | "ja" | "ko") {
+        return Err("unsupported language");
+    }
+    Ok(Some(language.to_string()))
+}
+
+fn websocket_request_for_helper(
+    raw_path: &str,
+    raw_headers: &str,
+) -> anyhow::Result<WebSocketRequest> {
+    let mut request = WebSocketRequest::builder()
+        .method("GET")
+        .uri(raw_path)
+        .version(http::Version::HTTP_11);
+    for line in raw_headers.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        request = request.header(name.trim(), value.trim());
+    }
+    Ok(request.body(())?)
+}
+
+async fn reject_dictation_websocket(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    let body = serde_json::to_vec(&serde_json::json!({ "message": message }))?;
+    write_http_response(stream, status, "application/json; charset=utf-8", &body).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn handle_local_dictation_websocket(
+    mut stream: tokio::net::TcpStream,
+    method: &str,
+    raw_path: &str,
+    headers: &str,
+    read_ahead: Vec<u8>,
+    settings: &crate::settings::DictationSettings,
+) -> anyhow::Result<()> {
+    if method != "GET" || !crate::extension_backend::is_websocket_upgrade(headers) {
+        return reject_dictation_websocket(
+            &mut stream,
+            "426 Upgrade Required",
+            "语音接口需要 WebSocket 连接",
+        )
+        .await;
+    }
+    if header_value_from_headers(headers, "content-length").is_some_and(|value| value != "0")
+        || header_value_from_headers(headers, "transfer-encoding").is_some()
+    {
+        return reject_dictation_websocket(
+            &mut stream,
+            "400 Bad Request",
+            "WebSocket 握手不能包含 HTTP 请求体",
+        )
+        .await;
+    }
+    let token = header_value_from_headers(headers, crate::dictation::TOKEN_HEADER);
+    if !crate::dictation::valid_helper_token(token.as_deref()) {
+        return reject_dictation_websocket(&mut stream, "403 Forbidden", "语音请求未授权").await;
+    }
+    let language = match dictation_stream_language(raw_path) {
+        Ok(language) => language,
+        Err(_) => {
+            return reject_dictation_websocket(&mut stream, "400 Bad Request", "语音语言参数无效")
+                .await;
+        }
+    };
+    if let Err(error) = crate::dictation::ensure_local_sensevoice_available(settings) {
+        let status = match error.status {
+            403 => "403 Forbidden",
+            503 => "503 Service Unavailable",
+            _ => "400 Bad Request",
+        };
+        return reject_dictation_websocket(&mut stream, status, &error.message).await;
+    }
+    let stream_guard = match try_acquire_dictation_ws_slot(DICTATION_WS_SESSION_SLOTS.clone()) {
+        Ok(guard) => guard,
+        Err(_) => {
+            return reject_dictation_websocket(
+                &mut stream,
+                "429 Too Many Requests",
+                "本地语音识别正在忙，请稍后重试",
+            )
+            .await;
+        }
+    };
+
+    let request = match websocket_request_for_helper(raw_path, headers) {
+        Ok(request) => request,
+        Err(_) => {
+            return reject_dictation_websocket(
+                &mut stream,
+                "400 Bad Request",
+                "WebSocket 握手无效",
+            )
+            .await;
+        }
+    };
+    let response = match create_response(&request) {
+        Ok(response) => response,
+        Err(_) => {
+            return reject_dictation_websocket(
+                &mut stream,
+                "400 Bad Request",
+                "WebSocket 握手无效",
+            )
+            .await;
+        }
+    };
+    let mut response_bytes = Vec::new();
+    write_response(&mut response_bytes, &response)?;
+    stream.write_all(&response_bytes).await?;
+
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(DICTATION_WS_MAX_FRAME_BYTES);
+    config.max_frame_size = Some(DICTATION_WS_MAX_FRAME_BYTES);
+    let socket = tokio_tungstenite::WebSocketStream::from_partially_read(
+        stream,
+        read_ahead,
+        Role::Server,
+        Some(config),
+    )
+    .await;
+    let settings = settings.clone();
+    let mut stream_guard = Some(stream_guard);
+    run_local_dictation_stream(socket, language, move |pcm, language| {
+        let stream_guard = stream_guard.take();
+        let settings = settings.clone();
+        async move {
+            let Some(stream_guard) = stream_guard else {
+                return Err(500);
+            };
+            crate::dictation::transcribe_local_pcm16_with_guard(
+                &settings,
+                &pcm,
+                language.as_deref(),
+                Some(stream_guard),
+            )
+            .await
+            .map_err(|error| error.status)
+        }
+    })
+    .await
+}
+
+#[derive(Debug)]
+struct DictationWebSocketFailure {
+    code: u16,
+    reason: &'static str,
+}
+
+#[derive(Default)]
+struct DictationWebSocketBudget {
+    input_bytes: usize,
+    output_bytes: usize,
+    frames: usize,
+}
+
+impl DictationWebSocketBudget {
+    fn record_input(&mut self, bytes: usize) -> Result<(), DictationWebSocketFailure> {
+        self.frames = self.frames.saturating_add(1);
+        self.input_bytes = self.input_bytes.saturating_add(bytes);
+        if self.input_bytes > DICTATION_WS_MAX_INPUT_BYTES || self.frames > DICTATION_WS_MAX_FRAMES
+        {
+            return Err(DictationWebSocketFailure {
+                code: 1009,
+                reason: "WebSocket input budget exceeded",
+            });
+        }
+        Ok(())
+    }
+
+    fn record_output(&mut self, bytes: usize) -> Result<(), DictationWebSocketFailure> {
+        self.output_bytes = self.output_bytes.saturating_add(bytes);
+        if self.output_bytes > DICTATION_WS_MAX_OUTPUT_BYTES {
+            return Err(DictationWebSocketFailure {
+                code: 1009,
+                reason: "WebSocket output budget exceeded",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn append_local_dictation_pcm(
+    pcm: &mut Vec<u8>,
+    chunk: &[u8],
+    max_pcm_bytes: usize,
+) -> Result<(), DictationWebSocketFailure> {
+    if chunk.is_empty() {
+        return Err(DictationWebSocketFailure {
+            code: 1007,
+            reason: "empty PCM chunk",
+        });
+    }
+    if pcm.len().saturating_add(chunk.len()) > max_pcm_bytes {
+        return Err(DictationWebSocketFailure {
+            code: 1009,
+            reason: "PCM stream is too large",
+        });
+    }
+    pcm.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn receive_local_dictation_pcm<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    absolute_deadline: tokio::time::Instant,
+    idle_timeout: std::time::Duration,
+    budget: &mut DictationWebSocketBudget,
+) -> Result<Option<Vec<u8>>, DictationWebSocketFailure>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let max_pcm_bytes = crate::dictation::MAX_AUDIO_BODY_BYTES - 44;
+    let mut pcm = Vec::new();
+    loop {
+        let idle_deadline = tokio::time::Instant::now() + idle_timeout;
+        let message = match tokio::time::timeout_at(
+            idle_deadline.min(absolute_deadline),
+            socket.next(),
+        )
+        .await
+        {
+            Err(_) => {
+                return Err(DictationWebSocketFailure {
+                    code: 1008,
+                    reason: "stream timed out",
+                });
+            }
+            Ok(Some(Ok(message))) => message,
+            Ok(Some(Err(error))) => {
+                return Err(DictationWebSocketFailure {
+                    code: if matches!(error, tokio_tungstenite::tungstenite::Error::Capacity(_)) {
+                        1009
+                    } else {
+                        1002
+                    },
+                    reason: "invalid WebSocket message",
+                });
+            }
+            Ok(None) => return Ok(None),
+        };
+        match message {
+            Message::Binary(chunk) => {
+                budget.record_input(chunk.len())?;
+                append_local_dictation_pcm(&mut pcm, &chunk, max_pcm_bytes)?;
+            }
+            Message::Text(text) => {
+                budget.record_input(text.len())?;
+                if text.len() > DICTATION_WS_MAX_CONTROL_BYTES {
+                    return Err(DictationWebSocketFailure {
+                        code: 1009,
+                        reason: "control message is too large",
+                    });
+                }
+                let command: Value =
+                    serde_json::from_str(&text).map_err(|_| DictationWebSocketFailure {
+                        code: 1007,
+                        reason: "invalid control message",
+                    })?;
+                if !command
+                    .as_object()
+                    .is_some_and(|object| object.len() == 1 && object.contains_key("type"))
+                {
+                    return Err(DictationWebSocketFailure {
+                        code: 1008,
+                        reason: "unsupported control message",
+                    });
+                }
+                match command.get("type").and_then(Value::as_str) {
+                    Some("KeepAlive") => {}
+                    Some("CloseStream") => {
+                        if pcm.is_empty() || pcm.len() % 2 != 0 {
+                            return Err(DictationWebSocketFailure {
+                                code: 1007,
+                                reason: "PCM stream is empty or misaligned",
+                            });
+                        }
+                        return Ok(Some(pcm));
+                    }
+                    _ => {
+                        return Err(DictationWebSocketFailure {
+                            code: 1008,
+                            reason: "unsupported control message",
+                        });
+                    }
+                }
+            }
+            Message::Ping(payload) => {
+                budget.record_input(payload.len())?;
+                budget.record_output(payload.len())?;
+                match tokio::time::timeout_at(
+                    absolute_deadline,
+                    socket.send(Message::Pong(payload)),
+                )
+                .await
+                {
+                    Err(_) => {
+                        return Err(DictationWebSocketFailure {
+                            code: 1008,
+                            reason: "stream timed out",
+                        });
+                    }
+                    Ok(Err(_)) => {
+                        return Err(DictationWebSocketFailure {
+                            code: 1002,
+                            reason: "WebSocket ping failed",
+                        });
+                    }
+                    Ok(Ok(())) => {}
+                }
+            }
+            Message::Pong(payload) => budget.record_input(payload.len())?,
+            Message::Close(_) => {
+                budget.record_input(0)?;
+                return Ok(None);
+            }
+            Message::Frame(_) => {
+                return Err(DictationWebSocketFailure {
+                    code: 1003,
+                    reason: "unsupported WebSocket frame",
+                });
+            }
+        }
+    }
+}
+
+async fn close_dictation_websocket<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    code: u16,
+    reason: &'static str,
+) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    socket
+        .send(Message::Close(Some(CloseFrame {
+            code: code.into(),
+            reason: reason.into(),
+        })))
+        .await?;
+    socket.flush().await?;
+    Ok(())
+}
+
+async fn run_local_dictation_stream<S, F, Fut>(
+    mut socket: tokio_tungstenite::WebSocketStream<S>,
+    language: Option<String>,
+    transcribe: F,
+) -> anyhow::Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    F: FnOnce(Vec<u8>, Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<String, u16>>,
+{
+    let deadline = tokio::time::Instant::now() + DICTATION_WS_SESSION_TIMEOUT;
+    let mut budget = DictationWebSocketBudget::default();
+    let pcm = match receive_local_dictation_pcm(
+        &mut socket,
+        deadline,
+        DICTATION_WS_IDLE_TIMEOUT,
+        &mut budget,
+    )
+    .await
+    {
+        Ok(Some(pcm)) => pcm,
+        Ok(None) => {
+            close_dictation_websocket(&mut socket, 1000, "").await?;
+            return Ok(());
+        }
+        Err(failure) => {
+            close_dictation_websocket(&mut socket, failure.code, failure.reason).await?;
+            return Ok(());
+        }
+    };
+    let text = match tokio::time::timeout_at(deadline, transcribe(pcm, language)).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(status)) => {
+            close_dictation_websocket(
+                &mut socket,
+                if status == 429 { 1013 } else { 1011 },
+                if status == 429 {
+                    "local transcription busy"
+                } else {
+                    "local transcription failed"
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(_) => {
+            close_dictation_websocket(&mut socket, 1011, "local transcription timed out").await?;
+            return Ok(());
+        }
+    };
+    let transcript =
+        serde_json::to_string(&serde_json::json!({ "type": "TranscriptText", "data": text }))?;
+    let endpoint = serde_json::to_string(&serde_json::json!({ "type": "TranscriptEndpoint" }))?;
+    if budget
+        .record_output(transcript.len().saturating_add(endpoint.len()))
+        .is_err()
+    {
+        close_dictation_websocket(&mut socket, 1009, "transcript is too large").await?;
+        return Ok(());
+    }
+    tokio::time::timeout_at(deadline, socket.send(Message::Text(transcript.into()))).await??;
+    tokio::time::timeout_at(deadline, socket.send(Message::Text(endpoint.into()))).await??;
+    close_dictation_websocket(&mut socket, 1000, "").await
 }
 
 async fn transcribe_until_disconnect(
@@ -3859,6 +4319,358 @@ mod dictation_http_tests {
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod dictation_websocket_tests {
+    use super::*;
+    use tokio_tungstenite::{accept_async, connect_async};
+
+    fn mask_client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        assert!(payload.len() < 126);
+        let mask = [0x13, 0x37, 0x42, 0x91];
+        let mut frame = vec![0x80 | opcode, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ mask[index % mask.len()]),
+        );
+        frame
+    }
+
+    #[test]
+    fn dictation_stream_language_accepts_only_the_local_allowlist() {
+        assert_eq!(
+            dictation_stream_language("/dictation/claude-stream?language=zh").unwrap(),
+            Some("zh".to_string())
+        );
+        assert_eq!(
+            dictation_stream_language("/dictation/claude-stream").unwrap(),
+            None
+        );
+        for path in [
+            "/dictation/claude-stream?language=zh%2Fen",
+            "/dictation/claude-stream?language=zh&language=en",
+            "/dictation/claude-stream?token=secret",
+        ] {
+            assert!(dictation_stream_language(path).is_err());
+        }
+    }
+
+    #[test]
+    fn dictation_stream_slot_rejects_an_excess_session() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let guard = try_acquire_dictation_ws_slot(slots.clone()).unwrap();
+        assert!(try_acquire_dictation_ws_slot(slots.clone()).is_err());
+        drop(guard);
+        assert!(try_acquire_dictation_ws_slot(slots).is_ok());
+    }
+
+    #[test]
+    fn dictation_pcm_buffer_enforces_empty_and_total_byte_limits() {
+        let mut pcm = Vec::new();
+        assert_eq!(
+            append_local_dictation_pcm(&mut pcm, &[], 4)
+                .unwrap_err()
+                .code,
+            1007
+        );
+        append_local_dictation_pcm(&mut pcm, &[1, 2], 4).unwrap();
+        append_local_dictation_pcm(&mut pcm, &[3, 4], 4).unwrap();
+        assert_eq!(pcm, vec![1, 2, 3, 4]);
+        assert_eq!(
+            append_local_dictation_pcm(&mut pcm, &[5, 6], 4)
+                .unwrap_err()
+                .code,
+            1009
+        );
+    }
+
+    #[test]
+    fn dictation_websocket_budget_caps_both_directions_and_frame_count() {
+        let mut budget = DictationWebSocketBudget::default();
+        budget.record_input(DICTATION_WS_MAX_INPUT_BYTES).unwrap();
+        assert_eq!(budget.record_input(1).unwrap_err().code, 1009);
+
+        let mut budget = DictationWebSocketBudget::default();
+        budget.record_output(DICTATION_WS_MAX_OUTPUT_BYTES).unwrap();
+        assert_eq!(budget.record_output(1).unwrap_err().code, 1009);
+
+        let mut budget = DictationWebSocketBudget::default();
+        for _ in 0..DICTATION_WS_MAX_FRAMES {
+            budget.record_input(0).unwrap();
+        }
+        assert_eq!(budget.record_input(0).unwrap_err().code, 1009);
+    }
+
+    #[tokio::test]
+    async fn dictation_upgrade_preserves_pipelined_pcm_and_control_frames() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await.unwrap();
+            assert!(request.body.is_empty());
+            let read_ahead = request.read_ahead;
+            let headers = String::from_utf8(request.headers).unwrap();
+            let request =
+                websocket_request_for_helper("/dictation/claude-stream", &headers).unwrap();
+            let response = create_response(&request).unwrap();
+            let mut response_bytes = Vec::new();
+            write_response(&mut response_bytes, &response).unwrap();
+            stream.write_all(&response_bytes).await.unwrap();
+            let mut socket = tokio_tungstenite::WebSocketStream::from_partially_read(
+                stream,
+                read_ahead,
+                Role::Server,
+                None,
+            )
+            .await;
+            let mut budget = DictationWebSocketBudget::default();
+            receive_local_dictation_pcm(
+                &mut socket,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(5),
+                &mut budget,
+            )
+            .await
+            .unwrap()
+        });
+
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        let mut request = format!(
+            "GET /dictation/claude-stream HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n\r\n"
+        )
+        .into_bytes();
+        request.extend(mask_client_frame(0x2, &[0x10, 0x00]));
+        request.extend(mask_client_frame(0x1, br#"{"type":"KeepAlive"}"#));
+        request.extend(mask_client_frame(0x2, &[0x20, 0x00]));
+        request.extend(mask_client_frame(0x1, br#"{"type":"CloseStream"}"#));
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client.write_all(&request).await.unwrap();
+        let mut status = [0; 12];
+        client.read_exact(&mut status).await.unwrap();
+        assert_eq!(&status, b"HTTP/1.1 101");
+        assert_eq!(server.await.unwrap(), Some(vec![0x10, 0x00, 0x20, 0x00]));
+    }
+
+    #[tokio::test]
+    async fn dictation_stream_idle_and_absolute_deadlines_stop_open_connections() {
+        for (absolute_timeout, idle_timeout) in [
+            (
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(100),
+            ),
+            (
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(20),
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = accept_async(stream).await.unwrap();
+                let mut budget = DictationWebSocketBudget::default();
+                receive_local_dictation_pcm(
+                    &mut socket,
+                    tokio::time::Instant::now() + absolute_timeout,
+                    idle_timeout,
+                    &mut budget,
+                )
+                .await
+                .unwrap_err()
+                .code
+            });
+            let (_client, _) = connect_async(format!("ws://{address}/dictation/claude-stream"))
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), server)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                1008
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dictation_stream_emits_text_endpoint_and_normal_close() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = accept_async(stream).await.unwrap();
+            run_local_dictation_stream(
+                socket,
+                Some("zh".to_string()),
+                |pcm, language| async move {
+                    assert_eq!(pcm, vec![0x10, 0x00, 0x20, 0x00]);
+                    assert_eq!(language.as_deref(), Some("zh"));
+                    Ok("本地识别".to_string())
+                },
+            )
+            .await
+            .unwrap();
+        });
+        let (mut client, _) = connect_async(format!("ws://{address}/dictation/claude-stream"))
+            .await
+            .unwrap();
+        client
+            .send(Message::Binary(vec![0x10, 0x00, 0x20, 0x00].into()))
+            .await
+            .unwrap();
+        client
+            .send(Message::Text(r#"{"type":"CloseStream"}"#.into()))
+            .await
+            .unwrap();
+        let transcript = client.next().await.unwrap().unwrap();
+        let Message::Text(transcript) = transcript else {
+            panic!("expected TranscriptText");
+        };
+        let transcript: Value = serde_json::from_str(&transcript).unwrap();
+        assert_eq!(transcript["type"], "TranscriptText");
+        assert_eq!(transcript["data"], "本地识别");
+        let endpoint = client.next().await.unwrap().unwrap();
+        let Message::Text(endpoint) = endpoint else {
+            panic!("expected TranscriptEndpoint");
+        };
+        let endpoint: Value = serde_json::from_str(&endpoint).unwrap();
+        assert_eq!(
+            endpoint,
+            serde_json::json!({ "type": "TranscriptEndpoint" })
+        );
+        let close = client.next().await.unwrap().unwrap();
+        let Message::Close(Some(close)) = close else {
+            panic!("expected normal close");
+        };
+        assert_eq!(u16::from(close.code), 1000);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dictation_stream_rejects_unsupported_controls() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = accept_async(stream).await.unwrap();
+            run_local_dictation_stream(socket, None, |_, _| async {
+                panic!("unsupported control must not reach transcription")
+            })
+            .await
+            .unwrap();
+        });
+        let (mut client, _) = connect_async(format!("ws://{address}/dictation/claude-stream"))
+            .await
+            .unwrap();
+        client
+            .send(Message::Text(
+                r#"{"type":"CloseStream","extra":true}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let close = client.next().await.unwrap().unwrap();
+        let Message::Close(Some(close)) = close else {
+            panic!("expected policy close");
+        };
+        assert_eq!(u16::from(close.code), 1008);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dictation_stream_rejects_remote_provider_before_upgrade() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let settings = crate::settings::DictationSettings {
+            enabled: true,
+            base_url: "https://example.invalid/v1".to_string(),
+            api_key: "not-a-real-key".to_string(),
+            ..Default::default()
+        };
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let headers = format!(
+                "GET /dictation/claude-stream HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{}: {}\r\n\r\n",
+                crate::dictation::TOKEN_HEADER,
+                crate::dictation::helper_token()
+            );
+            handle_local_dictation_websocket(
+                stream,
+                "GET",
+                "/dictation/claude-stream",
+                &headers,
+                Vec::new(),
+                &settings,
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(
+            !response
+                .windows(crate::dictation::helper_token().len())
+                .any(|window| window == crate::dictation::helper_token().as_bytes())
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dictation_stream_rejects_missing_capability_before_upgrade() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let settings = crate::settings::DictationSettings {
+            enabled: true,
+            provider: crate::settings::DictationProvider::SenseVoice,
+            base_url: "local://sensevoice".to_string(),
+            ..Default::default()
+        };
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let headers = format!(
+                "GET /dictation/claude-stream HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+            );
+            handle_local_dictation_websocket(
+                stream,
+                "GET",
+                "/dictation/claude-stream",
+                &headers,
+                Vec::new(),
+                &settings,
+            )
+            .await
+            .unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(
+            !response
+                .windows(crate::dictation::helper_token().len())
+                .any(|window| window == crate::dictation::helper_token().as_bytes())
+        );
+        server.await.unwrap();
     }
 }
 
@@ -4626,6 +5438,7 @@ fn http_body_limits_from(decoded: usize) -> HttpBodyLimits {
 struct HttpRequest {
     headers: Vec<u8>,
     body: Vec<u8>,
+    read_ahead: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -4792,6 +5605,7 @@ async fn read_http_request_with_limits(
     let mut header_end = None;
     let mut framing = HttpBodyFraming::Empty;
     let mut chunked_scan = ChunkedScanState::default();
+    let mut local_dictation_upgrade = false;
 
     loop {
         let read = stream.read(&mut chunk).await?;
@@ -4804,6 +5618,13 @@ async fn read_http_request_with_limits(
             if let Some(end) = header_end {
                 if end > MAX_HTTP_HEADER_BYTES {
                     return Err(HttpRequestReadError::bad_request("HTTP 请求头过大"));
+                }
+                if is_local_dictation_ws_upgrade(&buffer[..end]) {
+                    // The first WebSocket frame can arrive in the same TCP read as the
+                    // upgrade headers. Do not consume it as an HTTP body.
+                    local_dictation_upgrade = true;
+                    framing = HttpBodyFraming::Empty;
+                    break;
                 }
                 framing = http_body_framing(&buffer[..end])?;
             } else if buffer.len() > MAX_HTTP_HEADER_BYTES {
@@ -4851,12 +5672,32 @@ async fn read_http_request_with_limits(
             }
         },
     };
+    let read_ahead = if local_dictation_upgrade {
+        encoded_body.to_vec()
+    } else {
+        Vec::new()
+    };
 
-    Ok(HttpRequest { headers, body })
+    Ok(HttpRequest {
+        headers,
+        body,
+        read_ahead,
+    })
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn is_local_dictation_ws_upgrade(headers: &[u8]) -> bool {
+    let headers = String::from_utf8_lossy(headers);
+    let request_line = headers.lines().next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let raw_path = parts.next().unwrap_or_default();
+    method == "GET"
+        && raw_path.split('?').next() == Some("/dictation/claude-stream")
+        && crate::extension_backend::is_websocket_upgrade(&headers)
 }
 
 fn http_body_framing(headers: &[u8]) -> Result<HttpBodyFraming, HttpRequestReadError> {

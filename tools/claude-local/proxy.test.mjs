@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import tls from "node:tls";
@@ -16,6 +18,13 @@ let gateway;
 let proxy;
 let proxyClosed;
 let proxyPort;
+let dictationFixture;
+let dictationFixturePort;
+let dictationStateDir;
+let dictationCacheDir;
+let dictationAssetPath;
+let dictationUpgrade;
+let dictationFrame;
 
 async function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -84,7 +93,182 @@ async function request(pathname, { host, body, method = body === undefined ? "GE
   }
 }
 
+async function requestText(host, pathname) {
+  const connect = http.request({
+    hostname: "127.0.0.1", port: proxyPort, method: "CONNECT", path: `${host}:443`,
+  });
+  connect.end();
+  const [res, socket, head] = await once(connect, "connect");
+  assert.equal(res.statusCode, 200);
+  assert.equal(head.length, 0);
+  const secure = tls.connect({
+    socket, servername: host, ca: fs.readFileSync(path.join(here, "ca/ca.pem")),
+  });
+  await once(secure, "secureConnect");
+  const agent = new https.Agent({ keepAlive: false });
+  agent.createConnection = () => secure;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: host, path: pathname, method: "GET", headers: { connection: "close" }, agent,
+      });
+      req.on("error", reject);
+      req.on("response", (response) => {
+        const chunks = [];
+        response.on("error", reject);
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => resolve({
+          status: response.statusCode,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      });
+      req.end();
+    });
+    return result;
+  } finally {
+    agent.destroy();
+  }
+}
+
+function websocketAccept(key) {
+  return crypto.createHash("sha1")
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest("base64");
+}
+
+function websocketTextFrame(text) {
+  const payload = Buffer.from(text);
+  assert.ok(payload.length < 126);
+  return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+}
+
+function websocketCloseFrame(code = 1000) {
+  return Buffer.from([0x88, 0x02, (code >> 8) & 0xff, code & 0xff]);
+}
+
+function websocketClientFrame(payload) {
+  const data = Buffer.from(payload);
+  assert.ok(data.length < 126);
+  const mask = crypto.randomBytes(4);
+  const frame = Buffer.alloc(2 + mask.length + data.length);
+  frame[0] = 0x82;
+  frame[1] = 0x80 | data.length;
+  mask.copy(frame, 2);
+  for (let index = 0; index < data.length; index += 1) {
+    frame[6 + index] = data[index] ^ mask[index % 4];
+  }
+  return frame;
+}
+
+async function openTlsUpgrade({
+  host = "claude.ai",
+  pathname = "/api/ws/speech_to_text/voice_stream",
+  origin = "https://claude.ai",
+  extraHeaders = {},
+} = {}) {
+  const connect = http.request({
+    hostname: "127.0.0.1", port: proxyPort, method: "CONNECT", path: `${host}:443`,
+  });
+  connect.end();
+  const [res, socket, head] = await once(connect, "connect");
+  assert.equal(res.statusCode, 200);
+  assert.equal(head.length, 0);
+  const secure = tls.connect({
+    socket, servername: host, ca: fs.readFileSync(path.join(here, "ca/ca.pem")),
+  });
+  await once(secure, "secureConnect");
+  const key = crypto.randomBytes(16).toString("base64");
+  const headers = {
+    Host: host,
+    Upgrade: "websocket",
+    Connection: "Upgrade",
+    "Sec-WebSocket-Key": key,
+    "Sec-WebSocket-Version": "13",
+    ...(origin ? { Origin: origin } : {}),
+    ...extraHeaders,
+  };
+  const rawHeaders = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join("");
+  const responseBytes = new Promise((resolve, reject) => {
+    let bytes = Buffer.alloc(0);
+    const timeout = setTimeout(() => reject(new Error("WebSocket upgrade timed out")), 5000);
+    const onData = (chunk) => {
+      bytes = Buffer.concat([bytes, chunk]);
+      if (bytes.includes(Buffer.from("\r\n\r\n"))) {
+        clearTimeout(timeout);
+        secure.off("error", onError);
+        secure.off("data", onData);
+        resolve(bytes);
+      }
+    };
+    const onError = (error) => {
+      clearTimeout(timeout);
+      secure.off("data", onData);
+      reject(error);
+    };
+    secure.on("data", onData);
+    secure.once("error", onError);
+  });
+  secure.write(`GET ${pathname} HTTP/1.1\r\n${rawHeaders}\r\n`);
+  const response = await responseBytes;
+  const headerEnd = response.indexOf(Buffer.from("\r\n\r\n")) + 4;
+  return {
+    secure,
+    key,
+    status: response.subarray(0, headerEnd).toString("latin1"),
+    remainder: response.subarray(headerEnd),
+  };
+}
+
 before(async () => {
+  dictationStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-local-dictation-"));
+  dictationCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-local-cache-"));
+  const assetHost = "assets-proxy.anthropic.com";
+  dictationAssetPath = "/claude-ai/v2/assets/v1/c342ae4ef-ROR3Yba4.js";
+  const assetCacheKey = `${assetHost}${dictationAssetPath}`;
+  const assetCacheName = crypto.createHash("sha1").update(assetCacheKey).digest("hex");
+  const assetBody = Buffer.from('import{ph as e}from"./preload-helper-test.js";const D=125e3;const A=6e4;');
+  fs.writeFileSync(path.join(dictationCacheDir, assetCacheName), assetBody, { mode: 0o600 });
+  fs.writeFileSync(
+    path.join(dictationCacheDir, `${assetCacheName}.json`),
+    JSON.stringify({
+      status: 200,
+      headers: { "content-type": "text/javascript; charset=utf-8" },
+      url: assetCacheKey,
+    }),
+    { mode: 0o600 },
+  );
+  dictationFixture = http.createServer();
+  dictationFixture.on("upgrade", (req, socket, head) => {
+    dictationUpgrade = {
+      path: req.url,
+      token: req.headers["x-codex-plus-dictation-token"],
+      cookie: req.headers.cookie,
+      authorization: req.headers.authorization,
+      host: req.headers.host,
+    };
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${websocketAccept(req.headers["sec-websocket-key"])}\r\n\r\n`,
+    );
+    if (head.length) socket.write(head);
+    let replied = false;
+    socket.on("data", (chunk) => {
+      dictationFrame = Buffer.concat([dictationFrame || Buffer.alloc(0), chunk]);
+      if (!replied) {
+        replied = true;
+        socket.end(Buffer.concat([websocketTextFrame("helper-ok"), websocketCloseFrame()]));
+      }
+    });
+  });
+  dictationFixturePort = await listen(dictationFixture);
+  fs.writeFileSync(
+    path.join(dictationStateDir, "dictation-helper.json"),
+    JSON.stringify({ port: dictationFixturePort, token: "123e4567-e89b-42d3-a456-426614174000" }),
+    { mode: 0o600 },
+  );
+
   gateway = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -102,7 +286,12 @@ before(async () => {
   proxy = spawn(process.execPath, [
     path.join(here, "proxy.mjs"), "--port", String(proxyPort), "--mode", "mock", "--log", "0",
   ], {
-    env: { ...process.env, CLAUDE_LOCAL_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}` },
+    env: {
+      ...process.env,
+      CLAUDE_LOCAL_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
+      CLAUDE_LOCAL_CACHE_DIR: dictationCacheDir,
+      CODEX_PLUS_STATE_DIR: dictationStateDir,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   proxyClosed = new Promise((resolve) => proxy.once("close", resolve));
@@ -129,6 +318,77 @@ after(async () => {
   }
   if (proxyClosed) await proxyClosed;
   if (gateway) await new Promise((resolve) => gateway.close(resolve));
+  if (dictationFixture) await new Promise((resolve) => dictationFixture.close(resolve));
+  if (dictationStateDir) {
+    fs.unlinkSync(path.join(dictationStateDir, "dictation-helper.json"));
+    fs.rmdirSync(dictationStateDir);
+  }
+  if (dictationCacheDir) {
+    for (const file of fs.readdirSync(dictationCacheDir)) {
+      fs.unlinkSync(path.join(dictationCacheDir, file));
+    }
+    fs.rmdirSync(dictationCacheDir);
+  }
+});
+
+test("mock mode serves the patched Claude dictation asset from the local cache", async () => {
+  const result = await requestText("assets-proxy.anthropic.com", dictationAssetPath);
+  assert.equal(result.status, 200);
+  assert.match(result.body, /D=125e3/);
+  assert.doesNotMatch(result.body, /D=2e3/);
+});
+
+test("Claude dictation websocket is authorized locally and forwards only bounded metadata", async () => {
+  const clientFrame = websocketClientFrame("synthetic-pcm-frame");
+  const result = await openTlsUpgrade({
+    pathname: "/api/ws/speech_to_text/voice_stream?language=zh&stt_provider=deepgram-nova3&organization_uuid=private",
+    extraHeaders: { Cookie: "session=private", Authorization: "Bearer private" },
+  });
+  assert.match(result.status, /^HTTP\/1\.1 101 /);
+  assert.equal(result.status.includes("123e4567-e89b-42d3-a456-426614174000"), false);
+  assert.deepEqual(dictationUpgrade, {
+    path: "/dictation/claude-stream?language=zh",
+    token: "123e4567-e89b-42d3-a456-426614174000",
+    cookie: undefined,
+    authorization: undefined,
+    host: `127.0.0.1:${dictationFixturePort}`,
+  });
+  dictationFrame = undefined;
+  const clientResponse = new Promise((resolve, reject) => {
+    let bytes = result.remainder;
+    const timeout = setTimeout(() => reject(new Error("helper response did not close cleanly")), 3000);
+    const onData = (chunk) => {
+      bytes = Buffer.concat([bytes, chunk]);
+    };
+    const onClose = () => {
+      clearTimeout(timeout);
+      result.secure.off("error", onError);
+      result.secure.off("data", onData);
+      resolve(bytes);
+    };
+    const onError = (error) => {
+      clearTimeout(timeout);
+      result.secure.off("data", onData);
+      result.secure.off("close", onClose);
+      reject(error);
+    };
+    result.secure.on("data", onData);
+    result.secure.once("error", onError);
+    result.secure.once("close", onClose);
+  });
+  result.secure.write(clientFrame);
+  const responseBytes = await clientResponse;
+  assert.ok(dictationFrame.includes(clientFrame));
+  assert.ok(responseBytes.includes(websocketTextFrame("helper-ok")));
+  assert.ok(responseBytes.includes(websocketCloseFrame()));
+});
+
+test("Claude dictation websocket rejects untrusted origins before reaching the helper", async () => {
+  const previous = dictationUpgrade;
+  const result = await openTlsUpgrade({ origin: "https://attacker.example" });
+  assert.match(result.status, /^HTTP\/1\.1 403 /);
+  assert.equal(dictationUpgrade, previous);
+  result.secure.destroy();
 });
 
 for (const host of [undefined, "api.anthropic.com", "claude.ai"]) {

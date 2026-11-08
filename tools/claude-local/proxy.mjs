@@ -19,6 +19,7 @@ import https from "node:https";
 import tls from "node:tls";
 import net from "node:net";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -35,10 +36,19 @@ const PORT = Number(arg("port", "8899"));
 const MODE = arg("mode", "mock"); // mock | passthrough | demo
 const UPSTREAM = arg("upstream", "https://claude.ai");
 const CA_DIR = arg("ca", path.join(here, "ca"));
-const CACHE_DIR = path.join(here, ".cache");
+const APP_STATE_DIR = process.env.CODEX_PLUS_STATE_DIR || path.join(os.homedir(), ".codex-session-delete");
+const CACHE_DIR = process.env.CLAUDE_LOCAL_CACHE_DIR || path.join(here, ".cache");
 const LOG = arg("log", "1") !== "0";
 const GATEWAY_URL = process.env.CLAUDE_LOCAL_GATEWAY_URL || "http://127.0.0.1:3425";
 const GATEWAY_KEY = process.env.CLAUDE_LOCAL_GATEWAY_KEY || "magpie";
+const DICTATION_WS_PATH = "/api/ws/speech_to_text/voice_stream";
+const DICTATION_HELPER_PATH = "/dictation/claude-stream";
+const MAX_DICTATION_WS_CONNECTIONS = 4;
+const MAX_DICTATION_WS_BYTES = 26 * 1024 * 1024;
+const MAX_DICTATION_WS_IDLE_MS = 130_000;
+const MAX_DICTATION_WS_DURATION_MS = 16 * 60_000;
+const DICTATION_ALLOWED_HOSTS = new Set(["claude.ai", "claude.com", "api.anthropic.com"]);
+const DICTATION_ALLOWED_ORIGINS = new Set(["https://claude.ai", "https://claude.com"]);
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
@@ -824,6 +834,38 @@ function handle(req, res, hostHeader) {
   const url = new URL(req.url, `https://${host}`);
   log(`${req.method} ${url.pathname}${url.search}`);
 
+  if (
+    MODE === "mock" &&
+    req.method === "GET" &&
+    url.hostname.toLowerCase() === "assets-proxy.anthropic.com" &&
+    url.pathname === "/claude-ai/v2/assets/v1/c342ae4ef-ROR3Yba4.js" &&
+    !url.search
+  ) {
+    const cacheKey = `${url.host}${url.pathname}`;
+    const cachedPath = cachePathFor(cacheKey);
+    const metaPath = `${cachedPath}.json`;
+    if (fs.existsSync(cachedPath) && fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      const body = fs.readFileSync(cachedPath);
+      const patched = body.includes(Buffer.from("D=125e3")) && !body.includes(Buffer.from("D=2e3"));
+      if (
+        meta.status === 200 &&
+        meta.url === cacheKey &&
+        typeof meta.headers?.["content-type"] === "string" &&
+        !meta.headers?.["content-encoding"] &&
+        patched
+      ) {
+        res.writeHead(200, {
+          ...meta.headers,
+          "content-length": body.length,
+          "cache-control": "no-store",
+        });
+        log(`LOCAL DICTATION ASSET CACHE HIT ${url.pathname}`);
+        return res.end(body);
+      }
+    }
+  }
+
   // 只有主站 claude.ai/claude.com 本身走 mock；其余子域（downloads/assets-proxy 等）
   // 和其他 MITM 域一样直通真 host —— 否则 downloads.claude.ai 会被改写成 claude.ai 而 404。
   if (!/^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/i.test(host)) {
@@ -1107,6 +1149,223 @@ function handle(req, res, hostHeader) {
 
 // 内层 HTTP server：处理解密后的请求
 const inner = http.createServer((req, res) => handle(req, res, req.headers.host));
+
+let activeDictationWsConnections = 0;
+
+function rejectUpgrade(socket, status, reason) {
+  if (socket.destroyed) return;
+  const body = Buffer.from(`${reason}\n`);
+  socket.end(
+    `HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${body.length}\r\n\r\n${body.toString("utf8")}`,
+  );
+}
+
+function isClaudeHostname(value) {
+  if (typeof value !== "string") return false;
+  let parsed;
+  try {
+    parsed = new URL(`https://${value}`);
+  } catch {
+    return false;
+  }
+  return !parsed.username && !parsed.password &&
+    (!parsed.port || parsed.port === "443") &&
+    DICTATION_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase());
+}
+
+function dictationLanguage(requestUrl) {
+  let parsed;
+  try {
+    parsed = new URL(requestUrl, "https://claude.ai");
+  } catch {
+    return null;
+  }
+  if (parsed.pathname !== DICTATION_WS_PATH || parsed.search.length > 2048) return null;
+  const values = parsed.searchParams.getAll("language");
+  if (values.length > 1) return null;
+  const raw = (values[0] || "auto").trim().toLowerCase();
+  const language = raw.split(/[-_]/, 1)[0];
+  return ["auto", "zh", "en", "yue", "ja", "ko"].includes(language) ? language : null;
+}
+
+function readDictationReceipt() {
+  const receiptPath = path.join(APP_STATE_DIR, "dictation-helper.json");
+  try {
+    const metadata = fs.lstatSync(receiptPath);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) return null;
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) return null;
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+    if (
+      !Number.isInteger(receipt.port) || receipt.port < 1 || receipt.port > 65535 ||
+      typeof receipt.token !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.token)
+    ) return null;
+    return receipt;
+  } catch {
+    return null;
+  }
+}
+
+function expectedWebSocketAccept(key) {
+  return crypto.createHash("sha1")
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest("base64");
+}
+
+function validWebSocketKey(key) {
+  if (typeof key !== "string") return false;
+  const decoded = Buffer.from(key, "base64");
+  return decoded.length === 16 && decoded.toString("base64") === key;
+}
+
+function responseUpgradeHeaders(response) {
+  let raw = `HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage || ""}\r\n`;
+  for (let index = 0; index < response.rawHeaders.length; index += 2) {
+    raw += `${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}\r\n`;
+  }
+  return `${raw}\r\n`;
+}
+
+function handleDictationUpgrade(req, clientSocket, head) {
+  const language = dictationLanguage(req.url || "");
+  if (language === null) return rejectUpgrade(clientSocket, "404 Not Found", "not found");
+  if (MODE !== "mock") return rejectUpgrade(clientSocket, "503 Service Unavailable", "local dictation is unavailable");
+  if (!isClaudeHostname(req.headers.host)) return rejectUpgrade(clientSocket, "403 Forbidden", "forbidden");
+  if (req.headers.origin) {
+    let origin;
+    try {
+      origin = new URL(req.headers.origin);
+    } catch {
+      return rejectUpgrade(clientSocket, "403 Forbidden", "forbidden");
+    }
+    if (
+      origin.protocol !== "https:" ||
+      origin.username ||
+      origin.password ||
+      origin.pathname !== "/" ||
+      origin.search ||
+      origin.hash ||
+      !DICTATION_ALLOWED_ORIGINS.has(origin.origin)
+    ) {
+      return rejectUpgrade(clientSocket, "403 Forbidden", "forbidden");
+    }
+  }
+  const connection = String(req.headers.connection || "").toLowerCase().split(",").map((part) => part.trim());
+  const key = req.headers["sec-websocket-key"];
+  if (
+    req.method !== "GET" ||
+    String(req.headers.upgrade || "").toLowerCase() !== "websocket" ||
+    !connection.includes("upgrade") ||
+    req.headers["sec-websocket-version"] !== "13" ||
+    !validWebSocketKey(key) ||
+    head.length > 64 * 1024
+  ) return rejectUpgrade(clientSocket, "400 Bad Request", "invalid websocket request");
+  if (activeDictationWsConnections >= MAX_DICTATION_WS_CONNECTIONS) {
+    return rejectUpgrade(clientSocket, "503 Service Unavailable", "local dictation is busy");
+  }
+  const receipt = readDictationReceipt();
+  if (!receipt) return rejectUpgrade(clientSocket, "503 Service Unavailable", "local dictation is unavailable");
+
+  activeDictationWsConnections += 1;
+  let finished = false;
+  let transferredBytes = head.length;
+  let idleTimer;
+  let durationTimer;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(idleTimer);
+    clearTimeout(durationTimer);
+    activeDictationWsConnections = Math.max(0, activeDictationWsConnections - 1);
+  };
+  const request = http.request({
+    hostname: "127.0.0.1",
+    port: receipt.port,
+    method: "GET",
+    path: `${DICTATION_HELPER_PATH}?language=${encodeURIComponent(language)}`,
+    agent: false,
+    headers: {
+      host: `127.0.0.1:${receipt.port}`,
+      connection: "Upgrade",
+      upgrade: "websocket",
+      "sec-websocket-key": key,
+      "sec-websocket-version": "13",
+      "x-codex-plus-dictation-token": receipt.token,
+    },
+  });
+  clientSocket.pause();
+  clientSocket.once("close", () => {
+    finish();
+    request.destroy();
+  });
+  const fail = () => {
+    finish();
+    if (!clientSocket.destroyed) rejectUpgrade(clientSocket, "503 Service Unavailable", "local dictation is unavailable");
+  };
+  request.setTimeout(10000, () => request.destroy());
+  request.on("upgrade", (response, helperSocket, helperHead) => {
+    request.setTimeout(0);
+    if (
+      response.statusCode !== 101 ||
+      String(response.headers.upgrade || "").toLowerCase() !== "websocket" ||
+      response.headers["sec-websocket-accept"] !== expectedWebSocketAccept(key)
+    ) {
+      helperSocket.destroy();
+      return fail();
+    }
+    const closeNow = () => {
+      finish();
+      if (!clientSocket.destroyed) clientSocket.destroy();
+      if (!helperSocket.destroyed) helperSocket.destroy();
+    };
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(closeNow, MAX_DICTATION_WS_IDLE_MS);
+    };
+    const accountBytes = (chunk) => {
+      transferredBytes += chunk.length;
+      if (transferredBytes > MAX_DICTATION_WS_BYTES) {
+        closeNow();
+        return;
+      }
+      resetIdleTimer();
+    };
+    transferredBytes += helperHead.length;
+    if (transferredBytes > MAX_DICTATION_WS_BYTES) return closeNow();
+    durationTimer = setTimeout(closeNow, MAX_DICTATION_WS_DURATION_MS);
+    resetIdleTimer();
+    clientSocket.on("error", closeNow);
+    helperSocket.on("error", closeNow);
+    clientSocket.once("close", () => {
+      finish();
+      helperSocket.destroy();
+    });
+    clientSocket.once("finish", () => {
+      finish();
+      helperSocket.destroy();
+    });
+    helperSocket.once("close", () => {
+      if (!helperSocket.readableEnded) return closeNow();
+      if (!clientSocket.destroyed && !clientSocket.writableEnded) clientSocket.end();
+    });
+    clientSocket.on("data", accountBytes);
+    helperSocket.on("data", accountBytes);
+    clientSocket.write(responseUpgradeHeaders(response));
+    if (helperHead.length) clientSocket.write(helperHead);
+    if (head.length) helperSocket.write(head);
+    clientSocket.pipe(helperSocket);
+    helperSocket.pipe(clientSocket);
+    clientSocket.resume();
+  });
+  request.on("response", (response) => {
+    response.resume();
+    fail();
+  });
+  request.on("error", fail);
+  request.end();
+}
+
+inner.on("upgrade", handleDictationUpgrade);
 
 // 外层 HTTP server：CONNECT 做 TLS 终止；普通 HTTP（桌面 CLI 的 ANTHROPIC_BASE_URL 流量）
 // 剥掉桌面端多发、上游网关不认的字段后转给本地 magpie。
