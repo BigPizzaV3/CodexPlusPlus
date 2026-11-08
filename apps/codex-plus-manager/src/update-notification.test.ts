@@ -70,15 +70,19 @@ test("skipping a version persists through saved preferences and only silences th
 });
 
 test("update preferences default to automatic checks for old settings and parse versions like the backend", () => {
-  assert.deepEqual(updatePreferencesFrom(undefined), { autoCheck: true, skippedVersion: "" });
-  assert.deepEqual(updatePreferencesFrom({}), { autoCheck: true, skippedVersion: "" });
-  assert.deepEqual(updatePreferencesFrom({ updateAutoCheck: false, updateSkippedVersion: " v2.0.0 " }), { autoCheck: false, skippedVersion: "v2.0.0" });
+  assert.deepEqual(updatePreferencesFrom(undefined), { autoCheck: true, skippedVersion: "", autoDownload: true });
+  assert.deepEqual(updatePreferencesFrom({}), { autoCheck: true, skippedVersion: "", autoDownload: true });
+  assert.deepEqual(updatePreferencesFrom({ updateAutoCheck: false, updateSkippedVersion: " v2.0.0 " }), { autoCheck: false, skippedVersion: "v2.0.0", autoDownload: true });
+  // 「有可用更新时自动下载」关掉后读回 false（#2980）。
+  assert.equal(updatePreferencesFrom({ updateAutoDownload: false }).autoDownload, false);
   const saved = storage();
   const notifications = new UpdateNotifications(() => saved);
-  notifications.setPreferences({ autoCheck: false, skippedVersion: "" });
+  notifications.setPreferences({ autoCheck: false, skippedVersion: "", autoDownload: false });
   assert.equal(notifications.autoCheckEnabled(), false);
+  assert.equal(notifications.autoDownloadEnabled(), false);
   notifications.skipVersion("v1.0.0");
   assert.equal(notifications.autoCheckEnabled(), false, "skipping keeps the auto-check switch untouched");
+  assert.equal(notifications.autoDownloadEnabled(), false, "skipping keeps the auto-download switch untouched");
 
   assert.equal(isVersionSkipped("v1.11.0", ""), false);
   assert.equal(isVersionSkipped("v1.11.0", "1.11"), true);
@@ -91,7 +95,7 @@ test("update preferences default to automatic checks for old settings and parse 
 test("侧栏卡片提醒：跳过此版本、今日不再提示会藏起来；关闭弹窗只关弹窗，卡片还在", () => {
   const today = new Date(2026, 10, 3);
   const notifications = new UpdateNotifications(() => ({ getItem: () => null, setItem: () => {} }));
-  notifications.setPreferences({ autoCheck: true, skippedVersion: "" });
+  notifications.setPreferences({ autoCheck: true, skippedVersion: "", autoDownload: true });
   const candidate = { status: "ok", latestVersion: "v2.3.0", updateAvailable: true };
   assert.equal(notifications.shouldRemind(candidate, today), true);
   notifications.dismiss("v2.3.0");

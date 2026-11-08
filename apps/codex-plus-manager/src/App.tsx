@@ -3393,7 +3393,8 @@ export function App() {
       setUpdateDownload({ version: release.version, state: "ready", percent: 100 });
       return;
     }
-    if (settingsRef.current?.settings.updateAutoDownload === false) return;
+    if (!updateNotifications.current.preferencesLoaded) await ensureUpdatePreferences();
+    if (!updateNotifications.current.autoDownloadEnabled()) return;
     if (updateDownloadPending.current === release.version || updateInstallPending.current) return;
     updateDownloadPending.current = release.version;
     setUpdateDownload({ version: release.version, state: "downloading", percent: null });
