@@ -1060,6 +1060,30 @@ fn glm_image_urls_are_stripped_to_bare_base64() {
     assert_eq!(url, "QUJD");
 }
 
+/// #2991：带命名空间的 GLM（NVIDIA `z-ai/glm-5.3-flash`、OpenRouter 等聚合平台）
+/// 是标准 OpenAI 兼容接口，`image_url.url` 必须保留 data URL，不能剥成裸 base64。
+#[test]
+fn namespaced_glm_image_urls_keep_data_url_prefix() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "z-ai/glm-5.3-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,QUJD" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][0]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "data:image/png;base64,QUJD");
+}
+
 /// 标准 data URL 上游（OpenAI 等）不能被这层改写波及。
 #[test]
 fn non_glm_image_urls_keep_data_url_prefix() {
