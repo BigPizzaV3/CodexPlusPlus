@@ -41,6 +41,8 @@ import {
   routeNarrative,
   slugify,
   splitModels,
+  unlistedModels,
+  disabledGroup,
   validateDraft,
   validateProviderDraft,
   type GatewayAgentView,
@@ -117,6 +119,19 @@ test("校验：池里要有能用的供应商，模型要能路由，窗口格�
   assert.equal(validateDraft({ ...base, contextWindow: "12" }, data), "上下文窗口格式不对，例如 200000、200k 或 1M");
 });
 
+test("保留已停用的绑定组时，让后端按新的供应商池验证回退模型", () => {
+  const data = payload();
+  data.groups[0].disabled = true;
+  const draft = { ...draftFromBinding(undefined), model: "group/daily", poolExclude: ["deepseek"] };
+  assert.equal(modelRoutable(data, "deepseek-v4-pro", draft.poolExclude), false, "旧回退模型不在新池里");
+  assert.equal(modelRoutable(data, "glm-5.3", draft.poolExclude), true, "新池仍有可用模型");
+  assert.equal(validateDraft(draft, data, "group/daily"), null);
+  assert.equal(validateDraft(draft, data), "供应商池里没有这个模型", "新绑定不能选择停用组");
+  assert.equal(validateDraft(draft, data, "group/other"), "供应商池里没有这个模型", "更换成停用组不能绕过校验");
+  assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek", "glm", "bare"] }, data, "group/daily"), "供应商池是空的，先到「供应商」里添加");
+  assert.equal(validateDraft({ ...draft, contextWindow: "12" }, data, "group/daily"), "上下文窗口格式不对，例如 200000、200k 或 1M");
+});
+
 test("模型选择器：每个供应商一组，路由组作为 group/ 模型在后；未知输入给出 <供应商>/<模型>", () => {
   const all = pickerSections(payload(), "", initials);
   assert.deepEqual(all.map((section) => section.key), ["provider:deepseek", "provider:glm", "group"]);
@@ -130,6 +145,46 @@ test("模型选择器：每个供应商一组，路由组作为 group/ 模型在
   // 编辑路由组时不能选它自己；挑选排除的供应商不出现。
   assert.equal(pickerSections(payload(), "", initials, [], "daily").some((section) => section.key === "group"), false);
   assert.deepEqual(pickerSections(payload(), "", initials, ["deepseek"]).map((section) => section.key), ["provider:glm", "group"]);
+});
+
+test("停用组退出选择器、释放隐藏成员，重新启用后恢复；同名上游仍可按供应商选择", () => {
+  const data = payload();
+  data.groups[0].hideMembers = true;
+  assert.ok(unlistedModels(data).has("glm-5.3"));
+  data.groups[0].disabled = true;
+  assert.equal(disabledGroup(data, " GROUP/DAILY[ 1M ] ")?.id, "daily");
+  assert.equal(modelRoutable(data, "GROUP/DAILY[ 1M ]"), false);
+  assert.ok(!agentModels(data).includes("group/daily"));
+  assert.ok(!unlistedModels(data).has("glm-5.3"));
+  assert.ok(!pickerSections(data, "", initials).some((section) => section.key === "group"));
+  assert.ok(!pickerSections(data, "group/daily", initials).some((section) => section.key === "custom"));
+
+  data.pool[0].models.push("group/daily");
+  assert.ok(agentModels(data).includes("deepseek/group/daily"));
+  assert.ok(pickerSections(data, "", initials).flatMap((section) => section.items)
+    .some((item) => item.model === "deepseek/group/daily"));
+  data.groups[0].disabled = false;
+  assert.ok(agentModels(data).includes("group/daily"));
+  assert.ok(unlistedModels(data).has("glm-5.3"));
+  assert.ok(pickerSections(data, "", initials).some((section) => section.key === "group"));
+});
+
+test("关闭自动组后不再列出自动组入口，同名供应商模型仍可选择", () => {
+  const data = payload();
+  data.pool[1].models.push("deepseek-v4-pro");
+  data.autoGroups = [{
+    id: "auto:deepseek-v4-pro", name: "deepseek-v4-pro", mode: "inOrder",
+    members: [{ model: "deepseek/deepseek-v4-pro", weight: 1 }, { model: "glm/deepseek-v4-pro", weight: 1 }],
+    hidden: false, customized: false,
+  }];
+  assert.ok(pickerSections(data, "", initials).some((section) => section.key === "auto"));
+  data.autoGroups[0].hidden = true;
+  assert.ok(!pickerSections(data, "", initials).some((section) => section.key === "auto"));
+  assert.ok(agentModels(data).includes("deepseek-v4-pro"));
+  assert.ok(pickerSections(data, "", initials).flatMap((section) => section.items)
+    .some((item) => item.model === "deepseek/deepseek-v4-pro"));
+  data.autoGroups[0].hidden = false;
+  assert.ok(pickerSections(data, "", initials).some((section) => section.key === "auto"));
 });
 
 test("模型显示：模型名 + 提供它的供应商；<供应商>/<模型> 拆开；路由组显示组名", () => {
@@ -326,6 +381,8 @@ test("网关页接入导航，命令已注册", () => {
     "reorder_gateway_providers",
     "import_gateway_providers",
     "save_gateway_group",
+    "set_gateway_group_enabled",
+    "set_gateway_auto_group_enabled",
     "delete_gateway_group",
     "reveal_gateway_agent_config",
   ]) {

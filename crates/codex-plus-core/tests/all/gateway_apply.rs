@@ -1517,6 +1517,185 @@ fn groups_are_saved_validated_and_unlinked_on_delete() {
 }
 
 #[test]
+fn group_switch_persists_and_refreshes_agent_model_catalogs() {
+    let fixture = fixture(57390);
+    let store = &fixture.ctx.gateway;
+    let legacy: codex_plus_core::gateway::store::GatewayGroup = serde_json::from_value(json!({
+        "id": "legacy", "name": "Legacy", "members": []
+    })).unwrap();
+    assert!(!legacy.disabled);
+
+    let mut input = GroupInput {
+        name: "Daily".into(),
+        members: vec![GroupMember { model: "deepseek-v4-pro".into(), weight: 1 }],
+        ..GroupInput::default()
+    };
+    let (_, id) = save_group(store, &input).unwrap();
+    input.id = id.clone();
+    input.disabled = Some(true);
+    save_group(store, &input).unwrap();
+    input.disabled = None;
+    input.name = "Daily renamed".into();
+    let (gateway, _) = save_group(store, &input).unwrap();
+    assert!(store.load().unwrap().group(&id).unwrap().disabled);
+    let binding = AgentBinding {
+        model: format!("group/{id}"),
+        extra_models: vec![format!("group/{id}[1M]")],
+        claude_roles: ClaudeRoleModels {
+            opus: format!("group/{id}"),
+            sonnet: format!("group/{id}"),
+            haiku: format!("group/{id}[1M]"),
+            subagent: format!("group/{id}"),
+            ..ClaudeRoleModels::default()
+        },
+        token: "test-token".into(),
+        ..AgentBinding::default()
+    };
+    let codex = codex_plus_core::gateway::apply::codex_gateway_profile(&gateway, &binding, 57390, false).unwrap();
+    let grok = codex_plus_core::gateway::apply::grok_gateway_profile(&gateway, &binding, 57390);
+    let wiring = codex_plus_core::gateway::agents::connect::wiring(&gateway, &binding, "opencode", 57390);
+    assert_eq!(codex.model, "deepseek-v4-pro");
+    assert_eq!(wiring.default_model, "deepseek-v4-pro");
+    assert_eq!(wiring.small_model, "deepseek-v4-pro");
+    let claude = codex_plus_core::gateway::apply::claude_gateway_provider(&gateway, &binding, 57390);
+    for key in ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] {
+        assert_eq!(claude.settings_config["env"][key], "deepseek-v4-pro", "{key}");
+    }
+    for text in [&codex.model_list, &codex.config_contents, &codex.model_metadata, &grok.model_list] {
+        assert!(!text.contains(&format!("group/{id}")), "{text}");
+    }
+    assert!(!wiring.models.iter().any(|model| model.id.starts_with(&format!("group/{id}"))));
+    input.disabled = Some(false);
+    let (gateway, _) = save_group(store, &input).unwrap();
+    assert!(!gateway.group(&id).unwrap().disabled);
+    assert_eq!(gateway.group(&id).unwrap().name, "Daily renamed");
+    assert_eq!(codex_plus_core::gateway::route::binding_default_model(&gateway, &binding), format!("group/{id}"));
+    let claude = codex_plus_core::gateway::apply::claude_gateway_provider(&gateway, &binding, 57390);
+    assert_eq!(claude.settings_config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], format!("group/{id}"));
+    let wiring = codex_plus_core::gateway::agents::connect::wiring(&gateway, &binding, "opencode", 57390);
+    assert_eq!(wiring.small_model, format!("group/{id}[1M]"));
+}
+
+#[test]
+fn disabled_group_refreshes_live_agent_configs_and_goal_catalog() {
+    let fixture = fixture(57391);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+    let mut group = GroupInput {
+        name: "Daily".into(),
+        members: vec![GroupMember { model: "deepseek-v4-flash".into(), weight: 1 }],
+        ..GroupInput::default()
+    };
+    let (_, id) = save_group(&ctx.gateway, &group).unwrap();
+    group.id = id.clone();
+    let model = format!("group/{id}");
+    let mut selected = binding();
+    selected.model = model.clone();
+    selected.claude_roles.haiku = model.clone();
+    enable_binding(ctx, &ToolId::Codex, selected.clone()).unwrap();
+    enable_binding(ctx, &ToolId::Claude, selected.clone()).unwrap();
+    let opencode = ToolId::Unknown("opencode".into());
+    enable_binding(ctx, &opencode, selected).unwrap();
+    let opencode_path = (codex_plus_core::gateway::agents::spec("opencode").unwrap().config_path)(&ctx.agent_env);
+
+    let sqlite = ctx.codex_home.join("sqlite");
+    std::fs::create_dir_all(&sqlite).unwrap();
+    let db = rusqlite::Connection::open(sqlite.join("codex-dev.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model TEXT);
+         INSERT INTO threads VALUES ('goal', 'group/daily');
+         CREATE TABLE automation_runs (thread_id TEXT, updated_at TEXT, archived_reason TEXT);
+         INSERT INTO automation_runs VALUES ('goal', '2026-11-08T00:00:00Z', NULL);",
+    ).unwrap();
+    drop(db);
+
+    group.disabled = Some(true);
+    save_group(&ctx.gateway, &group).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("deepseek-v4-pro"));
+    assert!(!codex_catalog(ctx)["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == model));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "deepseek-v4-pro");
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(&opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["model"], "codexplus/deepseek-v4-pro");
+    assert_eq!(opencode_config["small_model"], "codexplus/deepseek-v4-pro");
+    assert!(opencode_config["provider"]["codexplus"]["models"].get(&model).is_none());
+    assert_eq!(ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().model, model);
+
+    group.disabled = Some(false);
+    save_group(&ctx.gateway, &group).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some(model.as_str()));
+    assert!(codex_catalog(ctx)["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == model));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], model);
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["small_model"], "codexplus/group/daily");
+}
+
+#[test]
+fn empty_binding_keeps_qualified_provider_model_when_its_namesake_group_is_disabled() {
+    let fixture = fixture(57392);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+
+    let provider_id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let mut provider = deepseek_input();
+    provider.model = "group/fast".into();
+    provider.model_list = "group/fast".into();
+    update_provider(&ctx.gateway, &provider_id, &provider).unwrap();
+    let qualified = format!("{provider_id}/group/fast");
+    let mut group = GroupInput {
+        name: "Fast".into(),
+        members: vec![GroupMember { model: qualified.clone(), weight: 1 }],
+        ..GroupInput::default()
+    };
+    let (_, id) = save_group(&ctx.gateway, &group).unwrap();
+    group.id = id;
+
+    let empty = AgentBinding::default();
+    enable_binding(ctx, &ToolId::Codex, empty.clone()).unwrap();
+    enable_binding(ctx, &ToolId::Claude, empty.clone()).unwrap();
+    let opencode = ToolId::Unknown("opencode".into());
+    enable_binding(ctx, &opencode, empty).unwrap();
+    let opencode_path = (codex_plus_core::gateway::agents::spec("opencode").unwrap().config_path)(&ctx.agent_env);
+
+    group.disabled = Some(true);
+    let (gateway, _) = save_group(&ctx.gateway, &group).unwrap();
+    let binding = gateway.binding(&opencode).unwrap();
+    assert!(binding.model.is_empty());
+    assert_eq!(codex_plus_core::gateway::route::binding_default_model(&gateway, binding), qualified);
+    assert!(codex_plus_core::gateway::route::binding_exposed_models(&gateway, binding).contains(&qualified));
+    let plan = codex_plus_core::gateway::route::resolve_plan(&gateway, &opencode, "", None).unwrap();
+    assert_eq!(plan.candidates[0].upstream_model, "group/fast");
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some(qualified.as_str()));
+    assert!(codex_catalog(ctx)["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == qualified));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"], qualified);
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(&opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["model"], format!("codexplus/{qualified}"));
+    assert!(opencode_config["provider"]["codexplus"]["models"].get(&qualified).is_some());
+
+    group.disabled = Some(false);
+    save_group(&ctx.gateway, &group).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("group/fast"));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"], "group/fast");
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["model"], "codexplus/group/fast");
+    assert!(ctx.gateway.load().unwrap().binding(&opencode).unwrap().model.is_empty());
+}
+
+#[test]
 fn imports_copy_data_and_leave_the_direct_mode_untouched() {
     let provider = ClaudeProvider {
         id: "kimi".into(),
@@ -1743,7 +1922,7 @@ fn direct_aggregates_move_into_the_gateway_as_pool_providers_and_a_group() {
 
 #[test]
 fn auto_group_settings_save_and_reset_to_default() {
-    use codex_plus_core::gateway::apply::save_auto_group;
+    use codex_plus_core::gateway::apply::{save_auto_group, save_auto_group_with_hidden};
     use codex_plus_core::gateway::store::AutoGroupSettings;
     let fixture = fixture(57396);
     let store = &fixture.ctx.gateway;
@@ -1762,6 +1941,12 @@ fn auto_group_settings_save_and_reset_to_default() {
     assert!(saved.hide_members);
     // 改回默认：记录删掉，自动组回到「没改过」、跟着池子变。
     let gateway = save_auto_group(store, "deepseek-v4-pro", AutoGroupSettings::default()).unwrap();
+    assert!(gateway.auto_groups.is_empty());
+    let gateway = save_auto_group_with_hidden(store, "deepseek-v4-pro", AutoGroupSettings::default(), Some(true)).unwrap();
+    assert!(gateway.auto_groups["deepseek-v4-pro"].hidden);
+    let gateway = save_auto_group_with_hidden(store, "deepseek-v4-pro", AutoGroupSettings::default(), None).unwrap();
+    assert!(gateway.auto_groups["deepseek-v4-pro"].hidden, "恢复默认不改另一窗口的开关");
+    let gateway = save_auto_group_with_hidden(store, "deepseek-v4-pro", AutoGroupSettings::default(), Some(false)).unwrap();
     assert!(gateway.auto_groups.is_empty());
 }
 

@@ -2,7 +2,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -10,6 +10,7 @@ import {
   agentModels,
   agentPoolProviders,
   bindingFromDraft,
+  disabledGroup,
   draftFromBinding,
   modelDisplay,
   ownPickerSection,
@@ -176,12 +177,11 @@ function AgentRow({
 
   const isClaude = agent.agent === "claude";
   const connected = agent.enabled;
-  const save = (next: BindingDraft) => {
-    setDraft(next);
-    const error = validateDraft(next, payload);
+  const save = async (next: BindingDraft) => {
+    const error = validateDraft(next, payload, connected ? binding?.model : undefined);
     if (error) {
       void notify(t("还不能接入"), t(error), "warning");
-      return Promise.resolve(false);
+      return false;
     }
     return run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding) }, t("保存网关绑定"), connected);
   };
@@ -362,7 +362,7 @@ function AgentDetail({
   useEffect(() => setWindowText(draft.contextWindow), [draft.contextWindow]);
   const providers = (payload?.pool ?? []).filter(providerEnabled);
   const used = agentPoolProviders(payload, draft.poolExclude);
-  const groups = (payload?.groups ?? []).filter((group) => group.members.length);
+  const groups = (payload?.groups ?? []).filter((group) => !group.disabled && group.members.length);
   const tiers: Array<[keyof BindingDraft, string]> = [
     ["opus", "Opus"],
     ["sonnet", "Sonnet"],
@@ -478,6 +478,7 @@ function AgentDetail({
             <TierPicker
               emptyLabel={t("不单独指定")}
               exclude={draft.poolExclude}
+              inactiveBlocksRequest
               label=""
               onPick={(model) => onSave({ ...draft, titleModel: model })}
               payload={payload}
@@ -490,6 +491,7 @@ function AgentDetail({
           <SetLine hint={t("「替我审批」的请求发给它")} title={t("审批模型")} tooltip={t("Codex「替我审批」的请求（codex-auto-review）发给这个模型；同默认模型时按「未知模型名」规则处理")}>
             <TierPicker
               exclude={draft.poolExclude}
+              inactiveBlocksRequest
               label=""
               onPick={(model) => onSave({ ...draft, autoReviewModel: model })}
               payload={payload}
@@ -969,11 +971,18 @@ function ModelPicker({
   onDisconnect: () => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  const inactive = disabledGroup(payload, draft.model);
+  const effectiveModel = connected && inactive ? agent.defaultModel : draft.model;
+  const display = inactive && connected && !effectiveModel
+    ? { title: "", sub: "", group: false }
+    : modelDisplay(payload, effectiveModel, draft.poolExclude);
+  const inactiveHint = inactive && connected
+    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    : undefined;
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);
   const showDefault = !connected && !draft.model && !own;
-  const selectedModel = connected || draft.model ? draft.model.trim() || agentModels(payload, draft.poolExclude)[0] || "" : "";
+  const selectedModel = connected || draft.model ? effectiveModel.trim() || agentModels(payload, draft.poolExclude)[0] || "" : "";
   const head = (
     <>
       {/* 用默认 = 断开网关并还原接入前的配置，只放这一个入口。 */}
@@ -992,13 +1001,14 @@ function ModelPicker({
   );
   return (
     <div className="gw-picker">
-      <button aria-expanded={open} aria-haspopup="listbox" className="gw-picker-button" onClick={() => onOpenChange(!open)} ref={buttonRef} type="button">
+      <button aria-expanded={open} aria-haspopup="listbox" className="gw-picker-button" onClick={() => onOpenChange(!open)} ref={buttonRef} title={inactiveHint} type="button">
         <span className="gw-picker-label">{t("默认模型")}</span>
         {showDefault || own ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
         <span title={own ? tf("{0} 自带的模型，直连 {1}，不经 Codex++", [agent.name, agent.ownModels?.vendor ?? ""]) : undefined}>
           {own ?? (showDefault ? t("默认") : display.title || t("选择模型"))}
         </span>
         {showDefault || own ? null : <AutoTag view={display} />}
+        {inactiveHint ? <AlertTriangle aria-label={inactiveHint} className="h-3.5 w-3.5" role="img" /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => onOpenChange(false)} open={open} width={560}>
@@ -1033,6 +1043,7 @@ function TierPicker({
   exclude,
   onPick,
   emptyLabel,
+  inactiveBlocksRequest = false,
 }: {
   label: string;
   value: string;
@@ -1041,11 +1052,13 @@ function TierPicker({
   onPick: (model: string) => void;
   /** 没选时显示的文字；默认「同默认模型」。 */
   emptyLabel?: string;
+  inactiveBlocksRequest?: boolean;
 }) {
   const empty = emptyLabel ?? t("同默认模型");
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const display = value ? modelDisplay(payload, value, exclude) : null;
+  const inactive = disabledGroup(payload, value);
   const head = (
     <button className="gw-mp-action" data-active={!value} onClick={() => { setOpen(false); onPick(""); }} title={t("跟随这一行选的模型")} type="button">
       <span className="gw-tier-default">=</span>
@@ -1055,10 +1068,10 @@ function TierPicker({
   );
   return (
     <>
-      <button aria-expanded={open} className="gw-tier-button" onClick={() => setOpen(!open)} ref={buttonRef} type="button">
+      <button aria-expanded={open} className="gw-tier-button" onClick={() => setOpen(!open)} ref={buttonRef} title={inactive ? tf(inactiveBlocksRequest ? "模型组「{0}」已停用，请选择其他模型" : "模型组「{0}」已停用，当前使用默认模型", [inactive.name]) : undefined} type="button">
         {label ? <em>{label}</em> : null}
         {display ? <ModelViewGlyph view={display} /> : null}
-        <span>{display ? display.title : empty}</span>
+        <span>{display ? display.title : empty}{inactive ? ` · ${t("已停用")}` : ""}</span>
         {display ? <AutoTag view={display} /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>

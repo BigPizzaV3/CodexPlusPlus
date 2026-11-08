@@ -3825,6 +3825,11 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   gap: 8px;
 }
 
+.shell .gw-route-group-switch {
+  display: inline-flex;
+  margin-left: auto;
+}
+
 .shell .gw-route-group-controls > * {
   min-width: 132px;
 }

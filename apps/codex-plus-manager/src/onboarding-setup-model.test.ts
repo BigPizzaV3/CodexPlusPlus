@@ -144,6 +144,24 @@ test("模型组展开具体候选并去重，失效成员不使整组假就绪�
   assert.equal(setupGatewayState("codex", data, "codex").bindingReady, true);
 });
 
+test("入门检查跳过停用的嵌套组，切换状态会使先前验证失效", () => {
+  const data = fixture();
+  data.groups = [
+    { id: "outer", name: "Outer", mode: "inOrder", members: [{ model: "GROUP/INNER", weight: 1 }, { model: "second/backup", weight: 1 }] },
+    { id: "inner", name: "Inner", mode: "inOrder", members: [{ model: "first/shared", weight: 1 }] },
+  ];
+  data.agents[0].defaultModel = "GROUP/OUTER";
+  const before = setupGatewayState("codex", data, "codex");
+  assert.deepEqual(before.candidates.map((item) => item.providerId), ["first", "second"]);
+  const probe = { fingerprint: before.fingerprint, candidateId: before.candidates[0].id, ok: true };
+  data.groups[1].disabled = true;
+  const disabled = setupGatewayState("codex", data, "codex");
+  assert.deepEqual(disabled.candidates.map((item) => item.providerId), ["second"]);
+  assert.equal(probeMatches(disabled, probe), false);
+  data.groups[1].disabled = false;
+  assert.deepEqual(setupGatewayState("codex", data, "codex").candidates.map((item) => item.providerId), ["first", "second"]);
+});
+
 test("手动组和自动组只检查实际选中成员，通配符沿用可用池的匹配规则", () => {
   const data = fixture();
   data.groups = [{ id: "manual", name: "Manual", mode: "manual", pick: "second/backup", members: [{ model: "first/*", weight: 1 }, { model: "second/backup", weight: 1 }] }];
