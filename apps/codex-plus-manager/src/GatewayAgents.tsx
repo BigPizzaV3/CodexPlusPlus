@@ -723,13 +723,17 @@ export function ModelList({
   onPickOwn?: (item: PickerItem) => void;
 }) {
   const nav = useContext(GatewayNavContext);
-  const [query, setQuery] = useState("");
+  const [query, updateQuery] = useState("");
   // 筛选：全部 / 只看收藏 / 只看某一家（或自动组、模型组）。再点一次选中的筛选回到全部。
   const [scope, setScope] = useState<"all" | "favorites" | { section: string }>("all");
   const favoritesOnly = scope === "favorites";
   const sectionOnly = typeof scope === "object" ? scope.section : null;
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
   const [closedSearchSections, setClosedSearchSections] = useState<string[]>([]);
+  const setQuery = (value: string) => {
+    updateQuery(value);
+    setClosedSearchSections([]);
+  };
   const searching = Boolean(query.trim());
   const providersBySection = useMemo(
     () => new Map<string, GatewayPayload["pool"][number]>((payload?.pool ?? []).map((provider) => [`provider:${provider.id}`, provider])),
@@ -793,7 +797,7 @@ export function ModelList({
       <div className="gw-mp-top">
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
-          <input autoFocus onChange={(event) => { setQuery(event.currentTarget.value); setClosedSearchSections([]); }} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
+          <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
           <em>{tf("{0} 个", [total])}</em>
         </label>
         <div className="gw-mp-filters">
@@ -851,7 +855,7 @@ export function ModelList({
                   data-selected={selected}
                   key={item.model}
                   onClick={() => choose(item)}
-                  onKeyDown={(event) => { if (event.key === "Enter") choose(item); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) choose(item); }}
                   role="option"
                   tabIndex={0}
                 >

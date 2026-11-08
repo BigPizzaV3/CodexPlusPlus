@@ -2321,7 +2321,7 @@ span.gw-avatar[data-size] {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 14px 6px 64px;
+  padding: 6px 14px 6px 80px;
   cursor: pointer;
   outline: none;
 }
@@ -2416,8 +2416,14 @@ span.gw-avatar[data-size] {
 
 .gw-portal .gw-mp-item:hover .gw-mp-star,
 .gw-portal .gw-mp-item:focus-visible .gw-mp-star,
+.gw-portal .gw-mp-star:focus-visible,
 .gw-portal .gw-mp-star[data-on="true"] {
   opacity: 1;
+}
+
+.gw-portal .gw-mp-star:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 1px;
 }
 
 .gw-portal .gw-mp-star[data-on="true"] {

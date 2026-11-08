@@ -15,7 +15,7 @@ function elements(value: unknown): Element[] {
   return [element, ...elements(element.props.children)];
 }
 
-function picker() {
+function picker(onPick: (item: { model: string }) => void = () => {}) {
   const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   const file = ts.createSourceFile("GatewayAgents.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
   const component = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "ModelList");
@@ -78,7 +78,7 @@ function picker() {
         payload: { pool, gateway: {} },
         exclude: [],
         selectedModel: "",
-        onPick: () => {},
+        onPick,
       }) as Element;
     },
   };
@@ -132,10 +132,26 @@ test("供应商筛选展开目标；搜索展开匹配项，清空后恢复手�
   heading(tree, "provider:a").props.onClick();
   tree = view.render();
   assert.equal(heading(tree, "provider:a").props["aria-expanded"], false);
+  elements(tree).find((element) => element.type === "input")!.props.onChange({ currentTarget: { value: "ALPHA" } });
+  tree = view.render();
+  assert.equal(heading(tree, "provider:a").props["aria-expanded"], true);
   elements(tree).find((element) => element.type === "input")!.props.onChange({ currentTarget: { value: "" } });
   tree = view.render();
   assert.equal(heading(tree, "provider:a").props["aria-expanded"], true);
   assert.equal(heading(tree, "provider:b").props["aria-expanded"], true);
+});
+
+test("收藏按钮的 Enter 不会触发模型选择，模型行的 Enter 仍可选择", () => {
+  const picked: string[] = [];
+  const view = picker((item) => picked.push(item.model));
+  heading(view.render(), "provider:a").props.onClick();
+  const modelRow = elements(section(view.render(), "provider:a")).find((element) => element.props.role === "option");
+  assert.ok(modelRow);
+  const row = {};
+  modelRow.props.onKeyDown({ key: "Enter", currentTarget: row, target: {} });
+  assert.deepEqual(picked, []);
+  modelRow.props.onKeyDown({ key: "Enter", currentTarget: row, target: row });
+  assert.deepEqual(picked, ["alpha"]);
 });
 
 test("空间不足时模型选择器使用窗口高度，普通浮层保持锚点定位", () => {
