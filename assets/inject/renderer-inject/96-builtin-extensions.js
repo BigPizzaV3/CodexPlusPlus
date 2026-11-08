@@ -62,6 +62,7 @@
       { id: "model-whitelist-unlock", name: "模型白名单解锁" },
       { id: "native-fast-unlock", name: "原生 Fast 强制解锁" },
       { id: "native-predictions", name: "原生输入预测" },
+      { id: "reported-usage-compaction", name: "按上报用量判断压缩（实验）" },
       { id: "reasoning-collapse", name: "第三方模型回答完自动折叠过程" },
       { id: "disable-work-view", name: "纯 API 模式禁用 Work 视图" },
       { id: "force-chinese-locale", name: "强制中文界面" },

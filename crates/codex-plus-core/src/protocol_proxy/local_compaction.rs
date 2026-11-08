@@ -91,6 +91,10 @@ pub(super) fn is_local_request(body: &Value, summary_prompt: &str) -> bool {
     {
         return false;
     }
+    is_summary_request(body, summary_prompt)
+}
+
+pub(super) fn is_summary_request(body: &Value, summary_prompt: &str) -> bool {
     let Some(last) = body
         .get("input")
         .and_then(Value::as_array)
@@ -281,13 +285,18 @@ mod tests {
         assert!(!is_local_request(&body, canonical));
         body["tools"] = json!([{"type":"function","name":"run"}]);
         assert!(!is_local_request(&body, canonical));
+        assert!(!is_summary_request(&body, canonical));
         body["client_metadata"]["x-codex-turn-metadata"] = json!(
             json!({"request_kind":"compaction","compaction":{"implementation":"responses"}})
                 .to_string()
         );
         assert!(!is_local_request(&body, canonical));
+        assert!(is_summary_request(&body, canonical));
         body.as_object_mut().unwrap().remove("client_metadata");
         assert!(!is_local_request(&body, canonical));
+        assert!(is_summary_request(&body, canonical));
+        body["input"][0]["content"][0]["text"] = json!("Ordinary task");
+        assert!(!is_summary_request(&body, canonical));
     }
 
     #[test]

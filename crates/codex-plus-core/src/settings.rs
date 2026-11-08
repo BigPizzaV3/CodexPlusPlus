@@ -1248,6 +1248,9 @@ pub struct BackendSettings {
     /// 只改本机界面与超时参数，服务端能力不变。默认关。
     #[serde(rename = "codexAppStatsigOverrides", default)]
     pub codex_app_statsig_overrides: bool,
+    /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
+    #[serde(rename = "codexAppReportedUsageCompaction", default)]
+    pub codex_app_reported_usage_compaction: bool,
     /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
     /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
     #[serde(rename = "managerAgentFocus", default)]
@@ -1558,6 +1561,7 @@ impl Default for BackendSettings {
             codex_app_third_party_reasoning_collapse: false,
             codex_app_offline_auto_review: false,
             codex_app_statsig_overrides: false,
+            codex_app_reported_usage_compaction: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
@@ -3006,6 +3010,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppStatsigOverrides");
+    merge_bool_setting(target, source, "codexAppReportedUsageCompaction");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
     {

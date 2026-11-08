@@ -130,6 +130,18 @@ struct WeixinSendResponse {
     errmsg: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct WeixinTypingConfigResponse {
+    #[serde(default)]
+    ret: i64,
+    #[serde(default)]
+    errcode: i64,
+    #[serde(default)]
+    errmsg: String,
+    #[serde(default)]
+    typing_ticket: Option<String>,
+}
+
 impl WeixinClient {
     pub(super) async fn send_workspace_attachment(
         &self,
@@ -375,6 +387,113 @@ impl WeixinClient {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(())
+    }
+
+    pub(super) async fn start_typing(
+        &self,
+        to_user_id: &str,
+        context_token: &str,
+    ) -> anyhow::Result<String> {
+        if context_token.trim().is_empty() {
+            bail!("微信输入状态缺少 context_token");
+        }
+        let response = self
+            .post_small_api(
+                "ilink/bot/getconfig",
+                &json!({
+                    "ilink_user_id": to_user_id,
+                    "context_token": context_token,
+                    "base_info": { "channel_version": CHANNEL_VERSION }
+                }),
+                "获取微信输入状态配置",
+            )
+            .await?;
+        let result: WeixinTypingConfigResponse = serde_json::from_slice(&response)
+            .context("微信输入状态配置响应格式无效")?;
+        if result.ret != 0 || result.errcode != 0 {
+            bail!(
+                "获取微信输入状态配置被拒绝：ret={} errcode={} {}",
+                result.ret,
+                result.errcode,
+                result.errmsg
+            );
+        }
+        let typing_ticket = result
+            .typing_ticket
+            .filter(|ticket| !ticket.trim().is_empty())
+            .context("微信输入状态配置缺少 typing_ticket")?;
+        self.send_typing_status(to_user_id, &typing_ticket, 1)
+            .await?;
+        Ok(typing_ticket)
+    }
+
+    pub(super) async fn stop_typing(
+        &self,
+        to_user_id: &str,
+        typing_ticket: &str,
+    ) -> anyhow::Result<()> {
+        self.send_typing_status(to_user_id, typing_ticket, 2)
+            .await
+    }
+
+    async fn send_typing_status(
+        &self,
+        to_user_id: &str,
+        typing_ticket: &str,
+        status: i64,
+    ) -> anyhow::Result<()> {
+        if typing_ticket.trim().is_empty() {
+            bail!("微信输入状态缺少 typing_ticket");
+        }
+        let response = self
+            .post_small_api(
+                "ilink/bot/sendtyping",
+                &json!({
+                    "ilink_user_id": to_user_id,
+                    "typing_ticket": typing_ticket,
+                    "status": status,
+                    "base_info": { "channel_version": CHANNEL_VERSION }
+                }),
+                "发送微信输入状态",
+            )
+            .await?;
+        if response.iter().all(u8::is_ascii_whitespace) {
+            return Ok(());
+        }
+        let result: WeixinSendResponse =
+            serde_json::from_slice(&response).context("微信输入状态响应格式无效")?;
+        if result.ret != 0 || result.errcode != 0 {
+            bail!(
+                "发送微信输入状态被拒绝：ret={} errcode={} {}",
+                result.ret,
+                result.errcode,
+                result.errmsg
+            );
+        }
+        Ok(())
+    }
+
+    async fn post_small_api(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        label: &str,
+    ) -> anyhow::Result<Vec<u8>> {
+        let response = self
+            .client
+            .post(self.endpoint(path)?)
+            .headers(self.auth_headers()?)
+            .json(body)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .with_context(|| format!("{label}请求失败"))?;
+        let (status, bytes) =
+            read_response_limited(response, MAX_SMALL_RESPONSE_BYTES, label).await?;
+        if !status.is_success() {
+            bail!("{label}失败：HTTP {status}");
+        }
+        Ok(bytes)
     }
 
     async fn send_text(
@@ -646,5 +765,71 @@ mod tests {
         let svg = render_qr_svg("https://example.test/login").unwrap();
         assert!(svg.starts_with("<?xml"));
         assert!(svg.contains("<svg"));
+    }
+
+    #[tokio::test]
+    async fn typing_indicator_fetches_ticket_then_sends_start_and_stop() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/ilink/bot/getconfig"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"typing_ticket":"typing-secret"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/ilink/bot/sendtyping"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ret":0})))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = WeixinClient::new(&server.uri(), "bot-secret", "route-secret").unwrap();
+
+        let ticket = client.start_typing("peer", "context-secret").await.unwrap();
+        client.stop_typing("peer", &ticket).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3);
+        let config: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(config["ilink_user_id"], "peer");
+        assert_eq!(config["context_token"], "context-secret");
+        for (request, expected_status) in [(&requests[1], 1), (&requests[2], 2)] {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body["ilink_user_id"], "peer");
+            assert_eq!(body["typing_ticket"], "typing-secret");
+            assert_eq!(body["status"], expected_status);
+            assert_eq!(body["base_info"]["channel_version"], CHANNEL_VERSION);
+        }
+    }
+
+    #[tokio::test]
+    async fn typing_indicator_rejects_missing_ticket_before_status_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/ilink/bot/getconfig"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ret":0})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = WeixinClient::new(&server.uri(), "bot-secret", "").unwrap();
+
+        let error = client
+            .start_typing("peer", "context-secret")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("typing_ticket"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

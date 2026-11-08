@@ -920,6 +920,9 @@ fn align_profile_model_with_active_goal_thread(home: &Path, profile: &RelayProfi
     else {
         return profile.clone();
     };
+    if !gateway_goal_model_available(profile, &goal_model) {
+        return profile.clone();
+    }
     let declared = relay_profile_model(profile).trim().to_string();
     if !declared.is_empty() && declared != model_list_head(profile) && declared != goal_model {
         return profile.clone();
@@ -931,6 +934,18 @@ fn align_profile_model_with_active_goal_thread(home: &Path, profile: &RelayProfi
     next.config_contents =
         strip_tool_written_model_from_config(home, profile, &next.config_contents);
     next
+}
+
+fn gateway_goal_model_available(profile: &RelayProfile, model: &str) -> bool {
+    if profile.id != crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        || !model.get(..crate::gateway::store::GROUP_MODEL_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(crate::gateway::store::GROUP_MODEL_PREFIX))
+    {
+        return true;
+    }
+    profile.model_list.split(['\r', '\n', ',']).any(|item| {
+        crate::model_suffix::parse_model_suffix(item).0.eq_ignore_ascii_case(model)
+    })
 }
 
 /// model_list 第一条（剥 catalog 后缀），与写入 config.toml 时的隐式默认一致。
@@ -1011,6 +1026,9 @@ pub fn align_live_config_model_with_goal_thread(
     else {
         return Ok(false);
     };
+    if !gateway_goal_model_available(profile, &goal_model) {
+        return Ok(false);
+    }
     if goal_model == live {
         return Ok(false);
     }
@@ -8052,6 +8070,24 @@ command = \"pwsh -File end.ps1\"
             model, "\"gpt-5.6-luna-max\"",
             "未归档目标任务的模型应优先于 model_list 第一条"
         );
+    }
+
+    #[test]
+    fn gateway_goal_alignment_does_not_restore_an_unlisted_group() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "group/fast")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+        let mut profile = goal_drift_test_profile();
+        profile.id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.to_string();
+        assert_eq!(apply_and_read_model(temp.path(), &profile), "\"astra-6-high\"");
+        assert!(!align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+        profile.model_list.push_str("\ngroup/fast[1M]");
+        assert!(align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+        assert_eq!(apply_and_read_model_config_line(temp.path()), "\"group/fast\"");
     }
 
     /// 对照组：没有未归档目标任务时保持旧行为（model_list 第一条），

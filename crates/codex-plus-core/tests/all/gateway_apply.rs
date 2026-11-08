@@ -1,9 +1,9 @@
 //! 网关模式开启 / 关闭对 Agent 配置文件的改写与恢复，以及网关自己的供应商池、路由组。
 
 use codex_plus_core::gateway::apply::{
-    ApplyContext, GroupInput, ProviderInput, codex_importable, copy_claude_provider,
-    copy_codex_provider, create_provider, delete_group, delete_provider, disable_binding,
-    enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
+    ApplyContext, GroupInput, ProviderInput, codex_gateway_profile_on, codex_importable,
+    copy_claude_provider, copy_codex_provider, create_provider, delete_group, delete_provider,
+    disable_binding, enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
     reapply_if_port_changed, refresh_enabled, reorder_providers, save_group, set_provider_enabled,
     set_provider_metadata, set_provider_windows, update_provider,
 };
@@ -1873,6 +1873,185 @@ fn groups_are_saved_validated_and_unlinked_on_delete() {
 }
 
 #[test]
+fn group_switch_persists_and_refreshes_agent_model_catalogs() {
+    let fixture = fixture(57390);
+    let store = &fixture.ctx.gateway;
+    let legacy: codex_plus_core::gateway::store::GatewayGroup = serde_json::from_value(json!({
+        "id": "legacy", "name": "Legacy", "members": []
+    })).unwrap();
+    assert!(!legacy.disabled);
+
+    let mut input = GroupInput {
+        name: "Daily".into(),
+        members: vec![GroupMember { model: "deepseek-v4-pro".into(), weight: 1 }],
+        ..GroupInput::default()
+    };
+    let (_, id) = save_group(store, &input).unwrap();
+    input.id = id.clone();
+    input.disabled = Some(true);
+    save_group(store, &input).unwrap();
+    input.disabled = None;
+    input.name = "Daily renamed".into();
+    let (gateway, _) = save_group(store, &input).unwrap();
+    assert!(store.load().unwrap().group(&id).unwrap().disabled);
+    let binding = AgentBinding {
+        model: format!("group/{id}"),
+        extra_models: vec![format!("group/{id}[1M]")],
+        claude_roles: ClaudeRoleModels {
+            opus: format!("group/{id}"),
+            sonnet: format!("group/{id}"),
+            haiku: format!("group/{id}[1M]"),
+            subagent: format!("group/{id}"),
+            ..ClaudeRoleModels::default()
+        },
+        token: "test-token".into(),
+        ..AgentBinding::default()
+    };
+    let codex = codex_plus_core::gateway::apply::codex_gateway_profile(&gateway, &binding, 57390, false).unwrap();
+    let grok = codex_plus_core::gateway::apply::grok_gateway_profile(&gateway, &binding, 57390);
+    let wiring = codex_plus_core::gateway::agents::connect::wiring(&gateway, &binding, "opencode", 57390);
+    assert_eq!(codex.model, "deepseek-v4-pro");
+    assert_eq!(wiring.default_model, "deepseek-v4-pro");
+    assert_eq!(wiring.small_model, "deepseek-v4-pro");
+    let claude = codex_plus_core::gateway::apply::claude_gateway_provider(&gateway, &binding, 57390);
+    for key in ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] {
+        assert_eq!(claude.settings_config["env"][key], "deepseek-v4-pro", "{key}");
+    }
+    for text in [&codex.model_list, &codex.config_contents, &codex.model_metadata, &grok.model_list] {
+        assert!(!text.contains(&format!("group/{id}")), "{text}");
+    }
+    assert!(!wiring.models.iter().any(|model| model.id.starts_with(&format!("group/{id}"))));
+    input.disabled = Some(false);
+    let (gateway, _) = save_group(store, &input).unwrap();
+    assert!(!gateway.group(&id).unwrap().disabled);
+    assert_eq!(gateway.group(&id).unwrap().name, "Daily renamed");
+    assert_eq!(codex_plus_core::gateway::route::binding_default_model(&gateway, &binding), format!("group/{id}"));
+    let claude = codex_plus_core::gateway::apply::claude_gateway_provider(&gateway, &binding, 57390);
+    assert_eq!(claude.settings_config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], format!("group/{id}"));
+    let wiring = codex_plus_core::gateway::agents::connect::wiring(&gateway, &binding, "opencode", 57390);
+    assert_eq!(wiring.small_model, format!("group/{id}[1M]"));
+}
+
+#[test]
+fn disabled_group_refreshes_live_agent_configs_and_goal_catalog() {
+    let fixture = fixture(57391);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+    let mut group = GroupInput {
+        name: "Daily".into(),
+        members: vec![GroupMember { model: "deepseek-v4-flash".into(), weight: 1 }],
+        ..GroupInput::default()
+    };
+    let (_, id) = save_group(&ctx.gateway, &group).unwrap();
+    group.id = id.clone();
+    let model = format!("group/{id}");
+    let mut selected = binding();
+    selected.model = model.clone();
+    selected.claude_roles.haiku = model.clone();
+    enable_binding(ctx, &ToolId::Codex, selected.clone()).unwrap();
+    enable_binding(ctx, &ToolId::Claude, selected.clone()).unwrap();
+    let opencode = ToolId::Unknown("opencode".into());
+    enable_binding(ctx, &opencode, selected).unwrap();
+    let opencode_path = (codex_plus_core::gateway::agents::spec("opencode").unwrap().config_path)(&ctx.agent_env);
+
+    let sqlite = ctx.codex_home.join("sqlite");
+    std::fs::create_dir_all(&sqlite).unwrap();
+    let db = rusqlite::Connection::open(sqlite.join("codex-dev.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, model TEXT);
+         INSERT INTO threads VALUES ('goal', 'group/daily');
+         CREATE TABLE automation_runs (thread_id TEXT, updated_at TEXT, archived_reason TEXT);
+         INSERT INTO automation_runs VALUES ('goal', '2026-11-08T00:00:00Z', NULL);",
+    ).unwrap();
+    drop(db);
+
+    group.disabled = Some(true);
+    save_group(&ctx.gateway, &group).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("deepseek-v4-pro"));
+    assert!(!codex_catalog(ctx)["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == model));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "deepseek-v4-pro");
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(&opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["model"], "codexplus/deepseek-v4-pro");
+    assert_eq!(opencode_config["small_model"], "codexplus/deepseek-v4-pro");
+    assert!(opencode_config["provider"]["codexplus"]["models"].get(&model).is_none());
+    assert_eq!(ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().model, model);
+
+    group.disabled = Some(false);
+    save_group(&ctx.gateway, &group).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some(model.as_str()));
+    assert!(codex_catalog(ctx)["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == model));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], model);
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["small_model"], "codexplus/group/daily");
+}
+
+#[test]
+fn empty_binding_keeps_qualified_provider_model_when_its_namesake_group_is_disabled() {
+    let fixture = fixture(57392);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+
+    let provider_id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let mut provider = deepseek_input();
+    provider.model = "group/fast".into();
+    provider.model_list = "group/fast".into();
+    update_provider(&ctx.gateway, &provider_id, &provider).unwrap();
+    let qualified = format!("{provider_id}/group/fast");
+    let mut group = GroupInput {
+        name: "Fast".into(),
+        members: vec![GroupMember { model: qualified.clone(), weight: 1 }],
+        ..GroupInput::default()
+    };
+    let (_, id) = save_group(&ctx.gateway, &group).unwrap();
+    group.id = id;
+
+    let empty = AgentBinding::default();
+    enable_binding(ctx, &ToolId::Codex, empty.clone()).unwrap();
+    enable_binding(ctx, &ToolId::Claude, empty.clone()).unwrap();
+    let opencode = ToolId::Unknown("opencode".into());
+    enable_binding(ctx, &opencode, empty).unwrap();
+    let opencode_path = (codex_plus_core::gateway::agents::spec("opencode").unwrap().config_path)(&ctx.agent_env);
+
+    group.disabled = Some(true);
+    let (gateway, _) = save_group(&ctx.gateway, &group).unwrap();
+    let binding = gateway.binding(&opencode).unwrap();
+    assert!(binding.model.is_empty());
+    assert_eq!(codex_plus_core::gateway::route::binding_default_model(&gateway, binding), qualified);
+    assert!(codex_plus_core::gateway::route::binding_exposed_models(&gateway, binding).contains(&qualified));
+    let plan = codex_plus_core::gateway::route::resolve_plan(&gateway, &opencode, "", None).unwrap();
+    assert_eq!(plan.candidates[0].upstream_model, "group/fast");
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some(qualified.as_str()));
+    assert!(codex_catalog(ctx)["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == qualified));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"], qualified);
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(&opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["model"], format!("codexplus/{qualified}"));
+    assert!(opencode_config["provider"]["codexplus"]["models"].get(&qualified).is_some());
+
+    group.disabled = Some(false);
+    save_group(&ctx.gateway, &group).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 3);
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("group/fast"));
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"], "group/fast");
+    let opencode_config: Value = serde_json::from_str(&std::fs::read_to_string(opencode_path).unwrap()).unwrap();
+    assert_eq!(opencode_config["model"], "codexplus/group/fast");
+    assert!(ctx.gateway.load().unwrap().binding(&opencode).unwrap().model.is_empty());
+}
+
+#[test]
 fn imports_copy_data_and_leave_the_direct_mode_untouched() {
     let provider = ClaudeProvider {
         id: "kimi".into(),
@@ -2099,7 +2278,7 @@ fn direct_aggregates_move_into_the_gateway_as_pool_providers_and_a_group() {
 
 #[test]
 fn auto_group_settings_save_and_reset_to_default() {
-    use codex_plus_core::gateway::apply::save_auto_group;
+    use codex_plus_core::gateway::apply::{save_auto_group, save_auto_group_with_hidden};
     use codex_plus_core::gateway::store::AutoGroupSettings;
     let fixture = fixture(57396);
     let store = &fixture.ctx.gateway;
@@ -2118,6 +2297,12 @@ fn auto_group_settings_save_and_reset_to_default() {
     assert!(saved.hide_members);
     // 改回默认：记录删掉，自动组回到「没改过」、跟着池子变。
     let gateway = save_auto_group(store, "deepseek-v4-pro", AutoGroupSettings::default()).unwrap();
+    assert!(gateway.auto_groups.is_empty());
+    let gateway = save_auto_group_with_hidden(store, "deepseek-v4-pro", AutoGroupSettings::default(), Some(true)).unwrap();
+    assert!(gateway.auto_groups["deepseek-v4-pro"].hidden);
+    let gateway = save_auto_group_with_hidden(store, "deepseek-v4-pro", AutoGroupSettings::default(), None).unwrap();
+    assert!(gateway.auto_groups["deepseek-v4-pro"].hidden, "恢复默认不改另一窗口的开关");
+    let gateway = save_auto_group_with_hidden(store, "deepseek-v4-pro", AutoGroupSettings::default(), Some(false)).unwrap();
     assert!(gateway.auto_groups.is_empty());
 }
 
@@ -2309,6 +2494,217 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     let off = ProviderInput { strip_image_generation_tool: Some(false), ..input };
     update_provider(&store, &id, &off).unwrap();
     assert!(!relay(&store).strip_image_generation_tool);
+}
+
+#[test]
+fn codex_gateway_image_capability_keeps_gateway_transport_for_each_identity() {
+    let fixture = fixture(57379);
+    let ctx = &fixture.ctx;
+    let agent_binding = AgentBinding {
+        token: "cpx-gw-codex-image-test".into(),
+        ..binding()
+    };
+    let mut cases = vec![("auto without images", ctx.gateway.load().unwrap(), false)];
+    let (gateway, image_id) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Images".into(),
+            base_url: "https://images.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "gpt-image-2".into(),
+            model_list: "gpt-image-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let picked = format!("{image_id}/gpt-image-2");
+    cases.push(("auto with images", gateway.clone(), true));
+    for (name, choice, enabled, available) in [
+        ("selected", picked.as_str(), true, true),
+        ("off", "off", true, false),
+        ("missing", "gone/gpt-image-2", true, false),
+        ("disabled", picked.as_str(), false, false),
+    ] {
+        let mut configured = gateway.clone();
+        configured
+            .image_models
+            .insert("codex".into(), choice.into());
+        configured
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == image_id)
+            .unwrap()
+            .enabled = enabled;
+        cases.push((name, configured, available));
+    }
+
+    for (name, gateway, available) in cases {
+        for signed_in in [false, true] {
+            for wsl_host in [None, Some(std::net::Ipv4Addr::new(172, 29, 16, 1))] {
+                let profile = codex_gateway_profile_on(
+                    &gateway,
+                    &agent_binding,
+                    ctx.port,
+                    wsl_host,
+                    signed_in,
+                )
+                .unwrap();
+                let config: toml::Value = toml::from_str(&profile.config_contents).unwrap();
+                let provider = &config["model_providers"]["custom"];
+                let official = signed_in && wsl_host.is_none();
+                let host = wsl_host.map_or("127.0.0.1".into(), |address| address.to_string());
+                let endpoint = format!("http://{host}:{}/gw/codex/v1", ctx.port);
+                let actor = provider
+                    .get("http_headers")
+                    .and_then(|headers| headers.get("x-openai-actor-authorization"))
+                    .and_then(toml::Value::as_str);
+                let expected_actor =
+                    (available && !official).then_some("codex-plus-gateway-image-generation");
+                assert_eq!(
+                    actor, expected_actor,
+                    "{name}, signed_in={signed_in}, wsl={wsl_host:?}"
+                );
+                assert_eq!(profile.base_url, endpoint);
+                assert_eq!(provider["base_url"].as_str(), Some(endpoint.as_str()));
+                assert!(!profile.pure_api_image_generation);
+                assert_eq!(
+                    config["model_provider"].as_str(),
+                    Some(if official { "openai" } else { "custom" })
+                );
+                if !official {
+                    assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn codex_startup_upgrades_image_registration_without_a_port_change_or_resave() {
+    let fixture = fixture(57377);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let original = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();
+    let (_, image_id) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Images".into(),
+            base_url: "https://images.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "gpt-image-2".into(),
+            model_list: "gpt-image-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway.restore_on_exit = false;
+            gateway.image_models.insert("codex".into(), format!("{image_id}/gpt-image-2"));
+            Ok(())
+        })
+        .unwrap();
+    assert!(!codex_config(ctx).contains("x-openai-actor-authorization"));
+    assert_eq!(reapply_if_port_changed(ctx).unwrap(), 0);
+
+    assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    assert!(codex_config(ctx).contains("codex-plus-gateway-image-generation"));
+    assert!(codex_config(ctx).contains("http://127.0.0.1:57377/gw/codex/v1"));
+    let refreshed = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();
+    assert_eq!(refreshed.token, original.token);
+    assert_eq!(refreshed.restore, original.restore);
+    assert!(!codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+
+    ctx.gateway
+        .update(|gateway| {
+            gateway.image_models.insert("codex".into(), "off".into());
+            Ok(())
+        })
+        .unwrap();
+    assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    assert!(!codex_config(ctx).contains("x-openai-actor-authorization"));
+    assert!(!codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+}
+
+#[test]
+fn codex_gateway_image_selection_refreshes_the_final_live_provider() {
+    let fixture = fixture(57378);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    assert!(!codex_config(ctx).contains("x-openai-actor-authorization"));
+
+    let (_, image_id) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Images".into(),
+            base_url: "https://images.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "gpt-image-2".into(),
+            model_list: "gpt-image-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let picked = format!("{image_id}/gpt-image-2");
+    for (choice, enabled, available) in [
+        ("", true, true),
+        (picked.as_str(), true, true),
+        ("off", true, false),
+        ("gone/gpt-image-2", true, false),
+        (picked.as_str(), false, false),
+        (picked.as_str(), true, true),
+        ("off", true, false),
+    ] {
+        ctx.gateway
+            .update(|gateway| {
+                if choice.is_empty() {
+                    gateway.image_models.remove("codex");
+                } else {
+                    gateway.image_models.insert("codex".into(), choice.into());
+                }
+                gateway
+                    .providers
+                    .iter_mut()
+                    .find(|provider| provider.relay.id == image_id)
+                    .unwrap()
+                    .enabled = enabled;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+        let config: toml::Value = toml::from_str(&codex_config(ctx)).unwrap();
+        let provider = &config["model_providers"]["custom"];
+        let actor = provider
+            .get("http_headers")
+            .and_then(|headers| headers.get("x-openai-actor-authorization"))
+            .and_then(toml::Value::as_str);
+        assert_eq!(
+            actor,
+            available.then_some("codex-plus-gateway-image-generation"),
+            "choice={choice:?}, enabled={enabled}"
+        );
+        assert_eq!(
+            provider["base_url"].as_str(),
+            Some("http://127.0.0.1:57378/gw/codex/v1")
+        );
+        assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+        let settings = ctx.settings.load().unwrap();
+        assert!(!settings.active_relay_profile().pure_api_image_generation);
+    }
 }
 
 /// #2746：Codex 没登录 ChatGPT 时，托管网关供应商要和直连模式手加的纯 API 供应商一样

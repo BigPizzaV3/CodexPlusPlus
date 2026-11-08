@@ -13,6 +13,7 @@ import {
   formatElapsed,
   formatMoney,
   formatTokens,
+  groupDisplayName,
   niceCeiling,
   prettyModelName,
   shortDate,
@@ -209,7 +210,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
             const share = total / tokenTotal;
             const groupHit = cacheHitRate(group);
             const providerEntry = payload?.pool.find((entry) => entry.id === group.key);
-            const name = split === "agent" ? agentName(group.key) : split === "model" ? prettyModelName(group.label) : maskAccountName(group.label);
+            const name = split === "agent" ? agentName(group.key) : split === "model" ? groupDisplayName(payload, group.key) ?? prettyModelName(group.label) : maskAccountName(group.label);
             return (
               <div
                 className="gw-usage-row gw-usage-row-link"
@@ -227,11 +228,11 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
               >
                 <span className="gw-usage-name">
                   {split === "agent" ? (
-                    AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />
+                    AGENT_ICONS[group.key] ? <img alt="" className="gw-usage-agent" data-agent-icon={group.key} src={AGENT_ICONS[group.key]} /> : <Avatar name={group.label} size="sm" />
                   ) : (
-                    <Avatar baseUrl={providerEntry?.baseUrl} name={group.label || "?"} size="sm" />
+                    <Avatar baseUrl={providerEntry?.baseUrl} name={(split === "model" ? name : group.label) || "?"} size="sm" />
                   )}
-                  <strong title={split === "provider" ? maskAccountName(group.label) : group.label}>{name || t("未知")}</strong>
+                  <strong title={split === "model" || split === "provider" ? name : group.label}>{name || t("未知")}</strong>
                 </span>
                 <span className="gw-usage-share">
                   <span className="gw-usage-bar"><i style={{ width: `${Math.max(2, share * 100)}%` }} /></span>

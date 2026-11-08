@@ -3,22 +3,13 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
-import { isFavoriteModel, modelDisplay, ownPickerSection, pickerSections, type GatewayPayload, type OwnModels, type PickerSection } from "./gateway-model.ts";
+import { agentModels, blankBinding, disabledGroup, draftFromBinding, isFavoriteModel, modelDisplay, ownPickerSection, pickerSections, qualifiedProvider, servingProviders, type GatewayPayload, type OwnModels } from "./gateway-model.ts";
 
 const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const ts = createRequire(import.meta.url)("typescript");
 const file = ts.createSourceFile("GatewayAgents.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
 const component = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "ModelList");
-const statement = component?.body?.statements.find((node: any) =>
-  ts.isVariableStatement(node) && node.declarationList.declarations.some((entry: any) => entry.name.getText(file) === "sections"));
-const declaration = statement?.declarationList.declarations.find((entry: any) => entry.name.getText(file) === "sections");
-const callback = declaration?.initializer?.arguments?.[0];
-assert.ok(callback && ts.isArrowFunction(callback) && ts.isBlock(callback.body));
-const select = new Function(
-  "payload", "query", "exclude", "skipGroup", "ownList", "sectionOnly", "favoritesOnly", "favorites",
-  "withOwnSection", "pickerSections", "ownPickerSection", "avatarOf", "isFavoriteModel", "selectedModel", "pinProvider", "modelDisplay",
-  callback.body.getText(file).slice(1, -1),
-);
+assert.ok(component);
 const ownStart = source.indexOf("function withOwnSection(");
 const bodyStart = source.indexOf("{\n", ownStart);
 const bodyEnd = source.indexOf("\n}", bodyStart);
@@ -38,13 +29,82 @@ const payload = {
 } as GatewayPayload;
 const own: OwnModels = { vendor: "Direct", current: "example-model", models: [{ id: "example-model", label: "Example" }] };
 
+function elements(element: any): any[] {
+  if (!element || typeof element !== "object") return [];
+  if (Array.isArray(element)) return element.flatMap(elements);
+  return [element, ...elements(element.props?.children)];
+}
+
 test("自带同名模型不遮住按供应商池路由的当前选择", () => {
-  const sections: PickerSection[] = select(
-    payload, "", [], undefined, own, null, false, [], withOwnSection, pickerSections,
-    ownPickerSection, (name: string) => name, isFavoriteModel, "example-model", true, modelDisplay,
-  );
-  assert.ok(sections.some((section) => section.key === "own"));
-  assert.equal(sections.find((section) => section.key === "current")?.items[0].model, "example-model");
+  const compiled = ts.transpileModule(component.getText(file), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const exports: Record<string, any> = {};
+  const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+  vm.runInNewContext(compiled, {
+    exports,
+    require: () => ({ jsx, jsxs: jsx }),
+    useState: (initial: any) => [typeof initial === "function" ? initial() : initial, () => {}],
+    useRef: (initial: unknown) => ({ current: initial }),
+    useMemo: (fn: () => unknown) => fn(),
+    useEffect: () => {},
+    useContext: () => ({}), GatewayNavContext: {},
+    pickerSections, ownPickerSection, withOwnSection, isFavoriteModel, modelDisplay, qualifiedProvider, servingProviders,
+    avatarOf: (name: string) => name, loadFavorites: () => [], persistFavorites: () => {},
+    t: (value: string) => value, tf: (value: string) => value,
+    Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
+    Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check", GROUP_MODEL_PREFIX: "group/",
+  });
+  const tree = exports.ModelList({
+    payload, exclude: [], selectedModel: "example-model", own, onPick: () => {}, onPickOwn: () => {}, pinProvider: true,
+  });
+  assert.ok(elements(tree).find((element) => element.props?.["data-section"] === "own"));
+  const current = elements(tree).find((element) => element.props?.["data-section"] === "current");
+  assert.ok(current);
+  const selected = elements(current).find((element) => element.props?.role === "option");
+  assert.equal(selected?.props["aria-selected"], true);
+  assert.equal(elements(selected).find((element) => element.type === "strong")?.props.title, "example-model");
+});
+
+test("同名停用组不遮住所选供应商模型的冲突提示", () => {
+  const selection = { providerId: "GROUP", upstreamModel: "daily", providerSource: "" };
+  const binding = { ...blankBinding(), enabled: true, model: "GROUP/daily", defaultModelSelection: selection };
+  const data: GatewayPayload = {
+    ...payload,
+    gateway: { ...payload.gateway, bindings: { codex: binding } },
+    pool: [{ ...payload.pool[0], id: "GROUP", name: "Group provider" }],
+    groups: [{ id: "daily", name: "Daily", mode: "inOrder", members: [], disabled: true }],
+  };
+  const agent = { agent: "codex", name: "Codex", enabled: true, defaultModel: "example-model" };
+  for (const [path, name] of [["GatewayAgents.tsx", "ModelPicker"], ["TrayPanel.tsx", "PanelAgentRow"]]) {
+    const content = readFileSync(new URL(`./${path}`, import.meta.url), "utf8");
+    const parsed = ts.createSourceFile(path, content, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+    const target = parsed.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    assert.ok(target);
+    const compiled = ts.transpileModule(`export ${target.getText(parsed)}`, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    }).outputText;
+    const exports: Record<string, any> = {};
+    const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+    vm.runInNewContext(compiled, {
+      exports,
+      require: () => ({ jsx, jsxs: jsx, Fragment: "Fragment" }),
+      useState: (initial: unknown) => [initial, () => {}], useRef: (initial: unknown) => ({ current: initial }),
+      disabledGroup, modelDisplay, agentModels, draftFromBinding,
+      ownCurrent: () => null, visibleOwnModels: () => null,
+      t: (value: string) => value, tf: (value: string) => value,
+      AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown",
+      Check: "Check", AlertTriangle: "AlertTriangle", Floating: "Floating", ModelList: "ModelList",
+      AgentDisconnectDialog: "AgentDisconnectDialog",
+    });
+    const tree = name === "ModelPicker"
+      ? exports.ModelPicker({ agent, payload: data, draft: draftFromBinding(binding), connected: true, open: false })
+      : exports.PanelAgentRow({ agent, payload: data, onRun: () => {} });
+    const picker = elements(tree).find((element) => element.props?.className?.includes("gw-picker-button"));
+    assert.equal(picker?.props.title, undefined, `${name} 不应声称回退到其他模型`);
+    assert.equal(elements(picker).find((element) => element.type === "ModelViewGlyph")?.props.view.issue, "conflict", name);
+    assert.equal(elements(tree).find((element) => element.type === "ModelList")?.props.selectedModel, "GROUP/daily", name);
+  }
 });
 
 test("选择默认模型保存失败时保持已保存的显示", async () => {
@@ -91,11 +151,6 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
       run: (...args: any[]) => { calls.push(args); return saved; },
       notify: async () => {},
     });
-  };
-  const elements = (element: any): any[] => {
-    if (!element || typeof element !== "object") return [];
-    if (Array.isArray(element)) return element.flatMap(elements);
-    return [element, ...elements(element.props?.children)];
   };
   const picker = () => elements(render()).find((element) => element.type === "ModelPicker");
   picker().props.onPick({ model: "next", providerModel: "provider/next" });
