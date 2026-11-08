@@ -677,7 +677,7 @@ export function pickerSections(
   if (autoItems.length) sections.push({ key: "auto", title: "自动组", avatar: "", items: autoItems });
   const groups = payload.groups
     .filter((group) => !group.disabled && group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id)))
-    .map((group) => ({ model: groupModelId(group.id), label: group.name, sub: groupModelId(group.id), avatar: avatar(group.name) }));
+    .map((group) => ({ model: groupModelId(group.id), label: group.name, sub: `${GROUP_MODEL_PREFIX}${group.name}`, avatar: avatar(group.name) }));
   if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
   const typed = rawQuery.trim();
   const visible = sectionOnly ? sections.filter((section) => section.key === sectionOnly) : sections;
@@ -734,12 +734,18 @@ export function servingProviders(payload: GatewayPayload | null, model: string, 
   return agentPoolProviders(payload, exclude).filter((entry) => entry.models.some((known) => known.toLowerCase() === name));
 }
 
+/** 仅解析模型组的当前名称；未找到时由显示入口保留原始值。 */
+export function groupDisplayName(payload: GatewayPayload | null, model: string): string | undefined {
+  const key = model.trim().toLowerCase();
+  return payload?.groups.find((group) => groupModelId(group.id).toLowerCase() === key)?.name;
+}
+
 /** 一个模型名在按钮上的显示：模型名 + 提供它的供应商；模型组显示组名。空串用池里第一个模型。 */
 export function modelDisplay(payload: GatewayPayload | null, model: string, exclude: string[] = []): ModelView {
   const title = model.trim() || agentModels(payload, exclude)[0] || "";
   if (title.startsWith(GROUP_MODEL_PREFIX)) {
-    const group = payload?.groups.find((item) => groupModelId(item.id) === title);
-    return { title: group?.name ?? title, sub: title, group: true };
+    const name = groupDisplayName(payload, title);
+    return { title: name ?? title, sub: name === undefined ? title : `${GROUP_MODEL_PREFIX}${name}`, group: true };
   }
   const qualified = qualifiedProvider(payload, title, exclude);
   if (qualified) return { title: prettyModelName(qualified.model), sub: maskAccountName(qualified.entry.name), group: false };
@@ -1023,8 +1029,8 @@ export type NarrativeLine = { tone: "muted" | "step" | "ok" | "fail"; text: stri
 export function routeNarrative(agent: string, record: RouteRecordView, payload: GatewayPayload | null): NarrativeLine[] {
   const lines: NarrativeLine[] = [];
   const who = agentName(agent);
-  const requested = record.requestedModel || record.model;
-  const plan = record.planned.map((member) => `${maskAccountName(member.relayName)}/${member.model}`).join(", ");
+  const requested = groupDisplayName(payload, record.requestedModel || record.model) ?? (record.requestedModel || record.model);
+  const plan = record.planned.map((member) => `${maskAccountName(member.relayName)}/${groupDisplayName(payload, member.model) ?? member.model}`).join(", ");
   if (record.groupId) {
     const group = payload?.groups.find((item) => item.id === record.groupId);
     lines.push({ tone: "muted", text: "{0} 请求 {1}，交给模型组「{2}」：{3}", args: [who, requested, group?.name ?? record.groupId, plan] });
@@ -1035,7 +1041,7 @@ export function routeNarrative(agent: string, record: RouteRecordView, payload: 
   record.steps.forEach((step, index) => {
     const last = index === record.steps.length - 1;
     if (step.outcome === "answered") {
-      lines.push({ tone: "ok", text: "{0}（{1}）回答，用时 {2}。", args: [maskAccountName(step.relayName), step.model, formatElapsed(record.elapsedMs)] });
+      lines.push({ tone: "ok", text: "{0}（{1}）回答，用时 {2}。", args: [maskAccountName(step.relayName), groupDisplayName(payload, step.model) ?? step.model, formatElapsed(record.elapsedMs)] });
       return;
     }
     const reason = { zh: step.outcome === "transport" ? "连不上" : failureLabel(step.failure) || "出错" };

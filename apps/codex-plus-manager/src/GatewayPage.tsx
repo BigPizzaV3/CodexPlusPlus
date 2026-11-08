@@ -13,7 +13,7 @@ import {
   formatElapsed,
   groupModeDescription,
   groupModeLabel,
-  groupModelId,
+  GROUP_MODEL_PREFIX,
   groupStickyDescription,
   groupStickyLabel,
   isPattern,
@@ -25,7 +25,6 @@ import {
   patternMatches,
   prettyModelName,
   speedOf,
-  slugify,
   type GatewayGroupEntry,
   type GatewayPayload,
   type GatewayResult,
@@ -415,7 +414,7 @@ function GroupCard({
         <span className="gw-route-group-icon">{auto ? <Shuffle className="h-4 w-4" /> : <Waypoints className="h-4 w-4" />}</span>
         <div className="gw-route-group-title">
           <strong>{auto ? prettyModelName(group.name) : group.name}</strong>
-          <code className="gw-chip" title={t("Agent 里选这个名字就走这个组")}>{auto ? group.name : groupModelId(group.id)}</code>
+          <code className="gw-chip" title={auto ? t("Agent 里选这个名字就走这个组") : t("模型组")}>{auto ? group.name : `${GROUP_MODEL_PREFIX}${group.name}`}</code>
           {auto ? <span className="gw-pill gw-pill-outline">{t("自动")}</span> : null}
         </div>
         <div className="gw-route-group-controls">
@@ -503,7 +502,7 @@ function RouteMember({
       {target ? <Avatar baseUrl={target.entry.baseUrl} name={target.entry.name} size="sm" /> : view.group ? <Waypoints className="gw-picker-glyph h-4 w-4" /> : <Shuffle className="gw-picker-glyph h-4 w-4" />}
       <span className="gw-route-member-name">
         <strong>{target ? maskAccountName(shortProviderName(target.entry.name)) : view.title}</strong>
-        <small>{target ? prettyModelName(target.model) : member.model}</small>
+        <small>{target ? prettyModelName(target.model) : view.group ? view.sub : member.model}</small>
       </span>
       {mode === "weighted" ? <span className="gw-route-member-weight">{tf("权重 {0}", [member.weight])}</span> : null}
       {status ? <span className="gw-route-member-status" data-state={status.state}><MemberStatusLabel status={status} /></span> : null}
@@ -592,7 +591,7 @@ function GroupEditor({
         </header>
         <div className="gw-modal-body">
           <label className="gw-field">
-            <span>{t("名称")} <small>{group ? groupModelId(group.id) : name.trim() ? groupModelId(slugify(name)) : ""}</small></span>
+            <span>{t("名称")} <small>{name.trim() ? `${GROUP_MODEL_PREFIX}${name.trim()}` : ""}</small></span>
             <Input autoFocus onChange={(event) => setName(event.currentTarget.value)} placeholder={t("例如 日常编码")} value={name} />
           </label>
           <div className="gw-field">

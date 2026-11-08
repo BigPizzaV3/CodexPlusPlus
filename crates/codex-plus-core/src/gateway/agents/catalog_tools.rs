@@ -277,7 +277,7 @@ fn dsh_block(wiring: &Wiring, user_config: Option<&str>) -> String {
         .models
         .iter()
         .map(|model| {
-            let mut entry = json!({ "id": model.id, "name": model.id });
+            let mut entry = json!({ "id": model.id, "name": model.display_name });
             if let Some(window) = model.context_window {
                 entry["contextWindow"] = json!(window);
                 entry["maxTokens"] = json!(output_limit(window));
@@ -680,7 +680,7 @@ fn write_empryo(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
         .models
         .iter()
         .map(|model| {
-            let mut entry = json!({ "id": model.id, "name": model.id });
+            let mut entry = json!({ "id": model.id, "name": model.display_name });
             if let Some(window) = model.context_window {
                 entry["contextWindow"] = json!(window);
             }
@@ -734,7 +734,7 @@ fn minimax_path(env: &AgentEnv) -> PathBuf {
 fn write_minimax(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
     let mut models = Map::new();
     for model in &wiring.models {
-        let mut entry = json!({ "name": model.id });
+        let mut entry = json!({ "name": model.display_name });
         if let Some(window) = model.context_window {
             entry["limit"] = json!({ "context": window, "output": output_limit(window) });
         }
@@ -825,7 +825,7 @@ fn write_droid(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
         let mut entry = json!({
             "model": model.id,
             "id": format!("{DROID_ID_PREFIX}{}", model.id),
-            "displayName": model.id,
+            "displayName": model.display_name,
             "baseUrl": base_url,
             "apiKey": wiring.token,
             "provider": provider,
@@ -901,7 +901,7 @@ fn write_cline(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
     for model in &wiring.models {
         let mut entry = json!({
             "id": model.id,
-            "name": model.id,
+            "name": model.display_name,
             "capabilities": ["streaming", "tools"],
         });
         if let Some(window) = model.context_window {
@@ -959,7 +959,7 @@ fn write_qoder_at(path: &Path, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
         .map(|model| {
             let mut entry = json!({
                 "model": model.id,
-                "displayName": model.id,
+                "displayName": model.display_name,
                 "capabilities": { "tools": true },
             });
             if let Some(window) = model.context_window {
@@ -1048,7 +1048,7 @@ fn write_grok_app(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
         .models
         .iter()
         .map(|model| {
-            let mut entry = json!({ "id": model.id, "name": model.id });
+            let mut entry = json!({ "id": model.id, "name": model.display_name });
             if let Some(window) = model.context_window {
                 entry["contextWindow"] = json!(window);
             }
@@ -1166,7 +1166,7 @@ fn write_zcode(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
             models.insert(
                 model.id.clone(),
                 json!({
-                    "name": model.id,
+                    "name": model.display_name,
                     "limit": { "context": window, "output": output_limit(window) },
                     "modalities": { "input": ["text"], "output": ["text"] },
                 }),
@@ -1201,11 +1201,11 @@ pub const ZCODE: AgentSpec = AgentSpec {
 // ---------------------------------------------------------------- WorkBuddy / WorkBuddy AI / CodeBuddy
 
 /// WorkBuddy 与 CodeBuddy 共用的 `models.json` 条目（OpenAI Chat Completions）。
-fn buddy_entry(wiring: &Wiring, id: &str, window: Option<u64>) -> Value {
+fn buddy_entry(wiring: &Wiring, id: &str, name: &str, window: Option<u64>) -> Value {
     let window = window.unwrap_or(200_000);
     json!({
         "id": id,
-        "name": id,
+        "name": name,
         "vendor": PROVIDER_ID,
         "apiKey": wiring.token,
         "url": format!("{}/chat/completions", wiring.v1()),
@@ -1327,7 +1327,7 @@ fn write_buddy_models(path: &Path, wiring: &Wiring, set: &mut FileSet) -> anyhow
     let ours: Vec<Value> = wiring
         .models
         .iter()
-        .map(|model| buddy_entry(wiring, &model.id, model.context_window))
+        .map(|model| buddy_entry(wiring, &model.id, &model.display_name, model.context_window))
         .collect();
     let current = match std::fs::read_to_string(path) {
         Ok(text) => Some(text),
@@ -1582,7 +1582,7 @@ fn write_ante(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Res
         .models
         .iter()
         .map(|model| {
-            let mut entry = json!({ "id": model.id, "display_name": model.id });
+            let mut entry = json!({ "id": model.id, "display_name": model.display_name });
             if let Some(window) = model.context_window {
                 entry["context_limit"] = json!(window);
                 entry["max_tokens"] = json!(output_limit(window));
@@ -1918,11 +1918,13 @@ mod tests {
             models: vec![
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
+                    display_name: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
                     reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
+                    display_name: "group/daily".to_string(),
                     context_window: None,
                     reasoning_levels: Vec::new(),
                 },

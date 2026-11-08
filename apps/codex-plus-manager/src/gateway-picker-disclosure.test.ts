@@ -70,6 +70,7 @@ function picker(onPick: (item: { model: string }) => void = () => {}) {
     tf: (value: string, values: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)])),
     Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
     Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check",
+    GROUP_MODEL_PREFIX: "group/",
   });
   return {
     render: () => {

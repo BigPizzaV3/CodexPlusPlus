@@ -786,6 +786,13 @@ pub fn member_outlives_provider(remaining: &[GatewayProvider], id: &str, member:
     declared_by_any(&relays, member)
 }
 
+/// 展示时使用当前组名；请求里的模型 ID 保持不变。
+pub fn model_display_name<'a>(gateway: &'a GatewaySettings, model: &'a str) -> &'a str {
+    group_by_model(gateway, model)
+        .map(|group| group.name.as_str())
+        .unwrap_or(model)
+}
+
 fn group_by_model<'a>(gateway: &'a GatewaySettings, model: &str) -> Option<&'a GatewayGroup> {
     let prefix = model.get(..GROUP_MODEL_PREFIX.len())?;
     if !prefix.eq_ignore_ascii_case(GROUP_MODEL_PREFIX) {

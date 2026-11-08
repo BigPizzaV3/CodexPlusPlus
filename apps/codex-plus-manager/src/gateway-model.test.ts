@@ -20,6 +20,7 @@ import {
   activeSponsorIds,
   gatewayPresets,
   groupModelId,
+  groupDisplayName,
   memberLabel,
   memberStatus,
   modelDispatch,
@@ -136,7 +137,7 @@ test("模型选择器：每个供应商一组，路由组作为 group/ 模型在
   const all = pickerSections(payload(), "", initials);
   assert.deepEqual(all.map((section) => section.key), ["provider:deepseek", "provider:glm", "group"]);
   assert.deepEqual(all[0].items.map((item) => item.model), ["deepseek-v4-pro", "deepseek-v4-flash"]);
-  assert.deepEqual(all[2].items[0], { model: "group/daily", label: "Daily", sub: "group/daily", avatar: "DA" });
+  assert.deepEqual(all[2].items[0], { model: "group/daily", label: "Daily", sub: "group/Daily", avatar: "DA" });
   assert.deepEqual(pickerSections(payload(), "flash", initials)[0].items.map((item) => item.model), ["deepseek-v4-flash"]);
   const custom = pickerSections(payload(), "kimi-k3", initials).at(-1);
   assert.equal(custom?.key, "custom");
@@ -191,11 +192,54 @@ test("模型显示：模型名 + 提供它的供应商；<供应商>/<模型> �
   assert.deepEqual(modelDisplay(payload(), ""), { title: "DeepSeek-V4-Pro", sub: "DeepSeek", group: false });
   assert.deepEqual(modelDisplay(payload(), "glm-5.3"), { title: "GLM-5.3", sub: "GLM", group: false });
   assert.deepEqual(modelDisplay(payload(), "deepseek/deepseek-v4-flash"), { title: "DeepSeek-V4-Flash", sub: "DeepSeek", group: false });
-  assert.deepEqual(modelDisplay(payload(), "group/daily"), { title: "Daily", sub: "group/daily", group: true });
+  assert.deepEqual(modelDisplay(payload(), "group/daily"), { title: "Daily", sub: "group/Daily", group: true });
   assert.equal(memberLabel(payload(), "deepseek/deepseek-v4-flash"), "DeepSeek · DeepSeek-V4-Flash");
   assert.equal(memberLabel(payload(), "group/daily"), "Daily");
   assert.equal(groupModelId("daily"), "group/daily");
   assert.equal(slugify(" 系统 默认 "), "系统-默认");
+});
+
+test("模型组改名：显示与选择器副标签跟随当前名称，路由 ID 保持不变", () => {
+  const data = payload();
+  data.groups[0].id = "聚合供应商-1";
+  data.groups[0].name = "6.1 Sol";
+  const model = "group/聚合供应商-1";
+  assert.deepEqual(modelDisplay(data, model), { title: "6.1 Sol", sub: "group/6.1 Sol", group: true });
+  const item = pickerSections(data, "6.1 Sol", initials).find((section) => section.key === "group")?.items[0];
+  assert.deepEqual(item, { model, label: "6.1 Sol", sub: "group/6.1 Sol", avatar: "6." });
+  assert.ok(agentModels(data).includes(model));
+  assert.equal(memberLabel(data, model), "6.1 Sol");
+  data.groups[0].name = "工作模型";
+  assert.deepEqual(modelDisplay(data, model), { title: "工作模型", sub: "group/工作模型", group: true });
+  assert.equal(pickerSections(data, "工作模型", initials).find((section) => section.key === "group")?.items[0].model, model);
+});
+
+test("多个组连续改名及复用旧名：显示按稳定 ID 解析，历史记录不被改写", () => {
+  const data = withActivity();
+  data.groups.push({ ...data.groups[0], id: "second", name: "Second" });
+  const record = data.activity!.agents[0].last!;
+  record.requestedModel = "group/daily";
+  const before = JSON.stringify(record);
+  for (const names of [["First renamed", "Second renamed"], ["Second", "First renamed"], ["相同名称", "相同名称"]]) {
+    data.groups.forEach((group, index) => { group.name = names[index]; });
+    data.groups.forEach((group, index) => {
+      const id = groupModelId(group.id);
+      assert.equal(groupDisplayName(data, id), names[index]);
+      assert.equal(groupDisplayName(data, id.toUpperCase()), names[index]);
+      assert.equal(modelDisplay(data, id).title, names[index]);
+      assert.equal(memberLabel(data, id), names[index]);
+      const item = pickerSections(data, "", initials).find((section) => section.key === "group")!.items.find((item) => item.model === id)!;
+      assert.equal(item.label, names[index]);
+      assert.equal(item.sub, `group/${names[index]}`);
+    });
+    const narrative = routeNarrative("claude", record, data);
+    assert.equal(narrative[0].args[1], names[0]);
+    assert.equal(narrative[0].args[2], names[0]);
+    assert.equal(JSON.stringify(record), before);
+  }
+  assert.equal(groupDisplayName(data, "deepseek-v4-pro"), undefined);
+  assert.equal(groupDisplayName(data, "group/deleted"), undefined);
+  assert.equal(groupDisplayName(null, "group/daily"), undefined);
 });
 
 test("模型名显示成正式写法，只影响显示", () => {
