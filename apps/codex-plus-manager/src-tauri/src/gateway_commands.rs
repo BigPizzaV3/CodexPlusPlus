@@ -926,6 +926,19 @@ pub fn save_gateway_options(
     respond("网关选项已保存。", "保存网关选项失败", result)
 }
 
+/// 「子智能体使用自己请求的模型」开关：开着时子智能体请求按 Codex 实际请求的模型发送，
+/// 不继承父回合的模型身份（#2987）。只影响之后的请求，不需要重写 Agent 配置。
+#[tauri::command]
+pub fn save_gateway_subagent_model_policy(
+    follow_request: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.subagent_model_follow_request = follow_request;
+        Ok(())
+    });
+    respond("子智能体模型策略已保存。", "保存子智能体模型策略失败", result)
+}
+
 /// 「多家自动切换」开关：多家都有的模型额外列一份按顺序自动切换的入口。改完重写开着的 Agent 配置。
 #[tauri::command]
 pub fn save_gateway_auto_models(enabled: bool) -> CommandResult<Option<GatewayPayload>> {

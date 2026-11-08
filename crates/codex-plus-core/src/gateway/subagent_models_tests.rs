@@ -210,6 +210,66 @@ fn child_inherits_parent_provider_and_model_instead_of_bare_override() {
     assert!(child.get("tools").is_none());
 }
 
+/// #2987：打开「子智能体使用自己请求的模型」后，子智能体请求不改写模型、不注入继承指引。
+#[test]
+fn follow_request_leaves_child_model_and_spawn_tools_untouched() {
+    let fixture = Fixture::new();
+    let mut gateway = gateway();
+    gateway.subagent_model_follow_request = true;
+    fixture
+        .apply(
+            &gateway,
+            "parent",
+            "parent-turn",
+            None,
+            "inherit-b/gpt-6.1-terra",
+        )
+        .unwrap();
+    let child = fixture
+        .apply(
+            &gateway,
+            "child",
+            "child-turn",
+            Some(("parent", "parent-turn")),
+            "gpt-6.1-sol",
+        )
+        .unwrap();
+    assert_eq!(child["model"], "gpt-6.1-sol");
+
+    // 带 spawn 工具的子请求：工具描述里不出现 `[Codex++ inherited model]` 指引。
+    let metadata = json!({"thread_id":"child2","turn_id":"child2-turn",
+        "parent_thread_id":"parent","parent_turn_id":"parent-turn"});
+    let headers = vec![
+        ("x-codex-turn-metadata".to_string(), metadata.to_string()),
+        ("x-codex-parent-thread-id".to_string(), "parent".to_string()),
+        ("x-openai-subagent".to_string(), "collab_spawn".to_string()),
+    ];
+    let mut request = json!({
+        "model": "gpt-6.1-sol",
+        "input": [],
+        "tools": [{"type":"function","name":"multi_agent_v1.spawn_agent","description":"Spawn a sub-agent."}]
+    });
+    prepare_at(
+        &gateway,
+        &ToolId::Codex,
+        &mut request,
+        ProxySessionHeaders {
+            thread_id: Some("child2"),
+            client_identity: &headers,
+            ..Default::default()
+        },
+        &fixture.registry,
+        &fixture.home,
+        &fixture.sqlite,
+    )
+    .unwrap();
+    assert_eq!(request["model"], "gpt-6.1-sol");
+    assert!(!request["tools"][0]["description"]
+        .as_str()
+        .unwrap()
+        .contains(POLICY_MARKER));
+}
+
 #[test]
 fn aggregate_identity_preserves_group_and_tracks_manual_selection() {
     let fixture = Fixture::new();

@@ -625,6 +625,11 @@ pub struct GatewaySettings {
     /// 模型下拉里不列自带模型（直连，不经 Codex++）的 Agent（默认都列，见 [`Self::shows_own_models_for`]）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide_own_models: Vec<String>,
+    /// 子智能体按 Codex 实际请求的模型发送（#2987）。默认关：没有显式供应商身份的
+    /// 子智能体请求继承父回合的完整模型身份（改写 `request.model`，并在 spawn 工具
+    /// 描述里加继承指引）；打开后按请求里的模型发送，不改写也不注入指引。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subagent_model_follow_request: bool,
     /// 旧版的全局生图模型，读的时候迁移给 Codex（见 [`read_store`]），之后不再写。
     #[serde(default, skip_serializing)]
     pub image_model: String,
@@ -660,6 +665,7 @@ impl Default for GatewaySettings {
             image_models: BTreeMap::new(),
             image_keep_urls: Vec::new(),
             hide_own_models: Vec::new(),
+            subagent_model_follow_request: false,
             image_model: String::new(),
             app_version: String::new(),
             extra: Map::new(),
@@ -1401,6 +1407,22 @@ mod tests {
         // 再读一遍还是同样的内容。
         let again = store.load().unwrap();
         assert_eq!(again.groups[0].extra["futureGroup"], 3);
+    }
+
+    /// #2987：默认关（子智能体继承父回合身份），序列化默认值时不落键，旧文件缺键也读成关。
+    #[test]
+    fn subagent_model_follow_request_defaults_off_and_round_trips() {
+        assert!(!GatewaySettings::default().subagent_model_follow_request);
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        store.save(&GatewaySettings::default()).unwrap();
+        let text = fs::read_to_string(&store.path).unwrap();
+        assert!(
+            !text.contains("subagentModelFollowRequest"),
+            "默认值不落键：{text}"
+        );
+        std::fs::write(&store.path, r#"{"subagentModelFollowRequest":true}"#).unwrap();
+        assert!(store.load().unwrap().subagent_model_follow_request);
     }
 
     #[test]
