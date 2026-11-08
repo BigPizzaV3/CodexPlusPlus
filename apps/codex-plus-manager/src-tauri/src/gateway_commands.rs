@@ -1012,7 +1012,12 @@ pub fn save_gateway_image_model(
                     .insert(agent.as_str().to_string(), model.to_string());
             }
             Ok(())
-        })
+        })?;
+        if agent == ToolId::Codex {
+            apply::refresh_enabled(&context())
+                .context("生图模型已保存，但应用 Codex 配置失败")?;
+        }
+        Ok(())
     });
     respond("生图模型已保存。", "保存生图模型失败", result)
 }
