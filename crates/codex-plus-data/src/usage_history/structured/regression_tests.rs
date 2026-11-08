@@ -2376,6 +2376,126 @@ fn routed_live_receipt_uses_the_successful_upstream_model() {
 }
 
 #[test]
+fn fallback_live_receipt_requires_the_same_original_request() {
+    let mut record = request();
+    record.model = "supplier-a/model-a".into();
+    record.relay_id = "supplier-b".into();
+    record.relay_name = "Supplier B".into();
+    let mut row = receipt("fallback");
+    row["model"] = json!("supplier-a/model-a");
+
+    let proof = match_receipts(&[record.clone()], json!([row.clone()]));
+    assert_eq!(proof[0]["provider"], "supplier-b");
+    assert_eq!(proof[0]["model"], "model-a");
+    assert_eq!(proof[0]["requestIds"], json!(["request-1"]));
+    assert_eq!(proof[0]["input"], 100);
+    assert_eq!(proof[0]["output"], 10);
+    assert_eq!(proof[0]["cached"], 20);
+
+    let mut retried = record.clone();
+    retried.attempts = Some(2);
+    retried.final_response_evidence = Some("final-response-v1".into());
+    assert_eq!(
+        match_receipts(&[retried.clone()], json!([row.clone()]))[0]["provider"],
+        "supplier-b"
+    );
+    retried.final_response_evidence = None;
+    assert_no_attribution(&match_receipts(&[retried], json!([row.clone()])));
+
+    for original in ["", "supplier-c/model-a"] {
+        let mut changed = record.clone();
+        changed.model = original.into();
+        let result = match_receipts(&[changed], json!([row.clone()]));
+        assert_no_attribution(&result);
+        assert_eq!(result[0]["rejected"], true, "original={original}");
+    }
+    let mut conflicting_provider = row.clone();
+    conflicting_provider["provider"] = json!("supplier-a");
+    let result = match_receipts(&[record.clone()], json!([conflicting_provider]));
+    assert_no_attribution(&result);
+    assert_eq!(result[0]["rejected"], true);
+
+    for key in ["provider", "requestIds", "requestSignatures"] {
+        row[key] = proof[0][key].clone();
+    }
+    assert_eq!(
+        match_receipts(&[record.clone()], json!([row.clone()]))[0]["provider"],
+        "supplier-b"
+    );
+    assert_eq!(match_receipts(&[], json!([row.clone()])), json!([]));
+    let mut changed = record.clone();
+    changed.model = "supplier-c/model-a".into();
+    assert_eq!(
+        match_receipts(&[changed], json!([row.clone()]))[0]["rejected"],
+        true
+    );
+    let mut invalid_signature = row.clone();
+    invalid_signature["requestSignatures"]["request-1"] = json!("b".repeat(64));
+    assert_eq!(
+        match_receipts(&[record.clone()], json!([invalid_signature]))[0]["rejected"],
+        true
+    );
+
+    let mut competing = record.clone();
+    competing.id = "request-2".into();
+    assert_no_attribution(&match_receipts(&[record, competing], json!([row])));
+}
+
+#[test]
+fn fallback_live_receipt_preserves_namespaced_upstream_model() {
+    let mut record = request();
+    record.model = "supplier-a/namespace/model-a".into();
+    record.upstream_model = "namespace/model-a".into();
+    record.relay_id = "supplier-b".into();
+    record.relay_name = "Supplier B".into();
+    let mut row = receipt("namespaced-fallback");
+    row["model"] = json!("supplier-a/namespace/model-a");
+
+    let proof = match_receipts(&[record.clone()], json!([row.clone()]));
+    assert_eq!(proof[0]["provider"], "supplier-b");
+    assert_eq!(proof[0]["model"], "namespace/model-a");
+
+    record.upstream_model = "model-a".into();
+    let result = match_receipts(&[record], json!([row]));
+    assert_no_attribution(&result);
+    assert_eq!(result[0]["rejected"], true);
+}
+
+#[test]
+fn fallback_merged_receipt_requires_each_original_request_to_match() {
+    let mut first = request();
+    first.model = "supplier-a/model-a".into();
+    first.relay_id = "supplier-b".into();
+    first.relay_name = "Supplier B".into();
+    first.started_at_ms = 98_000;
+    first.timestamp_ms = 99_000;
+    first.usage = Some(RequestEvidenceUsage {
+        input_tokens: Some(50),
+        output_tokens: Some(5),
+        cached_tokens: Some(10),
+    });
+    let mut second = first.clone();
+    second.id = "request-2".into();
+    second.started_at_ms = 99_500;
+    second.timestamp_ms = 100_000;
+    let mut row = receipt("merged-fallback");
+    row["model"] = json!("supplier-a/model-a");
+
+    let proof = match_receipts(&[first.clone(), second.clone()], json!([row.clone()]));
+    assert_eq!(proof[0]["provider"], "supplier-b");
+    assert_eq!(proof[0]["model"], "model-a");
+    assert_eq!(proof[0]["requestIds"].as_array().unwrap().len(), 2);
+
+    for changed_index in 0..2 {
+        let mut records = [first.clone(), second.clone()];
+        records[changed_index].model = "supplier-c/model-a".into();
+        let result = match_receipts(&records, json!([row.clone()]));
+        assert_no_attribution(&result);
+        assert_eq!(result[0]["rejected"], true, "changed_index={changed_index}");
+    }
+}
+
+#[test]
 fn unknown_successful_request_blocks_routed_live_receipt() {
     let mut unknown = request();
     unknown.id = "unknown-request".into();
