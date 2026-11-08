@@ -2954,6 +2954,7 @@ export const EN_PLAIN: Record<string, string> = {
   "已存在": "Exists",
   "保存时创建": "Created on save",
   "默认模型": "Default model",
+  "在文件管理器中显示配置文件": "Show configuration file in file manager",
   "模型发现端点": "Model discovery endpoint",
   "模型配置": "Model configurations",
   "未填写模型": "Model not set",

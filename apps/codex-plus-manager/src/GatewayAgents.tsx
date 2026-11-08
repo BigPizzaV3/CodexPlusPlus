@@ -2,7 +2,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ChevronDown, ChevronRight, Copy, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -538,9 +538,8 @@ function AgentDetail({
           {t("改动了")} <code>{agent.configPath ?? ""}</code>
         </span>
         <div className="gw-detail-value">
-          <button className="gw-text-button" onClick={() => void run(`reveal:${agent.agent}`, "reveal_gateway_agent_config", { agent: agent.agent }, t("查看"), true)} type="button">
-            {t("查看")}
-            <ChevronRight className="h-3.5 w-3.5" />
+          <button aria-label={t("在文件管理器中显示配置文件")} className="gw-icon-button" onClick={() => void run(`reveal:${agent.agent}`, "reveal_gateway_agent_config", { agent: agent.agent }, t("查看"), true)} title={t("在文件管理器中显示配置文件")} type="button">
+            <FolderOpen aria-hidden="true" className="h-4 w-4" />
           </button>
           <button className="gw-danger-link" disabled={busy !== null} onClick={onDisconnect} type="button">{t("断开并还原")}</button>
         </div>
@@ -994,6 +993,7 @@ function ModelPicker({
   return (
     <div className="gw-picker">
       <button aria-expanded={open} aria-haspopup="listbox" className="gw-picker-button" onClick={() => onOpenChange(!open)} ref={buttonRef} type="button">
+        <span className="gw-picker-label">{t("默认模型")}</span>
         {showDefault || own ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
         <span title={own ? tf("{0} 自带的模型，直连 {1}，不经 Codex++", [agent.name, agent.ownModels?.vendor ?? ""]) : undefined}>
           {own ?? (showDefault ? t("默认") : display.title || t("选择模型"))}
