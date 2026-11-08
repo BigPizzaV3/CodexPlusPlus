@@ -3017,6 +3017,15 @@ async fn handle_protocol_proxy_connection_inner(
     opener: ProxyOpener,
     hops_through_gateway: bool,
 ) -> anyhow::Result<()> {
+    let codex_usage_policy = !matches!(&opener, ProxyOpener::Gateway(agent) if *agent != crate::tools::ToolId::Codex)
+        && session_headers.client_identity.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("originator")
+                && matches!(value.as_str(), "Codex Desktop" | "codex_cli_rs" | "codex_exec")
+        })
+        && crate::builtin_takeover::load_effective_settings().is_ok_and(|settings| {
+            settings.enhancements_enabled && settings.codex_app_reported_usage_compaction
+        })
+        && !crate::extension_gateway::builtin_replaced("builtin:reported-usage-compaction");
     // 直连代理只在「本地代理 → 网关」这一跳带 Codex 的身份头，让网关再转给上游（#2783）；
     // 直连普通供应商的代理路径保持原样，不额外透传。
     if matches!(opener, ProxyOpener::Legacy) && !hops_through_gateway {
@@ -3157,6 +3166,18 @@ async fn handle_protocol_proxy_connection_inner(
         stream.shutdown().await?;
         return Ok(());
     }
+    let usage_headers = response_usage_headers(upstream.upstream_reasoning_included, codex_usage_policy);
+    if codex_usage_policy && !upstream.upstream_reasoning_included {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "protocol_proxy.reported_usage_compaction",
+            serde_json::json!({
+                "source": "local_codex_policy",
+                "upstreamReasoningIncluded": upstream.upstream_reasoning_included,
+                "stream": upstream.is_stream,
+                "wireApi": upstream.wire_api
+            }),
+        );
+    }
     if upstream.native_compaction_passthrough {
         let body = upstream.read_body().await?;
         request_log.record_usage_json(&body);
@@ -3170,7 +3191,7 @@ async fn handle_protocol_proxy_connection_inner(
         } else {
             &upstream.content_type
         };
-        write_http_response(stream, "200 OK", content_type, &body).await?;
+        write_http_response_with_usage(stream, "200 OK", content_type, &body, usage_headers).await?;
         log_helper_response(
             "helper.protocol_proxy_compaction_native",
             method,
@@ -3182,7 +3203,7 @@ async fn handle_protocol_proxy_connection_inner(
         return Ok(());
     }
     if upstream.is_stream {
-        write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        write_http_stream_headers_with_usage(stream, "200 OK", "text/event-stream; charset=utf-8", usage_headers).await?;
         if let Some(body) = upstream.buffered_body.take() {
             // buffered 模式：整段 SSE 已由协议代理收齐并重试完成，这里一次性转发。
             let mut transformer =
@@ -3411,7 +3432,7 @@ async fn handle_protocol_proxy_connection_inner(
             if let Err(error) = crate::protocol_proxy::validate_compaction_json_completion(&original, upstream.wire_api) {
                 let mut converter = crate::protocol_proxy::CompactionSseConverter::new("");
                 converter.fail(error.to_string(), Some("compaction_incomplete".to_string()));
-                write_http_response(stream, "200 OK", "text/event-stream; charset=utf-8", &converter.finish()).await?;
+                write_http_response_with_usage(stream, "200 OK", "text/event-stream; charset=utf-8", &converter.finish(), usage_headers).await?;
                 stream.shutdown().await?;
                 return Ok(());
             }
@@ -3429,7 +3450,7 @@ async fn handle_protocol_proxy_connection_inner(
                 .unwrap_or(""),
         )?;
         request_log.record_stream(None, None, None);
-        write_http_response(stream, "200 OK", "text/event-stream; charset=utf-8", &body).await?;
+        write_http_response_with_usage(stream, "200 OK", "text/event-stream; charset=utf-8", &body, usage_headers).await?;
         log_helper_response(
             "helper.protocol_proxy_compaction_ok",
             method,
@@ -3446,7 +3467,7 @@ async fn handle_protocol_proxy_connection_inner(
                 &upstream_body,
                 &upstream.tool_adaptation(),
             );
-            write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
+            write_http_response_with_usage(stream, "200 OK", "application/json; charset=utf-8", &body, usage_headers).await?;
             if let Some(outcome) = upstream.exec_outcome.as_mut() {
                 outcome.finish(valid);
             }
@@ -3458,7 +3479,7 @@ async fn handle_protocol_proxy_connection_inner(
         request_log.record_usage_json(&body);
         let final_usage = serde_json::from_slice::<Value>(&body).ok()
             .as_ref().and_then(crate::request_log::final_response_usage);
-        write_http_response(
+        write_http_response_with_usage(
             stream,
             "200 OK",
             if upstream.content_type.is_empty() {
@@ -3467,6 +3488,7 @@ async fn handle_protocol_proxy_connection_inner(
                 &upstream.content_type
             },
             &body,
+            usage_headers,
         )
         .await?;
         log_helper_response(
@@ -3487,7 +3509,7 @@ async fn handle_protocol_proxy_connection_inner(
     )?;
     let body = serde_json::to_vec(&response_json)?;
     request_log.record_usage_json(&body);
-    write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
+    write_http_response_with_usage(stream, "200 OK", "application/json; charset=utf-8", &body, usage_headers).await?;
     log_helper_response(
         "helper.protocol_proxy_ok",
         method,
@@ -3502,6 +3524,10 @@ async fn handle_protocol_proxy_connection_inner(
 #[cfg(test)]
 #[path = "launcher/final_response_tests.rs"]
 mod final_response_gateway_tests;
+
+#[cfg(test)]
+#[path = "launcher/reported_usage_tests.rs"]
+mod reported_usage_tests;
 /// 非流式的 Chat / Anthropic 上游响应体 → Responses 响应 JSON。
 pub(crate) fn non_stream_body_to_responses(
     wire_api: crate::protocol_proxy::UpstreamWireApi,
@@ -4075,14 +4101,35 @@ async fn handle_chat_completions_proxy_connection(
     Ok(())
 }
 
+// 第二个标记区分用户主动选择的本地口径，不能把它记成上游原本提供的事实。
+fn response_usage_headers(upstream_reasoning_included: bool, codex_usage_policy: bool) -> &'static str {
+    if upstream_reasoning_included {
+        "X-Reasoning-Included: true\r\n"
+    } else if codex_usage_policy {
+        "X-Reasoning-Included: true\r\nX-CodexPlus-Compaction-Usage: reported\r\n"
+    } else {
+        ""
+    }
+}
+
 pub(crate) async fn write_http_response(
     stream: &mut tokio::net::TcpStream,
     status: &str,
     content_type: &str,
     body: &[u8],
 ) -> anyhow::Result<()> {
+    write_http_response_with_usage(stream, status, content_type, body, "").await
+}
+
+async fn write_http_response_with_usage(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+    usage_headers: &str,
+) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{usage_headers}Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;
@@ -4095,8 +4142,17 @@ pub(crate) async fn write_http_stream_headers(
     status: &str,
     content_type: &str,
 ) -> anyhow::Result<()> {
+    write_http_stream_headers_with_usage(stream, status, content_type, "").await
+}
+
+async fn write_http_stream_headers_with_usage(
+    stream: &mut tokio::net::TcpStream,
+    status: &str,
+    content_type: &str,
+    usage_headers: &str,
+) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{usage_headers}Cache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
@@ -6738,6 +6794,7 @@ mod tests {
             wire_api: crate::protocol_proxy::UpstreamWireApi::Responses,
             compaction: false,
             native_compaction_passthrough: false,
+            upstream_reasoning_included: false,
             buffered_body: None,
             stream_prefix: Vec::new(),
             request_trace: Some(trace),
