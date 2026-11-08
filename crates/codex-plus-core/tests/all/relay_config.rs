@@ -2920,7 +2920,7 @@ experimental_bearer_token = "sk-new"
     )
     .unwrap();
     assert!(catalog.contains(r#""context_window": 200000"#), "{catalog}");
-    assert!(catalog.contains(r#""max_context_window": 200000"#), "{catalog}");
+    assert!(catalog.contains(r#""max_context_window": null"#), "{catalog}");
 }
 
 #[test]
@@ -5663,8 +5663,7 @@ experimental_bearer_token = "sk-new"
         .find(|model| model["slug"] == "gpt-5.6-sol")
         .unwrap();
     assert_eq!(sol["context_window"], 272_000);
-    // 未显式配置窗口时保留官方模板上限（issue #2191）。
-    assert_eq!(sol["max_context_window"], 872_000);
+    assert!(sol["max_context_window"].is_null());
     assert_eq!(sol["default_reasoning_level"], "low");
     assert_eq!(sol["service_tiers"][0]["id"], "priority");
     assert_eq!(sol["supports_search_tool"], true);
@@ -6230,8 +6229,7 @@ base_url = "https://relay.example/v1"
     let astra = &catalog["models"][0];
     assert_eq!(astra["slug"], "gpt-6-astra");
     assert_eq!(astra["context_window"], 272_000);
-    // 未显式配置窗口时保留官方模板上限（issue #2191）。
-    assert_eq!(astra["max_context_window"], 872_000);
+    assert!(astra["max_context_window"].is_null());
     assert_eq!(astra["use_responses_lite"], false);
     assert_eq!(astra["additional_speed_tiers"], serde_json::json!(["fast"]));
     assert_eq!(astra["service_tiers"][0]["id"], "priority");
@@ -6284,7 +6282,7 @@ base_url = "https://relay.example/v1"
     assert_eq!(model["display_name"], "GPT-6.1-Sol");
     assert_eq!(model["default_reasoning_level"], "medium");
     assert_eq!(model["context_window"], 272_000);
-    assert_eq!(model["max_context_window"], 872_000);
+    assert!(model["max_context_window"].is_null());
     assert_eq!(model["use_responses_lite"], false);
     assert_eq!(model["multi_agent_version"], "v2");
     assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
@@ -6304,7 +6302,7 @@ base_url = "https://relay.example/v1"
     apply_relay_profile_files_to_home_with_context(temp.path(), &overridden, "").unwrap();
     let model = read_model();
     assert_eq!(model["context_window"], 200_000);
-    assert_eq!(model["max_context_window"], 200_000);
+    assert!(model["max_context_window"].is_null());
 
     apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
     assert_eq!(read_model()["context_window"], 272_000);
@@ -6345,7 +6343,7 @@ base_url = "https://relay.example/v1"
             expected_efforts.push("ultra");
         }
         assert_eq!(model["context_window"], 272_000);
-        assert_eq!(model["max_context_window"], 872_000);
+        assert!(model["max_context_window"].is_null());
         assert_eq!(model["use_responses_lite"], false);
         assert_eq!(model["multi_agent_version"], "v2");
         assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
@@ -7518,7 +7516,7 @@ experimental_bearer_token = "sk-new"
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["vendor_extension"]["source"], "models.json");
     assert_eq!(model["context_window"], 1_000_000);
-    assert_eq!(model["max_context_window"], 1_000_000);
+    assert!(model["max_context_window"].is_null());
     assert_eq!(model["auto_compact_token_limit"], 700_000);
     assert_eq!(model["effective_context_window_percent"], 4);
     assert_eq!(model["priority"], 5);
@@ -7803,7 +7801,7 @@ base_url = "https://relay.example.test/v1"
     assert_eq!(model["priority"], 3);
     // 窗口仍按生成器管辖：未显式配置时取供应商元数据的 1M（而非粘贴残留值）
     assert_eq!(model["context_window"], 1_048_576);
-    assert_eq!(model["max_context_window"], 1_048_576);
+    assert!(model["max_context_window"].is_null());
 }
 
 /// Kimi 官方 Responses 接口不认 `tool_search` 工具（整单 400）：即使没配窗口也要落

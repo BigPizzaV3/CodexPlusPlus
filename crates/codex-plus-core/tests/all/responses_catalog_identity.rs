@@ -109,7 +109,7 @@ fn managed_responses_defaults_are_independent_of_session_identity() {
                     assert_eq!(model["tool_mode"], "code_mode_only");
                     assert_eq!(model["multi_agent_version"], "v2");
                     assert_eq!(model["context_window"], 272_000);
-                    assert_eq!(model["max_context_window"], 872_000);
+                    assert!(model["max_context_window"].is_null());
                 }
                 assert_auth_and_identity(temp.path(), &profile, identity);
             }
@@ -288,7 +288,7 @@ fn routed_unbundled_models_get_catalogs_for_managed_responses_only() {
 }
 
 #[test]
-fn explicit_windows_keep_upstream_clamp_and_metadata_precedence() {
+fn explicit_windows_allow_runtime_overrides_and_ignore_stale_metadata_clamp() {
     for identity in ["custom", "openai"] {
         let temp = tempfile::tempdir().unwrap();
         let mut profile = profile(RelayMode::PureApi, identity);
@@ -310,7 +310,7 @@ fn explicit_windows_keep_upstream_clamp_and_metadata_precedence() {
             .find(|model| model["slug"] == "gpt-5.6-sol")
             .unwrap();
         assert_eq!(sol["context_window"], 400_000);
-        assert_eq!(sol["max_context_window"], 400_000);
+        assert!(sol["max_context_window"].is_null());
         assert_eq!(sol["multi_agent_version"], "custom-contract");
         assert_eq!(sol["use_responses_lite"], true);
     }

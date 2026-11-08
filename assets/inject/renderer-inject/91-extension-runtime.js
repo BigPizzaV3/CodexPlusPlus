@@ -238,6 +238,30 @@
     };
     let manager = codexPlusManagerAtom ? managerFrom(codexPlusManagerAtom) : null;
     if (!manager) {
+      // 数字分块只检查当前页面已执行的模块缓存，不执行候选工厂或新加载懒模块。
+      const entries = Array.from(document.scripts || []).map((script) => script.src)
+        .filter((url) => /\/assets\/\d+\.[a-f\d]+\.js$/.test(url));
+      for (const url of entries) {
+        const runtime = (await import(url)).__webpack_require__;
+        if (!runtime?.c || !runtime?.m) continue;
+        for (const [key, factory] of Object.entries(runtime.m)) {
+          if (typeof factory !== "function" || !runtime.c[key]) continue;
+          const source = Function.prototype.toString.call(factory);
+          if (!source.includes("AppServerManager RPC is unavailable for hostId:") || !source.includes(".forHost(")) continue;
+          for (const value of Object.values(runtime.c[key].exports || {})) {
+            if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+            manager = managerFrom(value);
+            if (manager) {
+              codexPlusManagerAtom = value;
+              break;
+            }
+          }
+          if (manager) break;
+        }
+        if (manager) break;
+      }
+    }
+    if (!manager) {
       const module = await loadOptionalCodexAppModule("app-initial-");
       for (const value of Object.values(module || {})) {
         if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
@@ -250,6 +274,52 @@
     }
     if (!manager) throw new Error("没有找到 Codex 的 app-server 连接（Codex 版本不兼容）");
     return manager.forHost(hostId);
+  }
+
+  function installCodexThreadContextObserver() {
+    if (!codexPerModelContextEnabled()) return;
+    const state = window.__codexPlusThreadContextObserver
+      ||= { pending: null, subscription: null, handle: null, retryAt: 0 };
+    if (state.pending || state.handle || Date.now() < state.retryAt) return state.pending;
+    state.pending = (async () => {
+      const client = await codexPlusAppServerClient("local");
+      if (!codexPerModelContextEnabled()) return;
+      const subscription = client.subscribe({
+        type: "notification",
+        key: { hostId: "local" },
+        methods: ["thread/tokenUsage/updated"],
+        listener: ({ params }) => {
+          const size = params?.tokenUsage?.modelContextWindow;
+          if (typeof params?.threadId !== "string" || !Number.isSafeInteger(size) || size <= 0) return;
+          const observed = window.__codexPlusObservedContextWindows ||= new Map();
+          observed.set(params.threadId, size);
+          if (observed.size > 256) observed.delete(observed.keys().next().value);
+        },
+      });
+      state.subscription = subscription;
+      const handle = await subscription;
+      state.handle = handle;
+      handle.onRpcBroken(() => {
+        if (state.handle !== handle) return;
+        state.handle = null;
+        state.subscription = null;
+        state.retryAt = Date.now() + 5000;
+        handle[Symbol.dispose]();
+        subscription[Symbol.dispose]();
+        sendCodexPlusDiagnostic("thread_context_observer_disconnected", {});
+      });
+    })().catch((error) => {
+      state.retryAt = Date.now() + 5000;
+      state.subscription?.[Symbol.dispose]();
+      state.subscription = null;
+      state.handle = null;
+      sendCodexPlusDiagnostic("thread_context_observer_failed", {
+        errorMessage: String(error?.message || error),
+      });
+    }).finally(() => {
+      state.pending = null;
+    });
+    return state.pending;
   }
 
   /** 把 append 的条目整理成 app-server 的 ResponseItem：字符串当作用户消息，{ role, text } 按角色转成消息。 */

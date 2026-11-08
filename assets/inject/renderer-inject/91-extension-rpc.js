@@ -12,8 +12,8 @@
    *   - `["resolve", exportId, { start: { request }, steer, resume, … }]`：宿主发起轮次前回调页面要参数，
    *     `start.request` 就是 turn/start 的原样参数，`steer` 是会话忙时改走 turn/steer 的候选。
    *
-   * capnweb 的 import id 按 push 顺序隐式分配，所以改写某一帧要等中间件时，同一端口后面的帧
-   * 必须排队、按原顺序发出。没有拓展挂这些拦截点时一律同步放行，零开销。
+   * capnweb 的 import id 按 push 顺序隐式分配，所以改写 push 时后面的帧必须按原顺序发出。
+   * 本地上下文刷新单独等待 resolve，允许它的预检请求通过；没有拓展或上下文刷新时同步放行。
    *
    * 语义（`ctx.on(name, async (params, next) => …)`，先 `await next()` 拿下游决定再改）：
    *   - `agent/pre-step`：params `{ agent, turn, step, messages, signal }`，决定是
@@ -21,13 +21,32 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 1;
+  const codexPlusRpcInterceptorVersion = 3;
   const codexPlusRpcMiddlewareTimeoutMs = 5000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
   const codexPlusRpcPortQueues = new WeakMap();
   const codexPlusRpcTurnCache = new Map();
   const codexPlusRpcTurnCacheLimit = 64;
+  const codexPlusRpcHostReceivers = window.__codexPlusRpcHostReceivers
+    ||= new WeakMap();
+
+  function codexPlusRpcContextEnabled() {
+    return typeof codexPerModelContextEnabled === "function" && codexPerModelContextEnabled();
+  }
+
+  function codexPlusRpcReceiverHost(port, expr) {
+    let receivers = codexPlusRpcHostReceivers.get(port);
+    if (expr[2][0] === "subscribe") {
+      const hostId = expr[3][0]?.key?.hostId;
+      if (typeof hostId === "string" && hostId) {
+        if (!receivers) codexPlusRpcHostReceivers.set(port, receivers = new Map());
+        const previous = receivers.get(expr[1]);
+        receivers.set(expr[1], previous === undefined || previous === hostId ? hostId : "");
+      }
+    }
+    return receivers?.get(expr[1]) || "";
+  }
 
   function codexPlusRpcIsPlainObject(value) {
     if (!value || typeof value !== "object") return false;
@@ -258,24 +277,39 @@
     return {};
   }
 
-  function codexPlusRpcPlanSendRequest(frame) {
+  function codexPlusRpcPlanSendRequest(frame, hostId) {
     const expr = frame[1];
     const args = expr[3];
     const method = args[0];
-    if (typeof method !== "string" || !codexPlusRpcWantsRequestChain()) return null;
-    return async () => {
+    const refreshContext = hostId === "local" && codexPlusRpcContextEnabled()
+      && ["thread/start", "thread/fork"].includes(method);
+    if (typeof method !== "string" || (!codexPlusRpcWantsRequestChain() && !refreshContext)) return null;
+    const plan = async () => {
       const params = codexPlusRpcDecode(args[1]);
       const next = await codexPlusRpcRunRequestChain(method, params);
       if (next === params) return null;
       return ["push", [...expr.slice(0, 3), [method, codexPlusRpcEncode(next), ...args.slice(2)], ...expr.slice(4)], ...frame.slice(2)];
     };
+    if (refreshContext) {
+      plan.context = async (nextFrame) => {
+        const nextExpr = nextFrame[1];
+        const nextArgs = nextExpr[3];
+        const params = await prepareCodexThreadContextStart(method, codexPlusRpcDecode(nextArgs[1]), hostId);
+        return ["push", [...nextExpr.slice(0, 3), [method, codexPlusRpcEncode(params), ...nextArgs.slice(2)],
+          ...nextExpr.slice(4)], ...nextFrame.slice(2)];
+      };
+      plan.contextFailure = () => ["push", ["pipeline", expr[1], ["__codexPlusContextRefreshFailed"], []], ...frame.slice(2)];
+    }
+    return plan;
   }
 
-  function codexPlusRpcPlanStartConversation(frame) {
+  function codexPlusRpcPlanStartConversation(frame, hostId) {
     const expr = frame[1];
     const args = expr[3];
-    if (!codexPlusRpcIsPlainObject(args[0]) || !Array.isArray(args[0].input) || !codexPlusRpcWantsTurnHooks()) return null;
-    return async (signal) => {
+    const refreshContext = hostId === "local" && codexPlusRpcContextEnabled();
+    if (!codexPlusRpcIsPlainObject(args[0]) || !Array.isArray(args[0].input)
+        || (!codexPlusRpcWantsTurnHooks() && !refreshContext)) return null;
+    const plan = async (signal) => {
       let params = codexPlusRpcDecode(args[0]);
       const outcome = await codexPlusRpcProcessTurn({
         messageId: params.clientUserMessageId,
@@ -290,15 +324,28 @@
       }
       return ["push", [...expr.slice(0, 3), [codexPlusRpcEncode(params), ...args.slice(1)], ...expr.slice(4)], ...frame.slice(2)];
     };
+    if (refreshContext) {
+      plan.context = async (nextFrame) => {
+        if (nextFrame[1][2][0] !== "startConversation") return nextFrame;
+        const nextExpr = nextFrame[1];
+        const nextArgs = nextExpr[3];
+        const params = await prepareCodexThreadContextStart("thread/start", codexPlusRpcDecode(nextArgs[0]), hostId);
+        return ["push", [...nextExpr.slice(0, 3), [codexPlusRpcEncode(params), ...nextArgs.slice(1)],
+          ...nextExpr.slice(4)], ...nextFrame.slice(2)];
+      };
+      plan.contextFailure = () => ["push", ["pipeline", expr[1], ["__codexPlusContextRefreshFailed"], []], ...frame.slice(2)];
+    }
+    return plan;
   }
 
   function codexPlusRpcPlanResolve(frame) {
     const value = frame[2];
-    if (!codexPlusRpcIsPlainObject(value) || !codexPlusRpcWantsTurnHooks()) return null;
+    if (!codexPlusRpcIsPlainObject(value)) return null;
     const hasStart = codexPlusRpcIsPlainObject(value.start?.request) && Array.isArray(value.start.request.input);
     const hasSteer = codexPlusRpcIsPlainObject(value.steer) && Array.isArray(value.steer.input);
-    if (!hasStart && !hasSteer) return null;
-    return async (signal) => {
+    const refreshContext = hasStart && value.executionHostId === "local" && codexPlusRpcContextEnabled();
+    if ((!hasStart && !hasSteer) || (!codexPlusRpcWantsTurnHooks() && !refreshContext)) return null;
+    const plan = async (signal) => {
       const decoded = codexPlusRpcDecode(value);
       const conversationId = decoded.conversationId;
       const carriers = [];
@@ -333,18 +380,40 @@
       }
       return ["resolve", frame[1], codexPlusRpcEncode(decoded), ...frame.slice(3)];
     };
+    if (refreshContext) {
+      plan.context = async (nextFrame) => {
+        if (nextFrame[0] !== "resolve") return nextFrame;
+        const decoded = codexPlusRpcDecode(nextFrame[2]);
+        const client = await codexPlusAppServerClient("local");
+        const sendRequest = async (method, params, options) => {
+          if (method === "thread/unsubscribe") {
+            await client.unsubscribeInactiveConversation(params.threadId);
+            // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误传回当前发送。
+            return client.sendRequest(method, params, options);
+          }
+          if (method === "thread/resume" && params.config) return client.resumeThread(params);
+          return client.sendRequest(method, params, options);
+        };
+        await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, sendRequest,
+          "turn/start", decoded.start.request);
+        return nextFrame;
+      };
+      plan.contextFailure = (reason) => ["reject", frame[1], ["error", "Error", reason]];
+    }
+    return plan;
   }
 
   /** 判断一帧要不要拦。返回 null（同步放行）或 async (signal) => 新帧 | null。 */
-  function codexPlusRpcPlanFrame(frame) {
+  function codexPlusRpcPlanFrame(frame, port) {
     if (!Array.isArray(frame)) return null;
     if (frame[0] === "push") {
       const expr = frame[1];
       if (!Array.isArray(expr) || expr[0] !== "pipeline" || !Array.isArray(expr[2]) || expr[2].length !== 1 || !Array.isArray(expr[3])) {
         return null;
       }
-      if (expr[2][0] === "sendRequest") return codexPlusRpcPlanSendRequest(frame);
-      if (expr[2][0] === "startConversation") return codexPlusRpcPlanStartConversation(frame);
+      const hostId = codexPlusRpcReceiverHost(port, expr);
+      if (expr[2][0] === "sendRequest") return codexPlusRpcPlanSendRequest(frame, hostId);
+      if (expr[2][0] === "startConversation") return codexPlusRpcPlanStartConversation(frame, hostId);
       return null;
     }
     if (frame[0] === "resolve" && typeof frame[1] === "number" && frame.length > 2) return codexPlusRpcPlanResolve(frame);
@@ -352,11 +421,12 @@
   }
 
   /** 带超时地跑一个改写计划；超时或出错返回 null（原样发出），同时 abort 交给拓展的 signal。 */
-  async function codexPlusRpcRunPlan(plan) {
+  async function codexPlusRpcRunPlan(plan, frame) {
     const controller = new AbortController();
     let timer = null;
+    let replaced = null;
     try {
-      return await Promise.race([
+      replaced = await Promise.race([
         Promise.resolve().then(() => plan(controller.signal)),
         new Promise((resolve) => {
           timer = setTimeout(() => {
@@ -367,21 +437,29 @@
       ]);
     } catch (error) {
       codexPlusMarkExtensionFailure("", `rpc 拦截失败，已原样发出：${String(error?.message || error)}`);
-      return null;
     } finally {
       clearTimeout(timer);
+    }
+    if (!plan.context) return replaced;
+    try {
+      return await plan.context(replaced || frame);
+    } catch (error) {
+      const reason = String(error?.message || error);
+      codexPlusRpcRejectNotice(reason);
+      return plan.contextFailure(reason);
     }
   }
 
   /** 某个端口开始等中间件：之后的帧全部排队，按原顺序逐个处理、发出。 */
   async function codexPlusRpcDrainPort(port, original, first) {
-    const state = { queue: [] };
+    let finish;
+    const state = { queue: [], done: new Promise((resolve) => { finish = resolve; }) };
     codexPlusRpcPortQueues.set(port, state);
     try {
       let entry = first;
       while (entry) {
         const [message, rest, plan] = entry;
-        const replaced = plan ? await codexPlusRpcRunPlan(plan) : null;
+        const replaced = plan ? await codexPlusRpcRunPlan(plan, message) : null;
         try {
           original.call(port, replaced || message, ...rest);
         } catch (error) {
@@ -392,12 +470,13 @@
         if (!queued) break;
         let nextPlan = null;
         try {
-          nextPlan = codexPlusRpcPlanFrame(queued[0]);
+          nextPlan = codexPlusRpcPlanFrame(queued[0], port);
         } catch {}
         entry = [queued[0], queued[1], nextPlan];
       }
     } finally {
       codexPlusRpcPortQueues.delete(port);
+      finish();
     }
   }
 
@@ -410,14 +489,26 @@
     const original = installed?.original || proto.postMessage;
     const patched = function codexPlusRpcPostMessage(message, ...rest) {
       const state = codexPlusRpcPortQueues.get(this);
+      let plan = null;
+      try {
+        plan = codexPlusRpcPlanFrame(message, this);
+      } catch {}
+      // resolve 不分配隐式 RPC 序号。单独等待它，预检发出的请求才能通过同一端口。
+      if (message?.[0] === "resolve" && plan?.context) {
+        const port = this;
+        void (async () => {
+          if (state) await state.done;
+          const replaced = await codexPlusRpcRunPlan(plan, message);
+          original.call(port, replaced || message, ...rest);
+        })().catch((error) => {
+          codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`);
+        });
+        return undefined;
+      }
       if (state) {
         state.queue.push([message, rest]);
         return undefined;
       }
-      let plan = null;
-      try {
-        plan = codexPlusRpcPlanFrame(message);
-      } catch {}
       if (!plan) return original.call(this, message, ...rest);
       void codexPlusRpcDrainPort(this, original, [message, rest, plan]);
       return undefined;

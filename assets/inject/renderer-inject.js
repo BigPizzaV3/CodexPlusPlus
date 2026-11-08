@@ -432,7 +432,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "33";
+  const codexAppServerModelRequestPatchVersion = "34";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -4431,10 +4431,16 @@
         && codexRemoteSessionActiveProfile()?.relayMode === "aggregate") {
       await loadBackendSettingsState(codexAppServerPreparationTimeoutMs);
     }
-    const nextParams = applyCodexManagedSessionConnection("thread/start",
+    let nextParams = applyCodexManagedSessionConnection("thread/start",
       params, client.hostId);
+    if (typeof prepareCodexThreadContextStart === "function") {
+      nextParams = await prepareCodexThreadContextStart("thread/start", nextParams, client.hostId);
+    }
     const result = await prewarm(nextParams, options);
     noteCodexManagedSessionStart("thread/start", nextParams, result, client.hostId);
+    if (typeof noteCodexThreadRuntimeContext === "function") {
+      noteCodexThreadRuntimeContext("thread/start", nextParams, result, client.hostId);
+    }
     return result;
   }
 
@@ -4515,22 +4521,15 @@
     }
   }
 
-  async function reloadCodexManagedSessionConnection(threadId, read, turnParams, sendRequest, options, signature) {
-    const recoveryOptions = codexManagedSessionRecoveryOptions(options);
-    // 已加载 resume 不改配置，可用于读取运行时设置；不拉取整段聊天历史。
-    const current = read.thread.status.type === "idle"
-      ? await sendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions) : null;
-    if (current?.thread?.status && current.thread.status.type !== "idle") {
-      throw new Error("请先停止当前回复，再恢复连接");
-    }
-    assertCodexManagedSessionConnection(signature);
+  function codexThreadReloadParams(threadId, current, turnParams) {
     const params = { threadId, excludeTurns: true, config: {} };
     for (const key of ["cwd", "approvalPolicy", "approvalsReviewer", "runtimeWorkspaceRoots", "serviceTier"]) {
       if (current?.[key] !== undefined) params[key] = current[key];
     }
-    const model = turnParams?.model || current?.model;
+    const model = turnParams?.collaborationMode?.settings?.model || turnParams?.model || current?.model;
     if (model) params.model = model;
-    const effort = turnParams?.effort ?? current?.reasoningEffort;
+    const effort = turnParams?.collaborationMode?.settings?.reasoning_effort
+      ?? turnParams?.effort ?? current?.reasoningEffort;
     if (effort) params.config.model_reasoning_effort = effort;
     if (Object.prototype.hasOwnProperty.call(turnParams || {}, "serviceTier")) {
       params.serviceTier = turnParams.serviceTier;
@@ -4552,7 +4551,20 @@
         };
       }
     }
-    const protectedParams = applyCodexManagedSessionConnection("thread/resume", params, "local");
+    return params;
+  }
+
+  async function reloadCodexManagedSessionConnection(threadId, read, turnParams, sendRequest, options, signature) {
+    const recoveryOptions = codexManagedSessionRecoveryOptions(options);
+    // 已加载 resume 不改配置，可用于读取运行时设置；不拉取整段聊天历史。
+    const current = read.thread.status.type === "idle"
+      ? await sendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions) : null;
+    if (current?.thread?.status && current.thread.status.type !== "idle") {
+      throw new Error("请先停止当前回复，再恢复连接");
+    }
+    assertCodexManagedSessionConnection(signature);
+    const protectedParams = applyCodexManagedSessionConnection("thread/resume",
+      codexThreadReloadParams(threadId, current, turnParams), "local");
     // 已加载 resume 忽略连接覆盖，必须先卸载空闲会话再恢复。
     await sendRequest("thread/unsubscribe", { threadId }, recoveryOptions);
     assertCodexManagedSessionConnection(signature);
@@ -11997,9 +12009,9 @@
 
   function codexPerModelContextEnabled() {
     const profile = codexRemoteSessionActiveProfile();
-    if (!profile) return false;
-    return [profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata]
-      .some((value) => typeof value === "string" && value.trim() && value.trim() !== "{}");
+    // 多开 worker 关闭供应商写入开关，但仍使用实例自己的受管目录。
+    return !!window.__codexSessionDeleteBridge
+      && (!!codexModelCatalog.runtimeContext || ["pureApi", "aggregate"].includes(profile?.relayMode));
   }
 
   function codexThreadModelRequestState(method, params, result) {
@@ -12014,8 +12026,52 @@
       || result?.threadId
       || ""
     ).trim();
-    const model = String(params?.model || result?.thread?.model || "").trim();
+    const model = String(params?.collaborationMode?.settings?.model
+      || params?.model || result?.model || result?.thread?.model || "").trim();
     return { requestMethod, threadId, model };
+  }
+
+  async function codexThreadRuntimeContext(params) {
+    const catalog = await loadCodexModelCatalog(true);
+    const runtime = catalog.runtimeContext;
+    if (!runtime && catalog.status === "failed") {
+      throw new Error(catalog.message || "读取上下文配置失败，请稍后重新发送");
+    }
+    if (!runtime) return null;
+    if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
+    const model = codexThreadModelRequestState("", params).model || catalog.model;
+    const config = runtime.models[model];
+    return config ? { model, config, signature: JSON.stringify([model, config]) } : null;
+  }
+
+  async function prepareCodexThreadContextStart(method, params, hostId) {
+    if (hostId !== "local" || !codexPerModelContextEnabled()) return params;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      const nested = await prepareCodexThreadContextStart(String(params.method), params.params,
+        modelResponseHostId(params, hostId));
+      return nested === params.params ? params : { ...params, params: nested };
+    }
+    if (!["thread/start", "thread/fork"].includes(method)) return params;
+    const context = await codexThreadRuntimeContext(params);
+    return context ? { ...params, config: { ...params.config, ...context.config } } : params;
+  }
+
+  function noteCodexThreadRuntimeContext(method, params, result, hostId) {
+    if (hostId !== "local") return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      return noteCodexThreadRuntimeContext(String(params.method), params.params, result,
+        modelResponseHostId(params, hostId));
+    }
+    const state = codexThreadModelRequestState(method, params, result);
+    if (!state.threadId || !["thread/start", "thread/fork"].includes(method)
+        || !params?.config?.model_context_window) return;
+    const config = {
+      model_context_window: params.config.model_context_window,
+      model_auto_compact_token_limit: params.config.model_auto_compact_token_limit,
+    };
+    const contexts = window.__codexPlusThreadContexts ||= new Map();
+    contexts.set(state.threadId, JSON.stringify([state.model, config]));
+    if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
   }
 
   async function refreshCodexThreadModelBeforeTurn(client, originalSendRequest, method, params, options) {
@@ -12026,36 +12082,53 @@
           { ...params, method: nestedMethod, params: nestedParams }, nestedOptions),
         String(params.method), params.params, options);
     }
-    if (String(method || "") !== "turn/start" || !codexPerModelContextEnabled()) return null;
-    const { threadId, model } = codexThreadModelRequestState(method, params);
-    if (!threadId || !model) return null;
-    const previousModel = client.__codexPlusThreadModels?.get(threadId) || "";
-    if (!previousModel || previousModel === model) return null;
-    if (client.hostId === "local" && codexManagedSessionConnection()
-        && window.__codexPlusConnectionRecoveryPending?.has(threadId)) {
+    if (String(method || "") !== "turn/start" || client.hostId !== "local"
+        || !codexPerModelContextEnabled()) return null;
+    const { threadId } = codexThreadModelRequestState(method, params);
+    if (!threadId) return null;
+    const context = await codexThreadRuntimeContext(params);
+    if (!context) return null;
+    const contexts = window.__codexPlusThreadContexts ||= new Map();
+    if (contexts.get(threadId) === context.signature) return null;
+    if (window.__codexPlusConnectionRecoveryPending?.has(threadId)
+        || window.__codexPlusContextRefreshPending?.has(threadId)) {
       throw new Error("此会话正在检查连接，请稍后重新发送");
     }
-    let resumeParams = { threadId, model };
-    resumeParams = applyCodexRemoteSessionProviderOverride("thread/resume", resumeParams);
-    resumeParams = applyCodexManagedSessionConnection("thread/resume", resumeParams, client.hostId);
+    const pending = window.__codexPlusContextRefreshPending ||= new Set();
+    pending.add(threadId);
     try {
-      await originalSendRequest("thread/resume", resumeParams, options);
-      client.__codexPlusThreadModels.set(threadId, model);
-      sendCodexPlusDiagnostic("thread_model_context_refreshed", {
-        threadId,
-        from: previousModel,
-        to: model,
-      });
+      const recoveryOptions = codexManagedSessionRecoveryOptions(options);
+      const read = await originalSendRequest("thread/read", { threadId, includeTurns: false }, recoveryOptions);
+      if (!["idle", "notLoaded"].includes(read.thread.status.type)) {
+        throw new Error("请先等待当前回复结束，再应用上下文配置");
+      }
+      // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
+      const turns = await originalSendRequest("thread/turns/list",
+        { threadId, limit: 1, itemsView: "notLoaded" }, recoveryOptions);
+      if (turns.data.length === 0) throw new Error("此新会话尚无历史，请重新新建会话以应用上下文配置");
+      const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
+      if (current.thread.status.type !== "idle") throw new Error("请先等待当前回复结束，再应用上下文配置");
+      let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
+      resumeParams.modelProvider = current.modelProvider;
+      resumeParams.config = { ...resumeParams.config, ...context.config };
+      resumeParams = applyCodexRemoteSessionProviderOverride("thread/resume", resumeParams);
+      resumeParams = applyCodexManagedSessionConnection("thread/resume", resumeParams, "local");
+      await originalSendRequest("thread/unsubscribe", { threadId }, recoveryOptions);
+      const resumed = await originalSendRequest("thread/resume", resumeParams, recoveryOptions);
+      if (resumed.thread.status.type !== "idle") throw new Error("会话已开始其他回复，请等待结束后重新发送");
+      contexts.set(threadId, context.signature);
+      if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
+      sendCodexPlusDiagnostic("thread_model_context_refreshed", { threadId, model: context.model });
       return true;
     } catch (error) {
       sendCodexPlusDiagnostic("thread_model_context_refresh_failed", {
         threadId,
-        from: previousModel,
-        to: model,
         errorName: error?.name || "",
         errorMessage: error?.message || String(error),
       });
-      return false;
+      throw error;
+    } finally {
+      pending.delete(threadId);
     }
   }
 
@@ -12108,8 +12181,9 @@
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
       const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest);
-      const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
+      const connectionParams = await prepareCodexManagedSessionConnection(String(method || ""),
         resumeParams, client.hostId, originalSendRequest);
+      const nextParams = await prepareCodexThreadContextStart(String(method || ""), connectionParams, client.hostId);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -12124,6 +12198,7 @@
         () => originalSendRequest(method, nextParams, options));
       verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
+      noteCodexThreadRuntimeContext(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -12359,8 +12434,9 @@
       const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest.bind(client));
       // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
       // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
-      const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
+      const connectionParams = await prepareCodexManagedSessionConnection(String(method || ""),
         resumeParams, client.hostId, originalSendRequest.bind(client));
+      const nextParams = await prepareCodexThreadContextStart(String(method || ""), connectionParams, client.hostId);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -12375,6 +12451,7 @@
         () => originalSendRequest.call(client, method, nextParams, options));
       verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
+      noteCodexThreadRuntimeContext(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -12517,6 +12594,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     installCodexThreadGoalForwarding();
+    if (codexPerModelContextEnabled()) void installCodexThreadContextObserver();
     const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
       && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
@@ -18962,6 +19040,30 @@
     };
     let manager = codexPlusManagerAtom ? managerFrom(codexPlusManagerAtom) : null;
     if (!manager) {
+      // 数字分块只检查当前页面已执行的模块缓存，不执行候选工厂或新加载懒模块。
+      const entries = Array.from(document.scripts || []).map((script) => script.src)
+        .filter((url) => /\/assets\/\d+\.[a-f\d]+\.js$/.test(url));
+      for (const url of entries) {
+        const runtime = (await import(url)).__webpack_require__;
+        if (!runtime?.c || !runtime?.m) continue;
+        for (const [key, factory] of Object.entries(runtime.m)) {
+          if (typeof factory !== "function" || !runtime.c[key]) continue;
+          const source = Function.prototype.toString.call(factory);
+          if (!source.includes("AppServerManager RPC is unavailable for hostId:") || !source.includes(".forHost(")) continue;
+          for (const value of Object.values(runtime.c[key].exports || {})) {
+            if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+            manager = managerFrom(value);
+            if (manager) {
+              codexPlusManagerAtom = value;
+              break;
+            }
+          }
+          if (manager) break;
+        }
+        if (manager) break;
+      }
+    }
+    if (!manager) {
       const module = await loadOptionalCodexAppModule("app-initial-");
       for (const value of Object.values(module || {})) {
         if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
@@ -18974,6 +19076,52 @@
     }
     if (!manager) throw new Error("没有找到 Codex 的 app-server 连接（Codex 版本不兼容）");
     return manager.forHost(hostId);
+  }
+
+  function installCodexThreadContextObserver() {
+    if (!codexPerModelContextEnabled()) return;
+    const state = window.__codexPlusThreadContextObserver
+      ||= { pending: null, subscription: null, handle: null, retryAt: 0 };
+    if (state.pending || state.handle || Date.now() < state.retryAt) return state.pending;
+    state.pending = (async () => {
+      const client = await codexPlusAppServerClient("local");
+      if (!codexPerModelContextEnabled()) return;
+      const subscription = client.subscribe({
+        type: "notification",
+        key: { hostId: "local" },
+        methods: ["thread/tokenUsage/updated"],
+        listener: ({ params }) => {
+          const size = params?.tokenUsage?.modelContextWindow;
+          if (typeof params?.threadId !== "string" || !Number.isSafeInteger(size) || size <= 0) return;
+          const observed = window.__codexPlusObservedContextWindows ||= new Map();
+          observed.set(params.threadId, size);
+          if (observed.size > 256) observed.delete(observed.keys().next().value);
+        },
+      });
+      state.subscription = subscription;
+      const handle = await subscription;
+      state.handle = handle;
+      handle.onRpcBroken(() => {
+        if (state.handle !== handle) return;
+        state.handle = null;
+        state.subscription = null;
+        state.retryAt = Date.now() + 5000;
+        handle[Symbol.dispose]();
+        subscription[Symbol.dispose]();
+        sendCodexPlusDiagnostic("thread_context_observer_disconnected", {});
+      });
+    })().catch((error) => {
+      state.retryAt = Date.now() + 5000;
+      state.subscription?.[Symbol.dispose]();
+      state.subscription = null;
+      state.handle = null;
+      sendCodexPlusDiagnostic("thread_context_observer_failed", {
+        errorMessage: String(error?.message || error),
+      });
+    }).finally(() => {
+      state.pending = null;
+    });
+    return state.pending;
   }
 
   /** 把 append 的条目整理成 app-server 的 ResponseItem：字符串当作用户消息，{ role, text } 按角色转成消息。 */
@@ -20121,8 +20269,8 @@
    *   - `["resolve", exportId, { start: { request }, steer, resume, … }]`：宿主发起轮次前回调页面要参数，
    *     `start.request` 就是 turn/start 的原样参数，`steer` 是会话忙时改走 turn/steer 的候选。
    *
-   * capnweb 的 import id 按 push 顺序隐式分配，所以改写某一帧要等中间件时，同一端口后面的帧
-   * 必须排队、按原顺序发出。没有拓展挂这些拦截点时一律同步放行，零开销。
+   * capnweb 的 import id 按 push 顺序隐式分配，所以改写 push 时后面的帧必须按原顺序发出。
+   * 本地上下文刷新单独等待 resolve，允许它的预检请求通过；没有拓展或上下文刷新时同步放行。
    *
    * 语义（`ctx.on(name, async (params, next) => …)`，先 `await next()` 拿下游决定再改）：
    *   - `agent/pre-step`：params `{ agent, turn, step, messages, signal }`，决定是
@@ -20130,13 +20278,32 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 1;
+  const codexPlusRpcInterceptorVersion = 3;
   const codexPlusRpcMiddlewareTimeoutMs = 5000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
   const codexPlusRpcPortQueues = new WeakMap();
   const codexPlusRpcTurnCache = new Map();
   const codexPlusRpcTurnCacheLimit = 64;
+  const codexPlusRpcHostReceivers = window.__codexPlusRpcHostReceivers
+    ||= new WeakMap();
+
+  function codexPlusRpcContextEnabled() {
+    return typeof codexPerModelContextEnabled === "function" && codexPerModelContextEnabled();
+  }
+
+  function codexPlusRpcReceiverHost(port, expr) {
+    let receivers = codexPlusRpcHostReceivers.get(port);
+    if (expr[2][0] === "subscribe") {
+      const hostId = expr[3][0]?.key?.hostId;
+      if (typeof hostId === "string" && hostId) {
+        if (!receivers) codexPlusRpcHostReceivers.set(port, receivers = new Map());
+        const previous = receivers.get(expr[1]);
+        receivers.set(expr[1], previous === undefined || previous === hostId ? hostId : "");
+      }
+    }
+    return receivers?.get(expr[1]) || "";
+  }
 
   function codexPlusRpcIsPlainObject(value) {
     if (!value || typeof value !== "object") return false;
@@ -20367,24 +20534,39 @@
     return {};
   }
 
-  function codexPlusRpcPlanSendRequest(frame) {
+  function codexPlusRpcPlanSendRequest(frame, hostId) {
     const expr = frame[1];
     const args = expr[3];
     const method = args[0];
-    if (typeof method !== "string" || !codexPlusRpcWantsRequestChain()) return null;
-    return async () => {
+    const refreshContext = hostId === "local" && codexPlusRpcContextEnabled()
+      && ["thread/start", "thread/fork"].includes(method);
+    if (typeof method !== "string" || (!codexPlusRpcWantsRequestChain() && !refreshContext)) return null;
+    const plan = async () => {
       const params = codexPlusRpcDecode(args[1]);
       const next = await codexPlusRpcRunRequestChain(method, params);
       if (next === params) return null;
       return ["push", [...expr.slice(0, 3), [method, codexPlusRpcEncode(next), ...args.slice(2)], ...expr.slice(4)], ...frame.slice(2)];
     };
+    if (refreshContext) {
+      plan.context = async (nextFrame) => {
+        const nextExpr = nextFrame[1];
+        const nextArgs = nextExpr[3];
+        const params = await prepareCodexThreadContextStart(method, codexPlusRpcDecode(nextArgs[1]), hostId);
+        return ["push", [...nextExpr.slice(0, 3), [method, codexPlusRpcEncode(params), ...nextArgs.slice(2)],
+          ...nextExpr.slice(4)], ...nextFrame.slice(2)];
+      };
+      plan.contextFailure = () => ["push", ["pipeline", expr[1], ["__codexPlusContextRefreshFailed"], []], ...frame.slice(2)];
+    }
+    return plan;
   }
 
-  function codexPlusRpcPlanStartConversation(frame) {
+  function codexPlusRpcPlanStartConversation(frame, hostId) {
     const expr = frame[1];
     const args = expr[3];
-    if (!codexPlusRpcIsPlainObject(args[0]) || !Array.isArray(args[0].input) || !codexPlusRpcWantsTurnHooks()) return null;
-    return async (signal) => {
+    const refreshContext = hostId === "local" && codexPlusRpcContextEnabled();
+    if (!codexPlusRpcIsPlainObject(args[0]) || !Array.isArray(args[0].input)
+        || (!codexPlusRpcWantsTurnHooks() && !refreshContext)) return null;
+    const plan = async (signal) => {
       let params = codexPlusRpcDecode(args[0]);
       const outcome = await codexPlusRpcProcessTurn({
         messageId: params.clientUserMessageId,
@@ -20399,15 +20581,28 @@
       }
       return ["push", [...expr.slice(0, 3), [codexPlusRpcEncode(params), ...args.slice(1)], ...expr.slice(4)], ...frame.slice(2)];
     };
+    if (refreshContext) {
+      plan.context = async (nextFrame) => {
+        if (nextFrame[1][2][0] !== "startConversation") return nextFrame;
+        const nextExpr = nextFrame[1];
+        const nextArgs = nextExpr[3];
+        const params = await prepareCodexThreadContextStart("thread/start", codexPlusRpcDecode(nextArgs[0]), hostId);
+        return ["push", [...nextExpr.slice(0, 3), [codexPlusRpcEncode(params), ...nextArgs.slice(1)],
+          ...nextExpr.slice(4)], ...nextFrame.slice(2)];
+      };
+      plan.contextFailure = () => ["push", ["pipeline", expr[1], ["__codexPlusContextRefreshFailed"], []], ...frame.slice(2)];
+    }
+    return plan;
   }
 
   function codexPlusRpcPlanResolve(frame) {
     const value = frame[2];
-    if (!codexPlusRpcIsPlainObject(value) || !codexPlusRpcWantsTurnHooks()) return null;
+    if (!codexPlusRpcIsPlainObject(value)) return null;
     const hasStart = codexPlusRpcIsPlainObject(value.start?.request) && Array.isArray(value.start.request.input);
     const hasSteer = codexPlusRpcIsPlainObject(value.steer) && Array.isArray(value.steer.input);
-    if (!hasStart && !hasSteer) return null;
-    return async (signal) => {
+    const refreshContext = hasStart && value.executionHostId === "local" && codexPlusRpcContextEnabled();
+    if ((!hasStart && !hasSteer) || (!codexPlusRpcWantsTurnHooks() && !refreshContext)) return null;
+    const plan = async (signal) => {
       const decoded = codexPlusRpcDecode(value);
       const conversationId = decoded.conversationId;
       const carriers = [];
@@ -20442,18 +20637,40 @@
       }
       return ["resolve", frame[1], codexPlusRpcEncode(decoded), ...frame.slice(3)];
     };
+    if (refreshContext) {
+      plan.context = async (nextFrame) => {
+        if (nextFrame[0] !== "resolve") return nextFrame;
+        const decoded = codexPlusRpcDecode(nextFrame[2]);
+        const client = await codexPlusAppServerClient("local");
+        const sendRequest = async (method, params, options) => {
+          if (method === "thread/unsubscribe") {
+            await client.unsubscribeInactiveConversation(params.threadId);
+            // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误传回当前发送。
+            return client.sendRequest(method, params, options);
+          }
+          if (method === "thread/resume" && params.config) return client.resumeThread(params);
+          return client.sendRequest(method, params, options);
+        };
+        await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, sendRequest,
+          "turn/start", decoded.start.request);
+        return nextFrame;
+      };
+      plan.contextFailure = (reason) => ["reject", frame[1], ["error", "Error", reason]];
+    }
+    return plan;
   }
 
   /** 判断一帧要不要拦。返回 null（同步放行）或 async (signal) => 新帧 | null。 */
-  function codexPlusRpcPlanFrame(frame) {
+  function codexPlusRpcPlanFrame(frame, port) {
     if (!Array.isArray(frame)) return null;
     if (frame[0] === "push") {
       const expr = frame[1];
       if (!Array.isArray(expr) || expr[0] !== "pipeline" || !Array.isArray(expr[2]) || expr[2].length !== 1 || !Array.isArray(expr[3])) {
         return null;
       }
-      if (expr[2][0] === "sendRequest") return codexPlusRpcPlanSendRequest(frame);
-      if (expr[2][0] === "startConversation") return codexPlusRpcPlanStartConversation(frame);
+      const hostId = codexPlusRpcReceiverHost(port, expr);
+      if (expr[2][0] === "sendRequest") return codexPlusRpcPlanSendRequest(frame, hostId);
+      if (expr[2][0] === "startConversation") return codexPlusRpcPlanStartConversation(frame, hostId);
       return null;
     }
     if (frame[0] === "resolve" && typeof frame[1] === "number" && frame.length > 2) return codexPlusRpcPlanResolve(frame);
@@ -20461,11 +20678,12 @@
   }
 
   /** 带超时地跑一个改写计划；超时或出错返回 null（原样发出），同时 abort 交给拓展的 signal。 */
-  async function codexPlusRpcRunPlan(plan) {
+  async function codexPlusRpcRunPlan(plan, frame) {
     const controller = new AbortController();
     let timer = null;
+    let replaced = null;
     try {
-      return await Promise.race([
+      replaced = await Promise.race([
         Promise.resolve().then(() => plan(controller.signal)),
         new Promise((resolve) => {
           timer = setTimeout(() => {
@@ -20476,21 +20694,29 @@
       ]);
     } catch (error) {
       codexPlusMarkExtensionFailure("", `rpc 拦截失败，已原样发出：${String(error?.message || error)}`);
-      return null;
     } finally {
       clearTimeout(timer);
+    }
+    if (!plan.context) return replaced;
+    try {
+      return await plan.context(replaced || frame);
+    } catch (error) {
+      const reason = String(error?.message || error);
+      codexPlusRpcRejectNotice(reason);
+      return plan.contextFailure(reason);
     }
   }
 
   /** 某个端口开始等中间件：之后的帧全部排队，按原顺序逐个处理、发出。 */
   async function codexPlusRpcDrainPort(port, original, first) {
-    const state = { queue: [] };
+    let finish;
+    const state = { queue: [], done: new Promise((resolve) => { finish = resolve; }) };
     codexPlusRpcPortQueues.set(port, state);
     try {
       let entry = first;
       while (entry) {
         const [message, rest, plan] = entry;
-        const replaced = plan ? await codexPlusRpcRunPlan(plan) : null;
+        const replaced = plan ? await codexPlusRpcRunPlan(plan, message) : null;
         try {
           original.call(port, replaced || message, ...rest);
         } catch (error) {
@@ -20501,12 +20727,13 @@
         if (!queued) break;
         let nextPlan = null;
         try {
-          nextPlan = codexPlusRpcPlanFrame(queued[0]);
+          nextPlan = codexPlusRpcPlanFrame(queued[0], port);
         } catch {}
         entry = [queued[0], queued[1], nextPlan];
       }
     } finally {
       codexPlusRpcPortQueues.delete(port);
+      finish();
     }
   }
 
@@ -20519,14 +20746,26 @@
     const original = installed?.original || proto.postMessage;
     const patched = function codexPlusRpcPostMessage(message, ...rest) {
       const state = codexPlusRpcPortQueues.get(this);
+      let plan = null;
+      try {
+        plan = codexPlusRpcPlanFrame(message, this);
+      } catch {}
+      // resolve 不分配隐式 RPC 序号。单独等待它，预检发出的请求才能通过同一端口。
+      if (message?.[0] === "resolve" && plan?.context) {
+        const port = this;
+        void (async () => {
+          if (state) await state.done;
+          const replaced = await codexPlusRpcRunPlan(plan, message);
+          original.call(port, replaced || message, ...rest);
+        })().catch((error) => {
+          codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`);
+        });
+        return undefined;
+      }
       if (state) {
         state.queue.push([message, rest]);
         return undefined;
       }
-      let plan = null;
-      try {
-        plan = codexPlusRpcPlanFrame(message);
-      } catch {}
       if (!plan) return original.call(this, message, ...rest);
       void codexPlusRpcDrainPort(this, original, [message, rest, plan]);
       return undefined;

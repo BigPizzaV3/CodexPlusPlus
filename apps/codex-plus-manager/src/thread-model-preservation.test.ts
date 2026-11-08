@@ -466,6 +466,8 @@ describe("pure API persisted model snapshot", () => {
         appServerModelRequestMethod: (method: string, params: any) => method === "send-cli-request-for-host" ? params.method : method,
         loadBackendSettingsState: async () => scenario !== "refresh-failed", loadCodexModelCatalog: async () => ({}),
         prepareCodexManagedSessionConnection: async (_method: string, params: any) => params,
+        prepareCodexThreadContextStart: async (_method: string, params: any) => params,
+        noteCodexThreadRuntimeContext() {},
         codexManagedSessionConnection: () => null, refreshCodexThreadModelBeforeTurn: async () => null,
         sendCodexManagedSessionTurn: async () => null, noteCodexManagedSessionStart() {},
         codexThreadModelRequestState: () => ({}), codexPlusModelUnlockEnabled: () => false,

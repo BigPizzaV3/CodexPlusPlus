@@ -1350,15 +1350,16 @@ pub fn save_gateway_provider_windows(
     windows: std::collections::BTreeMap<String, u64>,
     fallback: Option<u64>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let result = apply::set_provider_windows(&GatewayStore::default(), &id, windows, fallback)
+        .and_then(|saved| {
+            apply::refresh_enabled(&context())
+                .context("窗口已保存，但刷新 Agent 配置失败")?;
+            Ok(saved)
+        });
     respond(
         "上下文窗口已保存。",
-        "保存上下文窗口失败",
-        refresh_agents(apply::set_provider_windows(
-            &GatewayStore::default(),
-            &id,
-            windows,
-            fallback,
-        )),
+        "更新上下文窗口失败",
+        result,
     )
 }
 
@@ -1449,11 +1450,12 @@ pub fn apply_gateway_provider_windows_sync(
     id: String,
     picks: Vec<meta_sync::WindowPick>,
 ) -> CommandResult<Option<GatewayPayload>> {
-    let result = refresh_agents(meta_sync::apply_window_sync(
-        &GatewayStore::default(),
-        &id,
-        &picks,
-    ));
+    let result = meta_sync::apply_window_sync(&GatewayStore::default(), &id, &picks)
+        .and_then(|saved| {
+            apply::refresh_enabled(&context())
+                .context("窗口已同步，但刷新 Agent 配置失败")?;
+            Ok(saved)
+        });
     let message = match &result {
         Ok((_, written)) => format!("已从上游同步 {written} 个模型的上下文窗口。"),
         Err(_) => String::new(),

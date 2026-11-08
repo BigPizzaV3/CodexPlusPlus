@@ -5260,7 +5260,7 @@ fn is_cc_switch_model_catalog(path: &str) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case(CC_SWITCH_MODEL_CATALOG_FILENAME))
 }
 
-fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
+pub(crate) fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
     let normalized = path.trim().replace('\\', "/");
     let relative = normalized.trim_start_matches("./");
     if relative.to_ascii_lowercase().starts_with("model-catalogs/") {
