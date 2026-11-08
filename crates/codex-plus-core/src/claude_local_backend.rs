@@ -1,5 +1,6 @@
 //! 原版 Claude Desktop 的本地兼容服务：只管理自己的进程、资源和独立用户目录。
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -73,6 +74,50 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "catalogs/zh-Hans.overrides.json",
         include_bytes!("../../../assets/claude-localization/catalogs/zh-Hans.overrides.json"),
+    ),
+    // 由 tools/claude-local/sanitize-mock.mjs 从本机录制数据生成的脱敏模板，
+    // 不含任何个人字段，供完整功能模式作为 PoC bootstrap/api 数据。
+    (
+        "mock/bootstrap.json",
+        include_bytes!("../../../tools/claude-local/mock-template/bootstrap.json"),
+    ),
+    (
+        "mock/api/account_profile.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/account_profile.json"),
+    ),
+    (
+        "mock/api/claude_code_user_settings.json",
+        include_bytes!(
+            "../../../tools/claude-local/mock-template/api/claude_code_user_settings.json"
+        ),
+    ),
+    (
+        "mock/api/conversations.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/conversations.json"),
+    ),
+    (
+        "mock/api/experiences.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/experiences.json"),
+    ),
+    (
+        "mock/api/mcp_servers.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/mcp_servers.json"),
+    ),
+    (
+        "mock/api/memory_settings.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/memory_settings.json"),
+    ),
+    (
+        "mock/api/reflections_settings.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/reflections_settings.json"),
+    ),
+    (
+        "mock/api/skills.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/skills.json"),
+    ),
+    (
+        "mock/api/trial_status.json",
+        include_bytes!("../../../tools/claude-local/mock-template/api/trial_status.json"),
     ),
 ];
 
@@ -171,6 +216,158 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// ── 真实 profile 的 1p/3p 切换 ─────────────────────────────────
+// 完整功能模式沿用 PoC 做法：复用真实 Claude profile，需要把
+// claude_desktop_config.json 的 deploymentMode 改为 1p 并把
+// Claude-3p/configLibrary 挪开。改动记录到 <state>/real-profile-switch.json，
+// 停止/切回 3p 时按记录恢复，保证幂等可回滚。
+const SWITCH_STATE_FILE: &str = "real-profile-switch.json";
+const CONFIG_LIBRARY_BACKUP: &str = "configLibrary.codex-plus-backup";
+
+fn app_support_dir() -> PathBuf {
+    home_dir().join("Library/Application Support")
+}
+
+fn desktop_config_paths(app_support: &Path) -> [PathBuf; 2] {
+    [
+        app_support.join("Claude/claude_desktop_config.json"),
+        app_support.join("Claude-3p/claude_desktop_config.json"),
+    ]
+}
+
+fn switch_state_path(root: &Path) -> PathBuf {
+    root.join(SWITCH_STATE_FILE)
+}
+
+fn apply_real_profile_one_p(app_support: &Path, root: &Path) -> Result<()> {
+    let state_path = switch_state_path(root);
+    if state_path.exists() {
+        // 已按记录切换过：校验仍在 1p 状态即可（幂等）。
+        let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+        ensure!(
+            state["applied"].as_bool() == Some(true),
+            "Claude 本地模式切换状态文件不一致，请检查 {SWITCH_STATE_FILE}"
+        );
+        return Ok(());
+    }
+    private_dir(root)?;
+    let mut original = serde_json::Map::new();
+    for config_path in desktop_config_paths(app_support) {
+        let key = config_path.to_string_lossy().into_owned();
+        if fs::symlink_metadata(&config_path).is_ok_and(|m| m.file_type().is_symlink()) {
+            bail!("Claude 配置不能是符号链接: {}", config_path.display());
+        }
+        match fs::read(&config_path) {
+            Ok(bytes) => {
+                let mut config: Value = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("{} 不是有效 JSON", config_path.display()))?;
+                let obj = config
+                    .as_object_mut()
+                    .context("Claude 配置必须是 JSON 对象")?;
+                original.insert(
+                    key,
+                    obj.get("deploymentMode").cloned().unwrap_or(Value::Null),
+                );
+                if obj.get("deploymentMode").and_then(Value::as_str) != Some("1p") {
+                    obj.insert("deploymentMode".into(), json!("1p"));
+                    crate::settings::atomic_write(
+                        &config_path,
+                        &serde_json::to_vec_pretty(&config)?,
+                    )?;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                original.insert(key, Value::Null);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut config_library_moved = false;
+    let config_library = app_support.join("Claude-3p/configLibrary");
+    let backup = config_library.with_file_name(CONFIG_LIBRARY_BACKUP);
+    if backup.exists() {
+        bail!(
+            "Claude-3p 已存在未恢复的 configLibrary 备份，请先处理 {}",
+            backup.display()
+        );
+    }
+    if config_library.exists() {
+        fs::rename(&config_library, &backup)
+            .with_context(|| format!("无法挪开 {}", config_library.display()))?;
+        config_library_moved = true;
+    }
+    let state = json!({
+        "applied": true,
+        "deploymentMode": Value::Object(original),
+        "configLibraryMoved": config_library_moved,
+        "configLibraryBackup": backup.to_string_lossy(),
+    });
+    crate::settings::atomic_write(&state_path, &serde_json::to_vec_pretty(&state)?)?;
+    Ok(())
+}
+
+fn restore_real_profile(app_support: &Path, root: &Path) -> Result<()> {
+    let state_path = switch_state_path(root);
+    if !state_path.exists() {
+        return Ok(());
+    }
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    if let Some(map) = state["deploymentMode"].as_object() {
+        for (path, original) in map {
+            let config_path = PathBuf::from(path);
+            if !config_path.exists() {
+                continue;
+            }
+            let mut config: Value = serde_json::from_slice(&fs::read(&config_path)?)?;
+            let obj = match config.as_object_mut() {
+                Some(obj) => obj,
+                None => continue,
+            };
+            match original {
+                Value::Null => {
+                    obj.remove("deploymentMode");
+                }
+                value => {
+                    obj.insert("deploymentMode".into(), value.clone());
+                }
+            }
+            crate::settings::atomic_write(&config_path, &serde_json::to_vec_pretty(&config)?)?;
+        }
+    }
+    if state["configLibraryMoved"].as_bool() == Some(true) {
+        let backup = PathBuf::from(state["configLibraryBackup"].as_str().unwrap_or(""));
+        let target = app_support.join("Claude-3p/configLibrary");
+        if backup.exists() && !target.exists() {
+            fs::rename(&backup, &target)
+                .with_context(|| format!("无法恢复 {}", target.display()))?;
+        }
+    }
+    fs::remove_file(&state_path).ok();
+    Ok(())
+}
+
+// 完整功能模式的 PoC 数据路径：仅支持显式 dev 覆盖 CLAUDE_LOCAL_RECORDED_DIR
+// （指向含 .cache/ + mock/bootstrap.json 的录制目录）。正式环境不做祖先搜索，
+// 数据来自安装到 state 的 mock 模板 + 在线 SPA 写穿缓存。
+fn recorded_data_dir() -> Option<PathBuf> {
+    let valid = |dir: &Path| {
+        dir.join(".cache").is_dir() && dir.join("mock").join("bootstrap.json").is_file()
+    };
+    let dir = std::env::var("CLAUDE_LOCAL_RECORDED_DIR")
+        .ok()
+        .map(PathBuf::from)?;
+    valid(&dir).then_some(dir)
+}
+
+// 首次运行且没有可回放的页面缓存时提示：依赖在线抓取，离线会降级。
+fn replay_cache_populated(root: &Path) -> bool {
+    let cache = root.join(".cache");
+    cache.is_dir()
+        && fs::read_dir(cache)
+            .map(|mut entries| entries.any(|entry| entry.is_ok()))
+            .unwrap_or(false)
+}
+
 fn install_assets(root: &Path) -> Result<()> {
     private_dir(root)?;
     for (name, contents) in ASSETS {
@@ -182,6 +379,13 @@ fn install_assets(root: &Path) -> Result<()> {
             private_dir(parent)?;
         }
         write_private(&path, contents)?;
+    }
+    // 信任标记：代理据此确认旁边的 mock/ 是我们安装的内嵌模板（而非来路不明的数据）。
+    if root.join("mock/bootstrap.json").is_file() {
+        write_private(
+            &root.join("mock/.codex-plus-template"),
+            b"codex-plus mock template\n",
+        )?;
     }
     Ok(())
 }
@@ -453,6 +657,21 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
     models
 }
 
+fn available_model_windows(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+) -> BTreeMap<String, u64> {
+    available_models(gateway)
+        .into_iter()
+        .filter_map(|model| {
+            crate::gateway::route::model_entry_window(gateway, binding, &model)
+                .or(binding.context_window)
+                .filter(|window| *window > 0)
+                .map(|window| (model, window))
+        })
+        .collect()
+}
+
 fn validate_config(mut config: ClaudeLocalSettings) -> Result<ClaudeLocalSettings> {
     config.model = config.model.trim().to_string();
     ensure!(
@@ -564,8 +783,11 @@ pub fn status() -> Result<ClaudeLocalStatus> {
     let source = source_app();
     let processes = claude_processes()?;
     let claude_running = !processes.is_empty();
-    let local_process = processes.contains(root.join("profile").to_string_lossy().as_ref());
     let runtime = runtime_status();
+    // 完整功能模式直接用真实 profile，无 --user-data-dir；按代理端口识别本地进程。
+    let local_process = runtime.as_ref().is_some_and(|(port, _, _, _)| {
+        processes.contains(&format!("--proxy-server=http://127.0.0.1:{port}"))
+    });
     let running = runtime.is_some();
     let connected = local_process
         && runtime.as_ref().is_some_and(|(_, _, _, health)| {
@@ -607,6 +829,8 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         Some("首次使用需要准备并信任本地证书".into())
     } else if config.enabled && config.voice_input && !dictation_ready {
         Some("本地听写尚未就绪，请在语音设置中启用 SenseVoice 并准备模型".into())
+    } else if config.enabled && recorded_data_dir().is_none() && !replay_cache_populated(&root) {
+        Some("首次运行需要从 claude.ai 在线抓取页面资源；离线环境下完整功能模式可能无法加载".into())
     } else {
         fs::read_to_string(root.join("compatibility-warning.txt"))
             .ok()
@@ -676,9 +900,8 @@ fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
     let cache = root.join(".cache");
     private_dir(&cache)?;
     let original_cache = home_dir().join("Library/Application Support/Claude/Cache/Cache_Data");
-    let local_cache = root.join("profile/Cache/Cache_Data");
     let mut last_error = None;
-    for electron_cache in [&local_cache, &original_cache] {
+    for electron_cache in [&original_cache] {
         let drain = probe(
             Command::new(node)
                 .arg(root.join("scripts/patch-dictation-drain.mjs"))
@@ -755,13 +978,21 @@ fn start_backend(root: &Path, node: &Path, config: &ClaudeLocalSettings) -> Resu
             "CLAUDE_LOCAL_GATEWAY_MODELS",
             serde_json::to_string(&available_models(&gateway))?,
         )
+        .env(
+            "CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS",
+            serde_json::to_string(&available_model_windows(&gateway, &binding))?,
+        )
         .env("CLAUDE_LOCAL_STATE_FILE", root.join("conversations.json"))
         .env("CLAUDE_LOCAL_READY_FILE", &ready_file)
         .env("CLAUDE_LOCAL_INSTANCE_ID", &instance)
         .env("CLAUDE_LOCAL_LOCALIZATION", flag(config.localization))
         .env("CLAUDE_LOCAL_VOICE_INPUT", flag(config.voice_input))
         .env("CLAUDE_LOCAL_COMPUTER_USE", flag(config.computer_use))
-        .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
+        .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode));
+    if let Some(dir) = recorded_data_dir() {
+        command.env("CLAUDE_LOCAL_RECORDED_DIR", dir);
+    }
+    command
         .stdin(Stdio::piped())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -794,11 +1025,10 @@ fn flag(enabled: bool) -> &'static str {
     if enabled { "1" } else { "0" }
 }
 
-fn local_launch_args(root: &Path, port: u16, localization: bool) -> Vec<String> {
+fn local_launch_args(_root: &Path, port: u16, localization: bool) -> Vec<String> {
     let mut args = vec![
         format!("--proxy-server=http://127.0.0.1:{port}"),
         "--disable-http-cache".into(),
-        format!("--user-data-dir={}", root.join("profile").display()),
     ];
     if localization {
         args.push("--lang=zh-CN".into());
@@ -818,20 +1048,31 @@ fn launch_original(
     }
     if let Some(port) = port {
         let gateway = GatewayStore::default().load()?;
-        let token = &gateway
+        let binding = gateway
             .active_binding(&ToolId::Unknown(AGENT_ID.into()))
             .context("Claude 本地模式的网关绑定尚未就绪")?
-            .token;
-        private_dir(&root.join("profile"))?;
+            .clone();
+        // 完整功能模式与 PoC 一致：直接用真实 Claude profile（无 --user-data-dir），
+        // 启动前把真实配置切到 1p 并记录回滚信息。
+        apply_real_profile_one_p(&app_support_dir(), root)?;
         private_dir(&root.join("claude-code"))?;
+        // 与 3p 路径一致：把 Codex++ 配置的每模型窗口/推理档传给内置 Claude Code。
+        let helper_port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
+        let wiring = wiring(&gateway, &binding, AGENT_ID, helper_port);
+        let token = wiring.token.clone();
         command
             .args(local_launch_args(root, port, localization))
             .env("CLAUDE_CONFIG_DIR", root.join("claude-code"))
             .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
-            .env("ANTHROPIC_API_KEY", token)
-            .env("ANTHROPIC_AUTH_TOKEN", token)
+            .env("ANTHROPIC_API_KEY", &token)
+            .env("ANTHROPIC_AUTH_TOKEN", &token)
             .env("NO_PROXY", "localhost,127.0.0.1")
             .env("no_proxy", "localhost,127.0.0.1");
+        if let Some(capabilities) =
+            crate::gateway::agents::catalog_apps::desktop_capabilities(&wiring)
+        {
+            command.env("CLAUDE_CODE_MODEL_CAPABILITIES", capabilities);
+        }
     }
     let mut child = command
         .stdin(Stdio::null())
@@ -847,6 +1088,8 @@ fn launch_original(
 
 fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> Result<()> {
     stop_backend();
+    // 切回 3p 前先恢复真实 profile（enable_binding 会重写 configLibrary，顺序不能反）。
+    restore_real_profile(&app_support_dir(), root)?;
     GatewayStore::default().update(|gateway| {
         if let Some(binding) = gateway.bindings.get_mut(AGENT_ID) {
             binding.enabled = false;
@@ -949,6 +1192,8 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
     let message = match action {
         "stop" => {
             stop_backend();
+            // 完整功能模式停止时把真实 profile 切回原始状态。
+            restore_real_profile(&app_support_dir(), &root)?;
             "Claude 本地服务已停止，Claude 应用保持打开。".to_string()
         }
         "trust" => {
@@ -987,8 +1232,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                     prepare_dictation(&root, &node)?;
                 }
                 let port = start_backend(&root, &node, &config)?;
-                if let Err(error) =
-                    launch_original(&source, &root, Some(port), config.localization)
+                if let Err(error) = launch_original(&source, &root, Some(port), config.localization)
                 {
                     stop_backend();
                     return Err(error);
@@ -1202,7 +1446,8 @@ server.listen(0,'127.0.0.1',()=>{
     fn local_launch_is_isolated_without_copy_or_integrity_flags() {
         let args = local_launch_args(Path::new("/state/claude local"), 45123, true);
         assert!(args.contains(&"--proxy-server=http://127.0.0.1:45123".to_string()));
-        assert!(args.contains(&"--user-data-dir=/state/claude local/profile".to_string()));
+        // 完整功能模式直接使用真实 Claude profile，不传 --user-data-dir
+        assert!(!args.iter().any(|arg| arg.starts_with("--user-data-dir")));
         assert!(args.contains(&"--lang=zh-CN".to_string()));
         let no_localization = local_launch_args(Path::new("/state/claude local"), 45123, false);
         assert!(!no_localization.iter().any(|arg| arg.starts_with("--lang=")));
@@ -1214,6 +1459,93 @@ server.listen(0,'127.0.0.1',()=>{
     }
 
     #[test]
+    fn real_profile_switch_round_trips_deployment_mode_and_config_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_support = dir.path().join("support");
+        let state_root = dir.path().join("state");
+        fs::create_dir_all(app_support.join("Claude")).unwrap();
+        fs::create_dir_all(app_support.join("Claude-3p/configLibrary")).unwrap();
+        fs::write(
+            app_support.join("Claude/claude_desktop_config.json"),
+            r#"{"deploymentMode":"3p","preferences":{"theme":"dark"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            app_support.join("Claude-3p/claude_desktop_config.json"),
+            r#"{"deploymentMode":"3p"}"#,
+        )
+        .unwrap();
+        fs::write(app_support.join("Claude-3p/configLibrary/lib"), b"lib").unwrap();
+
+        apply_real_profile_one_p(&app_support, &state_root).unwrap();
+        // 幂等：第二次 apply 不重复写状态
+        apply_real_profile_one_p(&app_support, &state_root).unwrap();
+
+        let one_p: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(one_p["deploymentMode"], json!("1p"));
+        assert_eq!(one_p["preferences"]["theme"], json!("dark"));
+        let one_p_3p: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude-3p/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(one_p_3p["deploymentMode"], json!("1p"));
+        assert!(!app_support.join("Claude-3p/configLibrary").exists());
+        assert!(
+            app_support
+                .join("Claude-3p")
+                .join(CONFIG_LIBRARY_BACKUP)
+                .is_dir()
+        );
+        assert!(state_root.join(SWITCH_STATE_FILE).is_file());
+
+        restore_real_profile(&app_support, &state_root).unwrap();
+        let restored: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored["deploymentMode"], json!("3p"));
+        let restored_3p: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude-3p/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored_3p["deploymentMode"], json!("3p"));
+        assert!(app_support.join("Claude-3p/configLibrary/lib").is_file());
+        assert!(!state_root.join(SWITCH_STATE_FILE).exists());
+        // 恢复后再次 restore 是空操作
+        restore_real_profile(&app_support, &state_root).unwrap();
+    }
+
+    #[test]
+    fn real_profile_switch_preserves_missing_deployment_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_support = dir.path().join("support");
+        let state_root = dir.path().join("state");
+        fs::create_dir_all(app_support.join("Claude")).unwrap();
+        fs::create_dir_all(app_support.join("Claude-3p")).unwrap();
+        fs::write(
+            app_support.join("Claude/claude_desktop_config.json"),
+            r#"{"preferences":{"theme":"dark"}}"#,
+        )
+        .unwrap();
+        apply_real_profile_one_p(&app_support, &state_root).unwrap();
+        let applied: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(applied["deploymentMode"], json!("1p"));
+        restore_real_profile(&app_support, &state_root).unwrap();
+        let restored: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(restored.get("deploymentMode").is_none());
+        assert_eq!(restored["preferences"]["theme"], json!("dark"));
+    }
+
+    #[test]
     fn embedded_assets_do_not_contain_recorded_accounts_or_certificates() {
         let dir = tempfile::tempdir().unwrap();
         install_assets(dir.path()).unwrap();
@@ -1221,13 +1553,66 @@ server.listen(0,'127.0.0.1',()=>{
         assert!(dir.path().join("page-shim.js").is_file());
         assert!(dir.path().join("official-assets.mjs").is_file());
         assert!(dir.path().join("catalogs/dynamic/zh-Hans.json").is_file());
-        assert!(!dir.path().join("mock").exists());
+        assert!(dir.path().join("mock/bootstrap.json").is_file());
         assert!(!dir.path().join("ca").exists());
         assert!(!dir.path().join("vendor").exists());
         assert!(
             !ASSETS
                 .iter()
-                .any(|(name, _)| name.contains("ion-dist.asar") || name.starts_with("mock/"))
+                .any(|(name, _)| name.contains("ion-dist.asar"))
+        );
+    }
+
+    #[test]
+    fn embedded_mock_template_is_sanitized() {
+        let dir = tempfile::tempdir().unwrap();
+        install_assets(dir.path()).unwrap();
+        let text = fs::read_to_string(dir.path().join("mock/bootstrap.json")).unwrap();
+        let bootstrap: Value = serde_json::from_str(&text).unwrap();
+        // 保留 GrowthBook / 模型选择器 / 计划形状
+        assert!(
+            bootstrap["org_growthbook"]["features"]
+                .as_object()
+                .is_some_and(|f| !f.is_empty())
+        );
+        assert!(
+            bootstrap["activeOrganization"]["claude_ai_bootstrap_models_config"]
+                .as_array()
+                .is_some_and(|m| !m.is_empty())
+        );
+        // 只允许合成账号字段；不得残留真实邮箱/其它 uuid
+        assert_eq!(
+            bootstrap["account"]["email_address"],
+            json!("local@claude.local")
+        );
+        assert_eq!(bootstrap["account"]["full_name"], json!("Local User"));
+        assert_eq!(bootstrap["activeOrganization"]["name"], json!("Local"));
+        // 允许公共支持邮箱（@anthropic.com 出现在 GrowthBook 文案里）与合成域；
+        // 其它邮箱一律不得残留。
+        for cap in text.split('"').filter(|s| s.contains('@')) {
+            let emails: Vec<&str> = cap
+                .split(|c: char| {
+                    !c.is_alphanumeric() && c != '@' && c != '.' && c != '-' && c != '_'
+                })
+                .filter(|s| {
+                    s.contains('@') && s.rsplit('@').next().is_some_and(|d| d.contains('.'))
+                })
+                .collect();
+            for email in emails {
+                let email = email.trim_end_matches('.');
+                assert!(
+                    email.ends_with("@claude.local")
+                        || email.ends_with("@anthropic.com")
+                        || email.ends_with("@example.com")
+                        || email.ends_with(".iam.gserviceaccount.com"),
+                    "unexpected personal email in template: {email}"
+                );
+            }
+        }
+        let convos = fs::read_to_string(dir.path().join("mock/api/conversations.json")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&convos).unwrap()["data"],
+            json!([])
         );
     }
 

@@ -39,9 +39,37 @@ export function runtimeConfig(env = process.env) {
       throw new Error("Invalid Claude local gateway model list");
     }
   }
+  let modelWindows = {};
+  if (env.CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS) {
+    try {
+      modelWindows = JSON.parse(env.CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS);
+    } catch {
+      throw new Error("Invalid Claude local gateway model windows");
+    }
+    if (!isRecord(modelWindows) || Object.entries(modelWindows).length > 4096 ||
+      Object.entries(modelWindows).some(([id, window]) =>
+        !isText(id, 512) || !id || !Number.isSafeInteger(window) || window <= 0)) {
+      throw new Error("Invalid Claude local gateway model windows");
+    }
+  }
+  // 完整功能模式的「PoC 数据路径」：CLAUDE_LOCAL_RECORDED_DIR 指向本机一份
+  // 录制数据（.cache/ 静态资产 + mock/bootstrap.json + mock/api/* + i18n/），
+  // 命中时数据面按非托管 PoC 回放；目录缺失/不完整则保持合成数据。
+  const recordedDir = (() => {
+    if (!managed || !env.CLAUDE_LOCAL_RECORDED_DIR) return null;
+    const resolved = path.resolve(env.CLAUDE_LOCAL_RECORDED_DIR);
+    try {
+      if (!fs.statSync(resolved).isDirectory()) return null;
+      if (!fs.statSync(path.join(resolved, ".cache")).isDirectory()) return null;
+      if (!fs.statSync(path.join(resolved, "mock", "bootstrap.json")).isFile()) return null;
+    } catch { return null; }
+    return resolved;
+  })();
   return {
     managed, gateway, model, smallModel, key,
     models: [...new Set([model, smallModel, ...models])],
+    modelWindows,
+    recordedDir,
     localization: flag("LOCALIZATION"),
     voiceInput: flag("VOICE_INPUT"),
     computerUse: flag("COMPUTER_USE"),
@@ -84,12 +112,18 @@ export function modelList(config) {
   };
 }
 
+export function modelWindow(config, model) {
+  return config.modelWindows?.[model] ?? 200000;
+}
+
 export function modelSelectors(config, selected = config.model) {
   const model = gatewayModel(config, selected);
   const thinking = { type: "effort", effort: "medium" };
   const models = config.models.map((id) => ({
     id, name: id, short_name: id, description: "", section: "main",
-    disabled: false, disabled_reason: null, hard_limit: 200000,
+    disabled: false, disabled_reason: null,
+    hard_limit: modelWindow(config, id),
+    context_window_tokens: modelWindow(config, id),
     capabilities: { compass: false, gsuite_tools: false, mm_images: false, mm_pdf: false, web_search: false },
     thinking: { type: "effort", effort_options: [{ id: "medium", name: "Medium" }] },
   }));

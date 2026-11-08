@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { decode, get, asMsg, asStr, ld, vi } from "./rpc.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
-import { createStateStore, gatewayModel, gatewayTarget, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayModel, gatewayTarget, modelWindow, runtimeConfig } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
@@ -305,18 +305,49 @@ test("clean managed runtime uses synthetic bootstrap and configured catalogs wit
     assert.equal(result.json.locale, "zh-Hans");
     assert.deepEqual(result.json.gated_imports, {});
     assert.deepEqual(result.json.current_user_access.features, []);
+    assert.equal(result.json.activeOrganization.uuid, result.json.resolved_org_uuid);
+    assert.equal(result.json.activeOrganization.uuid, result.json.account.organization_uuid);
+    assert.equal(result.json.account.memberships[0].organization.uuid, result.json.activeOrganization.uuid);
+    assert.equal(result.json.account.memberships[0].status, "active");
+    assert.equal(result.json.account.memberships[0].organization.capabilities.includes("chat"), true);
+    assert.equal(result.json.account.workspace_memberships.length, 1);
+    assert.equal(result.json.user.memberships[0].organization.uuid, result.json.activeOrganization.uuid);
+    assert.ok(result.headers["set-cookie"].some((cookie) => cookie.startsWith(`lastActiveOrg=${result.json.activeOrganization.uuid};`)));
     assert.deepEqual(result.json.model_selector_config.find((entry) => entry.id === "chat").models.map((model) => model.id), modelIds);
     assert.ok(result.json.model_selector_config[0].models.every((model) => model.capabilities.mm_images === false));
   }
   const profile = await request(service, "/api/account_profile", { host: "claude.ai" });
   assert.equal(profile.json.privateFixture, undefined);
   assert.equal(profile.json.conversation_preferences, null);
+  assert.equal(profile.json.display_name, "Local User");
+  assert.equal(profile.json.full_name, "Local User");
+  assert.equal(profile.json.organization_uuid, "e0e877d3-8475-44a1-a501-4fc431b085ab");
+  assert.equal(profile.json.membership.organization.uuid, profile.json.organization_uuid);
+  assert.ok(profile.headers["set-cookie"].some((cookie) => cookie.startsWith(`lastActiveOrg=${profile.json.organization_uuid};`)));
   const catalog = await request(service, "/i18n/s/zh-Hans.json", { host: "claude.ai" });
   assert.deepEqual(catalog.json, { message: "translated" });
   const chromeLocaleCatalog = await request(service, "/i18n/s/zh-CN.json", { host: "claude.ai" });
   assert.deepEqual(chromeLocaleCatalog.json, { message: "translated" });
   const defaultLocaleCatalog = await request(service, "/i18n/s/en-US.json", { host: "claude.ai" });
   assert.deepEqual(defaultLocaleCatalog.json, { message: "translated" });
+});
+
+test("managed organization discovery stays on the already joined local organization", async () => {
+  const discoverable = await request(service, "/api/organizations/discoverable", { host: "claude.ai" });
+  assert.equal(discoverable.status, 200);
+  assert.deepEqual(discoverable.json.organizations, []);
+  assert.deepEqual(discoverable.json.data, []);
+  assert.deepEqual(discoverable.json.items, []);
+  assert.ok(discoverable.headers["set-cookie"].some((cookie) => cookie.startsWith("lastActiveOrg=e0e877d3-8475-44a1-a501-4fc431b085ab;")));
+
+  const joined = await request(service, "/api/organizations/e0e877d3-8475-44a1-a501-4fc431b085ab/join", {
+    host: "claude.ai", method: "POST", body: {},
+  });
+  assert.equal(joined.status, 200);
+  assert.equal(joined.json.joined, true);
+  assert.equal(joined.json.is_member, true);
+  assert.equal(joined.json.membership.organization.uuid, "e0e877d3-8475-44a1-a501-4fc431b085ab");
+  assert.equal(joined.json.membership.status, "active");
 });
 
 test("managed feature flags are independently reflected without granting system permissions", async () => {
@@ -326,6 +357,24 @@ test("managed feature flags are independently reflected without granting system 
   const bootstrap = await request(service, "/api/bootstrap", { host: "claude.ai" });
   assert.equal(bootstrap.json.feature_flags.computer_use, false);
   assert.equal(bootstrap.json.account.capabilities.includes("computer_use"), false);
+});
+
+test("managed usage reports parseable windows and model windows accept gateway metadata", async () => {
+  const usage = await request(service, "/api/usage", { host: "claude.ai" });
+  assert.equal(usage.status, 200);
+  assert.ok(Array.isArray(usage.json.windows));
+  assert.deepEqual(usage.json.windows.map((entry) => entry.window), [
+    "five_hour", "seven_day", "seven_day_cowork",
+  ]);
+  const config = runtimeConfig({
+    CLAUDE_LOCAL_MANAGED: "1",
+    CLAUDE_LOCAL_GATEWAY_URL: "https://localhost/gw/test/",
+    CLAUDE_LOCAL_GATEWAY_MODEL: "alpha/claude-opus-4-6",
+    CLAUDE_LOCAL_GATEWAY_KEY: "test",
+    CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS: JSON.stringify({ "alpha/claude-opus-4-6": 1_000_000 }),
+  });
+  assert.equal(modelWindow(config, "alpha/claude-opus-4-6"), 1_000_000);
+  assert.equal(modelWindow(config, "unknown"), 200_000);
 });
 
 test("gateway forwarding preserves the configured root, authentication and selected provider/model", async () => {
@@ -449,4 +498,25 @@ test("gateway contracts keep duplicate model names distinct and old sessions use
   assert.equal(gatewayModel(config, undefined), modelIds[0]);
   assert.equal(gatewayModel(config, "claude-native-default"), modelIds[0]);
   assert.equal(gatewayModel(config, "claude-haiku-4-5"), modelIds[2]);
+});
+
+test("recorded data dir opts managed mode into the PoC data path", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-recorded-"));
+  const env = {
+    CLAUDE_LOCAL_MANAGED: "1", CLAUDE_LOCAL_GATEWAY_URL: "https://localhost/gw/test/",
+    CLAUDE_LOCAL_GATEWAY_MODEL: "claude-test", CLAUDE_LOCAL_GATEWAY_KEY: "test",
+    CLAUDE_LOCAL_RECORDED_DIR: dir,
+  };
+  // 未就绪（缺 .cache 和 mock/bootstrap.json）时保持合成数据路径
+  assert.equal(runtimeConfig(env).recordedDir, null);
+  fs.mkdirSync(path.join(dir, ".cache"));
+  assert.equal(runtimeConfig(env).recordedDir, null);
+  fs.mkdirSync(path.join(dir, "mock"));
+  fs.writeFileSync(path.join(dir, "mock", "bootstrap.json"), "{}");
+  assert.equal(runtimeConfig(env).recordedDir, dir);
+  // 非托管模式下忽略该变量
+  assert.equal(runtimeConfig({ CLAUDE_LOCAL_RECORDED_DIR: dir }).recordedDir, null);
+  // 未提供时同样保持合成数据路径
+  delete env.CLAUDE_LOCAL_RECORDED_DIR;
+  assert.equal(runtimeConfig(env).recordedDir, null);
 });

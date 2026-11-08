@@ -16,7 +16,10 @@ import { facadeFixture, recorderFixture } from "./scripts/fixtures/dictation-sta
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const gatewayRequests = [];
+const upstreamRequests = [];
 let gateway;
+let upstreamFixture;
+let upstreamFixturePort;
 let proxy;
 let proxyClosed;
 let proxyPort;
@@ -297,6 +300,13 @@ before(async () => {
     res.end(JSON.stringify({ type: "message", content: [{ type: "text", text: "ok" }] }));
   });
   const gatewayPort = await listen(gateway);
+  // 假上游：记录代理转发过来的 host 头与路径
+  upstreamFixture = http.createServer((req, res) => {
+    upstreamRequests.push({ host: req.headers.host, url: req.url });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, host: req.headers.host, url: req.url }));
+  });
+  upstreamFixturePort = await listen(upstreamFixture);
   const reservation = net.createServer();
   proxyPort = await listen(reservation);
   await new Promise((resolve) => reservation.close(resolve));
@@ -306,6 +316,7 @@ before(async () => {
     env: {
       ...process.env,
       CLAUDE_LOCAL_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
+      CLAUDE_LOCAL_UPSTREAM_MAP: JSON.stringify({ "downloads.claude.ai": `http://127.0.0.1:${upstreamFixturePort}` }),
       CLAUDE_LOCAL_CACHE_DIR: dictationCacheDir,
       CODEX_PLUS_STATE_DIR: dictationStateDir,
     },
@@ -629,6 +640,17 @@ test("token counting stays local instead of reaching the model gateway", async (
   assert.equal(gatewayRequests.length, before);
 });
 
+test("upstream requests keep their original host instead of being rewritten to claude.ai", async () => {
+  const result = await request("/claude-code-releases/2.1.317/darwin-arm64/claude.app.tar.zst", {
+    host: "downloads.claude.ai",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.ok, true);
+  const seen = upstreamRequests.at(-1);
+  assert.equal(seen.host, "downloads.claude.ai");
+  assert.equal(seen.url, "/claude-code-releases/2.1.317/darwin-arm64/claude.app.tar.zst");
+});
+
 test("model requests strip diagnostics and preserve the rest of the payload", async () => {
   const payload = {
     model: "local-model",
@@ -641,4 +663,27 @@ test("model requests strip diagnostics and preserve the rest of the payload", as
   });
   assert.equal(result.status, 200);
   assert.deepEqual(gatewayRequests.at(-1), { path: "/v1/messages?beta=true", body: payload });
+});
+
+test("document navigations replay the app shell rather than logged-out landing stubs", async () => {
+  const cacheWrite = (key, body, meta) => {
+    const cp = path.join(dictationCacheDir, crypto.createHash("sha1").update(key).digest("hex"));
+    fs.writeFileSync(cp, body);
+    fs.writeFileSync(`${cp}.json`, JSON.stringify(meta));
+  };
+  const shell = `<!doctype html><html data-build-id="recorded-shell"><head><meta charset="UTF-8"></head><body><div id="root">${"x".repeat(5000)}</div></body></html>`;
+  // 登出落地页桩体：上游匿名抓取的 claude.ai/ 就是这种小 HTML
+  cacheWrite("claude.ai/", "<html>redirect</html>", { status: 200, headers: { "content-type": "text/html" }, url: "claude.ai/" });
+  cacheWrite("claude.ai/new", "<html>redirect</html>", { status: 200, headers: { "content-type": "text/html" }, url: "claude.ai/new" });
+  cacheWrite("claude.ai/epitaxy", shell, { status: 200, headers: { "content-type": "text/html" }, url: "claude.ai/epitaxy" });
+
+  // `/` 会先被更早的 302 分支重写到 /new；其余文档导航直接回真外壳
+  const root = await requestText("claude.ai", "/", { accept: "text/html" });
+  assert.equal(root.status, 302);
+  for (const navPath of ["/new", "/chat", "/settings/general"]) {
+    const result = await requestText("claude.ai", navPath, { accept: "text/html" });
+    assert.equal(result.status, 200, navPath);
+    assert.match(result.body, /data-build-id="recorded-shell"/, navPath);
+    assert.doesNotMatch(result.body, /^<html>redirect<\/html>$/, navPath);
+  }
 });

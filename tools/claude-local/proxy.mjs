@@ -25,7 +25,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
-import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelList, modelSelectors, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelList, modelSelectors, modelWindow, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -34,7 +34,7 @@ const officialAssets = runtime.managed
   ? createOfficialAssets(process.env.CLAUDE_LOCAL_DESKTOP_RESOURCES)
   : null;
 const LOCALIZATION_SHIM_PATH = "/__codex_plus/claude-localization.js";
-const localizationShim = runtime.managed && runtime.localization
+const localizationShim = runtime.managed && !runtime.recordedDir && runtime.localization
   ? fs.readFileSync(path.join(here, "page-shim.js"))
   : null;
 
@@ -89,6 +89,20 @@ const UPSTREAM = arg("upstream", "https://claude.ai");
 const CA_DIR = arg("ca", path.join(here, "ca"));
 const APP_STATE_DIR = process.env.CODEX_PLUS_STATE_DIR || path.join(os.homedir(), ".codex-session-delete");
 const CACHE_DIR = process.env.CLAUDE_LOCAL_CACHE_DIR || path.join(here, ".cache");
+// 完整功能模式的「PoC 数据路径」：CLAUDE_LOCAL_RECORDED_DIR 指向本机录制数据
+// （.cache/ + mock/ + i18n/，不进包）。命中时数据面与 PoC 回放完全一致；
+// 生命周期、网关鉴权、dictation 等仍按 managed 运行。
+// POC_DIR 只在两类来源下启用：显式 dev 覆盖（CLAUDE_LOCAL_RECORDED_DIR），
+// 或由后端 install_assets 写入代理旁的内嵌模板（mock/.codex-plus-template 标记）。
+// 代理目录里来历不明的 mock 一律忽略（托管测试用 privateFixture 守住这条）。
+const TRUSTED_TEMPLATE = fs.existsSync(path.join(here, "mock", ".codex-plus-template"));
+const POC_DIR = runtime.recordedDir || (TRUSTED_TEMPLATE ? here : null);
+const POC_MOCK = path.join(POC_DIR ?? here, "mock");
+const POC_I18N = path.join(POC_DIR ?? here, "i18n");
+// 托管模式在存在 PoC 数据（dev 录制目录或安装的内嵌 mock 模板）时走 PoC 数据路径；
+// 完全没有模板数据时保持合成兜底（officialShell/localBootstrap + 状态告警）。
+const dataManaged = runtime.managed && !POC_DIR;
+const READ_CACHE = POC_DIR ? path.join(POC_DIR, ".cache") : CACHE_DIR;
 const LOG = arg("log", "1") !== "0";
 const READY_FILE = process.env.CLAUDE_LOCAL_READY_FILE;
 const INSTANCE_ID = process.env.CLAUDE_LOCAL_INSTANCE_ID || crypto.randomUUID();
@@ -124,6 +138,13 @@ const ACCOUNT = {
   full_name: "Local User",
   plan_type: "max",
   plan: "max",
+  tier: "max",
+  user_tier: "max",
+  plan_tier: "max",
+  entitlement_tier: "max",
+  membership_plan: "max",
+  plan_display_name: "Max",
+  plan_display_label: "Max",
   subscription: { plan: "max", status: "active" },
   is_max: true,
   has_claude_max: true,
@@ -147,6 +168,12 @@ const ORG = {
   organization_type: "personal",
   raven_type: "personal",
   plan_type: "max",
+  plan: "max",
+  tier: "max",
+  user_tier: "max",
+  plan_tier: "max",
+  entitlement_tier: "max",
+  membership_plan: "max",
   capabilities: [
     "chat",
     "claude_pro",
@@ -167,9 +194,13 @@ const ORG = {
   parent_organization_uuid: null,
   rate_limit_tier: "default_claude_max_20x",
   analytics_subscription_plan: "claude_max",
+  plan_display_name: "Max",
+  plan_display_label: "Max",
   has_hosted_code_environments: false,
   claude_ai_bootstrap_models_config: runtime.models.map((model) => ({
-    model, name: model, description: "", paprika_modes: [], thinking_modes: [], hard_limit: 200000,
+    model, name: model, description: "", paprika_modes: [], thinking_modes: [],
+    hard_limit: modelWindow(runtime, model),
+    context_window_tokens: modelWindow(runtime, model),
   })),
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -203,13 +234,13 @@ if (!runtime.computerUse) {
 
 // 读取录制到的真实 bootstrap 作为模板（capture.mjs 产出）
 function loadRecordedBootstrap() {
-  if (runtime.managed) return null;
+  if (dataManaged) return null;
   try {
-    for (const f of fs.readdirSync(CACHE_DIR)) {
+    for (const f of fs.readdirSync(READ_CACHE)) {
       if (!f.endsWith(".json")) continue;
-      const meta = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, f), "utf8"));
+      const meta = JSON.parse(fs.readFileSync(path.join(READ_CACHE, f), "utf8"));
       if (typeof meta.url === "string" && meta.url.includes("/edge-api/bootstrap")) {
-        const body = fs.readFileSync(path.join(CACHE_DIR, f.replace(/\.json$/, "")));
+        const body = fs.readFileSync(path.join(READ_CACHE, f.replace(/\.json$/, "")));
         return JSON.parse(body.toString("utf8"));
       }
     }
@@ -222,13 +253,13 @@ const RECORDED_BOOTSTRAP = loadRecordedBootstrap();
 // i18n 字典：.cache 里录制过的真实翻译文件（url 形如 claude.ai/i18n/s/zh-Hans.json?v=...）
 const i18nMap = (() => {
   const m = new Map(); // pathname -> abs body file
-  if (runtime.managed) return m;
+  if (dataManaged) return m;
   try {
-    for (const f of fs.readdirSync(CACHE_DIR)) {
+    for (const f of fs.readdirSync(READ_CACHE)) {
       if (!f.endsWith(".json")) continue;
-      const meta = JSON.parse(fs.readFileSync(path.join(CACHE_DIR, f), "utf8"));
+      const meta = JSON.parse(fs.readFileSync(path.join(READ_CACHE, f), "utf8"));
       const u = String(meta.url || "");
-      const bodyFile = path.join(CACHE_DIR, f.replace(/\.json$/, ""));
+      const bodyFile = path.join(READ_CACHE, f.replace(/\.json$/, ""));
       if (!u.includes("/i18n/") || meta.status !== 200 || !fs.existsSync(bodyFile)) continue;
       const pathPart = u.slice(u.indexOf("/i18n/")).split("?")[0];
       m.set(pathPart, bodyFile);
@@ -265,7 +296,7 @@ function localI18n(pathname) {
     ...readI18n(path.join(WEB_I18N_DIR, "dynamic", base)),
     ...readI18n(i18nMap.get(pathname)),
   } : {
-    ...(!runtime.managed ? readI18n(path.join(I18N_DIR, base)) : {}),
+    ...(!dataManaged ? readI18n(path.join(POC_I18N || I18N_DIR, base)) : {}),
     ...readI18n(path.join(WEB_I18N_DIR, base)),
     ...readI18n(i18nMap.get(`/i18n/${base}`)),
     ...readI18n(path.join(WEB_I18N_DIR, `${locale}.overrides.json`)),
@@ -292,14 +323,29 @@ function localI18n(pathname) {
 const now = () => new Date().toISOString();
 const log = (...a) => LOG && console.log(`[${now()}]`, ...a);
 
-function json(res, obj, code = 200) {
+function json(res, obj, code = 200, extraHeaders = {}) {
   const body = JSON.stringify(obj);
   res.writeHead(code, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
+    ...extraHeaders,
   });
   res.end(body);
+}
+
+function activeOrgCookies() {
+  return [
+    `org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
+    `active_org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
+    `last_active_org=${ORG.uuid}; Path=/; SameSite=Lax`,
+    `lastActiveOrg=${ORG.uuid}; Domain=.claude.ai; Path=/; Secure; SameSite=None`,
+    `sessionKey=${ACCOUNT.uuid}-local-session; Path=/; HttpOnly; Secure; SameSite=None`,
+  ];
+}
+
+function jsonWithActiveOrg(res, obj, code = 200) {
+  return json(res, obj, code, { "set-cookie": activeOrgCookies() });
 }
 
 function health() {
@@ -398,6 +444,13 @@ const FAKE_ACCOUNT = {
   full_name: ACCOUNT.name,
   plan_type: "max",
   plan: "max",
+  tier: "max",
+  user_tier: "max",
+  plan_tier: "max",
+  entitlement_tier: "max",
+  membership_plan: "max",
+  plan_display_name: "Max",
+  plan_display_label: "Max",
   is_max: true,
   has_claude_max: true,
   membership: { plan: "max", status: "active", plan_type: "max" },
@@ -408,7 +461,25 @@ const FAKE_ACCOUNT = {
   settings: {},
 };
 
+const LOCAL_MEMBERSHIP_ID = "11111111-2222-4333-8444-555555555556";
+
+function localMembership() {
+  return {
+    uuid: LOCAL_MEMBERSHIP_ID,
+    organization_uuid: ORG.uuid,
+    organization: ORG,
+    role: "admin",
+    status: "active",
+    seat_tier: "full_member",
+    joined: true,
+    is_member: true,
+    created_at: "2025-01-01T00:00:00Z",
+    updated_at: "2025-01-01T00:00:00Z",
+  };
+}
+
 function fakeAccount() {
+  const membership = localMembership();
   return {
     ...FAKE_ACCOUNT,
     tagged_id: `acct_${ACCOUNT.uuid}`,
@@ -420,14 +491,81 @@ function fakeAccount() {
     age_is_verified: true,
     is_anonymous: false,
     onboarding_complete: true,
-    workspace_memberships: [],
+    workspace_memberships: [membership],
     invites: [],
     never_accepted_legal_document_types: [],
     accepted_clickwrap_versions: {},
     display_avatar: null,
     settings: { ...ACCOUNT.settings },
-    memberships: [{ uuid: "11111111-2222-4333-8444-555555555556", organization: ORG, role: "admin", status: "active", seat_tier: "full_member", created_at: "2025-01-01T00:00:00Z" }],
+    memberships: [membership],
     memberships_incomplete: false,
+  };
+}
+
+function localAccount(source = {}) {
+  const account = source && typeof source === "object" && !Array.isArray(source) ? source : {};
+  const normalized = {
+    ...account,
+    ...fakeAccount(),
+    settings: { ...(account.settings || {}), ...ACCOUNT.settings },
+  };
+  const membership = localMembership();
+  normalized.organization_uuid = ORG.uuid;
+  normalized.organization = ORG;
+  normalized.plan_type = "max";
+  normalized.plan = "max";
+  normalized.tier = "max";
+  normalized.user_tier = "max";
+  normalized.plan_tier = "max";
+  normalized.entitlement_tier = "max";
+  normalized.membership_plan = "max";
+  normalized.plan_display_name = "Max";
+  normalized.plan_display_label = "Max";
+  normalized.subscription = { plan: "max", status: "active" };
+  normalized.memberships = [membership];
+  normalized.workspace_memberships = [membership];
+  normalized.memberships_incomplete = false;
+  normalized.onboarding_complete = true;
+  return normalized;
+}
+
+function normalizeLocalIdentity(source = {}) {
+  const payload = source && typeof source === "object" && !Array.isArray(source) ? source : {};
+  const membership = localMembership();
+  const account = localAccount(payload.account);
+  const user = localAccount(payload.user || payload.account);
+  return {
+    ...payload,
+    account,
+    user,
+    organization: ORG,
+    activeOrganization: ORG,
+    organizations: [ORG],
+    memberships: [membership],
+    resolved_org_uuid: ORG.uuid,
+    org_uuid: ORG.uuid,
+    active_org_uuid: ORG.uuid,
+    organization_uuid: ORG.uuid,
+    locale: runtime.localization ? "zh-Hans" : (payload.locale || "en-US"),
+  };
+}
+
+function normalizeAccountProfile(source = {}) {
+  const profile = source && typeof source === "object" && !Array.isArray(source) ? source : {};
+  return {
+    ...profile,
+    account: localAccount(profile.account),
+    organization: ORG,
+    organization_uuid: ORG.uuid,
+    activeOrganization: ORG,
+    resolved_org_uuid: ORG.uuid,
+    display_name: ACCOUNT.name,
+    full_name: ACCOUNT.name,
+    email_address: ACCOUNT.email,
+    locale: runtime.localization ? "zh-Hans" : (profile.locale || "en-US"),
+    membership: localMembership(),
+    memberships: [localMembership()],
+    workspace_memberships: [localMembership()],
   };
 }
 
@@ -446,7 +584,7 @@ function localUserAccess() {
 }
 
 function localBootstrap() {
-  return {
+  return normalizeLocalIdentity({
     ...BOOTSTRAP,
     account: fakeAccount(),
     user: fakeAccount(),
@@ -472,46 +610,99 @@ function localBootstrap() {
     gated_messages: { messages: {}, gates: [], locale: runtime.localization ? "zh-Hans" : "en-US" },
     gated_imports: {},
     ...(officialAssets ? { gated_imports_build_id: officialAssets.buildId } : {}),
-  };
+  });
+}
+
+// PoC 数据路径下：把网关池模型并入录制 bootstrap 的模型字段，
+// 让 Chat/Code 选择器同时提供原生条目（界面需要）与池内 provider/model 条目。
+function mergePoolModels(j) {
+  const ids = runtime.models;
+  if (!j || typeof j !== "object" || !ids.length) return;
+  const cfg = j.activeOrganization?.claude_ai_bootstrap_models_config;
+  if (Array.isArray(cfg)) {
+    const seen = new Set(cfg.map((m) => m?.model));
+    const tpl = cfg[0] ?? {};
+    for (const entry of cfg) {
+      if (entry && runtime.models.includes(entry.model)) {
+        entry.hard_limit = modelWindow(runtime, entry.model);
+        entry.context_window_tokens = modelWindow(runtime, entry.model);
+      }
+    }
+    for (const id of ids) {
+      if (!seen.has(id)) cfg.push({
+        ...tpl,
+        model: id,
+        name: id,
+        description: id,
+        hard_limit: modelWindow(runtime, id),
+        context_window_tokens: modelWindow(runtime, id),
+      });
+    }
+  }
+  const avail = j.claude_ai_available_models?.models;
+  if (Array.isArray(avail)) {
+    const seen = new Set(avail.map((m) => m?.model_id));
+    for (const id of ids) {
+      if (!seen.has(id)) avail.push({ model_id: id, minimum_tier: "free" });
+    }
+  }
+  if (Array.isArray(j.model_selector_config)) {
+    for (const sel of j.model_selector_config) {
+      if (!Array.isArray(sel?.models)) continue;
+      const seen = new Set(sel.models.map((m) => m?.id));
+      const tpl = sel.models[0] ?? {};
+      for (const entry of sel.models) {
+        if (entry && runtime.models.includes(entry.id)) {
+          entry.hard_limit = modelWindow(runtime, entry.id);
+          entry.context_window_tokens = modelWindow(runtime, entry.id);
+        }
+      }
+      for (const id of ids) {
+        if (!seen.has(id)) sel.models.push({
+          ...tpl,
+          id,
+          name: id,
+          short_name: id,
+          description: id,
+          hard_limit: modelWindow(runtime, id),
+          context_window_tokens: modelWindow(runtime, id),
+        });
+      }
+    }
+  }
+  if (Array.isArray(j.model_selector_state)) {
+    const thinking = { type: "effort", effort: "medium" };
+    j.model_selector_state = j.model_selector_state.map((s) => s && typeof s === "object"
+      ? { ...s, model: runtime.model, thinking_by_model: ids.map((id) => ({ id, thinking })) }
+      : s);
+  }
 }
 
 function mockEdgeApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   if (p.includes("/edge-api/bootstrap")) {
-    const fakeFile = path.join(here, "mock", "bootstrap.json");
-    const body = !runtime.managed && fs.existsSync(fakeFile)
+    const fakeFile = path.join(POC_MOCK, "bootstrap.json");
+    const body = !dataManaged && fs.existsSync(fakeFile)
       ? fs.readFileSync(fakeFile, "utf8")
       : null;
     if (body) {
-      // 解包代码显示 org 解析依赖 savedOrgCookie/org_uuid cookie，必须种上
-      res.writeHead(200, {
-        "content-type": "application/json; charset=utf-8",
-        "content-length": Buffer.byteLength(body),
-        "cache-control": "no-store",
-        "set-cookie": [
-          `org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
-          `active_org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
-          `last_active_org=${ORG.uuid}; Path=/; SameSite=Lax`,
-          `sessionKey=${ACCOUNT.uuid}-local-session; Path=/; HttpOnly; Secure; SameSite=None`,
-        ],
-      });
-      return res.end(body);
+      let body2 = JSON.stringify(normalizeLocalIdentity(localBootstrap()));
+      try {
+        const j = JSON.parse(body);
+        const normalized = normalizeLocalIdentity({ ...localBootstrap(), ...j });
+        mergePoolModels(j);
+        body2 = JSON.stringify(normalizeLocalIdentity({ ...normalized, ...j }));
+      } catch {}
+      return jsonWithActiveOrg(res, JSON.parse(body2));
     }
     const base = RECORDED_BOOTSTRAP ?? {};
-    res.setHeader("set-cookie", [
-      `org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
-      `active_org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
-      `lastActiveOrg=${ORG.uuid}; Path=/; SameSite=Lax`,
-      `sessionKey=${ACCOUNT.uuid}-local-session; Path=/; HttpOnly; Secure; SameSite=None`,
-    ]);
-    return json(res, {
+    const merged = normalizeLocalIdentity({
       ...localBootstrap(), ...base,
-      account: fakeAccount(),
-      activeOrganization: ORG,
-      locale: base.locale ?? (runtime.localization ? "zh-Hans" : "en-US"),
       intercom_account_hash: null,
       intercom_user_jwt: null,
     });
+    mergePoolModels(merged);
+    return jsonWithActiveOrg(res, merged);
   }
   if (p.endsWith("/edge-api/client-health/check")) return json(res, {});
   return json(res, {});
@@ -522,8 +713,8 @@ let REST_CONV_TEMPLATE = null;
 function convToRest(c) {
   if (!REST_CONV_TEMPLATE) {
     try {
-      if (runtime.managed) throw new Error("Managed mode uses synthetic data");
-      const f = path.join(here, "mock", "api", "conversations.json");
+      if (dataManaged) throw new Error("Managed mode uses synthetic data");
+      const f = path.join(POC_MOCK, "api", "conversations.json");
       REST_CONV_TEMPLATE = JSON.parse(fs.readFileSync(f, "utf8")).data[0] ?? {};
     } catch { REST_CONV_TEMPLATE = {}; }
   }
@@ -554,9 +745,9 @@ function mockApi(req, res, url) {
 
   // 会话列表：静态模板 + 运行期动态会话（RPC 建的）合并，按更新时间倒序
   if (/\/chat_conversations_v2$/.test(p) && method === "GET") {
-    const f = path.join(here, "mock", "api", "conversations.json");
+    const f = path.join(POC_MOCK, "api", "conversations.json");
     let base = { data: [], has_more: false };
-    if (!runtime.managed) {
+    if (!dataManaged) {
       try { base = JSON.parse(fs.readFileSync(f, "utf8")); } catch {}
     }
     const dynamic = [...CONV_STATE.values()].map(convToRest);
@@ -579,11 +770,16 @@ function mockApi(req, res, url) {
   ];
   for (const [re, slug] of apiMap) {
     if (re.test(p)) {
-      const f = path.join(here, "mock", "api", `${slug}.json`);
-      if (!runtime.managed && fs.existsSync(f)) {
-        try { return json(res, JSON.parse(fs.readFileSync(f, "utf8"))); } catch {}
+      const f = path.join(POC_MOCK, "api", `${slug}.json`);
+      if (!dataManaged && fs.existsSync(f)) {
+        try {
+          const data = JSON.parse(fs.readFileSync(f, "utf8"));
+          return slug === "account_profile"
+            ? jsonWithActiveOrg(res, normalizeAccountProfile(data))
+            : json(res, data);
+        } catch {}
       }
-      if (runtime.managed) {
+      if (dataManaged) {
         const synthetic = {
           reflections_settings: { time_alert_daily_minutes: null, quiet_hours: null },
           claude_code_user_settings: {
@@ -607,7 +803,9 @@ function mockApi(req, res, url) {
           skills: { skills: [] },
           experiences: { experiences: [], rules: { global: { rate_limit: null, cooldown: null }, placements: {}, tiers: {} } },
         };
-        return json(res, synthetic[slug]);
+        return slug === "account_profile"
+          ? jsonWithActiveOrg(res, normalizeAccountProfile(synthetic[slug]))
+          : json(res, synthetic[slug]);
       }
     }
   }
@@ -724,7 +922,11 @@ function mockApi(req, res, url) {
     });
   }
   // /v1/code/sessions/watch 是 EventSource：必须 text/event-stream
-  if (p === "/v1/code/sessions/watch" || (p.startsWith("/v1/code/sessions/watch"))) {
+  // 实测桌面端也会直接对 /v1/code/sessions 开 EventSource；按 Accept 分流，
+  // 否则 EventSource 收到 application/json 会中断连接，Code 面板永远停在骨架屏。
+  const wantsSse = req.headers.accept?.includes("text/event-stream");
+  if (p === "/v1/code/sessions/watch" || p.startsWith("/v1/code/sessions/watch") ||
+      (wantsSse && (/^\/v1\//.test(p) || /\/mcp\/v2\/bootstrap$/.test(p)))) {
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-store",
@@ -795,10 +997,10 @@ function mockApi(req, res, url) {
   // 当前用户访问权限（app 用它判断能否进入主界面 + 套餐判定）
   if (/\/api\/bootstrap\/[^/]+\/current_user_access$/.test(p)) {
     let base = localUserAccess();
-    if (!runtime.managed) {
-      try { base = JSON.parse(fs.readFileSync(path.join(here, "mock", "bootstrap.json"), "utf8")).current_user_access ?? base; } catch {}
+    if (!dataManaged) {
+      try { base = JSON.parse(fs.readFileSync(path.join(POC_MOCK, "bootstrap.json"), "utf8")).current_user_access ?? base; } catch {}
     }
-    return json(res, {
+    return jsonWithActiveOrg(res, {
       ...base,
       has_access: true,
       can_access: true,
@@ -812,11 +1014,16 @@ function mockApi(req, res, url) {
       rate_limit_tier: "default_claude_max_20x",
       analytics_subscription_plan: "claude_max",
       organization: ORG,
-      account: ACCOUNT,
-      memberships: [{ uuid: "11111111-2222-4333-8444-555555555556", organization: ORG, role: "admin", status: "active", seat_tier: "full_member" }],
-      membership: { organization: ORG, role: "admin", status: "active" },
+      organization_uuid: ORG.uuid,
+      account: localAccount(ACCOUNT),
+      memberships: [localMembership()],
+      workspace_memberships: [localMembership()],
+      membership: localMembership(),
       is_member: true,
       member: true,
+      joined: true,
+      activeOrganization: ORG,
+      resolved_org_uuid: ORG.uuid,
       feature_flags: BOOTSTRAP.feature_flags,
     });
   }
@@ -826,11 +1033,15 @@ function mockApi(req, res, url) {
   }
 
   if (p === "/api/bootstrap" || p === "/api/account" || p === "/api/account_profile") {
-    return json(res, runtime.managed ? localBootstrap() : BOOTSTRAP);
+    const base = RECORDED_BOOTSTRAP ? { ...BOOTSTRAP, ...RECORDED_BOOTSTRAP } : BOOTSTRAP;
+    if (!dataManaged && RECORDED_BOOTSTRAP) mergePoolModels(base);
+    return jsonWithActiveOrg(res, normalizeLocalIdentity(dataManaged ? localBootstrap() : base));
   }
-  if (/^\/api\/bootstrap\/[^/]+\/app_start$/.test(p)) return json(res, localBootstrap());
+  if (/^\/api\/bootstrap\/[^/]+\/app_start$/.test(p)) {
+    return jsonWithActiveOrg(res, localBootstrap());
+  }
   if (p === "/api/organizations") {
-    return json(res, { organizations: [ORG], data: [ORG], items: [ORG] });
+    return jsonWithActiveOrg(res, { organizations: [ORG], data: [ORG], items: [ORG] });
   }
   // org 级别的设置/记忆/skills 端点：未覆盖的通用 mock 形状会触发前端 parse 失败 notice
   if (/\/memory\/settings/.test(p)) {
@@ -843,24 +1054,25 @@ function mockApi(req, res, url) {
   }
   // 登录后组织选择页的数据源；item 的 uuid 要放在客户端读的位置（否则 join 打成 /undefined/join）
   if (p === "/api/organizations/discoverable") {
-    const item = {
-      ...ORG,
-      uuid: ORG.uuid,
-      id: ORG.uuid,
-      organization_uuid: ORG.uuid,
-      organization: ORG,
-      joined: true,
-      is_member: true,
-      membership: { organization: ORG, role: "admin", status: "active" },
-    };
-    return json(res, { organizations: [item], data: [item], items: [item] });
+    // 已经加入的 Local 组织不能出现在 discoverable 列表，否则官方桌面端会
+    // 在主界面显示“加入您的团队”横幅。显式 join 路由仍保留给旧 onboarding
+    // 流程重试，但正常登录态应视为没有可加入的组织。
+    return jsonWithActiveOrg(res, { organizations: [], data: [], items: [] });
   }
   // Join 组织确认
   if (/^\/api\/organizations\/[^/]+\/(join|memberships?)$/.test(p) && method !== "GET") {
-    return json(res, { ok: true, organization: ORG, membership: { organization: ORG, role: "admin" }, joined: true });
+    return jsonWithActiveOrg(res, {
+      ok: true,
+      organization: ORG,
+      organization_uuid: ORG.uuid,
+      membership: localMembership(),
+      memberships: [localMembership()],
+      joined: true,
+      is_member: true,
+    });
   }
   if (/^\/api\/organizations\/[^/]+$/.test(p)) {
-    return json(res, ORG);
+    return jsonWithActiveOrg(res, ORG);
   }
   if (/\/chat_conversations$/.test(p)) {
     if (method === "GET") return json(res, [...CONV_STATE.values()].map(convToRest));
@@ -968,10 +1180,24 @@ function mockApi(req, res, url) {
     return json(res, { is_pending: false, is_error: false });
   }
   if (/\/(usage|rate_limits|limits)/.test(p)) {
+    // 与 claude.ai 真实结构一致：限额面板读 five_hour/seven_day/extra_usage。
+    const windows = [
+      { window: "five_hour", threshold: 100, utilization: 0, status: "available", resets_at: null, resetsAt: null },
+      { window: "seven_day", threshold: 100, utilization: 0, status: "available", resets_at: null, resetsAt: null },
+      { window: "seven_day_cowork", threshold: 100, utilization: 0, status: "available", resets_at: null, resetsAt: null },
+    ];
     return json(res, {
       plan: "max",
       usage: { messages_used: 0, messages_limit: null },
       rate_limit: { allowed: true },
+      windows,
+      five_hour: { utilization: 0, resets_at: null },
+      seven_day: { utilization: 0, resets_at: null },
+      seven_day_oauth_apps: { utilization: 0, resets_at: null },
+      seven_day_opus: { utilization: 0, resets_at: null },
+      seven_day_cowork: { utilization: 0, resets_at: null },
+      extra_usage: { is_enabled: false, monthly_limit: null, used_credits: 0, utilization: 0, currency: "USD" },
+      iguana_necktie: null,
     });
   }
   if (/\/feature|flags|eligib/.test(p)) {
@@ -983,7 +1209,7 @@ function mockApi(req, res, url) {
 
 // ── 上游转发（带缓存） ───────────────────────────────────────
 function cachePathFor(keyStr) {
-  return path.join(CACHE_DIR, crypto.createHash("sha1").update(keyStr).digest("hex"));
+  return path.join(READ_CACHE, crypto.createHash("sha1").update(keyStr).digest("hex"));
 }
 
 function readBody(req, cb) {
@@ -991,6 +1217,81 @@ function readBody(req, cb) {
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => cb(Buffer.concat(chunks)));
   req.on("error", () => cb(Buffer.alloc(0)));
+}
+
+// 文档导航判定：GET + 无扩展名 + 显式要 HTML。/api|/v1|/edge-api 等接口路径在此前分支已返回。
+function isDocNav(req, url) {
+  return req.method === "GET" && !path.extname(url.pathname) &&
+    String(req.headers.accept || "").includes("text/html");
+}
+
+// 缓存里的真 SPA 外壳：>=4KB 的 200 HTML；登出落地页/重定向桩体（143B 等）一律不算。
+function readDocShell(host) {
+  for (const key of [`${host}/epitaxy`, `${host}/login`, `${host}/new`, `${host}/`]) {
+    const cp = cachePathFor(key);
+    try {
+      if (!fs.existsSync(cp) || !fs.existsSync(`${cp}.json`)) continue;
+      const meta = JSON.parse(fs.readFileSync(`${cp}.json`, "utf8"));
+      const body = fs.readFileSync(cp);
+      if (meta.status === 200 && body.length >= 4096) return body;
+    } catch { /* ignore corrupt entries */ }
+  }
+  return null;
+}
+
+// 文档导航的规范外壳兜底：优先回放缓存真壳；缺失时从上游抓一次 /epitaxy 写穿。
+// 绝不回放登出落地页桩体——那会让 SPA 永远卡在骨架屏。
+function serveDocShell(req, res, url) {
+  const host = url.host || "claude.ai";
+  const cached = readDocShell(host);
+  if (cached) {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": cached.length,
+      "cache-control": "no-store",
+    });
+    return res.end(cached);
+  }
+  const base = UPSTREAM_MAP[host] || `https://${host}`;
+  const target = new URL("/epitaxy", base);
+  const client = target.protocol === "http:" ? http : https;
+  const up = client.request(
+    {
+      hostname: target.hostname,
+      port: target.port || 443,
+      path: "/epitaxy",
+      method: "GET",
+      headers: { accept: "text/html", host, "user-agent": "Claude" },
+      timeout: 15000,
+    },
+    (r) => {
+      const chunks = [];
+      r.on("data", (c) => chunks.push(c));
+      r.on("end", () => {
+        const body = Buffer.concat(chunks);
+        if (r.statusCode === 200 && body.length >= 4096) {
+          const cp = cachePathFor(`${host}/epitaxy`);
+          fs.mkdirSync(path.dirname(cp), { recursive: true });
+          fs.writeFileSync(cp, body);
+          fs.writeFileSync(
+            `${cp}.json`,
+            JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, url: `${host}/epitaxy` }),
+          );
+        }
+        res.writeHead(r.statusCode || 502, {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": body.length,
+        });
+        res.end(body);
+      });
+    },
+  );
+  up.on("timeout", () => up.destroy(new Error("timeout")));
+  up.on("error", () => {
+    res.writeHead(502);
+    res.end("upstream shell unavailable\n");
+  });
+  up.end();
 }
 
 function forwardGateway(req, res, requestPath, raw) {
@@ -1022,20 +1323,28 @@ function forwardGateway(req, res, requestPath, raw) {
   up.end(body);
 }
 
+// 测试/运维可把某主机的上游重定向到本地 fixture；默认保留原始主机走 https。
+const UPSTREAM_MAP = (() => {
+  try { return JSON.parse(process.env.CLAUDE_LOCAL_UPSTREAM_MAP || "{}"); } catch { return {}; }
+})();
+
 function proxyUpstream(req, res, url) {
   const cacheKey = `${url.host}${url.pathname}${url.search}`;
   const cp = cachePathFor(cacheKey);
   const metaPath = `${cp}.json`;
 
-  const target = new URL(url.pathname + url.search, UPSTREAM);
-  const headers = { ...req.headers, host: target.host };
+  // 保留原始主机（downloads.claude.ai 等），不再统一改写到 claude.ai。
+  const base = UPSTREAM_MAP[url.host] || `https://${url.host || "claude.ai"}`;
+  const target = new URL(url.pathname + url.search, base);
+  const client = target.protocol === "http:" ? http : https;
+  const headers = { ...req.headers, host: url.host || target.host };
   delete headers["proxy-connection"];
   delete headers["accept-encoding"];
 
-  const upstreamReq = https.request(
+  const upstreamReq = client.request(
     {
       hostname: target.hostname,
-      port: 443,
+      port: target.port || 443,
       path: target.pathname + target.search,
       method: req.method,
       headers,
@@ -1047,25 +1356,42 @@ function proxyUpstream(req, res, url) {
       up.on("end", () => {
         const body = Buffer.concat(chunks);
         const ok = up.statusCode >= 200 && up.statusCode < 400;
-        if (ok && req.method === "GET" && !runtime.managed) {
+        // 文档路由不缓存桩体/落地页 HTML（登出页会让 SPA 卡骨架屏）
+        const docStub = isDocNav(req, url) && body.length < 4096;
+        if (ok && !docStub && req.method === "GET" && MODE !== "passthrough") {
+          fs.mkdirSync(path.dirname(cp), { recursive: true });
           fs.writeFileSync(cp, body);
           fs.writeFileSync(
             metaPath,
             JSON.stringify({ status: up.statusCode, headers: up.headers, url: cacheKey }),
           );
         }
-        res.writeHead(up.statusCode, { ...up.headers, "content-length": body.length });
+        // 去掉逐跳/编码头，避免与自算 content-length 冲突
+        const fwd = { ...up.headers };
+        delete fwd["transfer-encoding"];
+        delete fwd["connection"];
+        res.writeHead(up.statusCode, { ...fwd, "content-length": body.length });
         res.end(body);
       });
     },
   );
   upstreamReq.on("timeout", () => upstreamReq.destroy(new Error("upstream timeout")));
   upstreamReq.on("error", (err) => {
-    // 独立受管 profile 不回放历史缓存；静态回退只来自当前安装的官方资源包。
-    if (!runtime.managed && fs.existsSync(cp) && fs.existsSync(metaPath)) {
+    // 上游不可达时回放缓存副本（state 写穿缓存 / dev 录制缓存）。
+    if (fs.existsSync(cp) && fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
       const body = fs.readFileSync(cp);
-      res.writeHead(meta.status || 200, { ...meta.headers, "content-length": body.length });
+      const docStub = isDocNav(req, url) && (meta.status !== 200 || body.length < 4096);
+      if (docStub) {
+        // 桩体不落回客户端；真外壳兜底已在上层分支兜底
+        res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+        res.end("upstream unavailable (doc stub suppressed)\n");
+        return;
+      }
+      const fwd = { ...meta.headers };
+      delete fwd["transfer-encoding"];
+      delete fwd["connection"];
+      res.writeHead(meta.status || 200, { ...fwd, "content-length": body.length });
       res.end(body);
       log(`CACHE HIT ${url.pathname}`);
       return;
@@ -1132,7 +1458,7 @@ function handle(req, res, hostHeader) {
   }
 
   const officialResourcePath = (() => {
-    if (!runtime.managed || !["GET", "HEAD"].includes(req.method)) return null;
+    if (!dataManaged || !["GET", "HEAD"].includes(req.method)) return null;
     const mapI18nPath = (pathname) => {
       const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
       if (!match) return pathname;
@@ -1189,7 +1515,7 @@ function handle(req, res, hostHeader) {
 
   // Fresh受管profile直接使用安装包内同一版本的官方SPA和静态资源，不依赖旧HTML录制缓存。
   if (
-    runtime.managed &&
+    dataManaged &&
     MODE === "mock" &&
     isMainClaudeHost &&
     req.method === "GET" &&
@@ -1320,26 +1646,9 @@ function handle(req, res, hostHeader) {
         return readBody(req, (raw) => forwardGateway(req, res, url.pathname + url.search, raw));
       }
     }
-    const target = new URL(url.pathname + url.search, `https://${host}`);
-    const headers = { ...req.headers, host: target.host };
-    delete headers["proxy-connection"];
-    delete headers["accept-encoding"];
-    const up = https.request(
-      { hostname: target.hostname, port: 443, path: target.pathname + target.search, method: req.method, headers, timeout: 20000 },
-      (r) => {
-        const chunks = [];
-        r.on("data", (c) => chunks.push(c));
-        r.on("end", () => {
-          const body = Buffer.concat(chunks);
-          res.writeHead(r.statusCode, { ...r.headers, "content-length": body.length });
-          res.end(body);
-        });
-      },
-    );
-    up.on("timeout", () => up.destroy(new Error("timeout")));
-    up.on("error", (e) => { res.writeHead(502); res.end(String(e.message)); });
-    req.pipe(up);
-    return;
+    // 非主站域（downloads/assets-proxy 等）：统一走 proxyUpstream，
+    // 保留原始主机、写穿缓存、UPSTREAM_MAP 可重定向到本地 fixture。
+    return proxyUpstream(req, res, url);
   }
 
   if (url.pathname.startsWith("/edge-api/")) return mockEdgeApi(req, res, url);
@@ -1390,17 +1699,13 @@ function handle(req, res, hostHeader) {
   }
   if (MODE === "mock" && url.pathname === "/new") {
     const key = crypto.createHash("sha1").update("claude.ai/login").digest("hex");
-    const file = path.join(CACHE_DIR, key);
+    const file = path.join(READ_CACHE, key);
     if (fs.existsSync(file)) {
       const body = fs.readFileSync(file);
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "content-length": body.length,
-        "set-cookie": [
-          `org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
-          `active_org_uuid=${ORG.uuid}; Path=/; SameSite=Lax`,
-          `sessionKey=${ACCOUNT.uuid}-local-session; Path=/; HttpOnly; Secure; SameSite=None`,
-        ],
+        "set-cookie": activeOrgCookies(),
       });
       return res.end(body);
     }
@@ -1438,31 +1743,30 @@ function handle(req, res, hostHeader) {
   }
 
   // mock 模式：静态资源优先走本地缓存，避免被上游按地区 302
-  if (MODE !== "passthrough" && !runtime.managed && req.method === "GET") {
+  if (MODE !== "passthrough" && !dataManaged && req.method === "GET") {
     const key = `${host}${url.pathname}${url.search}`;
     const cp = cachePathFor(key);
+    const docNav = isDocNav(req, url);
     if (fs.existsSync(cp) && fs.existsSync(`${cp}.json`)) {
       const meta = JSON.parse(fs.readFileSync(`${cp}.json`, "utf8"));
       const body = fs.readFileSync(cp);
-      res.writeHead(meta.status && meta.status < 400 ? 200 : meta.status, {
-        ...meta.headers,
-        "content-length": body.length,
-        "cache-control": "no-store",
-      });
-      return res.end(body);
+      // 文档导航只允许真外壳通过；桩体/重定向（登出落地页）改走外壳兜底
+      if (!docNav || (meta.status === 200 && body.length >= 4096)) {
+        res.writeHead(meta.status && meta.status < 400 ? 200 : meta.status, {
+          ...meta.headers,
+          "content-length": body.length,
+          "cache-control": "no-store",
+        });
+        return res.end(body);
+      }
     }
+    if (docNav) return serveDocShell(req, res, url);
   }
 
   // mock 模式：接口路径回 {}，HTML 路由回 SPA 外壳
   if (MODE === "mock" && !path.extname(url.pathname)) {
     if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/v1/")) return json(res, {});
-    const shellKey = crypto.createHash("sha1").update("claude.ai/login").digest("hex");
-    const shell = path.join(CACHE_DIR, shellKey);
-    if (fs.existsSync(shell)) {
-      const body = fs.readFileSync(shell);
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": body.length });
-      return res.end(body);
-    }
+    return serveDocShell(req, res, url);
   }
   if (MODE === "passthrough" || MODE === "mock") return proxyUpstream(req, res, url);
   res.writeHead(404, { "content-type": "text/plain" });
