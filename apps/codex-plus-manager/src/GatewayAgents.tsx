@@ -2,7 +2,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -234,7 +234,7 @@ function AgentRow({
         className="gw-agent-row cx-row"
         data-clickable={connected}
         onClick={(event) => {
-          if (!connected || (event.target as HTMLElement).closest("button, a, input")) return;
+          if (!connected || !event.currentTarget.contains(event.target as HTMLElement) || (event.target as HTMLElement).closest("button, a, input")) return;
           onToggleExpand();
         }}
       >
@@ -540,9 +540,8 @@ function AgentDetail({
           {t("改动了")} <code>{agent.configPath ?? ""}</code>
         </span>
         <div className="gw-detail-value">
-          <button className="gw-text-button" onClick={() => void run(`reveal:${agent.agent}`, "reveal_gateway_agent_config", { agent: agent.agent }, t("查看"), true)} type="button">
-            {t("查看")}
-            <ChevronRight className="h-3.5 w-3.5" />
+          <button aria-label={t("在文件管理器中显示配置文件")} className="gw-icon-button" onClick={() => void run(`reveal:${agent.agent}`, "reveal_gateway_agent_config", { agent: agent.agent }, t("查看"), true)} title={t("在文件管理器中显示配置文件")} type="button">
+            <FolderOpen aria-hidden="true" className="h-4 w-4" />
           </button>
           <button className="gw-danger-link" disabled={busy !== null} onClick={onDisconnect} type="button">{t("断开并还原")}</button>
         </div>
@@ -740,8 +739,9 @@ export function ModelList({
   const listRef = useRef<HTMLDivElement>(null);
   const ownList = onPickOwn ? own : null;
   const sections = useMemo(() => {
-    const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup), ownPickerSection(ownList, query, avatarOf));
-    // 手输的模型 ID（custom）不属于哪一家，按供应商筛选时也留着。
+    const ownSection = ownPickerSection(ownList, query, avatarOf);
+    const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup, sectionOnly, Boolean(ownSection && (!sectionOnly || sectionOnly === "own"))), ownSection);
+    // custom 已在生成时限定目标供应商。
     if (sectionOnly) return all.filter((section) => section.key === sectionOnly || section.key === "custom");
     if (!favoritesOnly) return all;
     // 收藏的是池里的模型；Agent 自带的同名模型不算。
@@ -771,6 +771,7 @@ export function ModelList({
     [payload, exclude, skipGroup, ownList],
   );
   const total = sections.reduce((sum, section) => sum + section.items.length, 0);
+  const customCount = sections.find((section) => section.key === "custom")?.items.length ?? 0;
 
   // 排版：搜索 + 一排横向筛选在上；列表每个模型两行（模型名 / 供应商）；「默认」「断开」这类操作在底部。
   return (
@@ -779,7 +780,7 @@ export function ModelList({
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
           <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
-          <em>{tf("{0} 个", [total])}</em>
+          <em>{customCount ? tf("{0} 个自定义候选", [customCount]) : tf("{0} 个", [total])}</em>
         </label>
         <div className="gw-mp-filters">
           <button data-active={scope === "all"} onClick={() => { setScope("all"); setQuery(""); if (listRef.current) listRef.current.scrollTop = 0; }} type="button">{t("全部")}</button>
@@ -825,7 +826,7 @@ export function ModelList({
                 >
                   <span className="gw-mp-text">
                     <strong title={item.model}>{item.label}</strong>
-                    {item.custom ? <small>{t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
+                    {item.custom ? <small>{item.sub} · {t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
                   </span>
                   {item.direct ? (
                     <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>
@@ -1001,6 +1002,7 @@ function ModelPicker({
   return (
     <div className="gw-picker">
       <button aria-expanded={open} aria-haspopup="listbox" className="gw-picker-button" onClick={() => onOpenChange(!open)} ref={buttonRef} title={inactiveHint} type="button">
+        <span className="gw-picker-label">{t("默认模型")}</span>
         {showDefault || own ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
         <span title={own ? tf("{0} 自带的模型，直连 {1}，不经 Codex++", [agent.name, agent.ownModels?.vendor ?? ""]) : undefined}>
           {own ?? (showDefault ? t("默认") : display.title || t("选择模型"))}

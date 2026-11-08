@@ -59,8 +59,14 @@
 :root .shell .gw-agent > .gw-agent-row.cx-row {
   display: flex;
   min-height: 60px;
+  flex-wrap: wrap;
+  row-gap: 0;
   padding: 0 12px 0 0;
   border-bottom: 0;
+}
+
+:root .shell .gw-agent-row .cx-row-main {
+  min-width: 140px;
 }
 
 :root .shell .gw-agent > .gw-agent-row[data-clickable="true"] {
@@ -135,24 +141,35 @@
 }
 
 :root .shell .gw-agent-row .cx-row-controls {
+  min-width: 200px;
+  max-width: 100%;
+  flex: 0 1 auto;
   gap: 10px;
+  margin-left: auto;
 }
 
 /* 右侧默认模型下拉：不铺底，像 Cursor 行尾的下拉一样只显示文字和箭头。 */
 :root .shell .gw-agent-row .gw-picker {
   width: auto;
-  max-width: 280px;
+  max-width: 340px;
+  flex: 0 1 auto;
 }
 
 :root .shell .gw-agent-row .gw-picker-button {
   width: auto;
-  max-width: 280px;
+  max-width: 100%;
   height: 30px;
   padding: 0 8px 0 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   font-size: 13px;
+}
+
+:root .shell .gw-agent-row .gw-picker-button > .gw-picker-label {
+  overflow: visible;
+  flex: none;
+  color: hsl(var(--muted-foreground));
 }
 
 :root .shell .gw-agent-row .gw-picker-button:hover,
@@ -207,6 +224,7 @@
 /* 「高级」折叠区：一行小标题，点开是同样的标签 / 控件行。 */
 :root .shell .gw-detail-advanced > summary {
   display: flex;
+  position: relative;
   min-height: 40px;
   align-items: center;
   gap: 6px;
@@ -225,6 +243,9 @@
 }
 
 :root .shell .gw-detail-advanced > summary svg {
+  position: absolute;
+  right: 100%;
+  margin-right: 6px;
   transition: transform 0.15s ease;
 }
 
@@ -236,11 +257,16 @@
   border-top: 1px solid hsl(var(--cx-row-divider));
 }
 
+:root .shell .gw-agent .gw-detail-row.gw-detail-foot {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 :root .shell .gw-agent .gw-detail-foot .gw-detail-value {
   justify-content: flex-end;
 }
 
 :root .shell .gw-agent .gw-detail-file {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

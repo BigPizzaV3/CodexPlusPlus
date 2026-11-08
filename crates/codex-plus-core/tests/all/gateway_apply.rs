@@ -1,9 +1,9 @@
 //! 网关模式开启 / 关闭对 Agent 配置文件的改写与恢复，以及网关自己的供应商池、路由组。
 
 use codex_plus_core::gateway::apply::{
-    ApplyContext, GroupInput, ProviderInput, codex_importable, copy_claude_provider,
-    copy_codex_provider, create_provider, delete_group, delete_provider, disable_binding,
-    enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
+    ApplyContext, GroupInput, ProviderInput, codex_gateway_profile_on, codex_importable,
+    copy_claude_provider, copy_codex_provider, create_provider, delete_group, delete_provider,
+    disable_binding, enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
     reapply_if_port_changed, refresh_enabled, reorder_providers, save_group, set_provider_enabled,
     set_provider_metadata, set_provider_windows, update_provider,
 };
@@ -2138,6 +2138,217 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     let off = ProviderInput { strip_image_generation_tool: Some(false), ..input };
     update_provider(&store, &id, &off).unwrap();
     assert!(!relay(&store).strip_image_generation_tool);
+}
+
+#[test]
+fn codex_gateway_image_capability_keeps_gateway_transport_for_each_identity() {
+    let fixture = fixture(57379);
+    let ctx = &fixture.ctx;
+    let agent_binding = AgentBinding {
+        token: "cpx-gw-codex-image-test".into(),
+        ..binding()
+    };
+    let mut cases = vec![("auto without images", ctx.gateway.load().unwrap(), false)];
+    let (gateway, image_id) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Images".into(),
+            base_url: "https://images.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "gpt-image-2".into(),
+            model_list: "gpt-image-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let picked = format!("{image_id}/gpt-image-2");
+    cases.push(("auto with images", gateway.clone(), true));
+    for (name, choice, enabled, available) in [
+        ("selected", picked.as_str(), true, true),
+        ("off", "off", true, false),
+        ("missing", "gone/gpt-image-2", true, false),
+        ("disabled", picked.as_str(), false, false),
+    ] {
+        let mut configured = gateway.clone();
+        configured
+            .image_models
+            .insert("codex".into(), choice.into());
+        configured
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == image_id)
+            .unwrap()
+            .enabled = enabled;
+        cases.push((name, configured, available));
+    }
+
+    for (name, gateway, available) in cases {
+        for signed_in in [false, true] {
+            for wsl_host in [None, Some(std::net::Ipv4Addr::new(172, 29, 16, 1))] {
+                let profile = codex_gateway_profile_on(
+                    &gateway,
+                    &agent_binding,
+                    ctx.port,
+                    wsl_host,
+                    signed_in,
+                )
+                .unwrap();
+                let config: toml::Value = toml::from_str(&profile.config_contents).unwrap();
+                let provider = &config["model_providers"]["custom"];
+                let official = signed_in && wsl_host.is_none();
+                let host = wsl_host.map_or("127.0.0.1".into(), |address| address.to_string());
+                let endpoint = format!("http://{host}:{}/gw/codex/v1", ctx.port);
+                let actor = provider
+                    .get("http_headers")
+                    .and_then(|headers| headers.get("x-openai-actor-authorization"))
+                    .and_then(toml::Value::as_str);
+                let expected_actor =
+                    (available && !official).then_some("codex-plus-gateway-image-generation");
+                assert_eq!(
+                    actor, expected_actor,
+                    "{name}, signed_in={signed_in}, wsl={wsl_host:?}"
+                );
+                assert_eq!(profile.base_url, endpoint);
+                assert_eq!(provider["base_url"].as_str(), Some(endpoint.as_str()));
+                assert!(!profile.pure_api_image_generation);
+                assert_eq!(
+                    config["model_provider"].as_str(),
+                    Some(if official { "openai" } else { "custom" })
+                );
+                if !official {
+                    assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn codex_startup_upgrades_image_registration_without_a_port_change_or_resave() {
+    let fixture = fixture(57377);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let original = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();
+    let (_, image_id) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Images".into(),
+            base_url: "https://images.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "gpt-image-2".into(),
+            model_list: "gpt-image-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway.restore_on_exit = false;
+            gateway.image_models.insert("codex".into(), format!("{image_id}/gpt-image-2"));
+            Ok(())
+        })
+        .unwrap();
+    assert!(!codex_config(ctx).contains("x-openai-actor-authorization"));
+    assert_eq!(reapply_if_port_changed(ctx).unwrap(), 0);
+
+    assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    assert!(codex_config(ctx).contains("codex-plus-gateway-image-generation"));
+    assert!(codex_config(ctx).contains("http://127.0.0.1:57377/gw/codex/v1"));
+    let refreshed = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();
+    assert_eq!(refreshed.token, original.token);
+    assert_eq!(refreshed.restore, original.restore);
+    assert!(!codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+
+    ctx.gateway
+        .update(|gateway| {
+            gateway.image_models.insert("codex".into(), "off".into());
+            Ok(())
+        })
+        .unwrap();
+    assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    assert!(!codex_config(ctx).contains("x-openai-actor-authorization"));
+    assert!(!codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+}
+
+#[test]
+fn codex_gateway_image_selection_refreshes_the_final_live_provider() {
+    let fixture = fixture(57378);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    assert!(!codex_config(ctx).contains("x-openai-actor-authorization"));
+
+    let (_, image_id) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Images".into(),
+            base_url: "https://images.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "gpt-image-2".into(),
+            model_list: "gpt-image-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let picked = format!("{image_id}/gpt-image-2");
+    for (choice, enabled, available) in [
+        ("", true, true),
+        (picked.as_str(), true, true),
+        ("off", true, false),
+        ("gone/gpt-image-2", true, false),
+        (picked.as_str(), false, false),
+        (picked.as_str(), true, true),
+        ("off", true, false),
+    ] {
+        ctx.gateway
+            .update(|gateway| {
+                if choice.is_empty() {
+                    gateway.image_models.remove("codex");
+                } else {
+                    gateway.image_models.insert("codex".into(), choice.into());
+                }
+                gateway
+                    .providers
+                    .iter_mut()
+                    .find(|provider| provider.relay.id == image_id)
+                    .unwrap()
+                    .enabled = enabled;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+        let config: toml::Value = toml::from_str(&codex_config(ctx)).unwrap();
+        let provider = &config["model_providers"]["custom"];
+        let actor = provider
+            .get("http_headers")
+            .and_then(|headers| headers.get("x-openai-actor-authorization"))
+            .and_then(toml::Value::as_str);
+        assert_eq!(
+            actor,
+            available.then_some("codex-plus-gateway-image-generation"),
+            "choice={choice:?}, enabled={enabled}"
+        );
+        assert_eq!(
+            provider["base_url"].as_str(),
+            Some("http://127.0.0.1:57378/gw/codex/v1")
+        );
+        assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+        let settings = ctx.settings.load().unwrap();
+        assert!(!settings.active_relay_profile().pure_api_image_generation);
+    }
 }
 
 /// #2746：Codex 没登录 ChatGPT 时，托管网关供应商要和直连模式手加的纯 API 供应商一样

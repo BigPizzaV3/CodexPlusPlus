@@ -632,7 +632,7 @@ function matches(query: string, ...values: string[]): boolean {
 
 /**
  * 模型选择器的分组：每个能用的池内供应商一组列出它的模型，模型组（`group/<id>`）排在后面。
- * 查询词不是任何已知模型时，另给一组「自定义模型」：`<供应商 id>/<输入>`，直接发给那个供应商。
+ * 当前范围没有匹配项时，另给一组「自定义模型」：`<供应商 id>/<输入>`，直接发给那个供应商。
  * `skipGroup` 用来在编辑模型组时排除它自己。`avatar` 由调用方算（避免这里依赖界面工具函数）。
  */
 export function pickerSections(
@@ -641,6 +641,8 @@ export function pickerSections(
   avatar: (name: string) => string,
   exclude: string[] = [],
   skipGroup?: string,
+  sectionOnly: string | null = null,
+  hasOwnMatch = false,
 ): PickerSection[] {
   if (!payload) return [];
   const query = rawQuery.trim().toLowerCase();
@@ -653,7 +655,7 @@ export function pickerSections(
   for (const entry of providers) {
     const providerHit = matches(query, entry.name, entry.id);
     const items = entry.models
-      .filter((model) => providerHit || matches(query, model))
+      .filter((model) => providerHit || matches(query, model, `${entry.id}/${model}`))
       .flatMap((model) => {
         const groupDisabled = Boolean(disabledGroup(payload, model));
         const multi = servingProviders(payload, model, exclude).length > 1;
@@ -678,13 +680,20 @@ export function pickerSections(
     .map((group) => ({ model: groupModelId(group.id), label: group.name, sub: groupModelId(group.id), avatar: avatar(group.name) }));
   if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
   const typed = rawQuery.trim();
-  if (typed && !/\s/.test(typed) && !disabledGroup(payload, typed) && !modelRoutable(payload, typed, exclude)) {
+  const visible = sectionOnly ? sections.filter((section) => section.key === sectionOnly) : sections;
+  const qualified = qualifiedProvider(payload, typed, exclude);
+  const canOfferCustom = !sectionOnly || sectionOnly.startsWith("provider:");
+  if (typed && !/\s/.test(typed) && canOfferCustom && !disabledGroup(payload, typed) && !visible.length && !hasOwnMatch && (!modelRoutable(payload, typed, exclude) || qualified)) {
+    const targets = providers
+      .filter((entry) => (!sectionOnly || sectionOnly === `provider:${entry.id}`) && (!qualified || entry.id === qualified.entry.id))
+      .slice(0, 6);
+    if (!targets.length) return sections;
     sections.push({
       key: "custom",
       title: "自定义模型",
       avatar: "",
-      items: providers.slice(0, 6).map((entry) => ({
-        model: `${entry.id}/${typed}`,
+      items: targets.map((entry) => ({
+        model: qualified ? typed : `${entry.id}/${typed}`,
         label: typed,
         sub: maskAccountName(entry.name),
         avatar: avatar(entry.name),

@@ -375,7 +375,10 @@ pub fn codex_gateway_profile_on(
     crate::relay_config::normalize_relay_profile_for_storage(&mut profile)?;
     if !signed_in {
         // 归一化会把导入时的旧版供应商表换成 `custom`，声明要在它之后写上。
-        profile.config_contents = with_local_api_identity(&profile.config_contents)?;
+        profile.config_contents = with_local_api_identity(
+            &profile.config_contents,
+            crate::gateway::images::targets(gateway, &ToolId::Codex, None).is_ok(),
+        )?;
     }
     Ok(profile)
 }
@@ -383,7 +386,7 @@ pub fn codex_gateway_profile_on(
 /// 没登录 ChatGPT 时的托管供应商：显式写 `requires_openai_auth = false`，与直连模式手加的
 /// 纯 API 供应商一致。Codex 这时没有账号身份，原生 Fast 只认这个明确声明的本机 API 配置
 /// （见 [`crate::native_fast`]），缺这一行时 Fast 按钮整个不显示（#2746）。
-fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
+fn with_local_api_identity(contents: &str, image_generation: bool) -> anyhow::Result<String> {
     let mut doc = contents
         .parse::<toml_edit::DocumentMut>()
         .context("托管供应商配置不是合法 TOML")?;
@@ -399,6 +402,15 @@ fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
         .and_then(toml_edit::Item::as_table_mut)
         .context("托管供应商配置里没有传输供应商")?;
     table["requires_openai_auth"] = toml_edit::value(false);
+    if image_generation {
+        // 网关已经代理图片接口，不启用会把地址改到本地 helper 的直连生图开关。
+        let mut headers = toml_edit::InlineTable::new();
+        headers.insert(
+            crate::relay_config::PURE_API_IMAGE_GENERATION_HEADER,
+            "codex-plus-gateway-image-generation".into(),
+        );
+        table["http_headers"] = toml_edit::value(headers);
+    }
     Ok(doc.to_string())
 }
 
@@ -2009,8 +2021,8 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
             .unwrap_or(false)
 }
 
-/// Codex 开着网关时，托管供应商的会话身份要跟 Codex 的登录状态一致（登录了 ChatGPT 就保留官方身份）：
-/// 不一致（之后才登录 / 退出，或旧版写的）就重写一次。返回是否重写了。
+/// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
+/// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let gateway = ctx.gateway.load()?;
     let Some(binding) = gateway
@@ -2040,7 +2052,25 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let can_sign_in = codex_signed_in(&ctx.codex_home)
         || (crate::native_auth::selection_allows_auto_lend(&settings)
             && lendable_login(&gateway).is_some());
-    if keeps_login == can_sign_in {
+    let image_config_matches = if can_sign_in {
+        true
+    } else {
+        let config = std::fs::read_to_string(ctx.codex_home.join("config.toml"))?
+            .parse::<toml_edit::DocumentMut>()?;
+        let provider = config
+            .get("model_provider")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("openai");
+        let registered = config
+            .get("model_providers")
+            .and_then(|providers| providers.get(provider))
+            .and_then(|provider| provider.get("http_headers"))
+            .and_then(|headers| headers.get("x-openai-actor-authorization"))
+            .and_then(toml_edit::Item::as_str)
+            == Some("codex-plus-gateway-image-generation");
+        registered == crate::gateway::images::targets(&gateway, &ToolId::Codex, None).is_ok()
+    };
+    if keeps_login == can_sign_in && image_config_matches {
         return Ok(false);
     }
     write_codex(ctx, &gateway, &binding.clone())?;
