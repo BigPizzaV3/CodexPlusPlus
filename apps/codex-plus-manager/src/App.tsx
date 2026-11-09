@@ -16873,17 +16873,18 @@ function ClaudeLocalizationScreen(
       {!patchOnly ? <CxSection className="claude-local-settings" title={t("启动设置")}>
         <CxCard>
           <CxRow detail={t("从这里启动后生效；已打开的 Claude 需完全退出重开。")} title={t("启动模式")}>
-            <select
-              aria-label={t("启动模式")}
+            <AppSelect
+              ariaLabel={t("启动模式")}
               disabled={localDisabled || !local?.supported}
-              onChange={(event) => {
-                if (local) void configureLocal({ ...local.config, enabled: event.currentTarget.value === "full" });
+              onChange={(next) => {
+                if (local) void configureLocal({ ...local.config, enabled: next === "full" });
               }}
+              options={[
+                { value: "3p", label: t("3p 模式") },
+                { value: "full", label: t("完整功能模式") },
+              ]}
               value={local?.config.enabled ? "full" : "3p"}
-            >
-              <option value="3p">{t("3p 模式")}</option>
-              <option value="full">{t("完整功能模式")}</option>
-            </select>
+            />
           </CxRow>
           {/* 模型跟着「Agent 接入」里的 Claude Desktop 绑定走：这里只说明，不放第二个入口。 */}
           <CxRow detail={t("模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。")} title={t("默认模型")} />

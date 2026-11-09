@@ -82,7 +82,7 @@ function harness(
   };
   const context = vm.createContext({
     React: { Fragment: "Fragment", createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Plug", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight"].map((name) => [name, name])),
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Plug", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight", "AppSelect"].map((name) => [name, name])),
     // 页面骨架组件（cx-layout）按名字渲染成占位元素。
     AgentCx: new Proxy({}, { get: (_target, name) => String(name) }),
     t: (text: string) => text,
@@ -561,10 +561,10 @@ test("仅手动启动可选增强版时先制作副本；制作失败就不启�
 
 test("启动模式下拉独立保存 3p 与完整功能配置，两条原版启动均不制作副本", async () => {
   const screen = harness(undefined, {}, { openAdvanced: false });
-  const mode = () => findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!;
+  const mode = () => findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "启动模式")!;
   assert.equal(mode().props.value, "3p");
   assert.equal(inputs(screen.render()).some((item) => item.props["aria-label"] === "本地原生听写"), false);
-  mode().props.onChange({ currentTarget: { value: "full" } });
+  mode().props.onChange("full");
   assert.equal(screen.calls[0].command, "claude_local_configure");
   const fullConfig = (screen.calls[0].args[0] as { config: typeof localReady.config }).config;
   assert.deepEqual(structuredClone(fullConfig), { ...localReady.config, enabled: true });
@@ -577,7 +577,7 @@ test("启动模式下拉独立保存 3p 与完整功能配置，两条原版启�
   assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "launch" }));
   screen.calls[1].resolve({ ...localReady, config: fullConfig });
   await tick();
-  mode().props.onChange({ currentTarget: { value: "3p" } });
+  mode().props.onChange("3p");
   const threePConfig = (screen.calls[2].args[0] as { config: typeof localReady.config }).config;
   assert.equal(threePConfig.enabled, false);
   screen.calls[2].resolve({ ...localReady, config: threePConfig });
@@ -596,12 +596,12 @@ test("原版启动与模式保存失败保留配置，不自动回退增强副�
   await tick();
   assert.match(text(screen.render()), /本地服务启动失败/);
   assert.equal(screen.topbar()!.props.disabled, false);
-  const mode = findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!;
-  mode.props.onChange({ currentTarget: { value: "full" } });
+  const mode = findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "启动模式")!;
+  mode.props.onChange("full");
   screen.calls[1].reject(new Error("配置写入失败"));
   await tick();
   assert.match(text(screen.render()), /配置写入失败/);
-  assert.equal(findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!.props.value, "3p");
+  assert.equal(findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "启动模式")!.props.value, "3p");
   assert.equal(memo.status, localReady);
   assert.equal(screen.calls.some((call) => call.command.startsWith("claude_localization")), false);
 });
@@ -612,8 +612,8 @@ test("默认模型不在这一页选：只留一句说明，不放下拉也不�
     openAdvanced: false,
   });
   const page = screen.render();
-  assert.equal(findElements(page, "select").some((item) => item.props["aria-label"] === "Claude 默认模型"), false, "不再有默认模型下拉");
-  assert.equal(findElements(page, "select").some((item) => item.props["aria-label"] === "启动模式"), true, "启动模式那一行还在");
+  assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "Claude 默认模型"), false, "不再有默认模型下拉");
+  assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "启动模式"), true, "启动模式那一行还在");
   assert.match(text(page), /模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。/);
   assert.equal(buttons(page).some((button) => text(button).includes("去「Agent 接入」")), false, "不给跳转按钮");
   // 模型字段还留在配置类型里（后端旧值兜底），页面只是不再让人在这里改。
@@ -703,15 +703,15 @@ test("原版轮询的旧结果不能覆盖新配置，卸载后清理轮询", as
   assert.equal(screen.timerCount(), 1);
   screen.runTimer();
   assert.equal(screen.calls[0].command, "claude_local_status");
-  const mode = findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!;
-  mode.props.onChange({ currentTarget: { value: "3p" } });
+  const mode = findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "启动模式")!;
+  mode.props.onChange("3p");
   screen.render();
   const config = (screen.calls[1].args[0] as { config: typeof saved.config }).config;
   screen.calls[1].resolve({ ...saved, config });
   await tick(); screen.render();
   screen.calls[0].resolve(saved);
   await tick();
-  assert.equal(findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "启动模式")!.props.value, "3p");
+  assert.equal(findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "启动模式")!.props.value, "3p");
   assert.equal(screen.timerCount(), 1);
   screen.runTimer();
   screen.unmount();
