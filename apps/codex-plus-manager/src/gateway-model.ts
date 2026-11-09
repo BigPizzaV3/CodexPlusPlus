@@ -58,6 +58,8 @@ export type GatewaySettings = {
   imageKeepUrls?: string[];
   /** 模型下拉里不列自带模型的 Agent（默认都列）。 */
   hideOwnModels?: string[];
+  /** 子智能体按 Codex 实际请求的模型发送，不继承父回合身份（默认关）。 */
+  subagentModelFollowRequest?: boolean;
 };
 
 export type GatewayPoolEntry = {

@@ -10860,9 +10860,11 @@ const IMAGE_DATA_URL_PREFIX: &str = "data:image/";
 /// 这些上游只接受**纯 base64**，不认 `data:image/png;base64,` 前缀，收到就 400
 /// （issue #2031：GLM-5.3-Flash 的本地图片被拒）。只对这类供应商剥离前缀，
 /// 标准 data URL 上游（OpenAI 等）保持原样，免得把能用的改坏。
+/// 带命名空间的模型名（如 NVIDIA 的 `z-ai/glm-5.3-flash`、OpenRouter 的 `*/glm-*`）
+/// 是聚合平台的标准 OpenAI 兼容接口，`image_url.url` 必须保留 data URL（#2991）。
 fn upstream_needs_bare_base64(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.starts_with("glm-") || model.starts_with("zhipu") || model.contains("/glm-")
+    model.starts_with("glm-") || model.starts_with("zhipu")
 }
 
 /// 就地改写 messages 里 `image_url` 的 url：对需要纯 base64 的模型剥掉 data URL 前缀。
