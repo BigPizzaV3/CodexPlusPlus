@@ -2829,7 +2829,8 @@ fn injection_script_heartbeat_syncs_backend_settings() {
     // 心跳在健康时顺带刷新后端设置，让 manager 侧的改动能传播到已运行窗口（issue #2221）。
     assert!(script.contains("function syncBackendSettingsFromHeartbeat"));
     assert!(script.contains("syncBackendSettingsInFlight"));
-    assert!(script.contains("void syncBackendSettingsFromHeartbeat();"));
+    assert!(script.contains("void syncBackendSettingsFromHeartbeat().then((loaded) =>"));
+    assert!(script.contains("if (loaded && codexPlusBackendGeneration === window.__codexPlusBackendGeneration)"));
     // 跟着设置走的功能由内置拓展订阅 settings/loaded（对话宽度开关变了就重算宽度）。
     // 心跳还带上变了的设置字段名，并比较供应商发 relayProfile/switched、modelCatalog/changed。
     assert!(script.contains("emitCodexPlusSettingsLoaded(\"heartbeat\", "));
@@ -3373,7 +3374,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"33\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"36\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3386,7 +3387,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("modelWhitelistUnlock"));
     assert!(!script.contains("|| settingsResp.relayProfiles[0]"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
-    assert!(script.contains("codexPlusModelListRequestIds.size === 0"));
+    assert!(script.contains("codexPlusModelListRequests.has(requestId)"));
     assert!(!script.contains("function patchReactModelState"));
     assert!(!script.contains("function patchObjectGraphForModels"));
     assert!(!script.contains("window.dispatchEvent = function patchedCodexPlusDispatchEvent"));
@@ -3429,6 +3430,7 @@ const modelReasoningEfforts = () => [];
 const applyCodexPlusModelMetadata = () => false;
 const codexPlusModelNames = () => ["supplier-default", "extra-model"];
 let relayMode = "official";
+const window = {{}};
 const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode }});
 const codexPlusModelUnlockEnabled = () => true;
 const codexPlusBackendSettingsLoaded = true;

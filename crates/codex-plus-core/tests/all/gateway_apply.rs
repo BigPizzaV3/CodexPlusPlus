@@ -1970,6 +1970,707 @@ fn codex_catalog(ctx: &ApplyContext) -> Value {
 }
 
 #[test]
+fn gateway_catalog_includes_declared_models_with_provider_metadata() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57389);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Other".into(),
+            model: "other-model".into(),
+            model_list: "other-model".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &id,
+        &json!({
+            "claude-opus-5-5": {
+                "display_name": "Private Claude",
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+                "default_reasoning_level": "high",
+                "service_tiers": [{"id": "priority"}]
+            },
+            "unlisted-chat": {
+                "supported_reasoning_levels": [{"effort": "low"}],
+                "default_reasoning_level": "low"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Daily".into(),
+            members: vec![GroupMember {
+                model: format!("{id}/claude-opus-5-5"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let declared = format!("{id}/claude-opus-5-5");
+    let alias = format!("{id}/deepseek-v4-flash");
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: format!("{declared}[96K]"),
+            extra_models: vec![
+                alias.clone(),
+                "DEEPSEEK-V4-FLASH".into(),
+                "group/DAILY".into(),
+                "unlisted-chat[64K]".into(),
+            ],
+            context_window: Some(128_000),
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let catalog = codex_catalog(ctx);
+    let models = catalog["models"].as_array().unwrap();
+    let entry = |slug: &str| {
+        models
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{catalog}"))
+    };
+    assert_eq!(models[0]["slug"], declared);
+    assert_eq!(entry(&declared)["codex_plus_group_id"], id);
+    assert_eq!(entry(&declared)["display_name"], "Private Claude");
+    assert_eq!(entry(&declared)["default_reasoning_level"], "high");
+    assert_eq!(entry(&declared)["service_tiers"][0]["id"], "priority");
+    assert_eq!(entry(&declared)["context_window"], 96_000);
+    assert_eq!(entry(&alias)["codex_plus_group_id"], id);
+    assert!(entry("unlisted-chat")["codex_plus_group_id"].is_null());
+    assert_eq!(entry("unlisted-chat")["default_reasoning_level"], "low");
+    assert_eq!(entry("unlisted-chat")["context_window"], 64_000);
+    assert_eq!(entry("group/daily")["display_name"], "Daily");
+    assert_eq!(entry("group/daily")["default_reasoning_level"], "high");
+    assert_eq!(
+        models
+            .iter()
+            .filter(|entry| {
+                entry["slug"]
+                    .as_str()
+                    .unwrap()
+                    .eq_ignore_ascii_case("deepseek-v4-flash")
+            })
+            .count(),
+        1
+    );
+    let groups: Vec<&str> = models
+        .iter()
+        .filter_map(|entry| entry["codex_plus_group_id"].as_str())
+        .collect();
+    let mut blocks = groups.clone();
+    blocks.dedup();
+    let unique: std::collections::HashSet<_> = groups.into_iter().collect();
+    assert_eq!(blocks.len(), unique.len(), "同一供应商的模型不能分成几块");
+    let gateway = ctx.gateway.load().unwrap();
+    let binding = gateway.binding(&ToolId::Codex).unwrap();
+    let expected: Vec<_> = codex_plus_core::gateway::route::codex_binding_models(&gateway, binding);
+    assert_eq!(
+        codex_plus_core::gateway::server::exposed_models(&gateway, &ToolId::Codex),
+        expected
+    );
+}
+
+#[test]
+fn gateway_declared_fallback_keeps_member_search_tool_restrictions() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57386);
+    let ctx = &fixture.ctx;
+    let first = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let (_, second) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Kimi".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "kimi-k3".into(),
+            model_list: "kimi-k3".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Fallback".into(),
+            members: vec![
+                GroupMember {
+                    model: format!("{first}/deepseek-v4-pro"),
+                    weight: 1,
+                },
+                GroupMember {
+                    model: format!("{second}/kimi-k3"),
+                    weight: 1,
+                },
+            ],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let profile = codex_plus_core::gateway::apply::codex_gateway_profile(
+        &gateway,
+        &AgentBinding {
+            model: format!("group/{group}"),
+            extra_models: vec!["unlisted-chat".into()],
+            token: "test-gateway-catalog-token".into(),
+            ..AgentBinding::default()
+        },
+        ctx.port,
+        false,
+    )
+    .unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    assert!(metadata["unlisted-chat"]["codex_plus_group_id"].is_null());
+    assert!(metadata["unlisted-chat"]["codex_plus_group"].is_null());
+    assert_eq!(metadata["unlisted-chat"]["supports_search_tool"], false);
+}
+
+#[test]
+fn gateway_declared_fallback_keeps_model_capability_restrictions() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57380);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let first = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let (_, second) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Other".into(),
+            model: "other-model".into(),
+            model_list: "other-model".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &first,
+        &json!({
+            "unlisted-chat": {"supports_search_tool": true, "input_modalities": ["text", "image"]},
+            "restricted-chat": {"supports_search_tool": false, "input_modalities": ["text"]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &second,
+        &json!({
+            "unlisted-chat": {"supports_search_tool": false, "input_modalities": ["text"]},
+            "restricted-chat": {"supports_search_tool": true, "input_modalities": ["text", "image"]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Fallback".into(),
+            members: vec![
+                GroupMember { model: format!("{first}/deepseek-v4-pro"), weight: 1 },
+                GroupMember { model: format!("{second}/other-model"), weight: 1 },
+            ],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: format!("group/{group}"),
+            extra_models: vec!["unlisted-chat".into(), "restricted-chat".into()],
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let binding = gateway.binding(&ToolId::Codex).unwrap();
+    assert_eq!(
+        codex_plus_core::gateway::route::model_entry_members(&gateway, binding, &format!("group/{group}")).len(),
+        2
+    );
+    let catalog = codex_catalog(ctx);
+    for slug in ["unlisted-chat", "restricted-chat"] {
+        let entry = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .unwrap();
+        assert_eq!(entry["supports_search_tool"], false, "{entry}");
+        assert_eq!(entry["input_modalities"], json!(["text"]), "{entry}");
+        assert!(entry["codex_plus_group_id"].is_null(), "{entry}");
+        assert!(entry["codex_plus_group"].is_null(), "{entry}");
+    }
+}
+
+#[test]
+fn gateway_catalog_tracks_disabled_auto_groups_for_declared_and_default_models() {
+    use codex_plus_core::gateway::apply::set_auto_group_enabled;
+
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57381);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Other".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: "deepseek-v4-pro".into(),
+            extra_models: vec!["deepseek-v4-flash".into()],
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let check = |enabled: bool| {
+        let catalog = codex_catalog(ctx);
+        let gateway = ctx.gateway.load().unwrap();
+        let binding = gateway.binding(&ToolId::Codex).unwrap();
+        for slug in ["deepseek-v4-pro", "deepseek-v4-flash"] {
+            let entry = catalog["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["slug"] == slug)
+                .unwrap();
+            assert_eq!(
+                codex_plus_core::gateway::route::model_entry_members(&gateway, binding, slug).len(),
+                2
+            );
+            if enabled {
+                assert_eq!(entry["codex_plus_group"], "自动组");
+                assert_eq!(entry["codex_plus_group_id"], "codex-plus-gateway-auto");
+            } else {
+                assert!(entry["codex_plus_group"].is_null(), "{entry}");
+                assert!(entry["codex_plus_group_id"].is_null(), "{entry}");
+                assert!(!entry["display_name"].as_str().unwrap().contains("（自动）"));
+            }
+        }
+    };
+    check(true);
+    for slug in ["deepseek-v4-pro", "deepseek-v4-flash"] {
+        set_auto_group_enabled(&ctx.gateway, slug, false).unwrap();
+    }
+    refresh_enabled(ctx).unwrap();
+    check(false);
+    for slug in ["deepseek-v4-pro", "deepseek-v4-flash"] {
+        set_auto_group_enabled(&ctx.gateway, slug, true).unwrap();
+    }
+    refresh_enabled(ctx).unwrap();
+    check(true);
+    ctx.gateway.update(|gateway| {
+        gateway.auto_models = false;
+        Ok(())
+    }).unwrap();
+    refresh_enabled(ctx).unwrap();
+    check(false);
+}
+
+#[test]
+fn gateway_catalog_recognizes_uppercase_group_prefix() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57382);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Kimi".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            protocol: RelayProtocol::Responses,
+            model: "kimi-k3".into(),
+            model_list: "kimi-k3".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Daily".into(),
+            members: vec![GroupMember { model: "kimi-k3".into(), weight: 1 }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let slug = format!("GROUP/{}", group.to_ascii_uppercase());
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: slug.clone(),
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let catalog = codex_catalog(ctx);
+    let entry = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["slug"] == slug)
+        .unwrap();
+    assert_eq!(entry["display_name"], "Daily");
+    assert_eq!(entry["description"], "Daily · 模型组");
+    assert_eq!(entry["codex_plus_group_id"], "codex-plus-gateway-groups");
+    assert_eq!(entry["supports_search_tool"], false);
+}
+
+#[test]
+fn gateway_catalog_refresh_follows_model_sync_and_pool_changes() {
+    use codex_plus_core::gateway::model_sync::{set_provider_models, sync_upstream_models};
+
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57388);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let first = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let (_, second) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Mirror".into(),
+            model_list: "deepseek-v4-pro\nmirror-only".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let entries = || codex_catalog(ctx)["models"].as_array().unwrap().clone();
+    assert!(
+        entries()
+            .iter()
+            .any(|entry| entry["codex_plus_group"] == "自动组")
+    );
+    sync_upstream_models(
+        &ctx.gateway,
+        &second,
+        &[
+            "deepseek-v4-pro".into(),
+            "mirror-only".into(),
+            "synced-model".into(),
+        ],
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &second,
+        &json!({
+            "synced-model": {
+                "supported_reasoning_levels": [{"effort": "low"}],
+                "default_reasoning_level": "low"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    set_provider_windows(
+        &ctx.gateway,
+        &second,
+        [("synced-model".into(), 96_000)].into(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+    let models = entries();
+    let synced = models
+        .iter()
+        .find(|entry| entry["slug"] == "synced-model")
+        .unwrap();
+    assert_eq!(synced["codex_plus_group_id"], second);
+    assert_eq!(synced["default_reasoning_level"], "low");
+    assert_eq!(synced["context_window"], 96_000);
+
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Synced".into(),
+            members: vec![GroupMember {
+                model: format!("{second}/synced-*"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let models = entries();
+    let grouped = models
+        .iter()
+        .find(|entry| entry["slug"] == format!("group/{group}"))
+        .unwrap();
+    assert_eq!(grouped["display_name"], "Synced");
+    assert_eq!(grouped["default_reasoning_level"], "low");
+    assert_eq!(grouped["context_window"], 96_000);
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: group.clone(),
+            name: "Renamed".into(),
+            members: vec![GroupMember {
+                model: format!("{first}/deepseek-v4-flash"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(
+        entries().iter().any(|entry| {
+            entry["slug"] == format!("group/{group}") && entry["display_name"] == "Renamed"
+        })
+    );
+    delete_group(&ctx.gateway, &group).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(
+        !entries()
+            .iter()
+            .any(|entry| entry["slug"] == format!("group/{group}"))
+    );
+
+    set_provider_models(&ctx.gateway, &second, &["mirror-only".into()], None).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(!entries().iter().any(|entry| entry["slug"] == "synced-model"));
+    assert!(
+        !entries()
+            .iter()
+            .any(|entry| entry["slug"] == format!("{second}/deepseek-v4-pro"))
+    );
+    assert!(entries().iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    set_provider_enabled(&ctx.gateway, &second, false).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(!entries().iter().any(|entry| entry["slug"] == "mirror-only"));
+    set_provider_enabled(&ctx.gateway, &second, true).unwrap();
+    ctx.gateway
+        .update(|gateway| {
+            gateway
+                .bindings
+                .get_mut("codex")
+                .unwrap()
+                .pool_exclude
+                .push(second.clone());
+            Ok(())
+        })
+        .unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(
+        !entries()
+            .iter()
+            .any(|entry| entry["codex_plus_group_id"] == second)
+    );
+}
+
+#[test]
+fn codex_gateway_directory_snapshot_matches_published_catalog_without_connection_settings() {
+    use codex_plus_core::gateway::apply::{codex_gateway_model_catalog, codex_gateway_profile};
+    use codex_plus_core::gateway::model_sync::set_provider_models;
+
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57389);
+    let ctx = &fixture.ctx;
+    let provider_id = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    set_provider_models(
+        &ctx.gateway,
+        &provider_id,
+        &["deepseek-v4-pro".into(), "new-model".into()],
+        None,
+    )
+    .unwrap();
+    let (_, group_id) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Shared models".into(),
+            members: vec![GroupMember {
+                model: format!("{provider_id}/new-model"),
+                weight: 1,
+            }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let mut binding = binding();
+    binding.token = "test-private-token".into();
+    let snapshot = codex_gateway_model_catalog(&gateway, &binding);
+    let profile = codex_gateway_profile(&gateway, &binding, ctx.port, false).unwrap();
+
+    let (normalized_models, windows) =
+        codex_plus_core::model_suffix::migrate_model_list_with_suffixes(&snapshot.model_list);
+    assert_eq!(normalized_models, profile.model_list);
+    assert_eq!(
+        serde_json::to_value(windows).unwrap(),
+        serde_json::from_str::<Value>(&profile.model_windows).unwrap()
+    );
+    assert_eq!(snapshot.model_metadata, profile.model_metadata);
+    assert!(snapshot.model_list.contains("new-model"));
+    assert!(snapshot.model_list.contains(&format!("group/{group_id}")));
+    assert!(!snapshot.model_list.contains(&binding.token));
+    assert!(!snapshot.model_metadata.contains(&binding.token));
+    assert!(!snapshot.model_metadata.contains("api.deepseek.test"));
+
+    binding.token = "rotated-test-token".into();
+    assert_eq!(snapshot, codex_gateway_model_catalog(&gateway, &binding));
+
+    set_provider_windows(
+        &ctx.gateway,
+        &provider_id,
+        [("new-model".into(), 96_000)].into(),
+        None,
+    )
+    .unwrap();
+    let updated = codex_gateway_model_catalog(&ctx.gateway.load().unwrap(), &binding);
+    let (_, updated_windows) =
+        codex_plus_core::model_suffix::migrate_model_list_with_suffixes(&updated.model_list);
+    assert_eq!(updated_windows.get("new-model").map(String::as_str), Some("96000"));
+    assert_ne!(snapshot, updated);
+}
+
+#[test]
+fn gateway_catalog_refresh_keeps_provider_models_when_group_hides_shared_member() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57387);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let first = ctx.gateway.load().unwrap().providers[0].relay.id.clone();
+    let (_, second) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Mirror".into(),
+            model_list: "deepseek-v4-pro\nmirror-only".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    enable_binding(
+        ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: "deepseek-v4-flash".into(),
+            ..binding()
+        },
+    )
+    .unwrap();
+    let (_, group) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Shared".into(),
+            members: vec![GroupMember {
+                model: "deepseek-v4-pro".into(),
+                weight: 1,
+            }],
+            hide_members: true,
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    for provider in [&first, &second] {
+        let slug = format!("{provider}/deepseek-v4-pro");
+        let entry = entries.iter().find(|entry| entry["slug"] == slug).unwrap();
+        assert_eq!(entry["codex_plus_group_id"], provider.as_str());
+    }
+    assert!(!entries.iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    assert!(entries.iter().any(|entry| entry["slug"] == format!("group/{group}")));
+
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: group.clone(),
+            name: "Shared".into(),
+            members: vec![GroupMember {
+                model: "deepseek-v4-pro".into(),
+                weight: 1,
+            }],
+            hide_members: false,
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entries = catalog["models"].as_array().unwrap();
+    assert!(entries.iter().any(|entry| entry["slug"] == "deepseek-v4-pro"));
+    for provider in [&first, &second] {
+        let slug = format!("{provider}/deepseek-v4-pro");
+        assert!(entries.iter().any(|entry| entry["slug"] == slug));
+    }
+}
+
+#[test]
 fn context_windows_follow_each_model_in_the_pool() {
     let fixture = fixture(57396);
     let ctx = &fixture.ctx;
