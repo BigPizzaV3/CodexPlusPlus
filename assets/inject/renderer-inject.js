@@ -13001,7 +13001,7 @@
     state.signature = "";
     state.catalogRetryAt = 0;
     if (options.sourceChanged) codexPlusModelPickerPersist();
-    if (!state.disposed) codexPlusModelPickerSchedule(0);
+    if (!state.disposed && state.timer) codexPlusModelPickerSchedule(0);
   }
 
   function codexPlusModelPickerText() {

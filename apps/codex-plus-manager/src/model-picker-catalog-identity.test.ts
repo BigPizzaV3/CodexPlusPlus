@@ -402,6 +402,25 @@ it("remembered ownership is discarded when its catalog source changes", () => {
   assert.equal(r.state.providerNames.size, 0, "a different source cannot inherit cached ownership");
 });
 
+it("catalog changes only reschedule an already active picker", () => {
+  const changed = source.match(/^  function codexPlusModelPickerCatalogChanged\([^]*?^  \}/m)?.[0];
+  assert.ok(changed);
+  const state = { disposed: false, timer: 0 };
+  const delays: number[] = [];
+  const notify = new Function("codexPlusModelPickerGroupsState", "codexPlusModelPickerSchedule",
+    "codexPlusModelPickerPersist", `${changed}\nreturn codexPlusModelPickerCatalogChanged;`)
+    (state, (delay: number) => delays.push(delay), () => {});
+
+  notify();
+  assert.deepEqual(delays, [], "catalog loading must not start the picker");
+  state.timer = 1;
+  notify();
+  assert.deepEqual(delays, [0], "an active picker refreshes immediately");
+  state.disposed = true;
+  notify();
+  assert.deepEqual(delays, [0], "a disposed picker stays stopped");
+});
+
 it("persisted ownership is read only for its matching initialized source", () => {
   const storeSource = source.match(/^  function codexPlusModelPickerStore\([^]*?^  \}/m)?.[0];
   assert.ok(storeSource);
