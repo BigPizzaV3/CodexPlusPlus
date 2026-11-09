@@ -184,8 +184,13 @@ export function modelWindow(config, model) {
 export function modelSelectors(config, selected = config.model) {
   const model = gatewayModel(config, selected);
   const thinking = { type: "effort", effort: "medium" };
+  // Code / Cowork 等页面的模型选择器读的是这里，不是 /v1/models：名称与副标题同样用友好名。
   const models = config.models.map((id) => ({
-    id, name: id, short_name: id, description: "", section: "main",
+    id,
+    name: config.modelNames?.[id]?.name || id,
+    short_name: config.modelNames?.[id]?.name || id,
+    description: config.modelNames?.[id]?.description || "",
+    section: "main",
     disabled: false, disabled_reason: null,
     hard_limit: modelWindow(config, id),
     context_window: modelWindow(config, id),

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { decode, get, asMsg, asStr, ld, vi } from "./rpc.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
-import { createStateStore, gatewayModel, gatewayTarget, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayModel, gatewayTarget, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
@@ -605,4 +605,20 @@ test("runtime config parses model names and bad data falls back", () => {
   assert.equal(ok.modelNames["jojo/gpt-6.1-sol"].name, "gpt-6.1-sol");
   assert.deepEqual(runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: "not json" }).modelNames, {});
   assert.deepEqual(runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: '{"a/b":{"name":5}}' }).modelNames, {});
+});
+
+test("model selectors use friendly names and fall back to ids", () => {
+  const config = runtimeConfig({
+    CLAUDE_LOCAL_GATEWAY_MODEL: "jojo/gpt-6.1-sol",
+    CLAUDE_LOCAL_GATEWAY_MODELS: '["jojo/gpt-6.1-sol","other/raw-model"]',
+    CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: '{"jojo/gpt-6.1-sol":{"name":"gpt-6.1-sol","description":"Jojo Codemax"}}',
+  });
+  const models = modelSelectors(config).model_selector_config[0].models;
+  const named = models.find((model) => model.id === "jojo/gpt-6.1-sol");
+  assert.equal(named.name, "gpt-6.1-sol");
+  assert.equal(named.short_name, "gpt-6.1-sol");
+  assert.equal(named.description, "Jojo Codemax");
+  const raw = models.find((model) => model.id === "other/raw-model");
+  assert.equal(raw.name, "other/raw-model");
+  assert.equal(raw.description, "");
 });
