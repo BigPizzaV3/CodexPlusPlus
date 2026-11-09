@@ -3041,9 +3041,10 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains(
         "? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : \"\")"
     ));
-    // 删除是内置拓展注册的行内会话行操作：点击时按当下的行重新解析会话（临时 id 不删）。
+    // 正式会话按当下的行解析；临时 id 走原生 pending 清理，不发送到持久会话删除接口。
     assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
-    assert!(script.contains("会话仍在同步，请稍后重试"));
+    assert!(script.contains("return deleteUncreatedSession(row, button);"));
+    assert!(script.contains("function uncreatedSessionActionFromRow(row)"));
     assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
 
     let cases = run_session_ref_contract_harness();
