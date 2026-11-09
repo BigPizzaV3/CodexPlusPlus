@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1042
+      "lines": 1045
     },
     {
       "name": "31-config-read-deadline.js",
@@ -148,7 +148,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 523
+      "lines": 552
     },
     {
       "name": "92-extension-host.js",

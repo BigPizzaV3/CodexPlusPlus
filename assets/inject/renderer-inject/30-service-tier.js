@@ -202,8 +202,11 @@
       const status = read?.thread?.status?.type;
       if (!["idle", "notLoaded", "active"].includes(status)) {
         fallbackReason = "thread_state_unavailable";
-      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
-        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      } else if (status !== "notLoaded") {
+        if (read.thread.modelProvider !== target) {
+          throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+        }
+        return params;
       }
     }
     const config = { ...(params.config || {}) };

@@ -19,6 +19,12 @@ function runtime() {
   };
   const acknowledgements = new Map<string, () => void>();
   class MessagePort {
+    listeners: any[] = [];
+    addEventListener(type: string, listener: any, options: any) {
+      assert.equal(type, "message");
+      assert.equal(options.capture, true);
+      this.listeners.push(listener);
+    }
     postMessage(frame: Frame) {
       sent.push(frame);
       if (frame[0] === "push") acknowledgements.get(frame[1][2][0])?.();
@@ -45,8 +51,10 @@ function runtime() {
   const create = new Function("window", "codexPlusExtensionListeners", "codexPlusExtensionInterceptors",
     "codexPlusRunWaterfall", "codexPlusMarkExtensionFailure", "showToast", "codexPerModelContextEnabled",
     "prepareCodexThreadContextStart", "codexPlusAppServerClient", "refreshCodexThreadModelBeforeTurn",
+    "runCodexPlusExtensionCallback",
     `${source}\nreturn { decode: codexPlusRpcDecode, install: installCodexPlusRpcFrameInterceptor };`);
-  const api = create(window, new Map(), interceptors, (_name: string, value: any) => state.chain(value),
+  const listeners = new Map();
+  const api = create(window, listeners, interceptors, (_name: string, value: any) => state.chain(value),
     (_key: string, message: string) => failures.push(message), (message: string) => toasts.push(message),
     () => state.enabled,
     async (method: string, params: any, hostId: string) => {
@@ -66,7 +74,7 @@ function runtime() {
       await sendRequest("thread/resume", { threadId: params.threadId, excludeTurns: true }, { timeoutMs: 5000 });
       await sendRequest("thread/unsubscribe", { threadId: params.threadId }, { timeoutMs: 5000 });
       await sendRequest("thread/resume", { threadId: params.threadId, config: { model_context_window: 262144 } });
-    });
+    }, (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }));
   const settle = async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -75,7 +83,7 @@ function runtime() {
     target.postMessage(["push", ["pipeline", receiver, ["subscribe"], [{
       type: "notification", key: { hostId }, methods: [["turn/completed"]], listener: ["export", -3],
     }]]]);
-  return { api, window, port, sent, calls, state, toasts, failures, interceptors, subscribe, settle };
+  return { api, window, port, sent, calls, state, toasts, failures, listeners, interceptors, subscribe, settle };
 }
 
 function startFrame(receiver = -19): Frame {
@@ -193,9 +201,63 @@ describe("runtime context through host RPC", () => {
     const later: Frame = ["push", ["pipeline", -19, ["markRead"], ["thread"]]];
     env.port.postMessage(later);
     await env.settle();
-    assert.deepEqual(env.sent[1], ["push", ["pipeline", -19, ["__codexPlusContextRefreshFailed"], []]]);
-    assert.equal(env.sent[2], later);
+    assert.deepEqual(env.sent[1], ["push", ["pipeline", -19, ["startConversation"],
+      [...startFrame()[1][3], ["promise", -0.5]]]]);
+    assert.deepEqual(env.sent[2], ["reject", -0.5, ["error", "Error", "catalog unreadable"]]);
+    assert.equal(env.sent[3], later);
     assert.deepEqual(env.toasts, ["catalog unreadable"]);
+  });
+
+  it("rejects raw create calls with their original errors and preserves callback exports", async () => {
+    for (const method of ["thread/start", "thread/fork"]) {
+      const env = runtime();
+      env.subscribe("local");
+      env.state.startFailure = "catalog unreadable";
+      const args = [method, { model: "supplier/model", callback: ["export", -8] }, { onSettled: ["export", -9] }];
+      env.port.postMessage(["push", ["pipeline", -19, ["sendRequest"], args]]);
+      await env.settle();
+      assert.deepEqual(env.sent[1], ["push", ["pipeline", -19, ["sendRequest"], [...args, ["promise", -0.5]]]]);
+      assert.deepEqual(env.sent[2], ["reject", -0.5, ["error", "Error", "catalog unreadable"]]);
+    }
+  });
+
+  it("consumes only its synthetic promise releases and continues numbering across failures", async () => {
+    const env = runtime();
+    env.subscribe("local");
+    env.state.startFailure = "catalog unreadable";
+    env.port.postMessage(startFrame());
+    await env.settle();
+    const stop = { count: 0 };
+    for (const id of [-5, -0.5, -0.5]) {
+      env.port.listeners[0]({ data: ["release", id, 1], stopImmediatePropagation() { stop.count++; } });
+    }
+    assert.equal(stop.count, 1);
+    env.port.postMessage(startFrame());
+    await env.settle();
+    assert.deepEqual(env.sent.at(-1), ["reject", -1.5, ["error", "Error", "catalog unreadable"]]);
+    assert.equal(env.port.listeners.length, 1);
+  });
+
+  it("preserves extension rejection reasons without preparing context", async () => {
+    const env = runtime();
+    env.subscribe("local");
+    env.state.startFailure = "context must not run";
+    env.listeners.set("agent/pre-step", new Set([{ scriptKey: "fixture",
+      handler: () => ({ kind: "reject", reason: "blocked by extension" }) }]));
+    env.port.postMessage(startFrame());
+    await env.settle();
+    assert.deepEqual(env.sent[2], ["reject", -0.5, ["error", "Error", "blocked by extension"]]);
+    assert.deepEqual(env.toasts, ["blocked by extension"]);
+    assert.deepEqual(env.calls, []);
+  });
+
+  it("upgrades an older interceptor without wrapping it", () => {
+    const env = runtime();
+    const original = env.window.__codexPlusRpcFrameInterceptor.original;
+    env.window.__codexPlusRpcFrameInterceptor.version = 3;
+    env.api.install();
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 4);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
   });
 
   it("skips remote, unknown, steer-only and disabled context turns synchronously", () => {

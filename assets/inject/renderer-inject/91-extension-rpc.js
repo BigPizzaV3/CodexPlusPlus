@@ -21,11 +21,13 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 3;
+  const codexPlusRpcInterceptorVersion = 4;
   const codexPlusRpcMiddlewareTimeoutMs = 5000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
+  const codexPlusRpcPushFailure = Symbol("codexPlusRpcPushFailure");
   const codexPlusRpcPortQueues = new WeakMap();
+  const codexPlusRpcRejectionPorts = window.__codexPlusRpcRejectionPorts ||= new WeakMap();
   const codexPlusRpcTurnCache = new Map();
   const codexPlusRpcTurnCacheLimit = 64;
   const codexPlusRpcHostReceivers = window.__codexPlusRpcHostReceivers
@@ -248,6 +250,12 @@
     } catch {}
   }
 
+  function codexPlusRpcRejectPush(frame, reason) {
+    const rejected = [...frame];
+    rejected[codexPlusRpcPushFailure] = ["error", "Error", reason];
+    return rejected;
+  }
+
   /**
    * 处理一轮对话的参数（就地改 decoded 里的对象）。
    * carriers：[{ method, params, conversationId }]，第一个用来取 input；settings 是本轮的模型设置
@@ -298,7 +306,7 @@
         return ["push", [...nextExpr.slice(0, 3), [method, codexPlusRpcEncode(params), ...nextArgs.slice(2)],
           ...nextExpr.slice(4)], ...nextFrame.slice(2)];
       };
-      plan.contextFailure = () => ["push", ["pipeline", expr[1], ["__codexPlusContextRefreshFailed"], []], ...frame.slice(2)];
+      plan.contextFailure = (reason) => codexPlusRpcRejectPush(frame, reason);
     }
     return plan;
   }
@@ -319,8 +327,7 @@
       });
       if (outcome.reject) {
         codexPlusRpcRejectNotice(outcome.reject);
-        // push 帧不能丢（会打乱 import id），改成调一个不存在的方法，让这次调用以错误结束。
-        return ["push", ["pipeline", expr[1], ["__codexPlusRejectedByExtension"], []], ...frame.slice(2)];
+        return codexPlusRpcRejectPush(frame, outcome.reject);
       }
       return ["push", [...expr.slice(0, 3), [codexPlusRpcEncode(params), ...args.slice(1)], ...expr.slice(4)], ...frame.slice(2)];
     };
@@ -333,7 +340,7 @@
         return ["push", [...nextExpr.slice(0, 3), [codexPlusRpcEncode(params), ...nextArgs.slice(1)],
           ...nextExpr.slice(4)], ...nextFrame.slice(2)];
       };
-      plan.contextFailure = () => ["push", ["pipeline", expr[1], ["__codexPlusContextRefreshFailed"], []], ...frame.slice(2)];
+      plan.contextFailure = (reason) => codexPlusRpcRejectPush(frame, reason);
     }
     return plan;
   }
@@ -440,7 +447,7 @@
     } finally {
       clearTimeout(timer);
     }
-    if (!plan.context) return replaced;
+    if (!plan.context || replaced?.[codexPlusRpcPushFailure]) return replaced;
     try {
       return await plan.context(replaced || frame);
     } catch (error) {
@@ -461,7 +468,29 @@
         const [message, rest, plan] = entry;
         const replaced = plan ? await codexPlusRpcRunPlan(plan, message) : null;
         try {
-          original.call(port, replaced || message, ...rest);
+          const failure = replaced?.[codexPlusRpcPushFailure];
+          if (failure) {
+            let rejections = codexPlusRpcRejectionPorts.get(port);
+            if (!rejections) {
+              rejections = { nextId: -0.5, pending: new Set() };
+              codexPlusRpcRejectionPorts.set(port, rejections);
+              port.addEventListener("message", (event) => {
+                if (event.data?.[0] === "release" && rejections.pending.delete(event.data[1])) {
+                  event.stopImmediatePropagation();
+                }
+              }, { capture: true });
+            }
+            // 原生 export id 是整数；附加 promise 使用独立编号，release 由本层消费。
+            // 保留原参数中的全部 export；Capnweb 等参数 promise 拒绝后不会调用后端方法。
+            const id = rejections.nextId--;
+            rejections.pending.add(id);
+            const expr = replaced[1];
+            original.call(port, ["push", [...expr.slice(0, 3), [...expr[3], ["promise", id]],
+              ...expr.slice(4)], ...replaced.slice(2)], ...rest);
+            original.call(port, ["reject", id, failure]);
+          } else {
+            original.call(port, replaced || message, ...rest);
+          }
         } catch (error) {
           // 已经是异步发送，异常没法还给调用方；记下来，后面的帧照常发。
           codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`);

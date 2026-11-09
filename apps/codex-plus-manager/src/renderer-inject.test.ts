@@ -4606,8 +4606,13 @@ describe("extension rpc frame interception", () => {
     const sent: Frame[] = [];
     const toasts: string[] = [];
     const failures: string[] = [];
-    class MessagePort {}
-    (MessagePort.prototype as any).postMessage = function (message: Frame) { sent.push(message); };
+    class MessagePort {
+      postMessage(message: Frame) { sent.push(message); }
+      addEventListener(type: string, _listener: unknown, options: { capture: boolean }) {
+        assert.equal(type, "message");
+        assert.equal(options.capture, true);
+      }
+    }
     const window: Record<string, unknown> = { MessagePort };
     const listeners = new Map<string, Set<{ handler: Handler; scriptKey: string }>>();
     const interceptors = new Map<string, Array<{ handler: Handler; scriptKey: string; order: number; seq: number }>>();
@@ -4787,7 +4792,10 @@ describe("extension rpc frame interception", () => {
     env.on("agent/pre-step", async () => ({ kind: "reject" }));
     env.port.postMessage(["push", ["pipeline", -188, ["startConversation"], [{ input: [[{ ...userText }]] }, {}]]]);
     await env.settle();
-    assert.deepEqual(env.sent[0], ["push", ["pipeline", -188, ["__codexPlusRejectedByExtension"], []]]);
+    assert.deepEqual(env.sent, [
+      ["push", ["pipeline", -188, ["startConversation"], [{ input: [[{ ...userText }]] }, {}, ["promise", -0.5]]]],
+      ["reject", -0.5, ["error", "Error", "已被拓展拦截"]],
+    ]);
   });
 
   it("routes manager sendRequest calls through codex/request", async () => {
