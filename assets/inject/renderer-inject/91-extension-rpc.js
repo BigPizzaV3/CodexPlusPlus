@@ -21,13 +21,14 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 4;
+  const codexPlusRpcInterceptorVersion = 7;
   const codexPlusRpcMiddlewareTimeoutMs = 5000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
   const codexPlusRpcPushFailure = Symbol("codexPlusRpcPushFailure");
   const codexPlusRpcPortQueues = new WeakMap();
   const codexPlusRpcRejectionPorts = window.__codexPlusRpcRejectionPorts ||= new WeakMap();
+  const codexPlusRpcCreationFailures = window.__codexPlusRpcCreationFailures ||= new WeakMap();
   const codexPlusRpcTurnCache = new Map();
   const codexPlusRpcTurnCacheLimit = 64;
   const codexPlusRpcHostReceivers = window.__codexPlusRpcHostReceivers
@@ -457,6 +458,39 @@
     }
   }
 
+  function codexPlusRpcIncomingFrame(port, incoming) {
+    const creation = codexPlusRpcCreationFailures.get(port);
+    const rejections = codexPlusRpcRejectionPorts.get(port);
+    if (!creation && !rejections) return incoming;
+    if (incoming === null) {
+      creation?.callbacks.clear();
+      return incoming;
+    }
+    if (incoming?.[0] === "release") {
+      creation?.callbacks.delete(incoming[1]);
+      if (rejections?.pending.delete(incoming[1])) {
+        // 未知 import 的 resolve 是协议空操作；正半整数不属于任何原生或本层编号。
+        return ["resolve", 0.5, ["undefined"]];
+      }
+    }
+    const expr = incoming?.[1];
+    if (!creation || incoming?.[0] !== "push" || expr?.[0] !== "pipeline"
+        || expr[2]?.length !== 0 || !Array.isArray(expr[3])) return incoming;
+    const failures = creation.callbacks.get(expr[1]);
+    const messageId = expr[3][0]?.clientUserMessageId;
+    const error = failures?.get(messageId);
+    if (!error) return incoming;
+    failures.delete(messageId);
+    if (!failures.size) creation.callbacks.delete(expr[1]);
+    const id = creation.nextId--;
+    creation.pending.add(id);
+    const transformed = ["push", [...expr.slice(0, 3), [...expr[3], ["promise", id]], ...expr.slice(4)], ...incoming.slice(2)];
+    queueMicrotask(() => port.dispatchEvent(new MessageEvent("message", {
+      data: ["reject", id, error],
+    })));
+    return transformed;
+  }
+
   /** 某个端口开始等中间件：之后的帧全部排队，按原顺序逐个处理、发出。 */
   async function codexPlusRpcDrainPort(port, original, first) {
     let finish;
@@ -469,16 +503,23 @@
         const replaced = plan ? await codexPlusRpcRunPlan(plan, message) : null;
         try {
           const failure = replaced?.[codexPlusRpcPushFailure];
-          if (failure) {
+          const readInputs = failure && replaced[1][2][0] === "startConversation"
+            && replaced[1][3][1]?.readThreadCreationInputs;
+          if (readInputs?.[0] === "export" && typeof readInputs[1] === "number") {
+            let creation = codexPlusRpcCreationFailures.get(port);
+            if (!creation) {
+              creation = { nextId: -0.5, pending: new Set(), callbacks: new Map() };
+              codexPlusRpcCreationFailures.set(port, creation);
+            }
+            let failures = creation.callbacks.get(readInputs[1]);
+            if (!failures) creation.callbacks.set(readInputs[1], failures = new Map());
+            failures.set(replaced[1][3][0].clientUserMessageId, failure);
+            original.call(port, [...replaced], ...rest);
+          } else if (failure) {
             let rejections = codexPlusRpcRejectionPorts.get(port);
             if (!rejections) {
               rejections = { nextId: -0.5, pending: new Set() };
               codexPlusRpcRejectionPorts.set(port, rejections);
-              port.addEventListener("message", (event) => {
-                if (event.data?.[0] === "release" && rejections.pending.delete(event.data[1])) {
-                  event.stopImmediatePropagation();
-                }
-              }, { capture: true });
             }
             // 原生 export id 是整数；附加 promise 使用独立编号，release 由本层消费。
             // 保留原参数中的全部 export；Capnweb 等参数 promise 拒绝后不会调用后端方法。
@@ -516,7 +557,29 @@
     if (installed?.version >= codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) return true;
     // 重复注入时包原生的那个，不叠层。
     const original = installed?.original || proto.postMessage;
+    window.__codexPlusRpcIncomingFrame = codexPlusRpcIncomingFrame;
+    const eventProto = window.MessageEvent?.prototype;
+    if (eventProto && !window.__codexPlusRpcMessageData) {
+      const descriptor = Object.getOwnPropertyDescriptor(eventProto, "data");
+      if (descriptor?.get) {
+        const events = new WeakMap();
+        Object.defineProperty(eventProto, "data", {
+          ...descriptor,
+          get() {
+            if (events.has(this)) return events.get(this);
+            const data = descriptor.get.call(this);
+            const transformed = window.__codexPlusRpcIncomingFrame(this.currentTarget, data);
+            if (transformed !== data) events.set(this, transformed);
+            return transformed;
+          },
+        });
+        window.__codexPlusRpcMessageData = true;
+      }
+    }
     const patched = function codexPlusRpcPostMessage(message, ...rest) {
+      if (message?.[0] === "release" && codexPlusRpcCreationFailures.get(this)?.pending.delete(message[1])) {
+        return undefined;
+      }
       const state = codexPlusRpcPortQueues.get(this);
       let plan = null;
       try {

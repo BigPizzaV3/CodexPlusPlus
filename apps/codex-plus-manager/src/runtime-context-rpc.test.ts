@@ -7,6 +7,7 @@ type Frame = any[];
 
 function runtime() {
   const sent: Frame[] = [];
+  const received: Frame[] = [];
   const calls: any[] = [];
   const toasts: string[] = [];
   const failures: string[] = [];
@@ -18,6 +19,9 @@ function runtime() {
     chain: async (value: any) => value,
   };
   const acknowledgements = new Map<string, () => void>();
+  class PortMessageEvent extends MessageEvent<any> {
+    get data() { return super.data; }
+  }
   class MessagePort {
     listeners: any[] = [];
     addEventListener(type: string, listener: any, options: any) {
@@ -29,8 +33,14 @@ function runtime() {
       sent.push(frame);
       if (frame[0] === "push") acknowledgements.get(frame[1][2][0])?.();
     }
+    dispatchEvent(event: MessageEvent) {
+      Object.defineProperty(event, "currentTarget", { value: this });
+      for (const listener of this.listeners) listener(event);
+      received.push(event.data);
+      return true;
+    }
   }
-  const window = { MessagePort } as any;
+  const window = { MessagePort, MessageEvent: PortMessageEvent } as any;
   const port = new MessagePort();
   const client = {
     async sendRequest(method: string, params: any, options: any) {
@@ -83,7 +93,7 @@ function runtime() {
     target.postMessage(["push", ["pipeline", receiver, ["subscribe"], [{
       type: "notification", key: { hostId }, methods: [["turn/completed"]], listener: ["export", -3],
     }]]]);
-  return { api, window, port, sent, calls, state, toasts, failures, listeners, interceptors, subscribe, settle };
+  return { api, window, port, sent, received, calls, state, toasts, failures, listeners, interceptors, subscribe, settle };
 }
 
 function startFrame(receiver = -19): Frame {
@@ -221,21 +231,86 @@ describe("runtime context through host RPC", () => {
     }
   });
 
+  it("rejects the native creation-input callback without changing the original start push", async () => {
+    const env = runtime();
+    env.subscribe("local");
+    env.state.startFailure = "catalog unreadable";
+    const frame = startFrame();
+    frame[1][3][1].readThreadCreationInputs = ["export", -8];
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.deepEqual(env.sent[1], frame);
+    assert.equal(env.sent.length, 2);
+    const callback: Frame = ["push", ["pipeline", -8, [], [{
+      clientUserMessageId: "message", config: { original: true }, nested: ["export", -17],
+    }, "full"]]];
+    const originalArgs = [...callback[1][3]];
+    env.port.dispatchEvent(new env.window.MessageEvent("message", { data: callback }));
+    await env.settle();
+    assert.deepEqual(env.received, [
+      ["push", ["pipeline", -8, [], [...originalArgs, ["promise", -0.5]]]],
+      ["reject", -0.5, ["error", "Error", "catalog unreadable"]],
+    ]);
+    env.port.postMessage(["release", -0.5, 1]);
+    assert.equal(env.sent.length, 2);
+    env.port.postMessage(["release", -17, 1]);
+    assert.deepEqual(env.sent.at(-1), ["release", -17, 1]);
+    const creation = env.window.__codexPlusRpcCreationFailures.get(env.port);
+    assert.equal(creation.pending.size, 0);
+    assert.equal(creation.callbacks.size, 0);
+  });
+
+  it("matches creation failures by port, callback export and client message", async () => {
+    const env = runtime();
+    env.subscribe("local");
+    env.state.startFailure = "catalog unreadable";
+    const frame = startFrame();
+    frame[1][3][1].readThreadCreationInputs = ["export", -8];
+    env.port.postMessage(frame);
+    await env.settle();
+    const unrelated: Frame = ["push", ["pipeline", -8, [], [{ clientUserMessageId: "other" }, "full"]]];
+    env.port.dispatchEvent(new env.window.MessageEvent("message", { data: unrelated }));
+    assert.deepEqual(unrelated[1][3], [{ clientUserMessageId: "other" }, "full"]);
+    const otherPort = new env.window.MessagePort();
+    const other: Frame = ["push", ["pipeline", -8, [], [{ clientUserMessageId: "message" }, "full"]]];
+    otherPort.dispatchEvent(new env.window.MessageEvent("message", { data: other }));
+    assert.deepEqual(other[1][3], [{ clientUserMessageId: "message" }, "full"]);
+    env.api.install();
+    env.port.dispatchEvent(new env.window.MessageEvent("message", { data: ["release", -8, 1] }));
+    assert.equal(env.window.__codexPlusRpcCreationFailures.get(env.port).callbacks.size, 0);
+    assert.equal(env.port.listeners.length, 0);
+  });
+
+  it("returns untouched data for events without port state and unrelated frames on a tracked port", async () => {
+    const env = runtime();
+    const data = { marker: "other event" };
+    assert.equal(new env.window.MessageEvent("message", { data }).data, data);
+    const other = new env.window.MessagePort();
+    other.dispatchEvent(new env.window.MessageEvent("message", { data }));
+    assert.equal(env.received.at(-1), data);
+    env.subscribe("local");
+    env.state.startFailure = "catalog unreadable";
+    env.port.postMessage(startFrame());
+    await env.settle();
+    const frame: Frame = ["resolve", 19, { value: "original" }];
+    env.port.dispatchEvent(new env.window.MessageEvent("message", { data: frame }));
+    assert.equal(env.received.at(-1), frame);
+  });
+
   it("consumes only its synthetic promise releases and continues numbering across failures", async () => {
     const env = runtime();
     env.subscribe("local");
     env.state.startFailure = "catalog unreadable";
     env.port.postMessage(startFrame());
     await env.settle();
-    const stop = { count: 0 };
     for (const id of [-5, -0.5, -0.5]) {
-      env.port.listeners[0]({ data: ["release", id, 1], stopImmediatePropagation() { stop.count++; } });
+      env.port.dispatchEvent(new env.window.MessageEvent("message", { data: ["release", id, 1] }));
     }
-    assert.equal(stop.count, 1);
+    assert.deepEqual(env.received, [["release", -5, 1], ["resolve", 0.5, ["undefined"]], ["release", -0.5, 1]]);
     env.port.postMessage(startFrame());
     await env.settle();
     assert.deepEqual(env.sent.at(-1), ["reject", -1.5, ["error", "Error", "catalog unreadable"]]);
-    assert.equal(env.port.listeners.length, 1);
+    assert.equal(env.port.listeners.length, 0);
   });
 
   it("preserves extension rejection reasons without preparing context", async () => {
@@ -254,9 +329,9 @@ describe("runtime context through host RPC", () => {
   it("upgrades an older interceptor without wrapping it", () => {
     const env = runtime();
     const original = env.window.__codexPlusRpcFrameInterceptor.original;
-    env.window.__codexPlusRpcFrameInterceptor.version = 3;
+    env.window.__codexPlusRpcFrameInterceptor.version = 6;
     env.api.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 4);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 7);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
   });
 

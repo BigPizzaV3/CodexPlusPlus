@@ -4606,14 +4606,13 @@ describe("extension rpc frame interception", () => {
     const sent: Frame[] = [];
     const toasts: string[] = [];
     const failures: string[] = [];
-    class MessagePort {
-      postMessage(message: Frame) { sent.push(message); }
-      addEventListener(type: string, _listener: unknown, options: { capture: boolean }) {
-        assert.equal(type, "message");
-        assert.equal(options.capture, true);
-      }
+    class PortMessageEvent extends MessageEvent<any> {
+      get data() { return super.data; }
     }
-    const window: Record<string, unknown> = { MessagePort };
+    class MessagePort extends EventTarget {
+      postMessage(message: Frame) { sent.push(message); }
+    }
+    const window: Record<string, unknown> = { MessagePort, MessageEvent: PortMessageEvent };
     const listeners = new Map<string, Set<{ handler: Handler; scriptKey: string }>>();
     const interceptors = new Map<string, Array<{ handler: Handler; scriptKey: string; order: number; seq: number }>>();
     const api = new Function("window", "codexPlusExtensionListeners", "codexPlusExtensionInterceptors",
@@ -4640,7 +4639,7 @@ describe("extension rpc frame interception", () => {
     const intercept = (name: string, handler: Handler) => {
       interceptors.set(name, [...(interceptors.get(name) || []), { handler, scriptKey: "probe", order: 0, seq: ++seq }]);
     };
-    const port = new MessagePort() as { postMessage: (frame: Frame) => void };
+    const port = new MessagePort();
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
     return { api, window, sent, toasts, failures, on, intercept, port, settle };
   }
@@ -4796,6 +4795,32 @@ describe("extension rpc frame interception", () => {
       ["push", ["pipeline", -188, ["startConversation"], [{ input: [[{ ...userText }]] }, {}, ["promise", -0.5]]]],
       ["reject", -0.5, ["error", "Error", "已被拓展拦截"]],
     ]);
+  });
+
+  it("rejects native creation inputs at data consumption while leaving the host callback arguments intact", async () => {
+    const env = await runtime();
+    const received: Frame[] = [];
+    env.port.addEventListener("message", (event) => received.push((event as MessageEvent).data));
+    env.on("agent/pre-step", () => ({ kind: "reject", reason: "blocked by policy" }));
+    const callbacks = { readThreadCreationInputs: ["export", -688], onSettled: ["export", -689] };
+    const frame: Frame = ["push", ["pipeline", -188, ["startConversation"], [{
+      input: [[{ ...userText }]], clientUserMessageId: "blocked",
+    }, callbacks]]];
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.deepEqual(env.sent, [frame]);
+    const EventClass = env.window.MessageEvent as typeof MessageEvent;
+    env.port.dispatchEvent(new EventClass("message", {
+      data: ["push", ["pipeline", -688, [], [{ clientUserMessageId: "blocked" }, "full"]]],
+    }));
+    await env.settle();
+    assert.deepEqual(received, [
+      ["push", ["pipeline", -688, [], [{ clientUserMessageId: "blocked" }, "full", ["promise", -0.5]]]],
+      ["reject", -0.5, ["error", "Error", "blocked by policy"]],
+    ]);
+    const rpc = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-rpc.js", import.meta.url), "utf8");
+    assert.match(rpc, /codexPlusRpcInterceptorVersion = 7;/);
+    assert.doesNotMatch(rpc, /codexPlusRpcPlanResume|prepareCodexThreadProviderResume|codexPlusRpcResumeGates/);
   });
 
   it("routes manager sendRequest calls through codex/request", async () => {

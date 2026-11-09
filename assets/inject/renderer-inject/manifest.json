@@ -148,7 +148,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 552
+      "lines": 615
     },
     {
       "name": "92-extension-host.js",
