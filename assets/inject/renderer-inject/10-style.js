@@ -514,6 +514,11 @@
         letter-spacing: -0.15px;
         white-space: nowrap;
       }
+      ${codexPlusIsWindowsPlatform ? "" : `
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *) {
+        z-index: 2147483645 !important;
+      }
+      `}
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),
@@ -1833,12 +1838,12 @@
   function syncCodexPlusPagePopupStyle(open) {
     const id = `${styleId}-page-popups`;
     const existing = document.getElementById(id);
-    if (!open) {
+    if (!codexPlusIsWindowsPlatform || !open) {
       existing?.remove();
       return;
     }
     if (existing) return;
-    // 仅在管理页打开时提升原生弹层的直接定位容器。即使根条件不命中，
+    // Windows 仅在管理页打开时提升原生弹层的直接定位容器。即使根条件不命中，
     // 常驻的 :has() 仍会增加聊天 DOM 变化时的样式失效开销。
     const style = document.createElement("style");
     style.id = id;

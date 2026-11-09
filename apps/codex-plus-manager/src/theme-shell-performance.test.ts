@@ -4,7 +4,7 @@ import { it } from "node:test";
 
 const asset = (name: string) => readFile(new URL(`../../../assets/inject/${name}`, import.meta.url), "utf8");
 
-for (const platform of ["windows", "macos"]) {
+for (const platform of ["windows"]) {
   it(`${platform}: removes stylesheet :has() dependencies from base and community themes`, async () => {
     const renderer = await asset(`upstream/dream-skin/${platform}/renderer-inject.js`);
     const css = [
@@ -30,8 +30,6 @@ it("keeps the popup parent rule installed only while the manager page is open", 
     assert.ok(match, name);
     return match[0];
   };
-  assert.doesNotMatch(extract(styleSource, "installStyle"), /div:has\(/,
-    "manager popup parent rule must not remain in the always-installed sheet");
   let open = false;
   let writes = 0;
   type StyleNode = { id: string; textContent: string; setAttribute(): void; remove(): void };
@@ -53,6 +51,7 @@ it("keeps the popup parent rule installed only while the manager page is open", 
   };
   const sync = new Function("document", `
     const styleId = "codex-delete-style";
+    const codexPlusIsWindowsPlatform = true;
     const codexPlusPageClass = "codex-plus-page-overlay";
     const codexPlusRailSelector = "nav[data-app-navigation-rail]";
     const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
@@ -75,4 +74,23 @@ it("keeps the popup parent rule installed only while the manager page is open", 
   open = true;
   sync();
   assert.equal(nodes.size, 1, "reopening restores popup stacking");
+});
+
+it("keeps the original popup stylesheet behavior on non-Windows platforms", async () => {
+  const source = await asset("renderer-inject/10-style.js");
+  const install = source.match(/^  function installStyle\([^]*?^  \}/m)![0];
+  const names = [...new Set(["styleId", "codexDeleteStyleVersion",
+    ...Array.from(install.matchAll(/\$\{([A-Za-z_$][A-Za-z0-9_$]*)/g), m => m[1])])];
+  for (const windows of [false, true]) {
+    let text = "";
+    const document = {
+      getElementById: () => null,
+      createElement: () => ({id: "", dataset: {}, textContent: ""}),
+      documentElement: {appendChild: (style: {textContent: string}) => {text = style.textContent;}},
+    };
+    new Function("document", ...names, `${install}\ninstallStyle();`)(document,
+      ...names.map(name => name === "codexPlusIsWindowsPlatform" ? windows : name === "selectors" ? {} : name));
+    assert.equal(text.includes("div:has("), !windows,
+      "only Windows should stop installing the persistent parent rule");
+  }
 });

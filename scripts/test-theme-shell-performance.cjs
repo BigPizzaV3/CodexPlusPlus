@@ -23,7 +23,7 @@ async function run() {
     page.on("pageerror", error => errors.push(error.message));
     // 只使用仓库自带资源，不访问个人会话或网络。
     const artwork = "data:image/png;base64," + fs.readFileSync(path.join(root, "assets/inject/dream-skin-default.png")).toString("base64");
-    for (const platform of ["windows", "macos"]) {
+    for (const platform of ["windows"]) {
       const css = [asset(`upstream/dream-skin/${platform}/dream-skin.css`),
         asset("dream-skin-native-shell-compat.css"), asset("dream-skin-community-compat.css")].join("\n");
       let runtime = asset(`upstream/dream-skin/${platform}/renderer-inject.js`);
@@ -132,13 +132,14 @@ async function run() {
       await state("win32", false);
       assert.deepEqual(await margins(), ["8px", "4px"]);
     }
-    console.log("Windows alignment: old/new structures, disabled theme and macOS passed");
+    console.log("Windows alignment: old/new structures, disabled theme and non-Windows isolation passed");
 
     const styles = asset("renderer-inject/10-style.js");
     const pages = asset("renderer-inject/40-backend-settings.js");
     await page.setContent('<div id="outside"><div role="menu"></div></div><div class="codex-plus-page-overlay"><div id="inside"><div role="menu"></div></div></div>');
     await page.evaluate(`(() => {
       const styleId = "codex-delete-style";
+      const codexPlusIsWindowsPlatform = true;
       const codexPlusPageClass = "codex-plus-page-overlay";
       const codexPlusRailSelector = "nav[data-app-navigation-rail]";
       const codexPlusRailDestinationSelector = "[data-sidebar-destination]";

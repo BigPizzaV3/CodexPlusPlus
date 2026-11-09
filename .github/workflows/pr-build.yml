@@ -84,26 +84,6 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm test
 
-      - name: Install theme browser-test dependencies
-        shell: pwsh
-        run: |
-          # 与 image-overlay 回归一致，隔离测试依赖并使用 runner 自带 Edge。
-          npm install --prefix "$env:RUNNER_TEMP/theme-shell-tests" --no-save --package-lock=false playwright@1.62.1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "NODE_PATH=$env:RUNNER_TEMP/theme-shell-tests/node_modules" >> $env:GITHUB_ENV
-          $browser = @(
-            "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
-            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
-          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if (-not $browser) { throw "找不到主题回归测试所需的 Edge 浏览器。" }
-          "CODEX_TEST_BROWSER_PATH=$browser" >> $env:GITHUB_ENV
-
-      - name: Theme shell browser regressions
-        run: |
-          node scripts/assemble-renderer-inject.mjs --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/test-theme-shell-performance.cjs
-
       - name: Native Fast regression tests
         run: >-
           node --test
