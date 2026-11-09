@@ -201,7 +201,7 @@ const ORG = {
   plan_display_label: plan.label,
   has_hosted_code_environments: false,
   claude_ai_bootstrap_models_config: runtime.models.map((model) => ({
-    model, name: model, description: "", paprika_modes: [], thinking_modes: [],
+    model, name: runtime.modelNames?.[model]?.name || model, description: runtime.modelNames?.[model]?.description || "", paprika_modes: [], thinking_modes: [],
     hard_limit: modelWindow(runtime, model),
     context_window: modelWindow(runtime, model),
   })),

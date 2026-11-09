@@ -598,3 +598,11 @@ test("plan profile covers all four tiers", () => {
   assert.equal(planProfile("ultra").label, "Ultra");
   assert.equal(planProfile("nope").label, "Ultra");
 });
+
+test("runtime config parses model names and bad data falls back", () => {
+  assert.deepEqual(runtimeConfig({}).modelNames, {});
+  const ok = runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: '{"jojo/gpt-6.1-sol":{"name":"gpt-6.1-sol","description":"Jojo Codemax"}}' });
+  assert.equal(ok.modelNames["jojo/gpt-6.1-sol"].name, "gpt-6.1-sol");
+  assert.deepEqual(runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: "not json" }).modelNames, {});
+  assert.deepEqual(runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_NAMES: '{"a/b":{"name":5}}' }).modelNames, {});
+});

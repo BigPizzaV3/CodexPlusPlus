@@ -67,6 +67,15 @@ export function runtimeConfig(env = process.env) {
       throw new Error("Invalid Claude local gateway model windows");
     }
   }
+  // 选择器显示名（id → {name, description}）：坏数据当没给，界面回退 id。
+  const modelNames = (() => {
+    try {
+      const value = JSON.parse(env.CLAUDE_LOCAL_GATEWAY_MODEL_NAMES || "{}");
+      if (!isRecord(value)) return {};
+      return Object.fromEntries(Object.entries(value).filter(([id, info]) =>
+        isText(id, 512) && id && isRecord(info) && isText(info.name, 512) && (info.description === undefined || isText(info.description, 512))));
+    } catch { return {}; }
+  })();
   // 选中模型没有逐模型窗口时用这个值兜底（网关按 binding 解析出的窗口）。
   // 写坏了就当没给，不让一次启动失败在建环境变量上。
   const defaultWindow = (() => {
@@ -92,6 +101,7 @@ export function runtimeConfig(env = process.env) {
     managed, gateway, model, smallModel, key,
     models: [...new Set([model, smallModel, ...models])],
     modelWindows,
+    modelNames,
     defaultWindow,
     recordedDir,
     localization: flag("LOCALIZATION"),
@@ -136,7 +146,7 @@ export function gatewayBody(config, raw) {
 export function modelList(config) {
   return {
     data: config.models.map((id) => ({
-      id, type: "model", display_name: id, created_at: "2026-01-01T00:00:00Z",
+      id, type: "model", display_name: config.modelNames?.[id]?.name || id, created_at: "2026-01-01T00:00:00Z",
     })),
     has_more: false,
     first_id: config.models[0] ?? null,

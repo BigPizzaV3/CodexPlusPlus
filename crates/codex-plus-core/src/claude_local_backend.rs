@@ -854,6 +854,34 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
     models
 }
 
+/// Claude 模型选择器的显示名：有组显示名用组名，否则去掉「供应商/」前缀；
+/// 副标题放供应商显示名（取不到就用前缀原文）。发给网关的 model id 不变。
+fn model_names(
+    gateway: &GatewaySettings,
+    models: &[String],
+) -> std::collections::BTreeMap<String, Value> {
+    models
+        .iter()
+        .map(|id| {
+            let friendly = crate::gateway::route::model_display_name(gateway, id);
+            let name = if friendly != id.as_str() {
+                friendly.to_string()
+            } else {
+                id.rsplit('/').next().unwrap_or(id).to_string()
+            };
+            let vendor = id.split('/').next().unwrap_or_default();
+            let provider = gateway
+                .providers
+                .iter()
+                .find(|provider| provider.relay.id == vendor)
+                .map(|provider| provider.relay.name.clone())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| vendor.to_string());
+            (id.clone(), json!({"name": name, "description": provider}))
+        })
+        .collect()
+}
+
 /// 自动评审模型（`codex-auto-review`）是 Codex 内部子代理用的，不该出现在
 /// 人的模型选择器里：选中它当聊天模型没有意义，只会白烧额度。
 fn is_internal_review_model(model: &str) -> bool {
@@ -1299,6 +1327,7 @@ fn start_backend(
     crate::resident_helper::ensure_resident_helper(helper_port)?;
     let (gateway, binding) = bind_gateway(&GatewayStore::default(), config)?;
     let wiring = wiring(&gateway, &binding, AGENT_ID, helper_port);
+    let exposed = exposed_models(&gateway, &binding);
     let instance = uuid::Uuid::new_v4().to_string();
     let ready_file = root.join("ready.json");
     let log = private_file(&root.join("proxy.log"))?;
@@ -1326,7 +1355,11 @@ fn start_backend(
         .env("CLAUDE_LOCAL_GATEWAY_SMALL_MODEL", wiring.small_model)
         .env(
             "CLAUDE_LOCAL_GATEWAY_MODELS",
-            serde_json::to_string(&exposed_models(&gateway, &binding).0)?,
+            serde_json::to_string(&exposed.0)?,
+        )
+        .env(
+            "CLAUDE_LOCAL_GATEWAY_MODEL_NAMES",
+            serde_json::to_string(&model_names(&gateway, &exposed.0))?,
         )
         .env(
             "CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS",
@@ -2425,6 +2458,19 @@ server.listen(0,'127.0.0.1',()=>{
             wiring.root,
             "http://127.0.0.1:57321/gw/claude-desktop-local"
         );
+    }
+
+    /// 选择器显示名：组模型用组名、普通模型去供应商前缀、副标题用供应商显示名。
+    #[test]
+    fn model_names_prefers_friendly_names_and_vendor_label() {
+        let mut gateway = crate::gateway::store::GatewaySettings::default();
+        let mut provider = provider("jojo", "gpt-6.1-sol");
+        provider.relay.name = "Jojo Codemax".into();
+        gateway.providers.push(provider);
+        let names = model_names(&gateway, &["jojo/gpt-6.1-sol".to_string()]);
+        let entry = &names["jojo/gpt-6.1-sol"];
+        assert_eq!(entry["name"], "gpt-6.1-sol");
+        assert_eq!(entry["description"], "Jojo Codemax");
     }
 
     #[test]
