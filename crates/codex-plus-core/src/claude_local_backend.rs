@@ -1695,7 +1695,9 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             );
             let report = crate::claude_session_sync::sync_sessions(
                 &app_support_dir().join("Claude-3p/claude-code-sessions"),
+                &[root.join("claude-code-3p"), home_dir().join(".claude")],
                 &app_support_dir().join("Claude/claude-code-sessions"),
+                &[root.join("claude-code"), home_dir().join(".claude")],
                 &root.join("backups/session-sync"),
             )?;
             if !report.note.is_empty() {

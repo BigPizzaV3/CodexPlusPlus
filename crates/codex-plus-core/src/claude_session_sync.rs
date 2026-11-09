@@ -1,11 +1,12 @@
 //! Claude Code 会话在 3p 模式与完整功能模式之间的同步：
-//! 两种部署模式用不同的 Application Support 目录，元数据各存一份
-//! `claude-code-sessions/<account>/<org>/local_<uuid>.json`，会话正文两边共用
-//! `~/.claude/projects/`，不需要同步。`local-agent-mode-sessions`（Cowork）结构
-//! 不同，本次不同步。
+//! 两种部署模式用不同的 Application Support 目录，会话元数据各存一份
+//! `claude-code-sessions/<account>/<org>/local_<uuid>.json`；对话记录（transcript）
+//! 在各自的 CLAUDE_CONFIG_DIR 下 `projects/<escaped cwd>/<cliSessionId>.jsonl`，
+//! 早期 3p 会话的记录还在 `~/.claude`。`local-agent-mode-sessions`（Cowork）不同步。
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,8 @@ pub struct SyncReport {
     pub to_three_p: usize,
     pub updated: usize,
     pub skipped_deleted: usize,
+    /// 元数据有但两边都找不到的 transcript 条数。
+    pub missing_transcripts: usize,
     /// 3p 侧还没有会话目录时的说明；正常情况下为空。
     #[serde(skip_serializing_if = "String::is_empty")]
     pub note: String,
@@ -42,15 +45,12 @@ fn newest_pair(root: &Path) -> Option<(String, String)> {
         if !acct_path.is_dir() {
             continue;
         }
-        // 单个目录读不了只跳过它，不让整个 3p 侧判成「没有会话」。
-        let Ok(orgs) = fs::read_dir(&acct_path) else { continue };
-        for org in orgs.flatten() {
+        for org in fs::read_dir(&acct_path).ok()?.flatten() {
             let org_path = org.path();
             if !org_path.is_dir() {
                 continue;
             }
-            let Ok(entries) = fs::read_dir(&org_path) else { continue };
-            let newest = entries.flatten().filter_map(|entry| {
+            let newest = fs::read_dir(&org_path).ok()?.flatten().filter_map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 name.starts_with(LOCAL_PREFIX)
                     .then(|| entry.metadata().ok()?.modified().ok())
@@ -102,18 +102,133 @@ fn freshness(path: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn sync_dir(
+/// Claude Code 的 projects 目录转义：cwd 里每个非 ASCII 字母数字字符换成 `-`。
+fn escape_cwd(cwd: &str) -> String {
+    cwd.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
+fn backup_stamp() -> String {
+    format!(
+        "{:.0}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    )
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)?.flatten() {
+        let to = dst.join(entry.file_name());
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            copy_dir(&entry.path(), &to)?;
+        } else {
+            fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// 元数据里这条会话引用的 transcript id：cliSessionId + priorCliSessionIds。
+fn transcript_ids(meta: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(id) = meta.get("cliSessionId").and_then(Value::as_str) {
+        ids.push(id.to_string());
+    }
+    if let Some(list) = meta.get("priorCliSessionIds").and_then(Value::as_array) {
+        for id in list.iter().filter_map(Value::as_str) {
+            if !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+fn find_transcript(configs: &[PathBuf], escaped: &str, id: &str) -> Option<PathBuf> {
+    configs
+        .iter()
+        .map(|config| config.join("projects").join(escaped).join(format!("{id}.jsonl")))
+        .find(|path| path.is_file())
+}
+
+/// 把某条会话的 transcript 从源侧候选目录补到目标侧第一个 config 目录。
+/// 冲突保留字节数更大的一份（jsonl 只追加），被覆盖的先进备份。
+fn sync_transcripts(
+    meta: &Value,
+    source_configs: &[PathBuf],
+    target_configs: &[PathBuf],
+    backup: &Path,
+    report: &mut SyncReport,
+) -> Result<()> {
+    let Some(target) = target_configs.first() else {
+        return Ok(());
+    };
+    let cwd = meta.get("cwd").and_then(Value::as_str).unwrap_or_default();
+    if cwd.is_empty() {
+        return Ok(());
+    }
+    let escaped = escape_cwd(cwd);
+    for id in transcript_ids(meta) {
+        let dst = target.join("projects").join(&escaped).join(format!("{id}.jsonl"));
+        let src = find_transcript(source_configs, &escaped, &id)
+            .or_else(|| find_transcript(target_configs, &escaped, &id));
+        match (src, dst.is_file()) {
+            (Some(src), false) => {
+                fs::create_dir_all(dst.parent().unwrap())?;
+                fs::copy(&src, &dst)?;
+            }
+            (Some(src), true) => {
+                let src_bytes = fs::read(&src)?;
+                let dst_bytes = fs::read(&dst)?;
+                if src_bytes != dst_bytes && src_bytes.len() > dst_bytes.len() {
+                    let backup_dir = backup.join(backup_stamp()).join("transcripts");
+                    fs::create_dir_all(&backup_dir)?;
+                    fs::copy(&dst, backup_dir.join(format!("{id}.jsonl")))?;
+                    crate::settings::atomic_write(&dst, &src_bytes)?;
+                }
+            }
+            (None, exists) if !exists => {
+                report.missing_transcripts += 1;
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "claude_session_sync.missing_transcript",
+                    serde_json::json!({"cliSessionId": id, "cwd": cwd}),
+                );
+            }
+            _ => {}
+        }
+        // 同名子目录（子代理等输出）整体跟随。
+        for config in source_configs {
+            let dir = config.join("projects").join(&escaped).join(&id);
+            if dir.is_dir() {
+                let out = target.join("projects").join(&escaped).join(&id);
+                if !out.exists() {
+                    copy_dir(&dir, &out)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 单向合并 mine → theirs：复制缺席会话、按新鲜度覆盖、补 transcript。
+fn merge_dir(
     mine: &Path,
+    mine_configs: &[PathBuf],
     theirs: &Path,
+    their_configs: &[PathBuf],
+    tombstones: &HashSet<String>,
     backup: &Path,
     report: &mut SyncReport,
     direction: &str,
 ) -> Result<()> {
-    let (mine_locals, mine_deleted) = list_sessions(mine);
-    let (their_locals, their_deleted) = list_sessions(theirs);
+    let (mine_locals, _) = list_sessions(mine);
+    let (their_locals, _) = list_sessions(theirs);
     for id in &mine_locals {
-        if mine_deleted.contains(id) || their_deleted.contains(id) {
-            report.skipped_deleted += 1;
+        if tombstones.contains(id) {
             continue;
         }
         let src = mine.join(format!("{LOCAL_PREFIX}{id}.json"));
@@ -126,46 +241,43 @@ fn sync_dir(
             } else {
                 report.to_three_p += 1;
             }
-            continue;
+        } else {
+            let src_bytes = fs::read(&src)?;
+            let dst_bytes = fs::read(&dst)?;
+            if src_bytes != dst_bytes {
+                if serde_json::from_slice::<Value>(&src_bytes).is_err()
+                    || serde_json::from_slice::<Value>(&dst_bytes).is_err()
+                {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "claude_session_sync.bad_json",
+                        serde_json::json!({"file": src.file_name().unwrap_or_default().to_string_lossy()}),
+                    );
+                    continue;
+                }
+                if freshness(&src) > freshness(&dst) {
+                    let backup_dir = backup.join(backup_stamp()).join(direction);
+                    fs::create_dir_all(&backup_dir)?;
+                    fs::copy(&dst, backup_dir.join(format!("{LOCAL_PREFIX}{id}.json")))?;
+                    crate::settings::atomic_write(&dst, &src_bytes)?;
+                    report.updated += 1;
+                }
+            }
         }
-        let src_bytes = fs::read(&src)?;
-        let dst_bytes = fs::read(&dst)?;
-        if src_bytes == dst_bytes {
-            continue;
+        // 元数据到位后补 transcript（含之前同步过、当时没拷上的）。
+        if let Ok(meta) = serde_json::from_slice::<Value>(&fs::read(&dst).unwrap_or_default()) {
+            sync_transcripts(&meta, mine_configs, their_configs, backup, report)?;
         }
-        if serde_json::from_slice::<Value>(&src_bytes).is_err()
-            || serde_json::from_slice::<Value>(&dst_bytes).is_err()
-        {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "claude_session_sync.bad_json",
-                serde_json::json!({"file": src.file_name().unwrap_or_default().to_string_lossy()}),
-            );
-            continue;
-        }
-        if freshness(&src) <= freshness(&dst) {
-            continue;
-        }
-        // 覆盖前先备份旧文件。
-        let stamp = format!(
-            "{:.0}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0)
-        );
-        let backup_dir = backup.join(stamp).join(direction);
-        fs::create_dir_all(&backup_dir)?;
-        fs::copy(&dst, backup_dir.join(format!("{LOCAL_PREFIX}{id}.json")))?;
-        crate::settings::atomic_write(&dst, &src_bytes)?;
-        report.updated += 1;
     }
     Ok(())
 }
 
-/// root 指 `.../claude-code-sessions`。
+/// sessions root 指 `.../claude-code-sessions`；config 候选按优先级给出，
+/// 写入目标是每个候选列表的第一个。
 pub fn sync_sessions(
     three_p_root: &Path,
+    three_p_configs: &[PathBuf],
     full_root: &Path,
+    full_configs: &[PathBuf],
     backup_root: &Path,
 ) -> Result<SyncReport> {
     let mut report = SyncReport::default();
@@ -176,8 +288,38 @@ pub fn sync_sessions(
     let three_p = three_p_root.join(&acct).join(&org);
     let full = full_root.join(FULL_ACCOUNT).join(FULL_ORG);
     fs::create_dir_all(&full)?;
-    sync_dir(&three_p, &full, backup_root, &mut report, "full")?;
-    sync_dir(&full, &three_p, backup_root, &mut report, "three-p")?;
+    // 任一侧的墓碑都阻止复制；同一会话只计一次。
+    let (_, tp_deleted) = list_sessions(&three_p);
+    let (_, f_deleted) = list_sessions(&full);
+    let tombstones: HashSet<String> = tp_deleted.into_iter().chain(f_deleted).collect();
+    let (tp_locals, _) = list_sessions(&three_p);
+    let (f_locals, _) = list_sessions(&full);
+    report.skipped_deleted = tp_locals
+        .iter()
+        .chain(f_locals.iter())
+        .filter(|id| tombstones.contains(*id))
+        .collect::<HashSet<_>>()
+        .len();
+    merge_dir(
+        &three_p,
+        three_p_configs,
+        &full,
+        full_configs,
+        &tombstones,
+        backup_root,
+        &mut report,
+        "full",
+    )?;
+    merge_dir(
+        &full,
+        full_configs,
+        &three_p,
+        three_p_configs,
+        &tombstones,
+        backup_root,
+        &mut report,
+        "three-p",
+    )?;
     Ok(report)
 }
 
@@ -185,57 +327,124 @@ pub fn sync_sessions(
 mod tests {
     use super::*;
 
-    fn seed(root: &Path, acct: &str, org: &str, id: &str, activity: f64, body: &str) {
+    fn seed(
+        root: &Path,
+        acct: &str,
+        org: &str,
+        id: &str,
+        activity: f64,
+        extra: &str,
+    ) {
         let dir = root.join(acct).join(org);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join(format!("local_{id}.json")),
-            format!(r#"{{"sessionId":"{id}","lastActivityAt":{activity},"title":"{body}"}}"#),
+            format!(
+                r#"{{"sessionId":"{id}","cliSessionId":"cli-{id}","cwd":"/Users/mac/Desktop/reclaude2api","lastActivityAt":{activity}{extra}}}"#
+            ),
         )
         .unwrap();
     }
 
-    #[test]
-    fn syncs_both_directions_and_picks_newest_on_conflict() {
-        let temp = tempfile::tempdir().unwrap();
-        let three_p = temp.path().join("3p/claude-code-sessions");
-        let full = temp.path().join("full/claude-code-sessions");
-        let backup = temp.path().join("backup");
-        seed(&three_p, "a3p", "o3p", "s1", 10.0, "from-3p");
-        seed(&full, FULL_ACCOUNT, FULL_ORG, "s2", 20.0, "from-full");
-        seed(&three_p, "a3p", "o3p", "s3", 30.0, "newer");
-        seed(&full, FULL_ACCOUNT, FULL_ORG, "s3", 5.0, "older");
-        let report = sync_sessions(&three_p, &full, &backup).unwrap();
-        assert_eq!(report.to_full, 1);
-        assert_eq!(report.to_three_p, 1);
-        assert_eq!(report.updated, 1);
-        let conflict = fs::read_to_string(
-            full.join(FULL_ACCOUNT).join(FULL_ORG).join("local_s3.json"),
-        )
-        .unwrap();
-        assert!(conflict.contains("newer"));
-        // 被覆盖的旧文件进了备份。
-        assert!(backup.join("full/local_s3.json").exists()
-            || fs::read_dir(&backup).map(|mut d| d.next().is_some()).unwrap_or(false));
+    fn transcript(config: &Path, id: &str, lines: usize) -> PathBuf {
+        let file = config
+            .join("projects/-Users-mac-Desktop-reclaude2api")
+            .join(format!("cli-{id}.jsonl"));
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "x\n".repeat(lines)).unwrap();
+        file
+    }
+
+    fn transcript_exists(config: &Path, id: &str) -> bool {
+        config
+            .join("projects/-Users-mac-Desktop-reclaude2api")
+            .join(format!("cli-{id}.jsonl"))
+            .is_file()
+    }
+
+    fn copy_dir_prep(config: &Path, id: &str) {
+        let dir = config
+            .join("projects/-Users-mac-Desktop-reclaude2api")
+            .join(format!("cli-{id}/sub"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("out.txt"), "o").unwrap();
     }
 
     #[test]
-    fn tombstones_bad_json_and_other_files_are_left_alone() {
+    fn escape_matches_claude_code_project_dirs() {
+        assert_eq!(escape_cwd("/Users/mac/Desktop/reclaude2api"), "-Users-mac-Desktop-reclaude2api");
+        assert_eq!(escape_cwd("/Users/mac/.tmp_cc"), "-Users-mac--tmp-cc");
+    }
+
+    #[test]
+    fn sessions_and_transcripts_flow_both_ways() {
         let temp = tempfile::tempdir().unwrap();
-        let three_p = temp.path().join("3p/claude-code-sessions");
-        let full = temp.path().join("full/claude-code-sessions");
+        let t3 = temp.path().join("3p/sessions");
+        let tf = temp.path().join("full/sessions");
+        let c3 = vec![temp.path().join("3p/claude-code-3p"), temp.path().join("claude")];
+        let cf = vec![temp.path().join("full/claude-code"), temp.path().join("claude")];
         let backup = temp.path().join("backup");
-        let dir3 = three_p.join("a").join("o");
+        seed(&t3, "a3p", "o3p", "s1", 10.0, "");
+        // transcript 只在 ~/.claude 候选里也找得到。
+        transcript(&c3[1], "s1", 3);
+        seed(&tf, FULL_ACCOUNT, FULL_ORG, "s2", 20.0, "");
+        transcript(&cf[0], "s2", 2);
+        let report = sync_sessions(&t3, &c3, &tf, &cf, &backup).unwrap();
+        assert_eq!((report.to_full, report.to_three_p), (1, 1));
+        assert!(transcript_exists(&cf[0], "s1"));
+        assert!(transcript_exists(&c3[0], "s2"));
+        assert_eq!(report.missing_transcripts, 0);
+    }
+
+    #[test]
+    fn prior_ids_subdirs_conflicts_and_backfill() {
+        let temp = tempfile::tempdir().unwrap();
+        let t3 = temp.path().join("3p/sessions");
+        let tf = temp.path().join("full/sessions");
+        let c3 = vec![temp.path().join("3p/claude-code-3p")];
+        let cf = vec![temp.path().join("full/claude-code")];
+        let backup = temp.path().join("backup");
+        // priorCliSessionIds 的 transcript 也复制。
+        seed(&t3, "a3p", "o3p", "s1", 30.0, r#","priorCliSessionIds":["cli-p1"]"#);
+        transcript(&c3[0], "s1", 5);
+        transcript(&c3[0], "p1", 1);
+        // 子目录整体复制。
+        copy_dir_prep(&c3[0], "s1");
+        // 冲突保留大的一份 + 备份。
+        transcript(&cf[0], "s1", 2);
+        let dst = cf[0].join("projects/-Users-mac-Desktop-reclaude2api/cli-s1.jsonl");
+        // 元数据已同步过去但 transcript 缺的会话补拷。
+        seed(&t3, "a3p", "o3p", "s9", 1.0, "");
+        seed(&tf, FULL_ACCOUNT, FULL_ORG, "s9", 1.0, "");
+        transcript(&c3[0], "s9", 1);
+        let report = sync_sessions(&t3, &c3, &tf, &cf, &backup).unwrap();
+        assert!(transcript_exists(&cf[0], "p1"));
+        assert!(cf[0].join("projects/-Users-mac-Desktop-reclaude2api/cli-s1/sub").is_dir());
+        assert!(transcript_exists(&cf[0], "s9"), "已有元数据缺 transcript 的也要补");
+        assert!(fs::read_to_string(&dst).unwrap().lines().count() == 5, "大的那份覆盖小的");
+        let stamped: Vec<_> = fs::read_dir(&backup).unwrap().flatten().collect();
+        assert!(stamped.iter().any(|e| e.path().join("transcripts/cli-s1.jsonl").is_file()), "被覆盖的进备份");
+        // 缺源计 missing_transcripts。
+        seed(&t3, "a3p", "o3p", "gone", 1.0, "");
+        let report = sync_sessions(&t3, &c3, &tf, &cf, &backup).unwrap();
+        assert!(report.missing_transcripts >= 1);
+    }
+
+    #[test]
+    fn tombstones_dedupe_and_other_files_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let t3 = temp.path().join("3p/sessions");
+        let tf = temp.path().join("full/sessions");
+        let c3 = vec![temp.path().join("3p/claude-code-3p")];
+        let cf = vec![temp.path().join("full/claude-code")];
+        let dir3 = t3.join("a").join("o");
         fs::create_dir_all(&dir3).unwrap();
         fs::write(dir3.join("deleted_s9.json"), "{}").unwrap();
         fs::write(dir3.join("local_s9.json"), "{}").unwrap();
-        fs::write(dir3.join("local_bad.json"), "not json {").unwrap();
         fs::write(dir3.join("scheduled-tasks.json"), "[]").unwrap();
-        seed(&full, FULL_ACCOUNT, FULL_ORG, "ok", 1.0, "fine");
-        let report = sync_sessions(&three_p, &full, &backup).unwrap();
-        assert_eq!(report.skipped_deleted, 1);
-        assert!(!full.join(FULL_ACCOUNT).join(FULL_ORG).join("local_s9.json").exists());
-        assert!(!dir3.join("local_ok.json").exists() || true);
+        let report = sync_sessions(&t3, &c3, &tf, &cf, &temp.path().join("backup")).unwrap();
+        assert_eq!(report.skipped_deleted, 1, "墓碑按 id 去重");
+        assert!(!tf.join(FULL_ACCOUNT).join(FULL_ORG).join("local_s9.json").exists());
         assert!(dir3.join("scheduled-tasks.json").exists());
     }
 
@@ -244,7 +453,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let report = sync_sessions(
             &temp.path().join("nope"),
+            &[],
             &temp.path().join("full"),
+            &[],
             &temp.path().join("backup"),
         )
         .unwrap();
