@@ -22,7 +22,7 @@ export const PLANS = {
 };
 
 export function planProfile(plan) {
-  return PLANS[plan] || PLANS.ultra;
+  return Object.hasOwn(PLANS, plan) ? PLANS[plan] : PLANS.ultra;
 }
 
 export function runtimeConfig(env = process.env) {
@@ -99,7 +99,7 @@ export function runtimeConfig(env = process.env) {
     computerUse: flag("COMPUTER_USE"),
     backgroundMode: flag("BACKGROUND_MODE"),
     displayName: displayName(env.CLAUDE_LOCAL_DISPLAY_NAME),
-    plan: PLANS[env.CLAUDE_LOCAL_PLAN] ? env.CLAUDE_LOCAL_PLAN : "ultra",
+    plan: Object.hasOwn(PLANS, env.CLAUDE_LOCAL_PLAN ?? "") ? env.CLAUDE_LOCAL_PLAN : "ultra",
   };
 }
 
