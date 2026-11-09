@@ -16349,6 +16349,7 @@ type ClaudeLocalConfig = {
   backgroundMode: boolean;
   displayName?: string;
   plan?: string;
+  sessionSync?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -16544,7 +16545,7 @@ function ClaudeLocalizationScreen(
     claudeLocalMemo.autoDetected = true;
     void refreshLocal();
   }, []);
-  const localAction = async (action: "launch" | "stop" | "trust" | "untrust" | "prepare") => {
+  const localAction = async (action: "launch" | "stop" | "trust" | "untrust" | "prepare" | "sync_sessions") => {
     if (localPending.current || pending.current) return;
     localPending.current = true;
     localGeneration.current++;
@@ -16908,6 +16909,23 @@ function ClaudeLocalizationScreen(
               ]}
               value={local?.config.plan || "ultra"}
             />
+          </CxRow>
+          <CxRow detail={t("启动 Claude 前同步 3p 模式与完整功能模式的 Code 会话")} title={t("会话同步")}>
+            <div className="claude-l10n-actions">
+              <label className="switch-row compact">
+                <input
+                  aria-label={t("会话同步")}
+                  checked={local?.config.sessionSync === true}
+                  disabled={localDisabled || !local?.supported}
+                  onChange={(event) => {
+                    if (local) void configureLocal({ ...local.config, sessionSync: event.currentTarget.checked });
+                  }}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+              <button className="cx-secondary" disabled={localDisabled || !local?.supported || local?.claudeRunning} onClick={() => void localAction("sync_sessions")} title={t("立即同步")} type="button">{t("立即同步")}</button>
+            </div>
           </CxRow>
         </CxCard>
         {local?.config.enabled ? (

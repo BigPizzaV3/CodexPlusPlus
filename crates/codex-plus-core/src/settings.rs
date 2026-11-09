@@ -56,6 +56,8 @@ pub struct ClaudeLocalSettings {
     pub display_name: String,
     /// Claude 里显示的套餐：free / pro / max / ultra。
     pub plan: String,
+    /// 启动前同步 3p 模式与完整功能模式的 Code 会话（默认关）。
+    pub session_sync: bool,
 }
 
 impl Default for ClaudeLocalSettings {
@@ -69,6 +71,7 @@ impl Default for ClaudeLocalSettings {
             background_mode: false,
             display_name: String::new(),
             plan: "ultra".into(),
+            session_sync: false,
         }
     }
 }

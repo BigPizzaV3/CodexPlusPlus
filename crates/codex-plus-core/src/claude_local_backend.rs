@@ -1604,7 +1604,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
         "原版 Claude 本地模式目前仅支持 macOS"
     );
     ensure!(
-        ["launch", "stop", "trust", "untrust", "prepare"].contains(&action),
+        ["launch", "stop", "trust", "untrust", "prepare", "sync_sessions"].contains(&action),
         "未知的 Claude 本地服务操作"
     );
     let _guard = OPERATION
@@ -1613,7 +1613,8 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
     let config = SettingsStore::default().load()?.claude_desktop_local;
     let root = root_dir();
     let source = source_app();
-    let message = match action {
+    let mut sync_summary = String::new();
+    let mut message = match action {
         "stop" => {
             let port = runtime_status()
                 .map(|(port, _, _, _)| port)
@@ -1647,6 +1648,25 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             }
             "Claude 本地兼容资源已准备，原版应用未修改。".to_string()
         }
+        "sync_sessions" => {
+            ensure!(
+                claude_processes()?.is_empty(),
+                "请先完全退出 Claude 再同步会话"
+            );
+            let report = crate::claude_session_sync::sync_sessions(
+                &app_support_dir().join("Claude-3p/claude-code-sessions"),
+                &app_support_dir().join("Claude/claude-code-sessions"),
+                &root.join("backups/session-sync"),
+            )?;
+            if !report.note.is_empty() {
+                report.note.clone()
+            } else {
+                format!(
+                    "已同步会话：3p→完整 {} 个，完整→3p {} 个，更新 {} 个，跳过已删除 {} 个。",
+                    report.to_full, report.to_three_p, report.updated, report.skipped_deleted
+                )
+            }
+        }
         "launch" => {
             ensure!(
                 executable(&source).is_file(),
@@ -1656,6 +1676,27 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 claude_processes()?.is_empty(),
                 "Claude 正在运行，请先完全退出，再从 Codex++ 启动以应用本地模式"
             );
+            if config.session_sync {
+                match crate::claude_session_sync::sync_sessions(
+                    &app_support_dir().join("Claude-3p/claude-code-sessions"),
+                    &app_support_dir().join("Claude/claude-code-sessions"),
+                    &root.join("backups/session-sync"),
+                ) {
+                    Ok(report) if report.to_full + report.to_three_p + report.updated > 0 => {
+                        sync_summary = format!(
+                            "已同步会话：3p→完整 {} 个，完整→3p {} 个，更新 {} 个。",
+                            report.to_full, report.to_three_p, report.updated
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "claude_session_sync.launch_failed",
+                            serde_json::json!({"error": format!("{error:#}")}),
+                        );
+                    }
+                }
+            }
             if config.enabled {
                 install_assets(&root)?;
                 prepare_ca(&root)?;
@@ -1688,6 +1729,9 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 &json!({"configHash": config_hash(&config), "localMode": config.enabled}),
             )?,
         )?;
+    }
+    if !sync_summary.is_empty() {
+        message = format!("{sync_summary}{message}");
     }
     Ok(ClaudeLocalResult {
         status: status()?,

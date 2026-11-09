@@ -624,6 +624,23 @@ test("用户名与套餐：默认 Ultra，改名与换套餐各发一次 claude_
   assert.equal((screen.calls[1].args[0] as { config: { displayName: string } }).config.displayName, "张三");
 });
 
+test("会话同步：开关默认关闭，切换走 configure，立即同步走 action", async () => {
+  const screen = harness(undefined, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
+  const sync = findElements(screen.render(), "input").find((item) => item.props["aria-label"] === "会话同步")!;
+  assert.equal(sync.props.checked, false);
+  sync.props.onChange({ currentTarget: { checked: true } });
+  await tick();
+  assert.equal(screen.calls[0].command, "claude_local_configure");
+  assert.equal((screen.calls[0].args[0] as { config: { sessionSync: boolean } }).config.sessionSync, true);
+  screen.calls[0].resolve({ ...localReady, config: { ...localReady.config, sessionSync: true } });
+  await tick();
+  const syncNow = buttons(screen.render()).find((item) => item.props.title === "立即同步")!;
+  syncNow.props.onClick();
+  await tick();
+  assert.equal(screen.calls[1].command, "claude_local_action");
+  assert.equal((screen.calls[1].args[0] as { action: string }).action, "sync_sessions");
+});
+
 test("默认模型不在这一页选：只留一句说明，不放下拉也不放跳转", () => {
   const screen = harness(undefined, {}, {
     localMemo: { status: { ...localReady, config: { ...localReady.config, enabled: true } }, autoDetected: true },
