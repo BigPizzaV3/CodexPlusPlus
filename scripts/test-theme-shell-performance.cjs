@@ -14,6 +14,8 @@ const extract = (source, name) => {
 };
 const homeMarker = "data-dream-has-home-utility-above";
 const timelineMarker = "data-dream-has-timeline-composer";
+const layoutFixtures = process.env.CODEX_THEME_LAYOUT_CSS_OUTPUT
+  ? JSON.parse(fs.readFileSync(process.env.CODEX_THEME_LAYOUT_CSS_OUTPUT, "utf8")) : null;
 
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CODEX_TEST_BROWSER_PATH });
@@ -111,28 +113,44 @@ async function run() {
     // 新版 header 在 main 外，aside 在 workspace 内；同时保留旧版结构。
     for (const structure of ["legacy", "workspace"]) {
       await page.setContent(`<style>@layer theme,base,utilities;
-        @layer utilities { #sidebar {margin-top:8px!important} #header {margin-inline-end:4px!important} }
+        @layer utilities { #sidebar {margin-top:8px!important} #header {margin-inline-end:4px!important;height:52px!important} }
         #header {background:rgb(11,22,33);backdrop-filter:blur(12px)}
         </style>${structure === "workspace"
           ? '<div data-app-shell-workspace><aside id="sidebar" data-ds-part="sidebar"></aside><main></main></div><header id="header" data-ds-part="header"></header>'
           : '<aside id="sidebar" data-ds-part="sidebar"></aside><main><header id="header" data-ds-part="header"></header></main>'}`);
       await page.addStyleTag({content: asset("dream-skin-native-shell-compat.css")});
       const margins = () => page.evaluate(() => [getComputedStyle(document.getElementById("sidebar")).marginTop,
-        getComputedStyle(document.getElementById("header")).marginInlineEnd]);
+        getComputedStyle(document.getElementById("header")).marginInlineEnd,
+        getComputedStyle(document.getElementById("header")).height]);
       const state = (os, active) => page.evaluate(({os,active}) => {
         Object.assign(document.documentElement.dataset, {codexOs:os, codexWindowChrome:"application-menu"});
         if (active) document.documentElement.dataset.dreamSkin = "active";
         else delete document.documentElement.dataset.dreamSkin;
       }, {os, active});
       await state("win32", true);
-      assert.deepEqual(await margins(), ["0px", "0px"]);
+      assert.deepEqual(await margins(), ["8px", "4px", "52px"], "no theme layout declaration preserves native geometry");
       assert.deepEqual(await page.$eval("#header", n => [getComputedStyle(n).backgroundColor, getComputedStyle(n).backdropFilter]), ["rgb(11, 22, 33)", "blur(12px)"]);
-      await state("darwin", true);
-      assert.deepEqual(await margins(), ["8px", "4px"]);
-      await state("win32", false);
-      assert.deepEqual(await margins(), ["8px", "4px"]);
+      if (layoutFixtures) {
+        const unchanged = await page.addStyleTag({content: layoutFixtures.unchanged});
+        assert.deepEqual(await margins(), ["8px", "4px", "52px"]);
+        await unchanged.evaluate(n => n.remove());
+        for (const [name, expected] of [["custom", ["6px", "12px", "64px"]], ["aligned", ["0px", "0px", "52px"]]]) {
+          const style = await page.addStyleTag({content: layoutFixtures[name]});
+          await state("win32", true);
+          assert.deepEqual(await margins(), expected, `${structure}/${name}: authored values override native important utilities`);
+          await state("darwin", true);
+          assert.deepEqual(await margins(), ["8px", "4px", "52px"], "Windows layout declarations are isolated");
+          await state("win32", false);
+          assert.deepEqual(await margins(), ["8px", "4px", "52px"], "disabled theme restores native geometry");
+          await state("win32", true);
+          await style.evaluate(n => n.remove());
+          assert.deepEqual(await margins(), ["8px", "4px", "52px"], "switching to an unconfigured theme restores defaults");
+        }
+      }
     }
-    console.log("Windows alignment: old/new structures, disabled theme and non-Windows isolation passed");
+    console.log(layoutFixtures
+      ? "Windows theme layout: actual Rust-compiled CSS, custom values, theme switch, disable and platform isolation passed"
+      : "Windows theme layout: native defaults passed; compiled CSS checks require CODEX_THEME_LAYOUT_CSS_OUTPUT");
 
     const styles = asset("renderer-inject/10-style.js");
     const pages = asset("renderer-inject/40-backend-settings.js");

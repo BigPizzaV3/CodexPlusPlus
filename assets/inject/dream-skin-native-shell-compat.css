@@ -6,16 +6,4 @@
     :is([data-app-shell-page-surface="true"], [class*="_ApplicationMenuPageSurfaceLayout_"], [class~="bg-token-main-surface-primary"][class~="h-full"][class~="w-full"]):not([data-codex-composer-root], [data-codex-composer-root] *, [role="dialog"], [role="dialog"] *, [role="menu"], [role="menu"] *, [data-slot="popover-content"], [data-slot="popover-content"] *) {
     background: transparent !important;
   }
-
-  /* 26.1103 的侧栏位于 workspace 内，header 则在 main 外。
-     使用公开部件标记适配两种层级，消除原生 8px/4px 留白造成的皮肤断层。 */
-  html[data-dream-skin="active"][data-codex-os="win32"][data-codex-window-chrome="application-menu"]
-    [data-ds-part="sidebar"] {
-    margin-top: 0 !important;
-  }
-
-  html[data-dream-skin="active"][data-codex-os="win32"][data-codex-window-chrome="application-menu"]
-    [data-ds-part="header"] {
-    margin-inline-end: 0 !important;
-  }
 }

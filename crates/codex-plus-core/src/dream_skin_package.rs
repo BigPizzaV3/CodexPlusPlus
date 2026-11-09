@@ -222,26 +222,35 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
         })
         .collect::<HashSet<_>>();
     let mut compiled = String::from("@layer dreamskin-community {\n");
-    for rule in rules {
-        compiled.push_str("  ");
-        compiled.push_str(rule.selector);
-        compiled.push_str(" {\n");
-        for (property, value) in &rule.declarations {
-            compiled.push_str("    ");
-            compiled.push_str(property);
-            compiled.push_str(": ");
-            compiled.push_str(value);
-            compiled.push_str(" !important;\n");
-            if rule.part == "composer" && composer_base_borders.contains(property) {
-                compiled.push_str(&format!(
-                    "    --ds-community-composer-{property}: {value} !important;\n"
-                ));
+    for rule in &rules {
+        if rule
+            .declarations
+            .iter()
+            .any(|(property, _)| !is_shell_layout_property(property))
+        {
+            compiled.push_str("  ");
+            compiled.push_str(rule.selector);
+            compiled.push_str(" {\n");
+            for (property, value) in &rule.declarations {
+                if is_shell_layout_property(property) {
+                    continue;
+                }
+                compiled.push_str("    ");
+                compiled.push_str(property);
+                compiled.push_str(": ");
+                compiled.push_str(value);
+                compiled.push_str(" !important;\n");
+                if rule.part == "composer" && composer_base_borders.contains(property) {
+                    compiled.push_str(&format!(
+                        "    --ds-community-composer-{property}: {value} !important;\n"
+                    ));
+                }
+                if *property == "background-color" && matches!(rule.part, "sidebar" | "main" | "home") {
+                    compiled.push_str("    background-image: none !important;\n");
+                }
             }
-            if *property == "background-color" && matches!(rule.part, "sidebar" | "main" | "home") {
-                compiled.push_str("    background-image: none !important;\n");
-            }
+            compiled.push_str("  }\n");
         }
-        compiled.push_str("  }\n");
 
         if rule.part == "home-hero"
             && let Some((_, value)) = rule
@@ -294,7 +303,49 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
         }
     }
     compiled.push_str("}\n");
+
+    // 仅编译主题显式声明的 Windows shell 几何属性。原生 utilities 的
+    // !important 优先于后声明的 community 层，故使用已有 theme 层覆盖。
+    // 其他外观声明仍在 community 层，非 Windows 平台不接收这些布局设置。
+    let mut shell_layout = String::new();
+    for rule in &rules {
+        let declarations = rule
+            .declarations
+            .iter()
+            .filter(|(property, _)| is_shell_layout_property(property))
+            .collect::<Vec<_>>();
+        if declarations.is_empty() {
+            continue;
+        }
+        shell_layout.push_str(&format!(
+            "  html[data-dream-skin=\"active\"][data-codex-os=\"win32\"] {} {{\n",
+            rule.selector
+        ));
+        for (property, value) in declarations {
+            shell_layout.push_str(&format!("    {property}: {value} !important;\n"));
+        }
+        shell_layout.push_str("  }\n");
+    }
+    if !shell_layout.is_empty() {
+        compiled.push_str("@layer theme {\n");
+        compiled.push_str(&shell_layout);
+        compiled.push_str("}\n");
+    }
     Ok(compiled)
+}
+
+fn is_shell_layout_property(property: &str) -> bool {
+    matches!(property, "margin-top" | "margin-inline-end" | "height")
+}
+
+fn validate_shell_layout_value(part: &str, property: &str, value: &str) -> bool {
+    match (part, property) {
+        ("sidebar", "margin-top") | ("header", "margin-inline-end") => {
+            zero_or_px(value, 0.0, 64.0)
+        }
+        ("header", "height") => numeric(value, "px", 32.0, 128.0),
+        _ => false,
+    }
 }
 
 #[derive(Debug)]
@@ -391,7 +442,8 @@ fn parse_safe_css(css: &str) -> anyhow::Result<Vec<SafeCssRule<'_>>> {
             if value.is_empty()
                 || value.chars().count() > 512
                 || value.contains(['{', '}', '<', '>', '!', ';'])
-                || !validate_property_value(property, value)
+                || !(validate_property_value(property, value)
+                    || validate_shell_layout_value(part, property, value))
             {
                 bail!("theme.css 属性值不受 Safe CSS 支持：{property}");
             }
