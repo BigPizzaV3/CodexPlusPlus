@@ -854,7 +854,74 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
     models
 }
 
-/// Claude 模型选择器的显示名：有组显示名用组名，否则去掉「供应商/」前缀；
+/// 把模型 slug 拼成给人看的样子：`gpt-6.1-sol` → `GPT-6.1 Sol`、
+/// `deepseek-v4-flash` → `DeepSeek V4 Flash`、`kimi-k3` → `Kimi K3`。
+/// 只用于界面显示，发给上游的 model id 一个字都不改。
+fn friendly_model_name(slug: &str) -> String {
+    let parts: Vec<String> = slug
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .enumerate()
+        .map(|(index, part)| friendly_model_word(part, index == 0))
+        .collect();
+    let mut out = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            // `GPT-6.1` / `GLM-5.3`：前缀后面紧跟版本号时用连字符，其余用空格。
+            let previous = parts[index - 1].as_str();
+            let digit = part.chars().next().is_some_and(|c| c.is_ascii_digit());
+            out.push(if (previous == "GPT" || previous == "GLM") && digit { '-' } else { ' ' });
+        }
+        out.push_str(part);
+    }
+    if out.is_empty() { slug.to_string() } else { out }
+}
+
+fn friendly_model_word(raw: &str, first: bool) -> String {
+    let lower = raw.to_ascii_lowercase();
+    let capitalized = || {
+        let mut chars = lower.chars();
+        match chars.next() {
+            Some(head) => head.to_ascii_uppercase().to_string() + chars.as_str(),
+            None => String::new(),
+        }
+    };
+    match lower.as_str() {
+        "gpt" => "GPT".to_string(),
+        "glm" => "GLM".to_string(),
+        "llm" | "api" => lower.to_ascii_uppercase(),
+        "deepseek" => "DeepSeek".to_string(),
+        "kimi" => "Kimi".to_string(),
+        "qwen" => "Qwen".to_string(),
+        "claude" => "Claude".to_string(),
+        "gemini" => "Gemini".to_string(),
+        "grok" => "Grok".to_string(),
+        "mimo" => "MiMo".to_string(),
+        "mini" | "pro" | "flash" | "sol" | "terra" | "luna" | "astra" | "fast" | "codex"
+        | "opus" | "sonnet" | "haiku" | "turbo" | "lite" | "reasoner" | "thinking" | "image" => {
+            capitalized()
+        }
+        // `v4` / `v2.5`：大写 V
+        _ if lower
+            .strip_prefix('v')
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.')) =>
+        {
+            format!("V{}", &lower[1..])
+        }
+        // 非首段的「字母+数字」短词（`k3`）：首字母大写
+        _ if !first
+            && lower.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && lower.chars().any(|c| c.is_ascii_digit())
+            && lower.len() <= 8 =>
+        {
+            capitalized()
+        }
+        // 版本号、编号、不认识的词原样保留
+        _ => raw.to_string(),
+    }
+}
+
+/// Claude 模型选择器的显示名：有组显示名用组名，否则把 slug 拼得像样点（不再是 `jojocodemax/gpt-6.1-sol`）；
 /// 副标题放供应商显示名（取不到就用前缀原文）。发给网关的 model id 不变。
 fn model_names(
     gateway: &GatewaySettings,
@@ -864,10 +931,11 @@ fn model_names(
         .iter()
         .map(|id| {
             let friendly = crate::gateway::route::model_display_name(gateway, id);
+            let slug = id.rsplit('/').next().unwrap_or(id);
             let name = if friendly != id.as_str() {
                 friendly.to_string()
             } else {
-                id.rsplit('/').next().unwrap_or(id).to_string()
+                friendly_model_name(slug)
             };
             let vendor = id.split('/').next().unwrap_or_default();
             let provider = gateway
@@ -1069,6 +1137,8 @@ pub fn resume_attached_proxy() -> Result<Option<u16>> {
         return Ok(None);
     };
     let node = node_runtime().context("未找到支持 fetch 和 WebSocket 的 Node.js")?;
+    // 升级 Codex++ 后恢复的代理也要用新版脚本，不能沿用状态目录里的旧副本。
+    install_assets(&root)?;
     start_backend(&root, &node, &config, Some(port)).map(Some)
 }
 
@@ -1832,6 +1902,18 @@ mod tests {
     }
 
     #[test]
+    fn friendly_model_names_read_like_product_names() {
+        assert_eq!(friendly_model_name("gpt-6.1-sol"), "GPT-6.1 Sol");
+        assert_eq!(friendly_model_name("gpt-5.6-terra"), "GPT-5.6 Terra");
+        assert_eq!(friendly_model_name("deepseek-v4-flash"), "DeepSeek V4 Flash");
+        assert_eq!(friendly_model_name("kimi-k3"), "Kimi K3");
+        assert_eq!(friendly_model_name("glm-5.3"), "GLM-5.3");
+        assert_eq!(friendly_model_name("claude-opus-4-6"), "Claude Opus 4 6");
+        // 不认识的词保持原样，不会凭空变形
+        assert_eq!(friendly_model_name("gpt-image-2-4k"), "GPT Image 2 4k");
+    }
+
+    #[test]
     fn internal_review_models_are_not_offered_as_chat_models() {
         let mut gateway = GatewaySettings::default();
         gateway.providers = vec![provider("openai", "gpt-6\ncodex-auto-review")];
@@ -2460,7 +2542,7 @@ server.listen(0,'127.0.0.1',()=>{
         );
     }
 
-    /// 选择器显示名：组模型用组名、普通模型去供应商前缀、副标题用供应商显示名。
+    /// 选择器显示名：组模型用组名、普通模型拼成产品名、副标题用供应商显示名。
     #[test]
     fn model_names_prefers_friendly_names_and_vendor_label() {
         let mut gateway = crate::gateway::store::GatewaySettings::default();
@@ -2469,7 +2551,7 @@ server.listen(0,'127.0.0.1',()=>{
         gateway.providers.push(provider);
         let names = model_names(&gateway, &["jojo/gpt-6.1-sol".to_string()]);
         let entry = &names["jojo/gpt-6.1-sol"];
-        assert_eq!(entry["name"], "gpt-6.1-sol");
+        assert_eq!(entry["name"], "GPT-6.1 Sol");
         assert_eq!(entry["description"], "Jojo Codemax");
     }
 
