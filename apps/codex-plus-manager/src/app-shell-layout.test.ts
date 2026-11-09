@@ -703,7 +703,9 @@ test("侧栏 Claude 播放键读 claude_local_status / claude_local_action，不
   const entry = functionSource("App");
   // App 传进侧栏的是一份轻量状态：running / busy / unavailableReason + 启停回调。
   assert.match(entry, /claudeRun=\{claudeRun\}/);
-  assert.match(entry, /const claudeRun = \{\n\s*running: Boolean\(claudeRunStatus\?\.running\),/);
+  // 代理活着、或 Claude 还挂在我们的代理端口上（代理已退）都算在跑，按钮才会给「停止」。
+  assert.match(entry, /const claudeAttached = Boolean\(claudeRunStatus\?\.running \|\| claudeRunStatus\?\.localProcess\);/);
+  assert.match(entry, /const claudeRun = \{\n\s*running: claudeAttached,/);
   assert.match(entry, /unavailableReason: !claudeRunStatus\n\s*\? null/);
   assert.match(entry, /onStart: \(\) => void claudeLocalRunAction\("launch"\),\n\s*onStop: \(\) => void claudeLocalRunAction\("stop"\),/);
   // 探测一次就够：读状态要查进程和钥匙串，App 层不轮询。

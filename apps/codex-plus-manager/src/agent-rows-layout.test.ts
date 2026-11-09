@@ -52,12 +52,17 @@ test("Codex 行有启动 / 停止键：只有主窗口传了 codexRun 才显示�
   const controls = source.slice(source.indexOf('<div className="cx-row-controls">'), source.indexOf("<Switch", source.indexOf('<div className="cx-row-controls">')));
   assert.match(controls, /<ModelPicker/);
   assert.match(controls, /isCodex && codexRun/);
-  assert.match(controls, /isClaude && claudeRun/);
+  assert.match(controls, /canLaunchClaudeDesktop && claudeRun/);
 });
 
 test("Claude Desktop 行有本地启动 / 停止键，其它 Agent 不显示", () => {
   // 只有 Claude Desktop 有可启停的本地启动器；Codex 的启动入口在侧栏和总览，Grok 没有本地启动器。
-  assert.match(source, /\{isClaude && claudeRun \? \(/);
+  // 绑定 id 是 `claude-desktop`（`claude` 是 Claude Code 命令行），两者都要认成 Claude。
+  assert.match(source, /const isClaude = agent\.agent === "claude" \|\| agent\.agent === "claude-desktop";/);
+  assert.match(source, /const canLaunchClaudeDesktop = agent\.agent === "claude-desktop";/);
+  assert.match(source, /\{canLaunchClaudeDesktop && claudeRun \? \(/);
+  assert.doesNotMatch(source, /\{isClaude && claudeRun \? \(/, "Claude Code 行不该出现本地启动键");
+  assert.match(source, /if \(canLaunchClaudeDesktop\) void refreshClaudeRun\(\);/);
   assert.match(source, /className="gw-icon-button gw-agent-run"/);
   assert.match(source, /data-running=\{claudeRun\.running\}/);
   assert.match(source, /invoke<ClaudeLocalRunStatus>\("claude_local_status"\)/);

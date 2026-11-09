@@ -129,6 +129,8 @@ pub struct ClaudeLocalStatus {
     pub version: String,
     pub claude_running: bool,
     pub running: bool,
+    /// Claude 还挂在本机代理上（哪怕代理进程已经退了）：这种「半开」状态要能按停止收尾。
+    pub local_process: bool,
     pub connected: bool,
     pub port: Option<u16>,
     pub ca_ready: bool,
@@ -484,6 +486,76 @@ fn node_runtime() -> Option<PathBuf> {
     .ok()
     .filter(|(success, _)| *success)
     .map(|_| node)
+}
+
+/// `--proxy-server` 完整标志：整词匹配，5351 不会误伤 53514。
+fn proxy_flag(port: u16) -> String {
+    format!("--proxy-server=http://127.0.0.1:{port}")
+}
+
+/// 进程列表里有没有进程把 `--proxy-server` 指到这个端口：
+/// 逐行、按空白切分，整词等于完整标志才算。
+fn processes_use_proxy(processes: &str, port: u16) -> bool {
+    let flag = proxy_flag(port);
+    processes
+        .lines()
+        .any(|line| line.split_whitespace().any(|token| token == flag))
+}
+
+/// 从 `pgrep -fl`（行首是 pid）里挑出挂在指定代理端口上的进程 pid。
+fn claude_pids_on_proxy(listing: &str, port: u16) -> Vec<u32> {
+    let flag = proxy_flag(port);
+    listing
+        .lines()
+        .filter_map(|line| {
+            let (pid, command) = line.trim().split_once(' ')?;
+            if command.split_whitespace().any(|token| token == flag) {
+                pid.trim().parse().ok()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 关掉「经本机代理启动」的 Claude：`--proxy-server=http://127.0.0.1:<port>` 是它独有的标记，
+/// 按端口整词匹配就不会误伤用户自己开的 Claude。返回是否真的动过进程。
+fn quit_claude_with_proxy(port: u16) -> Result<bool> {
+    if !cfg!(target_os = "macos") {
+        return Ok(false);
+    }
+    let pids = claude_pids_on_proxy(&claude_processes()?, port);
+    if pids.is_empty() {
+        return Ok(false);
+    }
+    for pid in &pids {
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && pids.iter().any(|pid| process_alive(*pid)) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for pid in pids.iter().filter(|pid| process_alive(**pid)) {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    Ok(true)
+}
+
+fn process_alive(pid: u32) -> bool {
+    Command::new("/bin/ps")
+        .args(["-p", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn claude_processes() -> Result<String> {
@@ -878,9 +950,17 @@ fn chosen_model(
     let routable = |model: &str| {
         !model.is_empty() && crate::gateway::route::model_is_routable(gateway, binding, model)
     };
+    // 「Agent 接入」页里 Claude Desktop 那一行写的是 `claude-desktop` 绑定；本地模式用的是
+    // `claude-desktop-local`。用户只看得见前者，所以以它为准，本地绑定自己的值退到第二位。
+    let sibling = gateway
+        .binding(&ToolId::Unknown("claude-desktop".into()))
+        .map(|binding| binding.model.trim().to_string())
+        .unwrap_or_default();
     let bound = binding.model.trim();
     let configured = config.model.trim();
-    if routable(bound) {
+    if routable(&sibling) {
+        sibling
+    } else if routable(bound) {
         bound.to_string()
     } else if routable(configured) {
         configured.to_string()
@@ -913,6 +993,13 @@ fn local_binding(gateway: &GatewaySettings, config: &ClaudeLocalSettings) -> Res
         binding.token = new_client_token(&agent);
     }
     Ok(binding)
+}
+
+/// `ready.json` 里记的端口：代理进程已经没了也还能用来认出「还挂着旧代理的 Claude」。
+fn ready_port(root: &Path) -> Option<u16> {
+    let bytes = fs::read(root.join("ready.json")).ok()?;
+    let value = serde_json::from_slice::<Value>(&bytes).ok()?;
+    value.get("port")?.as_u64()?.try_into().ok()
 }
 
 fn parse_ready(value: &Value, instance: &str, pid: u32) -> Option<u16> {
@@ -979,9 +1066,12 @@ pub fn status() -> Result<ClaudeLocalStatus> {
     let claude_running = !processes.is_empty();
     let runtime = runtime_status();
     // 完整功能模式直接用真实 profile，无 --user-data-dir；按代理端口识别本地进程。
-    let local_process = runtime.as_ref().is_some_and(|(port, _, _, _)| {
-        processes.contains(&format!("--proxy-server=http://127.0.0.1:{port}"))
-    });
+    let port_hint = runtime
+        .as_ref()
+        .map(|(port, _, _, _)| *port)
+        .or_else(|| ready_port(&root));
+    let local_process =
+        port_hint.is_some_and(|port| processes_use_proxy(&processes, port));
     let running = runtime.is_some();
     let connected = local_process
         && runtime.as_ref().is_some_and(|(_, _, _, health)| {
@@ -1044,6 +1134,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         source_app: source.to_string_lossy().into_owned(),
         claude_running,
         running,
+        local_process,
         connected,
         port: runtime.map(|(port, _, _, _)| port),
         ca_ready: ready,
@@ -1386,7 +1477,9 @@ pub fn stop_backend() {
         runtime.stdin.take();
         terminate_child(&mut runtime.child, Duration::from_secs(2));
     }
-    reap_stale_proxy(&root_dir());
+    let root = root_dir();
+    reap_stale_proxy(&root);
+    reap_orphan_proxies(&root);
 }
 
 /// 先礼后兵地结束一个子进程。
@@ -1422,6 +1515,11 @@ pub fn reap_stale_proxy(root: &Path) {
     if !is_our_proxy(pid, root) {
         return;
     }
+    terminate_pid(pid, root);
+}
+
+/// TERM → 最多等 2 秒（用 `is_our_proxy` 探活）→ 仍活着就 KILL。
+fn terminate_pid(pid: u32, root: &Path) {
     let _ = Command::new("/bin/kill")
         .args(["-TERM", &pid.to_string()])
         .stdout(Stdio::null())
@@ -1439,6 +1537,37 @@ pub fn reap_stale_proxy(root: &Path) {
             .status();
     }
 }
+
+/// 回收 `ready.json` 已经不记的遗留代理：重启前没回收成功的会一直占着端口和内存。
+/// 只收本目录（root）下的 `proxy.mjs`，排除自己和当前正在跑的 runtime 代理。
+#[cfg(target_os = "macos")]
+fn reap_orphan_proxies(root: &Path) {
+    let output = Command::new("/usr/bin/pgrep")
+        .args(["-f", "proxy.mjs"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else { return };
+    let current_child = runtime_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(|runtime| runtime.child.id());
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(pid) = line.trim().parse::<u32>() else {
+            continue;
+        };
+        if pid == 0 || pid == std::process::id() || Some(pid) == current_child {
+            continue;
+        }
+        if is_our_proxy(pid, root) {
+            terminate_pid(pid, root);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reap_orphan_proxies(_root: &Path) {}
 
 /// pid 还活着，且命令行就是本目录的 `proxy.mjs`（与 `ready.json` 里的旧记录核对）。
 fn is_our_proxy(pid: u32, root: &Path) -> bool {
@@ -1469,10 +1598,18 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
     let source = source_app();
     let message = match action {
         "stop" => {
+            let port = runtime_status()
+                .map(|(port, _, _, _)| port)
+                .or_else(|| ready_port(&root));
             stop_backend();
-            // 完整功能模式停止时把真实 profile 切回原始状态。
+            // 先让 Claude 退出，再还原 profile：Claude 退出时还会回写自己的配置。
+            let quit = port.map(quit_claude_with_proxy).transpose()?.unwrap_or(false);
             restore_real_profile(&app_support_dir(), &root)?;
-            "Claude 本地服务已停止，Claude 应用保持打开。".to_string()
+            if quit {
+                "Claude 本地服务已停止，经它启动的 Claude 已退出。".to_string()
+            } else {
+                "Claude 本地服务已停止。".to_string()
+            }
         }
         "trust" => {
             install_assets(&root)?;
@@ -1650,6 +1787,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config["deploymentMode"], json!("1p"));
+    }
+
+    #[test]
+    fn local_mode_follows_the_claude_desktop_binding_model() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers = vec![
+            provider("anthropic", "claude-sonnet-4-6"),
+            provider("relay", "gpt-6-astra\ngpt-6.1-sol"),
+        ];
+        gateway.bindings.insert(
+            "claude-desktop".into(),
+            AgentBinding {
+                model: "relay/gpt-6.1-sol".into(),
+                ..AgentBinding::default()
+            },
+        );
+        gateway.bindings.insert(
+            AGENT_ID.into(),
+            AgentBinding {
+                model: "relay/gpt-6-astra".into(),
+                ..AgentBinding::default()
+            },
+        );
+        let binding = local_binding(&gateway, &ClaudeLocalSettings::default()).unwrap();
+        assert_eq!(
+            binding.model, "relay/gpt-6.1-sol",
+            "用户在「Agent 接入」的 Claude Desktop 行选的模型说了算"
+        );
     }
 
     #[test]
@@ -2155,5 +2320,39 @@ server.listen(0,'127.0.0.1',()=>{
             wiring.root,
             "http://127.0.0.1:57321/gw/claude-desktop-local"
         );
+    }
+
+    /// 代理端口按整词匹配：5351 不能误伤 53514、535140，行尾无空格也算。
+    #[test]
+    fn processes_use_proxy_matches_the_whole_flag() {
+        let main = format!("4509 /Applications/Claude.app/Contents/MacOS/Claude {} --disable-http-cache --lang=zh-CN", proxy_flag(53514));
+        for (processes, port, expected) in [
+            (main.as_str(), 53514, true),
+            (main.as_str(), 5351, false),
+            (main.as_str(), 53515, false),
+        ] {
+            assert_eq!(processes_use_proxy(processes, port), expected, "{port}");
+        }
+        // 标志在行尾（后面没有空白）也要算。
+        let tail = format!("4509 /Applications/Claude.app/Contents/MacOS/Claude {}", proxy_flag(53514));
+        assert!(processes_use_proxy(&tail, 53514));
+        // 不带该标志的用户自己开的 Claude 不算。
+        assert!(!processes_use_proxy("4509 /Applications/Claude.app/Contents/MacOS/Claude", 53514));
+    }
+
+    /// pgrep -fl 输出里只取端口精确匹配的 Claude 主进程：helper 行和别的端口行都不算。
+    #[test]
+    fn claude_pids_on_proxy_picks_only_the_main_process_on_that_port() {
+        let listing = format!(
+            "4509 /Applications/Claude.app/Contents/MacOS/Claude {} --disable-http-cache
+             4512 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)
+             77248 /Applications/Claude.app/Contents/MacOS/Claude {}",
+            proxy_flag(53514),
+            proxy_flag(63917),
+        );
+        assert_eq!(claude_pids_on_proxy(&listing, 53514), vec![4509]);
+        assert_eq!(claude_pids_on_proxy(&listing, 63917), vec![77248]);
+        assert!(claude_pids_on_proxy(&listing, 5351).is_empty());
+        assert!(claude_pids_on_proxy("", 53514).is_empty());
     }
 }

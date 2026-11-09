@@ -5046,14 +5046,16 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const claudeRunStatus = claudeLocalRun?.status === "ok" ? claudeLocalRun : null;
+  /** 代理活着，或者 Claude 还挂在我们的代理端口上：两种情况都算「在跑」，按钮该是停止。 */
+  const claudeAttached = Boolean(claudeRunStatus?.running || claudeRunStatus?.localProcess);
   const claudeRun = {
-    running: Boolean(claudeRunStatus?.running),
+    running: claudeAttached,
     busy: claudeLocalRunBusy,
     unavailableReason: !claudeRunStatus
       ? null
       : !claudeRunStatus.supported
         ? t("未检测到支持的 Claude Desktop")
-        : claudeRunStatus.claudeRunning && !claudeRunStatus.running
+        : claudeRunStatus.claudeRunning && !claudeAttached
           ? t("Claude 正在运行，请先完全退出，再从 Codex++ 启动")
           : claudeRunStatus.config?.enabled && !claudeRunStatus.nodeAvailable
             ? t("缺少 Node.js，无法启动本地服务")
@@ -16353,6 +16355,8 @@ type ClaudeLocalStatus = {
   version: string;
   claudeRunning: boolean;
   running: boolean;
+  /** Claude 仍挂在本机代理上（代理进程可能已经退了）：这种半开状态也要能按「停止」收尾。 */
+  localProcess?: boolean;
   connected: boolean;
   port?: number | null;
   caReady: boolean;

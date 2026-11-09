@@ -60,6 +60,7 @@ type ClaudeLocalRunStatus = {
   status: string;
   message?: string;
   running?: boolean;
+  localProcess?: boolean;
   supported?: boolean;
   claudeRunning?: boolean;
   nodeAvailable?: boolean;
@@ -205,7 +206,11 @@ function AgentRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindingKey]);
 
-  const isClaude = agent.agent === "claude";
+  // 「Agent 接入」页里 Claude Desktop 的绑定 id 是 `claude-desktop`；`claude` 是 Claude Code（命令行），
+  // 两行都要能展开档位，但只有前者有本地启动器。
+  const isClaude = agent.agent === "claude" || agent.agent === "claude-desktop";
+  /** 只有「Claude Desktop」这一行有本地启动器；`claude` 是 Claude Code（命令行），不在这里启动。 */
+  const canLaunchClaudeDesktop = agent.agent === "claude-desktop";
   const isCodex = agent.agent === "codex";
   const connected = agent.enabled;
   /**
@@ -218,11 +223,13 @@ function AgentRow({
     try {
       const result = await invoke<ClaudeLocalRunStatus>("claude_local_status");
       if (result.status !== "ok") return;
+      // 代理活着、或 Claude 还挂在我们的代理端口上，都算「在跑」：按钮该给停止，点了就能收尾。
+      const attached = Boolean(result.running || result.localProcess);
       setClaudeRun({
-        running: Boolean(result.running),
+        running: attached,
         unavailableReason: !result.supported
           ? t("未检测到支持的 Claude Desktop")
-          : result.claudeRunning && !result.running
+          : result.claudeRunning && !attached
             ? t("Claude 正在运行，请先完全退出，再从 Codex++ 启动")
             : result.config?.enabled && !result.nodeAvailable
               ? t("缺少 Node.js，无法启动本地服务")
@@ -233,7 +240,7 @@ function AgentRow({
     }
   };
   useEffect(() => {
-    if (isClaude) void refreshClaudeRun();
+    if (canLaunchClaudeDesktop) void refreshClaudeRun();
     // 只在 Claude 那一行探测一次；动作后自己会刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isClaude]);
@@ -383,7 +390,7 @@ function AgentRow({
                   : <Play aria-hidden="true" className="h-4 w-4" />}
             </button>
           ) : null}
-          {isClaude && claudeRun ? (
+          {canLaunchClaudeDesktop && claudeRun ? (
             <button
               aria-label={claudeRun.running ? t("停止本地服务") : t("启动 Claude")}
               className="gw-icon-button gw-agent-run"
@@ -460,7 +467,9 @@ function AgentDetail({
   /** 去供应商池（弹窗里是关掉弹窗再去）。 */
   onManage: () => void;
 }) {
-  const isClaude = agent.agent === "claude";
+  // 「Agent 接入」页里 Claude Desktop 的绑定 id 是 `claude-desktop`；`claude` 是 Claude Code（命令行），
+  // 两行都要能展开档位，但只有前者有本地启动器。
+  const isClaude = agent.agent === "claude" || agent.agent === "claude-desktop";
   const [selecting, setSelecting] = useState(false);
   const [windowText, setWindowText] = useState(draft.contextWindow);
   // 通用 Agent 有的只能在自己界面里填 Key（如 Zed 存在钥匙串里）：给出地址和本 Agent 的网关 token 一键复制。
