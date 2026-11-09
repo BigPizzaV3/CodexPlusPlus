@@ -52,6 +52,10 @@ pub struct ClaudeLocalSettings {
     pub voice_input: bool,
     pub computer_use: bool,
     pub background_mode: bool,
+    /// Claude 里显示的用户名；空串按「Local User」。
+    pub display_name: String,
+    /// Claude 里显示的套餐：free / pro / max / ultra。
+    pub plan: String,
 }
 
 impl Default for ClaudeLocalSettings {
@@ -63,6 +67,37 @@ impl Default for ClaudeLocalSettings {
             voice_input: true,
             computer_use: false,
             background_mode: false,
+            display_name: String::new(),
+            plan: "ultra".into(),
+        }
+    }
+}
+
+impl ClaudeLocalSettings {
+    /// 套餐只认 free / pro / max / ultra（大小写不敏感），其他一律 ultra。
+    pub fn normalized_plan(&self) -> &str {
+        match self.plan.trim().to_ascii_lowercase().as_str() {
+            "free" => "free",
+            "pro" => "pro",
+            "max" => "max",
+            _ => "ultra",
+        }
+    }
+
+    /// 显示名：trim、去控制字符、最多 64 字符；空则按默认「Local User」。
+    pub fn effective_display_name(&self) -> String {
+        let name: String = self
+            .display_name
+            .trim()
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(64)
+            .collect();
+        let name = name.trim();
+        if name.is_empty() {
+            "Local User".to_string()
+        } else {
+            name.to_string()
         }
     }
 }

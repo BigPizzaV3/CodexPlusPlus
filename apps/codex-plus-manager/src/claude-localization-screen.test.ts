@@ -606,6 +606,25 @@ test("原版启动与模式保存失败保留配置，不自动回退增强副�
   assert.equal(screen.calls.some((call) => call.command.startsWith("claude_localization")), false);
 });
 
+test("用户名与套餐：默认 Ultra，改名与换套餐各发一次 claude_local_configure", async () => {
+  const screen = harness(undefined, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
+  const selects = findElements(screen.render(), "AppSelect");
+  const plan = selects.find((item) => item.props.ariaLabel === "套餐")!;
+  assert.equal(plan.props.value, "ultra");
+  plan.props.onChange("free");
+  await tick();
+  assert.equal(screen.calls[0].command, "claude_local_configure");
+  assert.equal((screen.calls[0].args[0] as { config: { plan: string } }).config.plan, "free");
+  // 上一次保存未完成时 configureLocal 会被丢弃：先让它落定再改用户名。
+  screen.calls[0].resolve({ ...localReady, config: { ...localReady.config, plan: "free" } });
+  await tick();
+  const name = findElements(screen.render(), "Input").find((item) => item.props["aria-label"] === "用户名")!;
+  name.props.onBlur({ currentTarget: { value: "张三" } });
+  await tick();
+  assert.equal(screen.calls[1].command, "claude_local_configure");
+  assert.equal((screen.calls[1].args[0] as { config: { displayName: string } }).config.displayName, "张三");
+});
+
 test("默认模型不在这一页选：只留一句说明，不放下拉也不放跳转", () => {
   const screen = harness(undefined, {}, {
     localMemo: { status: { ...localReady, config: { ...localReady.config, enabled: true } }, autoDetected: true },

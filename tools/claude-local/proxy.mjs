@@ -25,7 +25,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
-import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelList, modelSelectors, modelWindow, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -130,24 +130,28 @@ const cert = fs.readFileSync(path.join(CA_DIR, "server.crt"));
 const ctx = tls.createSecureContext({ key, cert });
 
 // ── mock 数据 ────────────────────────────────────────────────
+// 显示给 Claude 的账号信息：用户名与套餐来自本地设置。
+const plan = planProfile(runtime.plan);
+const displayName = runtime.displayName;
+const isMax = plan.capabilities.includes("claude_max");
 const ACCOUNT = {
   id: "c46bd1eb-fbbf-4e5a-9bb3-5ebe8521eb54",
   uuid: "c46bd1eb-fbbf-4e5a-9bb3-5ebe8521eb54",
   email: "local@claude.local",
-  name: "Local User",
-  full_name: "Local User",
-  plan_type: "max",
-  plan: "max",
-  tier: "max",
-  user_tier: "max",
-  plan_tier: "max",
-  entitlement_tier: "max",
-  membership_plan: "max",
-  plan_display_name: "Max",
-  plan_display_label: "Max",
-  subscription: { plan: "max", status: "active" },
-  is_max: true,
-  has_claude_max: true,
+  name: displayName,
+  full_name: displayName,
+  plan_type: plan.plan,
+  plan: plan.plan,
+  tier: plan.plan,
+  user_tier: plan.plan,
+  plan_tier: plan.plan,
+  entitlement_tier: plan.plan,
+  membership_plan: plan.plan,
+  plan_display_name: plan.label,
+  plan_display_label: plan.label,
+  subscription: { plan: plan.plan, status: "active" },
+  is_max: isMax,
+  has_claude_max: isMax,
   capabilities: [
     "chat",
     "projects",
@@ -167,17 +171,16 @@ const ORG = {
   name: "Local",
   organization_type: "personal",
   raven_type: "personal",
-  plan_type: "max",
-  plan: "max",
-  tier: "max",
-  user_tier: "max",
-  plan_tier: "max",
-  entitlement_tier: "max",
-  membership_plan: "max",
+  plan_type: plan.plan,
+  plan: plan.plan,
+  tier: plan.plan,
+  user_tier: plan.plan,
+  plan_tier: plan.plan,
+  entitlement_tier: plan.plan,
+  membership_plan: plan.plan,
   capabilities: [
     "chat",
-    "claude_pro",
-    "claude_max",
+    ...plan.capabilities,
     "projects",
     "artifacts",
     "computer_use",
@@ -192,10 +195,10 @@ const ORG = {
   settings: {},
   visibility_status: "active",
   parent_organization_uuid: null,
-  rate_limit_tier: "default_claude_max_20x",
-  analytics_subscription_plan: "claude_max",
-  plan_display_name: "Max",
-  plan_display_label: "Max",
+  rate_limit_tier: plan.rateLimitTier,
+  analytics_subscription_plan: plan.analytics,
+  plan_display_name: plan.label,
+  plan_display_label: plan.label,
   has_hosted_code_environments: false,
   claude_ai_bootstrap_models_config: runtime.models.map((model) => ({
     model, name: model, description: "", paprika_modes: [], thinking_modes: [],
@@ -442,19 +445,19 @@ const FAKE_ACCOUNT = {
   email: ACCOUNT.email,
   name: ACCOUNT.name,
   full_name: ACCOUNT.name,
-  plan_type: "max",
-  plan: "max",
-  tier: "max",
-  user_tier: "max",
-  plan_tier: "max",
-  entitlement_tier: "max",
-  membership_plan: "max",
-  plan_display_name: "Max",
-  plan_display_label: "Max",
-  is_max: true,
-  has_claude_max: true,
-  membership: { plan: "max", status: "active", plan_type: "max" },
-  subscription: { plan: "max", status: "active" },
+  plan_type: plan.plan,
+  plan: plan.plan,
+  tier: plan.plan,
+  user_tier: plan.plan,
+  plan_tier: plan.plan,
+  entitlement_tier: plan.plan,
+  membership_plan: plan.plan,
+  plan_display_name: plan.label,
+  plan_display_label: plan.label,
+  is_max: isMax,
+  has_claude_max: isMax,
+  membership: { plan: plan.plan, status: "active", plan_type: plan.plan },
+  subscription: { plan: plan.plan, status: "active" },
   organization_uuid: ORG.uuid,
   organization: ORG,
   capabilities: ACCOUNT.capabilities,
@@ -512,16 +515,16 @@ function localAccount(source = {}) {
   const membership = localMembership();
   normalized.organization_uuid = ORG.uuid;
   normalized.organization = ORG;
-  normalized.plan_type = "max";
-  normalized.plan = "max";
-  normalized.tier = "max";
-  normalized.user_tier = "max";
-  normalized.plan_tier = "max";
-  normalized.entitlement_tier = "max";
-  normalized.membership_plan = "max";
-  normalized.plan_display_name = "Max";
-  normalized.plan_display_label = "Max";
-  normalized.subscription = { plan: "max", status: "active" };
+  normalized.plan_type = plan.plan;
+  normalized.plan = plan.plan;
+  normalized.tier = plan.plan;
+  normalized.user_tier = plan.plan;
+  normalized.plan_tier = plan.plan;
+  normalized.entitlement_tier = plan.plan;
+  normalized.membership_plan = plan.plan;
+  normalized.plan_display_name = plan.label;
+  normalized.plan_display_label = plan.label;
+  normalized.subscription = { plan: plan.plan, status: "active" };
   normalized.memberships = [membership];
   normalized.workspace_memberships = [membership];
   normalized.memberships_incomplete = false;
@@ -997,7 +1000,7 @@ function mockApi(req, res, url) {
   // /upgrade 页：缺这些会 TypeError 进 fatal boundary（toLowerCase of undefined）
   if (/\/subscription_details$/.test(p)) {
     return json(res, {
-      plan: { code: "claude_max", name: "Max", tier: "max" },
+      plan: { code: `claude_${plan.plan}`, name: plan.label, tier: plan.plan },
       status: "active", billing_type: "stripe_subscription",
       interval: "month", amount: 10000, currency: "usd",
       next_payment_date: null, cancel_at_period_end: false, seats: 1,
@@ -1021,12 +1024,12 @@ function mockApi(req, res, url) {
       status: "allowed",
       is_eligible: true,
       reason: null,
-      plan: "max",
-      plan_type: "max",
-      subscription_plan: "max",
+      plan: plan.plan,
+      plan_type: plan.plan,
+      subscription_plan: plan.plan,
       billing_type: "stripe_subscription",
-      rate_limit_tier: "default_claude_max_20x",
-      analytics_subscription_plan: "claude_max",
+      rate_limit_tier: plan.rateLimitTier,
+      analytics_subscription_plan: plan.analytics,
       organization: ORG,
       organization_uuid: ORG.uuid,
       account: localAccount(ACCOUNT),

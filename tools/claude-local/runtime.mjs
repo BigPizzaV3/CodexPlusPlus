@@ -12,6 +12,19 @@ const isText = (value, max = MAX_TEXT) => typeof value === "string" && value.len
 const isId = (value) => typeof value === "string" && idPattern.test(value);
 const isDate = (value) => typeof value === "string" && value.length <= 64 && Number.isFinite(Date.parse(value));
 
+// Claude 前端只认 free / pro / max 和 max 的 5x/20x，没有 Ultra 档：
+// Ultra 按最高档 max_20x 发，只是显示名不同。
+export const PLANS = {
+  free:  { plan: "free", label: "Free",  capabilities: [],                           rateLimitTier: "default_claude_ai",      analytics: "claude_free" },
+  pro:   { plan: "pro",  label: "Pro",   capabilities: ["claude_pro"],               rateLimitTier: "default_claude_ai",      analytics: "claude_pro" },
+  max:   { plan: "max",  label: "Max",   capabilities: ["claude_pro", "claude_max"], rateLimitTier: "default_claude_max_5x",  analytics: "claude_max" },
+  ultra: { plan: "max",  label: "Ultra", capabilities: ["claude_pro", "claude_max"], rateLimitTier: "default_claude_max_20x", analytics: "claude_max" },
+};
+
+export function planProfile(plan) {
+  return PLANS[plan] || PLANS.ultra;
+}
+
 export function runtimeConfig(env = process.env) {
   const managed = env.CLAUDE_LOCAL_MANAGED === "1";
   const flag = (name) => env[`CLAUDE_LOCAL_${name}`] !== "0";
@@ -85,7 +98,15 @@ export function runtimeConfig(env = process.env) {
     voiceInput: flag("VOICE_INPUT"),
     computerUse: flag("COMPUTER_USE"),
     backgroundMode: flag("BACKGROUND_MODE"),
+    displayName: displayName(env.CLAUDE_LOCAL_DISPLAY_NAME),
+    plan: PLANS[env.CLAUDE_LOCAL_PLAN] ? env.CLAUDE_LOCAL_PLAN : "ultra",
   };
+}
+
+// 显示名：trim、去控制字符、最多 64 字符；空则按默认。
+function displayName(value) {
+  const name = String(value ?? "").trim().replace(/[\u0000-\u001F\u007F]/g, "").slice(0, 64).trim();
+  return name || "Local User";
 }
 
 export function gatewayTarget(config, requestPath) {

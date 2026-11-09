@@ -16347,6 +16347,8 @@ type ClaudeLocalConfig = {
   voiceInput: boolean;
   computerUse: boolean;
   backgroundMode: boolean;
+  displayName?: string;
+  plan?: string;
 };
 
 type ClaudeLocalStatus = {
@@ -16892,6 +16894,37 @@ function ClaudeLocalizationScreen(
           </CxRow>
           {/* 模型跟着「Agent 接入」里的 Claude Desktop 绑定走：这里只说明，不放第二个入口。 */}
           <CxRow detail={t("模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。")} title={t("默认模型")} />
+          <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("用户名")}>
+            <Input
+              aria-label={t("用户名")}
+              defaultValue={local?.config.displayName ?? ""}
+              disabled={localDisabled || !local?.supported}
+              key={local?.config.displayName ?? ""}
+              onBlur={(event) => {
+                if (local && event.currentTarget.value !== (local.config.displayName ?? "")) void configureLocal({ ...local.config, displayName: event.currentTarget.value });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              placeholder={t("Local User")}
+            />
+          </CxRow>
+          <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("套餐")}>
+            <AppSelect
+              ariaLabel={t("套餐")}
+              disabled={localDisabled || !local?.supported}
+              onChange={(next) => {
+                if (local) void configureLocal({ ...local.config, plan: next });
+              }}
+              options={[
+                { value: "free", label: "Free" },
+                { value: "pro", label: "Pro" },
+                { value: "max", label: "Max" },
+                { value: "ultra", label: "Ultra" },
+              ]}
+              value={local?.config.plan || "ultra"}
+            />
+          </CxRow>
         </CxCard>
         {local?.config.enabled ? (
           <>

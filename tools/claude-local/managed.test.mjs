@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { decode, get, asMsg, asStr, ld, vi } from "./rpc.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
-import { createStateStore, gatewayModel, gatewayTarget, modelWindow, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayModel, gatewayTarget, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
@@ -575,4 +575,26 @@ test("recorded data dir opts managed mode into the PoC data path", () => {
   // 未提供时同样保持合成数据路径
   delete env.CLAUDE_LOCAL_RECORDED_DIR;
   assert.equal(runtimeConfig(env).recordedDir, null);
+});
+
+test("runtime config parses display name and plan with safe defaults", () => {
+  assert.equal(runtimeConfig({}).displayName, "Local User");
+  assert.equal(runtimeConfig({}).plan, "ultra");
+  assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: "  张三  " }).displayName, "张三");
+  assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: "a\nb\t" }).displayName, "ab");
+  assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: "x".repeat(80) }).displayName.length, 64);
+  assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: " \t\n " }).displayName, "Local User");
+  for (const [raw, expected] of [["free", "free"], ["pro", "pro"], ["max", "max"], ["ultra", "ultra"], ["vip", "ultra"], ["", "ultra"]]) {
+    assert.equal(runtimeConfig({ CLAUDE_LOCAL_PLAN: raw }).plan, expected, raw);
+  }
+});
+
+test("plan profile covers all four tiers", () => {
+  assert.equal(planProfile("free").plan, "free");
+  assert.equal(planProfile("free").rateLimitTier, "default_claude_ai");
+  assert.deepEqual(planProfile("pro").capabilities, ["claude_pro"]);
+  assert.equal(planProfile("max").rateLimitTier, "default_claude_max_5x");
+  assert.equal(planProfile("ultra").rateLimitTier, "default_claude_max_20x");
+  assert.equal(planProfile("ultra").label, "Ultra");
+  assert.equal(planProfile("nope").label, "Ultra");
 });

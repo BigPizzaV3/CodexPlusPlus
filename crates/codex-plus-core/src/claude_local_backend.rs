@@ -934,6 +934,9 @@ fn validate_config(mut config: ClaudeLocalSettings) -> Result<ClaudeLocalSetting
     if config.background_mode {
         config.computer_use = true;
     }
+    // 显示名与套餐按白名单落盘：界面改哪一格都不影响其它字段的规范化。
+    config.display_name = config.effective_display_name();
+    config.plan = config.normalized_plan().to_string();
     Ok(config)
 }
 
@@ -1303,7 +1306,9 @@ fn start_backend(root: &Path, node: &Path, config: &ClaudeLocalSettings) -> Resu
         .env("CLAUDE_LOCAL_LOCALIZATION", flag(config.localization))
         .env("CLAUDE_LOCAL_VOICE_INPUT", flag(config.voice_input))
         .env("CLAUDE_LOCAL_COMPUTER_USE", flag(config.computer_use))
-        .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode));
+        .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
+        .env("CLAUDE_LOCAL_DISPLAY_NAME", config.effective_display_name())
+        .env("CLAUDE_LOCAL_PLAN", config.normalized_plan());
     if let Some(dir) = recorded_data_dir() {
         command.env("CLAUDE_LOCAL_RECORDED_DIR", dir);
     }
@@ -2332,6 +2337,31 @@ server.listen(0,'127.0.0.1',()=>{
             wiring.root,
             "http://127.0.0.1:57321/gw/claude-desktop-local"
         );
+    }
+
+    /// 显示名与套餐：缺字段走默认（ultra / 空名→Local User），非法值被规范化。
+    #[test]
+    fn display_name_and_plan_defaults_and_normalization() {
+        let config: crate::settings::ClaudeLocalSettings =
+            serde_json::from_str("{}").unwrap();
+        assert_eq!(config.plan, "ultra");
+        assert_eq!(config.display_name, "");
+        assert_eq!(config.normalized_plan(), "ultra");
+        assert_eq!(config.effective_display_name(), "Local User");
+
+        let mut config = crate::settings::ClaudeLocalSettings::default();
+        for (raw, expected) in [("FREE", "free"), ("Pro", "pro"), ("max", "max"), (" vip ", "ultra")] {
+            config.plan = raw.into();
+            assert_eq!(config.normalized_plan(), expected, "{raw}");
+        }
+        config.display_name = "  张三\u{1f600}  ".into();
+        assert_eq!(config.effective_display_name(), "张三\u{1f600}");
+        config.display_name = "a\nb\t".into();
+        assert_eq!(config.effective_display_name(), "ab");
+        config.display_name = "x".repeat(80);
+        assert_eq!(config.effective_display_name().chars().count(), 64);
+        config.display_name = " \t\n ".into();
+        assert_eq!(config.effective_display_name(), "Local User");
     }
 
     /// 代理端口按整词匹配：5351 不能误伤 53514、535140，行尾无空格也算。
