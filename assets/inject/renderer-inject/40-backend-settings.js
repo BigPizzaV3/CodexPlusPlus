@@ -1062,7 +1062,9 @@
   function syncCodexPlusRailNativeSelection() {
     const root = document.documentElement;
     if (!root) return;
-    if (!document.querySelector(`.${codexPlusPageClass}`)) {
+    const open = Boolean(document.querySelector(`.${codexPlusPageClass}`));
+    syncCodexPlusPagePopupStyle(open);
+    if (!open) {
       root.removeAttribute("data-codex-plus-page-open");
       root.style.removeProperty("--codex-plus-rail-dim");
       return;

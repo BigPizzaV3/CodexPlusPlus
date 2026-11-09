@@ -514,12 +514,6 @@
         letter-spacing: -0.15px;
         white-space: nowrap;
       }
-      /*
-       * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
-       * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
-       * 只提升里面的节点逃不出这个堆叠上下文，所以直接父容器也一起提升。
-       */
-      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),
@@ -1831,6 +1825,27 @@
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-group-head,
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-empty { display: none; }
         .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  function syncCodexPlusPagePopupStyle(open) {
+    const id = `${styleId}-page-popups`;
+    const existing = document.getElementById(id);
+    if (!open) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    // 仅在管理页打开时提升原生弹层的直接定位容器。即使根条件不命中，
+    // 常驻的 :has() 仍会增加聊天 DOM 变化时的样式失效开销。
+    const style = document.createElement("style");
+    style.id = id;
+    style.setAttribute("data-codex-plus-ext", "page-popup-style");
+    style.textContent = `
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *) {
+        z-index: 2147483645 !important;
       }
     `;
     document.documentElement.appendChild(style);
