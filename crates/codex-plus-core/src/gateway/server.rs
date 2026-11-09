@@ -1410,7 +1410,13 @@ async fn handle_models(
 pub fn exposed_models(gateway: &GatewaySettings, agent: &ToolId) -> Vec<String> {
     gateway
         .binding(agent)
-        .map(|binding| route::binding_exposed_models(gateway, binding))
+        .map(|binding| {
+            if *agent == ToolId::Codex {
+                route::codex_binding_models(gateway, binding)
+            } else {
+                route::binding_exposed_models(gateway, binding)
+            }
+        })
         .unwrap_or_default()
 }
 

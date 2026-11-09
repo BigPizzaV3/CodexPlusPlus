@@ -10,7 +10,7 @@ use codex_plus_core::routes::{
     CoreRuntimeService, evaluate_extension_cdp, handle_bridge_request,
 };
 use codex_plus_core::agent_pet;
-use codex_plus_core::settings::{BackendSettings, RelayProfile};
+use codex_plus_core::settings::{BackendSettings, RelayProfile, RelayProtocol};
 use codex_plus_core::status::StatusStore;
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -257,6 +257,123 @@ async fn settings_payload_fingerprint_follows_model_catalog_fields() {
     assert!(first["activeRelayProfilePublic"].get("baseUrl").is_none());
     assert_eq!(first["modelCatalogFingerprint"], same["modelCatalogFingerprint"]);
     assert_ne!(first["modelCatalogFingerprint"], changed["modelCatalogFingerprint"]);
+}
+
+#[tokio::test]
+async fn internal_catalog_source_identity_tracks_connection_without_public_exposure() {
+    use codex_plus_core::settings::{RelayApiKey, RelayMode};
+
+    async fn read(settings: BackendSettings, path: &str) -> Value {
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings)),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData::default()),
+        );
+        handle_bridge_request(ctx, path, json!({})).await
+    }
+    let mut settings = settings_with_secret_profile("model");
+    settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
+    settings.relay_profiles[0].api_keys = vec![RelayApiKey {
+        id: "key".into(), name: "key".into(), api_key: "secret-a".into(),
+    }];
+    let first = read(settings.clone(), "/settings/get").await;
+    let same = read(settings.clone(), "/settings/get").await;
+    let identity = first["modelCatalogSourceIdentity"].as_str().unwrap();
+    assert!(!identity.is_empty());
+    assert!(!identity.contains("secret"));
+    assert_eq!(first["modelCatalogSourceIdentity"], same["modelCatalogSourceIdentity"]);
+    let mut changed = settings.clone();
+    changed.relay_profiles[0].api_keys[0].api_key = "secret-b".into();
+    assert_eq!(
+        identity,
+        read(changed, "/settings/get").await["modelCatalogSourceIdentity"],
+        "changing credentials must not clear same-source grouping memory"
+    );
+    let mut changed = settings.clone();
+    changed.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
+    assert_ne!(identity, read(changed, "/settings/get").await["modelCatalogSourceIdentity"]);
+    let mut changed = settings.clone();
+    changed.relay_profiles[0].config_contents.clear();
+    changed.relay_profiles[0].base_url = "https://different.example/v1".into();
+    assert_ne!(identity, read(changed, "/settings/get").await["modelCatalogSourceIdentity"]);
+    let mut renamed = settings.clone();
+    renamed.relay_profiles[0].name = "New name".into();
+    assert_eq!(identity, read(renamed, "/settings/get").await["modelCatalogSourceIdentity"]);
+    assert!(read(settings, "/settings/public").await.get("modelCatalogSourceIdentity").is_none());
+}
+
+#[tokio::test]
+async fn public_catalog_fingerprint_tracks_active_aggregate_members() {
+    use codex_plus_core::settings::RelayMode;
+
+    async fn read(settings: BackendSettings) -> Value {
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings)),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData::default()),
+        );
+        handle_bridge_request(ctx, "/settings/public", json!({})).await
+    }
+
+    let mut settings = settings_with_secret_profile("deepseek-v4-pro");
+    settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
+    settings.relay_profiles.push(RelayProfile {
+        id: "agg".into(),
+        name: "Aggregate".into(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    });
+    settings.relay_profiles.push(RelayProfile {
+        id: "unrelated".into(),
+        name: "Unrelated".into(),
+        ..RelayProfile::default()
+    });
+    settings.active_relay_id = "agg".into();
+    settings.active_aggregate_relay_id = "agg".into();
+    settings.aggregate_relay_profiles = vec![serde_json::from_value(json!({
+        "id": "agg",
+        "name": "Aggregate",
+        "modelAggregationEnabled": true,
+        "members": [{"relayId": "p1"}]
+    })).unwrap()];
+
+    let initial = read(settings.clone()).await;
+    let fingerprint = &initial["modelCatalogFingerprint"];
+    assert!(!initial.to_string().contains("secret"));
+    for field in ["list", "name", "metadata", "windows", "compact", "default", "tool_search", "availability"] {
+        let mut changed = settings.clone();
+        let member = &mut changed.relay_profiles[0];
+        match field {
+            "list" => member.model_list.push_str("\nnew-model"),
+            "name" => member.name.push_str(" renamed"),
+            "metadata" => member.model_metadata = r#"{"deepseek-v4-pro":{"display_name":"New"}}"#.into(),
+            "windows" => member.model_windows = r#"{"deepseek-v4-pro":"200000"}"#.into(),
+            "compact" => member.model_auto_compact = r#"{"deepseek-v4-pro":"80"}"#.into(),
+            "default" => member.config_contents = "model = \"new-default\"\n".into(),
+            "tool_search" => member.disable_tool_search = true,
+            "availability" => {
+                member.api_key.clear();
+                member.auth_contents.clear();
+                member.config_contents = "model = \"deepseek-v4-pro\"\n".into();
+            }
+            _ => unreachable!(),
+        }
+        assert_ne!(fingerprint, &read(changed).await["modelCatalogFingerprint"], "{field}");
+    }
+
+    let mut unrelated = settings.clone();
+    unrelated.relay_profiles[2].model_list = "different".into();
+    assert_eq!(fingerprint, &read(unrelated).await["modelCatalogFingerprint"]);
+
+    let mut rotated = settings.clone();
+    rotated.relay_profiles[0].api_key = "another-secret".into();
+    rotated.relay_profiles[0].auth_contents = "another-secret".into();
+    rotated.relay_profiles[0].upstream_base_url = "https://another-secret.example/v1".into();
+    assert_eq!(fingerprint, &read(rotated).await["modelCatalogFingerprint"]);
+
+    let mut missing = settings.clone();
+    missing.relay_profiles.remove(0);
+    assert_ne!(fingerprint, &read(missing).await["modelCatalogFingerprint"]);
 }
 
 #[tokio::test]

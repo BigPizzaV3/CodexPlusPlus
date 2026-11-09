@@ -473,7 +473,7 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
     Some(ui)
 }
 
-fn model_speed_tier_is(tier: &Value, expected: &str) -> bool {
+pub(crate) fn model_speed_tier_is(tier: &Value, expected: &str) -> bool {
     tier.as_str().or_else(|| tier.get("id").and_then(Value::as_str))
         .is_some_and(|id| id.trim().eq_ignore_ascii_case(expected))
 }

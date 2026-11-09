@@ -984,8 +984,14 @@ where
         // 工具写入的隐式默认且有未归档目标任务时，对齐到目标任务模型。
         if settings.relay_profiles_enabled {
             // 只升级受管目录和指针，不重放 profile 或覆盖用户选定模型。
-            crate::relay_config::migrate_managed_model_catalog_pointer_in_home(&home, &settings)
-                .context("启动前升级模型目录失败")?;
+            if let Err(error) =
+                crate::relay_config::migrate_managed_model_catalog_pointer_in_home(&home, &settings)
+            {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.model_catalog_pointer_migration_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
             let profile = settings.active_relay_profile();
             if profile.relay_mode != crate::settings::RelayMode::Official {
                 if let Err(error) =

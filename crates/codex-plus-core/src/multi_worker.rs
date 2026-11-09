@@ -1185,7 +1185,14 @@ fn arguments_user_data_matches(arguments: &[String], expected: &Path) -> anyhow:
     anyhow::ensure!(!path.is_empty(), "数据目录参数为空");
     let path = Path::new(path);
     anyhow::ensure!(path.is_absolute(), "进程数据目录是相对路径，无法确认归属");
-    let actual = path.canonicalize()?;
+    // 解析的是别的进程命令行里的目录：它可能已经不存在（旧实例目录被删），
+    // canonicalize 报 os error 3，目录不存在就不可能是我们这个已解析成功的目录，
+    // 判不匹配而不是让整段清理中止（#3004）。
+    let actual = match path.canonicalize() {
+        Ok(actual) => actual,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
     #[cfg(windows)]
     return Ok(actual
         .to_string_lossy()
@@ -1769,6 +1776,25 @@ mod tests {
             arguments_user_data_matches(&["Codex".into(), "--user-data-dir".into()], &expected)
                 .is_err()
         );
+    }
+
+    /// #3004：别的进程命令行里的目录可能已被删除（os error 3），判不匹配而不是报错中止清理。
+    #[test]
+    fn missing_user_data_argument_matches_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let own = temp.path().join("own data");
+        std::fs::create_dir(&own).unwrap();
+        let expected = own.canonicalize().unwrap();
+        let missing = temp.path().join("deleted-instance").join("user data");
+        for args in [
+            vec!["Codex".into(), format!("--user-data-dir={}", missing.display())],
+            vec!["Codex".into(), "--user-data-dir".into(), missing.display().to_string()],
+        ] {
+            assert_eq!(arguments_user_data_matches(&args, &expected).unwrap(), false);
+        }
+        // 存在的目录与 expected 相同时仍匹配。
+        let args = vec!["Codex".into(), format!("--user-data-dir={}", own.display())];
+        assert!(arguments_user_data_matches(&args, &expected).unwrap());
     }
 
     #[test]

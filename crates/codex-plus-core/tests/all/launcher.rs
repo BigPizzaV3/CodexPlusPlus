@@ -1930,9 +1930,9 @@ async fn launch_upgrades_legacy_context_catalog_before_starting_codex() {
             r#"{"models":[{"slug":"chosen","context_window":131072,"max_context_window":131072}]}"#
         };
         std::fs::write(&catalog_path, original).unwrap();
-        std::fs::write(home.join("config.toml"),
-            "model = 'chosen'\nmodel_catalog_json = 'model-catalogs/legacy.json'\n"
-        ).unwrap();
+        let original_config =
+            "model = 'chosen'\nmodel_catalog_json = 'model-catalogs/legacy.json'\n";
+        std::fs::write(home.join("config.toml"), original_config).unwrap();
         let result = launch_and_inject_with_hooks(
             LaunchOptions {
                 app_dir: Some(app_dir),
@@ -1941,11 +1941,20 @@ async fn launch_upgrades_legacy_context_catalog_before_starting_codex() {
             },
             &hooks,
         ).await;
+        let handle = result.unwrap();
         if invalid {
-            assert!(format!("{:#}", result.err().unwrap()).contains("升级模型目录失败"));
-            assert!(!events.lock().unwrap().iter().any(|event| event.starts_with("launch:")));
+            assert!(events.lock().unwrap().iter().any(|event| event.starts_with("launch:")));
+            assert_eq!(
+                std::fs::read_to_string(home.join("config.toml")).unwrap(),
+                original_config
+            );
+            assert_eq!(std::fs::read_to_string(&catalog_path).unwrap(), original);
+            let log =
+                std::fs::read_to_string(codex_plus_core::diagnostic_log::diagnostic_log_path())
+                    .unwrap();
+            assert!(log.contains("launcher.model_catalog_pointer_migration_failed"));
+            assert!(log.contains("解析待升级模型目录失败"));
         } else {
-            let handle = result.unwrap();
             let config: toml_edit::DocumentMut =
                 std::fs::read_to_string(home.join("config.toml")).unwrap().parse().unwrap();
             assert_eq!(config["model"].as_str(), Some("chosen"));
@@ -1955,8 +1964,8 @@ async fn launch_upgrades_legacy_context_catalog_before_starting_codex() {
                 serde_json::from_slice(&std::fs::read(migrated).unwrap()).unwrap();
             assert!(catalog["models"][0]["max_context_window"].is_null());
             assert_eq!(std::fs::read_to_string(&catalog_path).unwrap(), original);
-            handle.wait_for_codex_exit().await.unwrap();
         }
+        handle.wait_for_codex_exit().await.unwrap();
     }
 }
 
