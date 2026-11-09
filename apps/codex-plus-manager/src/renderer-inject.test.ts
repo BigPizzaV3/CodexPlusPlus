@@ -32,8 +32,10 @@ describe("session more menu lifecycle", () => {
         matches: () => false, remove: () => { group.isConnected = false; },
       };
       const row = {
-        isConnected: true, dataset: {}, querySelectorAll: () => [group],
+        isConnected: true, dataset: {}, querySelectorAll: (selector?: string) => selector === "button" ? [] : [group],
         contains: (node: unknown) => node === group, classList: { remove: (name: string) => classes.delete(name) },
+        addEventListener: () => {}, appendChild: (node: unknown) => { row.rebuilt = node; },
+        rebuilt: null as unknown,
       };
       const menu = {
         ...events(), hidden: false, removed: false, isConnected: true, classes, row, group, button,
@@ -49,11 +51,19 @@ describe("session more menu lifecycle", () => {
     const api = new Function("document", "window", "codexPlusSettings", "codexPlusBackendSettings",
       "moreMenuClass", "moreButtonClass", "buttonClass", "actionGroupClass", "exportButtonClass",
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
-      "codexPlusRegistry", "codexPlusExtensionItems",
+      "codexPlusRegistry", "codexPlusExtensionItems", "HTMLElement", "actionButtonClass",
+      "appendCodexPlusExtensionRowActions", "syncActionGroupLayout", "setTimeout",
       `${source.split("  function tryAttachButton(row)")[0]}
        return { pruneSessionMoreMenus, pruneRemovedSessionActions, attachButton, closeSessionMoreMenus, installSessionMoreMenuAutoClose };`,
     )(
-      { querySelectorAll: () => { menuQueries++; return menus.filter((menu) => !menu.removed); }, activeElement: null },
+      {
+        querySelectorAll: () => { menuQueries++; return menus.filter((menu) => !menu.removed); },
+        activeElement: null, body: { appendChild: () => {} },
+        createElement: () => ({
+          dataset: {}, setAttribute: () => {}, removeAttribute: () => {}, appendChild: () => {},
+          addEventListener: () => {}, removeEventListener: () => {},
+        }),
+      },
       {
         setTimeout: (callback: () => void) => {
           const id = ++timerId;
@@ -64,10 +74,11 @@ describe("session more menu lifecycle", () => {
       },
       () => ({ sessionDelete: true, markdownExport: true }), { enhancementsEnabled: true },
       "more-menu", "more-button", "delete-button", "actions", "export-button", "7", "7",
-      (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({}),
+      (row: { querySelectorAll: () => unknown[] }) => row.querySelectorAll()[0], () => ({ session_id: "thread-1" }),
       // 内置的删除（行内按钮）与导出（菜单项）都是注册进来的会话行操作。
       { rowActions: new Map([["export", { id: "export", label: "导出" }], ["delete", { id: "delete", label: "删除", placement: "inline" }]]) },
-      (registry: Map<string, unknown>) => [...registry.values()],
+      (registry: Map<string, unknown>) => [...registry.values()], class {}, "action-button",
+      () => {}, () => {}, () => 0,
     );
     return {
       ...api, timers, menuQueries: () => menuQueries,
@@ -123,6 +134,7 @@ describe("session more menu lifecycle", () => {
       else menu.__codexSessionMoreGroup = live.group;
       api.attachButton(menu.row);
       assert.equal(menu.group.isConnected, false, `${damage} must rebuild the retained group`);
+      assert.ok(menu.row.rebuilt, `${damage} must create a replacement group`);
     }
   });
 
