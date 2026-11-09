@@ -1,4 +1,4 @@
-export type GroupableSkill = { id: string; repoKey: string; bundled: boolean };
+export type GroupableSkill = { id: string; repoKey: string; bundled: boolean; instanceKey?: string; conflict?: string | null; conflictKind?: string | null };
 export type GroupableRepository = { owner: string; name: string };
 export type SkillGroup<T> = { key: string; label: string; kind: "builtin" | "user" | "repo" | "custom"; items: T[] };
 export type SkillGroupSortDirection = "asc" | "desc";
@@ -15,7 +15,89 @@ export const BUILTIN_SKILL_GROUP = "builtin";
 export const USER_SKILL_GROUP = "user";
 export const customSkillGroupKey = (name: string) => `custom:${name}`;
 export const repositorySkillGroupKey = (name: string) => `repo:${name}`;
-export const skillIdentityKey = (skill: Pick<GroupableSkill, "repoKey" | "id">) => JSON.stringify([skill.repoKey, skill.id]);
+export const skillIdentityKey = (skill: Pick<GroupableSkill, "repoKey" | "id" | "instanceKey" | "conflict">) =>
+  JSON.stringify(skill.instanceKey && skill.instanceKey !== skill.id
+    ? ["instance", skill.id, skill.instanceKey] : [skill.repoKey, skill.id]);
+export const skillGroupIdentityKey = (skill: GroupableSkill) => skill.conflictKind === "equal-independent"
+  ? JSON.stringify(["aggregate", skill.id]) : skillIdentityKey(skill);
+
+function aggregateLegacyAssignment(
+  skill: GroupableSkill,
+  assignmentsByIdentity: Record<string, string>,
+): string | null | undefined {
+  const existing = skillIdentityKey(skill);
+  if (Object.prototype.hasOwnProperty.call(assignmentsByIdentity, existing)) return assignmentsByIdentity[existing];
+  const values = Object.entries(assignmentsByIdentity).filter(([key]) => {
+    try {
+      const tuple: unknown = JSON.parse(key);
+      return Array.isArray(tuple) && tuple.length === 2 && tuple[1] === skill.id && tuple[0] !== "aggregate";
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return false;
+    }
+  }).map(([, value]) => value);
+  if (!values.length) return undefined;
+  return values.every((value) => value === values[0]) ? values[0] : null;
+}
+
+export function migrateSkillInstanceAssignments(
+  assignmentsByIdentity: Record<string, string>,
+  assignments: Record<string, string>,
+  skills: GroupableSkill[],
+  customNames: string[],
+): Record<string, string> {
+  let migrated = assignmentsByIdentity;
+  for (const skill of skills) {
+    if (skill.bundled || !skill.instanceKey || skill.instanceKey === skill.id) continue;
+    const key = skillGroupIdentityKey(skill);
+    if (Object.prototype.hasOwnProperty.call(migrated, key)) continue;
+    if (skill.conflictKind === "equal-independent") {
+      const value = aggregateLegacyAssignment(skill, migrated);
+      if (typeof value === "string") {
+        if (migrated === assignmentsByIdentity) migrated = { ...assignmentsByIdentity };
+        migrated[key] = value;
+      } else if (value === undefined && Object.prototype.hasOwnProperty.call(assignments, skill.id)) {
+        const legacy = assignments[skill.id];
+        const name = legacySkillCustomGroupName(legacy, customNames);
+        if (migrated === assignmentsByIdentity) migrated = { ...assignmentsByIdentity };
+        migrated[key] = name === null ? legacy : customSkillGroupKey(name);
+      }
+      continue;
+    }
+    const previousKeys = [
+      JSON.stringify([skill.repoKey, skill.id, skill.instanceKey]),
+      JSON.stringify(["", skill.id, skill.instanceKey]),
+      ...(!skill.conflict ? [JSON.stringify([skill.repoKey, skill.id])] : []),
+    ];
+    const previousKey = previousKeys.find((previous) => Object.prototype.hasOwnProperty.call(migrated, previous));
+    let value: string;
+    if (previousKey !== undefined) value = migrated[previousKey];
+    else if (!skill.conflict && Object.prototype.hasOwnProperty.call(assignments, skill.id)) {
+      const legacy = assignments[skill.id];
+      const name = legacySkillCustomGroupName(legacy, customNames);
+      value = name === null ? legacy : customSkillGroupKey(name);
+    } else continue;
+    if (migrated === assignmentsByIdentity) migrated = { ...assignmentsByIdentity };
+    migrated[key] = value;
+  }
+  return migrated;
+}
+
+export function migrateSkillGroupAssignments(
+  assignments: Record<string, string>,
+  changes: Array<{ id: string; fromRepoKey: string; toRepoKey: string }>,
+): Record<string, string> {
+  const migrated = { ...assignments };
+  for (const change of changes) {
+    const from = skillIdentityKey({ id: change.id, repoKey: change.fromRepoKey });
+    const to = skillIdentityKey({ id: change.id, repoKey: change.toRepoKey });
+    if (from === to || !Object.prototype.hasOwnProperty.call(migrated, from)) continue;
+    // 目标身份可能已有用户设置，保留它，避免覆盖另一项的分组。
+    if (!Object.prototype.hasOwnProperty.call(migrated, to)) migrated[to] = migrated[from];
+    delete migrated[from];
+  }
+  return migrated;
+}
 
 /** 导入渠道不是仓库；只有明确的 owner/repo@branch 来源才创建仓库分组。 */
 export function skillRepositoryName(repoKey: string): string | null {
@@ -41,9 +123,17 @@ export function skillGroupAssignment(
   assignments: Record<string, string>,
   assignmentsByIdentity: Record<string, string>,
 ): string {
-  const key = skillIdentityKey(skill);
+  const key = skillGroupIdentityKey(skill);
   // 空字符串表示主动选择按来源，不能再回退到旧的 ID 分配。
   if (Object.prototype.hasOwnProperty.call(assignmentsByIdentity, key)) return assignmentsByIdentity[key];
+  if (skill.conflictKind === "equal-independent") {
+    const legacy = aggregateLegacyAssignment(skill, assignmentsByIdentity);
+    if (legacy !== undefined) return legacy ?? "";
+  }
+  // 旧设置不能证明属于哪一份冲突内容。
+  if (skill.conflict && skill.conflictKind !== "equal-independent") return "";
+  const previousKey = JSON.stringify([skill.repoKey, skill.id]);
+  if (Object.prototype.hasOwnProperty.call(assignmentsByIdentity, previousKey)) return assignmentsByIdentity[previousKey];
   const legacy = Object.prototype.hasOwnProperty.call(assignments, skill.id) ? assignments[skill.id] : "";
   const customName = legacySkillCustomGroupName(legacy, customNames);
   return customName === null ? legacy : customSkillGroupKey(customName);

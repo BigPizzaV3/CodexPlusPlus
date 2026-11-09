@@ -13,6 +13,7 @@ mod extension_curation_commands;
 mod extension_publish_commands;
 mod gateway_commands;
 mod global_dictation;
+mod impeccable_versions;
 pub mod install;
 mod lightweight;
 mod provider_lookup_commands;
@@ -557,6 +558,15 @@ pub fn run() {
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
+            commands::find_skill_repository_matches,
+            commands::apply_skill_repository_matches,
+            commands::discover_skill_source_evidence,
+            commands::preview_skill_duplicates,
+            commands::archive_skill_duplicate,
+            commands::preview_skill_in_place_update,
+            commands::execute_skill_in_place_update,
+            commands::preview_rea_update,
+            commands::inspect_impeccable_versions,
             commands::import_ccs_skills,
             commands::import_local_skills,
             commands::install_skill,

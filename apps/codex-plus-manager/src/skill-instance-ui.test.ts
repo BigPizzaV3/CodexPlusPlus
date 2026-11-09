@@ -1,0 +1,157 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
+
+type Element = { type: any; props: Record<string, any>; children: any[] };
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function component(path: string, name: string): string {
+  const source = readFileSync(new URL(path, import.meta.url), "utf8");
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const node = file.statements.find((item) => ts.isFunctionDeclaration(item) && item.name?.text === name);
+  assert.ok(node);
+  return ts.transpileModule(node.getText(file), {
+    compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+}
+
+function collect(node: any, result: Element[] = []): Element[] {
+  if (!node || typeof node !== "object") return result;
+  if (Array.isArray(node)) { node.forEach((item) => collect(item, result)); return result; }
+  result.push(node);
+  node.children?.forEach((item: any) => collect(item, result));
+  if (node.props?.footer) collect(node.props.footer, result);
+  return result;
+}
+
+test("independent installations retain their own source and actions", () => {
+  const matched: string[] = [];
+  const updates: Array<[string, string]> = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/example/repo" : "", sourceLabel: () => "",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", CloudDownload: "CloudDownload", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const skill = {
+    id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+    conflict: "多个独立安装", conflictKind: "equal-independent",
+    locations: [
+      { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", rootKind: "shared", managed: false, enabled: true, selectable: true, repoKey: "one/repo@main", repoPath: "skills/alpha" },
+      { manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", rootKind: "claude", managed: false, enabled: true, selectable: true },
+      { manifestPath: "C:/codex/alpha/SKILL.md", rootKind: "codex", managed: true, enabled: true, selectable: false },
+      { manifestPath: "C:/legacy/alpha/SKILL.md", originalPath: "C:/legacy/alpha", rootKind: "grok", managed: false, enabled: true, selectable: true, repoKey: "cc-switch" },
+    ],
+  };
+  const elements = collect(context.SkillDetailDrawer({
+    skill, backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: (path: string) => matched.push(path), onRestore: () => {},
+    onUpdate: (repo: string, path: string) => updates.push([repo, path]), onReaPreview: () => {},
+  }));
+  const location = (path: string) => {
+    const node = elements.find((item) => item.type === "dd" && item.children.includes(`${path}/SKILL.md`));
+    assert.ok(node);
+    return collect(node);
+  };
+  const first = location("C:/agents/alpha");
+  const second = location("C:/claude/alpha");
+  const managed = location("C:/codex/alpha");
+  const legacy = location("C:/legacy/alpha");
+  assert.ok(first.some((item) => item.children.includes("one/repo@main / skills/alpha")));
+  assert.ok(second.some((item) => item.children.includes("来源未确认")));
+  first.find((item) => item.type === "Button" && item.children.includes("重新关联此安装位置"))!.props.onClick();
+  second.find((item) => item.type === "Button" && item.children.includes("关联此安装位置"))!.props.onClick();
+  first.find((item) => item.type === "Button" && item.children.includes("预览此位置更新"))!.props.onClick();
+  assert.equal(second.some((item) => item.type === "Button" && item.children.includes("预览此位置更新")), false);
+  assert.ok(legacy.some((item) => item.children.includes("来源未确认")));
+  assert.equal(legacy.some((item) => item.type === "Button" && item.children.includes("预览此位置更新")), false);
+  assert.deepEqual(matched, ["C:/agents/alpha", "C:/claude/alpha"]);
+  assert.deepEqual(updates, [["one/repo@main", "C:/agents/alpha"]]);
+  assert.equal(managed.some((item) => item.type === "Button"), false);
+  const split = collect(context.SkillDetailDrawer({
+    skill: { ...skill, repoKey: "two/repo@main", repoPath: "alpha", originalDir: "C:/claude/alpha",
+      conflictKind: "independent", locations: [{ ...skill.locations[1], repoKey: "two/repo@main", repoPath: "alpha" }] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: () => {}, onRestore: () => {}, onUpdate: (repo: string, path: string) => updates.push([repo, path]), onReaPreview: () => {},
+  }));
+  split.find((item) => item.type === "Button" && item.children.includes("预览原位更新"))!.props.onClick();
+  assert.deepEqual(updates[1], ["two/repo@main", "C:/claude/alpha"]);
+});
+
+test("the detail view displays the reason for an unknown location status", () => {
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", rootKind: "shared", managed: false,
+        enabled: false, statusError: "无法确定名称规则的启用状态" }] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: () => {}, onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+  }));
+  const location = elements.find((item) => item.type === "dd" && item.children.includes("C:/agents/alpha/SKILL.md"))!;
+  assert.ok(location.children.includes("状态未知"));
+  assert.equal(location.children.includes("未启用"), false);
+  assert.ok(collect(location).some((item) => item.props.role === "alert" && item.children.includes("无法确定名称规则的启用状态")));
+});
+
+test("update preview separates managed copies, following paths and skipped locations", async () => {
+  const slots: any[] = [];
+  const effects: Array<() => void> = [];
+  const calls: Array<{ command: string; args: any }> = [];
+  const executions: string[] = [];
+  let cursor = 0;
+  let elements: Element[] = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, ManagementDrawer: "ManagementDrawer", RefreshCw: "RefreshCw",
+    useState: (initial: any) => {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+      return [slots[index], (value: any) => { slots[index] = typeof value === "function" ? value(slots[index]) : value; }];
+    },
+    useEffect: (run: () => void, deps: any[]) => {
+      const index = cursor++;
+      const previous = slots[index] as any[] | undefined;
+      if (!previous || deps.some((value, position) => !Object.is(value, previous[position]))) effects.push(run);
+      slots[index] = deps;
+    },
+    invoke: async (command: string, args: any) => {
+      calls.push({ command, args });
+      return { status: "ok", message: "", previewId: "confirmed-preview", repoKey: args.repoKey, repoPath: "alpha",
+        targetPath: args.localPath, currentHash: "old", nextHash: "new", conflicts: [],
+        managedPaths: ["C:/codex/alpha"], followedPaths: ["C:/gemini/alpha"], skippedPaths: ["C:/claude/alpha"] };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./SkillInPlaceUpdateDrawer.tsx", "SkillInPlaceUpdateDrawer"), context);
+  const props = { id: "alpha", repoKey: "one/repo@main", localPath: "C:/agents/alpha", onClose: () => {},
+    onExecute: async (id: string) => { executions.push(id); return true; } };
+  const render = () => {
+    cursor = 0; effects.length = 0;
+    elements = collect(context.exports.SkillInPlaceUpdateDrawer(props));
+    effects.splice(0).forEach((run) => run());
+  };
+  render(); await tick(); render();
+  assert.equal(calls[0].command, "preview_skill_in_place_update");
+  assert.equal(calls[0].args.localPath, "C:/agents/alpha");
+  assert.ok(elements.some((item) => item.type === "strong" && item.children.includes("将同步的受控副本")));
+  assert.ok(elements.some((item) => item.type === "strong" && item.children.includes("将随原件或受控副本更新的路径")));
+  assert.ok(elements.some((item) => item.type === "li" && item.children.includes("C:/gemini/alpha")));
+  assert.ok(elements.some((item) => item.type === "strong" && item.children.includes("独立或归属未确认的安装，保持不变")));
+  const confirm = elements.find((item) => item.type === "button" && item.children.includes("确认接管并更新"));
+  assert.ok(confirm);
+  assert.equal(confirm.props.disabled, false);
+  await confirm.props.onClick(); await tick(); render();
+  assert.deepEqual(executions, ["confirmed-preview"]);
+  assert.ok(elements.some((item) => item.type === "p" && item.children.includes("原位更新已完成，原版本已保存到备份。")));
+});

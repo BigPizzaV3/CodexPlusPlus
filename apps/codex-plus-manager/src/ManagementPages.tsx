@@ -120,8 +120,8 @@ export function MatrixCell({ name, enabled, disabled, onToggle, agent = "codex",
   return <button className="mg-cell" type="button" aria-pressed={enabled} aria-label={`${name} · ${agentLabel(agent)}：${enabled ? t("已启用") : t("已停用")}`} title={hint ? `${agentLabel(agent)}：${hint}` : `${name} · ${agentLabel(agent)}`} disabled={disabled} onClick={onToggle}><span data-on={enabled}>{enabled && <Check size={12} strokeWidth={3} />}</span></button>;
 }
 /** 行内的一个 Agent 开关胶囊：图标 + 名字，开了是实心。悬停显示它的配置文件位置。 */
-export function AgentToggle({ name, enabled, disabled, onToggle, agent, title, hint }: { name: string; enabled: boolean; disabled?: boolean; onToggle: () => void; agent: McpAgentId; title?: string; hint?: string }) {
-  return <button className="cx-agent-toggle" type="button" aria-pressed={enabled} aria-label={`${name} · ${agentLabel(agent)}：${enabled ? t("已启用") : t("已停用")}`} title={hint ? `${agentLabel(agent)}：${hint}` : title ? `${agentLabel(agent)} · ${title}` : agentLabel(agent)} disabled={disabled} onClick={(event) => { event.stopPropagation(); onToggle(); }}><AgentGlyph agent={agent} /><span>{agentLabel(agent)}</span></button>;
+export function AgentToggle({ name, enabled, disabled, onToggle, agent, title, hint, statusUnknown }: { name: string; enabled: boolean; disabled?: boolean; onToggle: () => void; agent: McpAgentId; title?: string; hint?: string; statusUnknown?: boolean }) {
+  return <button className="cx-agent-toggle" type="button" aria-pressed={statusUnknown ? undefined : enabled} aria-label={`${name} · ${agentLabel(agent)}：${statusUnknown ? t("状态未知") : enabled ? t("已启用") : t("已停用")}`} title={hint ? `${agentLabel(agent)}：${hint}` : title ? `${agentLabel(agent)} · ${title}` : agentLabel(agent)} disabled={disabled} onClick={(event) => { event.stopPropagation(); onToggle(); }}><AgentGlyph agent={agent} /><span>{agentLabel(agent)}</span></button>;
 }
 async function copyValue(text: string, notify: Notify) {
   try { await navigator.clipboard.writeText(text); await notify(t("复制"), t("已复制。"), "ok"); }

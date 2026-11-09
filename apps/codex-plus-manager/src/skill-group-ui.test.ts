@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
-import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, SkillBatchRegistry } from "./skill-agent-batch.ts";
+import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
-type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean };
+type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean; originalDir?: string | null; updateOwner?: string; instanceKey?: string; conflict?: string | null; conflictKind?: "independent" | "equal-independent" | "managed-modified" | null; safeDisableAgents?: string[]; locations?: Array<{ manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; selectable?: boolean }> };
 type FixtureRepo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
-type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string };
+type FixtureBackup = { id: string; skillId: string; name: string; backedUpAt: string; restorePath?: string | null; purpose?: string | null };
+type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; backups: FixtureBackup[] };
 
 const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
 const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -18,10 +19,41 @@ assert.ok(page);
 const code = ts.transpileModule(page.getText(file), {
   compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const sourceLabelNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "sourceLabel");
+assert.ok(sourceLabelNode);
+const sourceLabelCode = ts.transpileModule(sourceLabelNode.getText(file), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
 
 const skill = (id: string, repoKey: string, bundled = false): FixtureSkill => ({ id, name: id, description: "", repoKey,
   installed: true, enabled: false, bundled, updateAvailable: false, agents: [], managed: true });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("legacy cc-switch markers do not claim a verified upstream source", () => {
+  const context = { t: (value: string) => value, LOCAL_IMPORT_REPO_KEY: "local" };
+  vm.createContext(context);
+  vm.runInContext(sourceLabelCode, context);
+  const label = (context as any).sourceLabel;
+  assert.equal(label(skill("legacy", "cc-switch")), "本地（来源未确认）");
+  assert.equal(label(skill("repository", "owner/repo@main")), "owner/repo");
+});
+
+test("shared skills do not offer uninstall while local Codex skills still do", async () => {
+  const ui = createHarness();
+  const shared = { manifestPath: "C:/agents/shared/SKILL.md", rootKind: "shared", managed: false, enabled: true };
+  const codex = { manifestPath: "C:/codex/shared/SKILL.md", rootKind: "codex", managed: true, enabled: true };
+  ui.server.skills = [
+    { ...skill("shared-only", ""), managed: false, agents: ["codex"], locations: [shared] },
+    { ...skill("shared-and-copy", ""), agents: ["codex"], locations: [shared, codex] },
+    { ...skill("codex-only", ""), agents: ["codex"], locations: [codex] },
+  ];
+  ui.render(); await tick(); ui.render();
+  for (const id of ["shared-only", "shared-and-copy"]) {
+    assert.equal(ui.rowElements("user", "", id).some((node) => node.type === "MenuItem" && node.children.includes("卸载")), false);
+  }
+  assert.equal(ui.rowElements("user", "", "codex-only").some((node) => node.type === "MenuItem" && node.children.includes("卸载")), true);
+  ui.unmount();
+});
 
 function createHarness(saved = "{}", shared?: { server: FixtureServer; registry: SkillBatchRegistry }) {
   const slots: any[] = [];
@@ -32,9 +64,9 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const calls: string[] = [];
   const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
   const notices: Array<{ title: string; message: string; status: string }> = [];
-  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any> } = {};
+  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: () => Promise<boolean> } = {};
   const server = shared?.server ?? { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
-    repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "" };
+    repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "", backups: [] as FixtureBackup[] };
   const registry = shared?.registry ?? new SkillBatchRegistry();
   let cursor = 0;
   let elements: Element[] = [];
@@ -71,17 +103,17 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     },
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
-    groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
+    groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
-    sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
+    sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "cc-switch" ? "本地（来源未确认）" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
-    mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillBatchRegistry: registry,
-    appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
+    mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry,
+    appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => hooks.confirm ? hooks.confirm() : true,
   };
   for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
+    "SkillDetailDrawer", "SkillBackupsDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillDuplicatesDrawer", "SkillInPlaceUpdateDrawer", "ReaUpdatePreviewDrawer", "BookOpen", "RefreshCw", "Search", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
   const collect = (node: any, result: Element[]) => {
@@ -125,12 +157,12 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     assert.ok(select);
     return select;
   };
-  const rowElements = (groupKey: string, repoKey: string, id: string) => {
+  const rowElements = (groupKey: string, repoKey: string, id: string, identity?: Pick<FixtureSkill, "instanceKey" | "conflict">) => {
     const head = groupHead(groupKey);
     if (!head.props["aria-expanded"]) { head.props.onClick(); render(); }
     const children: Element[] = [];
     collect(group(groupKey).children[0]("handle"), children);
-    const row = children.find((node) => node.type === "CxRow" && node.props.className === "cx-skill-row" && node.props.key === skillIdentityKey({ repoKey, id }));
+    const row = children.find((node) => node.type === "CxRow" && node.props.className === "cx-skill-row" && node.props.key === skillIdentityKey({ repoKey, id, ...identity }));
     assert.ok(row);
     const result: Element[] = [];
     collect(row, result);
@@ -245,6 +277,383 @@ test("group toolbar icons retain accessible labels and fold or expand groups", a
   for (const key of ui.order()) assert.equal(ui.groupHead(key).props["aria-expanded"], false);
   control("全部展开").props.onClick(); ui.render();
   for (const key of ui.order()) assert.equal(ui.groupHead(key).props["aria-expanded"], true);
+});
+
+test("repository matching is immediately before new group and migrates only successful associations", async () => {
+  const original = skill("first", "local");
+  const failed = skill("second", "local");
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignmentsByIdentity: {
+    [skillIdentityKey(original)]: "custom:Manual", [skillIdentityKey(failed)]: "",
+  } }));
+  ui.server.skills = [original, failed];
+  ui.render(); await tick(); ui.render();
+  const trailing = ui.find((node) => node.type === "CxFilters").props.trailing;
+  const controls = trailing.children.filter((node: Element) => node?.type === "button");
+  assert.equal(controls.findIndex((node: Element) => node.props["aria-label"] === "匹配仓库") + 1,
+    controls.findIndex((node: Element) => node.props["aria-label"] === "新建分组"));
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "匹配仓库").props.onClick(); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  assert.deepEqual(Array.from(drawer.props.localSkillIds), ["first", "second"]);
+  ui.hooks.mutation = async (command) => {
+    assert.equal(command, "apply_skill_repository_matches");
+    ui.server.skills = [{ ...original, repoKey: "owner/repo@main" }, failed];
+    return { ...structuredClone(ui.server), status: "failed", message: "one failed", applied: [
+      { localId: "first", fromRepoKey: "local", toRepoKey: "owner/repo@main" },
+    ] };
+  };
+  await drawer.props.onApply([]);
+  ui.render();
+  assert.deepEqual(ui.savedState().assignmentsByIdentity, {
+    [skillIdentityKey(skill("first", "owner/repo@main"))]: "custom:Manual",
+    [skillIdentityKey(failed)]: "",
+  });
+  assert.equal(ui.notices.at(-1)?.status, "failed");
+  ui.unmount();
+});
+
+test("a split physical installation retains the previously assigned group after source association", async () => {
+  const previous: FixtureSkill = { ...skill("alpha", ""), instanceKey: "alpha:C:/agents/alpha",
+    conflict: "多个独立安装", conflictKind: "equal-independent", locations: [
+      { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true },
+      { manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true, rootKind: "claude", managed: false, enabled: true },
+    ] };
+  const selected: FixtureSkill = { ...previous, repoKey: "other/repo@main", instanceKey: "alpha:C:/claude/alpha",
+    conflictKind: "independent", locations: [previous.locations![1]] };
+  const retained: FixtureSkill = { ...previous, conflictKind: "independent", locations: [previous.locations![0]] };
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignmentsByIdentity: {
+    [skillIdentityKey(previous)]: "custom:Manual",
+  } }));
+  ui.server.skills = [previous];
+  ui.render(); await tick(); ui.render();
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "匹配仓库").props.onClick(); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  ui.hooks.mutation = async (command) => {
+    assert.equal(command, "apply_skill_repository_matches");
+    ui.server.skills = [retained, selected];
+    return { ...structuredClone(ui.server), applied: [{
+      localId: "alpha", fromRepoKey: "", toRepoKey: selected.repoKey, localPath: "C:/claude/alpha",
+    }] };
+  };
+  await drawer.props.onApply([{ localId: "alpha", repoKey: selected.repoKey, repoPath: "alpha",
+    previewId: "preview", localPath: "C:/claude/alpha" }]);
+  ui.render();
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(retained)], "custom:Manual");
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(selected)], "custom:Manual");
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey),
+    [retained.instanceKey, selected.instanceKey]);
+  ui.unmount();
+});
+
+test("legacy grouping of an equal aggregate follows only the explicitly associated location after splitting", async () => {
+  const previous: FixtureSkill = { ...skill("alpha", ""), instanceKey: "alpha:C:/agents/alpha",
+    conflict: "多个独立安装", conflictKind: "equal-independent", locations: [
+      { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true },
+      { manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true, rootKind: "claude", managed: false, enabled: true },
+    ] };
+  const selected: FixtureSkill = { ...previous, repoKey: "other/repo@main", instanceKey: "alpha:C:/claude/alpha",
+    conflictKind: "independent", locations: [previous.locations![1]] };
+  const retained: FixtureSkill = { ...previous, conflictKind: "independent", locations: [previous.locations![0]] };
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignments: { alpha: "Manual" } }));
+  ui.server.skills = [previous];
+  ui.render(); await tick(); ui.render(); ui.render();
+  assert.equal(ui.savedState().assignmentsByIdentity[skillGroupIdentityKey(previous)], "custom:Manual");
+  assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "匹配仓库").props.onClick(); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  ui.hooks.mutation = async () => {
+    ui.server.skills = [retained, selected];
+    return { ...structuredClone(ui.server), applied: [{
+      localId: "alpha", fromRepoKey: "", toRepoKey: selected.repoKey, localPath: "C:/claude/alpha",
+    }] };
+  };
+  await drawer.props.onApply([{ localId: "alpha", repoKey: selected.repoKey, repoPath: "alpha",
+    previewId: "preview", localPath: "C:/claude/alpha" }]);
+  ui.render(); ui.render();
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(retained)], undefined);
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(selected)], "custom:Manual");
+  assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.instanceKey), [retained.instanceKey]);
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [selected.instanceKey]);
+  ui.unmount();
+});
+
+test("updates of an associated original open a preview instead of entering the old update queue", async () => {
+  const ui = createHarness();
+  ui.server.skills = [{ ...skill("original", "owner/repo@main"), originalDir: "C:\\skills\\original", updateOwner: "in_place", updateAvailable: true }];
+  ui.render(); await tick(); ui.render();
+  const update = ui.rowElements("repo:owner/repo", "owner/repo@main", "original")
+    .find((node) => node.type === "Button" && node.children.includes("更新"));
+  assert.ok(update);
+  update.props.onClick(); ui.render();
+  const preview = ui.find((node) => node.type === "SkillInPlaceUpdateDrawer");
+  assert.equal(preview.props.id, "original");
+  assert.equal(preview.props.localPath, "C:\\skills\\original");
+  assert.equal(ui.registry.getUpdates().length, 0);
+  ui.unmount();
+});
+
+test("conflicting same-name locations remain separate and cannot perform id-based writes", async () => {
+  const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
+  const first: FixtureSkill = { ...skill("same", ""), instanceKey: "shared:C:/agents/same", conflict: "内容不同",
+    locations: [{ manifestPath: "C:/agents/same/SKILL.md", rootKind: "shared", managed: false, enabled: true }],
+    agents: ["codex"], updateAvailable: true };
+  const second: FixtureSkill = { ...skill("same", ""), instanceKey: "same:C:/codex/same", conflict: "内容不同",
+    locations: [{ manifestPath: "C:/codex/same/SKILL.md", rootKind: "codex", managed: true, enabled: true }],
+    agents: ["codex"], updateAvailable: true };
+  ui.server.skills = [first, second];
+  ui.render(); await tick(); ui.render();
+  const firstRow = ui.rowElements("user", "", "same", first);
+  const secondRow = ui.rowElements("user", "", "same", second);
+  assert.ok(firstRow.some((node) => node.props.title === "C:/agents/same/SKILL.md"));
+  assert.ok(secondRow.some((node) => node.props.title === "C:/codex/same/SKILL.md"));
+  for (const row of [firstRow, secondRow]) {
+    assert.ok(row.filter((node) => node.type === "AgentToggle").every((node) => node.props.disabled));
+    assert.ok(row.find((node) => node.type === "MenuItem" && node.children.includes("重新关联来源"))?.props.disabled);
+    assert.equal(row.some((node) => node.type === "MenuItem" && node.children.includes("卸载")), false);
+    assert.equal(row.some((node) => node.type === "Button" && node.children.includes("更新")), false);
+  }
+  firstRow.find((node) => node.type === "MenuItem" && node.children.includes("Manual"))!.props.onClick();
+  ui.render();
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [first.instanceKey]);
+  assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.instanceKey), [second.instanceKey]);
+  ui.groupSelect("user", "codex").props.onChange(false);
+  await tick();
+  assert.equal(ui.calls.includes("set_skill_enabled_for"), false);
+  ui.unmount();
+});
+
+test("equal independent installs allow only the Codex path switch", async () => {
+  const ui = createHarness();
+  ui.server.skills = [{ ...skill("reverse-engineer-anything", ""), agents: ["codex", "claude"],
+    conflict: "多个独立安装，当前内容一致", conflictKind: "equal-independent",
+    locations: [
+      { manifestPath: "C:/agents/rea/SKILL.md", rootKind: "shared", managed: false, enabled: true },
+      { manifestPath: "C:/claude/rea/SKILL.md", rootKind: "claude", managed: false, enabled: true },
+    ],
+  }];
+  ui.render(); await tick(); ui.render();
+  const row = ui.rowElements("user", "", "reverse-engineer-anything");
+  assert.ok(row.some((node) => node.type === "CxBadge" && node.children.includes("多个独立安装")));
+  const toggles = row.filter((node) => node.type === "AgentToggle");
+  const codex = toggles.find((node) => node.props.agent === "codex");
+  assert.ok(codex);
+  assert.equal(codex.props.disabled, false);
+  assert.ok(toggles.filter((node) => node.props.agent !== "codex").every((node) => node.props.disabled));
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "set_skill_enabled_for");
+    assert.deepEqual(JSON.parse(JSON.stringify(args)), { agent: "codex", id: "reverse-engineer-anything", enabled: false });
+    return structuredClone(ui.server);
+  };
+  await codex.props.onToggle();
+  assert.equal(ui.requests.filter((request) => request.command === "set_skill_enabled_for").length, 1);
+  ui.unmount();
+});
+
+test("unknown native status disables only the Codex control and batch", async () => {
+  const ui = createHarness();
+  ui.server.skills = [{ ...skill("alpha", ""), agents: ["claude"],
+    locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", rootKind: "shared", managed: false,
+      enabled: false, statusError: "无法确定名称规则的启用状态" }] }];
+  ui.render(); await tick(); ui.render();
+  const row = ui.rowElements("user", "", "alpha");
+  assert.ok(row.some((node) => node.type === "CxBadge" && node.children.includes("Codex 状态未知")));
+  const toggles = row.filter((node) => node.type === "AgentToggle");
+  const codex = toggles.find((node) => node.props.agent === "codex")!;
+  const claude = toggles.find((node) => node.props.agent === "claude")!;
+  assert.equal(codex.props.disabled, true);
+  assert.equal(codex.props.statusUnknown, true);
+  assert.match(codex.props.hint, /无法确定名称规则的启用状态/);
+  assert.equal(claude.props.disabled, false);
+  ui.groupSelect("user", "codex").props.onChange(true);
+  await tick();
+  assert.equal(ui.requests.some((request) => request.command === "set_skill_enabled_for"), false);
+  ui.unmount();
+});
+
+test("a conflicting independent instance opens source matching for its exact path", async () => {
+  const ui = createHarness();
+  const original: FixtureSkill = { ...skill("impeccable", ""), instanceKey: "impeccable:C:/agents/impeccable",
+    conflict: "内容不同", conflictKind: "independent", originalDir: "C:/agents/impeccable",
+    locations: [{ manifestPath: "C:/agents/impeccable/SKILL.md", rootKind: "shared", managed: false, enabled: true }],
+    agents: ["codex"] };
+  const other: FixtureSkill = { ...original, instanceKey: "impeccable:C:/claude/impeccable",
+    originalDir: "C:/claude/impeccable", agents: ["claude"],
+    locations: [{ manifestPath: "C:/claude/impeccable/SKILL.md", rootKind: "claude", managed: false, enabled: true }] };
+  ui.server.skills = [original, other];
+  ui.render(); await tick(); ui.render();
+  const menu = ui.rowElements("user", "", "impeccable", original)
+    .find((node) => node.type === "MenuItem" && node.children.includes("重新关联来源"));
+  assert.ok(menu);
+  assert.equal(menu.props.disabled, false);
+  menu.props.onClick(); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  assert.equal(drawer.props.id, "impeccable");
+  assert.equal(drawer.props.localPath, original.originalDir);
+  ui.unmount();
+});
+
+test("an equal independent install can select a physical location for matching", async () => {
+  const ui = createHarness();
+  ui.server.skills = [{ ...skill("alpha", ""), conflict: "多个独立安装", conflictKind: "equal-independent",
+    locations: [
+      { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true },
+      { manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true, rootKind: "claude", managed: false, enabled: true },
+    ],
+    agents: ["codex", "claude"] }];
+  ui.render(); await tick(); ui.render();
+  ui.rowElements("user", "", "alpha").find((node) => node.type === "CxRow")!.props.onClick();
+  ui.render();
+  ui.find((node) => node.type === "SkillDetailDrawer").props.onMatch("C:/claude/alpha");
+  ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  assert.equal(drawer.props.id, "alpha");
+  assert.equal(drawer.props.localPath, "C:/claude/alpha");
+  ui.unmount();
+});
+
+test("a location-specific update opens the preview for that location and repository", async () => {
+  const ui = createHarness();
+  ui.server.skills = [{ ...skill("alpha", ""), conflict: "多个独立安装", conflictKind: "equal-independent",
+    locations: [
+      { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true },
+      { manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true, rootKind: "claude", managed: false, enabled: true },
+    ],
+    agents: ["codex", "claude"] }];
+  ui.render(); await tick(); ui.render();
+  ui.rowElements("user", "", "alpha").find((node) => node.type === "CxRow")!.props.onClick();
+  ui.render();
+  ui.find((node) => node.type === "SkillDetailDrawer").props.onUpdate("other/repo@main", "C:/claude/alpha");
+  ui.render();
+  const drawer = ui.find((node) => node.type === "SkillInPlaceUpdateDrawer");
+  assert.equal(drawer.props.id, "alpha");
+  assert.equal(drawer.props.repoKey, "other/repo@main");
+  assert.equal(drawer.props.localPath, "C:/claude/alpha");
+  ui.unmount();
+});
+
+test("different confirmed repositories keep split rows, groups and update targets independent", async () => {
+  const first: FixtureSkill = { ...skill("alpha", "one/repo@main"), instanceKey: "alpha:C:/agents/alpha",
+    originalDir: "C:/agents/alpha", conflict: "不同来源", conflictKind: "independent",
+    locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true }] };
+  const second: FixtureSkill = { ...first, repoKey: "two/repo@main", instanceKey: "alpha:C:/claude/alpha",
+    originalDir: "C:/claude/alpha",
+    locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true, rootKind: "claude", managed: false, enabled: true }] };
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignmentsByIdentity: {
+    [skillIdentityKey(first)]: "custom:Manual",
+  } }));
+  ui.server.skills = [first, second];
+  ui.render(); await tick(); ui.render();
+  for (const [item, group] of [[first, "custom:Manual"], [second, "repo:two/repo"]] as const) {
+    const row = ui.rowElements(group, item.repoKey, item.id, item);
+    assert.ok(row.some((node) => node.type === "small" && node.children.includes(item.repoKey.split("@")[0])));
+    row.find((node) => node.type === "CxRow")!.props.onClick(); ui.render();
+    const detail = ui.find((node) => node.type === "SkillDetailDrawer");
+    assert.equal(detail.props.skill.repoKey, item.repoKey);
+    assert.equal(detail.props.skill.originalDir, item.originalDir);
+    detail.props.onUpdate(item.repoKey, item.originalDir); ui.render();
+    const preview = ui.find((node) => node.type === "SkillInPlaceUpdateDrawer");
+    assert.equal(preview.props.repoKey, item.repoKey);
+    assert.equal(preview.props.localPath, item.originalDir);
+    preview.props.onClose(); ui.render();
+  }
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [first.instanceKey]);
+  assert.deepEqual(ui.group("repo:two/repo").props.group.items.map((item: FixtureSkill) => item.instanceKey), [second.instanceKey]);
+  ui.unmount();
+});
+
+test("a modified managed copy allows only its listed agent to be disabled and backed up", async () => {
+  const ui = createHarness();
+  const original: FixtureSkill = { ...skill("same", ""), instanceKey: "same:C:/shared/same",
+    conflict: "内容不同", conflictKind: "managed-modified", safeDisableAgents: [],
+    locations: [{ manifestPath: "C:/shared/same/SKILL.md", rootKind: "shared", managed: false, enabled: true }],
+    agents: ["codex"] };
+  const copy: FixtureSkill = { ...skill("same", ""), instanceKey: "same:C:/claude/same",
+    conflict: "内容不同", conflictKind: "managed-modified", safeDisableAgents: ["claude"],
+    locations: [{ manifestPath: "C:/claude/same/SKILL.md", rootKind: "claude", managed: true, enabled: true }],
+    agents: ["claude"] };
+  ui.server.skills = [original, copy];
+  ui.render(); await tick(); ui.render();
+  const first = ui.rowElements("user", "", "same", original);
+  const second = ui.rowElements("user", "", "same", copy);
+  assert.ok(first.filter((node) => node.type === "AgentToggle").every((node) => node.props.disabled));
+  const toggles = second.filter((node) => node.type === "AgentToggle");
+  const claude = toggles.find((node) => node.props.agent === "claude");
+  assert.ok(claude);
+  assert.equal(claude.props.disabled, false);
+  assert.equal(claude.props.hint, "停用并备份已修改的受控副本");
+  assert.ok(toggles.filter((node) => node.props.agent !== "claude").every((node) => node.props.disabled));
+
+  ui.hooks.confirm = async () => false;
+  await claude.props.onToggle();
+  assert.equal(ui.requests.some((request) => request.command === "set_skill_enabled_for"), false);
+  ui.hooks.confirm = async () => true;
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "set_skill_enabled_for");
+    assert.deepEqual(JSON.parse(JSON.stringify(args)), { agent: "claude", id: "same", enabled: false });
+    return { ...structuredClone(ui.server), skills: [original], message: "已停用并备份" };
+  };
+  await claude.props.onToggle();
+  assert.equal(ui.requests.filter((request) => request.command === "set_skill_enabled_for").length, 1);
+  assert.equal(ui.notices.at(-1)?.message, "已停用并备份");
+  ui.unmount();
+});
+
+test("a saved assignment follows its physical skill through conflict and resolution", async () => {
+  const original = { ...skill("same", "owner/repo@main"), instanceKey: "same:C:/agents/same" };
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignmentsByIdentity: {
+    [skillIdentityKey(skill("same", "owner/repo@main"))]: "custom:Manual",
+  } }));
+  ui.server.skills = [original];
+  ui.render(); await tick(); ui.render(); ui.render();
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(original)], "custom:Manual");
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [original.instanceKey]);
+
+  const conflicted = { ...original, repoKey: "", conflict: "内容不同" };
+  const other = { ...conflicted, instanceKey: "same:C:/codex/same" };
+  ui.server.skills = [conflicted, other];
+  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  await tick(); ui.render(); ui.render();
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [original.instanceKey]);
+  assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.instanceKey), [other.instanceKey]);
+  ui.rowElements("user", "", "same", other).find((node) => node.type === "MenuItem" && node.children.includes("Manual"))!.props.onClick();
+  ui.render();
+
+  ui.server.skills = [{ ...skill("same", "owner/repo@main"), instanceKey: other.instanceKey }];
+  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  await tick(); ui.render(); ui.render();
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [other.instanceKey]);
+  ui.unmount();
+});
+
+test("backups remain accessible without a skill and while its instances conflict", async () => {
+  const ui = createHarness();
+  const backup: FixtureBackup = { id: "backup", skillId: "same", name: "same", backedUpAt: "1",
+    purpose: "duplicate", restorePath: "C:/codex/same" };
+  ui.server.skills = [];
+  ui.server.backups = [backup];
+  ui.render(); await tick(); ui.render();
+  ui.find((node) => node.type === "MenuItem" && node.children.includes("查看 Skill 备份")).props.onClick();
+  ui.render();
+  const drawer = ui.find((node) => node.type === "SkillBackupsDrawer");
+  assert.equal(drawer.props.backups[0].restorePath, backup.restorePath);
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "restore_skill_backup");
+    assert.equal(args.backupId, backup.id);
+    return { ...structuredClone(ui.server), status: "failed", message: "原位置已有内容，未覆盖" };
+  };
+  drawer.props.onRestore(backup);
+  await tick(); await tick(); ui.render();
+  assert.equal(ui.notices.at(-1)?.status, "failed");
+  assert.equal(ui.notices.at(-1)?.message, "原位置已有内容，未覆盖");
+  drawer.props.onClose(); ui.render();
+
+  const conflict = { ...skill("same", ""), instanceKey: "same:C:/agents/same", conflict: "内容不同" };
+  ui.server.skills = [conflict, { ...conflict, instanceKey: "same:C:/codex/same" }];
+  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  await tick(); ui.render();
+  ui.rowElements("user", "", "same", conflict).find((node) => node.type === "CxRow")!.props.onClick();
+  ui.render();
+  assert.equal(ui.find((node) => node.type === "SkillDetailDrawer").props.backups[0].id, backup.id);
+  ui.unmount();
 });
 
 test("queued updates survive remount and invalidate an older list response", async () => {
@@ -435,7 +844,7 @@ test("shared IDs support independent choices while retaining legacy assignments 
   assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.repoKey).sort(), ["a/repo@main", "z/repo@main"]);
   assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.repoKey), ["local", "cc-switch"]);
   assert.ok(ui.rowElements("user", "local", "local-import").some((node) => node.type === "small" && node.children.includes("本地导入")));
-  assert.ok(ui.rowElements("user", "cc-switch", "cc-import").some((node) => node.type === "small" && node.children.includes("cc-switch")));
+  assert.ok(ui.rowElements("user", "cc-switch", "cc-import").some((node) => node.type === "small" && node.children.includes("本地（来源未确认）")));
   assert.equal(ui.rowElements("builtin", "", "shared").some((node) => node.props.className === "mg-menu-label"), false);
   assert.ok(ui.rowElements("custom:Manual", "a/repo@main", "shared").some((node) => node.props.className === "mg-menu-label"));
   assert.deepEqual(ui.savedState().assignments, { shared: "Manual" });

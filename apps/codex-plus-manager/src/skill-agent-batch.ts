@@ -1,4 +1,5 @@
-export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[] };
+export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[]; conflict?: string | null;
+  locations?: Array<{ statusError?: string | null }> };
 export type SkillBatchOperation = { groupKey: string; agent: string; enabled: boolean; skillIds: string[] };
 export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; owner: symbol };
 
@@ -111,12 +112,18 @@ export function skillAgents(skill: SkillAgentState): string[] {
   return skill.agents ?? (skill.enabled ? ["codex"] : []);
 }
 
+export function skillCodexStatusError(skill: SkillAgentState): string | undefined {
+  return skill.locations?.find((location) => location.statusError)?.statusError || undefined;
+}
+
 export function skillBatchTargets<T extends SkillAgentState>(skills: T[], agent: string, enabled: boolean): T[] {
-  return skills.filter((skill) => skill.installed && !skill.bundled && skillAgents(skill).includes(agent) !== enabled);
+  return skills.filter((skill) => skill.installed && !skill.bundled && !skill.conflict
+    && (agent !== "codex" || !skillCodexStatusError(skill)) && skillAgents(skill).includes(agent) !== enabled);
 }
 
 export function skillBatchState(skills: SkillAgentState[], agent: string) {
-  const eligible = skills.filter((skill) => skill.installed && !skill.bundled);
+  const eligible = skills.filter((skill) => skill.installed && !skill.bundled && !skill.conflict
+    && (agent !== "codex" || !skillCodexStatusError(skill)));
   const selected = eligible.filter((skill) => skillAgents(skill).includes(agent)).length;
   return { total: eligible.length, checked: eligible.length > 0 && selected === eligible.length, mixed: selected > 0 && selected < eligible.length };
 }
@@ -128,8 +135,10 @@ export function skillBatchHasPending(operations: SkillBatchOperation[], skills: 
 
 // 只合并目标 Agent 的结果，避免覆盖其他操作产生的状态。
 export function mergeSkillAgentResult<T extends SkillAgentState & { id: string }>(current: T[], result: T[], id: string, agent: string): T[] {
-  const updated = result.find((skill) => skill.id === id && skill.installed && !skill.bundled);
-  if (!updated) return current;
+  const matches = result.filter((skill) => skill.id === id && skill.installed && !skill.bundled);
+  const existing = current.filter((skill) => skill.id === id && skill.installed && !skill.bundled);
+  if (matches.length !== 1 || existing.length !== 1 || matches[0].conflict || existing[0].conflict) return current;
+  const updated = matches[0];
   const enabled = skillAgents(updated).includes(agent);
   return current.map((skill) => {
     if (skill.id !== id || !skill.installed || skill.bundled) return skill;

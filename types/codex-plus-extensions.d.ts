@@ -743,7 +743,7 @@ interface CodexPlusManagerPublicData {
     } }>;
   };
   installedSkills: { skills: Array<{
-    id: string; name: string; enabled: boolean; bundled: boolean; managed: boolean; agents: string[]; contentHash: string;
+    id: string; name: string; enabled: boolean | null; statusError?: string; bundled: boolean; managed: boolean; agents: string[]; contentHash: string;
   }> };
   /** 仅 Codex++ 市场托管的插件，不是全部 Codex 插件。 */
   installedPlugins: { plugins: Array<{ id: string; name: string; version: string; source: "public" | "full"; enabled: boolean }> };
