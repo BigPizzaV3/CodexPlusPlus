@@ -143,6 +143,12 @@ export function gatewayBody(config, raw) {
   return Buffer.from(JSON.stringify(value));
 }
 
+/** 选择器里的名称与副标题：有友好名用友好名（副标题是供应商），否则名称沿用模型 id、副标题为空。 */
+export function modelLabel(config, id) {
+  const entry = config.modelNames?.[id];
+  return { name: entry?.name || id, description: entry?.description || "" };
+}
+
 export function modelList(config) {
   return {
     data: config.models.map((id) => ({
@@ -187,9 +193,9 @@ export function modelSelectors(config, selected = config.model) {
   // Code / Cowork 等页面的模型选择器读的是这里，不是 /v1/models：名称与副标题同样用友好名。
   const models = config.models.map((id) => ({
     id,
-    name: config.modelNames?.[id]?.name || id,
-    short_name: config.modelNames?.[id]?.name || id,
-    description: config.modelNames?.[id]?.description || "",
+    name: modelLabel(config, id).name,
+    short_name: modelLabel(config, id).name,
+    description: modelLabel(config, id).description,
     section: "main",
     disabled: false, disabled_reason: null,
     hard_limit: modelWindow(config, id),

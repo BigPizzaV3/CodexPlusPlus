@@ -25,7 +25,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
-import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -616,6 +616,10 @@ function localBootstrap() {
   });
 }
 
+// 选择器里显示的名称与副标题：有友好名用友好名（副标题是供应商），否则沿用模型 id。
+const friendlyName = (id) => modelLabel(runtime, id).name;
+const friendlyDescription = (id) => modelLabel(runtime, id).description || id;
+
 // PoC 数据路径下：把网关池模型并入录制 bootstrap 的模型字段，
 // 让 Chat/Code 选择器同时提供原生条目（界面需要）与池内 provider/model 条目。
 function mergePoolModels(j) {
@@ -635,8 +639,8 @@ function mergePoolModels(j) {
       if (!seen.has(id)) cfg.push({
         ...tpl,
         model: id,
-        name: id,
-        description: id,
+        name: friendlyName(id),
+        description: friendlyDescription(id),
         hard_limit: modelWindow(runtime, id),
         context_window: modelWindow(runtime, id),
       });
@@ -665,9 +669,9 @@ function mergePoolModels(j) {
         if (!seen.has(id)) sel.models.push({
           ...tpl,
           id,
-          name: id,
-          short_name: id,
-          description: id,
+          name: friendlyName(id),
+          short_name: friendlyName(id),
+          description: friendlyDescription(id),
           hard_limit: modelWindow(runtime, id),
           context_window: modelWindow(runtime, id),
           runtime: { max_input_tokens: modelWindow(runtime, id) },

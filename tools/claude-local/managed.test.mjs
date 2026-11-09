@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { decode, get, asMsg, asStr, ld, vi } from "./rpc.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
-import { createStateStore, gatewayModel, gatewayTarget, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, gatewayModel, gatewayTarget, modelLabel, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
@@ -618,6 +618,8 @@ test("model selectors use friendly names and fall back to ids", () => {
   assert.equal(named.name, "gpt-6.1-sol");
   assert.equal(named.short_name, "gpt-6.1-sol");
   assert.equal(named.description, "Jojo Codemax");
+  assert.deepEqual(modelLabel(config, "jojo/gpt-6.1-sol"), { name: "gpt-6.1-sol", description: "Jojo Codemax" });
+  assert.deepEqual(modelLabel(config, "other/raw-model"), { name: "other/raw-model", description: "" });
   const raw = models.find((model) => model.id === "other/raw-model");
   assert.equal(raw.name, "other/raw-model");
   assert.equal(raw.description, "");
