@@ -42,12 +42,15 @@ fn newest_pair(root: &Path) -> Option<(String, String)> {
         if !acct_path.is_dir() {
             continue;
         }
-        for org in fs::read_dir(&acct_path).ok()?.flatten() {
+        // 单个目录读不了只跳过它，不让整个 3p 侧判成「没有会话」。
+        let Ok(orgs) = fs::read_dir(&acct_path) else { continue };
+        for org in orgs.flatten() {
             let org_path = org.path();
             if !org_path.is_dir() {
                 continue;
             }
-            let newest = fs::read_dir(&org_path).ok()?.flatten().filter_map(|entry| {
+            let Ok(entries) = fs::read_dir(&org_path) else { continue };
+            let newest = entries.flatten().filter_map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 name.starts_with(LOCAL_PREFIX)
                     .then(|| entry.metadata().ok()?.modified().ok())
