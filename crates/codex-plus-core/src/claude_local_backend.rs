@@ -474,10 +474,22 @@ fn checked(command: &mut Command, timeout: Duration, message: &str) -> Result<()
     Ok(())
 }
 
+/// 统一建 Command：Windows 上不为控制台程序（node、openssl 等）弹黑色终端窗口。
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    command
+}
+
 fn node_runtime() -> Option<PathBuf> {
     let node = crate::dsh_plugins::locate_node()?;
     probe(
-        Command::new(&node).args([
+        hidden_command(&node).args([
             "-e",
             "process.exit(typeof fetch==='function'&&typeof WebSocket==='function'?0:1)",
         ]),
@@ -652,7 +664,7 @@ IP.1=127.0.0.1
     )?;
     let openssl = crate::dsh_plugins::locate_program("openssl")
         .context("未找到 OpenSSL，无法准备本地证书")?;
-    let mut command = Command::new(&openssl);
+    let mut command = hidden_command(&openssl);
     command
         .args(["genrsa", "-out"])
         .arg(ca.join("ca.key"))
@@ -662,7 +674,7 @@ IP.1=127.0.0.1
         Duration::from_secs(20),
         "生成本地 CA 私钥失败",
     )?;
-    let mut command = Command::new(&openssl);
+    let mut command = hidden_command(&openssl);
     command
         .args(["req", "-x509", "-new", "-key"])
         .arg(ca.join("ca.key"))
@@ -682,7 +694,7 @@ IP.1=127.0.0.1
         Duration::from_secs(20),
         "生成本地 CA 证书失败",
     )?;
-    let mut command = Command::new(&openssl);
+    let mut command = hidden_command(&openssl);
     command
         .args(["genrsa", "-out"])
         .arg(ca.join("server.key"))
@@ -692,7 +704,7 @@ IP.1=127.0.0.1
         Duration::from_secs(20),
         "生成本地服务私钥失败",
     )?;
-    let mut command = Command::new(&openssl);
+    let mut command = hidden_command(&openssl);
     command
         .args(["req", "-new", "-key"])
         .arg(ca.join("server.key"))
@@ -705,7 +717,7 @@ IP.1=127.0.0.1
         Duration::from_secs(20),
         "生成本地服务证书请求失败",
     )?;
-    let mut command = Command::new(&openssl);
+    let mut command = hidden_command(&openssl);
     command
         .args(["x509", "-req", "-in"])
         .arg(ca.join("server.csr"))
@@ -1198,7 +1210,7 @@ fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
     let mut last_error = None;
     for electron_cache in [&original_cache] {
         let drain = probe(
-            Command::new(node)
+            hidden_command(node)
                 .arg(root.join("scripts/patch-dictation-drain.mjs"))
                 .args(["--apply", "--cache-dir"])
                 .arg(&cache)
@@ -1209,7 +1221,7 @@ fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
         );
         let code = "const m=await import(process.argv[1]);m.applyStartupPatches({cacheDir:process.argv[2],electronCacheDir:process.argv[3]});";
         let start = probe(
-            Command::new(node)
+            hidden_command(node)
                 .args(["--input-type=module", "-e", code])
                 .arg(
                     reqwest::Url::from_file_path(root.join("scripts/patch-dictation-start.mjs"))
@@ -1248,7 +1260,7 @@ fn start_backend(root: &Path, node: &Path, config: &ClaudeLocalSettings) -> Resu
     let instance = uuid::Uuid::new_v4().to_string();
     let ready_file = root.join("ready.json");
     let log = private_file(&root.join("proxy.log"))?;
-    let mut command = Command::new(node);
+    let mut command = hidden_command(node);
     command
         .arg(root.join("proxy.mjs"))
         .args(["--port", "0", "--mode", "mock", "--log", "0", "--ca"])
@@ -1345,7 +1357,7 @@ fn launch_original(
     port: Option<u16>,
     localization: bool,
 ) -> Result<()> {
-    let mut command = Command::new(executable(source));
+    let mut command = hidden_command(executable(source));
     for name in [
         "ELECTRON_RUN_AS_NODE",
         "ELECTRON_NO_ASAR",
@@ -1431,7 +1443,7 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     let wiring = wiring(&gateway, binding, "claude-desktop", port);
     private_dir(root)?;
     private_dir(&root.join("claude-code-3p"))?;
-    let mut command = Command::new(executable(source));
+    let mut command = hidden_command(executable(source));
     for name in [
         "ELECTRON_RUN_AS_NODE",
         "ELECTRON_NO_ASAR",
