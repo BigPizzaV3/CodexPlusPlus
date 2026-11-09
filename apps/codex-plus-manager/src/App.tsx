@@ -16403,11 +16403,6 @@ function sameClaudeRunState(
 }
 
 /** 隐藏模型列表最多列 5 个，其余用「等」收尾。 */
-function formatHiddenModelsPreview(models: string[]): string {
-  const shown = models.slice(0, 5).join("、");
-  return models.length > 5 ? `${shown}${t("等")}` : shown;
-}
-
 const claudeLocalMemo: {
   status: CommandResult<ClaudeLocalStatus> | null;
   autoDetected: boolean;
@@ -16824,7 +16819,6 @@ function ClaudeLocalizationScreen(
         ? tf("上下文窗口 {0}（供应商声明）", [formatContextWindow(local.contextWindow)])
         : t("上下文窗口 未声明（Claude 按 200k）")}`
     : t("正在读取原版 Claude 状态");
-  const hiddenModels = local?.hiddenModels ?? [];
   const defaultModelWindow = local?.contextWindow != null && local.contextWindow > 0
     ? formatContextWindow(local.contextWindow)
     : formatContextWindow(CLAUDE_DEFAULT_CONTEXT_WINDOW);
@@ -16866,16 +16860,6 @@ function ClaudeLocalizationScreen(
         </CxRow>
       </CxCard> : null}
       {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}
-      {!patchOnly && hiddenModels.length > 0 ? (
-        <p className="claude-l10n-hint" title={t("Claude 只按默认模型的窗口压缩；把它们列出来会被按默认模型的窗口误算。")}>
-          {tf("另有 {0} 个模型窗口比默认模型小，没有列给 Claude（在那里切换会按 {1} 压缩）：{2}", [
-            hiddenModels.length,
-            defaultModelWindow,
-            formatHiddenModelsPreview(hiddenModels),
-          ])}
-        </p>
-      ) : null}
-      {!patchOnly ? <p className="claude-l10n-hint">{t("账号、套餐与用量显示来自本地合成数据，不代表真实订阅。")}</p> : null}
       {!patchOnly ? <CxSection className="claude-local-settings" title={t("启动设置")}>
         <CxCard>
           <CxRow detail={t("从这里启动后生效；已打开的 Claude 需完全退出重开。")} title={t("启动模式")}>
@@ -16909,7 +16893,7 @@ function ClaudeLocalizationScreen(
               placeholder={t("Local User")}
             />
           </CxRow>
-          <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("套餐")}>
+          <CxRow title={t("套餐")}>
             <AppSelect
               ariaLabel={t("套餐")}
               disabled={localDisabled || !local?.supported}
@@ -16976,9 +16960,7 @@ function ClaudeLocalizationScreen(
               icon={<CxStatusIcon tone={s?.prepared && !s.needsRebuild ? "ok" : "off"}><PackageOpen /></CxStatusIcon>}
               title={t("补丁 Desktop")}
             />
-            <p className="claude-l10n-hint">
-              {t("给改过代码的 Desktop 副本用：制作/更新/检查/启动增强版，原件与 app.asar 不动；日常用「Desktop 增强」页的完整功能模式即可。副本会改写自己的 app.asar，并关闭 asar 完整性校验；原件不受影响。")}
-            </p>
+
           </CxCard>
         ) : null}
         <fieldset className="claude-local-advanced-body" disabled={localBusy !== null}>

@@ -3479,11 +3479,8 @@ export const EN_PLAIN: Record<string, string> = {
   "补丁 Desktop": "Patched Desktop",
   "制作、更新与启动改过代码的 Desktop 副本；原件与 app.asar 不动": "Create, update and launch a modified Desktop copy; the original app and its app.asar stay untouched",
   "制作/更新/检查/启动增强版副本；原件与 app.asar 不动。": "Build, update, check and launch the enhanced copy; the original app and its app.asar are untouched.",
-  "给改过代码的 Desktop 副本用：制作/更新/检查/启动增强版，原件与 app.asar 不动；日常用「Desktop 增强」页的完整功能模式即可。副本会改写自己的 app.asar，并关闭 asar 完整性校验；原件不受影响。": "For Desktop copies whose code was modified: build, update, check and launch the enhanced copy while the original app and its app.asar stay untouched. For daily use, Full-feature mode on the Desktop enhancements page is enough. The copy rewrites its own app.asar and turns off asar integrity checks; the original is unaffected.",
   "上下文窗口 未声明（Claude 按 200k）": "Context window undeclared (Claude assumes 200k)",
-  "Claude 只按默认模型的窗口压缩；把它们列出来会被按默认模型的窗口误算。": "Claude compacts against the default model's window only; listing them would make their windows be misread as the default model's.",
   "取消信任证书": "Remove certificate trust",
-  "账号、套餐与用量显示来自本地合成数据，不代表真实订阅。": "Account, plan and usage figures come from local synthetic data and do not represent a real subscription.",
   "等": " and others",
   // cx-pages:agents —— Claude 本地模式：模型入口搬到「Agent 接入」、侧栏 / 行内的启动键
   "模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。": "The model is chosen on the Claude Desktop row under Agent connections; restart the local service after changing it.",

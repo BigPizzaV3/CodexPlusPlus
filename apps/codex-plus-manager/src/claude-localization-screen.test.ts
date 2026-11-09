@@ -32,7 +32,6 @@ const formatHelpers = transpile([
   functionSource(gatewayModel, "trimNumber"),
   functionSource(gatewayModel, "formatTokens"),
   functionSource(app, "formatContextWindow"),
-  functionSource(app, "formatHiddenModelsPreview"),
 ].join("\n"));
 
 type Element = { type: string; props: Record<string, any> };
@@ -755,38 +754,13 @@ test("上下文窗口按供应商声明显示，未声明时说明 Claude 按 20
   assert.match(text(undeclared.render()), /上下文窗口 未声明（Claude 按 200k）/);
 });
 
-test("窗口比默认模型小的模型只给一行提示，最多列 5 个", () => {
-  const screen = harness(undefined, {}, {
-    localMemo: {
-      status: { ...localReady, contextWindow: 1_000_000, hiddenModels: ["a", "b", "c", "d", "e", "f", "g"] },
-      autoDetected: true,
-    },
-    openAdvanced: false,
-  });
-  const body = text(screen.render());
-  assert.match(body, /另有 7 个模型窗口比默认模型小，没有列给 Claude（在那里切换会按 1M 压缩）：a、b、c、d、e等/);
-  assert.doesNotMatch(body, /f、g/, "超过 5 个只留「等」");
-
-  const none = harness(undefined, {}, {
-    localMemo: { status: { ...localReady, hiddenModels: [] }, autoDetected: true },
-    openAdvanced: false,
-  });
-  assert.doesNotMatch(text(none.render()), /没有列给 Claude/);
-});
-
-test("完整功能模式常显示本地合成数据说明，不放进副本页", () => {
-  const local = harness(undefined, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
-  assert.match(text(local.render()), /账号、套餐与用量显示来自本地合成数据，不代表真实订阅。/);
-  const patch = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
-  assert.doesNotMatch(text(patch.render()), /本地合成数据/);
-});
 
 test("补丁 Desktop 页：说明卡 + 常开的副本块，没有本地状态与页头启动", () => {
   const screen = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
   const page = screen.render();
   assert.match(text(page), /补丁 Desktop/);
-  assert.match(text(page), /给改过代码的 Desktop 副本用/);
-  assert.match(text(page), /关闭 asar 完整性校验/);
+  assert.doesNotMatch(text(page), /给改过代码的 Desktop 副本用/);
+  assert.doesNotMatch(text(page), /关闭 asar 完整性校验/);
   assert.ok(findElements(page, "section").length > 0, "副本块是常开的 section");
   assert.equal(findElements(page, "details").length, 0, "补丁页不再用折叠块");
   assert.match(text(page), /受管增强版/);
