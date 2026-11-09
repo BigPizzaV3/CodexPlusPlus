@@ -241,6 +241,24 @@ pub fn run() {
     // 失败只记诊断日志，不影响启动。
     #[cfg(target_os = "macos")]
     std::thread::spawn(codex_plus_core::update::macos::cleanup_stale_update_transactions);
+    // Codex++ 重启后在原端口恢复 Claude 仍挂接着的本地代理（后台做，不阻塞启动）。
+    std::thread::spawn(|| {
+        match codex_plus_core::claude_local_backend::resume_attached_proxy() {
+            Ok(Some(port)) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "claude_local.resumed",
+                    serde_json::json!({"port": port}),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "claude_local.resume_failed",
+                    serde_json::json!({"message": format!("{error:#}")}),
+                );
+            }
+        }
+    });
     if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load() {
         // 请求体上限是运行期策略：管理器启动即按设置应用，之后启动的 helper 直接继承，
         // 不必等完整启动流程。环境变量仍由 launcher 侧统一优先。

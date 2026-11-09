@@ -1010,6 +1010,40 @@ fn local_binding(gateway: &GatewaySettings, config: &ClaudeLocalSettings) -> Res
     Ok(binding)
 }
 
+/// Codex++ 重启后要不要在原端口恢复代理：runtime 不在、ready 有端口、
+/// Claude 还挂在这个端口上、且完整功能模式开着。
+fn resume_port(
+    runtime_alive: bool,
+    ready_port: Option<u16>,
+    processes: &str,
+    enabled: bool,
+) -> Option<u16> {
+    if runtime_alive || !enabled {
+        return None;
+    }
+    ready_port.filter(|port| processes_use_proxy(processes, *port))
+}
+
+/// 管理器重启后代理随之退出，而 Claude 还指着那个端口：在原端口把代理拉起来，
+/// Claude 的重试就能自己连上（换端口它永远连不上）。
+pub fn resume_attached_proxy() -> Result<Option<u16>> {
+    if !cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let config = SettingsStore::default().load()?.claude_desktop_local;
+    let root = root_dir();
+    let Some(port) = resume_port(
+        runtime_status().is_some(),
+        ready_port(&root),
+        &claude_processes()?,
+        config.enabled,
+    ) else {
+        return Ok(None);
+    };
+    let node = node_runtime().context("未找到支持 fetch 和 WebSocket 的 Node.js")?;
+    start_backend(&root, &node, &config, Some(port)).map(Some)
+}
+
 /// `ready.json` 里记的端口：代理进程已经没了也还能用来认出「还挂着旧代理的 Claude」。
 fn ready_port(root: &Path) -> Option<u16> {
     let bytes = fs::read(root.join("ready.json")).ok()?;
@@ -1249,7 +1283,12 @@ fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
     Ok(())
 }
 
-fn start_backend(root: &Path, node: &Path, config: &ClaudeLocalSettings) -> Result<u16> {
+fn start_backend(
+    root: &Path,
+    node: &Path,
+    config: &ClaudeLocalSettings,
+    preferred_port: Option<u16>,
+) -> Result<u16> {
     if let Some((port, _, hash, _)) = runtime_status()
         && hash == config_hash(config)
     {
@@ -1266,7 +1305,8 @@ fn start_backend(root: &Path, node: &Path, config: &ClaudeLocalSettings) -> Resu
     let mut command = hidden_command(node);
     command
         .arg(root.join("proxy.mjs"))
-        .args(["--port", "0", "--mode", "mock", "--log", "0", "--ca"])
+        // 恢复挂接时优先在原端口重启：Claude 只认启动时的 --proxy-server 端口。
+        .args(["--port", &preferred_port.unwrap_or(0).to_string(), "--mode", "mock", "--log", "0", "--ca"])
         .arg(root.join("ca"))
         .current_dir(root)
         .env("CLAUDE_LOCAL_MANAGED", "1")
@@ -1679,7 +1719,9 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             if config.session_sync {
                 match crate::claude_session_sync::sync_sessions(
                     &app_support_dir().join("Claude-3p/claude-code-sessions"),
+                    &[root.join("claude-code-3p"), home_dir().join(".claude")],
                     &app_support_dir().join("Claude/claude-code-sessions"),
+                    &[root.join("claude-code"), home_dir().join(".claude")],
                     &root.join("backups/session-sync"),
                 ) {
                     Ok(report) if report.to_full + report.to_three_p + report.updated > 0 => {
@@ -1708,7 +1750,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 if config.voice_input {
                     prepare_dictation(&root, &node)?;
                 }
-                let port = start_backend(&root, &node, &config)?;
+                let port = start_backend(&root, &node, &config, None)?;
                 if let Err(error) = launch_original(&source, &root, Some(port), config.localization)
                 {
                     stop_backend();
@@ -2381,6 +2423,17 @@ server.listen(0,'127.0.0.1',()=>{
             wiring.root,
             "http://127.0.0.1:57321/gw/claude-desktop-local"
         );
+    }
+
+    #[test]
+    fn resume_port_only_when_claude_is_still_attached() {
+        let attached = format!("4509 /Applications/Claude.app/Contents/MacOS/Claude {}", proxy_flag(53514));
+        assert_eq!(resume_port(false, Some(53514), &attached, true), Some(53514));
+        assert_eq!(resume_port(false, Some(53514), "", true), None, "没挂接不恢复");
+        assert_eq!(resume_port(false, Some(5351), &attached, true), None, "端口不匹配不恢复");
+        assert_eq!(resume_port(false, Some(53514), &attached, false), None, "未开完整功能不恢复");
+        assert_eq!(resume_port(true, Some(53514), &attached, true), None, "runtime 在时不恢复");
+        assert_eq!(resume_port(false, None, &attached, true), None);
     }
 
     /// 显示名与套餐：缺字段走默认（ultra / 空名→Local User），非法值被规范化。
