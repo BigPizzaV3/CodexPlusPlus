@@ -200,7 +200,7 @@ const ORG = {
   claude_ai_bootstrap_models_config: runtime.models.map((model) => ({
     model, name: model, description: "", paprika_modes: [], thinking_modes: [],
     hard_limit: modelWindow(runtime, model),
-    context_window_tokens: modelWindow(runtime, model),
+    context_window: modelWindow(runtime, model),
   })),
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -625,7 +625,7 @@ function mergePoolModels(j) {
     for (const entry of cfg) {
       if (entry && runtime.models.includes(entry.model)) {
         entry.hard_limit = modelWindow(runtime, entry.model);
-        entry.context_window_tokens = modelWindow(runtime, entry.model);
+        entry.context_window = modelWindow(runtime, entry.model);
       }
     }
     for (const id of ids) {
@@ -635,7 +635,7 @@ function mergePoolModels(j) {
         name: id,
         description: id,
         hard_limit: modelWindow(runtime, id),
-        context_window_tokens: modelWindow(runtime, id),
+        context_window: modelWindow(runtime, id),
       });
     }
   }
@@ -654,7 +654,8 @@ function mergePoolModels(j) {
       for (const entry of sel.models) {
         if (entry && runtime.models.includes(entry.id)) {
           entry.hard_limit = modelWindow(runtime, entry.id);
-          entry.context_window_tokens = modelWindow(runtime, entry.id);
+          entry.context_window = modelWindow(runtime, entry.id);
+          entry.runtime = { max_input_tokens: modelWindow(runtime, entry.id) };
         }
       }
       for (const id of ids) {
@@ -665,7 +666,8 @@ function mergePoolModels(j) {
           short_name: id,
           description: id,
           hard_limit: modelWindow(runtime, id),
-          context_window_tokens: modelWindow(runtime, id),
+          context_window: modelWindow(runtime, id),
+          runtime: { max_input_tokens: modelWindow(runtime, id) },
         });
       }
     }
@@ -681,31 +683,30 @@ function mergePoolModels(j) {
 function mockEdgeApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   if (p.includes("/edge-api/bootstrap")) {
-    const fakeFile = path.join(POC_MOCK, "bootstrap.json");
-    const body = !dataManaged && fs.existsSync(fakeFile)
-      ? fs.readFileSync(fakeFile, "utf8")
-      : null;
-    if (body) {
-      let body2 = JSON.stringify(normalizeLocalIdentity(localBootstrap()));
-      try {
-        const j = JSON.parse(body);
-        const normalized = normalizeLocalIdentity({ ...localBootstrap(), ...j });
-        mergePoolModels(j);
-        body2 = JSON.stringify(normalizeLocalIdentity({ ...normalized, ...j }));
-      } catch {}
-      return jsonWithActiveOrg(res, JSON.parse(body2));
-    }
-    const base = RECORDED_BOOTSTRAP ?? {};
-    const merged = normalizeLocalIdentity({
-      ...localBootstrap(), ...base,
-      intercom_account_hash: null,
-      intercom_user_jwt: null,
-    });
-    mergePoolModels(merged);
-    return jsonWithActiveOrg(res, merged);
+    return jsonWithActiveOrg(res, resolvedBootstrap());
   }
   if (p.endsWith("/edge-api/client-health/check")) return json(res, {});
   return json(res, {});
+}
+
+let resolvedBootstrapCache;
+function resolvedBootstrap() {
+  if (resolvedBootstrapCache) return resolvedBootstrapCache;
+  let template = RECORDED_BOOTSTRAP ?? {};
+  if (!dataManaged) {
+    try { template = JSON.parse(fs.readFileSync(path.join(POC_MOCK, "bootstrap.json"), "utf8")); } catch {}
+  }
+  const result = normalizeLocalIdentity({
+    ...localBootstrap(), ...structuredClone(template),
+    intercom_account_hash: null, intercom_user_jwt: null,
+  });
+  result.served_copy = {
+    ...result.served_copy,
+    "web.plan_name.max_20x": runtime.localization ? "Codex++ 本地网关" : "Codex++ local gateway",
+  };
+  mergePoolModels(result);
+  resolvedBootstrapCache = result;
+  return result;
 }
 
 // REST 侧的会话条目：拿录制文件里的第一条当模板，叠动态字段
@@ -737,6 +738,19 @@ function convToRest(c) {
 function mockApi(req, res, url) {
   const p = url.pathname.replace(/\/+$/, "");
   const method = req.method;
+
+  // Code 的上下文来自 CLI model_selector，不读取网页的 hard_limit。
+  const selector = p.match(/^\/api\/(?:organizations\/[^/]+\/)?model_selector\/([^/]+)$/);
+  if (method === "GET" && selector) {
+    const catalog = modelSelectors(runtime);
+    const config = catalog.model_selector_config.find((entry) => entry.id === selector[1]);
+    const state = catalog.model_selector_state.find((entry) => entry.id === selector[1]);
+    return json(res, {
+      model_selector_config: config ? [config] : [],
+      model_selector_state: state ? [state] : [],
+      organization_uuid: ORG.uuid,
+    });
+  }
 
   const convGet = p.match(/\/chat_conversations\/([0-9a-f-]{36})$/);
   if (convGet && method === "GET") {
@@ -1033,12 +1047,10 @@ function mockApi(req, res, url) {
   }
 
   if (p === "/api/bootstrap" || p === "/api/account" || p === "/api/account_profile") {
-    const base = RECORDED_BOOTSTRAP ? { ...BOOTSTRAP, ...RECORDED_BOOTSTRAP } : BOOTSTRAP;
-    if (!dataManaged && RECORDED_BOOTSTRAP) mergePoolModels(base);
-    return jsonWithActiveOrg(res, normalizeLocalIdentity(dataManaged ? localBootstrap() : base));
+    return jsonWithActiveOrg(res, resolvedBootstrap());
   }
   if (/^\/api\/bootstrap\/[^/]+\/app_start$/.test(p)) {
-    return jsonWithActiveOrg(res, localBootstrap());
+    return jsonWithActiveOrg(res, resolvedBootstrap());
   }
   if (p === "/api/organizations") {
     return jsonWithActiveOrg(res, { organizations: [ORG], data: [ORG], items: [ORG] });
@@ -1180,23 +1192,15 @@ function mockApi(req, res, url) {
     return json(res, { is_pending: false, is_error: false });
   }
   if (/\/(usage|rate_limits|limits)/.test(p)) {
-    // 与 claude.ai 真实结构一致：限额面板读 five_hour/seven_day/extra_usage。
-    const windows = [
-      { window: "five_hour", threshold: 100, utilization: 0, status: "available", resets_at: null, resetsAt: null },
-      { window: "seven_day", threshold: 100, utilization: 0, status: "available", resets_at: null, resetsAt: null },
-      { window: "seven_day_cowork", threshold: 100, utilization: 0, status: "available", resets_at: null, resetsAt: null },
-    ];
+    // windows 是前端由 limits 转换出的视图。本地网关没有 Anthropic 套餐额度。
     return json(res, {
-      plan: "max",
-      usage: { messages_used: 0, messages_limit: null },
-      rate_limit: { allowed: true },
-      windows,
-      five_hour: { utilization: 0, resets_at: null },
-      seven_day: { utilization: 0, resets_at: null },
-      seven_day_oauth_apps: { utilization: 0, resets_at: null },
-      seven_day_opus: { utilization: 0, resets_at: null },
-      seven_day_cowork: { utilization: 0, resets_at: null },
-      extra_usage: { is_enabled: false, monthly_limit: null, used_credits: 0, utilization: 0, currency: "USD" },
+      limits: [],
+      five_hour: null,
+      seven_day: null,
+      seven_day_oauth_apps: null,
+      seven_day_opus: null,
+      seven_day_cowork: null,
+      extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null, currency: "USD" },
       iguana_necktie: null,
     });
   }
@@ -1210,6 +1214,45 @@ function mockApi(req, res, url) {
 // ── 上游转发（带缓存） ───────────────────────────────────────
 function cachePathFor(keyStr) {
   return path.join(READ_CACHE, crypto.createHash("sha1").update(keyStr).digest("hex"));
+}
+
+function isHashedStaticAsset(req, url) {
+  if (req.method !== "GET" || req.headers.range || url.search) return false;
+  const prefix = url.hostname === "assets-proxy.anthropic.com" ? "/claude-ai/v2/assets/"
+    : /^(?:www\.)?claude\.(?:ai|com)$/.test(url.hostname) ? "/assets/" : null;
+  return prefix !== null && url.pathname.startsWith(prefix) &&
+    /\/[^/]+-[A-Za-z0-9_-]{8,}\.(?:m?js|css|wasm|woff2?|ttf|otf|png|jpe?g|webp|gif|svg|ico)$/.test(url.pathname);
+}
+
+function bufferedResponseHeaders(headers, length) {
+  const result = { ...headers };
+  const connectionHeaders = String(result.connection || "").split(",").map((name) => name.trim().toLowerCase());
+  for (const name of ["connection", "transfer-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade", ...connectionHeaders]) {
+    delete result[name];
+  }
+  // Buffer 未解压，保留 content-encoding 并以实际传输字节数更新长度。
+  result["content-length"] = length;
+  return result;
+}
+
+function serveCachedStaticAsset(req, res, url) {
+  if (MODE === "passthrough" || !isHashedStaticAsset(req, url)) return false;
+  const cacheKey = `${url.host}${url.pathname}${url.search}`;
+  const cp = cachePathFor(cacheKey);
+  try {
+    const meta = JSON.parse(fs.readFileSync(`${cp}.json`, "utf8"));
+    if (meta.status !== 200 || meta.url !== cacheKey ||
+        typeof meta.headers?.["content-type"] !== "string" ||
+        /\b(?:private|no-store)\b/i.test(String(meta.headers["cache-control"] || ""))) return false;
+    const body = fs.readFileSync(cp);
+    const headers = bufferedResponseHeaders(meta.headers, body.length);
+    delete headers["set-cookie"];
+    res.writeHead(200, headers);
+    res.end(body);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readBody(req, cb) {
@@ -1332,6 +1375,9 @@ function proxyUpstream(req, res, url) {
   const cacheKey = `${url.host}${url.pathname}${url.search}`;
   const cp = cachePathFor(cacheKey);
   const metaPath = `${cp}.json`;
+  const staticAsset = isHashedStaticAsset(req, url);
+  const document = /^(?:www\.)?claude\.(?:ai|com)$/.test(url.hostname) && isDocNav(req, url);
+  const canCache = MODE !== "passthrough" && (staticAsset || document);
 
   // 保留原始主机（downloads.claude.ai 等），不再统一改写到 claude.ai。
   const base = UPSTREAM_MAP[url.host] || `https://${url.host || "claude.ai"}`;
@@ -1358,27 +1404,27 @@ function proxyUpstream(req, res, url) {
         const ok = up.statusCode >= 200 && up.statusCode < 400;
         // 文档路由不缓存桩体/落地页 HTML（登出页会让 SPA 卡骨架屏）
         const docStub = isDocNav(req, url) && body.length < 4096;
-        if (ok && !docStub && req.method === "GET" && MODE !== "passthrough") {
+        if (ok && !docStub && canCache && (!staticAsset || (
+          up.statusCode === 200 && !up.headers["set-cookie"] &&
+          !/\b(?:private|no-store)\b/i.test(String(up.headers["cache-control"] || ""))
+        ))) {
           fs.mkdirSync(path.dirname(cp), { recursive: true });
           fs.writeFileSync(cp, body);
           fs.writeFileSync(
             metaPath,
-            JSON.stringify({ status: up.statusCode, headers: up.headers, url: cacheKey }),
+            JSON.stringify({ status: up.statusCode, headers: bufferedResponseHeaders(up.headers, body.length), url: cacheKey }),
           );
         }
-        // 去掉逐跳/编码头，避免与自算 content-length 冲突
-        const fwd = { ...up.headers };
-        delete fwd["transfer-encoding"];
-        delete fwd["connection"];
-        res.writeHead(up.statusCode, { ...fwd, "content-length": body.length });
+        res.writeHead(up.statusCode, bufferedResponseHeaders(up.headers, body.length));
         res.end(body);
       });
     },
   );
   upstreamReq.on("timeout", () => upstreamReq.destroy(new Error("upstream timeout")));
   upstreamReq.on("error", (err) => {
-    // 上游不可达时回放缓存副本（state 写穿缓存 / dev 录制缓存）。
-    if (fs.existsSync(cp) && fs.existsSync(metaPath)) {
+    if (serveCachedStaticAsset(req, res, url)) return;
+    // 动态接口不能回放其它会话的缓存；文档仍沿用本地外壳兜底。
+    if (canCache && document && fs.existsSync(cp) && fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
       const body = fs.readFileSync(cp);
       const docStub = isDocNav(req, url) && (meta.status !== 200 || body.length < 4096);
@@ -1388,10 +1434,7 @@ function proxyUpstream(req, res, url) {
         res.end("upstream unavailable (doc stub suppressed)\n");
         return;
       }
-      const fwd = { ...meta.headers };
-      delete fwd["transfer-encoding"];
-      delete fwd["connection"];
-      res.writeHead(meta.status || 200, { ...fwd, "content-length": body.length });
+      res.writeHead(meta.status || 200, bufferedResponseHeaders(meta.headers, body.length));
       res.end(body);
       log(`CACHE HIT ${url.pathname}`);
       return;
@@ -1414,6 +1457,11 @@ function handle(req, res, hostHeader) {
 
   const hostName = url.hostname.toLowerCase();
   const isMainClaudeHost = /^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/.test(hostName);
+  if (MODE === "mock" && req.method === "GET" &&
+      (isMainClaudeHost || hostName === "api.anthropic.com") &&
+      /^\/api\/(?:organizations\/[^/]+\/)?model_selector\/[^/]+\/?$/.test(url.pathname)) {
+    return mockApi(req, res, url);
+  }
   if (runtime.managed && isMainClaudeHost && url.pathname.startsWith("/__codex_plus/")) {
     if (
       url.pathname !== LOCALIZATION_SHIM_PATH ||
@@ -1572,6 +1620,7 @@ function handle(req, res, hostHeader) {
   // 只有主站 claude.ai/claude.com 本身走 mock；其余子域（downloads/assets-proxy 等）
   // 和其他 MITM 域一样直通真 host —— 否则 downloads.claude.ai 会被改写成 claude.ai 而 404。
   if (!/^(claude\.ai|www\.claude\.ai|claude\.com|www\.claude\.com)$/i.test(host)) {
+    if (serveCachedStaticAsset(req, res, url)) return;
     // api.anthropic.com 的 OAuth 换票链本地化：authorize 回 redirect_uri(带 code)，token 回凭据。
     // 真服务器会拒掉我们种的假 sessionKey，导致 oauth-v2 fresh exchange 失败、
     // 客户端判 session_stale_relogin → "Couldn't verify your sign-in"。

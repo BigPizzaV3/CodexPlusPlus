@@ -11,12 +11,15 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import tls from "node:tls";
 import { fileURLToPath } from "node:url";
+import { gzipSync, gunzipSync } from "node:zlib";
 import { startupAssets } from "./scripts/patch-dictation-start.mjs";
 import { facadeFixture, recorderFixture } from "./scripts/fixtures/dictation-start.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const gatewayRequests = [];
 const upstreamRequests = [];
+const cdnAssetPath = "/claude-ai/v2/assets/v1/codex-fixture-AbCd1234.js";
+const cdnAssetBody = gzipSync('export const fixture = "cached CDN bytes";');
 let gateway;
 let upstreamFixture;
 let upstreamFixturePort;
@@ -125,6 +128,7 @@ async function requestText(host, pathname, headers = {}) {
         response.on("end", () => resolve({
           status: response.statusCode,
           headers: response.headers,
+          bytes: Buffer.concat(chunks),
           body: Buffer.concat(chunks).toString("utf8"),
         }));
       });
@@ -303,6 +307,17 @@ before(async () => {
   // 假上游：记录代理转发过来的 host 头与路径
   upstreamFixture = http.createServer((req, res) => {
     upstreamRequests.push({ host: req.headers.host, url: req.url });
+    if (req.url === cdnAssetPath) {
+      res.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "content-encoding": "gzip",
+        "access-control-allow-origin": "*",
+        "cache-control": "public, max-age=31536000, immutable",
+        connection: "close, x-fixture-hop",
+        "x-fixture-hop": "remove-me",
+      });
+      return res.end(cdnAssetBody);
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, host: req.headers.host, url: req.url }));
   });
@@ -316,7 +331,10 @@ before(async () => {
     env: {
       ...process.env,
       CLAUDE_LOCAL_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
-      CLAUDE_LOCAL_UPSTREAM_MAP: JSON.stringify({ "downloads.claude.ai": `http://127.0.0.1:${upstreamFixturePort}` }),
+      CLAUDE_LOCAL_UPSTREAM_MAP: JSON.stringify({
+        "downloads.claude.ai": `http://127.0.0.1:${upstreamFixturePort}`,
+        "assets-proxy.anthropic.com": `http://127.0.0.1:${upstreamFixturePort}`,
+      }),
       CLAUDE_LOCAL_CACHE_DIR: dictationCacheDir,
       CODEX_PLUS_STATE_DIR: dictationStateDir,
     },
@@ -345,6 +363,10 @@ after(async () => {
     proxy.kill("SIGTERM");
   }
   if (proxyClosed) await proxyClosed;
+  if (upstreamFixture) {
+    upstreamFixture.closeAllConnections();
+    await new Promise((resolve) => upstreamFixture.close(resolve));
+  }
   if (gateway) await new Promise((resolve) => gateway.close(resolve));
   if (dictationFixture) await new Promise((resolve) => dictationFixture.close(resolve));
   if (dictationStateDir) {
@@ -649,6 +671,46 @@ test("upstream requests keep their original host instead of being rewritten to c
   const seen = upstreamRequests.at(-1);
   assert.equal(seen.host, "downloads.claude.ai");
   assert.equal(seen.url, "/claude-code-releases/2.1.317/darwin-arm64/claude.app.tar.zst");
+});
+
+test("hashed CDN assets replay cached compressed bytes before contacting the upstream", async () => {
+  const before = upstreamRequests.length;
+  const first = await requestText("assets-proxy.anthropic.com", cdnAssetPath);
+  assert.equal(upstreamRequests.length, before + 1);
+  const second = await requestText("assets-proxy.anthropic.com", cdnAssetPath);
+  assert.equal(upstreamRequests.length, before + 1, "cached CDN module must not wait for upstream or its timeout");
+  for (const result of [first, second]) {
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.bytes, cdnAssetBody);
+    assert.equal(result.headers["content-encoding"], "gzip");
+    assert.equal(result.headers["access-control-allow-origin"], "*");
+    assert.equal(result.headers["transfer-encoding"], undefined);
+    assert.equal(result.headers["x-fixture-hop"], undefined);
+    assert.equal(Number(result.headers["content-length"]), cdnAssetBody.length);
+    assert.equal(gunzipSync(result.bytes).toString("utf8"), 'export const fixture = "cached CDN bytes";');
+  }
+});
+
+test("CDN dynamic APIs ignore old cache entries and do not persist responses", async () => {
+  const dynamicPath = "/api/usage";
+  const key = `assets-proxy.anthropic.com${dynamicPath}`;
+  const cached = path.join(dictationCacheDir, crypto.createHash("sha1").update(key).digest("hex"));
+  const oldBody = JSON.stringify({ stalePrivateFixture: true });
+  fs.writeFileSync(cached, oldBody);
+  fs.writeFileSync(`${cached}.json`, JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, url: key }));
+  const before = upstreamRequests.length;
+  const first = await requestText("assets-proxy.anthropic.com", dynamicPath);
+  const second = await requestText("assets-proxy.anthropic.com", dynamicPath);
+  assert.equal(upstreamRequests.length, before + 2);
+  assert.equal(JSON.parse(first.body).ok, true);
+  assert.equal(JSON.parse(second.body).stalePrivateFixture, undefined);
+  assert.equal(fs.readFileSync(cached, "utf8"), oldBody);
+
+  const uncachedPath = "/api/model_metadata";
+  await requestText("assets-proxy.anthropic.com", uncachedPath);
+  const uncachedKey = crypto.createHash("sha1").update(`assets-proxy.anthropic.com${uncachedPath}`).digest("hex");
+  assert.equal(fs.existsSync(path.join(dictationCacheDir, uncachedKey)), false);
+  assert.equal(fs.existsSync(path.join(dictationCacheDir, `${uncachedKey}.json`)), false);
 });
 
 test("model requests strip diagnostics and preserve the rest of the payload", async () => {

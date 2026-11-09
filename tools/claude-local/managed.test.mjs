@@ -17,6 +17,10 @@ import { createStateStore, gatewayModel, gatewayTarget, modelWindow, runtimeConf
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
+const modelWindows = {
+  [modelIds[0]]: 1_000_000, [modelIds[1]]: 1_100_000, [modelIds[2]]: 256_000,
+  [modelIds[3]]: 128_000, [modelIds[4]]: 512_000,
+};
 let root;
 let gateway;
 let gatewayPort;
@@ -114,6 +118,7 @@ async function start(extra = {}) {
       CLAUDE_LOCAL_GATEWAY_KEY: "test-local-gateway-token",
       CLAUDE_LOCAL_GATEWAY_MODEL: modelIds[0],
       CLAUDE_LOCAL_GATEWAY_MODELS: JSON.stringify(modelIds),
+      CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS: JSON.stringify(modelWindows),
       CLAUDE_LOCAL_LOCALIZATION: "1",
       CLAUDE_LOCAL_VOICE_INPUT: "0",
       CLAUDE_LOCAL_COMPUTER_USE: "0",
@@ -359,13 +364,33 @@ test("managed feature flags are independently reflected without granting system 
   assert.equal(bootstrap.json.account.capabilities.includes("computer_use"), false);
 });
 
-test("managed usage reports parseable windows and model windows accept gateway metadata", async () => {
-  const usage = await request(service, "/api/usage", { host: "claude.ai" });
+test("managed usage returns the frontend limits contract without invented subscription usage", async () => {
+  const usage = await request(service, "/api/organizations/local/usage?skip_spend=1", { host: "claude.ai" });
   assert.equal(usage.status, 200);
-  assert.ok(Array.isArray(usage.json.windows));
-  assert.deepEqual(usage.json.windows.map((entry) => entry.window), [
-    "five_hour", "seven_day", "seven_day_cowork",
-  ]);
+  assert.deepEqual(usage.json.limits, []);
+  assert.equal(usage.json.five_hour, null);
+  assert.equal(usage.json.extra_usage.used_credits, null);
+  assert.equal(usage.json.windows, undefined);
+  const bootstrap = await request(service, "/edge-api/bootstrap", { host: "claude.ai" });
+  assert.equal(bootstrap.json.served_copy["web.plan_name.max_20x"], "Codex++ 本地网关");
+});
+
+test("managed model selector responses include per-model runtime windows", async () => {
+  for (const host of ["claude.ai", "api.anthropic.com"]) {
+    for (const surface of ["cc", "ccd", "ccr"]) {
+      for (const prefix of ["/api", "/api/organizations/local"]) {
+        const result = await request(service, `${prefix}/model_selector/${surface}`, { host });
+        assert.equal(result.status, 200);
+        const [config] = result.json.model_selector_config;
+        assert.equal(config.id, surface);
+        assert.deepEqual(config.models.map((entry) => [entry.id, entry.context_window]), Object.entries(modelWindows));
+        assert.deepEqual(config.models.map((entry) => [entry.id, entry.runtime.max_input_tokens]), Object.entries(modelWindows));
+      }
+    }
+  }
+});
+
+test("model window metadata validates configured values", () => {
   const config = runtimeConfig({
     CLAUDE_LOCAL_MANAGED: "1",
     CLAUDE_LOCAL_GATEWAY_URL: "https://localhost/gw/test/",
@@ -375,6 +400,37 @@ test("managed usage reports parseable windows and model windows accept gateway m
   });
   assert.equal(modelWindow(config, "alpha/claude-opus-4-6"), 1_000_000);
   assert.equal(modelWindow(config, "unknown"), 200_000);
+  assert.equal(modelWindow(config, "ALPHA/claude-opus-4-6"), 1_000_000);
+  assert.equal(modelWindow(config, "claude-opus-4-6"), 1_000_000, "裸模型名也能命中带前缀的声明");
+  for (const value of ["[]", '{"m":0}', '{"m":-1}', '{"m":"1100000"}', '{"m":1.1}']) {
+    assert.throws(() => runtimeConfig({ CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS: value }), /model windows/);
+  }
+});
+
+test("selected model falls back to the gateway default window instead of 200k", () => {
+  const config = runtimeConfig({
+    CLAUDE_LOCAL_MANAGED: "1",
+    CLAUDE_LOCAL_GATEWAY_URL: "https://localhost/gw/test/",
+    CLAUDE_LOCAL_GATEWAY_MODEL: "jojocodemax/gpt-6.1-sol",
+    CLAUDE_LOCAL_GATEWAY_KEY: "test",
+    CLAUDE_LOCAL_GATEWAY_MODELS: JSON.stringify(["jojocodemax/gpt-6.1-sol", "chatgpt/gpt-6.1-terra"]),
+    CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS: JSON.stringify({}),
+    CLAUDE_LOCAL_GATEWAY_DEFAULT_WINDOW: "1100000",
+  });
+  assert.equal(config.defaultWindow, 1_100_000);
+  assert.equal(modelWindow(config, "jojocodemax/gpt-6.1-sol"), 1_100_000, "选中的模型用网关窗口");
+  assert.equal(modelWindow(config, "chatgpt/gpt-6.1-terra"), 200_000, "没声明的其它模型仍按 200k 兜底");
+  // 写坏了就当没给：不因为一个环境变量让启动失败
+  for (const value of ["", "abc", "0", "-1", "1.5"]) {
+    const broken = runtimeConfig({
+      CLAUDE_LOCAL_MANAGED: "1",
+      CLAUDE_LOCAL_GATEWAY_URL: "https://localhost/gw/test/",
+      CLAUDE_LOCAL_GATEWAY_MODEL: "jojocodemax/gpt-6.1-sol",
+      CLAUDE_LOCAL_GATEWAY_KEY: "test",
+      CLAUDE_LOCAL_GATEWAY_DEFAULT_WINDOW: value,
+    });
+    assert.equal(broken.defaultWindow, 200_000);
+  }
 });
 
 test("gateway forwarding preserves the configured root, authentication and selected provider/model", async () => {

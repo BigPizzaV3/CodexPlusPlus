@@ -137,6 +137,10 @@ pub struct ClaudeLocalStatus {
     pub dictation_ready: bool,
     pub config: ClaudeLocalSettings,
     pub models: Vec<String>,
+    /// 当前默认模型实际下发的窗口（供应商声明值）；`None` 表示未声明，Claude 按 200k 处理。
+    pub context_window: Option<u64>,
+    /// 因为窗口比默认模型小、没有列给 Claude 的模型。
+    pub hidden_models: Vec<String>,
     pub warning: Option<String>,
     pub needs_restart: bool,
 }
@@ -239,7 +243,52 @@ fn switch_state_path(root: &Path) -> PathBuf {
     root.join(SWITCH_STATE_FILE)
 }
 
+/// 处理「上次切换留下、状态文件却已经丢了」的 `configLibrary` 备份。
+///
+/// 正常流程里备份由 `restore_real_profile` 按状态文件还原。状态文件丢了（崩溃、
+/// 中途被删）就会卡在这里：备份一直在，`apply_real_profile_one_p` 每次启动都拒绝。
+/// 于是按现场情况收尾：目标不在就把备份放回去；目标还在（Claude 自己重建过）
+/// 就保留目标，把备份归档到 state 的 `backups/` 里，谁也不丢。
+fn recover_orphan_config_library(app_support: &Path, root: &Path) -> Result<Option<String>> {
+    let target = app_support.join("Claude-3p/configLibrary");
+    let backup = target.with_file_name(CONFIG_LIBRARY_BACKUP);
+    if !backup.exists() {
+        return Ok(None);
+    }
+    // 状态文件还认这份备份：属于正常切换流程，交给 restore_real_profile。
+    let tracked = fs::read(switch_state_path(root))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|state| state["configLibraryMoved"].as_bool())
+        == Some(true);
+    if tracked {
+        return Ok(None);
+    }
+    if !target.exists() {
+        fs::rename(&backup, &target)
+            .with_context(|| format!("无法恢复 {}", target.display()))?;
+        return Ok(Some(format!(
+            "已恢复上次遗留的 configLibrary 备份：{}",
+            target.display()
+        )));
+    }
+    let archive = root.join("backups");
+    private_dir(&archive)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let archived = archive.join(format!("configLibrary-orphan-{stamp}"));
+    fs::rename(&backup, &archived)
+        .with_context(|| format!("无法归档遗留的 {}", backup.display()))?;
+    Ok(Some(format!(
+        "已把上次遗留的 configLibrary 备份归档到 {}",
+        archived.display()
+    )))
+}
+
 fn apply_real_profile_one_p(app_support: &Path, root: &Path) -> Result<()> {
+    recover_orphan_config_library(app_support, root)?;
     let state_path = switch_state_path(root);
     if state_path.exists() {
         // 已按记录切换过：校验仍在 1p 状态即可（幂等）。
@@ -307,6 +356,8 @@ fn apply_real_profile_one_p(app_support: &Path, root: &Path) -> Result<()> {
 }
 
 fn restore_real_profile(app_support: &Path, root: &Path) -> Result<()> {
+    // 状态文件丢了也得先把遗留备份收尾，否则切回 3p 之后它还会一直卡着下次启动。
+    recover_orphan_config_library(app_support, root)?;
     let state_path = switch_state_path(root);
     if !state_path.exists() {
         return Ok(());
@@ -626,14 +677,73 @@ fn trust_ca(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 内嵌的运行时代理资产指纹。
+///
+/// 代理进程是常驻的，`start_backend` 靠 `config_hash` 判断能不能复用。运行时
+/// 资产（`runtime.mjs` / `proxy.mjs` …）换了而哈希不变时，旧进程会带着上一版
+/// 环境变量契约继续跑（例如不知道 `CLAUDE_LOCAL_GATEWAY_DEFAULT_WINDOW`），
+/// 界面上看起来就是"改了没生效"。把资产内容算进哈希，升级后必然重启。
+fn assets_digest() -> &'static str {
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| {
+        let mut hasher = Sha256::new();
+        for (name, contents) in ASSETS {
+            hasher.update(name.as_bytes());
+            hasher.update((contents.len() as u64).to_le_bytes());
+            hasher.update(contents);
+        }
+        format!("{:x}", hasher.finalize())
+    })
+}
+
+/// 取消本地 CA 的信任。
+///
+/// 完整功能模式靠这枚 CA 拦截 claude.ai 的 TLS；不再使用时它不该继续留在钥匙串里：
+/// 私钥就在应用状态目录（0600），一条残留的信任条目等于给本机留了个长期中间人。
+fn untrust_ca(root: &Path) -> Result<()> {
+    ensure!(cfg!(target_os = "macos"), "本地证书信任目前仅支持 macOS");
+    let cert = root.join("ca/ca.pem");
+    if !cert.is_file() {
+        return Ok(());
+    }
+    let _ = Command::new("/usr/bin/security")
+        .args(["remove-trusted-cert", "-d"])
+        .arg(&cert)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    ensure!(
+        !ca_trusted(root),
+        "本地证书仍在信任列表中，请在“钥匙串访问”里删除 Codex++ Local CA"
+    );
+    Ok(())
+}
+
 fn config_hash(config: &ClaudeLocalSettings) -> String {
-    let models = GatewayStore::default()
-        .load()
-        .map(|gateway| available_models(&gateway.with_extension_providers()))
-        .unwrap_or_default();
+    let gateway_state = GatewayStore::default().load().ok().map(|gateway| {
+        let gateway = gateway.with_extension_providers();
+        let models = available_models(&gateway);
+        let binding = local_binding(&gateway, config).ok();
+        let windows = binding
+            .as_ref()
+            .map(|binding| available_model_windows(&gateway, binding))
+            .unwrap_or_default();
+        // 「Agent 接入」里换了模型也算配置变了：代理要重启，默认模型才会跟着换。
+        let model = binding.map(|binding| binding.model);
+        (models, windows, model)
+    });
+    config_hash_with_gateway_state(config, gateway_state)
+}
+
+fn config_hash_with_gateway_state(
+    config: &ClaudeLocalSettings,
+    gateway_state: Option<(Vec<String>, BTreeMap<String, u64>, Option<String>)>,
+) -> String {
     format!(
         "{:x}",
-        Sha256::digest(serde_json::to_vec(&(config, models)).unwrap_or_default())
+        Sha256::digest(
+            serde_json::to_vec(&(config, gateway_state, assets_digest())).unwrap_or_default()
+        )
     )
 }
 
@@ -641,6 +751,9 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
     let mut models = Vec::new();
     for provider in gateway.providers.iter().filter(|provider| provider.enabled) {
         for model in crate::gateway::route::chat_models(&provider.relay) {
+            if is_internal_review_model(&model) {
+                continue;
+            }
             let model = format!("{}/{model}", provider.relay.id);
             if !models.contains(&model) {
                 models.push(model);
@@ -657,19 +770,75 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
     models
 }
 
+/// 自动评审模型（`codex-auto-review`）是 Codex 内部子代理用的，不该出现在
+/// 人的模型选择器里：选中它当聊天模型没有意义，只会白烧额度。
+fn is_internal_review_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("auto-review")
+}
+
+/// 交给 Claude 的模型：`(可见, 因窗口更小而隐藏)`。
+///
+/// Claude Code 的上下文窗口是一份**全局环境变量**（`CLAUDE_CODE_MAX_CONTEXT_TOKENS`），
+/// 启动时按默认模型算一次；在 Claude 里切到窗口更小的模型时它不会跟着变小，
+/// auto-compact 会一直等到大窗口才触发，请求先被上游顶回来。所以只暴露窗口
+/// 不小于默认模型的模型，其余的仍留在 Codex++ 的默认模型选择器里。
+fn exposed_models(gateway: &GatewaySettings, binding: &AgentBinding) -> (Vec<String>, Vec<String>) {
+    let models = available_models(gateway);
+    let Some(selected) = selected_model_window(gateway, binding, &binding.model) else {
+        return (models, Vec::new());
+    };
+    models
+        .into_iter()
+        .partition(|model| {
+            selected_model_window(gateway, binding, model).is_some_and(|window| window >= selected)
+        })
+}
+
 fn available_model_windows(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
 ) -> BTreeMap<String, u64> {
-    available_models(gateway)
+    exposed_models(gateway, binding)
+        .0
         .into_iter()
         .filter_map(|model| {
-            crate::gateway::route::model_entry_window(gateway, binding, &model)
-                .or(binding.context_window)
-                .filter(|window| *window > 0)
-                .map(|window| (model, window))
+            selected_model_window(gateway, binding, &model).map(|window| (model, window))
         })
         .collect()
+}
+
+fn selected_model_window(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<u64> {
+    crate::gateway::route::model_entry_window(gateway, binding, model)
+        .or(binding.context_window)
+        .filter(|window| *window > 0)
+}
+
+/// 用户自己在环境里给的窗口（手动 `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000` 那种）。
+fn inherited_context_tokens() -> Option<u64> {
+    std::env::var("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+}
+
+/// 网关声明优先，其次是用户显式设的值；两者都没有时不设，交给 Claude Code 自己的模型表。
+fn pick_context_tokens(resolved: Option<u64>, inherited: Option<u64>) -> Option<u64> {
+    let usable = |window: Option<u64>| window.filter(|window| *window > 0);
+    usable(resolved).or_else(|| usable(inherited))
+}
+
+fn context_tokens(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<u64> {
+    pick_context_tokens(
+        selected_model_window(gateway, binding, model),
+        inherited_context_tokens(),
+    )
 }
 
 fn validate_config(mut config: ClaudeLocalSettings) -> Result<ClaudeLocalSettings> {
@@ -698,16 +867,41 @@ fn bind_gateway(
     Ok((store.load()?.with_extension_providers(), binding))
 }
 
+/// Claude 用哪个模型：`Agent 接入` 里那份绑定选过就用它；否则退回配置里的旧值；
+/// 两者都没有才默认第一个可用模型。**选过但已经不可用**时留空，交给调用方报错，
+/// 不静默换成别的模型。
+fn chosen_model(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    config: &ClaudeLocalSettings,
+) -> String {
+    let routable = |model: &str| {
+        !model.is_empty() && crate::gateway::route::model_is_routable(gateway, binding, model)
+    };
+    let bound = binding.model.trim();
+    let configured = config.model.trim();
+    if routable(bound) {
+        bound.to_string()
+    } else if routable(configured) {
+        configured.to_string()
+    } else if !bound.is_empty() {
+        // 选过但上游已经不提供它了：原样留着，让下面的 ensure 明确报错，不静默换模型。
+        bound.to_string()
+    } else if !configured.is_empty() {
+        configured.to_string()
+    } else {
+        binding.extra_models.first().cloned().unwrap_or_default()
+    }
+}
+
 fn local_binding(gateway: &GatewaySettings, config: &ClaudeLocalSettings) -> Result<AgentBinding> {
     let agent = ToolId::Unknown(AGENT_ID.into());
     let mut binding = gateway.binding(&agent).cloned().unwrap_or_default();
     binding.pool_exclude.clear();
     binding.extra_models = available_models(gateway);
-    binding.model = if config.model.is_empty() {
-        binding.extra_models.first().cloned().unwrap_or_default()
-    } else {
-        config.model.clone()
-    };
+    // 模型以「Agent 接入」里这份绑定的选择为准：那边一处选好，Codex / Claude / Grok 都按它走。
+    // 配置里的 `model` 只是老版本的遗留值，绑定还没选过模型时才拿来兜底。
+    binding.model = chosen_model(gateway, &binding, &config);
     let model = crate::gateway::route::binding_default_model(gateway, &binding);
     ensure!(
         !model.is_empty() && crate::gateway::route::model_is_routable(gateway, &binding, &model),
@@ -810,7 +1004,15 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         || (!config.enabled && local_process)
         || (claude_running && changed_since_launch);
     let gateway = GatewayStore::default().load()?.with_extension_providers();
-    let models = available_models(&gateway);
+    // 状态里报的是「交给 Claude 的那份列表」，不是网关全量：窗口更小的模型不会出现。
+    let binding = local_binding(&gateway, &config).ok();
+    let (models, hidden_models) = match binding.as_ref() {
+        Some(binding) => exposed_models(&gateway, binding),
+        None => (available_models(&gateway), Vec::new()),
+    };
+    let context_window = binding
+        .as_ref()
+        .and_then(|binding| context_tokens(&gateway, binding, &binding.model));
     let ready = ca_ready(&root);
     let trusted = ready && ca_trusted(&root);
     let effective_dictation = crate::dictation::effective_settings(&settings);
@@ -823,7 +1025,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         .filter(|text| !text.is_empty())
     {
         Some(warning.to_string())
-    } else if models.is_empty() {
+    } else if available_models(&gateway).is_empty() {
         Some("供应商池中还没有可用的聊天模型".into())
     } else if config.enabled && !trusted {
         Some("首次使用需要准备并信任本地证书".into())
@@ -850,6 +1052,8 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         dictation_ready,
         config,
         models,
+        context_window,
+        hidden_models,
         warning,
         needs_restart,
     })
@@ -976,11 +1180,19 @@ fn start_backend(root: &Path, node: &Path, config: &ClaudeLocalSettings) -> Resu
         .env("CLAUDE_LOCAL_GATEWAY_SMALL_MODEL", wiring.small_model)
         .env(
             "CLAUDE_LOCAL_GATEWAY_MODELS",
-            serde_json::to_string(&available_models(&gateway))?,
+            serde_json::to_string(&exposed_models(&gateway, &binding).0)?,
         )
         .env(
             "CLAUDE_LOCAL_GATEWAY_MODEL_WINDOWS",
             serde_json::to_string(&available_model_windows(&gateway, &binding))?,
+        )
+        // 选中模型的窗口也单独给一份：逐模型表里没有它时，界面还知道该显示多长，
+        // 与启动 Claude Code 时写进 CLAUDE_CODE_MAX_CONTEXT_TOKENS 的值同源。
+        .env(
+            "CLAUDE_LOCAL_GATEWAY_DEFAULT_WINDOW",
+            context_tokens(&gateway, &binding, &binding.model)
+                .unwrap_or_default()
+                .to_string(),
         )
         .env("CLAUDE_LOCAL_STATE_FILE", root.join("conversations.json"))
         .env("CLAUDE_LOCAL_READY_FILE", &ready_file)
@@ -1043,7 +1255,12 @@ fn launch_original(
     localization: bool,
 ) -> Result<()> {
     let mut command = Command::new(executable(source));
-    for name in ["ELECTRON_RUN_AS_NODE", "ELECTRON_NO_ASAR", "NODE_OPTIONS"] {
+    for name in [
+        "ELECTRON_RUN_AS_NODE",
+        "ELECTRON_NO_ASAR",
+        "NODE_OPTIONS",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+    ] {
         command.env_remove(name);
     }
     if let Some(port) = port {
@@ -1052,6 +1269,9 @@ fn launch_original(
             .active_binding(&ToolId::Unknown(AGENT_ID.into()))
             .context("Claude 本地模式的网关绑定尚未就绪")?
             .clone();
+        if let Some(window) = context_tokens(&gateway, &binding, &binding.model) {
+            command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", window.to_string());
+        }
         // 完整功能模式与 PoC 一致：直接用真实 Claude profile（无 --user-data-dir），
         // 启动前把真实配置切到 1p 并记录回滚信息。
         apply_real_profile_one_p(&app_support_dir(), root)?;
@@ -1104,11 +1324,8 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     let mut binding = gateway.binding(&agent).cloned().unwrap_or_default();
     binding.pool_exclude.clear();
     binding.extra_models = available_models(&gateway);
-    binding.model = if config.model.is_empty() {
-        binding.extra_models.first().cloned().unwrap_or_default()
-    } else {
-        config.model.clone()
-    };
+    // 与完整功能模式同一条规则：绑定里选过就用它，配置里的旧值只作兜底。
+    binding.model = chosen_model(&gateway, &binding, config);
     let default_model = crate::gateway::route::binding_default_model(&gateway, &binding);
     ensure!(
         !default_model.is_empty()
@@ -1129,8 +1346,12 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
         "ELECTRON_NO_ASAR",
         "NODE_OPTIONS",
         "CLAUDE_USER_DATA_DIR",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
     ] {
         command.env_remove(name);
+    }
+    if let Some(window) = context_tokens(&gateway, binding, &binding.model) {
+        command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", window.to_string());
     }
     command
         .env("CLAUDE_CONFIG_DIR", root.join("claude-code-3p"))
@@ -1163,15 +1384,72 @@ pub fn stop_backend() {
         .take();
     if let Some(mut runtime) = runtime {
         runtime.stdin.take();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while runtime.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        if runtime.child.try_wait().ok().flatten().is_none() {
-            let _ = runtime.child.kill();
-        }
-        let _ = runtime.child.wait();
+        terminate_child(&mut runtime.child, Duration::from_secs(2));
     }
+    reap_stale_proxy(&root_dir());
+}
+
+/// 先礼后兵地结束一个子进程。
+fn terminate_child(child: &mut Child, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+/// 回收上一次运行留下的代理进程。
+///
+/// 应用崩溃或重启后 `runtime_slot` 是空的，只有 `ready.json` 还记着它的 pid：
+/// 不回收就会一直占着端口和内存，还带着旧的 token 与同一个本地 CA 在跑。
+pub fn reap_stale_proxy(root: &Path) {
+    let Ok(bytes) = fs::read(root.join("ready.json")) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    let Some(pid) = value.get("pid").and_then(Value::as_u64) else {
+        return;
+    };
+    let Ok(pid) = u32::try_from(pid) else { return };
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    if !is_our_proxy(pid, root) {
+        return;
+    }
+    let _ = Command::new("/bin/kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while is_our_proxy(pid, root) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if is_our_proxy(pid, root) {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// pid 还活着，且命令行就是本目录的 `proxy.mjs`（与 `ready.json` 里的旧记录核对）。
+fn is_our_proxy(pid: u32, root: &Path) -> bool {
+    let output = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else { return false };
+    let command = String::from_utf8_lossy(&output.stdout);
+    command.contains("proxy.mjs") && command.contains(&root.to_string_lossy().to_string())
 }
 
 pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
@@ -1180,7 +1458,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
         "原版 Claude 本地模式目前仅支持 macOS"
     );
     ensure!(
-        ["launch", "stop", "trust", "prepare"].contains(&action),
+        ["launch", "stop", "trust", "untrust", "prepare"].contains(&action),
         "未知的 Claude 本地服务操作"
     );
     let _guard = OPERATION
@@ -1201,6 +1479,10 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             prepare_ca(&root)?;
             trust_ca(&root)?;
             "本地证书已信任。".to_string()
+        }
+        "untrust" => {
+            untrust_ca(&root)?;
+            "本地证书已取消信任。".to_string()
         }
         "prepare" => {
             install_assets(&root)?;
@@ -1275,6 +1557,154 @@ mod tests {
     }
 
     #[test]
+    fn internal_review_models_are_not_offered_as_chat_models() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers = vec![provider("openai", "gpt-6\ncodex-auto-review")];
+        assert_eq!(available_models(&gateway), vec!["openai/gpt-6"]);
+    }
+
+    fn orphan_fixture(temp: &tempfile::TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let app_support = temp.path().join("support");
+        let root = temp.path().join("state");
+        let target = app_support.join("Claude-3p/configLibrary");
+        let backup = target.with_file_name(CONFIG_LIBRARY_BACKUP);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&app_support).unwrap();
+        (app_support, root, target, backup)
+    }
+
+    #[test]
+    fn orphan_config_library_backup_is_put_back_when_target_is_gone() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("00000000.json"), b"{}").unwrap();
+
+        let note = recover_orphan_config_library(&app_support, &root).unwrap();
+        assert!(note.is_some(), "收尾之后要给用户一句说明");
+        assert!(target.join("00000000.json").is_file(), "目标不在就把备份放回去");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn orphan_config_library_backup_is_archived_when_target_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("fresh.json"), b"{}").unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("old.json"), b"{}").unwrap();
+
+        recover_orphan_config_library(&app_support, &root).unwrap();
+        assert!(target.join("fresh.json").is_file(), "Claude 重建的那份保持不动");
+        assert!(!backup.exists(), "遗留备份不再卡住启动");
+        let archived: Vec<_> = fs::read_dir(root.join("backups")).unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(archived.len(), 1);
+        assert!(archived[0].starts_with("configLibrary-orphan-"), "{archived:?}");
+    }
+
+    #[test]
+    fn tracked_config_library_backup_is_left_to_the_restore_step() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        crate::settings::atomic_write(
+            &switch_state_path(&root),
+            &serde_json::to_vec_pretty(&json!({
+                "applied": true,
+                "deploymentMode": Value::Object(serde_json::Map::new()),
+                "configLibraryMoved": true,
+                "configLibraryBackup": backup.to_string_lossy(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(recover_orphan_config_library(&app_support, &root).unwrap(), None);
+        assert!(backup.exists(), "正常流程里的备份交给 restore_real_profile");
+    }
+
+    #[test]
+    fn one_p_switch_no_longer_fails_on_a_leftover_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        for app in ["Claude", "Claude-3p"] {
+            fs::create_dir_all(app_support.join(app)).unwrap();
+            fs::write(
+                app_support.join(app).join("claude_desktop_config.json"),
+                b"{\"mcpServers\":{}}",
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+
+        apply_real_profile_one_p(&app_support, &root).unwrap();
+        assert!(switch_state_path(&root).is_file(), "这次要正常记下切换状态");
+        assert!(backup.exists() && !target.exists(), "configLibrary 已挪开");
+        let config: Value = serde_json::from_slice(
+            &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(config["deploymentMode"], json!("1p"));
+    }
+
+    #[test]
+    fn agent_binding_model_wins_over_legacy_local_model() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers = vec![
+            provider("anthropic", "claude-sonnet-4-6"),
+            provider("xai", "grok-4"),
+        ];
+        // 「Agent 接入」里已经给 Claude 选过模型：本地模式跟着它走。
+        gateway.bindings.insert(
+            AGENT_ID.into(),
+            AgentBinding {
+                model: "anthropic/claude-sonnet-4-6".into(),
+                ..AgentBinding::default()
+            },
+        );
+        let binding = local_binding(
+            &gateway,
+            &ClaudeLocalSettings {
+                model: "xai/grok-4".into(),
+                ..ClaudeLocalSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(binding.model, "anthropic/claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn exposed_models_hide_windows_smaller_than_the_selected_one() {
+        let mut gateway = GatewaySettings::default();
+        let mut relay = provider("relay", "gpt-6-astra\nsmall-model");
+        relay.model_windows.insert("gpt-6-astra".into(), 1_100_000);
+        relay.model_windows.insert("small-model".into(), 128_000);
+        gateway.providers.push(relay);
+
+        let binding = AgentBinding {
+            model: "relay/gpt-6-astra".into(),
+            ..AgentBinding::default()
+        };
+        let (visible, hidden) = exposed_models(&gateway, &binding);
+        assert_eq!(visible, vec!["relay/gpt-6-astra"]);
+        assert_eq!(hidden, vec!["relay/small-model"], "小窗口模型不交给 Claude");
+
+        // 默认模型自己没声明窗口时不过滤：Claude 那边按 200k 兜底，也不会更差。
+        let binding = AgentBinding {
+            model: "relay/unknown-model".into(),
+            ..AgentBinding::default()
+        };
+        let (visible, hidden) = exposed_models(&gateway, &binding);
+        assert!(hidden.is_empty());
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
     fn all_pool_models_keep_provider_identity_for_each_family() {
         let mut gateway = GatewaySettings::default();
         gateway.providers = vec![
@@ -1320,6 +1750,97 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn selected_model_window_prefers_provider_metadata_and_hash_tracks_changes() {
+        let mut gateway = GatewaySettings::default();
+        let mut provider = provider("openai", "gpt-6\nsmall-model");
+        provider.model_windows.insert("gpt-6".into(), 1_100_000);
+        gateway.providers.push(provider);
+        let binding = AgentBinding {
+            model: "openai/gpt-6".into(),
+            context_window: Some(200_000),
+            ..AgentBinding::default()
+        };
+
+        assert_eq!(
+            selected_model_window(&gateway, &binding, &binding.model),
+            Some(1_100_000)
+        );
+        assert_eq!(
+            selected_model_window(&gateway, &binding, "openai/small-model"),
+            Some(200_000)
+        );
+
+        let config = ClaudeLocalSettings::default();
+        let models = vec!["openai/gpt-6".into()];
+        let bound = Some("openai/gpt-6".to_string());
+        let initial = config_hash_with_gateway_state(
+            &config,
+            Some((
+                models.clone(),
+                BTreeMap::from([("openai/gpt-6".into(), 1_100_000)]),
+                bound.clone(),
+            )),
+        );
+        let changed_window = config_hash_with_gateway_state(
+            &config,
+            Some((
+                models.clone(),
+                BTreeMap::from([("openai/gpt-6".into(), 300_000)]),
+                bound.clone(),
+            )),
+        );
+        assert_ne!(initial, changed_window, "窗口变了要重启代理");
+        let changed_model = config_hash_with_gateway_state(
+            &config,
+            Some((
+                models,
+                BTreeMap::from([("openai/gpt-6".into(), 1_100_000)]),
+                Some("openai/small-model".to_string()),
+            )),
+        );
+        assert_ne!(initial, changed_model, "「Agent 接入」换了模型也要重启代理");
+    }
+
+    #[test]
+    fn context_tokens_prefers_gateway_window_then_inherited_value() {
+        assert_eq!(
+            pick_context_tokens(Some(1_100_000), Some(200_000)),
+            Some(1_100_000),
+            "网关声明压过环境里的旧值"
+        );
+        assert_eq!(
+            pick_context_tokens(None, Some(1_000_000)),
+            Some(1_000_000),
+            "网关没声明时沿用用户自己设的窗口"
+        );
+        assert_eq!(pick_context_tokens(None, None), None, "都没有就不设，交给 Claude Code");
+        assert_eq!(pick_context_tokens(Some(0), Some(0)), None, "0 不是窗口");
+        assert_eq!(pick_context_tokens(Some(0), Some(272_000)), Some(272_000));
+    }
+
+    #[test]
+    fn assets_digest_is_stable_and_part_of_the_config_hash() {
+        let digest = assets_digest();
+        assert_eq!(digest.len(), 64, "sha256 十六进制");
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(digest, assets_digest(), "同一份资产必须给出同一个指纹");
+
+        let config = ClaudeLocalSettings::default();
+        let hash = config_hash_with_gateway_state(&config, None);
+        let without_assets = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(
+                    &config,
+                    Option::<(Vec<String>, BTreeMap<String, u64>, Option<String>)>::None
+                ))
+                .unwrap_or_default()
+            )
+        );
+        assert_ne!(hash, without_assets, "资产指纹要参与代理复用判断");
     }
 
     #[test]

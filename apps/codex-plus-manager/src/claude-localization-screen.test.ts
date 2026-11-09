@@ -8,9 +8,32 @@ import ts from "typescript";
 const app = ts.createSourceFile("App.tsx", readFileSync(new URL("./App.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = app.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "ClaudeLocalizationScreen");
 assert.ok(component);
-const source = ts.transpileModule(component.getText(app), {
+const transpile = (text: string) => ts.transpileModule(text, {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const source = transpile(component.getText(app));
+
+// 页面用到的两个纯格式函数也直接取 App.tsx 里的真实实现（不复制一份，改了实现这边会跟着变）。
+function functionSource(file: ts.SourceFile, name: string) {
+  const found = file.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.ok(found, name);
+  // 去掉导出的函数上的 `export`，这里只把它们放进 vm 里当普通函数用。
+  return found.getText(file).replace(/^export /, "");
+}
+// 上下文窗口格式化复用网关的 formatTokens（B/M/K），这里连它和 trimNumber 一起拿真实实现。
+const gatewayModel = ts.createSourceFile(
+  "gateway-model.ts",
+  readFileSync(new URL("./gateway-model.ts", import.meta.url), "utf8"),
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+);
+const formatHelpers = transpile([
+  functionSource(gatewayModel, "trimNumber"),
+  functionSource(gatewayModel, "formatTokens"),
+  functionSource(app, "formatContextWindow"),
+  functionSource(app, "formatHiddenModelsPreview"),
+].join("\n"));
 
 type Element = { type: string; props: Record<string, any> };
 type Memo = { status: unknown; autoDetected: boolean };
@@ -25,8 +48,18 @@ const localReady = {
 function harness(
   memo: Memo = { status: null, autoDetected: false },
   cuStatus: unknown = {},
-  options: { localMemo?: Memo; openAdvanced?: boolean } = {},
+  options: {
+    localMemo?: Memo;
+    openAdvanced?: boolean;
+    mode?: "local" | "patch";
+    onLocalStatus?: (status: unknown) => void;
+  } = {},
 ) {
+  const props = {
+    ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.onLocalStatus ? { onLocalStatus: options.onLocalStatus } : {}),
+  };
+  const renderArgs = Object.keys(props).length > 0 ? props : undefined;
   const hooks: any[] = [];
   /** 页头槽位：createPortal 渲染进来的元素记在这里，用来断言「启动增强版」在右上角。 */
   const topbarSlot = { portal: null as unknown };
@@ -49,10 +82,18 @@ function harness(
   };
   const context = vm.createContext({
     React: { Fragment: "Fragment", createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight"].map((name) => [name, name])),
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Plug", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight"].map((name) => [name, name])),
     // 页面骨架组件（cx-layout）按名字渲染成占位元素。
     AgentCx: new Proxy({}, { get: (_target, name) => String(name) }),
     t: (text: string) => text,
+    // 只有带参数的词条会走 tf；沙箱里按中文模板原样替换 {n}。
+    tf: (key: string, args: Array<string | number>) => key.replace(/\{(\d+)\}/g, (match, index: string) => {
+      const value = args[Number(index)];
+      return value === undefined || value === null ? match : String(value);
+    }),
+    // 跳转按钮在没传 onOpenPatch 时退化成写 hash；测试里给个壳，避免直接碰真的 window。
+    window: { location: { hash: "" } },
+    CLAUDE_DEFAULT_CONTEXT_WINDOW: 200_000,
     setTimeout: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: (id: number) => timers.delete(id),
     clampNumber: (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value))),
@@ -83,20 +124,21 @@ function harness(
     useEffect: effectHook,
     useLayoutEffect: effectHook,
   });
-  vm.runInContext(`${source}\nglobalThis.render = ClaudeLocalizationScreen;`, context);
+  vm.runInContext(`${source}\n${formatHelpers}\nglobalThis.render = ClaudeLocalizationScreen;`, context);
   let initiallyRendered = false;
   return {
     calls,
     render: () => {
       cursor = 0;
-      let page = context.render() as Element;
+      let page = context.render(renderArgs) as Element;
       if (!initiallyRendered && options.openAdvanced !== false) {
         initiallyRendered = true;
-        findElements(page, "details")[0].props.onToggle({ currentTarget: { open: true } });
+        // 补丁页的副本块是常开结构，没有 details；完整功能模式里才需要手动展开。
+        findElements(page, "details")[0]?.props.onToggle({ currentTarget: { open: true } });
         cursor = 0;
-        page = context.render() as Element;
+        page = context.render(renderArgs) as Element;
         cursor = 0;
-        page = context.render() as Element;
+        page = context.render(renderArgs) as Element;
       }
       return page;
     },
@@ -149,7 +191,7 @@ const ready = {
 
 test("首次进入自动检测一次，再次进入沿用上次结果；手动检测不并发", async () => {
   const memo: Memo = { status: null, autoDetected: false };
-  const screen = harness(memo);
+  const screen = harness(memo, {}, { mode: "patch" });
   let page = screen.render();
   assert.equal(screen.calls.length, 1, "首次进入应自动检测");
   assert.equal(screen.calls[0].command, "claude_localization_status");
@@ -165,7 +207,7 @@ test("首次进入自动检测一次，再次进入沿用上次结果；手动�
   screen.unmount();
 
   // Codex++ 没退出，再次进入：直接显示上次结果，不再自动探测。
-  const again = harness(memo);
+  const again = harness(memo, {}, { mode: "patch" });
   page = again.render();
   assert.equal(again.calls.length, 0, "同一次运行内只自动检测一次");
   assert.match(text(page), /未检测到 Claude，请先安装官方应用/);
@@ -175,7 +217,7 @@ test("首次进入自动检测一次，再次进入沿用上次结果；手动�
 
 test("检测中切走页面后，迟到的检测结果不能写回已卸载页面", async () => {
   const memo: Memo = { status: null, autoDetected: false };
-  const screen = harness(memo);
+  const screen = harness(memo, {}, { mode: "patch" });
   screen.render();
   assert.equal(screen.calls.length, 1);
   screen.unmount();
@@ -184,11 +226,11 @@ test("检测中切走页面后，迟到的检测结果不能写回已卸载页�
   await tick();
   assert.equal(screen.changes(), before);
   // 结果仍记进 memo：回到页面时能看到这次检测，而不是又一片「未检测」。
-  assert.match(text(harness(memo).render()), /1\.2\.3/);
+  assert.match(text(harness(memo, {}, { mode: "patch" }).render()), /1\.2\.3/);
 });
 
 test("检查副本失败或检测超时保留最后有效状态，同时显示可重试错误", async () => {
-  const screen = harness();
+  const screen = harness(undefined, {}, { mode: "patch" });
   screen.render();
   screen.calls[0].resolve(ready);
   await tick();
@@ -231,14 +273,14 @@ test("原版启动放在页头，默认不探测或制作增强副本", async ()
 
 test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开时，提示二选一", async () => {
   const conflict = { targets: { claudeDesktop: { state: "registered" } } };
-  const screen = harness(undefined, conflict);
+  const screen = harness(undefined, conflict, { mode: "patch" });
   screen.render();
   screen.calls[0].resolve({ ...ready, computerUse: true, computerUseSupported: true });
   await tick();
   const warning = (page: Element) => JSON.stringify(page).includes("is-warning");
   assert.ok(warning(screen.render()), "两套都开时应显示冲突提醒");
 
-  const quiet = harness(undefined, { targets: { claudeDesktop: { state: "missing" } } });
+  const quiet = harness(undefined, { targets: { claudeDesktop: { state: "missing" } } }, { mode: "patch" });
   quiet.render();
   quiet.calls[0].resolve({ ...ready, computerUse: true, computerUseSupported: true });
   await tick();
@@ -251,7 +293,7 @@ test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开�
 
 test("Claude 增强页不再重复提供万物皆拓展开关，保留其他增强项", () => {
   for (const extensions of [false, true]) {
-    const screen = harness({ status: { ...ready, extensions }, autoDetected: true });
+    const screen = harness({ status: { ...ready, extensions }, autoDetected: true }, {}, { mode: "patch" });
     const page = screen.render();
     assert.equal(inputs(page).some((input) => input.props["aria-label"] === "万物皆拓展"), false);
     assert.doesNotMatch(text(page), /万物皆拓展/);
@@ -263,7 +305,7 @@ test("Claude 增强页不再重复提供万物皆拓展开关，保留其他增�
 });
 
 test("Bash 时间限制可分别修改默认值和最大值", async () => {
-  const screen = harness();
+  const screen = harness(undefined, {}, { mode: "patch" });
   screen.render();
   screen.calls[0].resolve(ready);
   await tick();
@@ -294,7 +336,7 @@ test("Bash 时间限制可分别修改默认值和最大值", async () => {
 });
 
 test("Cowork 适配警告不覆盖启动成功状态，其他增强保持可用", async () => {
-  const screen = harness({ status: { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } }, autoDetected: true });
+  const screen = harness({ status: { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } }, autoDetected: true }, {}, { mode: "patch" });
   screen.render();
   screen.render();
   enhancedLaunch(screen).props.onClick();
@@ -303,7 +345,7 @@ test("Cowork 适配警告不覆盖启动成功状态，其他增强保持可用"
   const page = screen.render();
   assert.ok(text(page).includes("不支持的 Cowork Bash 参数校验结构"));
   assert.match(text(page), /不支持的 Cowork Bash 参数校验结构/);
-  assert.equal(screen.topbar()!.props.disabled, false);
+  assert.equal(enhancedLaunch(screen).props.disabled, false);
   assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleLocalization"))!.props.disabled, false);
   assert.equal(inputs(page).find((input) => String(input.props.onChange).includes("toggleVoiceInput"))!.props.disabled, false);
 });
@@ -314,12 +356,12 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
     bashTimeout: { ...ready.bashTimeout, enabled: true },
     bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。",
   };
-  const screen = harness({ status: pendingStatus, autoDetected: true });
+  const screen = harness({ status: pendingStatus, autoDetected: true }, {}, { mode: "patch" });
   screen.render();
   let page = screen.render();
   assert.match(text(page), /Bash时限解锁增强: 已准备，暂未确认。将在增强版启动后自动确认。/);
   assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
-  assert.equal(screen.topbar()!.props.disabled, false);
+  assert.equal(enhancedLaunch(screen).props.disabled, false);
   buttons(page).find((button) => text(button) === "检测 Claude")!.props.onClick();
   assert.equal(screen.calls[0].command, "claude_localization_status");
   screen.calls[0].resolve(pendingStatus);
@@ -327,13 +369,13 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
   page = screen.render();
   assert.match(text(page), /Bash时限解锁增强: 已准备，暂未确认。将在增强版启动后自动确认。/);
   assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
-  assert.equal(screen.topbar()!.props.disabled, false);
+  assert.equal(enhancedLaunch(screen).props.disabled, false);
 });
 
 test("启动后自动确认并撤下顶部黄字提示，每次启动重新确认且不重置输入草稿", async () => {
   const pendingStatus = { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
     bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
-  const screen = harness({ status: ready, autoDetected: true });
+  const screen = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
   screen.render(); screen.render();
   enhancedLaunch(screen).props.onClick();
   screen.calls[0].resolve(pendingStatus);
@@ -341,7 +383,8 @@ test("启动后自动确认并撤下顶部黄字提示，每次启动重新确�
   let page = screen.render();
   assert.match(text(page), /已准备，暂未确认/);
   assert.ok(text(page).indexOf("已准备，暂未确认") < text(page).indexOf("重新制作增强版"));
-  const advanced = findElements(page, "details")[0];
+  const advanced = findElements(page, "section")[0];
+  assert.ok(advanced, "补丁页应有常开的副本块");
   assert.ok(JSON.stringify(advanced).indexOf("claude-l10n-warning") < JSON.stringify(advanced).indexOf("claude-l10n-actions"));
   assert.equal(screen.timerCount(), 1);
   inputs(page).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!.props.onChange({ currentTarget: { value: "456" } });
@@ -364,7 +407,7 @@ test("启动后自动确认并撤下顶部黄字提示，每次启动重新确�
 test("重新启动时，上一次尚在返回的确认不能撤下本次启动提示", async () => {
   const pendingStatus = { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
     bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
-  const screen = harness({ status: pendingStatus, autoDetected: true });
+  const screen = harness({ status: pendingStatus, autoDetected: true }, {}, { mode: "patch" });
   screen.render(); screen.render();
   screen.runTimer();
   enhancedLaunch(screen).props.onClick();
@@ -380,7 +423,7 @@ test("重新启动时，上一次尚在返回的确认不能撤下本次启动�
 test("确认读取失败会重试，离开页面后取消轮询且迟到结果不写状态", async () => {
   const memo = { status: { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
     bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" }, autoDetected: true };
-  const screen = harness(memo);
+  const screen = harness(memo, {}, { mode: "patch" });
   screen.render(); screen.render();
   screen.runTimer();
   screen.calls[0].reject(new Error("temporary read error"));
@@ -397,7 +440,7 @@ test("确认读取失败会重试，离开页面后取消轮询且迟到结果�
 });
 
 test("Bash 总开关保存失败后恢复已保存值，并允许重试", async () => {
-  const screen = harness({ status: ready, autoDetected: true });
+  const screen = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
   const toggle = () => inputs(screen.render()).find((input) => input.props["aria-label"] === "解锁 Bash 时间限制")!;
   toggle().props.onChange({ currentTarget: { checked: true } });
   screen.calls[0].resolve({ status: "failed", message: "写入失败", data: {} });
@@ -414,7 +457,7 @@ test("Bash 总开关保存失败后恢复已保存值，并允许重试", async 
 
 test("Bash 数字保存抛出异常时恢复已保存值，而非编辑草稿", async () => {
   const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
-  const screen = harness({ status: saved, autoDetected: true });
+  const screen = harness({ status: saved, autoDetected: true }, {}, { mode: "patch" });
   const input = () => inputs(screen.render()).find((input) => input.props["aria-label"] === "默认等待时间（秒）")!;
   input().props.onChange({ currentTarget: { value: "300" } });
   input().props.onBlur();
@@ -426,7 +469,7 @@ test("Bash 数字保存抛出异常时恢复已保存值，而非编辑草稿", 
 
 test("Bash 数字失焦后点击开关串行保存，不丢点击、不被旧响应覆盖", async () => {
   const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
-  const screen = harness({ status: saved, autoDetected: true });
+  const screen = harness({ status: saved, autoDetected: true }, {}, { mode: "patch" });
   const input = (name: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === name)!;
   input("默认等待时间（秒）").props.onChange({ currentTarget: { value: "300" } });
   input("默认等待时间（秒）").props.onBlur();
@@ -450,7 +493,7 @@ test("Bash 数字失焦后点击开关串行保存，不丢点击、不被旧响
 test("Bash 排队保存失败回到最后一次成功值，离开页面后不写入组件状态", async () => {
   const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
   const memo: Memo = { status: saved, autoDetected: true };
-  const screen = harness(memo);
+  const screen = harness(memo, {}, { mode: "patch" });
   const input = (name: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === name)!;
   input("默认等待时间（秒）").props.onChange({ currentTarget: { value: "300" } });
   input("默认等待时间（秒）").props.onBlur();
@@ -467,12 +510,12 @@ test("Bash 排队保存失败回到最后一次成功值，离开页面后不写
   screen.calls[2].resolve({ ...saved, bashTimeout: { ...saved.bashTimeout, defaultSeconds: 300, maxEnabled: false } });
   await tick();
   assert.equal(screen.changes(), before);
-  assert.equal(inputs(harness(memo).render()).find((item) => item.props["aria-label"] === "修改最大等待时间")!.props.checked, false);
+  assert.equal(inputs(harness(memo, {}, { mode: "patch" }).render()).find((item) => item.props["aria-label"] === "修改最大等待时间")!.props.checked, false);
 });
 
 test("Bash 秒数允许清空后重输，失焦才显示规范值并保存数字", async () => {
   const saved = { ...ready, bashTimeout: { ...ready.bashTimeout, enabled: true } };
-  const screen = harness({ status: saved, autoDetected: true });
+  const screen = harness({ status: saved, autoDetected: true }, {}, { mode: "patch" });
   const input = (name: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === name)!;
   for (const [name, field, value] of [
     ["默认等待时间（秒）", "defaultSeconds", "1"],
@@ -495,7 +538,7 @@ test("Bash 秒数允许清空后重输，失焦才显示规范值并保存数字
 
 test("仅手动启动可选增强版时先制作副本；制作失败就不启动", async () => {
   const unprepared = { ...ready, prepared: false, copyVersion: "" };
-  const screen = harness({ status: unprepared, autoDetected: true });
+  const screen = harness({ status: unprepared, autoDetected: true }, {}, { mode: "patch" });
   screen.render(); screen.render();
   const launch = () => enhancedLaunch(screen);
   assert.equal(launch().props.disabled, false, "没制作也能直接点启动");
@@ -507,7 +550,7 @@ test("仅手动启动可选增强版时先制作副本；制作失败就不启�
   await tick();
   assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "launch" }), "制作成功后自动启动");
 
-  const failing = harness({ status: unprepared, autoDetected: true });
+  const failing = harness({ status: unprepared, autoDetected: true }, {}, { mode: "patch" });
   failing.render(); failing.render();
   enhancedLaunch(failing).props.onClick();
   failing.calls[0].resolve({ status: "failed", message: "制作失败", data: {} });
@@ -563,21 +606,29 @@ test("原版启动与模式保存失败保留配置，不自动回退增强副�
   assert.equal(screen.calls.some((call) => call.command.startsWith("claude_localization")), false);
 });
 
-test("完整功能模式的默认模型与四项能力分别保存，不修改增强版开关或代点系统权限", async () => {
+test("默认模型不在这一页选：只留一句说明，不放下拉也不放跳转", () => {
+  const screen = harness(undefined, {}, {
+    localMemo: { status: { ...localReady, config: { ...localReady.config, enabled: true } }, autoDetected: true },
+    openAdvanced: false,
+  });
+  const page = screen.render();
+  assert.equal(findElements(page, "select").some((item) => item.props["aria-label"] === "Claude 默认模型"), false, "不再有默认模型下拉");
+  assert.equal(findElements(page, "select").some((item) => item.props["aria-label"] === "启动模式"), true, "启动模式那一行还在");
+  assert.match(text(page), /模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。/);
+  assert.equal(buttons(page).some((button) => text(button).includes("去「Agent 接入」")), false, "不给跳转按钮");
+  // 模型字段还留在配置类型里（后端旧值兜底），页面只是不再让人在这里改。
+  assert.equal(screen.calls.length, 0, "页面不写配置");
+});
+
+test("完整功能模式的四项能力分别保存，不修改增强版开关或代点系统权限", async () => {
   const saved = { ...localReady, config: { ...localReady.config, enabled: true } };
   const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
-  const model = findElements(screen.render(), "select").find((item) => item.props["aria-label"] === "Claude 默认模型")!;
-  assert.match(text(model), /claude-test.*gpt-test/);
-  model.props.onChange({ currentTarget: { value: "gpt-test" } });
-  let config = (screen.calls[0].args[0] as { config: typeof saved.config }).config;
-  assert.equal(config.model, "gpt-test");
-  screen.calls[0].resolve({ ...saved, config });
-  await tick();
+  let config = saved.config;
   for (const [index, label, key] of [
-    [1, "本地界面汉化", "localization"],
-    [2, "本地原生听写", "voiceInput"],
-    [3, "本地电脑控制", "computerUse"],
-    [4, "本地后台模式", "backgroundMode"],
+    [0, "本地界面汉化", "localization"],
+    [1, "本地原生听写", "voiceInput"],
+    [2, "本地电脑控制", "computerUse"],
+    [3, "本地后台模式", "backgroundMode"],
   ] as const) {
     const toggle = inputs(screen.render()).find((item) => item.props["aria-label"] === label)!;
     toggle.props.onChange({ currentTarget: { checked: !config[key] } });
@@ -588,7 +639,7 @@ test("完整功能模式的默认模型与四项能力分别保存，不修改�
     screen.calls[index].resolve({ ...saved, config });
     await tick();
   }
-  assert.equal(screen.calls.length, 5);
+  assert.equal(screen.calls.length, 4);
   assert.equal(screen.calls.some((call) => /permission|computer_use|claude_localization/.test(call.command)), false);
 });
 
@@ -615,7 +666,17 @@ test("原版显示证书准备与信任操作，本地服务在线不冒充 Clau
   assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ action: "trust" }));
   screen.calls[1].resolve({ ...saved, caReady: true, caTrusted: true, connected: true, needsRestart: false, warning: null });
   await tick();
-  assert.match(text(screen.render()), /本地模式已连接/);
+  page = screen.render();
+  assert.match(text(page), /本地模式已连接/);
+  // 已信任时同一个位置换成「取消信任证书」，走 claude_local_action("untrust")。
+  assert.equal(buttons(page).some((button) => text(button) === "信任证书"), false, "已信任时不再重复给信任按钮");
+  buttons(page).find((button) => text(button) === "取消信任证书")!.props.onClick();
+  assert.equal(JSON.stringify(screen.calls[2].args[0]), JSON.stringify({ action: "untrust" }));
+  screen.calls[2].resolve({ ...saved, caReady: true, caTrusted: false, connected: false, needsRestart: false, warning: null });
+  await tick();
+  page = screen.render();
+  assert.match(text(page), /未信任/);
+  assert.ok(buttons(page).find((button) => text(button) === "信任证书"));
 });
 
 test("原版检测跨挂载只自动一次，迟到检测不更新已卸载页面", async () => {
@@ -659,4 +720,103 @@ test("原版轮询的旧结果不能覆盖新配置，卸载后清理轮询", as
   await tick();
   assert.equal(screen.changes(), changes);
   assert.equal(screen.timerCount(), 0);
+});
+
+test("上下文窗口按供应商声明显示，未声明时说明 Claude 按 200k 兜底", () => {
+  const declared = harness(undefined, {}, {
+    localMemo: { status: { ...localReady, contextWindow: 1_100_000 }, autoDetected: true },
+    openAdvanced: false,
+  });
+  assert.match(text(declared.render()), /上下文窗口 1\.1M（供应商声明）/);
+
+  const undeclared = harness(undefined, {}, {
+    localMemo: { status: { ...localReady, contextWindow: null }, autoDetected: true },
+    openAdvanced: false,
+  });
+  assert.match(text(undeclared.render()), /上下文窗口 未声明（Claude 按 200k）/);
+});
+
+test("窗口比默认模型小的模型只给一行提示，最多列 5 个", () => {
+  const screen = harness(undefined, {}, {
+    localMemo: {
+      status: { ...localReady, contextWindow: 1_000_000, hiddenModels: ["a", "b", "c", "d", "e", "f", "g"] },
+      autoDetected: true,
+    },
+    openAdvanced: false,
+  });
+  const body = text(screen.render());
+  assert.match(body, /另有 7 个模型窗口比默认模型小，没有列给 Claude（在那里切换会按 1M 压缩）：a、b、c、d、e等/);
+  assert.doesNotMatch(body, /f、g/, "超过 5 个只留「等」");
+
+  const none = harness(undefined, {}, {
+    localMemo: { status: { ...localReady, hiddenModels: [] }, autoDetected: true },
+    openAdvanced: false,
+  });
+  assert.doesNotMatch(text(none.render()), /没有列给 Claude/);
+});
+
+test("完整功能模式常显示本地合成数据说明，不放进副本页", () => {
+  const local = harness(undefined, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
+  assert.match(text(local.render()), /账号、套餐与用量显示来自本地合成数据，不代表真实订阅。/);
+  const patch = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
+  assert.doesNotMatch(text(patch.render()), /本地合成数据/);
+});
+
+test("补丁 Desktop 页：说明卡 + 常开的副本块，没有本地状态与页头启动", () => {
+  const screen = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
+  const page = screen.render();
+  assert.match(text(page), /补丁 Desktop/);
+  assert.match(text(page), /给改过代码的 Desktop 副本用/);
+  assert.match(text(page), /关闭 asar 完整性校验/);
+  assert.ok(findElements(page, "section").length > 0, "副本块是常开的 section");
+  assert.equal(findElements(page, "details").length, 0, "补丁页不再用折叠块");
+  assert.match(text(page), /受管增强版/);
+  assert.equal(screen.topbar(), null, "补丁页不往页头塞原版启动按钮");
+  assert.doesNotMatch(text(page), /Claude Desktop 卡|本地证书|运行环境/);
+  assert.doesNotMatch(text(page), /账号、套餐与用量显示来自本地合成数据/);
+});
+
+test("Desktop 增强页不再提副本：没有副本块，也没有指向补丁页的提示或按钮", () => {
+  const screen = harness(undefined, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
+  const page = screen.render();
+  assert.doesNotMatch(text(page), /搬到了「补丁 Desktop」页/);
+  assert.doesNotMatch(text(page), /打开「补丁 Desktop」/);
+  assert.equal(text(page).includes("受管增强版"), false, "副本块不再出现在完整功能模式");
+  assert.equal(findElements(page, "details").length, 0, "完整功能模式里连折叠块也没有了");
+  assert.equal(buttons(page).some((button) => text(button).includes("补丁 Desktop")), false, "不放跳转按钮");
+});
+
+test("上下文窗口格式化：1M / 1.1M / 200k，非正数与缺省不出东西", () => {
+  const formatWindow = vm.runInContext(formatHelpers + "\nformatContextWindow", vm.createContext({}));
+  assert.equal(formatWindow(1_000_000), "1M");
+  assert.equal(formatWindow(1_100_000), "1.1M");
+  assert.equal(formatWindow(200_000), "200k");
+  assert.equal(formatWindow(16_000), "16k");
+  assert.equal(formatWindow(null), "");
+  assert.equal(formatWindow(0), "");
+  assert.equal(formatWindow(-1), "");
+});
+
+test("页面里启动 / 停止后把本地状态交给 App，侧栏的播放键不用轮询也能跟着变", async () => {
+  const seen: Array<{ running?: boolean; status?: string }> = [];
+  const screen = harness(undefined, {}, {
+    localMemo: { status: localReady, autoDetected: true },
+    openAdvanced: false,
+    onLocalStatus: (status) => seen.push(status as { running?: boolean; status?: string }),
+  });
+  screen.render();
+  assert.equal(seen.length, 0, "只是渲染不回调（状态没变）");
+  buttons(screen.render()).find((button) => text(button) === "检测原版 Claude")!.props.onClick();
+  assert.equal(screen.calls[0].command, "claude_local_status");
+  screen.calls[0].resolve({ ...localReady, running: true });
+  await tick();
+  assert.equal(seen.length, 1, "读到新状态就交给 App");
+  assert.equal(seen[0].running, true);
+  assert.equal(seen[0].status, "ok");
+
+  // 失败结果不回调：App 那边保留上一份有效状态。
+  buttons(screen.render()).find((button) => text(button) === "停止本地服务")!.props.onClick();
+  screen.calls[1].resolve({ status: "failed", message: "停止失败" });
+  await tick();
+  assert.equal(seen.length, 1, "失败不覆盖 App 里的状态");
 });

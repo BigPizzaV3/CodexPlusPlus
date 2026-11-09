@@ -4,6 +4,8 @@ import path from "node:path";
 
 const MAX_STATE_BYTES = 32 * 1024 * 1024;
 const MAX_TEXT = 1024 * 1024;
+// 没声明窗口的模型按 Claude 自己的假定值走；声明了就一律以声明为准。
+const DEFAULT_MODEL_WINDOW = 200_000;
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isText = (value, max = MAX_TEXT) => typeof value === "string" && value.length <= max;
@@ -52,6 +54,14 @@ export function runtimeConfig(env = process.env) {
       throw new Error("Invalid Claude local gateway model windows");
     }
   }
+  // 选中模型没有逐模型窗口时用这个值兜底（网关按 binding 解析出的窗口）。
+  // 写坏了就当没给，不让一次启动失败在建环境变量上。
+  const defaultWindow = (() => {
+    const raw = env.CLAUDE_LOCAL_GATEWAY_DEFAULT_WINDOW;
+    if (raw === undefined || raw === "") return DEFAULT_MODEL_WINDOW;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MODEL_WINDOW;
+  })();
   // 完整功能模式的「PoC 数据路径」：CLAUDE_LOCAL_RECORDED_DIR 指向本机一份
   // 录制数据（.cache/ 静态资产 + mock/bootstrap.json + mock/api/* + i18n/），
   // 命中时数据面按非托管 PoC 回放；目录缺失/不完整则保持合成数据。
@@ -69,6 +79,7 @@ export function runtimeConfig(env = process.env) {
     managed, gateway, model, smallModel, key,
     models: [...new Set([model, smallModel, ...models])],
     modelWindows,
+    defaultWindow,
     recordedDir,
     localization: flag("LOCALIZATION"),
     voiceInput: flag("VOICE_INPUT"),
@@ -112,8 +123,31 @@ export function modelList(config) {
   };
 }
 
+/**
+ * 一个模型在界面上显示多长窗口。
+ *
+ * 逐模型声明最优先；键可能是 `provider/model`，也可能只是裸模型名（老配置和
+ * 手写的 `modelWindows` 都是后者），所以两边都认。选中的那个模型还没声明时，
+ * 用网关按 binding 解析出的 `defaultWindow` —— 它就是启动 Claude Code 时
+ * 写进 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 的同一个数，界面和 CLI 不该各说各话。
+ * 其余没声明的模型仍按 Claude 自己的假定值。
+ */
 export function modelWindow(config, model) {
-  return config.modelWindows?.[model] ?? 200000;
+  const windows = config.modelWindows ?? {};
+  const id = typeof model === "string" ? model : "";
+  if (Object.hasOwn(windows, id)) return windows[id];
+  const folded = id.toLowerCase();
+  const match = (key) => key.toLowerCase() === folded;
+  const declared = Object.entries(windows).find(([key]) => match(key));
+  if (declared !== undefined) return declared[1];
+  const bareName = (value) => (value.includes("/") ? value.slice(value.lastIndexOf("/") + 1) : value);
+  const wanted = bareName(id);
+  if (wanted !== "") {
+    const bare = Object.entries(windows).find(([key]) => bareName(key).toLowerCase() === wanted.toLowerCase());
+    if (bare !== undefined) return bare[1];
+  }
+  if (id !== "" && id === (config.model ?? "")) return config.defaultWindow ?? DEFAULT_MODEL_WINDOW;
+  return DEFAULT_MODEL_WINDOW;
 }
 
 export function modelSelectors(config, selected = config.model) {
@@ -123,7 +157,8 @@ export function modelSelectors(config, selected = config.model) {
     id, name: id, short_name: id, description: "", section: "main",
     disabled: false, disabled_reason: null,
     hard_limit: modelWindow(config, id),
-    context_window_tokens: modelWindow(config, id),
+    context_window: modelWindow(config, id),
+    runtime: { max_input_tokens: modelWindow(config, id) },
     capabilities: { compass: false, gsuite_tools: false, mm_images: false, mm_pdf: false, web_search: false },
     thinking: { type: "effort", effort_options: [{ id: "medium", name: "Medium" }] },
   }));

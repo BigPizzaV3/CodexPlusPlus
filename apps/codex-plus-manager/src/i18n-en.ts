@@ -3475,6 +3475,26 @@ export const EN_PLAIN: Record<string, string> = {
   "Grok 仍连接网关，但没有可用的恢复存档，当前供应商也没有模型；请在 Grok 供应商页添加并应用一个直连供应商后再断开。": "Grok still points to the gateway, but no usable restoration archive or direct-provider models are available. Add and apply a direct provider on the Grok providers page before disconnecting.",
     "隔离预演未能完成还原；原配置未被修改，请检查可切回的供应商和恢复存档。": "The isolated restoration simulation did not complete. The original configuration was not changed. Check the available direct providers and restoration archive.",
   "Codex 配置按实时恢复存档计算；正式断开仍需成功切换直连供应商，并更新模型目录、应用状态和备份。供应商校验或写入失败时会中止断开。": "The Codex configuration is calculated from the live restoration archive. Disconnecting still requires switching to the direct provider and updating model catalogs, application state and backups. The disconnect is aborted if provider validation or writing fails.",
+  // cx-pages:agents —— 补丁 Desktop（Claude 副本页）与完整功能模式的小改
+  "补丁 Desktop": "Patched Desktop",
+  "制作、更新与启动改过代码的 Desktop 副本；原件与 app.asar 不动": "Create, update and launch a modified Desktop copy; the original app and its app.asar stay untouched",
+  "制作/更新/检查/启动增强版副本；原件与 app.asar 不动。": "Build, update, check and launch the enhanced copy; the original app and its app.asar are untouched.",
+  "给改过代码的 Desktop 副本用：制作/更新/检查/启动增强版，原件与 app.asar 不动；日常用「Desktop 增强」页的完整功能模式即可。副本会改写自己的 app.asar，并关闭 asar 完整性校验；原件不受影响。": "For Desktop copies whose code was modified: build, update, check and launch the enhanced copy while the original app and its app.asar stay untouched. For daily use, Full-feature mode on the Desktop enhancements page is enough. The copy rewrites its own app.asar and turns off asar integrity checks; the original is unaffected.",
+  "上下文窗口 未声明（Claude 按 200k）": "Context window undeclared (Claude assumes 200k)",
+  "Claude 只按默认模型的窗口压缩；把它们列出来会被按默认模型的窗口误算。": "Claude compacts against the default model's window only; listing them would make their windows be misread as the default model's.",
+  "取消信任证书": "Remove certificate trust",
+  "账号、套餐与用量显示来自本地合成数据，不代表真实订阅。": "Account, plan and usage figures come from local synthetic data and do not represent a real subscription.",
+  "等": " and others",
+  // cx-pages:agents —— Claude 本地模式：模型入口搬到「Agent 接入」、侧栏 / 行内的启动键
+  "模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。": "The model is chosen on the Claude Desktop row under Agent connections; restart the local service after changing it.",
+  "去「Agent 接入」选模型": "Choose a model under Agent connections",
+  "启动 Claude": "Start Claude",
+  "停止本地服务": "Stop local service",
+  "未检测到支持的 Claude Desktop": "No supported Claude Desktop found",
+  "Claude 正在运行，请先完全退出，再从 Codex++ 启动": "Claude is running. Quit it completely first, then start it from Codex++",
+  "缺少 Node.js，无法启动本地服务": "Node.js is missing, so the local service cannot start",
+  "Claude 本地模式": "Claude local mode",
+  "操作失败": "The action failed",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4114,6 +4134,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "请求 {0} · 失败 {1} · 进行中 {2}": "Requests {0} · Failed {1} · In progress {2}",
   "最近请求：{0}": "Last request: {0}",
   "最近一次网关错误：{0}": "Last gateway error: {0}",
+  "上下文窗口 {0}（供应商声明）": "Context window {0} (declared by provider)",
+  "另有 {0} 个模型窗口比默认模型小，没有列给 Claude（在那里切换会按 {1} 压缩）：{2}": "{0} more models have smaller windows than the default model and are not listed for Claude (switching there compacts against {1}): {2}",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated

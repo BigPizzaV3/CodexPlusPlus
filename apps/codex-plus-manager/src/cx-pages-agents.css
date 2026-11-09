@@ -830,6 +830,25 @@
   border: 0;
 }
 
+/* 补丁 Desktop 页：副本块变成整页主体，去掉折叠块那条分隔线；顶部说明卡自带内边距。 */
+:root .shell .claude-local-advanced-page {
+  border-top: 0;
+}
+
+:root .shell .claude-localization-page .claude-l10n-patch-intro {
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid hsl(var(--border));
+}
+
+/* 卡内已有 grid 间距，说明别再加一条上分隔线。 */
+:root .shell .claude-localization-page .claude-l10n-patch-intro .claude-l10n-hint {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 :root .shell .claude-localization-page .claude-l10n-progress {
   margin: 0;
   padding: 12px 14px;

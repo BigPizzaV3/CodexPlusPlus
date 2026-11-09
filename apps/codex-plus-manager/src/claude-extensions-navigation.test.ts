@@ -92,6 +92,7 @@ function harness() {
       tools: [{ id: activeTool, name: activeTool, switchable: true, relayCount: 0 }],
       activeTool, focus, soloAgent: singleAgent(focus), route: "overview", theme: "light", version: "test",
       codexRun: { running: true, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
+      claudeRun: { running: false, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
       onNavigate: (route: string) => navigations.push(route),
     }) as Element,
   };

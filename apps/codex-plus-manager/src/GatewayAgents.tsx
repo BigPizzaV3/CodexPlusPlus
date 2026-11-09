@@ -2,7 +2,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Search, Shuffle, Star, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -43,6 +43,29 @@ import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
 import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
+/** Codex 行的启动 / 停止：和侧栏 `cx-side-run` 用的同一份 App 状态（`App` 里只建一份，两处共用）。 */
+export type CodexRunControls = {
+  running: boolean;
+  busy: boolean;
+  unavailableReason: string | null;
+  onStart: () => void;
+  onStop: () => void;
+};
+
+/**
+ * `claude_local_status` / `claude_local_action` 的返回：`CommandResult` 把状态字段 flatten 到顶层，
+ * 失败时只有 `{ status, message }`，所以每个字段都可能缺。
+ */
+type ClaudeLocalRunStatus = {
+  status: string;
+  message?: string;
+  running?: boolean;
+  supported?: boolean;
+  claudeRunning?: boolean;
+  nodeAvailable?: boolean;
+  config?: { enabled?: boolean };
+};
+
 export function AgentsView({
   payload,
   busy,
@@ -50,6 +73,7 @@ export function AgentsView({
   notify,
   onManage,
   onOpenCodexProviderSettings,
+  codexRun,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -57,6 +81,8 @@ export function AgentsView({
   notify: Notify;
   onManage: () => void;
   onOpenCodexProviderSettings?: () => void;
+  /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
+  codexRun?: CodexRunControls;
 }) {
   // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
   const focus = useAgentFocus();
@@ -71,6 +97,7 @@ export function AgentsView({
     <AgentRow
       agent={agent}
       busy={busy}
+      codexRun={codexRun}
       expanded={expanded === agent.agent}
       key={agent.agent}
       notify={notify}
@@ -154,10 +181,12 @@ function AgentRow({
   onOpenCodexProviderSettings,
   run,
   notify,
+  codexRun,
 }: {
   agent: GatewayAgentView;
   payload: GatewayPayload | null;
   busy: string | null;
+  codexRun?: CodexRunControls;
   expanded: boolean;
   onToggleExpand: () => void;
   onManage: () => void;
@@ -177,7 +206,50 @@ function AgentRow({
   }, [bindingKey]);
 
   const isClaude = agent.agent === "claude";
+  const isCodex = agent.agent === "codex";
   const connected = agent.enabled;
+  /**
+   * Claude Desktop 有本地启动器：行上给一个启动 / 停止键（Codex 的启动入口在侧栏和总览，这里不重复）。
+   * 状态读一次 `claude_local_status`（要查进程和钥匙串，不轮询），动作完成后再读一次。
+   */
+  const [claudeRun, setClaudeRun] = useState<{ running: boolean; unavailableReason: string | null } | null>(null);
+  const [claudeBusy, setClaudeBusy] = useState(false);
+  const refreshClaudeRun = async () => {
+    try {
+      const result = await invoke<ClaudeLocalRunStatus>("claude_local_status");
+      if (result.status !== "ok") return;
+      setClaudeRun({
+        running: Boolean(result.running),
+        unavailableReason: !result.supported
+          ? t("未检测到支持的 Claude Desktop")
+          : result.claudeRunning && !result.running
+            ? t("Claude 正在运行，请先完全退出，再从 Codex++ 启动")
+            : result.config?.enabled && !result.nodeAvailable
+              ? t("缺少 Node.js，无法启动本地服务")
+              : null,
+      });
+    } catch {
+      // 读不到状态（比如非 macOS）：不显示启动键，比显示一个点了必失败的键好。
+    }
+  };
+  useEffect(() => {
+    if (isClaude) void refreshClaudeRun();
+    // 只在 Claude 那一行探测一次；动作后自己会刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isClaude]);
+  const claudeAction = async (action: "launch" | "stop") => {
+    if (claudeBusy) return;
+    setClaudeBusy(true);
+    try {
+      const result = await invoke<ClaudeLocalRunStatus>("claude_local_action", { action });
+      if (result.status !== "ok") await notify(t("Claude 本地模式"), result.message ?? t("操作失败"), "failed");
+    } catch (error) {
+      await notify(t("Claude 本地模式"), String(error), "failed");
+    } finally {
+      setClaudeBusy(false);
+      await refreshClaudeRun();
+    }
+  };
   const save = async (next: BindingDraft) => {
     const error = validateDraft(next, payload, connected ? binding?.model : undefined);
     if (error) {
@@ -290,6 +362,47 @@ function AgentRow({
             open={pickerOpen}
             payload={payload}
           />
+          {isCodex && codexRun ? (
+            <button
+              aria-label={codexRun.running ? t("停止 Codex") : t("启动 Codex")}
+              className="gw-icon-button gw-agent-run"
+              data-running={codexRun.running}
+              data-unavailable={!codexRun.running && Boolean(codexRun.unavailableReason)}
+              disabled={codexRun.busy || (!codexRun.running && Boolean(codexRun.unavailableReason))}
+              onClick={(event) => {
+                event.stopPropagation();
+                (codexRun.running ? codexRun.onStop : codexRun.onStart)();
+              }}
+              title={codexRun.busy ? t("处理中…") : codexRun.running ? t("停止 Codex") : codexRun.unavailableReason ?? t("启动 Codex")}
+              type="button"
+            >
+              {codexRun.busy
+                ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                : codexRun.running
+                  ? <Square aria-hidden="true" className="h-4 w-4" />
+                  : <Play aria-hidden="true" className="h-4 w-4" />}
+            </button>
+          ) : null}
+          {isClaude && claudeRun ? (
+            <button
+              aria-label={claudeRun.running ? t("停止本地服务") : t("启动 Claude")}
+              className="gw-icon-button gw-agent-run"
+              data-running={claudeRun.running}
+              disabled={claudeBusy || (!claudeRun.running && Boolean(claudeRun.unavailableReason))}
+              onClick={(event) => {
+                event.stopPropagation();
+                void claudeAction(claudeRun.running ? "stop" : "launch");
+              }}
+              title={claudeBusy ? t("处理中…") : claudeRun.running ? t("停止本地服务") : claudeRun.unavailableReason ?? t("启动 Claude")}
+              type="button"
+            >
+              {claudeBusy
+                ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                : claudeRun.running
+                  ? <Square aria-hidden="true" className="h-4 w-4" />
+                  : <Play aria-hidden="true" className="h-4 w-4" />}
+            </button>
+          ) : null}
           <Switch disabled={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
           <button
             aria-expanded={expanded}
