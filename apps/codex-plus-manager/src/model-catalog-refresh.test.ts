@@ -42,7 +42,10 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
     uniqueValues: (values: any[]) => [...new Set(values.filter(value => typeof value === "string" && value.trim()))],
     readCodexAppServerPreparation: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
     findCodexQueryClient: () => sharedWindow.testQueryClient || ({
-      getQueryCache: () => ({ getAll: () => [...queries, { queryKey: ["threads", "local"] }] }),
+      getQueryCache: () => ({
+        getAll: () => [...queries, { queryKey: ["threads", "local"] }],
+        findAll: () => [],
+      }),
       invalidateQueries: (filter: any) => invalidated.push(filter.queryKey),
     }),
   });
@@ -82,7 +85,11 @@ async function load(r: ReturnType<typeof runtime>, models: string[], metadata = 
 function queryClient(entries: Array<{ queryKey: any[]; state: { data: any } }>) {
   const pending: Array<{ key: any[]; resolve: () => void }> = [];
   const client = {
-    getQueryCache: () => ({ getAll: () => entries }),
+    getQueryCache: () => ({
+      getAll: () => entries,
+      findAll: ({ queryKey, predicate }: { queryKey: any[]; predicate: (entry: any) => boolean }) =>
+        entries.filter(entry => queryKey.every((part, index) => entry.queryKey[index] === part) && predicate(entry)),
+    }),
     setQueryData: (key: any[], update: (value: any) => any) => {
       const entry = entries.find(value => JSON.stringify(value.queryKey) === JSON.stringify(key));
       if (entry) entry.state.data = update(entry.state.data);
@@ -371,14 +378,15 @@ it("catalog changes notify the installed picker without requiring it during init
   const r = runtime();
   await load(r, ["a/sol"]);
   const notifications: any[] = [];
-  r.window.__codexPlusModelPickerGroupsRuntime = { catalogChanged: (options: any) => { notifications.push(options); } };
+  r.window.__codexPlusModelPickerGroupsRuntime = { catalogChanged: (...args: any[]) => { notifications.push(args); } };
   r.update({ ...r.settings(), activeRelayId: "other", modelCatalogFingerprint: "other-catalog" });
   assert.equal(notifications.length, 1, "clearing the previous supplier notifies the picker");
-  assert.equal(notifications[0].sourceChanged, true);
+  assert.equal(notifications[0][0].sourceChanged, true);
   r.pending.shift()!.resolve(catalog(["b/terra"]));
   await settle();
   assert.equal(notifications.length, 2, "publishing the new catalog notifies the picker");
-  assert.equal(notifications[1], undefined);
+  assert.equal(notifications[1][0].status, "loading");
+  assert.deepEqual(Array.from(notifications[1][1].models), ["b/terra"]);
 });
 
 it("catalog patches respect hidden entries and never alter selected model or reasoning fields", async () => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { FileDiff, Loader2, RefreshCw, ShieldCheck, Unplug, X } from "lucide-react";
+import { FileDiff, Loader2, RefreshCw, Unplug, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, tf } from "./i18n";
 import type { GatewayAgentView, GatewayDisconnectPreview, PickerItem } from "./gateway-model";
@@ -116,7 +116,6 @@ export function AgentDisconnectDialog({
                     <code>{file.path}</code>
                     <span>{t(disconnectFileLabel(file.kind))}</span>
                   </div>
-                  {file.redacted ? <p className="gw-disconnect-redacted"><ShieldCheck aria-hidden="true" className="h-3.5 w-3.5" />{t("敏感值已隐藏")}</p> : null}
                   <pre className="gw-disconnect-diff" tabIndex={0}>{file.diff ? file.diff.split("\n").map((line, lineIndex) => (
                     <span data-kind={line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : "context"} key={lineIndex}>{line}{"\n"}</span>
                   )) : t("文件内容无需修改")}</pre>

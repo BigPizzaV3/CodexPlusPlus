@@ -162,6 +162,7 @@ async fn open_candidates(
     // 主动限速：第一次因为候选都满了而排队的时刻，和累计排了多久。
     let mut queue_started: Option<Instant> = None;
     let mut queued = Duration::ZERO;
+    let mut dispatch_gate = crate::gateway::quota::DispatchGate::default();
     loop {
         // 先登记「有名额释放」的通知再检查名额，检查和等待之间的释放不会漏掉。
         let released = key_pool::limit_released();
@@ -171,6 +172,27 @@ async fn open_candidates(
         // 这一轮因限速满了跳过的候选（按原顺序）：不算失败、不冷却，都试完了再排队等它们。
         let mut deferred: Vec<&GatewayCandidate> = Vec::new();
         for (index, candidate) in pending.into_iter().enumerate() {
+            let gateway = if crate::official_login::member_uses_official_login_transport(
+                &candidate.relay,
+            ) {
+                crate::gateway::store::GatewayStore::default()
+                    .load()
+                    .map_err(|error| anyhow::anyhow!("读取网关额度策略失败：{error}"))?
+            } else {
+                crate::gateway::store::GatewaySettings::default()
+            };
+            if let Err(blocked) = dispatch_gate.check(&gateway, &candidate.relay) {
+                match &blocked.action {
+                    &crate::gateway::store::SubscriptionLimitAction::ApiFallback
+                    | &crate::gateway::store::SubscriptionLimitAction::NextPermitted => {
+                        last_error = Some(blocked.into());
+                        continue;
+                    }
+                    &crate::gateway::store::SubscriptionLimitAction::Stop => {
+                        return Err(blocked.into());
+                    }
+                }
+            }
             let Some(slot) =
                 key_pool::try_acquire(&candidate.key, candidate.limits, Instant::now())
             else {
@@ -257,7 +279,7 @@ async fn open_candidates(
                     if deferred.is_empty() {
                         crate::gateway::route::remember_answer(plan, candidate);
                     }
-                    observe_quota(&candidate.relay.id, &upstream);
+                    observe_quota(&candidate.relay, &upstream);
                     if let GatewayUpstream::Pipeline(response) = &upstream
                         && let Some(inner) = &response.request_trace
                     {
@@ -711,6 +733,12 @@ pub(crate) async fn attempt_once(
     candidate: &GatewayCandidate,
     request: &GatewayRequest<'_>,
 ) -> anyhow::Result<(UpstreamProxyResponse, Option<FailureClass>)> {
+    if crate::official_login::member_uses_official_login_transport(&candidate.relay) {
+        let gateway = crate::gateway::store::GatewayStore::default()
+            .load()
+            .context("读取网关额度策略失败")?;
+        crate::gateway::quota::dispatch_decision(&gateway, &candidate.relay)?;
+    }
     let upstream = match attempt_pipeline(settings, candidate, request).await {
         Ok(Attempt::Success(upstream)) => (upstream, None),
         Ok(Attempt::Failed { upstream, class }) => (upstream, Some(class)),
@@ -723,7 +751,7 @@ pub(crate) async fn attempt_once(
 }
 
 /// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、供应商池显示用）。
-fn observe_quota(relay_id: &str, upstream: &GatewayUpstream) {
+fn observe_quota(relay: &crate::settings::RelayProfile, upstream: &GatewayUpstream) {
     let headers = match upstream {
         GatewayUpstream::Pipeline(response) => {
             response.response.as_ref().map(reqwest::Response::headers)
@@ -740,7 +768,7 @@ fn observe_quota(relay_id: &str, upstream: &GatewayUpstream) {
     if let Some(quota) =
         headers.and_then(|headers| crate::gateway::quota::from_codex_headers(headers, now))
     {
-        crate::gateway::quota::record(relay_id, quota);
+        crate::gateway::quota::record_for_relay(relay, quota);
     }
 }
 

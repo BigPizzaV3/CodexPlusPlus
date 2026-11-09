@@ -76,13 +76,15 @@ impl Receipt {
     }
 }
 
-fn receipt_model_matches(model: &str, actual: &str, provider: &str) -> bool {
-    let model = request_base_model(model);
-    model == actual
-        || model
-            .strip_prefix(provider)
+fn receipt_model_matches(model: &str, actual: &str, record: &RequestEvidence) -> bool {
+    let normalized = request_base_model(model);
+    normalized == actual
+        || normalized
+            .strip_prefix(&record.relay_id)
             .and_then(|suffix| suffix.strip_prefix('/'))
             == Some(actual)
+        || (model == record.model
+            && model.split_once('/').map(|(_, suffix)| suffix) == Some(actual))
 }
 
 pub(super) fn match_captured_receipts(
@@ -312,9 +314,9 @@ pub(super) fn match_receipts(
                     || record.keys().is_empty()
                     || !final_response_eligible(record)
                     || aliases.resolve(&record.thread_id).as_deref() != Some(session.as_str())
-                    || record.actual_model().is_none_or(|model| {
-                        !receipt_model_matches(&receipt.model, model, &record.relay_id)
-                    })
+                    || record
+                        .actual_model()
+                        .is_none_or(|model| !receipt_model_matches(&receipt.model, model, record))
                     || (!receipt.provider.is_empty() && receipt.provider != record.relay_id)
                     || !within_receipt_window(
                         record,
@@ -393,6 +395,7 @@ pub(super) fn match_receipts(
             };
             let mut model: Option<&str> = None;
             let mut provider: Option<&str> = None;
+            let mut matching_model = true;
             let mut request_ids = Vec::new();
             for start in (end.saturating_sub(MAX_MERGED - 1)..=end).rev() {
                 let record = records[start];
@@ -416,6 +419,7 @@ pub(super) fn match_receipts(
                 }
                 model = Some(normalized);
                 provider = Some(&record.relay_id);
+                matching_model &= receipt_model_matches(&receipt.model, normalized, record);
                 let usage = record.usage.unwrap();
                 let Some(input) = sum.input.checked_add(usage.input_tokens.unwrap()) else {
                     break;
@@ -451,7 +455,7 @@ pub(super) fn match_receipts(
                     // 已知模型与请求不一致也保留占用，不能把证据转给另一个回执。
                     if (unknown_model(&receipt.model)
                         || codex_plus_core::aggregate_catalog::is_aggregate_model(&receipt.model)
-                        || receipt_model_matches(&receipt.model, normalized, &record.relay_id))
+                        || matching_model)
                         && (unknown_provider(&receipt.provider)
                             || receipt.provider == record.relay_id)
                     {

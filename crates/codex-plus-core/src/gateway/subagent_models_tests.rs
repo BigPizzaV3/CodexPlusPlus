@@ -29,13 +29,14 @@ impl Fixture {
         }
     }
 
-    fn apply(
+    fn apply_inner(
         &self,
         gateway: &GatewaySettings,
         thread: &str,
         turn: &str,
         parent: Option<(&str, &str)>,
         model: &str,
+        native_spawn: bool,
     ) -> anyhow::Result<Value> {
         let metadata = json!({"thread_id":thread,"turn_id":turn,
             "parent_thread_id":parent.map(|parent|parent.0).unwrap_or(""),
@@ -43,7 +44,9 @@ impl Fixture {
         let mut headers = vec![("x-codex-turn-metadata".into(), metadata.to_string())];
         if let Some((parent, _)) = parent {
             headers.push(("x-codex-parent-thread-id".into(), parent.into()));
-            headers.push(("x-openai-subagent".into(), "collab_spawn".into()));
+            if native_spawn {
+                headers.push(("x-openai-subagent".into(), "collab_spawn".into()));
+            }
         }
         let mut request = json!({"model":model,"input":[]});
         prepare_at(
@@ -60,6 +63,69 @@ impl Fixture {
             &self.sqlite,
         )?;
         Ok(request)
+    }
+
+    fn apply(
+        &self,
+        gateway: &GatewaySettings,
+        thread: &str,
+        turn: &str,
+        parent: Option<(&str, &str)>,
+        model: &str,
+    ) -> anyhow::Result<Value> {
+        self.apply_inner(gateway, thread, turn, parent, model, parent.is_some())
+    }
+
+    fn apply_explicit(
+        &self,
+        gateway: &GatewaySettings,
+        thread: &str,
+        turn: &str,
+        parent: Option<(&str, &str)>,
+        model: &str,
+    ) -> anyhow::Result<Value> {
+        self.apply_inner(gateway, thread, turn, parent, model, false)
+    }
+
+    fn add_native_spawn_edge(&self, child: &str, parent: &str) {
+        let database = Connection::open(self.sqlite.join("state_5.sqlite")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE thread_spawn_edges (
+                    parent_thread_id TEXT NOT NULL,
+                    child_thread_id TEXT NOT NULL PRIMARY KEY,
+                    status TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO thread_spawn_edges(parent_thread_id, child_thread_id, status)
+                 VALUES (?1, ?2, 'open')",
+                [parent, child],
+            )
+            .unwrap();
+    }
+
+    fn add_native_spawn_source(&self, child: &str, parent: &str) {
+        let database = Connection::open(self.sqlite.join("state_5.sqlite")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO threads(id, source) VALUES (?1, ?2)",
+                [
+                    child,
+                    &json!({"subagent":{"thread_spawn":{"parent_thread_id":parent}}}).to_string(),
+                ],
+            )
+            .unwrap();
     }
 }
 
@@ -144,6 +210,66 @@ fn child_inherits_parent_provider_and_model_instead_of_bare_override() {
     assert!(child.get("tools").is_none());
 }
 
+/// #2987：打开「子智能体使用自己请求的模型」后，子智能体请求不改写模型、不注入继承指引。
+#[test]
+fn follow_request_leaves_child_model_and_spawn_tools_untouched() {
+    let fixture = Fixture::new();
+    let mut gateway = gateway();
+    gateway.subagent_model_follow_request = true;
+    fixture
+        .apply(
+            &gateway,
+            "parent",
+            "parent-turn",
+            None,
+            "inherit-b/gpt-6.1-terra",
+        )
+        .unwrap();
+    let child = fixture
+        .apply(
+            &gateway,
+            "child",
+            "child-turn",
+            Some(("parent", "parent-turn")),
+            "gpt-6.1-sol",
+        )
+        .unwrap();
+    assert_eq!(child["model"], "gpt-6.1-sol");
+
+    // 带 spawn 工具的子请求：工具描述里不出现 `[Codex++ inherited model]` 指引。
+    let metadata = json!({"thread_id":"child2","turn_id":"child2-turn",
+        "parent_thread_id":"parent","parent_turn_id":"parent-turn"});
+    let headers = vec![
+        ("x-codex-turn-metadata".to_string(), metadata.to_string()),
+        ("x-codex-parent-thread-id".to_string(), "parent".to_string()),
+        ("x-openai-subagent".to_string(), "collab_spawn".to_string()),
+    ];
+    let mut request = json!({
+        "model": "gpt-6.1-sol",
+        "input": [],
+        "tools": [{"type":"function","name":"multi_agent_v1.spawn_agent","description":"Spawn a sub-agent."}]
+    });
+    prepare_at(
+        &gateway,
+        &ToolId::Codex,
+        &mut request,
+        ProxySessionHeaders {
+            thread_id: Some("child2"),
+            client_identity: &headers,
+            ..Default::default()
+        },
+        &fixture.registry,
+        &fixture.home,
+        &fixture.sqlite,
+    )
+    .unwrap();
+    assert_eq!(request["model"], "gpt-6.1-sol");
+    assert!(!request["tools"][0]["description"]
+        .as_str()
+        .unwrap()
+        .contains(POLICY_MARKER));
+}
+
 #[test]
 fn aggregate_identity_preserves_group_and_tracks_manual_selection() {
     let fixture = Fixture::new();
@@ -174,6 +300,69 @@ fn aggregate_identity_preserves_group_and_tracks_manual_selection() {
         .unwrap();
     assert_eq!(retried["model"], "group/inherit-group");
     assert_eq!(target(&gateway, "group/inherit-group").0, "inherit-a");
+}
+
+#[test]
+fn native_spawn_repairs_a_stale_provider_model_to_the_parent_group() {
+    let fixture = Fixture::new();
+    let gateway = gateway();
+    fixture
+        .apply(&gateway, "parent", "turn", None, "group/inherit-group")
+        .unwrap();
+    let child = fixture
+        .apply(
+            &gateway,
+            "child",
+            "turn",
+            Some(("parent", "turn")),
+            "inherit-a/gpt-6.1-sol",
+        )
+        .unwrap();
+    assert_eq!(child["model"], "group/inherit-group");
+
+    let database = Connection::open(&fixture.registry).unwrap();
+    database
+        .execute(
+            "UPDATE gateway_subagent_models SET model='inherit-a/gpt-6.1-sol', model_kind='provider' WHERE thread='child' AND turn='turn'",
+            [],
+        )
+        .unwrap();
+    let repaired = fixture
+        .apply(
+            &gateway,
+            "child",
+            "turn",
+            Some(("parent", "turn")),
+            "inherit-b/gpt-6.1-sol",
+        )
+        .unwrap();
+    assert_eq!(repaired["model"], "group/inherit-group");
+}
+
+#[test]
+fn persisted_native_spawn_metadata_overrides_a_preselected_supplier() {
+    for use_edge in [true, false] {
+        let fixture = Fixture::new();
+        let gateway = gateway();
+        fixture
+            .apply(&gateway, "parent", "turn", None, "group/inherit-group")
+            .unwrap();
+        if use_edge {
+            fixture.add_native_spawn_edge("child", "parent");
+        } else {
+            fixture.add_native_spawn_source("child", "parent");
+        }
+        let child = fixture
+            .apply_explicit(
+                &gateway,
+                "child",
+                "turn",
+                Some(("parent", "turn")),
+                "inherit-a/gpt-6.1-sol",
+            )
+            .unwrap();
+        assert_eq!(child["model"], "group/inherit-group");
+    }
 }
 
 #[test]
@@ -301,7 +490,7 @@ fn missing_parent_record_fails_but_missing_parent_turn_uses_legacy_routing() {
     let gateway = gateway();
     assert!(
         fixture
-            .apply(
+            .apply_explicit(
                 &gateway,
                 "child",
                 "turn",
@@ -311,7 +500,7 @@ fn missing_parent_record_fails_but_missing_parent_turn_uses_legacy_routing() {
             .is_err()
     );
     let legacy = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -335,7 +524,7 @@ fn ordinary_turn_updates_its_record_without_rewriting_later_requests() {
     assert_eq!(first["model"], "inherit-a/gpt-6.1-sol");
     assert_eq!(second["model"], "inherit-b/gpt-6.1-terra");
     let child = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -476,7 +665,7 @@ fn explicit_child_model_is_preserved_and_becomes_the_nested_parent_identity() {
         .apply(&gateway, "parent", "turn", None, "group/inherit-group")
         .unwrap();
     let child = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -496,7 +685,7 @@ fn explicit_child_model_is_preserved_and_becomes_the_nested_parent_identity() {
         .unwrap();
     assert_eq!(nested["model"], "inherit-a/gpt-6.1-sol");
     let explicit_group = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "other-child",
             "turn",
@@ -563,7 +752,7 @@ fn changed_slash_interpretation_and_empty_group_cannot_switch_suppliers() {
     gateway.bindings.get_mut("codex").unwrap().model = "inherit-a/gpt-6.1-sol".into();
     assert!(
         fixture
-            .apply(
+            .apply_explicit(
                 &gateway,
                 "child",
                 "turn",
@@ -715,7 +904,7 @@ fn parent_rollout_fallback_skips_a_database_without_threads() {
     drop(database);
     assert!(!fixture.sqlite.join("state_5.sqlite").exists());
     let child = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -745,7 +934,7 @@ fn legacy_registry_migrates_and_cleanup_preserves_active_ancestors() {
     database.execute("INSERT INTO gateway_subagent_models VALUES (?1,'parent','turn','','','inherit-b/gpt-6.1-terra')", [&scope]).unwrap();
     drop(database);
     let child = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -808,7 +997,7 @@ fn locked_registry_does_not_block_ordinary_or_explicit_child_requests() {
         .unwrap();
     assert_eq!(ordinary["model"], "inherit-a/gpt-6.1-sol");
     let explicit = fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -819,7 +1008,7 @@ fn locked_registry_does_not_block_ordinary_or_explicit_child_requests() {
     assert_eq!(explicit["model"], "inherit-a/gpt-6.1-sol");
     assert!(
         fixture
-            .apply(
+            .apply_explicit(
                 &gateway,
                 "child",
                 "turn",
@@ -902,7 +1091,7 @@ fn explicit_child_must_reconfirm_its_own_model_after_a_registry_fault() {
         .apply(&gateway, "parent", "turn", None, "inherit-a/gpt-6.1-sol")
         .unwrap();
     fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",
@@ -916,7 +1105,7 @@ fn explicit_child_must_reconfirm_its_own_model_after_a_registry_fault() {
         .unwrap();
     assert!(
         fixture
-            .apply(
+            .apply_explicit(
                 &gateway,
                 "child",
                 "turn",
@@ -926,7 +1115,7 @@ fn explicit_child_must_reconfirm_its_own_model_after_a_registry_fault() {
             .is_err()
     );
     fixture
-        .apply(
+        .apply_explicit(
             &gateway,
             "child",
             "turn",

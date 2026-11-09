@@ -1,4 +1,4 @@
-const { assert, chromium, sharp, shot: snapshot, pixel, near: assertNear, configure: configureOverlay } = require("./image-overlay-fixture.cjs");
+const { assert, browserOptions, chromium, sharp, shot: snapshot, pixel, near: assertNear, configure: configureOverlay } = require("./image-overlay-fixture.cjs");
 // Pixel comparisons against the original upstream overlay, not selector coverage.
 const fs = require("node:fs");
 const path = require("node:path");
@@ -54,23 +54,31 @@ const fixture = (theme, photo, gif, zoom = 1) => `<!doctype html><html><head><st
   <div id="preview" role="dialog"><div data-testid="image-preview-dismiss-area"><img src="${photo}"></div></div></div></body></html>`;
 async function prepare(page, html) {
   await page.setContent(html);
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const shadow = document.querySelector("#shadow").attachShadow({mode:"open"});
     shadow.innerHTML = "<style>div{background:#563a66;color:white;height:40px}</style><div>Native file-tree shadow rows</div>";
     const canvas = document.querySelector("#canvas");
-    canvas.getContext("2d").fillStyle = "#19b450";
-    canvas.getContext("2d").fillRect(0,0,64,64);
+    // 固定 captureStream 的源帧颜色路径；加速 canvas 首帧可能是 I420，后续变为 BGRA。
+    const context = canvas.getContext("2d", {willReadFrequently:true});
+    context.fillStyle = "#19b450";
+    context.fillRect(0,0,64,64);
     window.testStream = canvas.captureStream(10);
-    document.querySelector("#video").srcObject = window.testStream;
+    const video = document.querySelector("#video");
+    // 必须在首帧提交给合成器后采 native 基线；固定等待在 CI 上可能只拍到空背景。
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("video first frame timed out")), 10000);
+      video.requestVideoFrameCallback(() => { clearTimeout(timeout); resolve(); });
+      video.srcObject = window.testStream;
+      video.play().catch(error => { clearTimeout(timeout); reject(error); });
+    });
   });
-  await page.waitForTimeout(150);
 }
 async function main() {
   const wall = await bitmap({r:40,g:80,b:200,alpha:1},160,90);
   const photo = await bitmap({r:220,g:40,b:50,alpha:1});
   const gif = await bitmap({r:30,g:180,b:60,alpha:1},80,80,"gif");
-  const browser = await chromium.launch({channel:process.env.CODEX_TEST_BROWSER || "msedge",
-    executablePath:process.env.CODEX_TEST_BROWSER_PATH,headless:true});
+  const browser = await chromium.launch(browserOptions);
+  console.log(JSON.stringify({ browser: browser.version(), platform: process.platform }));
   try {
     for (const theme of ["dark","light"]) for (const width of (process.env.CODEX_COMPOSITE_FITS_ONLY?[]:[480,1088])) for (const zoom of [.8,1,1.25]) {
       const page = await browser.newPage({viewport:{width,height:900}});
@@ -78,6 +86,10 @@ async function main() {
       page.on("pageerror",error => errors.push(error.message));
       await prepare(page,fixture(theme,photo,gif,zoom));
       const native = await snapshot(page);
+      const nativeVideo=await at(page,"#video");
+      if(nativeVideo.x+nativeVideo.width/2<width)
+        assertNear(pixel(native,nativeVideo.x+nativeVideo.width/2,nativeVideo.y+nativeVideo.height/2),[25,180,80],"native video matches source canvas");
+      assert.ok(await page.$eval("#video",video=>!video.paused&&video.srcObject.active),"video remains a playing stream");
       await reference(page,wall,"stretch",.2);
       const baseline = await snapshot(page);
       await page.$eval("#upstream-reference",node=>node.remove());
@@ -86,13 +98,28 @@ async function main() {
       const mediaBoxes = await page.evaluate(() => [...document.querySelectorAll("img,video,canvas,[data-browser-sidebar-webview]")]
         .map(node=>{const r=node.getBoundingClientRect();return {l:r.left-1,t:r.top-1,r:r.right+1,b:r.bottom+1};}));
       let ordinary = 0, mismatch = 0, maxError = 0;
+      const differences = [];
       for(let y=0;y<actual.height;y++)for(let x=0;x<actual.width;x++){
         if(mediaBoxes.some(r=>x>=r.l&&x<=r.r&&y>=r.t&&y<=r.b))continue;
         const offset=(y*actual.width+x)*4;
         ordinary++;
         const error=Math.max(...[0,1,2].map(c=>Math.abs(actual.data[offset+c]-baseline.data[offset+c])));
         maxError=Math.max(maxError,error);
-        if(error>1)mismatch++;
+        if(error>1){
+          mismatch++;
+          if(differences.length<24)differences.push({x,y,actual:pixel(actual,x,y),expected:pixel(baseline,x,y),native:pixel(native,x,y)});
+        }
+      }
+      if(mismatch){
+        const elements=await page.evaluate(points=>points.map(({x,y})=>({x,y,elements:document.elementsFromPoint(x,y)
+          .filter(n=>!n.closest('[data-codex-plus-ext]')).slice(0,4).map(n=>({tag:n.tagName,id:n.id,class:n.className}))})),differences);
+        console.log(JSON.stringify({theme,width,zoom,mismatch,maxError,differences,elements}));
+        if(out){
+          fs.mkdirSync(out,{recursive:true});
+          for(const [name,frame] of Object.entries({native,baseline,actual}))
+            await sharp(frame.data,{raw:{width:frame.width,height:frame.height,channels:4}}).png().toFile(path.join(out,`failure-${theme}-${width}-${zoom}-${name}.png`));
+          fs.writeFileSync(path.join(out,"failure.json"),JSON.stringify({browser:browser.version(),theme,width,zoom,mismatch,maxError,differences,elements},null,2));
+        }
       }
       assert.equal(mismatch,0,`${theme}/${width}/${zoom}: ordinary full-frame mismatches=${mismatch}, max=${maxError}`);
       const remove=await at(page,"#remove");

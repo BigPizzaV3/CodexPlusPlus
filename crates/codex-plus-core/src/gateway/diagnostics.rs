@@ -1,7 +1,7 @@
 //! Agent 接入的只读诊断：磁盘上的当前配置、helper 状态，以及网关实际见到的流量。
 //!
 //! 没有流量只能说明尚未验证，不能据此断言 Agent 绕过了网关。配置值只输出脱敏后的地址，
-//! 凭据只返回「相符 / 不相符」的证据，错误只返回固定分类与 HTTP 状态码。
+//! 凭据只返回「相符 / 不相符 / 已由宿主封存」的证据，错误只返回固定分类与 HTTP 状态码。
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -22,6 +22,9 @@ use crate::tools::ToolId;
 const RECENT_TRAFFIC_MS: u64 = 5 * 60 * 1000;
 const MARKER_HOST: &str = "codex-plus-diagnostics.invalid";
 const MARKER_TOKEN: &str = "cpx-diagnostics-placeholder";
+/// Claude Desktop（3P 网关模式）启动时把明文网关凭据交给系统安全存储（Windows DPAPI 等）
+/// 封存，原地写回成这个前缀的密文（#2927）。
+const HOST_SEALED_PREFIX: &str = "__seal";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +105,11 @@ impl<'a> Inspection<'a> {
         }
         if !matches!(
             code,
-            "endpoint_match" | "credential_match" | "selection_match" | "managed_config_match"
+            "endpoint_match"
+                | "credential_match"
+                | "credential_sealed"
+                | "selection_match"
+                | "managed_config_match"
         ) {
             self.valid = false;
         }
@@ -614,7 +621,16 @@ fn inspect_scalar(
         inspection.endpoint(path, field, current, &expected);
     } else if projected.contains(MARKER_TOKEN) {
         let expected = projected.replace(MARKER_TOKEN, token);
-        inspection.credential(path, field, current == Some(expected.as_str()));
+        if current != Some(expected.as_str())
+            && projected == MARKER_TOKEN
+            && current.is_some_and(host_sealed)
+        {
+            // 整个字段就是凭据、又被宿主应用换成了系统安全存储的密文：无法也不该逐字节比较，
+            // 单列证据但不算改动；地址等其它字段照常校验。
+            inspection.add(path, field, "credential_sealed", None, None);
+        } else {
+            inspection.credential(path, field, current == Some(expected.as_str()));
+        }
     } else if provider_reference(projected)
         && (selection_field(field.rsplit('.').next().unwrap_or_default())
             || field.contains("enabled_providers."))
@@ -643,6 +659,13 @@ fn inspect_scalar(
             None,
         );
     }
+}
+
+/// 宿主应用封存后的凭据：`__seal` 前缀后面还得有密文，只有前缀不算。
+fn host_sealed(value: &str) -> bool {
+    value
+        .strip_prefix(HOST_SEALED_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
 }
 
 fn provider_reference(value: &str) -> bool {

@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady, fullSwitchReady } from "./gateway-agent-safety.ts";
+import { disabledGroup } from "./gateway-model.ts";
 import type { GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
 
 const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
@@ -16,7 +17,7 @@ const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
 });
 const preview = (token = "snapshot-1"): GatewayDisconnectPreview => ({
   agent: "opencode", previewToken: token, canDisconnect: true, warnings: ["保留接入后修改的字段"],
-  files: [{ path: "/test/opencode.jsonc", kind: "modify", diff: "-  \"key\": \"[hidden]\"\n+  // 用户注释", redacted: true }],
+  files: [{ path: "/test/opencode.jsonc", kind: "modify", diff: "-  \"apiKey\": \"sk-old-secret\"\n+  // 用户注释" }],
 });
 
 test("无请求只表示待验证；配置、helper、上游失败分别显示且保留旧drift兼容", () => {
@@ -61,7 +62,7 @@ test("预览授权绑定Agent与非空token；文件状态和未知诊断证据�
   assert.equal(diagnosticErrorLabel("authInvalid"), "认证已失效");
   assert.equal(diagnosticErrorLabel("unrecognized_error"), "错误原因待确认");
   for (const code of [
-    "endpoint_match", "credential_match", "selection_match", "managed_config_match", "config_missing", "config_unreadable",
+    "endpoint_match", "credential_match", "credential_sealed", "selection_match", "managed_config_match", "config_missing", "config_unreadable",
     "config_invalid", "config_unverified", "unsupported_agent", "endpoint_missing", "endpoint_invalid", "endpoint_changed",
     "endpoint_host_mismatch", "endpoint_port_mismatch", "endpoint_path_mismatch", "selection_changed", "credential_changed", "managed_config_changed",
   ]) assert.notEqual(diagnosticEvidenceLabel(code), "诊断信息待确认", `后端证据码 ${code} 应有可读文案`);
@@ -183,7 +184,7 @@ async function ready(dialog: ReturnType<typeof harness>, value = preview()) {
   return dialog.render();
 }
 
-test("断开前等待预览；保留字段警告、文件diff与脱敏状态可读", async () => {
+test("断开前等待预览；保留字段警告、文件diff按原文可读", async () => {
   const dialog = harness();
   let tree = dialog.render();
   assert.equal(button(tree, "断开并还原").props.disabled, true);
@@ -193,8 +194,7 @@ test("断开前等待预览；保留字段警告、文件diff与脱敏状态可�
   assert.match(text(tree), /OpenCode 将恢复接入前的设置，以下为要改回的项/);
   assert.match(text(tree), /保留接入后修改的字段/);
   assert.match(text(tree), /\/test\/opencode.jsonc/);
-  assert.match(text(tree), /敏感值已隐藏/);
-  assert.match(text(tree), /\[hidden\]/);
+  assert.match(text(tree), /sk-old-secret/);
   assert.match(text(tree), /用户注释/);
   assert.equal(elements(tree).find((element) => element.props.role === "dialog")?.props["aria-modal"], "true");
 });
@@ -281,7 +281,7 @@ test("断开并直连明确预览范围，携带相同确认token", async () => 
   assert.equal(dialog.closeCount(), 0, "卸载后的结果不再次触发关闭");
 });
 
-function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) {
+function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false, group?: { disabled: boolean }) {
   const sourceFile = ts.createSourceFile("TrayPanel.tsx", readFileSync(new URL("./TrayPanel.tsx", import.meta.url), "utf8"), ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
   const component = sourceFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "PanelAgentRow");
   assert.ok(component);
@@ -309,10 +309,11 @@ function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) 
       if (!(index in hooks)) hooks[index] = { current: initial };
       return hooks[index];
     },
-    AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown", Check: "Check",
+    AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown", Check: "Check", AlertTriangle: "AlertTriangle",
     Floating: "Floating", ModelList: "ModelList", AgentDisconnectDialog: "AgentDisconnectDialog",
-    draftFromBinding: () => ({ model: "gpt", poolExclude: [] }),
-    modelDisplay: () => ({ title: "GPT" }),
+    draftFromBinding: () => ({ model: group ? "group/daily" : "gpt", poolExclude: [] }),
+    disabledGroup,
+    modelDisplay: (_payload: unknown, model: string) => ({ title: model === "group/daily" ? "Daily" : "GPT" }),
     ownCurrent: () => null,
     visibleOwnModels: () => [],
     agentModels: () => [],
@@ -326,12 +327,29 @@ function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false) 
       cursor = 0;
       return exports.PanelAgentRow({
         agent: { ...agent(), enabled: connected, requiresDisconnectPreview },
-        payload: null,
+        payload: group ? { groups: [{ id: "daily", name: "Daily", disabled: group.disabled }], gateway: { bindings: {} } } : null,
         onRun: async (command: string, args: Record<string, unknown>) => { calls.push({ command, args }); return true; },
       }) as Element;
     },
   };
 }
+
+test("托盘在模型组停用时显示回退模型，重新启用后恢复原组", () => {
+  const group = { disabled: true };
+  const tray = renderTrayAgent(true, false, group);
+  let tree = tray.render();
+  let picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
+  assert.match(text(picker), /GPT/);
+  assert.equal(picker.props.title, "原模型组「Daily」已停用，当前使用 GPT");
+  assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "gpt");
+
+  group.disabled = false;
+  tree = tray.render();
+  picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
+  assert.match(text(picker), /Daily/);
+  assert.equal(picker.props.title, undefined);
+  assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "group/daily");
+});
 
 test("托盘已连接Agent的默认与直连选择共用预览确认，未连接直连保持直接切换", async () => {
   const tray = renderTrayAgent(true);

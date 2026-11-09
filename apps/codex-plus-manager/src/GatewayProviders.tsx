@@ -31,6 +31,8 @@ import {
   providerEnabled,
   providerInput,
   skippedAgents,
+  subscriptionBlockReason,
+  maskAccountText,
   type GatewayAgentId,
   type GatewayPayload,
   type GatewayPoolEntry,
@@ -48,7 +50,7 @@ import {
   type SubscriptionLoginStart,
   type SubscriptionView,
 } from "./gateway-model";
-import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaBadge, QuotaWindows, Switch, type Notify, type Run } from "./gateway-ui";
+import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaWindows, Switch, type Notify, type Run } from "./gateway-ui";
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
 import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
 import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./ProviderWindowsDialog";
@@ -619,7 +621,7 @@ function PoolRow({
     if (await run(`newapi-access:${entry.id}`, "save_gateway_provider_newapi_access", { id: entry.id, token, userId, clear }, title)) setAccessOpen(false);
   };
   const sub = (entry.account
-    ? [t("订阅登录"), entry.lentToCodex ? t("Codex 正用它登录") : "", tf("{0} 个模型", [entry.models.length])]
+    ? [t("订阅登录"), tf("{0} 个模型", [entry.models.length])]
     : [protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])]
   ).filter(Boolean).join(" · ");
   // 价格、代理各开各的弹窗。
@@ -664,6 +666,7 @@ function PoolRow({
   const price = priceSummary(entry);
   // ChatGPT 订阅账号、Copilot 和 SuperGrok 能查额度（ChatGPT API 账号按量计费，没有额度窗口）。
   const quotaSupported = entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok";
+  const testBlocked = subscriptionBlockReason(entry);
   const saveExtras = async (nextPrice: ProviderPrice | null, modelPrices: Record<string, ProviderPrice> | null, proxy: string) => {
     const title = extrasOpen === "proxy" ? t("保存代理") : t("保存价格");
     if (await run(`extras:${entry.id}`, "save_gateway_provider_extras", { id: entry.id, price: nextPrice, modelPrices, proxy }, title)) setExtrasOpen(null);
@@ -699,6 +702,9 @@ function PoolRow({
         <div className="gw-pool-main">
           <strong>{maskAccountName(entry.name)}</strong>
           <small>{sub}</small>
+          {quotaSupported ? entry.quota
+            ? <QuotaWindows compact maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} />
+            : <small>{t("额度待刷新")}</small> : null}
         </div>
         <span className="gw-pool-status">
           {newModels ? (
@@ -712,7 +718,6 @@ function PoolRow({
             : status.state === "idle" && billing.probe?.rate ? <RelayBillingPoolLabel probe={billing.probe} />
             // 只有一个 Key（订阅登录就是一个账号）时「🔑 1」没信息量，写「可用」。
             : status.text === "{0} 个 Key" && Number(status.args[0]) <= 1 ? t("可用") : <MemberStatusLabel status={status} />}
-          {enabled && entry.quota ? <QuotaBadge quota={entry.quota} /> : null}
           {enabled && billing.probe ? <RelayBillingPoolBadge failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} /> : null}
           {vendorBalance.balance ? <ProviderBalancePoolBadge balance={vendorBalance.balance} loading={vendorBalance.loading} onRefresh={vendorBalance.refresh} /> : null}
           {enabled && !billing.probe && billing.settled ? (
@@ -720,15 +725,15 @@ function PoolRow({
           ) : null}
         </span>
         <span className="gw-pool-actions">
-          {/* 编辑放在标题栏（#2782）；订阅账号没有可编辑的连接，留同宽的空位让开关对齐。 */}
-          {entry.account ? (
+          {/* 普通订阅没有可编辑的连接；ChatGPT 订阅可编辑独立的额度策略。 */}
+          {entry.account && entry.account !== "chatgpt" ? (
             <span aria-hidden="true" className="gw-pool-edit-slot" />
           ) : (
             <button
               aria-label={tf("编辑 {0}", [maskAccountName(entry.name)])}
               className="gw-icon-button gw-pool-edit"
               onClick={onEdit}
-              title={t("编辑名称、地址、协议与模型")}
+              title={entry.account === "chatgpt" ? t("编辑订阅额度策略") : t("编辑名称、地址、协议与模型")}
               type="button"
             >
               <Pencil className="h-4 w-4" />
@@ -823,7 +828,7 @@ function PoolRow({
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {entry.quota ? <QuotaWindows quota={entry.quota} /> : <span className="gw-muted">{t("还没查到，每 10 分钟查一次，用过一次也会更新")}</span>}
+                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{t("尚未取得官方用量")}</span>}
               </div>
               <span className="gw-detail-actions">
                 <button
@@ -836,6 +841,15 @@ function PoolRow({
                   {t("刷新")}
                 </button>
               </span>
+            </div>
+          ) : null}
+          {entry.account === "chatgpt" ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("订阅额度策略")}</span>
+              <div className="gw-detail-value">
+                {t("按官方窗口限制")}
+              </div>
+              <span className="gw-detail-actions"><EditIcon disabled={busy !== null} label={t("编辑订阅额度策略")} onClick={onEdit} /></span>
             </div>
           ) : null}
           {/* 价格、窗口、思考等级、代理、限速不常改：收进「更多设置」，展开详情先看到模型、Key、额度。 */}
@@ -927,9 +941,9 @@ function PoolRow({
               <span className="gw-detail-foot-actions">
                 <button
                   className="gw-text-button gw-sync-button"
-                  disabled={busy !== null}
+                  disabled={busy !== null || Boolean(testBlocked)}
                   onClick={() => setTestKey(null)}
-                  title={t("发一条很短的请求，看这家供应商能不能用、多快回复；不计入路由与统计")}
+                  title={testBlocked ? t(maskAccountText(testBlocked)) : t("发一条很短的请求，看这家供应商能不能用、多快回复；不计入路由与统计")}
                   type="button"
                 >
                   <Zap className="h-3.5 w-3.5" />
@@ -949,7 +963,7 @@ function PoolRow({
           </div>
         </div>
       ) : null}
-      {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onClose={() => setTestKey(undefined)} /> : null}
+      {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onEditSubscription={onEdit} onClose={() => setTestKey(undefined)} /> : null}
       {metaSync ? (
         <ProviderMetaSyncDialog
           busy={busy !== null}

@@ -19,7 +19,7 @@
     {
       kind: "request-access",
       pattern: [
-        `async function ${id}\\((?<scope>${id}),(?<host>${id})\\)\\{let (?<auth>${id})=await ${call}\\(\\k<scope>,\\k<host>\\);`,
+        `async function(?: ${id})?\\((?<scope>${id}),(?<host>${id})\\)\\{let (?<auth>${id})=await ${call}\\(\\k<scope>,\\k<host>\\);`,
         `if\\((?<gate>"chatgpt"!==\\k<auth>&&"personalAccessToken"!==\\k<auth>(?:&&${literal}!==\\k<auth>)*)\\)return null;`,
         `let (?<requirements>${id})=await ${call}\\(\\k<scope>,\\k<host>,\\{priority:"critical"\\}\\);`,
         `return \\k<scope>\\.query\\.setData\\(${id}\\.${id},\\{authMethod:\\k<auth>,hostId:\\k<host>\\},\\k<requirements>\\),${call}\\(\\k<requirements>\\)\\}`,
@@ -32,7 +32,7 @@
       pattern: [
         `function\\((?<manager>${id}),\\{runtime:(?<runtime>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
         `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;null!=\\k<pending>;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
-        `return \\k<before>\\(\\),${id}\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>\\{`,
+        `return \\k<before>\\(\\),(?:${id}|async function\\(${id},${id},${id},${id}\\)\\{[^]{0,1800}?\\})\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>\\{`,
         `if\\("local"===\\k<manager>\\.getHostId\\(\\)&&await \\k<runtime>\\.isUsingCopilotInference\\(\\)\\)return!1;`,
         `let (?<result>${id})=await \\k<manager>\\.getAccount\\(\\{priority:"critical"\\}\\);`,
         `return (?<gate>\\k<result>\\.account\\?\\.type==="chatgpt"(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}\\)\\},async writeServiceTier\\(`,
@@ -42,14 +42,18 @@
     },
     {
       kind: "queue-explicit-access",
-      pattern: [
+      // 26.1103 将读取档位的闭包内联进 Promise.all；两种结构分别匹配，合并计数。
+      patterns: [
+        [`let (?<readTier>${id})=async\\(\\)=>\\{`, `\\},\\[${id},${id}\\]=await Promise\\.all\\(\\[\\k<readTier>\\(\\),`],
+        [`let\\[${id},${id}\\]=await Promise\\.all\\(\\[\\(async\\(\\)=>\\{`, `\\}\\)\\(\\),`],
+      ].map(([start, end]) => [
         `function\\((?<manager>${id}),\\{settings:(?<settings>${id}),storage:${id},filesystem:${id},runtime:(?<runtime>${id})\\},(?<readDefault>${id}),${id},${id}\\)\\{`,
         `return async\\(${id},(?<message>${id})\\)=>\\{let (?<options>${id})=\\k<message>\\.submissionOptions,${id}=\\k<message>\\.context\\.workPermissions,${id}=null!=${id},`,
         `(?<host>${id})=\\k<options>\\?\\.executionHostId\\?\\?\\k<manager>\\.getHostId\\(\\);`,
-        `[^]{0,2400}?let (?<readTier>${id})=async\\(\\)=>\\{if\\(null==\\k<options>\\)return \\k<readDefault>\\(${id}\\?\\.latestModel\\|\\|null\\);`,
+        `[^]{0,2400}?${start}if\\(null==\\k<options>\\)return \\k<readDefault>\\(${id}\\?\\.latestModel\\|\\|null\\);`,
         `if\\(null==\\k<options>\\.serviceTier\\)return null;let\\{account:(?<account>${id})\\}=await \\k<manager>\\.getAccount\\(\\{priority:"critical"\\}\\);`,
-        `return (?<gate>\\k<account>\\?\\.type==="chatgpt"(?:\\|\\|\\k<account>\\?\\.type===${literal})*)\\?\\k<options>\\.serviceTier:null\\},\\[${id},${id}\\]=await Promise\\.all\\(\\[\\k<readTier>\\(\\),\\k<options>\\?\\.usePermissionSelection\\?\\?\\k<settings>\\.readPermissionRefreshEnabled\\(\\)\\]\\)`,
-      ].join(""),
+        `return (?<gate>\\k<account>\\?\\.type==="chatgpt"(?:\\|\\|\\k<account>\\?\\.type===${literal})*)\\?\\k<options>\\.serviceTier:null${end}\\k<options>\\?\\.usePermissionSelection\\?\\?\\k<settings>\\.readPermissionRefreshEnabled\\(\\)\\]\\)`,
+      ].join("")),
       distinct: ["manager", "host", "runtime", "account"],
       replacement: g => `(${g.gate}||${g.host}==="local"&&${allow(`${g.manager}.getHostId()`, `${g.account}?.type`)}&&typeof ${g.runtime}.isUsingCopilotInference==="function"&&!(await ${g.runtime}.isUsingCopilotInference()))`,
     },
@@ -103,8 +107,8 @@
     }
     const replacements = new Map();
     for (const gate of gates) {
-      const matches = factories.flatMap(factory => [...factory.source.matchAll(new RegExp(gate.pattern, "g"))]
-        .map(match => ({ factory, match })));
+      const matches = factories.flatMap(factory => (gate.patterns ?? [gate.pattern]).flatMap(pattern =>
+        [...factory.source.matchAll(new RegExp(pattern, "g"))].map(match => ({ factory, match }))));
       diagnostics.matches[gate.kind] = matches.length;
       if (matches.length !== 1) continue;
       const { factory, match } = matches[0];
@@ -139,7 +143,9 @@
   function registrationChunk(source, url) {
     if (!isRuntime(source)) return null;
     const register = new RegExp(`(?<chunk>${id})\\.__rspack_esm_ids,(?<modules>${id})=\\k<chunk>\\.__webpack_modules__,${id}=\\k<chunk>\\.__rspack_esm_runtime,${id}=0;for\\((?<key>${id}) in \\k<modules>\\)(?<require>${id})\\.o\\(\\k<modules>,\\k<key>\\)&&\\((?<assignment>\\k<require>\\.m\\[\\k<key>\\]=\\k<modules>\\[\\k<key>\\])\\)`, "g");
-    const registrations = [...source.matchAll(register)];
+    // 26.1103 在注册工厂、执行 runtime 后才读取 chunk ids，保留旧顺序的兼容性。
+    const reordered = new RegExp(`(?<chunk>${id})=>\\{var (?<key>${id}),(?<modules>${id})=\\k<chunk>\\.__webpack_modules__,(?<runtime>${id})=\\k<chunk>\\.__rspack_esm_runtime;for\\(\\k<key> in \\k<modules>\\)(?<require>${id})\\.o\\(\\k<modules>,\\k<key>\\)&&\\(\\k<require>\\.m\\[\\k<key>\\]=\\k<modules>\\[\\k<key>\\]\\);\\k<runtime>&&\\k<runtime>\\(\\k<require>\\);for\\(var ${id}=\\k<chunk>\\.__rspack_esm_ids,${id}=0;`, "g");
+    const registrations = [...source.matchAll(register), ...source.matchAll(reordered)];
     if (registrations.length !== 1) return null;
     const { groups: g } = registrations[0];
     const requireName = g.require.replace(/\$/g, "\\$");
@@ -150,7 +156,7 @@
   function prepare(source, url, factories, rewriteModuleBase, entryModuleSource) {
     const failed = reason => ({ ok: false, modules: [], diagnostics: { reason, rewriters: { fast: reason } } });
     if (typeof source !== "string" || source.length > 24 * 1024 * 1024
-      || !/export const __rspack_esm_id=\d+;export const __rspack_esm_ids=\[\d+\];export const __webpack_modules__=\{/.test(source)
+      || !/(?:export const __rspack_esm_id=\d+;)?export const __rspack_esm_ids=\[\d+\];export const __webpack_modules__=\{/.test(source)
       || source.includes("__rspack_esm_runtime") || source.includes("__codexPlusFastFactories")) return failed("unsupported-rspack-chunk");
     const planned = planFactories(factories);
     if (!planned.ok) return { ...failed(planned.diagnostics.reason), diagnostics: { ...planned.diagnostics, rewriters: { fast: planned.diagnostics.reason } } };

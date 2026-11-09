@@ -22,7 +22,7 @@ pub fn output_limit(window: u64) -> u64 {
 pub fn opencode_models(wiring: &Wiring) -> Map<String, Value> {
     let mut models = Map::new();
     for entry in &wiring.models {
-        let mut model = json!({ "name": entry.id });
+        let mut model = json!({ "name": entry.display_name });
         if let Some(window) = entry.context_window {
             model["limit"] = json!({ "context": window, "output": output_limit(window) });
         }
@@ -105,11 +105,13 @@ mod tests {
             models: vec![
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
+                    display_name: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
                     reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
+                    display_name: "group/daily".to_string(),
                     context_window: None,
                     reasoning_levels: Vec::new(),
                 },

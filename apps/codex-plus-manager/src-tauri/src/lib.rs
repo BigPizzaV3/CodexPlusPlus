@@ -5,6 +5,7 @@ mod agent_mcp_commands;
 mod auto_takeover;
 pub mod commands;
 mod computer_use_commands;
+mod config_doctor_commands;
 mod cu_pip;
 mod dsh_plugin_commands;
 mod extension_community_commands;
@@ -337,6 +338,7 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::stop_codex_plus,
             commands::load_settings,
+            config_doctor_commands::config_doctor_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,
@@ -397,12 +399,16 @@ pub fn run() {
             gateway_commands::save_gateway_local_login_discovery,
             gateway_commands::scan_gateway_local_logins,
             gateway_commands::save_gateway_auto_group,
+            gateway_commands::set_gateway_auto_group_enabled,
             gateway_commands::save_gateway_auto_models,
             gateway_commands::save_gateway_favorites,
             gateway_commands::save_gateway_options,
+            gateway_commands::save_gateway_subagent_model_policy,
             gateway_commands::reset_gateway_key_health,
             gateway_commands::create_gateway_provider,
             gateway_commands::update_gateway_provider,
+            gateway_commands::get_native_auth_state,
+            gateway_commands::set_native_auth_account,
             gateway_commands::add_gateway_provider_key,
             gateway_commands::replace_gateway_provider_key,
             gateway_commands::delete_gateway_provider_key,
@@ -421,6 +427,7 @@ pub fn run() {
             gateway_commands::set_gateway_provider_enabled,
             gateway_commands::reorder_gateway_providers,
             gateway_commands::save_gateway_group,
+            gateway_commands::set_gateway_group_enabled,
             gateway_commands::delete_gateway_group,
             gateway_commands::reveal_gateway_agent_config,
             gateway_commands::load_gateway_usage,

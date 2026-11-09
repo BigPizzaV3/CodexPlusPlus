@@ -13,7 +13,7 @@
  *   node scripts/assemble-renderer-inject.mjs           # 写回产物
  *   node scripts/assemble-renderer-inject.mjs --check   # 只校验，不写（CI 用）
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -27,6 +27,28 @@ const manifest = JSON.parse(
 );
 if (!Array.isArray(manifest.fragments) || manifest.fragments.length === 0) {
   throw new Error("manifest.json 里没有 fragments");
+}
+
+// 不能只检查已登记的分片：合并时同时漏掉清单项与生成代码也会看似一致。
+const fragmentNames = manifest.fragments.map((fragment) => fragment.name);
+if (fragmentNames.some((name) => typeof name !== "string" || !/^[^/\\]+\.js$/.test(name))) {
+  throw new Error("manifest.json 的分片名必须是当前目录内的 .js 文件名");
+}
+if (new Set(fragmentNames).size !== fragmentNames.length) {
+  throw new Error("manifest.json 不得重复引用同一分片");
+}
+const diskNames = (await readdir(fragmentDir, { withFileTypes: true }))
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+  .map((entry) => entry.name);
+const unlisted = diskNames.filter((name) => !fragmentNames.includes(name)).sort();
+const missing = fragmentNames.filter((name) => !diskNames.includes(name)).sort();
+if (unlisted.length || missing.length) {
+  throw new Error(
+    "manifest.json 与分片目录不一致\n" +
+      (unlisted.length ? `  未登记的分片: ${unlisted.join(", ")}\n` : "") +
+      (missing.length ? `  不存在的分片: ${missing.join(", ")}\n` : "") +
+      "  合并时请保留两侧新增分片，确认顺序后重新组装；移除功能时同步移除源码分片。",
+  );
 }
 
 let assembled = "";

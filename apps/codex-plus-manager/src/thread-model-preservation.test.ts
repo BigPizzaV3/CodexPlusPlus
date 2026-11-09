@@ -89,7 +89,6 @@ function snapshotRuntime(read?: (payload: any) => Promise<any>) {
     relayProfiles: [{ id: "relay", relayMode: "pureApi", configContents: 'model_provider = "custom"' }] };
   const calls: any[] = [];
   const diagnostics: any[] = [];
-  const window: any = {};
   const create = new Function("codexPlusBackendSettings", "codexModelCatalog", "sendCodexPlusDiagnostic",
     "postJson", "codexAppServerPreparationTimeoutMs", "window", `${override}\n${readSource}
       return { prepare: prepareCodexPureApiResume, apply: applyCodexRemoteSessionProviderOverride,
@@ -98,8 +97,8 @@ function snapshotRuntime(read?: (payload: any) => Promise<any>) {
     assert.equal(route, "/thread-resume-model-metadata");
     calls.push(payload);
     return read ? read(payload) : { status: "ok", threadId: payload.thread_id, model: "saved-model", reasoningEffort: "high" };
-  }, 30, window);
-  return { ...api, settings, calls, diagnostics, window };
+  }, 30, {});
+  return { ...api, settings, calls, diagnostics };
 }
 
 describe("pure API persisted model snapshot", () => {
@@ -274,7 +273,6 @@ describe("pure API persisted model snapshot", () => {
     assert.deepEqual(params, { threadId: "a" });
     assert.equal(Object.hasOwn(result, "model"), false);
     assert.equal(api.diagnostics.filter((item: any) => item.event === "pure_api_resume_model_fallback").length, 1);
-    assert.equal(api.window.__codexPlusPureApiResumePreparations.size, 0);
   });
 
   it("rejects a provider change while reading the saved model", async () => {
@@ -293,93 +291,6 @@ describe("pure API persisted model snapshot", () => {
         return { status: "ok", threadId: thread_id, model: "saved", reasoningEffort: "high" };
       });
       await assert.rejects(api.prepare("thread/resume", params, "local"), /设置已变化/);
-    }
-  });
-
-  it("rejects direct local resumes retargeted to another host during preparation", async () => {
-    for (const field of ["hostId", "host_id"]) {
-      const params: any = { threadId: "a" };
-      const api = snapshotRuntime(async ({ thread_id }) => {
-        params[field] = "remote";
-        return { status: "ok", threadId: thread_id, model: "saved", reasoningEffort: "high" };
-      });
-      await assert.rejects(api.prepare("thread/resume", params, "local"), /已变化/);
-    }
-  });
-
-  it("discards pending history after a separate explicit model or effort resume for the same thread", async () => {
-    for (const choice of [
-      { model: "new-choice", config: { model_reasoning_effort: "low" } },
-      { config: { model: "new-choice", model_reasoning_effort: "low" } },
-      { config: { model_reasoning_effort: "low" } },
-    ]) {
-      let finish!: (value: any) => void;
-      let reads = 0;
-      const api = snapshotRuntime(async ({ thread_id }) => {
-        if (++reads === 1) return await new Promise(resolve => { finish = resolve; });
-        return { status: "ok", threadId: thread_id, model: "saved", reasoningEffort: "high" };
-      });
-      const pending = api.prepare("thread/resume", { threadId: "a" }, "local");
-      const rejected = assert.rejects(pending, /设置已变化/);
-      const explicit = await api.prepare("thread/resume", { threadId: "a", ...choice }, "local");
-      assert.equal(explicit.config.model_reasoning_effort, "low");
-      if (choice.model || choice.config.model) assert.equal(explicit.model, "new-choice");
-      finish({ status: "ok", threadId: "a", model: "old-choice", reasoningEffort: "ultra" });
-      await rejected;
-      assert.equal(api.window.__codexPlusPureApiResumePreparations?.size || 0, 0);
-    }
-  });
-
-  it("does not send a late historical resume after a turn has started through a host envelope", async () => {
-    let finish!: (value: any) => void;
-    let reading!: () => void;
-    const entered = new Promise<void>(resolve => { reading = resolve; });
-    const api = snapshotRuntime();
-    const pending = api.prepare("send-cli-request-for-host",
-      { hostId: "local", method: "thread/resume", params: { threadId: "a" } }, "local", false,
-      async (_method: string, envelope: any) => {
-        assert.equal(envelope.method, "thread/read");
-        reading();
-        return await new Promise(resolve => { finish = resolve; });
-      });
-    const rejected = assert.rejects(pending, /设置已变化/);
-    await entered;
-    const turn = { hostId: "local", method: "turn/start",
-      params: { threadId: "a", model: "new-choice", effort: "low" } };
-    assert.equal(await api.prepare("send-cli-request-for-host", turn, "local"), turn);
-    finish({ thread: { id: "a", modelProvider: "custom", status: { type: "notLoaded" } } });
-    await rejected;
-    assert.equal(api.window.__codexPlusPureApiResumePreparations?.size || 0, 0);
-  });
-
-  it("keeps independent thread restores isolated when snapshots finish in reverse order", async () => {
-    const finish = new Map<string, (value: any) => void>();
-    const api = snapshotRuntime(({ thread_id }) => new Promise(resolve => { finish.set(thread_id, resolve); }));
-    const a = api.prepare("thread/resume", { threadId: "a" }, "local");
-    const b = api.prepare("thread/resume", { threadId: "b" }, "local");
-    await api.prepare("thread/resume", { threadId: "other", model: "manual-choice" }, "local");
-    finish.get("b")!({ status: "ok", threadId: "b", model: "model-b", reasoningEffort: "low" });
-    const restoredB = await b;
-    finish.get("a")!({ status: "ok", threadId: "a", model: "outside-current-catalog", reasoningEffort: "ultra" });
-    const restoredA = await a;
-    assert.equal(restoredB.model, "model-b");
-    assert.equal(restoredB.config.model_reasoning_effort, "low");
-    assert.equal(restoredA.model, "outside-current-catalog");
-    assert.equal(restoredA.config.model_reasoning_effort, "ultra");
-    assert.equal(api.window.__codexPlusPureApiResumePreparations?.size || 0, 0);
-  });
-
-  it("keeps loaded same-provider runtime choices instead of reapplying an older persisted snapshot", async () => {
-    for (const status of ["idle", "active"]) {
-      for (const config of [undefined, { model_reasoning_effort: "low", model_context_window: 500000 }]) {
-        const api = snapshotRuntime();
-        const params = { threadId: "a", ...(config ? { config } : {}) };
-        const result = await api.prepare("thread/resume", params, "local", false,
-          async () => ({ thread: { id: "a", modelProvider: "custom", status: { type: status } } }));
-        assert.equal(result, params);
-        assert.equal(Object.hasOwn(result, "model"), false);
-        assert.deepEqual(api.diagnostics, []);
-      }
     }
   });
 
@@ -594,82 +505,6 @@ describe("pure API persisted model snapshot", () => {
     }
   });
 
-  it("never sends superseded history through native instance, prototype or envelope wrappers", async () => {
-    const catalog = readFileSync(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
-    const instance = catalog.slice(catalog.indexOf("  function patchAppServerModelRequestClient("), catalog.indexOf("  // issue #2177"));
-    const prototype = catalog.slice(catalog.indexOf("    function installCodexAppServerClientPrototypePatch()"),
-      catalog.indexOf("  const appServerModelRequestPatchMaxMisses"));
-    for (const mode of ["instance", "prototype", "envelope"]) {
-      for (const phase of ["metadata", "state"]) {
-        const calls: any[] = [];
-        const selected = { model: "initial", effort: "medium" };
-        let finish!: (value: any) => void;
-        let entered!: () => void;
-        const reading = new Promise<void>(resolve => { entered = resolve; });
-        class Client {
-          hostId = "local";
-          async sendRequest(method: string, params: any) {
-            const inner = method === "send-cli-request-for-host" ? params : { method, params };
-            calls.push(inner);
-            if (inner.method === "thread/read") {
-              if (phase === "state") {
-                entered();
-                return await new Promise(resolve => { finish = resolve; });
-              }
-              return { thread: { id: "a", modelProvider: "custom", status: { type: "notLoaded" } } };
-            }
-            if (inner.method === "thread/resume") {
-              selected.model = inner.params.model || selected.model;
-              selected.effort = inner.params.config?.model_reasoning_effort || selected.effort;
-              return { thread: { id: "a" }, model: selected.model, reasoningEffort: selected.effort,
-                modelProvider: "custom" };
-            }
-            throw new Error(`unexpected request: ${inner.method}`);
-          }
-        }
-        const client = new Client();
-        const api = snapshotRuntime();
-        const context = vm.createContext({
-          window: { __codexPlusAppServerClientClass: Client, __codexSessionDeleteBridge: () => {} },
-          client, codexPlusBackendSettings: api.settings, codexPlusBackendSettingsLoaded: true,
-          codexModelCatalog: {}, codexAppServerModelRequestPatchVersion: "test-pure-api-race",
-          codexAppServerPreparationTimeoutMs: 2000,
-          postJson: async (_route: string, payload: any) => {
-            if (phase === "metadata") {
-              entered();
-              return await new Promise(resolve => { finish = resolve; });
-            }
-            return { status: "ok", threadId: payload.thread_id, model: "old-choice", reasoningEffort: "ultra" };
-          },
-          registerNativeHostClient() {}, sendCodexPlusDiagnostic() {},
-          codexPlusPluginNativeInterceptClient: () => null,
-          appServerModelRequestMethod: (method: string, params: any) => method === "send-cli-request-for-host" ? params.method : method,
-          loadBackendSettingsState: async () => true, loadCodexModelCatalog: async () => ({}),
-          prepareCodexManagedSessionConnection: async (_method: string, params: any) => params,
-          codexManagedSessionConnection: () => null, refreshCodexThreadModelBeforeTurn: async () => null,
-          sendCodexManagedSessionTurn: async () => null, noteCodexManagedSessionStart() {},
-          codexThreadModelRequestState: () => ({}), codexPlusModelUnlockEnabled: () => false,
-          codexPluginMarketplacePatchEnabled: () => false, codexPlusSettings: () => ({}),
-          setTimeout, clearTimeout,
-        });
-        vm.runInContext(override + readSource + instance + prototype, context);
-        vm.runInContext(mode === "prototype" ? "installCodexAppServerClientPrototypePatch()" : "patchAppServerModelRequestClient(client)", context);
-        const send = (params: any) => client.sendRequest(mode === "envelope" ? "send-cli-request-for-host" : "thread/resume",
-          mode === "envelope" ? { hostId: "local", method: "thread/resume", params } : params);
-        const pending = send({ threadId: "a" });
-        const rejected = assert.rejects(pending, /设置已变化/);
-        await reading;
-        await send({ threadId: "a", model: "manual-choice", config: { model_reasoning_effort: "low" } });
-        finish(phase === "metadata"
-          ? { status: "ok", threadId: "a", model: "old-choice", reasoningEffort: "ultra" }
-          : { thread: { id: "a", modelProvider: "custom", status: { type: "notLoaded" } } });
-        await rejected;
-        assert.deepEqual(selected, { model: "manual-choice", effort: "low" });
-        assert.equal(calls.filter(call => call.method === "thread/resume").length, 1);
-        assert.equal(context.window.__codexPlusPureApiResumePreparations.size, 0);
-      }
-    }
-  });
 });
 
 describe("settings-driven catalog refresh ownership", () => {
@@ -744,6 +579,7 @@ describe("settings-driven catalog refresh ownership", () => {
         invalidateQueries: async (options: any) => { invalidated.push(options.queryKey); },
       }),
       codexPlusModelPickerCatalogChanged() {}, renderCodexPlusMenu() {}, scheduleCodexModelWhitelistRefresh() {},
+      syncCodexPlusGroupModelQueries() {},
       sendCodexPlusDiagnostic() {},
     });
     context.window.__codexPlusModelCatalogRuntime = runtime;

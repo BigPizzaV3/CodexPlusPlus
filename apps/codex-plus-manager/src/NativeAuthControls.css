@@ -1,0 +1,113 @@
+.native-auth-control {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  min-width: 0;
+}
+.native-auth-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.native-auth-row > label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.native-auth-row select,
+.subscription-policy select,
+.subscription-policy input[type="number"] {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid hsl(var(--input));
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font: inherit;
+}
+.native-auth-row select {
+  width: min(320px, 100%);
+}
+:root .shell .native-auth-current > .cx-row-main {
+  flex: 0 0 auto;
+  padding-left: 0;
+}
+:root .shell .native-auth-current > .cx-row-controls {
+  flex: 0 1 auto;
+  max-width: 430px;
+  margin-left: auto;
+  min-width: 0;
+}
+:root .shell .native-auth-current .app-select {
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 350px;
+  min-width: 0;
+}
+:root .shell .native-auth-current .app-select-trigger {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+}
+:root .shell .native-auth-current .app-select-trigger:hover,
+:root .shell .native-auth-current .app-select-trigger[aria-expanded="true"] {
+  border-color: hsl(var(--border));
+  background: hsl(var(--accent) / 0.5);
+}
+.native-auth-current .native-auth-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+.native-auth-current .native-auth-action:hover:not(:disabled) {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.native-auth-current .native-auth-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.native-auth-action > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.native-auth-error {
+  margin: 6px 0 0;
+  color: hsl(var(--destructive));
+  overflow-wrap: anywhere;
+}
+.subscription-policy {
+  display: grid;
+  gap: 10px;
+}
+.subscription-policy label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.subscription-policy input[type="number"] {
+  width: 100px;
+}
+.subscription-policy .subscription-permission {
+  justify-content: flex-start;
+}

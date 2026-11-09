@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 describe("session more menu lifecycle", () => {
   async function runtime() {
@@ -2515,6 +2515,14 @@ describe("renderer inject 分片与产物一致", () => {
       `产物与分片不一致（分片 ${names.length} 个）。` +
         "改分片后请跑 node scripts/assemble-renderer-inject.mjs 重新组装。",
     );
+  });
+
+  it("目录里的每个源码分片都必须登记，防止合并后清单和产物一起漏项", async () => {
+    const { names } = await assembleFromFragments();
+    const files = (await readdir(fragmentDir, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+      .map((entry) => entry.name);
+    assert.deepEqual([...names].sort(), files.sort());
   });
 
   it("拼接结果是完整可解析的单个 IIFE", async () => {

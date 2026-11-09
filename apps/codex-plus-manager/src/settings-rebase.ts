@@ -17,3 +17,53 @@ export function rebaseSettingsEdits<T extends object>(form: T, previous: T, late
   }
   return merged as T;
 }
+
+type AuthAwareProfile = { id?: unknown; authContents?: unknown } & Record<string, unknown>;
+type AuthAwareSettings = { relayProfiles?: AuthAwareProfile[] } & Record<string, unknown>;
+
+/**
+ * 保存撞上 settings_revision_conflict 自动重试前的凭据保护：
+ * 后台刷新登录 token 只会改 relayProfiles[].authContents。rebase 是顶层键粒度，
+ * 用户只要动过供应商列表，整个数组都会取用户旧快照，把已轮换的 refresh token
+ * 写回去。这里按 profile id 细化：外部只动了 authContents、而用户没有自己改
+ * authContents 的 profile，采用外部最新 token；用户粘贴过新凭据的 profile 不动。
+ */
+export function mergeRotatedAuthContents<T extends AuthAwareSettings>(
+  merged: T,
+  previous: T,
+  latest: T,
+): T {
+  const mergedProfiles = merged.relayProfiles;
+  const previousProfiles = previous.relayProfiles;
+  const latestProfiles = latest.relayProfiles;
+  if (
+    !Array.isArray(mergedProfiles)
+    || !Array.isArray(previousProfiles)
+    || !Array.isArray(latestProfiles)
+  ) {
+    return merged;
+  }
+  const baseById = new Map(
+    previousProfiles
+      .filter((profile) => typeof profile?.id === "string")
+      .map((profile) => [profile.id as string, profile] as const),
+  );
+  const latestById = new Map(
+    latestProfiles
+      .filter((profile) => typeof profile?.id === "string")
+      .map((profile) => [profile.id as string, profile] as const),
+  );
+  let changed = false;
+  const nextProfiles = mergedProfiles.map((profile) => {
+    if (typeof profile?.id !== "string") return profile;
+    const base = baseById.get(profile.id);
+    const fresh = latestById.get(profile.id);
+    if (!base || !fresh) return profile;
+    if (profile.authContents === base.authContents && fresh.authContents !== base.authContents) {
+      changed = true;
+      return { ...profile, authContents: fresh.authContents };
+    }
+    return profile;
+  });
+  return changed ? { ...merged, relayProfiles: nextProfiles } : merged;
+}

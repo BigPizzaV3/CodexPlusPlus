@@ -26,6 +26,78 @@ pub const CLIENT_TOKEN_PREFIX: &str = "cpx-gw-";
 /// 路由组当作模型名时的前缀：`group/<组 id>`。
 pub const GROUP_MODEL_PREFIX: &str = "group/";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionLimitAction {
+    Stop,
+    NextPermitted,
+    ApiFallback,
+}
+
+impl Default for SubscriptionLimitAction {
+    fn default() -> Self {
+        Self::Stop
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionUnknownUsage {
+    Block,
+    Allow,
+}
+
+impl Default for SubscriptionUnknownUsage {
+    fn default() -> Self {
+        Self::Allow
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_used_percent_limit: Option<u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub window_used_percent_limits: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub on_limit: SubscriptionLimitAction,
+    #[serde(default)]
+    pub unknown_usage: SubscriptionUnknownUsage,
+    #[serde(default = "default_subscription_max_age_seconds")]
+    pub max_age_seconds: u64,
+}
+
+fn default_subscription_max_age_seconds() -> u64 {
+    600
+}
+
+impl Default for SubscriptionPolicy {
+    fn default() -> Self {
+        Self {
+            default_used_percent_limit: None,
+            window_used_percent_limits: BTreeMap::new(),
+            on_limit: SubscriptionLimitAction::Stop,
+            unknown_usage: SubscriptionUnknownUsage::Allow,
+            max_age_seconds: default_subscription_max_age_seconds(),
+        }
+    }
+}
+
+impl SubscriptionPolicy {
+    pub fn normalized(mut self) -> Self {
+        self.default_used_percent_limit = self
+            .default_used_percent_limit
+            .filter(|value| *value <= 100);
+        self.window_used_percent_limits
+            .retain(|_, value| *value <= 100);
+        if self.max_age_seconds == 0 {
+            self.max_age_seconds = default_subscription_max_age_seconds();
+        }
+        self
+    }
+}
+
 /// 网关供应商池里的一个供应商。上游配置复用 [`RelayProfile`] 的结构（协议、地址、多 Key 等），
 /// 但只存在网关里；`relay.id` 同时是它的短名，`<id>/<模型>` 可以指定只发给它。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +146,9 @@ pub struct GatewayProvider {
     /// 和 Key 一样只存在 gateway.json，界面只拿到打码后的样子。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newapi_access: Option<crate::relay_billing::NewApiAccess>,
+    /// 官方订阅窗口的硬上限；未配置时沿用接入即可使用的行为。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_policy: Option<SubscriptionPolicy>,
     /// 上次「从上游同步上下文窗口 / 思考等级」写进去的值（#2807）。
     /// 现值和这里一样说明是同步来的，下次同步默认可覆盖；不一样就是用户手动改过的，默认不覆盖。
     #[serde(default, skip_serializing_if = "UpstreamMetaRecord::is_empty")]
@@ -275,6 +350,9 @@ fn default_weight() -> u32 {
 pub struct GatewayGroup {
     pub id: String,
     pub name: String,
+    /// 停用后保留配置，但不再出现在模型列表或参与路由。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
     #[serde(default, deserialize_with = "lenient")]
     pub mode: GroupMode,
     #[serde(default, deserialize_with = "lenient")]
@@ -547,6 +625,11 @@ pub struct GatewaySettings {
     /// 模型下拉里不列自带模型（直连，不经 Codex++）的 Agent（默认都列，见 [`Self::shows_own_models_for`]）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide_own_models: Vec<String>,
+    /// 子智能体按 Codex 实际请求的模型发送（#2987）。默认关：没有显式供应商身份的
+    /// 子智能体请求继承父回合的完整模型身份（改写 `request.model`，并在 spawn 工具
+    /// 描述里加继承指引）；打开后按请求里的模型发送，不改写也不注入指引。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subagent_model_follow_request: bool,
     /// 旧版的全局生图模型，读的时候迁移给 Codex（见 [`read_store`]），之后不再写。
     #[serde(default, skip_serializing)]
     pub image_model: String,
@@ -582,6 +665,7 @@ impl Default for GatewaySettings {
             image_models: BTreeMap::new(),
             image_keep_urls: Vec::new(),
             hide_own_models: Vec::new(),
+            subagent_model_follow_request: false,
             image_model: String::new(),
             app_version: String::new(),
             extra: Map::new(),
@@ -744,6 +828,7 @@ impl GatewaySettings {
                 upstream_gone: Vec::new(),
                 models_checked_at_ms: 0,
                 newapi_access: None,
+                subscription_policy: None,
                 upstream_meta: Default::default(),
                 relay,
                 extra: Map::new(),
@@ -810,6 +895,10 @@ fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider
 
 impl GatewayStore {
     pub fn default_path() -> PathBuf {
+        #[cfg(test)]
+        if let Some(path) = TEST_PATH.with(|path| path.borrow().clone()) {
+            return path;
+        }
         crate::paths::default_app_state_dir().join(STORE_FILE)
     }
 
@@ -860,6 +949,28 @@ impl GatewayStore {
                 .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
         };
         lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct GatewayPathTestScope(Option<PathBuf>);
+
+#[cfg(test)]
+impl GatewayPathTestScope {
+    pub(crate) fn new(directory: &Path) -> Self {
+        Self(TEST_PATH.with(|path| path.replace(Some(directory.join(STORE_FILE)))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for GatewayPathTestScope {
+    fn drop(&mut self) {
+        TEST_PATH.with(|path| path.replace(self.0.take()));
     }
 }
 
@@ -1175,6 +1286,7 @@ mod tests {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
             newapi_access: None,
+            subscription_policy: None,
             upstream_meta: Default::default(),
             relay: RelayProfile {
                 id: "deepseek".to_string(),
@@ -1295,6 +1407,22 @@ mod tests {
         // 再读一遍还是同样的内容。
         let again = store.load().unwrap();
         assert_eq!(again.groups[0].extra["futureGroup"], 3);
+    }
+
+    /// #2987：默认关（子智能体继承父回合身份），序列化默认值时不落键，旧文件缺键也读成关。
+    #[test]
+    fn subagent_model_follow_request_defaults_off_and_round_trips() {
+        assert!(!GatewaySettings::default().subagent_model_follow_request);
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        store.save(&GatewaySettings::default()).unwrap();
+        let text = fs::read_to_string(&store.path).unwrap();
+        assert!(
+            !text.contains("subagentModelFollowRequest"),
+            "默认值不落键：{text}"
+        );
+        std::fs::write(&store.path, r#"{"subagentModelFollowRequest":true}"#).unwrap();
+        assert!(store.load().unwrap().subagent_model_follow_request);
     }
 
     #[test]

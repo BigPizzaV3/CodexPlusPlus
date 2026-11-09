@@ -2,8 +2,14 @@ name: PR build artifacts
 
 on:
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   workflow_dispatch:
     inputs:
       rust_test_filter:
@@ -13,6 +19,11 @@ on:
 
 permissions:
   contents: read
+
+# 同一个 PR 推了新提交就取消旧的那轮；main 上每次推送都完整跑完，方便事后定位是哪次提交红的。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-artifacts:
@@ -30,7 +41,17 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # 只缓存第三方依赖的编译产物（rust-cache 会剔除本仓库 crate）。只在 main 上写缓存：
+      # PR 读 main 的缓存，各 PR 不再各占一份，免得 10 GB 配额被挤爆、main 的缓存被逐出。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Install NSIS
+        # 安装包只在推 main / 手动触发时打，PR 不需要 NSIS。
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           $makensis = $null
@@ -97,9 +118,13 @@ jobs:
           }
 
       - name: Build release application
+        # PR 上只跑测试：release 是第二套完整编译，Windows 上要多 10 多分钟。
+        # main 每次推送仍出安装包，release profile 才有的问题最晚在合入后一轮暴露；发版走 release-assets.yml。
+        if: github.event_name != 'pull_request'
         run: cargo build --release
 
       - name: Stage Windows app files
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/windows/app | Out-Null
@@ -107,6 +132,7 @@ jobs:
           if ((Get-ChildItem dist/windows/app -Filter *.exe).Count -ne 1) { throw "Windows 安装包必须只有一个应用程序。" }
 
       - name: Build Windows installer
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v", "V")
@@ -136,6 +162,7 @@ jobs:
           }
 
       - name: Upload Windows binaries
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: codex-plus-plus-windows-binaries
@@ -143,6 +170,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Windows installer
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: codex-plus-plus-windows-installer
@@ -171,6 +199,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      # 只缓存第三方依赖的编译产物（rust-cache 会剔除本仓库 crate）。只在 main 上写缓存：
+      # PR 读 main 的缓存，各 PR 不再各占一份，免得 10 GB 配额被挤爆、main 的缓存被逐出。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-universal
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -249,6 +285,14 @@ jobs:
           node-version: "22"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      # 只缓存第三方依赖的编译产物（rust-cache 会剔除本仓库 crate）。只在 main 上写缓存：
+      # PR 读 main 的缓存，各 PR 不再各占一份，免得 10 GB 配额被挤爆、main 的缓存被逐出。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update -qq

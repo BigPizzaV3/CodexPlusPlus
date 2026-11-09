@@ -110,6 +110,11 @@ pub async fn probe_provider_with_timeout(
         }
     }
     let started = Instant::now();
+    if let Err(error) = super::quota::dispatch_decision(gateway, &relay) {
+        fail(&mut result, "subscription_policy", &error.to_string());
+        result.total_ms = elapsed_ms(started);
+        return Ok(result);
+    }
     let finished =
         tokio::time::timeout(timeout, run(settings, &relay, &model, started, &mut result)).await;
     if finished.is_err() {
@@ -443,6 +448,9 @@ fn stream_error_category(text: &str) -> &'static str {
 /// 没收到上游响应的错误：超时、连不上（含代理），其余归「其它」。
 fn transport_category(error: &anyhow::Error) -> &'static str {
     for cause in error.chain() {
+        if cause.is::<super::quota::SubscriptionBlocked>() {
+            return "subscription_policy";
+        }
         if let Some(error) = cause.downcast_ref::<reqwest::Error>() {
             if error.is_timeout() {
                 return "timeout";
@@ -639,6 +647,51 @@ fn output_text(response: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn zero_cap_official_probe_stops_before_credentials_are_prepared() {
+        let relay = RelayProfile {
+            id: "unpermitted-probe".into(),
+            name: "Synthetic account".into(),
+            model: "fixture-model".into(),
+            relay_mode: crate::settings::RelayMode::Official,
+            protocol: crate::settings::RelayProtocol::Responses,
+            auth_contents: serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "account_id": "fixture", "access_token": "fixture-access",
+                    "refresh_token": "never-use-this-fixture"
+                }
+            }).to_string(),
+            ..RelayProfile::default()
+        };
+        let provider = serde_json::from_value(serde_json::json!({
+            "relay": relay, "subscriptionPolicy": { "defaultUsedPercentLimit": 0 }
+        })).unwrap();
+        let gateway = GatewaySettings {
+            providers: vec![provider],
+            ..GatewaySettings::default()
+        };
+        let result = probe_provider_with_timeout(
+            &BackendSettings::default(), &gateway, "unpermitted-probe", "fixture-model",
+            None, Duration::from_millis(20),
+        ).await.unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.category, "subscription_policy");
+        assert!(result.error.contains("上限设为 0%"));
+        assert_eq!(result.http_status, None);
+    }
+
+    #[test]
+    fn policy_rejection_remains_distinct_from_network_and_auth_errors() {
+        let error = anyhow::Error::new(super::super::quota::SubscriptionBlocked {
+            action: super::super::store::SubscriptionLimitAction::Stop,
+            status: 429,
+            message: "Synthetic usage cap".into(),
+        }).context("Admission recheck");
+        assert_eq!(transport_category(&error), "subscription_policy");
+        assert_eq!(transport_category(&anyhow::anyhow!("fixture timeout")), "timeout");
+    }
 
     fn parse(body: &str) -> StreamText {
         let mut text = StreamText::default();

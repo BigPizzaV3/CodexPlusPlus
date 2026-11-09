@@ -10,7 +10,7 @@ import { ArrowUpRight, CheckCircle2, Loader2, Play, XCircle } from "lucide-react
 import { t, tf } from "./i18n";
 import { agentAccessState, agentUsageStats, recentAgentRequests, type DashboardRequest } from "./agent-dashboard-model";
 import { AgentGlyph, useGatewayPayload } from "./HubOverview";
-import { formatElapsed, formatTokens, modelDisplay, relativeTime, shortPath, type AgentSessionView, type UsageSummary } from "./gateway-model";
+import { formatElapsed, formatTokens, groupDisplayName, modelDisplay, relativeTime, shortPath, type AgentSessionView, type UsageSummary } from "./gateway-model";
 import { providersHidden } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxRow, CxSection, CxStats, CxStatusIcon } from "./cx-layout";
@@ -199,14 +199,17 @@ export function AgentDashboard({
                     : view?.enabled ? t("在它里面发一条消息试试。") : t("接入网关后，这里显示它的每次请求走了哪家供应商。")}
                   title={agent === "codex" ? t("最近没有经过本地代理的请求") : t("还没有经过网关的请求")}
                 />
-              ) : requests.map((request) => (
-                <CxRow detail={request.provider ? `→ ${request.provider}` : "—"} key={request.id} title={<span title={request.model}>{request.model}</span>}>
-                  <time className="cx-dash-time">{request.running ? t("进行中") : formatElapsed(request.durationMs)}</time>
-                  {request.running ? <Loader2 aria-hidden="true" className="cx-dash-spin cx-dash-state" size={14} />
-                    : request.success ? <CheckCircle2 aria-label={t("成功")} className="cx-dash-state" data-tone="ok" size={14} />
-                      : <XCircle aria-label={t("失败")} className="cx-dash-state" data-tone="err" size={14} />}
-                </CxRow>
-              ))}
+              ) : requests.map((request) => {
+                const name = groupDisplayName(payload, request.model) ?? request.model;
+                return (
+                  <CxRow detail={request.provider ? `→ ${request.provider}` : "—"} key={request.id} title={<span title={name}>{name}</span>}>
+                    <time className="cx-dash-time">{request.running ? t("进行中") : formatElapsed(request.durationMs)}</time>
+                    {request.running ? <Loader2 aria-hidden="true" className="cx-dash-spin cx-dash-state" size={14} />
+                      : request.success ? <CheckCircle2 aria-label={t("成功")} className="cx-dash-state" data-tone="ok" size={14} />
+                        : <XCircle aria-label={t("失败")} className="cx-dash-state" data-tone="err" size={14} />}
+                  </CxRow>
+                );
+              })}
             </CxCard>
           </CxSection>
         )}

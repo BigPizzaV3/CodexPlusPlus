@@ -1921,8 +1921,9 @@ fn load_multi_instance_manifest_with_probes(
     // 「未知」，停止也会拒绝写回执，用户就被卡住（#2904）。这里只按记录里的 PID +
     // 创建身份确认那一代进程确已退出、worker 已退出、数据目录与端口无人使用（两次），
     // 才把这条过期记录标为已停止并丢弃失效身份；任何一步不确定都保持原样，不结束任何进程。
-    let orphaned = instance.status != "stopped"
-        && !multi_instance_orphaned_identities(&instance).is_empty()
+    // 重启前已停止、清单仍留着旧身份的记录同样适用（#2940）：否则列表一直「未知」，
+    // 重新启动也因身份对不上无法确认旧实例已释放。
+    let orphaned = !multi_instance_orphaned_identities(&instance).is_empty()
         && orphan_absent(&instance).unwrap_or(false)
         && orphan_absent(&instance).unwrap_or(false);
     if orphaned {
@@ -1985,6 +1986,9 @@ fn load_multi_instance_manifest_with_probes(
 ///
 /// 身份与清单一致时返回空，交给原有核验路径；身份不属于本实例本代、缺少 PID 或
 /// 创建身份时同样返回空——没有可靠依据就不清理。
+///
+/// 已停止的记录只在清单本身还留着对不上的身份时才需要核验（#2940）：这种记录在列表里
+/// 会一直显示「未知」，也挡住重新启动；清单无身份的已停止记录本来就显示已停止，不用碰。
 fn multi_instance_orphaned_identities(
     instance: &CodexMultiInstance,
 ) -> Vec<&codex_plus_core::multi_worker::CodexInstanceIdentity> {
@@ -1992,7 +1996,7 @@ fn multi_instance_orphaned_identities(
         || instance.instance_id == "main"
         || instance.instance_id.is_empty()
         || instance.generation == 0
-        || instance.status == "stopped"
+        || instance.status == "stopped" && instance.identity.is_none()
         || instance
             .identity
             .as_ref()
@@ -3019,8 +3023,12 @@ enum RestartDisposition {
     StopAndRestart,
 }
 
-fn restart_disposition(sync_active_relay: bool, app_running: bool) -> RestartDisposition {
-    if !sync_active_relay && !app_running {
+fn restart_disposition(
+    sync_active_relay: bool,
+    app_running: bool,
+    is_windows: bool,
+) -> RestartDisposition {
+    if !is_windows && !sync_active_relay && !app_running {
         RestartDisposition::LaunchOnly
     } else {
         RestartDisposition::StopAndRestart
@@ -3033,15 +3041,24 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.restart_requested",
+        json!({
+            "debug_port": request.debug_port,
+            "helper_port": request.helper_port,
+            "app_path": request.app_path.trim(),
+            "sync_active_relay": request.sync_active_relay
+        }),
+    );
     // 按本实例的调试端口判定是否在跑。
     // 早先用 `find_codex_processes_for_debug_port`，但它在非 macOS 上返回全部
     // Codex 进程：Windows 上只要有多开实例在跑，就会把「主 Codex 没开」误判成
     // 「已运行」，进而走进重启分支去停进程。
     let app_running = codex_plus_core::cdp::endpoint_available(request.debug_port);
-    if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly
+    if restart_disposition(request.sync_active_relay, app_running, cfg!(windows))
+        == RestartDisposition::LaunchOnly
     {
-        // 调试端口不可连不代表 Codex 没在跑：Windows 商店版主 Codex 可能开着却没带端口
-        // （issue #2764）。走重启专用的启动，由 launcher 识别并结束它后再启动。
+        // Windows 始终先执行停止流程；其他平台保留原来的直接启动分支。
         return spawn_codex_plus_launch_with(
             request,
             "Codex 未运行，已按直接启动方式在后台唤起。",
@@ -3087,14 +3104,19 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         10,
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
-        || stop_main_codex_process(request.debug_port),
+        || stop_main_codex_process(&request).map(|_| ()),
         codex_plus_launcher::stop,
         wait_native_browser_shutdown,
     ) {
         Ok(shutdown) => shutdown,
         Err(error) => {
+            let message = restart_stop_failure_message(&error);
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.restart_stop_failed",
+                json!({"debug_port": request.debug_port, "message": message}),
+            );
             return failed(
-                &restart_stop_failure_message(&error),
+                &message,
                 json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
             );
         }
@@ -3117,7 +3139,7 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        "manager.restart_requested",
+        "manager.restart_starting",
         json!({
             "debug_port": request.debug_port,
             "helper_port": request.helper_port,
@@ -3143,11 +3165,11 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
     let mut restart_message = "Codex 已请求重启，启动任务正在后台运行。".to_string();
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
-        spawn_after_provider_guard_release(
-            provider_guard,
-            request,
-            start_embedded_launcher_for_restart,
-        )
+        #[cfg(windows)]
+        let start = start_embedded_launcher;
+        #[cfg(not(windows))]
+        let start = start_embedded_launcher_for_restart;
+        spawn_after_provider_guard_release(provider_guard, request, start)
     }) {
         Ok(warnings) => {
             for warning in warnings {
@@ -3187,24 +3209,64 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
 }
 
-/// 结束主 Codex 进程并确认调试端口已关闭。重启和「停止 Codex」共用。
-fn stop_main_codex_process(debug_port: u16) -> anyhow::Result<()> {
-    // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
-    // 这里允许「按端口没匹配到就退回全局结束」，否则会卡在
-    // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
-    // macOS 上按端口没匹配到时，退回结束没带调试端口的主进程（外部启动的 Codex）。
+/// 结束主 Codex 进程并确认退出。重启和「停止 Codex」共用。
+fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
     #[cfg(windows)]
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(debug_port, true);
+    {
+        let session = codex_plus_launcher::session_snapshot();
+        let needs_settings = (session.launch_extra_args.is_none() && !session.owned)
+            || (session.app_dir.is_none() && request.app_path.trim().is_empty());
+        let settings = needs_settings
+            .then(|| SettingsStore::default().load())
+            .transpose()?;
+        // 设置可能在启动后被编辑；停止时沿用该会话真正使用过的参数。
+        let launch_extra_args = session
+            .launch_extra_args
+            .as_deref()
+            .or_else(|| {
+                (!session.owned).then(|| {
+                    settings
+                        .as_ref()
+                        .map(|settings| settings.codex_extra_args.as_slice())
+                        .unwrap_or_default()
+                })
+            });
+        let owned_debug_port = session.owned.then_some(session.debug_port).flatten();
+        let app_dir = session.app_dir.or_else(|| {
+            codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+                (!request.app_path.trim().is_empty())
+                    .then(|| Path::new(request.app_path.trim())),
+                settings
+                    .as_ref()
+                    .map(|settings| settings.codex_app_path.as_str()),
+            )
+        });
+        let app_dir = app_dir.ok_or_else(|| anyhow::anyhow!("无法核实 Codex 应用路径"))?;
+        let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
+        return codex_plus_core::watcher::stop_windows_main_codex_processes_with_args_and_wait(
+            &executable,
+            owned_debug_port,
+            launch_extra_args,
+        );
+    }
+    #[cfg(not(windows))]
+    let was_running = codex_plus_core::cdp::endpoint_available(request.debug_port)
+        || main_codex_running_without_debug_port();
+    #[cfg(not(windows))]
+    let debug_port = request.debug_port;
     #[cfg(target_os = "macos")]
     codex_plus_core::watcher::stop_main_codex_processes_and_wait(debug_port);
     #[cfg(not(any(windows, target_os = "macos")))]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(debug_port);
+    #[cfg(not(windows))]
     anyhow::ensure!(
         !codex_plus_core::cdp::endpoint_available(debug_port),
         "Codex 进程尚未退出"
     );
+    #[cfg(not(windows))]
     anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
-    Ok(())
+    #[cfg(not(windows))]
+    Ok(usize::from(was_running))
 }
 
 /// 主 Codex 开着却没带调试端口：从 Dock / Finder 等外部启动，调试端口探测不到它。
@@ -3237,7 +3299,16 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
-    if !codex_plus_core::cdp::endpoint_available(request.debug_port)
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.stop_requested",
+        json!({
+            "debug_port": request.debug_port,
+            "helper_port": request.helper_port,
+            "app_path": request.app_path.trim()
+        }),
+    );
+    if !cfg!(windows)
+        && !codex_plus_core::cdp::endpoint_available(request.debug_port)
         && !main_codex_running_without_debug_port()
     {
         return ok("Codex 没有在运行。", json!({}));
@@ -3257,23 +3328,41 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         "user_stopping",
         10,
     ));
+    let mut stopped_count = None;
     match stop_codex_plus_for_restart(
-        || stop_main_codex_process(request.debug_port),
+        || {
+            let count = stop_main_codex_process(&request)?;
+            stopped_count = Some(count);
+            Ok(())
+        },
         codex_plus_launcher::stop,
         wait_native_browser_shutdown,
     ) {
         Ok(_) => {
+            let stopped_count = stopped_count.unwrap_or_default();
+            let message = if stopped_count == 0 {
+                "Codex 没有在运行。"
+            } else {
+                "Codex 已停止。"
+            };
             let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
                 &request,
                 "stopped",
-                "Codex 已停止。",
+                message,
                 current_timestamp_ms(),
                 "user_stopped",
                 100,
             ));
-            ok("Codex 已停止。", json!({}))
+            ok(message, json!({ "stoppedCount": stopped_count }))
         }
-        Err(error) => failed(&stop_failure_message(&error), json!({})),
+        Err(error) => {
+            let message = stop_failure_message(&error);
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.stop_failed",
+                json!({"debug_port": request.debug_port, "message": message}),
+            );
+            failed(&message, json!({}))
+        }
     }
 }
 
@@ -8306,10 +8395,29 @@ pub fn set_relay_feature(
     }
 }
 
+// 同步 tauri 命令跑在主线程上，Windows 下主线程就是 WebView2 的界面线程：读日志、
+// 生成诊断报告（要枚举进程、探 helper 和调试端口，各带 1 秒超时）期间整个窗口都不响应，
+// 进「日志与诊断」时就会卡一下（#2922）。这几个命令都放到阻塞线程池里做。
 #[tauri::command]
-pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
+pub async fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    read_latest_logs_at(&path, request)
+    let lines = request.lines;
+    let task_path = path.clone();
+    match tauri::async_runtime::spawn_blocking(move || read_latest_logs_at(&task_path, request))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("读取日志失败：{error}"),
+            LogsPayload {
+                path: path.to_string_lossy().to_string(),
+                text: String::new(),
+                lines,
+                truncated: false,
+                file_size: 0,
+            },
+        ),
+    }
 }
 
 fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPayload> {
@@ -8338,9 +8446,14 @@ fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPa
 }
 
 #[tauri::command]
-pub fn clear_logs() -> CommandResult<LogsPayload> {
+pub async fn clear_logs() -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    match codex_plus_core::diagnostic_log::clear_diagnostic_log() {
+    // 清理要拿日志全局锁，别在界面线程上等。
+    let cleared =
+        tauri::async_runtime::spawn_blocking(codex_plus_core::diagnostic_log::clear_diagnostic_log)
+            .await
+            .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())));
+    match cleared {
         Ok(()) => ok(
             "日志已清理。",
             LogsPayload {
@@ -8365,13 +8478,16 @@ pub fn clear_logs() -> CommandResult<LogsPayload> {
 }
 
 #[tauri::command]
-pub fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
-    ok(
-        "诊断报告已生成。",
-        DiagnosticsPayload {
-            report: diagnostics_report(),
-        },
-    )
+pub async fn copy_diagnostics() -> CommandResult<DiagnosticsPayload> {
+    match tauri::async_runtime::spawn_blocking(diagnostics_report).await {
+        Ok(report) => ok("诊断报告已生成。", DiagnosticsPayload { report }),
+        Err(error) => failed(
+            &format!("生成诊断报告失败：{error}"),
+            DiagnosticsPayload {
+                report: String::new(),
+            },
+        ),
+    }
 }
 
 #[tauri::command]
@@ -11570,12 +11686,18 @@ base_url = "https://example.invalid/v1"
     #[test]
     fn restart_absent_app_uses_launch_but_explicit_sync_still_restarts() {
         assert_eq!(
-            restart_disposition(false, false),
+            restart_disposition(false, false, false),
             RestartDisposition::LaunchOnly
         );
         for (sync, running) in [(true, false), (false, true), (true, true)] {
             assert_eq!(
-                restart_disposition(sync, running),
+                restart_disposition(sync, running, false),
+                RestartDisposition::StopAndRestart
+            );
+        }
+        for (sync, running) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(
+                restart_disposition(sync, running, true),
                 RestartDisposition::StopAndRestart
             );
         }
@@ -14373,9 +14495,17 @@ model_reasoning_effort = "high"
         // 修复前的表现：身份对不上就一直是「未知」。
         assert_eq!(multi_instance_snapshot_status(&orphan, false), "unknown");
 
+        // 已停止但清单仍留着对不上的旧身份（#2940）：同样需要核验清理。
         let mut stopped = orphan.clone();
         stopped.status = "stopped".into();
+        assert_eq!(multi_instance_orphaned_identities(&stopped).len(), 2);
+        // 已停止且清单无身份：本来就显示已停止，不再核验。
+        stopped.identity = None;
         assert!(multi_instance_orphaned_identities(&stopped).is_empty());
+        // 已停止且身份仍与清单一致：交给原有路径。
+        let mut stopped_ready = ready.clone();
+        stopped_ready.status = "stopped".into();
+        assert!(multi_instance_orphaned_identities(&stopped_ready).is_empty());
 
         let mut main = orphan.clone();
         main.is_main = true;
@@ -14460,6 +14590,129 @@ model_reasoning_effort = "high"
         assert!(multi_instance_relaunch_is_safe_with(&again, |_| {
             panic!("identity was dropped after confirmed exit")
         }));
+    }
+
+    /// 模拟 #2940：重启前实例已停止（清单 status stopped / running false / pid null），
+    /// 但清单与回执里仍留着旧身份；重启后安装路径变了，身份对不上清单。
+    fn stopped_orphaned_multi_instance_fixture(root: &Path) -> CodexMultiInstance {
+        let mut instance = stopped_multi_instance_fixture(root);
+        instance.status = "stopped".into();
+        instance.running = false;
+        instance.pid = None;
+        instance.worker_birth_id = None;
+        instance.app_path = Some(
+            root.join("Codex-removed-version.app")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        save_multi_instance_manifest(root, &instance).unwrap();
+        instance
+    }
+
+    #[test]
+    fn stopped_record_with_stale_identity_is_cleared_and_shown_stopped() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = stopped_orphaned_multi_instance_fixture(temp.path());
+        // 修复前的表现：清单已停止，列表却一直是「未知」，重新启动也不放行。
+        assert_eq!(multi_instance_snapshot_status(&original, false), "unknown");
+        assert!(!multi_instance_relaunch_is_safe_with(
+            &original,
+            stale_multi_instance_is_absent
+        ));
+
+        let probes = std::cell::Cell::new(0);
+        let current = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("mismatched identity must not use the regular probe"),
+            |instance| {
+                assert_eq!(instance.identity, original.identity);
+                probes.set(probes.get() + 1);
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(probes.get(), 2);
+        assert_eq!(current.status, "stopped");
+        assert!(!current.running);
+        assert_eq!(current.identity, None);
+        assert_eq!(current.pid, None);
+        assert_eq!(multi_instance_snapshot_status(&current, false), "stopped");
+        assert!(!multi_instance_is_running(&current));
+
+        let receipt = load_multi_launch_result(temp.path()).unwrap();
+        assert_eq!(receipt.status, "stopped");
+        assert!(receipt.identity.is_none() && receipt.pid.is_none());
+        assert!(multi_instance_stopped_receipt_matches(&current, &receipt));
+
+        // 再读一次不再探测；「结束实例」最后写回执的一步成功，重新启动放行。
+        let again = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("already synchronized"),
+            |_| panic!("already synchronized"),
+        )
+        .unwrap();
+        assert_eq!(multi_instance_snapshot_status(&again, false), "stopped");
+        finish_multi_instance_cleanup(temp.path(), &again, Ok(()), |_| Ok(true)).unwrap();
+        assert!(multi_instance_relaunch_is_safe_with(&again, |_| {
+            panic!("identity was dropped after confirmed exit")
+        }));
+    }
+
+    #[test]
+    fn stopped_record_with_stale_identity_stays_untouched_while_exit_is_uncertain() {
+        for failed_probe in [0, 1, 2] {
+            let temp = tempfile::tempdir().unwrap();
+            let original = stopped_orphaned_multi_instance_fixture(temp.path());
+            let manifest = std::fs::read(multi_instance_manifest_path(temp.path())).unwrap();
+            let receipt = std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap();
+            let probes = std::cell::Cell::new(0);
+            let current = load_multi_instance_manifest_with_probes(
+                temp.path(),
+                |_| panic!("stopped records never use the regular probe"),
+                |_| {
+                    probes.set(probes.get() + 1);
+                    if failed_probe == 0 {
+                        anyhow::bail!("query denied");
+                    }
+                    // 旧身份那一代进程仍在（PID 未复用）、数据目录或端口仍被占用。
+                    Ok(probes.get() != failed_probe)
+                },
+            )
+            .unwrap();
+            assert_eq!(current.identity, original.identity);
+            assert_eq!(multi_instance_snapshot_status(&current, false), "unknown");
+            assert_eq!(
+                std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+                manifest
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap(),
+                receipt
+            );
+        }
+    }
+
+    #[test]
+    fn stopped_record_with_matching_identity_is_not_reprobed() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut instance = stopped_multi_instance_fixture(temp.path());
+        instance.status = "stopped".into();
+        instance.running = false;
+        instance.pid = None;
+        instance.worker_birth_id = None;
+        save_multi_instance_manifest(temp.path(), &instance).unwrap();
+        let manifest = std::fs::read(multi_instance_manifest_path(temp.path())).unwrap();
+        let current = load_multi_instance_manifest_with_probes(
+            temp.path(),
+            |_| panic!("already stopped"),
+            |_| panic!("identity still matches the manifest"),
+        )
+        .unwrap();
+        assert_eq!(current.identity, instance.identity);
+        assert_eq!(
+            std::fs::read(multi_instance_manifest_path(temp.path())).unwrap(),
+            manifest
+        );
     }
 
     #[test]

@@ -725,6 +725,9 @@ fn resolve_synced_chatgpt_tokens(profile: &RelayProfile) -> SyncedChatgptTokens 
     let Ok(settings) = crate::settings::SettingsStore::default().load() else {
         return None;
     };
+    if settings.native_auth_selection.is_some() {
+        return None;
+    }
     let aggregate = settings
         .aggregate_relay_profiles
         .iter()
@@ -917,6 +920,9 @@ fn align_profile_model_with_active_goal_thread(home: &Path, profile: &RelayProfi
     else {
         return profile.clone();
     };
+    if !gateway_goal_model_available(profile, &goal_model) {
+        return profile.clone();
+    }
     let declared = relay_profile_model(profile).trim().to_string();
     if !declared.is_empty() && declared != model_list_head(profile) && declared != goal_model {
         return profile.clone();
@@ -928,6 +934,18 @@ fn align_profile_model_with_active_goal_thread(home: &Path, profile: &RelayProfi
     next.config_contents =
         strip_tool_written_model_from_config(home, profile, &next.config_contents);
     next
+}
+
+fn gateway_goal_model_available(profile: &RelayProfile, model: &str) -> bool {
+    if profile.id != crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        || !model.get(..crate::gateway::store::GROUP_MODEL_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(crate::gateway::store::GROUP_MODEL_PREFIX))
+    {
+        return true;
+    }
+    profile.model_list.split(['\r', '\n', ',']).any(|item| {
+        crate::model_suffix::parse_model_suffix(item).0.eq_ignore_ascii_case(model)
+    })
 }
 
 /// model_list 第一条（剥 catalog 后缀），与写入 config.toml 时的隐式默认一致。
@@ -1008,6 +1026,9 @@ pub fn align_live_config_model_with_goal_thread(
     else {
         return Ok(false);
     };
+    if !gateway_goal_model_available(profile, &goal_model) {
+        return Ok(false);
+    }
     if goal_model == live {
         return Ok(false);
     }
@@ -1133,6 +1154,8 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
     common_config_contents: &str,
     proxy_port: u16,
 ) -> anyhow::Result<RelayApplyResult> {
+    let resolved_profile = crate::native_auth::resolve_profile_credentials(profile)?;
+    let profile = &resolved_profile;
     let previous_model = live_root_model(home);
     let result =
         apply_relay_profile_to_home_inner(home, profile, common_config_contents, proxy_port)?;
@@ -1337,8 +1360,11 @@ pub fn apply_pure_api_config_to_home_with_session_provider(
     let auth_contents = serde_json::to_string_pretty(&json!({
         "OPENAI_API_KEY": bearer_token
     }))?;
-    let backup_path =
-        write_codex_live_atomic(home, Some(&updated), Some(auth_contents.as_bytes()))?;
+    let backup_path = write_codex_live_atomic(
+        home,
+        Some(&updated),
+        Some(auth_contents.as_bytes()),
+    )?;
     let status = relay_config_status_from_home(home);
     Ok(RelayApplyResult {
         config_path: status.config_path,
@@ -2674,9 +2700,32 @@ fn write_codex_live_atomic(
     config_text: Option<&str>,
     auth_bytes: Option<&[u8]>,
 ) -> anyhow::Result<Option<String>> {
+    write_codex_live_atomic_with(home, config_text, auth_bytes, crate::settings::atomic_write)
+}
+
+fn write_codex_live_atomic_with(
+    home: &Path,
+    config_text: Option<&str>,
+    auth_bytes: Option<&[u8]>,
+    mut write: impl FnMut(&Path, &[u8]) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<String>> {
+    let _guard = crate::official_login::native_auth_write_guard(home)?;
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    let old_auth = read_optional_bytes(&auth_path)?;
+    let apply_native_selection = crate::native_auth::is_default_home(home)
+        && SettingsStore::default().load()?.native_auth_selection.is_some();
+    let auth_bytes = auth_bytes.or_else(|| {
+        apply_native_selection.then(|| old_auth.as_deref().unwrap_or(b"{}"))
+    });
+    let projected_auth = auth_bytes
+        .map(|bytes| {
+            let proposed = std::str::from_utf8(bytes).context("auth.json 不是有效 UTF-8")?;
+            crate::native_auth::project_native_auth(home, proposed).map(String::into_bytes)
+        })
+        .transpose()?;
+    let auth_bytes = projected_auth.as_deref();
     #[cfg(windows)]
     let normalized_config_text = config_text.map(normalize_config_text_for_write);
     #[cfg(windows)]
@@ -2705,23 +2754,37 @@ fn write_codex_live_atomic(
     }
 
     let old_config = read_optional_bytes(&config_path)?;
-    let old_auth = read_optional_bytes(&auth_path)?;
     let backup_path = create_live_backup(home, old_config.as_deref(), old_auth.as_deref())?;
     let mut auth_written = false;
 
     if let Some(auth_bytes) = auth_bytes {
-        if let Err(error) = crate::settings::atomic_write(&auth_path, auth_bytes) {
+        if read_optional_bytes(&auth_path)? != old_auth {
+            anyhow::bail!("原生登录已被其他进程更新，已停止覆盖，请重试");
+        }
+        if let Err(error) = write(&auth_path, auth_bytes) {
             return Err(error.context("写入 auth.json 失败"));
         }
         auth_written = true;
     }
 
     if let Some(config_text) = config_text {
-        if let Err(error) = crate::settings::atomic_write(&config_path, config_text.as_bytes()) {
-            if auth_written {
-                let _ = restore_optional_file(&auth_path, old_auth.as_deref());
+        let result = (|| {
+            if read_optional_bytes(&config_path)? != old_config {
+                anyhow::bail!("config.toml 已被其他进程更新，已停止覆盖，请重试");
             }
-            let _ = restore_optional_file(&config_path, old_config.as_deref());
+            write(&config_path, config_text.as_bytes())
+        })();
+        if let Err(error) = result {
+            if auth_written
+                && read_optional_bytes(&auth_path)
+                    .is_ok_and(|current| current.as_deref() == auth_bytes)
+            {
+                if let Err(restore_error) = restore_optional_file(&auth_path, old_auth.as_deref()) {
+                    return Err(error.context(format!("写入 config.toml 失败；恢复 auth.json 也失败：{restore_error}")));
+                }
+            }
+            // atomic_write leaves the previous config intact on failure. Never overwrite
+            // another process's config or newer OAuth generation with a stale backup.
             return Err(error.context("写入 config.toml 失败"));
         }
     }
@@ -7036,6 +7099,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_config_write_recovers_only_the_auth_generation_written_by_this_transaction() {
+        for (previous, concurrent) in [
+            (Some(r#"{"tokens":{"access_token":"old"}}"#), None),
+            (None, None),
+            (Some(r#"{"tokens":{"access_token":"old"}}"#), Some(r#"{"tokens":{"access_token":"newer"}}"#)),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let auth_path = temp.path().join("auth.json");
+            let config_path = temp.path().join("config.toml");
+            let previous_config = "model = \"old\"\n";
+            std::fs::write(&config_path, previous_config).unwrap();
+            if let Some(previous) = previous {
+                std::fs::write(&auth_path, previous).unwrap();
+            }
+            let result = write_codex_live_atomic_with(
+                temp.path(), Some("model = \"new\"\n"), Some(br#"{"OPENAI_API_KEY":"test"}"#),
+                |path, bytes| {
+                    if path == config_path {
+                        if let Some(concurrent) = concurrent {
+                            std::fs::write(&auth_path, concurrent)?;
+                        }
+                        anyhow::bail!("synthetic config write failure");
+                    }
+                    crate::settings::atomic_write(path, bytes)
+                },
+            );
+            assert!(result.unwrap_err().to_string().contains("config.toml"));
+            assert_eq!(read_optional_bytes(&auth_path).unwrap(),
+                concurrent.or(previous).map(|contents| contents.as_bytes().to_vec()));
+            assert_eq!(std::fs::read_to_string(&config_path).unwrap(), previous_config);
+        }
+    }
+
+    #[test]
+    fn concurrent_config_change_is_not_overwritten_and_auth_is_recovered() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let auth_path = temp.path().join("auth.json");
+        std::fs::write(&config_path, "model = \"old\"\n").unwrap();
+        let result = write_codex_live_atomic_with(
+            temp.path(), Some("model = \"ours\"\n"), Some(b"{}"),
+            |path, bytes| {
+                crate::settings::atomic_write(path, bytes)?;
+                if path == auth_path {
+                    std::fs::write(&config_path, "model = \"external\"\n")?;
+                }
+                Ok(())
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("config.toml"));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "model = \"external\"\n");
+        assert!(!auth_path.exists());
+    }
+
+    #[test]
     fn managed_session_provider_follows_effective_transport_without_selecting_it() {
         let mut doc = parse_toml_document(
             r#"
@@ -7952,6 +8070,24 @@ command = \"pwsh -File end.ps1\"
             model, "\"gpt-5.6-luna-max\"",
             "未归档目标任务的模型应优先于 model_list 第一条"
         );
+    }
+
+    #[test]
+    fn gateway_goal_alignment_does_not_restore_an_unlisted_group() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "{}\n").unwrap();
+        write_goal_thread_fixture_db(
+            temp.path(),
+            &[("t-goal", "group/fast")],
+            &[("t-goal", "2026-09-21T02:00:00Z", None)],
+        );
+        let mut profile = goal_drift_test_profile();
+        profile.id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.to_string();
+        assert_eq!(apply_and_read_model(temp.path(), &profile), "\"astra-6-high\"");
+        assert!(!align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+        profile.model_list.push_str("\ngroup/fast[1M]");
+        assert!(align_live_config_model_with_goal_thread(temp.path(), &profile).unwrap());
+        assert_eq!(apply_and_read_model_config_line(temp.path()), "\"group/fast\"");
     }
 
     /// 对照组：没有未归档目标任务时保持旧行为（model_list 第一条），

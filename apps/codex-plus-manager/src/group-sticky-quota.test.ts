@@ -45,10 +45,10 @@ test("通配符与后端一致：* 匹配任意字符（含 /），不区分大�
   assert.equal(memberLabel(payload(), "*free"), "*free", "通配符成员原样显示");
 });
 
-test("额度：取最紧的窗口，过了重置时间按满额；窗口名", () => {
+test("额度：取最紧的窗口，过了重置时间不能假定恢复；窗口名", () => {
   const quota = { windows: [{ windowMinutes: 300, usedPercent: 30, resetsAtMs: 1000 }, { windowMinutes: 10080, usedPercent: 85, resetsAtMs: 5000 }], updatedAtMs: 0 };
   assert.equal(Math.round(quotaRemaining(quota, 0) * 100), 15);
-  assert.equal(Math.round(quotaRemaining(quota, 6000) * 100), 100);
+  assert.equal(Math.round(quotaRemaining(quota, 6000) * 100), 0);
   assert.deepEqual(quotaWindowLabel(quota.windows[0]), { text: "5 小时", args: [] });
   assert.deepEqual(quotaWindowLabel({ windowMinutes: null, usedPercent: 0, resetsAtMs: null }), { text: "本月", args: [] });
   assert.deepEqual(quotaWindowLabel({ windowMinutes: 2880, usedPercent: 0, resetsAtMs: null }), { text: "{0} 天", args: [2] });
@@ -72,6 +72,6 @@ test("模型组编辑器：五种模式、三种会话固定、通配符成员�
   assert.match(page, /patternMatches\(payload, member\.model\)/);
   const providers = read("GatewayProviders.tsx");
   assert.match(providers, /"refresh_gateway_quota", \{ id: entry\.id \}/);
-  assert.match(providers, /<QuotaBadge quota=\{entry\.quota\} \/>/);
+  assert.match(providers, /<QuotaWindows compact/);
   assert.match(read("../src-tauri/src/lib.rs"), /gateway_commands::refresh_gateway_quota,/);
 });

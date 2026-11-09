@@ -183,3 +183,16 @@ test("Windows long-path prefixes are stripped from project headings and grouping
   assert.equal(groups[0].path, "E:/Work/new-chat");
   assert.equal(groups[0].label, "new-chat");
 });
+
+test("盘符大小写统一成大写，c:\\ 与 C:\\ 归为同一个项目（#2937）", () => {
+  assert.equal(normalizeProjectPath("c:\\Users\\me\\.copilot\\chats\\1"), "C:/Users/me/.copilot/chats/1");
+  assert.equal(normalizeProjectPath("c:/Users/me/app/"), "C:/Users/me/app");
+  assert.equal(normalizeProjectPath("\\\\?\\d:\\Work"), "D:/Work");
+  assert.equal(normalizeProjectPath("e:"), "E:");
+  // 只动盘符；路径其余部分以及非盘符开头的路径保持原样。
+  assert.equal(normalizeProjectPath("/users/me/app"), "/users/me/app");
+  assert.equal(normalizeProjectPath("ab:/x"), "ab:/x");
+  const groups = sessionGroups([session("claude", "c:\\Work\\app"), session("codex", "C:\\Work\\app")], "project");
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].path, "C:/Work/app");
+});

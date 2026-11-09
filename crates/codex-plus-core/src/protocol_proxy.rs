@@ -1860,6 +1860,8 @@ pub struct UpstreamProxyResponse {
     pub content_type: String,
     pub is_stream: bool,
     pub wire_api: UpstreamWireApi,
+    /// 仅反映最后一次真实上游响应是否带有 x-reasoning-included。
+    pub upstream_reasoning_included: bool,
     /// 仅标记需要代理重组的合成摘要兼容路径。
     pub compaction: bool,
     /// 原生上游已返回恰好一个 compaction 项或完整失败流时为真，
@@ -2006,6 +2008,12 @@ impl UpstreamProxyResponse {
     pub fn take_response(&mut self) -> anyhow::Result<reqwest::Response> {
         self.response.take().context("缺少上游响应")
     }
+}
+
+fn response_includes_upstream_reasoning(response: &reqwest::Response) -> bool {
+    response.headers().contains_key("x-reasoning-included")
+        && response.headers().get("x-codexplus-compaction-usage")
+            .is_none_or(|value| value != "reported")
 }
 
 pub fn upstream_header_timeout() -> Duration {
@@ -3061,6 +3069,7 @@ fn native_compaction_unsupported_result(
             content_type: "application/json".to_string(),
             is_stream: false,
             wire_api: UpstreamWireApi::Responses,
+            upstream_reasoning_included: false,
             compaction: false,
             native_compaction_passthrough: false,
             buffered_body: Some(serde_json::to_vec(&body).unwrap_or_default()),
@@ -3578,6 +3587,7 @@ fn extension_rejected_response(reason: &str) -> anyhow::Result<UpstreamProxyResp
         content_type: "application/json".to_string(),
         is_stream: false,
         wire_api: UpstreamWireApi::Responses,
+        upstream_reasoning_included: false,
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: Some(serde_json::to_vec(&json!({
@@ -3642,6 +3652,7 @@ async fn open_responses_proxy_request_once(
                 content_type: "application/json".to_string(),
                 is_stream: false,
                 wire_api: UpstreamWireApi::Responses,
+                upstream_reasoning_included: false,
                 compaction: false,
                 native_compaction_passthrough: false,
                 buffered_body: Some(serde_json::to_vec(&json!({
@@ -4327,6 +4338,8 @@ async fn open_responses_proxy_request_once(
                 .and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
         }
 
+        let mut upstream_reasoning_included = wire_api == UpstreamWireApi::Responses
+            && response_includes_upstream_reasoning(&upstream);
         if legacy_native_compaction {
             let body = read_limited_upstream_body(&mut upstream, MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES).await?;
             let stream_response = response_body_is_stream(&content_type, &body);
@@ -4349,6 +4362,7 @@ async fn open_responses_proxy_request_once(
             return Ok(UpstreamProxyResponse {
                 status_code: code, content_type: response_type, is_stream: valid && stream_response,
                 wire_api, compaction: false, native_compaction_passthrough: valid && success,
+                upstream_reasoning_included,
                 buffered_body: Some(body), exec_adapted: false, exec_outcome: None, response: None,
                 stream_prefix: Vec::new(),
                 request_trace: None,
@@ -4388,6 +4402,7 @@ async fn open_responses_proxy_request_once(
                     wire_api,
                     compaction: false,
                     native_compaction_passthrough: stream_response,
+                    upstream_reasoning_included,
                     buffered_body: Some(probed),
                     stream_prefix: Vec::new(),
                     request_trace: None,
@@ -4412,6 +4427,7 @@ async fn open_responses_proxy_request_once(
                             wire_api,
                             compaction: false,
                             native_compaction_passthrough: true,
+                            upstream_reasoning_included,
                             buffered_body: Some(probed),
                             stream_prefix: Vec::new(),
                             request_trace: None,
@@ -4431,6 +4447,7 @@ async fn open_responses_proxy_request_once(
                             wire_api,
                             compaction: false,
                             native_compaction_passthrough: true,
+                            upstream_reasoning_included,
                             buffered_body: Some(incomplete_compaction_stream(&probed)),
                             stream_prefix: Vec::new(),
                             request_trace: None,
@@ -4458,6 +4475,7 @@ async fn open_responses_proxy_request_once(
                         wire_api,
                         compaction: false,
                         native_compaction_passthrough: true,
+                        upstream_reasoning_included,
                         buffered_body: Some(probed),
                         stream_prefix: Vec::new(),
                         request_trace: None,
@@ -4474,6 +4492,7 @@ async fn open_responses_proxy_request_once(
                         wire_api,
                         compaction: false,
                         native_compaction_passthrough: true,
+                        upstream_reasoning_included,
                         buffered_body: Some(sse),
                         stream_prefix: Vec::new(),
                         request_trace: None,
@@ -4497,6 +4516,7 @@ async fn open_responses_proxy_request_once(
                     wire_api,
                     compaction: false,
                     native_compaction_passthrough: false,
+                    upstream_reasoning_included,
                     buffered_body: Some(probed),
                     stream_prefix: Vec::new(),
                     request_trace: None,
@@ -4585,6 +4605,8 @@ async fn open_responses_proxy_request_once(
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+            upstream_reasoning_included = wire_api == UpstreamWireApi::Responses
+                && response_includes_upstream_reasoning(&upstream);
         }
 
         // 内置兼容回退也可能重建请求体；最终返回的 trace 绑定最后一次发送。
@@ -4812,6 +4834,7 @@ async fn open_responses_proxy_request_once(
                         wire_api,
                         compaction: false,
                         native_compaction_passthrough: false,
+                        upstream_reasoning_included,
                         buffered_body: Some(body),
                         stream_prefix: Vec::new(),
                         request_trace: Some(request_trace),
@@ -4991,6 +5014,7 @@ async fn open_responses_proxy_request_once(
             content_type,
             wire_api,
             compaction: is_compaction_request,
+            upstream_reasoning_included,
             native_compaction_passthrough: false,
             buffered_body: None,
             stream_prefix,
@@ -5360,6 +5384,7 @@ pub async fn open_models_proxy_request(
         is_stream: false,
         content_type,
         wire_api: UpstreamWireApi::Responses,
+        upstream_reasoning_included: false,
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
@@ -5419,6 +5444,7 @@ pub async fn open_audio_transcriptions_proxy_request(
         is_stream: false,
         content_type,
         wire_api: UpstreamWireApi::AudioTranscriptions,
+        upstream_reasoning_included: false,
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
@@ -5597,6 +5623,7 @@ async fn open_image_request_with_relay(
         is_stream: false,
         content_type,
         wire_api,
+        upstream_reasoning_included: false,
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
@@ -5680,6 +5707,7 @@ async fn open_official_image_proxy_request(
         is_stream: false,
         content_type,
         wire_api,
+        upstream_reasoning_included: false,
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
@@ -5766,6 +5794,7 @@ pub async fn open_chat_completions_proxy_request(
         is_stream: is_stream || content_type.contains("text/event-stream"),
         content_type,
         wire_api: UpstreamWireApi::ChatCompletions,
+        upstream_reasoning_included: false,
         compaction: false,
         native_compaction_passthrough: false,
         buffered_body: None,
@@ -6054,13 +6083,15 @@ async fn upstream_request_parts(
         // `web_search_call` 历史时必须声明 web_search 工具，否则流式返回
         // `response protection is unavailable`。Codex 对自定义 provider 走本地压缩
         // （`tools` 为空），所以官方成员的每个压缩请求都会被拒。
-        // 这里只对「完全没有声明工具」的官方登录请求自动补齐：补完 tool_choice 会被
-        // 置为 none（模型不能真正调用搜索），带工具的普通轮次保持原样。
+        // 没有声明工具或前一跳已恢复缓存工具的本地摘要都需补齐声明。
+        // 后者必须已有 none 和明确摘要身份，带工具的普通轮次保持原样。
         // 拓展用 gateway.replaces 关掉 builtin:official-shaping 时不自动补，由拓展在 upstream 段整理。
         let official_auto_repair = official_base.is_some()
             && !legacy_compact_path
             && !crate::extension_gateway::builtin_replaced("builtin:official-shaping")
-            && request_declares_no_tools(&body);
+            && (request_declares_no_tools(&body)
+                || (body.get("tool_choice").and_then(Value::as_str) == Some("none")
+                    && local_compaction::is_summary_request(&body, COMPACTION_SUMMARY_INSTRUCTION)));
         let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
         if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
         {
@@ -10829,9 +10860,11 @@ const IMAGE_DATA_URL_PREFIX: &str = "data:image/";
 /// 这些上游只接受**纯 base64**，不认 `data:image/png;base64,` 前缀，收到就 400
 /// （issue #2031：GLM-5.3-Flash 的本地图片被拒）。只对这类供应商剥离前缀，
 /// 标准 data URL 上游（OpenAI 等）保持原样，免得把能用的改坏。
+/// 带命名空间的模型名（如 NVIDIA 的 `z-ai/glm-5.3-flash`、OpenRouter 的 `*/glm-*`）
+/// 是聚合平台的标准 OpenAI 兼容接口，`image_url.url` 必须保留 data URL（#2991）。
 fn upstream_needs_bare_base64(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.starts_with("glm-") || model.starts_with("zhipu") || model.contains("/glm-")
+    model.starts_with("glm-") || model.starts_with("zhipu")
 }
 
 /// 就地改写 messages 里 `image_url` 的 url：对需要纯 base64 的模型剥掉 data URL 前缀。

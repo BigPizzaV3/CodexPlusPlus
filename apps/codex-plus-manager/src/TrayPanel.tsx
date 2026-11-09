@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   Activity,
+  AlertTriangle,
   ChartColumn,
   Radio,
   Check,
@@ -43,11 +44,13 @@ import {
   agentModels,
   agentName,
   bindingFromDraft,
+  disabledGroup,
   costText,
   draftFromBinding,
   formatMoney,
   formatTokens,
   modelDisplay,
+  groupDisplayName,
   prettyModelName,
   quotaWindowLabel,
   relativeTime,
@@ -215,7 +218,7 @@ export function TrayPanel() {
     if (which === "home") jobs.push(loadSettings(), loadUsage("today"));
     if (which === "usage") jobs.push(loadUsage(rangeRef.current), loadGateway());
     if (which === "gateway") jobs.push(loadGateway(), loadLogs());
-    if (which === "flow") jobs.push(loadUsage("today"));
+    if (which === "flow") jobs.push(loadUsage("today"), loadGateway());
     await Promise.all(jobs);
   };
 
@@ -401,7 +404,7 @@ export function TrayPanel() {
           />
         ) : null}
         {tab === "gateway" ? <GatewayTab logs={logs} onOpenRoute={openRoute} onPayload={setPayload} payload={payload} /> : null}
-        {tab === "flow" ? <FlowTab onOpenRoute={openRoute} today={usage.today ?? null} /> : null}
+        {tab === "flow" ? <FlowTab onOpenRoute={openRoute} payload={payload} today={usage.today ?? null} /> : null}
       </div>
 
       {flash ? (
@@ -638,13 +641,16 @@ function UsageTab({
       {glance && glance.topModels.length ? (
         <Section title={t("用得最多的模型")}>
           <div className="tp-card tp-bars">
-            {glance.topModels.map((model) => (
-              <div className="tp-bar-row" key={model.key}>
-                <span className="tp-bar-label" title={model.label}>{prettyModelName(model.label)}</span>
-                <span className="tp-bar-track"><i style={{ width: `${Math.max(3, Math.round(model.share * 100))}%` }} /></span>
-                <span className="tp-bar-value">{formatTokens(model.tokens)}</span>
-              </div>
-            ))}
+            {glance.topModels.map((model) => {
+              const name = groupDisplayName(payload, model.key) ?? prettyModelName(model.label);
+              return (
+                <div className="tp-bar-row" key={model.key}>
+                  <span className="tp-bar-label" title={groupDisplayName(payload, model.key) ?? model.label}>{name}</span>
+                  <span className="tp-bar-track"><i style={{ width: `${Math.max(3, Math.round(model.share * 100))}%` }} /></span>
+                  <span className="tp-bar-value">{formatTokens(model.tokens)}</span>
+                </div>
+              );
+            })}
           </div>
         </Section>
       ) : null}
@@ -783,9 +789,9 @@ function GatewayTab({
             const tokens = entry.usage ? `${formatTokens(entry.usage.inputTokens)} → ${formatTokens(entry.usage.outputTokens)}` : "";
             return (
               <div className="tp-log" key={entry.id}>
-                <img alt="" src={AGENT_ICONS[agent === "codex" ? "codexApp" : agent] ?? AGENT_ICONS.codexApp} title={agentName(agent)} />
+                <img alt="" data-agent-icon={agent} src={AGENT_ICONS[agent === "codex" ? "codexApp" : agent] ?? AGENT_ICONS.codexApp} title={agentName(agent)} />
                 <div className="tp-log-main">
-                  <strong>{entry.upstreamModel || entry.model || "—"}</strong>
+                  <strong>{groupDisplayName(payload, entry.upstreamModel || entry.model || "") ?? (entry.upstreamModel || entry.model || "—")}</strong>
                   <small>{[maskAccountName(entry.relayName ?? ""), tokens, entry.durationMs ? `${(entry.durationMs / 1000).toFixed(1)}s` : ""].filter(Boolean).join(" · ")}</small>
                 </div>
                 <span className="tp-log-side">
@@ -809,7 +815,7 @@ function GatewayTab({
  * 上排 Agent、中间 Codex++、下排供应商；每条真实请求一颗光点，发出时往下走到供应商，
  * 回答完再走回来（成功绿、失败红），进行中的连线一直流动。下面是最近的请求。
  */
-function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
+function FlowTab({ today, payload, onOpenRoute }: { today: UsageSummary | null; payload: GatewayPayload | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
   const focus = useAgentFocus();
   const { entries, loaded } = useRequestFlow(FLOW_REFRESH_MS);
   const visible = entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
@@ -869,7 +875,7 @@ function FlowTab({ today, onOpenRoute }: { today: UsageSummary | null; onOpenRou
 
       <Section aside={<LinkButton label={t("请求日志")} onClick={() => void onOpenRoute("requestLog")} />} title={t("实时请求")}>
         <div className="tp-card tp-list tp-flow-list">
-          {visible.slice(0, FLOW_LIST_LIMIT).map((entry) => <FlowRequestRow entry={entry} key={entry.id} now={now} />)}
+          {visible.slice(0, FLOW_LIST_LIMIT).map((entry) => <FlowRequestRow entry={entry} payload={payload} key={entry.id} now={now} />)}
           {!loaded ? <div className="tp-empty">{t("读取中…")}</div> : null}
           {loaded && visible.length === 0 ? <div className="tp-empty">{t("还没有经过 Codex++ 的请求。在接入的 Agent 里发一条消息，这里会实时显示。")}</div> : null}
         </div>
@@ -893,7 +899,14 @@ function PanelAgentRow({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
-  const display = modelDisplay(payload, draft.model, draft.poolExclude);
+  const inactive = disabledGroup(payload, draft.model);
+  const effectiveModel = agent.enabled && inactive ? agent.defaultModel : draft.model;
+  const display = inactive && agent.enabled && !effectiveModel
+    ? { title: "", sub: "", group: false }
+    : modelDisplay(payload, effectiveModel, draft.poolExclude);
+  const inactiveHint = inactive && agent.enabled
+    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);
   const head = (
@@ -916,13 +929,14 @@ function PanelAgentRow({
     <div className="tp-agent">
       <AgentIcon agent={agent.agent} className="gw-agent-icon" />
       <strong>{agent.name}</strong>
-      <button aria-expanded={open} className="gw-picker-button tp-agent-picker" onClick={() => setOpen(!open)} ref={buttonRef} type="button">
+      <button aria-expanded={open} className="gw-picker-button tp-agent-picker" onClick={() => setOpen(!open)} ref={buttonRef} title={inactiveHint} type="button">
         {!agent.enabled ? <AgentIcon agent={agent.agent} className="gw-picker-agent" /> : <ModelViewGlyph view={display} />}
-        <span>{agent.enabled ? display.title : own ?? t("默认")}</span>
+        <span>{agent.enabled ? display.title || t("未设置") : own ?? t("默认")}</span>
         {agent.enabled ? <AutoTag view={display} /> : null}
+        {inactiveHint ? <AlertTriangle aria-label={inactiveHint} className="h-3.5 w-3.5" role="img" /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
-      <Floating anchorRef={buttonRef} className="gw-model-popover" onClose={() => setOpen(false)} open={open} width={340}>
+      <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => setOpen(false)} open={open} width={340}>
         <ModelList
           exclude={draft.poolExclude}
           head={head}
@@ -938,7 +952,7 @@ function PanelAgentRow({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
-          selectedModel={agent.enabled ? draft.model || agentModels(payload, draft.poolExclude)[0] || "" : ""}
+          selectedModel={agent.enabled ? effectiveModel || agentModels(payload, draft.poolExclude)[0] || "" : ""}
         />
       </Floating>
       {disconnectTarget ? (

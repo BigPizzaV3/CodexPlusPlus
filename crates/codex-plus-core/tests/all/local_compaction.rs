@@ -122,16 +122,35 @@ async fn capture_requests(
     listener: &tokio::net::TcpListener,
     replies: Vec<(u16, &'static str, String)>,
 ) -> Vec<Value> {
+    capture_requests_with_reasoning_headers(
+        listener,
+        replies
+            .into_iter()
+            .map(|(status, content_type, body)| (status, content_type, body, false))
+            .collect(),
+    )
+    .await
+}
+
+async fn capture_requests_with_reasoning_headers(
+    listener: &tokio::net::TcpListener,
+    replies: Vec<(u16, &'static str, String, bool)>,
+) -> Vec<Value> {
     let mut requests = Vec::new();
-    for (status, content_type, reply) in replies {
+    for (status, content_type, reply, reasoning_included) in replies {
         let (mut stream, _) =
             tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
                 .await
                 .unwrap()
                 .unwrap();
         requests.push(read_request(&mut stream).await);
+        let marker = if reasoning_included {
+            "X-Reasoning-Included: false\r\n"
+        } else {
+            ""
+        };
         let headers = format!(
-            "HTTP/1.1 {status} Result\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {status} Result\r\nContent-Type: {content_type}\r\n{marker}Content-Length: {}\r\nConnection: close\r\n\r\n",
             reply.len(),
         );
         stream.write_all(headers.as_bytes()).await.unwrap();
@@ -198,6 +217,142 @@ async fn local_compaction_preserves_tools_without_enabling_calls_for_json_and_ss
                 assert_eq!(requests[1]["client_metadata"], compact["client_metadata"]);
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn upstream_reasoning_marker_tracks_actual_headers_for_plain_buffered_and_native_bodies() {
+    for marked in [false, true] {
+        for kind in [
+            "json", "stream", "buffered", "local", "native-json", "native-stream",
+            "native-json-as-stream", "legacy-native",
+        ] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let mut settings = settings(
+                format!("http://{}/v1", listener.local_addr().unwrap()),
+                RelayProtocol::Responses,
+                kind == "local",
+            );
+            let streaming = matches!(
+                kind, "stream" | "buffered" | "local" | "native-stream" | "native-json-as-stream"
+            );
+            settings.protocol_proxy_auto_retry = kind == "buffered";
+            settings.protocol_proxy_auto_retry_mode = "buffered".into();
+            let native = kind.starts_with("native") || kind == "legacy-native";
+            let mut request = normal(streaming);
+            let path = if kind == "legacy-native" {
+                "/v1/responses/compact"
+            } else {
+                "/v1/responses"
+            };
+            if native {
+                request["input"] = json!([{"type":"compaction_trigger"}]);
+            } else if kind == "local" {
+                request = compact(&request);
+            }
+            let response_stream = streaming && kind != "native-json-as-stream";
+            let response = if native {
+                let response = json!({
+                    "id":"resp_native","status":"completed",
+                    "output":[{"id":"cmp_native","type":"compaction","encrypted_content":"opaque"}]
+                });
+                if response_stream {
+                    (200, "text/event-stream", format!(
+                        "data: {}\n\ndata: {}\n\n",
+                        json!({"type":"response.output_item.done","item":response["output"][0]}),
+                        json!({"type":"response.completed","response":response})
+                    ))
+                } else {
+                    (200, "application/json", response.to_string())
+                }
+            } else {
+                success(RelayProtocol::Responses, response_stream)
+            };
+            let expected_body = response.2.clone();
+            let server = tokio::spawn(async move {
+                capture_requests_with_reasoning_headers(
+                    &listener,
+                    vec![(response.0, response.1, response.2, marked)],
+                )
+                .await
+            });
+            let mut result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+                &request.to_string(), settings, path, None, ProxySessionHeaders::default(),
+            ).await.unwrap();
+            assert_eq!(result.status_code, 200, "{kind}");
+            assert_eq!(result.upstream_reasoning_included, marked, "{kind}");
+            if kind == "buffered" || native {
+                assert!(result.buffered_body.is_some(), "{kind}");
+            }
+            let body = result.read_body().await.unwrap();
+            if kind == "native-json-as-stream" {
+                assert!(String::from_utf8_lossy(&body).contains("opaque"));
+            } else {
+                assert_eq!(body, expected_body.as_bytes(), "{kind}");
+            }
+            assert_eq!(server.await.unwrap().len(), 1, "{kind}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn upstream_reasoning_marker_uses_final_retry_headers_not_the_failed_attempt() {
+    for mode in ["streaming", "buffered"] {
+        for final_marked in [false, true] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let mut settings = settings(
+                format!("http://{}/v1", listener.local_addr().unwrap()),
+                RelayProtocol::Responses,
+                false,
+            );
+            settings.protocol_proxy_auto_retry = true;
+            settings.protocol_proxy_auto_retry_mode = mode.into();
+            settings.protocol_proxy_auto_retry_interval_seconds = 0;
+            settings.protocol_proxy_auto_retry_max_attempts = 1;
+            let reply = success(RelayProtocol::Responses, true);
+            let expected = reply.2.clone();
+            let server = tokio::spawn(async move {
+                capture_requests_with_reasoning_headers(&listener, vec![
+                    (200, "text/event-stream",
+                        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_overloaded\",\"message\":\"overloaded\"}}}\n\n".into(),
+                        !final_marked),
+                    (reply.0, reply.1, reply.2, final_marked),
+                ]).await
+            });
+            let mut result = send(&normal(true), &settings, None).await;
+            assert_eq!(result.upstream_reasoning_included, final_marked, "{mode}");
+            assert_eq!(result.read_body().await.unwrap(), expected.as_bytes());
+            assert_eq!(server.await.unwrap().len(), 2);
+        }
+    }
+}
+
+#[tokio::test]
+async fn upstream_reasoning_marker_uses_native_fallback_headers_not_the_rejected_probe() {
+    for final_marked in [false, true] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let settings = settings(
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+            RelayProtocol::Responses,
+            false,
+        );
+        let reply = success(RelayProtocol::Responses, false);
+        let expected = reply.2.clone();
+        let server = tokio::spawn(async move {
+            capture_requests_with_reasoning_headers(&listener, vec![
+                (400, "application/json",
+                    r#"{"error":{"message":"unsupported compaction_trigger item"}}"#.into(),
+                    !final_marked),
+                (reply.0, reply.1, reply.2, final_marked),
+            ]).await
+        });
+        let mut request = normal(false);
+        request["input"].as_array_mut().unwrap().push(json!({"type":"compaction_trigger"}));
+        let mut result = send(&request, &settings, None).await;
+        assert!(result.compaction);
+        assert_eq!(result.upstream_reasoning_included, final_marked);
+        assert_eq!(result.read_body().await.unwrap(), expected.as_bytes());
+        assert_eq!(server.await.unwrap().len(), 2);
     }
 }
 

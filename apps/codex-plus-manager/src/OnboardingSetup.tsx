@@ -7,7 +7,7 @@ import { AgentGlyph } from "./HubOverview";
 import { AgentConnectDialog } from "./GatewayAgents";
 import { ProviderAdder } from "./GatewayProviders";
 import { ProviderTestDialog } from "./ProviderTestDialog";
-import { agentName, maskAccountName, type GatewayPayload, type GatewayResult } from "./gateway-model";
+import { agentName, groupDisplayName, maskAccountName, type GatewayPayload, type GatewayResult } from "./gateway-model";
 import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } from "./gateway-store";
 import { makeRun, type Notify } from "./gateway-ui";
 import { agentVisible, type AgentFocus } from "./agent-focus-model";
@@ -273,7 +273,7 @@ export function OnboardingSetup({
                 </>
               ) : (
                 <>
-                  <p role={loadError ? "alert" : undefined}>{loadError || (gateway.issue ? bindingIssue[gateway.issue] : tf("{0} 已接入 · {1}", [agentName(agentId), gateway.model]))}</p>
+                  <p role={loadError ? "alert" : undefined}>{loadError || (gateway.issue ? bindingIssue[gateway.issue] : tf("{0} 已接入 · {1}", [agentName(agentId), groupDisplayName(payload, gateway.model) ?? gateway.model]))}</p>
                   <div className="setup-actions">
                     {loadError ? <Button onClick={() => { setLoading(true); void refresh(); }} size="sm" variant="secondary"><RefreshCw size={13} />{t("重试")}</Button> : (
                       <>

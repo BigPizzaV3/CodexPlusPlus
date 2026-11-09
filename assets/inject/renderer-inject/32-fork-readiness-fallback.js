@@ -75,3 +75,47 @@
     });
     return codexForkReadinessState.installing;
   }
+
+  // 启动时没联网（#2898）：Statsig 客户端 Ready 但一份远程数据都没有（NoValues），而且整个会话不再重拉。
+  // 原生只在「有数据」时才把执行配置（execution assignments）发布给宿主，于是
+  // readPermissionRefreshEnabled() 一直是 null，分支对话在发 thread/fork 之前就判 not-ready /
+  // execution-config-loading——上面的放置门控兜底管不到这一处，启动时连着网才正常。
+  //
+  // 原生的 readPermissionRefreshEnabled 闭包在设置对象里，拿不到；改从源头补：没有账号且 Statsig 完全没数据时，
+  // 补一份空数据（见 33-offline-auto-review.js 的 codexPlusOfflineStatsigPatch）。所有闸门仍是「没下发 = 关」，
+  // 和没数据时读到的值一样，只是原生能据此发布执行配置（permissionRefresh = false，即旧版权限选择方式），
+  // 等同于启动时连着网的纯 API Key 会话。只写内存，拿到真实数据就不碰，登录用户保持原生行为。
+  function codexForkStatsigFallbackActive() {
+    if (typeof codexPlusBackendSettingsLoaded === "undefined" || codexPlusBackendSettingsLoaded !== true) return false;
+    return !(typeof codexPlusBackendSettings !== "undefined" && codexPlusBackendSettings?.enhancementsEnabled === false);
+  }
+
+  function codexForkStatsigWithoutAccount(client) {
+    try {
+      const user = client.getContext()?.user;
+      return user != null && (user.customIDs?.account_id ?? null) == null;
+    } catch {
+      return false;
+    }
+  }
+
+  function codexForkStatsigFallbackTick() {
+    if (!codexForkStatsigFallbackActive()) return;
+    for (const client of codexPlusOfflineStatsigClients()) {
+      try {
+        if (!codexForkStatsigWithoutAccount(client) || !codexPlusOfflineStatsigPatch(client)) continue;
+        if (!codexForkReadinessState.statsigReported) {
+          codexForkReadinessState.statsigReported = true;
+          try { sendCodexPlusDiagnostic("fork_statsig_offline_fallback", {}); } catch {}
+        }
+      } catch {}
+    }
+  }
+
+  function installCodexForkStatsigFallback() {
+    // 重新注入会得到新作用域：摘掉旧脚本留下的定时器，只留一个。
+    window.clearInterval(codexForkReadinessState.statsigTimer);
+    codexForkStatsigFallbackTick();
+    // Statsig 可能晚于注入才 Ready、后端设置也是异步读到的：低频复查，补过之后每轮都是空操作。
+    codexForkReadinessState.statsigTimer = window.setInterval(codexForkStatsigFallbackTick, 3000);
+  }

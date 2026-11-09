@@ -70,6 +70,9 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    /// 供应商引用的网关/账号凭证；留空时沿用供应商自己的 auth 快照。
+    #[serde(rename = "officialAccountRef", default, skip_serializing_if = "String::is_empty")]
+    pub official_account_ref: String,
     #[serde(rename = "noAuth", default)]
     pub no_auth: bool,
     #[serde(rename = "hideOfficialUsageAlert", default)]
@@ -378,6 +381,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
@@ -1063,6 +1067,16 @@ impl ClaudeBashTimeoutSettings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum NativeAuthSelection {
+    None,
+    Account {
+        #[serde(rename = "accountRef")]
+        account_ref: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     /// 读取快照的版本，只用于条件保存，不写入 settings.json。
@@ -1100,6 +1114,9 @@ pub struct BackendSettings {
     /// 默认关闭；用户手动改过模型的会话不受影响。
     #[serde(rename = "threadModelFollowSwitchEnabled", default)]
     pub thread_model_follow_switch_enabled: bool,
+    /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。
+    #[serde(rename = "nativeAuthSelection", default)]
+    pub native_auth_selection: Option<NativeAuthSelection>,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -1227,6 +1244,13 @@ pub struct BackendSettings {
     /// 自动审批入口被隐藏；审批请求本身走当前供应商。默认关。
     #[serde(rename = "codexAppOfflineAutoReview", default)]
     pub codex_app_offline_auto_review: bool,
+    /// Statsig 界面增强：强制几项远程开关（隐藏升级/额度推销、放宽网络与流式超时、补开记忆）。
+    /// 只改本机界面与超时参数，服务端能力不变。默认关。
+    #[serde(rename = "codexAppStatsigOverrides", default)]
+    pub codex_app_statsig_overrides: bool,
+    /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
+    #[serde(rename = "codexAppReportedUsageCompaction", default)]
+    pub codex_app_reported_usage_compaction: bool,
     /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
     /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
     #[serde(rename = "managerAgentFocus", default)]
@@ -1493,6 +1517,7 @@ impl Default for BackendSettings {
             provider_sync_enabled: false,
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
+            native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
@@ -1535,6 +1560,8 @@ impl Default for BackendSettings {
             codex_app_native_predictions: false,
             codex_app_third_party_reasoning_collapse: false,
             codex_app_offline_auto_review: false,
+            codex_app_statsig_overrides: false,
+            codex_app_reported_usage_compaction: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
@@ -1643,6 +1670,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                official_account_ref: String::new(),
                 no_auth: false,
                 hide_official_usage_alert: false,
                 test_model: String::new(),
@@ -1717,6 +1745,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
             test_model: String::new(),
@@ -2980,6 +3009,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativePredictions");
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
+    merge_bool_setting(target, source, "codexAppStatsigOverrides");
+    merge_bool_setting(target, source, "codexAppReportedUsageCompaction");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
     {
@@ -3474,6 +3505,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "protocol",
     "relayMode",
     "officialMixApiKey",
+    "officialAccountRef",
     "noAuth",
     "hideOfficialUsageAlert",
     "testModel",

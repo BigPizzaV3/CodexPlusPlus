@@ -156,6 +156,7 @@ fn build_auto_group(
     Some(GatewayGroup {
         id: format!("{AUTO_GROUP_PREFIX}{key}"),
         name: model.to_string(),
+        disabled: false,
         mode: settings.mode,
         sticky: settings.sticky,
         members,
@@ -215,7 +216,7 @@ fn unlisted_members(gateway: &GatewaySettings) -> Vec<String> {
         (!model.is_empty() && !is_pattern(model) && !model.starts_with(GROUP_MODEL_PREFIX))
             .then(|| model.to_ascii_lowercase())
     };
-    for group in gateway.groups.iter().filter(|group| group.hide_members) {
+    for group in gateway.groups.iter().filter(|group| !group.disabled && group.hide_members) {
         hidden.extend(group.members.iter().filter_map(concrete));
     }
     if gateway.auto_models {
@@ -235,6 +236,11 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
     for relay in binding_pool_relays(gateway, binding) {
         // 生图模型不能聊天，不进 Agent 的模型列表（在「网关设置」的生图模型里选）。
         for model in chat_models(relay) {
+            let model = if is_disabled_group_model(gateway, &model) {
+                format!("{}/{model}", relay.id)
+            } else {
+                model
+            };
             if !unlisted.contains(&model.to_ascii_lowercase())
                 && !models
                     .iter()
@@ -245,7 +251,7 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
         }
     }
     for group in &gateway.groups {
-        if !group.members.is_empty() {
+        if !group.disabled && !group.members.is_empty() {
             models.push(group.model_id());
         }
     }
@@ -306,6 +312,7 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
         .chain(binding.declared_models())
     {
         if !model.is_empty()
+            && !is_disabled_group_model(gateway, &model)
             && !models
                 .iter()
                 .any(|known| known.eq_ignore_ascii_case(&model))
@@ -339,6 +346,13 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
     for relay in &relays {
         let mut block = Vec::new();
         for model in chat_models(relay) {
+            if is_disabled_group_model(gateway, &model) {
+                let pinned = format!("{}/{model}", relay.id);
+                if !unlisted.contains(&pinned.to_ascii_lowercase()) && fresh(&pinned) {
+                    block.push(pinned);
+                }
+                continue;
+            }
             if serving_count(&relays, &model) > 1 {
                 let pinned = format!("{}/{model}", relay.id);
                 if !unlisted.contains(&pinned.to_ascii_lowercase()) && fresh(&pinned) {
@@ -369,7 +383,7 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
         gateway
             .groups
             .iter()
-            .filter(|group| !group.members.is_empty())
+            .filter(|group| !group.disabled && !group.members.is_empty())
             .map(GatewayGroup::model_id)
             .collect(),
     );
@@ -497,17 +511,32 @@ pub(crate) fn codex_model_members(
 pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) -> String {
     let (slug, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
     if !slug.trim().is_empty() {
+        if is_disabled_group_model(gateway, &slug) {
+            return pool_models(gateway, binding)
+                .into_iter()
+                .find(|model| !expand_model(gateway, binding, model, 0, &mut Vec::new(), false).is_empty())
+                .unwrap_or_default();
+        }
         return slug.trim().to_string();
     }
-    binding_pool_relays(gateway, binding)
-        .into_iter()
-        .filter_map(|relay| relay_models(relay).into_iter().next())
-        .next()
-        .unwrap_or_default()
+    let mut qualified_fallback = None;
+    for relay in binding_pool_relays(gateway, binding) {
+        for model in relay_models(relay) {
+            if is_disabled_group_model(gateway, &model) {
+                qualified_fallback.get_or_insert_with(|| format!("{}/{model}", relay.id));
+            } else {
+                return model;
+            }
+        }
+    }
+    qualified_fallback.unwrap_or_default()
 }
 
 /// 模型名是否能在池里路由：池里的模型、`group/<id>`，或 `<供应商 id>/<任意模型>`。
 pub fn model_is_routable(gateway: &GatewaySettings, binding: &AgentBinding, model: &str) -> bool {
+    if is_disabled_group_model(gateway, model) {
+        return false;
+    }
     pool_models(gateway, binding)
         .iter()
         .any(|known| known.eq_ignore_ascii_case(model))
@@ -525,7 +554,7 @@ pub fn binding_exposed_models(gateway: &GatewaySettings, binding: &AgentBinding)
         .into_iter()
         .chain(binding.declared_models())
     {
-        if !models.contains(&model) {
+        if !is_disabled_group_model(gateway, &model) && !models.contains(&model) {
             models.push(model);
         }
     }
@@ -589,6 +618,13 @@ fn claude_alias_target(
         })?;
     binding_exposed_models(gateway, binding)
         .into_iter()
+        .chain(
+            binding.declared_models().into_iter()
+                .filter(|model| is_disabled_group_model(gateway, model)),
+        )
+        .chain(
+            gateway.groups.iter().filter(|group| group.disabled).map(GatewayGroup::model_id),
+        )
         .find(|model| alias_number(model) == digits)
 }
 
@@ -685,6 +721,9 @@ fn effective_model_detailed(
         }
     }
     let (requested_slug, _) = crate::model_suffix::parse_model_suffix(requested);
+    if is_disabled_group_model(gateway, &requested_slug) {
+        return (requested_slug, false);
+    }
     let declared = binding.declared_models();
     if declared
         .iter()
@@ -826,17 +865,35 @@ pub fn member_outlives_provider(remaining: &[GatewayProvider], id: &str, member:
     declared_by_any(&relays, member)
 }
 
+/// 展示时使用当前组名；请求里的模型 ID 保持不变。
+pub fn model_display_name<'a>(gateway: &'a GatewaySettings, model: &'a str) -> &'a str {
+    group_by_model(gateway, model)
+        .map(|group| group.name.as_str())
+        .unwrap_or(model)
+}
+
 fn group_by_model<'a>(gateway: &'a GatewaySettings, model: &str) -> Option<&'a GatewayGroup> {
-    let id = model.strip_prefix(GROUP_MODEL_PREFIX)?;
+    let prefix = model.get(..GROUP_MODEL_PREFIX.len())?;
+    if !prefix.eq_ignore_ascii_case(GROUP_MODEL_PREFIX) {
+        return None;
+    }
+    let id = &model[GROUP_MODEL_PREFIX.len()..];
     gateway
         .groups
         .iter()
         .find(|group| group.id.eq_ignore_ascii_case(id))
 }
 
+/// 停用组的引用不能作为普通未知模型改写或转发。
+pub fn is_disabled_group_model(gateway: &GatewaySettings, model: &str) -> bool {
+    let (model, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    group_by_model(gateway, &model).is_some_and(|group| group.disabled)
+}
+
 /// 这个模型名走哪个组：`group/<id>` 是自建的组；多家都有的裸模型名走它的自动组（生效时）。
 fn group_for(gateway: &GatewaySettings, model: &str) -> Option<GatewayGroup> {
     group_by_model(gateway, model)
+        .filter(|group| !group.disabled)
         .cloned()
         .or_else(|| active_auto_group(gateway, model))
 }
@@ -850,6 +907,9 @@ fn expand_model(
     visiting: &mut Vec<String>,
     advance: bool,
 ) -> Vec<(RelayProfile, String)> {
+    if is_disabled_group_model(gateway, model) {
+        return Vec::new();
+    }
     if let Some(group) = group_for(gateway, model) {
         return expand_group(gateway, binding, &group, depth, visiting, advance);
     }
@@ -1230,6 +1290,9 @@ fn resolve_plan_with(
     let default_model = binding_default_model(gateway, binding);
     let (model, mapped_to_default) =
         effective_model_detailed(gateway, binding, &default_model, requested_model);
+    if is_disabled_group_model(gateway, &model) {
+        bail!("模型组 {model} 已停用");
+    }
     let conversation = conversation
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1271,6 +1334,34 @@ fn resolve_plan_with(
     if relays.is_empty() {
         bail!("网关的供应商池里没有供应商提供模型 {model}");
     }
+    let mut gate = crate::gateway::quota::DispatchGate::default();
+    let mut permitted = Vec::new();
+    let mut blocked = None;
+    for (relay, model) in relays {
+        match gate.check(gateway, &relay) {
+            Ok(()) => permitted.push((relay, model)),
+            Err(error) => {
+                let stop = matches!(
+                    &error.action,
+                    &crate::gateway::store::SubscriptionLimitAction::Stop
+                );
+                blocked = Some(error);
+                if stop {
+                    break;
+                }
+            }
+        }
+    }
+    if permitted.is_empty() {
+        if let Some(error) = blocked {
+            return Err(error.into());
+        }
+    }
+    let preferred = preferred.filter(|(relay_id, preferred_model)| {
+        permitted
+            .iter()
+            .any(|(relay, model)| &relay.id == relay_id && model == preferred_model)
+    });
     if mapped_to_default && advance && should_log_model_rewrite(agent.as_str(), requested_model.trim()) {
         // 请求的模型池里没人提供，按「未知模型」策略整个改发到默认模型的供应商（#2874）。
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1279,8 +1370,8 @@ fn resolve_plan_with(
                 "agent": agent.as_str(),
                 "requestedModel": requested_model.trim(),
                 "model": model,
-                "provider": relays.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
-                "providerId": relays.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
+                "provider": permitted.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
+                "providerId": permitted.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
                 "hint": "请求的模型不在网关供应商池里（或所在供应商已关闭），已按「未知模型」策略改发到默认模型；可在网关的 Agent 接入设置里改成原样转发",
             }),
         );
@@ -1296,7 +1387,7 @@ fn resolve_plan_with(
     let cooldown_off = crate::extension_gateway::builtin_replaced("builtin:key-cooldown");
     let breaker_off = crate::extension_gateway::builtin_replaced("builtin:key-breaker");
     let rate_limit_off = crate::extension_gateway::builtin_replaced("builtin:local-rate-limit");
-    for (relay, upstream_model) in relays {
+    for (relay, upstream_model) in permitted {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
         // 限速满了的 Key 照样进候选：是否跳过、排队由候选循环在发请求时按实时名额决定。
@@ -1401,6 +1492,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            subscription_policy: None,
             relay: RelayProfile {
                 id: id.to_string(),
                 name: id.to_string(),
@@ -1483,6 +1575,57 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn unconfigured_exhausted_subscription_keeps_api_failover_candidates() {
+        use base64::Engine;
+        use crate::gateway::quota::{ProviderQuota, QuotaWindow, record_for_relay};
+        use crate::gateway::store::SubscriptionPolicy;
+
+        let model = "legacy-quota-failover-model";
+        let mut official = provider("legacy-quota-subscription", model);
+        official.relay.relay_mode = RelayMode::Official;
+        official.relay.base_url.clear();
+        official.relay.api_key.clear();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"iss": "https://auth.openai.com", "sub": "legacy-quota-failover"})
+                .to_string(),
+        );
+        official.relay.auth_contents = serde_json::json!({"tokens": {
+            "id_token": format!("header.{claims}.signature"),
+            "access_token": "legacy-quota-access",
+            "account_id": "legacy-quota-workspace"
+        }}).to_string();
+        record_for_relay(&official.relay, ProviderQuota {
+            windows: vec![QuotaWindow {
+                used_percent: 100.0,
+                resets_at_ms: Some(u64::MAX),
+                ..Default::default()
+            }],
+            updated_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            official_allowed: Some(false),
+            ..Default::default()
+        });
+        let mut gateway = gateway("group/legacy-quota-failover");
+        gateway.providers = vec![official, provider("legacy-quota-api", model)];
+        gateway.groups = vec![group(
+            "legacy-quota-failover",
+            GroupMode::InOrder,
+            vec![member(&format!("legacy-quota-subscription/{model}")), member(&format!("legacy-quota-api/{model}"))],
+        )];
+        assert_eq!(
+            routed(&gateway, "group/legacy-quota-failover"),
+            [
+                ("legacy-quota-subscription".into(), model.into()),
+                ("legacy-quota-api".into(), model.into())
+            ]
+        );
+        gateway.providers[0].subscription_policy = Some(SubscriptionPolicy::default());
+        assert!(resolve_plan(
+            &gateway, &ToolId::Claude, "group/legacy-quota-failover", None,
+        ).is_err(), "only an explicitly configured stop policy may stop API failover");
+    }
+
     fn pair(relay: &str, model: &str) -> (String, String) {
         (relay.to_string(), model.to_string())
     }
@@ -1512,6 +1655,97 @@ mod tests {
             ["kimi-k3".to_string(), "deepseek-v4-pro".to_string()]
         );
         assert_eq!(binding_default_model(&gateway, &binding), "kimi-k3");
+    }
+
+    #[test]
+    fn disabled_groups_leave_catalogs_and_reject_old_references_until_reenabled() {
+        let mut gateway = gateway("group/fast");
+        gateway.groups[0].hide_members = true;
+        let binding = gateway.bindings.get_mut("claude").unwrap();
+        binding.extra_models = vec!["group/fast[1M]".into(), "GROUP/Fast[ 1M ]".into()];
+        binding.auto_review_model = "group/fast".into();
+        let binding = binding.clone();
+        assert!(pool_models(&gateway, &binding).contains(&"group/fast".to_string()));
+
+        gateway.groups[0].disabled = true;
+        assert_eq!(binding_default_model(&gateway, &binding), "deepseek-v4-pro");
+        assert!(!model_is_routable(&gateway, &binding, "group/fast"));
+        assert!(pool_models(&gateway, &binding).contains(&"kimi-k3".to_string()));
+        for models in [
+            pool_models(&gateway, &binding),
+            codex_pool_models(&gateway, &binding),
+            codex_binding_models(&gateway, &binding),
+            binding_exposed_models(&gateway, &binding),
+        ] {
+            assert!(
+                !models.iter().any(|model| {
+                    crate::model_suffix::parse_model_suffix(model)
+                        .0
+                        .eq_ignore_ascii_case("group/fast")
+                }),
+                "{models:?}"
+            );
+        }
+        for model in [
+            "group/fast".to_string(),
+            "GROUP/FAST[1M]".to_string(),
+            claude_alias("group/fast"),
+            claude_desktop_alias("group/fast", true),
+            claude_alias("GROUP/Fast"),
+            claude_desktop_alias("GROUP/Fast", true),
+            crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL.to_string(),
+        ] {
+            let error = resolve_plan(&gateway, &ToolId::Claude, &model, None).unwrap_err();
+            assert!(error.to_string().contains("已停用"), "{model}: {error}");
+        }
+        assert_eq!(
+            routed(&gateway, "group/coder"),
+            vec![pair("mirror", "deepseek-v4-pro")],
+            "嵌套的停用组不再展开"
+        );
+
+        gateway.groups[0].disabled = false;
+        assert_eq!(binding_default_model(&gateway, &binding), "group/fast");
+        assert_eq!(routed(&gateway, "group/fast").len(), 2);
+        assert!(binding_exposed_models(&gateway, &binding).contains(&"group/fast".to_string()));
+        assert!(codex_binding_models(&gateway, &binding).contains(&"group/fast".to_string()));
+    }
+
+    #[test]
+    fn disabled_group_default_only_falls_back_to_an_expandable_model() {
+        let mut gateway = gateway("group/fast");
+        gateway.groups.truncate(2);
+        gateway.groups[0].disabled = true;
+        gateway.groups[1].mode = GroupMode::Manual;
+        gateway.groups[1].pick = "group/fast".into();
+        gateway.groups[1].hide_members = true;
+        gateway.groups[1].members = vec![
+            member("group/fast"),
+            member("deepseek-v4-pro"),
+            member("deepseek-v4-flash"),
+            member("kimi-k3"),
+        ];
+        let binding = gateway.bindings.get("claude").unwrap();
+        assert_eq!(pool_models(&gateway, binding), vec!["group/coder"]);
+        assert_eq!(binding_default_model(&gateway, binding), "");
+    }
+
+    #[test]
+    fn provider_models_matching_disabled_group_ids_remain_available_when_qualified() {
+        let mut gateway = gateway("");
+        gateway.providers = vec![provider("ds", "group/fast\nkimi-k3")];
+        gateway.groups[0].disabled = true;
+        let binding = gateway.bindings.get("claude").unwrap();
+        assert_eq!(binding_default_model(&gateway, binding), "kimi-k3");
+        assert!(!model_is_routable(&gateway, binding, "GROUP/FAST"));
+        assert!(pool_models(&gateway, binding).contains(&"ds/group/fast".to_string()));
+        assert!(codex_pool_models(&gateway, binding).contains(&"ds/group/fast".to_string()));
+        assert_eq!(routed(&gateway, "ds/group/fast"), vec![pair("ds", "group/fast")]);
+
+        gateway.providers = vec![provider("ds", "group/fast")];
+        let binding = gateway.bindings.get("claude").unwrap();
+        assert_eq!(binding_default_model(&gateway, binding), "ds/group/fast");
+        assert_eq!(routed(&gateway, ""), vec![pair("ds", "group/fast")]);
     }
 
     #[test]
@@ -2051,8 +2285,10 @@ mod tests {
                 window_minutes: Some(300),
                 used_percent: used,
                 resets_at_ms: None,
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 0,
+            ..ProviderQuota::default()
         };
         let mut gateway = gateway("group/usage-pin");
         gateway.providers.extend([
@@ -2204,8 +2440,10 @@ mod tests {
                 window_minutes: Some(300),
                 used_percent: used,
                 resets_at_ms: None,
+                ..QuotaWindow::default()
             }],
             updated_at_ms: 0,
+            ..ProviderQuota::default()
         };
         record("q-low", quota(90.0));
         record("q-empty", quota(100.0));

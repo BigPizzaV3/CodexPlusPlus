@@ -1060,6 +1060,30 @@ fn glm_image_urls_are_stripped_to_bare_base64() {
     assert_eq!(url, "QUJD");
 }
 
+/// #2991：带命名空间的 GLM（NVIDIA `z-ai/glm-5.3-flash`、OpenRouter 等聚合平台）
+/// 是标准 OpenAI 兼容接口，`image_url.url` 必须保留 data URL，不能剥成裸 base64。
+#[test]
+fn namespaced_glm_image_urls_keep_data_url_prefix() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "z-ai/glm-5.3-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,QUJD" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][0]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "data:image/png;base64,QUJD");
+}
+
 /// 标准 data URL 上游（OpenAI 等）不能被这层改写波及。
 #[test]
 fn non_glm_image_urls_keep_data_url_prefix() {
@@ -4960,6 +4984,133 @@ async fn aggregate_official_member_declares_web_search_for_tool_less_history() {
     assert_eq!(sent, expected, "只补搜索声明，历史内容必须原样保留");
 }
 
+/// 外层 API 缓存恢复工具，内层官方登录代理仍须识别本地摘要并补搜索声明。
+#[tokio::test]
+async fn official_local_compaction_repairs_cached_tools_across_two_proxy_hops_for_all_switches() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
+    for (local, search) in [(false, false), (false, true), (true, false), (true, true)] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let _base = EnvVarGuard::set(
+            "CODEX_PLUS_OFFICIAL_BASE_URL",
+            &format!("http://{address}/backend-api/codex"),
+        );
+        let official_server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                    .await.unwrap().unwrap();
+                let raw = read_http_request(&mut stream).await;
+                let request: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+                let has_search = request["tools"].as_array().is_some_and(|tools| {
+                    tools.iter().any(|tool| tool["type"] == "web_search")
+                });
+                let rejected = request["tool_choice"] == "none" && !has_search;
+                let (status, body) = if rejected {
+                    ("400 Bad Request", r#"{"error":{"message":"response protection is unavailable"}}"#)
+                } else {
+                    ("200 OK", r#"{"id":"resp_official","status":"completed","output":[]}"#)
+                };
+                write_remote_compaction_response(&mut stream, status, body).await;
+                requests.push(request);
+            }
+            requests
+        });
+        let official_settings = official_aggregate_test_settings(
+            &format!("official-cache-{local}-{search}"), &format!("official-cache-agg-{local}-{search}"),
+        );
+        let inner = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let inner_address = inner.local_addr().unwrap();
+        let gateway = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = tokio::time::timeout(Duration::from_secs(10), inner.accept())
+                    .await.unwrap().unwrap();
+                let raw = read_http_request(&mut stream).await;
+                let request: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+                let mut result = open_responses_proxy_request_with_settings(
+                    &request.to_string(), official_settings.clone(),
+                ).await.unwrap();
+                let status = if result.status_code == 200 { "200 OK" } else { "400 Bad Request" };
+                let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+                write_remote_compaction_response(&mut stream, status, &body).await;
+                requests.push(request);
+            }
+            requests
+        });
+        let mut settings = single_relay_proxy_settings(&format!("http://{inner_address}/v1"));
+        settings.protocol_proxy_auto_retry = false;
+        settings.relay_profiles[0].local_compaction_prompt_at_end = local;
+        settings.relay_profiles[0].web_search_history_compat = search;
+        assert_eq!(settings.relay_profiles[0].local_compaction_prompt_at_end_enabled(), local);
+        let normal = json!({
+            "model":"gpt-6.1-sol","stream":false,"store":false,
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+            "tool_choice":"required","parallel_tool_calls":true,
+            "input":[
+                {"type":"message","role":"user","content":"Current task"},
+                {"type":"web_search_call","id":"ws_prior","status":"completed",
+                    "action":{"type":"search","query":"fixture"}}
+            ]
+        });
+        let thread_id = format!("official-cache-{local}-{search}");
+        let headers = ProxySessionHeaders { thread_id: Some(&thread_id), ..Default::default() };
+        let mut result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+            &normal.to_string(), settings.clone(), "/v1/responses", None, headers,
+        ).await.unwrap();
+        assert_eq!(result.status_code, 200);
+        result.read_body().await.unwrap();
+        let mut compact = normal.clone();
+        compact["tools"] = json!([]);
+        compact["tool_choice"] = json!("none");
+        compact["parallel_tool_calls"] = json!(false);
+        compact["client_metadata"] = json!({
+            "x-codex-turn-metadata": json!({
+                "request_kind":"compaction","compaction":{"implementation":"responses"}
+            }).to_string()
+        });
+        compact["input"].as_array_mut().unwrap().push(json!({
+            "type":"message","role":"user","content":[{"type":"input_text",
+                "text":"You are performing a CONTEXT CHECKPOINT COMPACTION."}]
+        }));
+        let mut result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+            &compact.to_string(), settings, "/v1/responses", None, headers,
+        ).await.unwrap();
+        assert_eq!(result.status_code, 200, "local={local}, search={search}");
+        result.read_body().await.unwrap();
+        let gateway_requests = gateway.await.unwrap();
+        let requests = official_server.await.unwrap();
+        assert_eq!(requests.len(), 2, "no summary retry");
+        assert_eq!(gateway_requests.len(), 2);
+        let mut expected_normal = normal.clone();
+        if search {
+            expected_normal["tools"].as_array_mut().unwrap().push(
+                json!({"type":"web_search","external_web_access":false})
+            );
+        }
+        assert_eq!(requests[0], expected_normal, "ordinary tool requests stay independent");
+        let mut expected = compact;
+        if local {
+            expected["tools"] = normal["tools"].clone();
+        }
+        if search {
+            expected["tools"].as_array_mut().unwrap().push(
+                json!({"type":"web_search","external_web_access":false})
+            );
+        }
+        assert_eq!(gateway_requests[1], expected, "outer proxy controls cached tools and opt-in search");
+        if !expected["tools"].as_array().unwrap().iter().any(|tool| tool["type"] == "web_search") {
+            expected["tools"].as_array_mut().unwrap().push(
+                json!({"type":"web_search","external_web_access":false})
+            );
+        }
+        assert_eq!(requests[1], expected, "official shaping only adds declarations; history and none stay intact");
+    }
+}
+
 /// 官方登录通道只修「没有声明任何工具」的请求；带工具的普通轮次保持原样。
 #[tokio::test]
 async fn aggregate_official_member_leaves_tool_declaring_requests_unchanged() {
@@ -5003,6 +5154,37 @@ async fn aggregate_official_member_leaves_tool_declaring_requests_unchanged() {
     assert_eq!(sent, request, "带工具的请求不应被改写");
 }
 
+/// none 本身不是摘要身份；普通任务和只有摘要前缀的请求都不自动补工具。
+#[tokio::test]
+async fn aggregate_official_member_leaves_non_summary_tool_choice_none_unchanged() {
+    let _lock = settings_path_test_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
+    for text in ["Ordinary task", "You are performing a CONTEXT CHECKPOINT COMPACTION."] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let _base = EnvVarGuard::set(
+            "CODEX_PLUS_OFFICIAL_BASE_URL", &format!("http://{address}/backend-api/codex"),
+        );
+        let server = tokio::spawn(capture_json_request_once(listener));
+        let request = json!({
+            "model":"gpt-6.1-sol","stream":false,"tool_choice":"none",
+            "tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+            "input":[
+                {"type":"web_search_call","id":"ws_prior","status":"completed"},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
+            ]
+        });
+        let mut result = open_responses_proxy_request_with_settings(
+            &request.to_string(), official_aggregate_test_settings("official-none", "official-none-agg"),
+        ).await.unwrap();
+        assert_eq!(result.status_code, 200);
+        result.read_body().await.unwrap();
+        assert_eq!(server.await.unwrap().1, request);
+    }
+}
+
 /// 官方登录 token 被提前撤销：第一次 401 后强制刷新一次并原样重试，
 /// 第二次请求带刷新后的 Bearer；refresh 请求带轮换前的 refresh token。
 #[tokio::test]
@@ -5010,6 +5192,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
     let _lock = settings_path_test_lock();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().to_str().unwrap());
 
     let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -5108,6 +5291,9 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
         ..BackendSettings::default()
     };
 
+    let store = codex_plus_core::settings::SettingsStore::default();
+    store.save(&settings).unwrap();
+
     let result = open_responses_proxy_request_with_settings(
         r#"{"model":"gpt-5.6-sol","input":"hi","stream":false}"#,
         settings,
@@ -5140,6 +5326,18 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
         token_request.contains("refresh_token=official-refresh"),
         "{token_request}"
     );
+
+    let persisted = store
+        .load()
+        .unwrap()
+        .relay_profiles
+        .into_iter()
+        .find(|profile| profile.id == "proxy-official-401")
+        .unwrap();
+    let auth: serde_json::Value = serde_json::from_str(&persisted.auth_contents).unwrap();
+    assert_eq!(auth["tokens"]["access_token"], "refreshed-access");
+    assert_eq!(auth["tokens"]["refresh_token"], "refreshed-refresh");
+    assert_eq!(auth["tokens"]["account_id"], "acct-official");
 }
 
 #[tokio::test]

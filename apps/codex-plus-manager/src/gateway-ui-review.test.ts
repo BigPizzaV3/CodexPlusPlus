@@ -182,7 +182,7 @@ test("订阅登录不占全局 busy，可取消：关掉验证码弹窗即取消
     const start = commands.indexOf(`pub async fn ${name}(`);
     const body = commands.slice(start, commands.indexOf("\n}\n", start));
     assert.match(body, /cancellable_login\(async move \{/, name);
-    assert.match(body, /login_response\(outcome\)/, name);
+    assert.match(body, /login_response\(outcome, &before\)\.await/, name);
   }
 });
 
@@ -209,7 +209,8 @@ test("「挑选」弹层挂在 body 上，紧凑规则用 .gw-portal 前缀", ()
 test("模型选择器顶部的供应商按钮是筛选，不是滚动到那一段", () => {
   const source = read("GatewayAgents.tsx");
   assert.match(source, /onClick=\{\(\) => pickScope\(\{ section: section\.key \}\)\}/);
-  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly \|\| section\.key === "custom"\)/);
+  assert.match(source, /pickerSections\(payload, query, avatarOf, exclude, skipGroup, sectionOnly,/);
+  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly \|\| section\.key === "custom"\)/, "自定义组由 pickerSections 按供应商限定");
   assert.doesNotMatch(source, /scrollTop = node\.offsetTop/);
 });
 

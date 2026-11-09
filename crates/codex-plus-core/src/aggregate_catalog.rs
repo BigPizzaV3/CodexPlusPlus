@@ -787,6 +787,7 @@ pub fn catalog_summary(
     aggregate: &AggregateRelayProfile,
 ) -> anyhow::Result<Value> {
     let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let effective_config_model = crate::model_catalog::effective_config_model(&config);
     let published = config_catalog_pointer(&config)
         .and_then(|pointer| owned_catalog_path(home, &aggregate.id, &pointer))
         .and_then(|path| std::fs::read_to_string(path).ok());
@@ -822,6 +823,7 @@ pub fn catalog_summary(
         "path": home.join("config.toml").to_string_lossy(),
         "service_tier": Value::Null,
         "model": ids.first().cloned().unwrap_or_default(),
+        "effective_config_model": effective_config_model,
         "model_provider": aggregate.id,
         "codex_model_provider": crate::model_catalog::codex_model_provider_for_relay_profile(home, profile),
         "provider_name": aggregate.name,
@@ -974,6 +976,24 @@ mod tests {
         let path=home.join("model-catalogs/agg.json");std::fs::write(&path,build_catalog_json(&loaded,&aggregate).unwrap()).unwrap();
         std::fs::write(home.join("config.toml"),format!("model_catalog_json = {:?}\n",path.to_str().unwrap())).unwrap();
         (temp,store,home)
+    }
+
+    #[test]
+    fn aggregate_catalog_default_identity_comes_from_live_config() {
+        let settings = settings();
+        let aggregate = active_model_aggregation(&settings).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let summary = catalog_summary(home.path(), &settings, &aggregate).unwrap();
+        assert!(!summary["default_model"].as_str().unwrap().is_empty());
+        assert_eq!(summary["effective_config_model"], "");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model = 'root'\nprofile = 'work'\n[profiles.work]\nmodel = 'actual-model'\n",
+        )
+        .unwrap();
+        let summary = catalog_summary(home.path(), &settings, &aggregate).unwrap();
+        assert_eq!(summary["effective_config_model"], "actual-model");
+        assert_ne!(summary["default_model"], summary["effective_config_model"]);
     }
 
     #[test]

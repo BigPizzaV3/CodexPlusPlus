@@ -630,6 +630,67 @@ pub(crate) struct VerifiedStopProcess {
     handle: std::os::windows::io::OwnedHandle,
 }
 
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StopProcessEnvironment {
+    pub app_data: Option<String>,
+    pub user_data: Option<String>,
+    pub agent_run_id: Option<String>,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StopProcessOwner {
+    pub user_sid: Vec<u8>,
+    pub authentication_id: (u32, i32),
+    pub session_id: u32,
+}
+
+/// 只保留停止核验需要的键；完整解析失败时不输出目标的其他环境数据。
+#[cfg(any(windows, test))]
+fn stop_process_environment_from_block(block: &[u16]) -> anyhow::Result<StopProcessEnvironment> {
+    let end = block
+        .windows(2)
+        .position(|pair| pair == [0, 0])
+        .ok_or_else(|| anyhow::anyhow!("进程环境缺少完整结束标记"))?;
+    anyhow::ensure!(end + 2 == block.len(), "进程环境结束标记后仍有数据");
+    let mut result = StopProcessEnvironment {
+        app_data: None,
+        user_data: None,
+        agent_run_id: None,
+    };
+    if end == 0 {
+        return Ok(result);
+    }
+    for entry in block[..end].split(|unit| *unit == 0) {
+        let entry = String::from_utf16(entry)
+            .map_err(|_| anyhow::anyhow!("进程环境包含无效 UTF-16"))?;
+        // Windows 的 =C:=... 是合法的隐藏驱动器环境变量。
+        let separator = entry
+            .char_indices()
+            .skip(usize::from(entry.starts_with('=')))
+            .find(|(_, ch)| *ch == '=')
+            .map(|(index, _)| index)
+            .ok_or_else(|| anyhow::anyhow!("进程环境包含无法解析的条目"))?;
+        let (key, value) = entry.split_at(separator);
+        anyhow::ensure!(!key.is_empty(), "进程环境包含空键");
+        let target = if key.eq_ignore_ascii_case("APPDATA") {
+            Some(&mut result.app_data)
+        } else if key.eq_ignore_ascii_case("CODEX_ELECTRON_USER_DATA_PATH") {
+            Some(&mut result.user_data)
+        } else if key.eq_ignore_ascii_case("CODEX_ELECTRON_AGENT_RUN_ID") {
+            Some(&mut result.agent_run_id)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            anyhow::ensure!(target.is_none(), "停止核验所需环境键重复");
+            *target = Some(value[1..].to_owned());
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(windows)]
 impl VerifiedStopProcess {
     pub fn capture(process_id: u32, terminate: bool) -> anyhow::Result<Option<Self>> {
@@ -683,6 +744,73 @@ impl VerifiedStopProcess {
         process_command_line_from_handle(self.native())
             .and_then(|line| command_line_arguments(&line))
             .ok_or_else(|| anyhow::anyhow!("无法读取多开进程参数"))
+    }
+
+    pub fn stop_environment(&self) -> anyhow::Result<StopProcessEnvironment> {
+        let address = process_environment_address(self.native())?;
+        let mut block = Vec::new();
+        // 每次最多读一个较小块；跨不可读页时退回单个 UTF-16 单元。
+        const MAX_ENVIRONMENT_UNITS: usize = 512 * 1024;
+        while block.len() < MAX_ENVIRONMENT_UNITS {
+            let offset = block
+                .len()
+                .checked_mul(2)
+                .and_then(|offset| address.checked_add(offset))
+                .ok_or_else(|| anyhow::anyhow!("进程环境地址溢出"))?;
+            let mut chunk = [0_u16; 256];
+            let count = (MAX_ENVIRONMENT_UNITS - block.len()).min(chunk.len());
+            let read = read_process_memory_bytes(
+                self.native(),
+                offset,
+                chunk.as_mut_ptr().cast(),
+                count * 2,
+            );
+            let units = if read == Some(count * 2) {
+                count
+            } else {
+                chunk[0] = read_process_memory::<u16>(self.native(), offset)
+                    .ok_or_else(|| anyhow::anyhow!("无法完整读取进程环境"))?;
+                1
+            };
+            for unit in chunk.into_iter().take(units) {
+                let complete = unit == 0 && block.last() == Some(&0);
+                block.push(unit);
+                if complete {
+                    anyhow::ensure!(
+                        process_environment_address(self.native())? == address,
+                        "读取期间进程环境地址发生变化"
+                    );
+                    return stop_process_environment_from_block(&block);
+                }
+            }
+        }
+        anyhow::bail!("进程环境超过安全读取上限")
+    }
+
+    pub fn stop_owner(&self) -> anyhow::Result<StopProcessOwner> {
+        process_stop_owner(self.native())
+    }
+
+    pub fn request_main_close(&self) -> anyhow::Result<bool> {
+        if !self.is_alive()? {
+            return Ok(false);
+        }
+        let Some(hwnd) = visible_window_for_process(self.process_id) else {
+            return Ok(false);
+        };
+        if !self.is_alive()? {
+            return Ok(false);
+        }
+        let mut window_process_id = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut window_process_id)) };
+        anyhow::ensure!(
+            window_process_id == self.process_id,
+            "关闭前 Codex 窗口归属发生变化"
+        );
+        // HWND 不随进程句柄固定，故在投递前最后复核 owner，绝不按标题/类名关闭别的窗口。
+        unsafe { PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)) }
+            .context("无法请求已核验 Codex 窗口关闭")?;
+        Ok(true)
     }
 
     pub fn parent_id(&self) -> anyhow::Result<u32> {
@@ -781,6 +909,10 @@ const X64_COMMAND_LINE_OFFSET: usize = 0x70;
 const X86_PROCESS_PARAMETERS_OFFSET: usize = 0x10;
 #[cfg(windows)]
 const X86_COMMAND_LINE_OFFSET: usize = 0x40;
+#[cfg(windows)]
+const X64_ENVIRONMENT_OFFSET: usize = 0x80;
+#[cfg(windows)]
+const X86_ENVIRONMENT_OFFSET: usize = 0x48;
 
 /// Windows 命令行上限 32767 个字符；`UNICODE_STRING.length` 是字节数。
 #[cfg(windows)]
@@ -825,8 +957,184 @@ unsafe extern "system" {
 }
 
 #[cfg(windows)]
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(process: HANDLE, access: u32, token: *mut HANDLE) -> i32;
+    fn GetTokenInformation(
+        token: HANDLE,
+        information_class: u32,
+        information: *mut core::ffi::c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct StopLuid {
+    low: u32,
+    high: i32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct StopTokenStatistics {
+    token_id: StopLuid,
+    authentication_id: StopLuid,
+    expiration_time: i64,
+    token_type: i32,
+    impersonation_level: i32,
+    dynamic_charged: u32,
+    dynamic_available: u32,
+    group_count: u32,
+    privilege_count: u32,
+    modified_id: StopLuid,
+}
+
+#[cfg(windows)]
+fn process_stop_owner(process: HANDLE) -> anyhow::Result<StopProcessOwner> {
+    use std::os::windows::io::FromRawHandle;
+    let mut token = HANDLE::default();
+    anyhow::ensure!(
+        unsafe { OpenProcessToken(process, 0x0008, &mut token) } != 0,
+        "无法读取进程登录身份：{}",
+        std::io::Error::last_os_error()
+    );
+    let _token_guard = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(token.0) };
+    let mut statistics = StopTokenStatistics::default();
+    let mut returned = 0;
+    anyhow::ensure!(
+        unsafe {
+            GetTokenInformation(
+                token,
+                10,
+                (&mut statistics as *mut StopTokenStatistics).cast(),
+                std::mem::size_of::<StopTokenStatistics>() as u32,
+                &mut returned,
+            )
+        } != 0
+            && returned as usize == std::mem::size_of::<StopTokenStatistics>(),
+        "无法完整读取进程登录统计"
+    );
+    let mut session_id = 0_u32;
+    anyhow::ensure!(
+        unsafe {
+            GetTokenInformation(
+                token,
+                12,
+                (&mut session_id as *mut u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+                &mut returned,
+            )
+        } != 0
+            && returned as usize == std::mem::size_of::<u32>(),
+        "无法完整读取进程 Windows 会话"
+    );
+    let mut required = 0;
+    let query = unsafe { GetTokenInformation(token, 1, std::ptr::null_mut(), 0, &mut required) };
+    anyhow::ensure!(
+        query == 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(122)
+            && (std::mem::size_of::<usize>()..=65536).contains(&(required as usize)),
+        "无法确定进程用户身份大小"
+    );
+    let mut user = vec![0_u8; required as usize];
+    anyhow::ensure!(
+        unsafe {
+            GetTokenInformation(
+                token,
+                1,
+                user.as_mut_ptr().cast(),
+                required,
+                &mut returned,
+            )
+        } != 0
+            && returned <= required,
+        "无法完整读取进程用户身份"
+    );
+    user.truncate(returned as usize);
+    anyhow::ensure!(user.len() >= std::mem::size_of::<usize>(), "用户身份结构不完整");
+    let sid = unsafe { std::ptr::read_unaligned(user.as_ptr().cast::<usize>()) };
+    let start = sid
+        .checked_sub(user.as_ptr() as usize)
+        .ok_or_else(|| anyhow::anyhow!("用户 SID 地址不在结果内"))?;
+    let header = user
+        .get(start..)
+        .filter(|tail| tail.len() >= 8 && tail[0] == 1 && tail[1] <= 15)
+        .ok_or_else(|| anyhow::anyhow!("用户 SID 结构不完整"))?;
+    let length = 8 + usize::from(header[1]) * 4;
+    let user_sid = header
+        .get(..length)
+        .ok_or_else(|| anyhow::anyhow!("用户 SID 长度不完整"))?
+        .to_vec();
+    Ok(StopProcessOwner {
+        user_sid,
+        authentication_id: (
+            statistics.authentication_id.low,
+            statistics.authentication_id.high,
+        ),
+        session_id,
+    })
+}
+
+#[cfg(windows)]
+fn process_environment_address(handle: HANDLE) -> anyhow::Result<usize> {
+    let mut peb32 = 0_usize;
+    let mut returned = 0_u32;
+    let status = unsafe {
+        NtQueryInformationProcess(
+            handle,
+            PROCESS_WOW64_INFORMATION_CLASS,
+            (&mut peb32 as *mut usize).cast(),
+            std::mem::size_of::<usize>() as u32,
+            &mut returned,
+        )
+    };
+    anyhow::ensure!(
+        status >= 0 && returned as usize == std::mem::size_of::<usize>(),
+        "无法核验目标进程位数"
+    );
+    let (peb, parameters_offset, environment_offset, pointer_is_32_bit) =
+        if peb32 != 0 {
+            (peb32, X86_PROCESS_PARAMETERS_OFFSET, X86_ENVIRONMENT_OFFSET, true)
+        } else {
+            anyhow::ensure!(
+                std::mem::size_of::<usize>() == 8,
+                "当前架构不支持安全读取目标进程环境"
+            );
+            (
+                query_peb_base_address(handle)
+                    .ok_or_else(|| anyhow::anyhow!("无法读取进程 PEB"))?,
+                X64_PROCESS_PARAMETERS_OFFSET,
+                X64_ENVIRONMENT_OFFSET,
+                false,
+            )
+        };
+    let read_pointer = |address| {
+        if pointer_is_32_bit {
+            read_process_memory::<u32>(handle, address).map(|value| value as usize)
+        } else {
+            read_process_memory::<usize>(handle, address)
+        }
+        .filter(|address| *address != 0)
+    };
+    let parameters = peb
+        .checked_add(parameters_offset)
+        .and_then(read_pointer)
+        .ok_or_else(|| anyhow::anyhow!("无法读取进程参数地址"))?;
+    parameters
+        .checked_add(environment_offset)
+        .and_then(read_pointer)
+        .ok_or_else(|| anyhow::anyhow!("无法读取进程环境地址"))
+}
+
+#[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> BOOL;
+
     fn ReadProcessMemory(
         process_handle: HANDLE,
         base_address: *const core::ffi::c_void,
@@ -834,6 +1142,25 @@ unsafe extern "system" {
         size: usize,
         bytes_read: *mut usize,
     ) -> i32;
+}
+
+/// 读取进程所属的 Windows 会话；已经退出的 PID 返回 `None`。
+///
+/// 该查询不需要打开进程句柄，停止主实例前先用它排除其他交互式会话，
+/// 避免无关用户的 `ChatGPT.exe` 因句柄权限或坏 argv 阻断当前实例。
+#[cfg(windows)]
+pub(crate) fn process_session_id(process_id: u32) -> anyhow::Result<Option<u32>> {
+    anyhow::ensure!(process_id != 0, "拒绝查询无效进程 PID");
+    let mut session_id = 0_u32;
+    if unsafe { ProcessIdToSessionId(process_id, &mut session_id).as_bool() } {
+        return Ok(Some(session_id));
+    }
+    let error = std::io::Error::last_os_error();
+    // ERROR_INVALID_PARAMETER：PID 已经退出或不再存在。
+    if error.raw_os_error() == Some(87) {
+        return Ok(None);
+    }
+    Err(error).context("无法读取进程 Windows 会话")
 }
 
 #[cfg(windows)]
@@ -1509,6 +1836,45 @@ impl Drop for RegistryKeyGuard {
     }
 }
 
+#[cfg(test)]
+mod stop_environment_tests {
+    use super::stop_process_environment_from_block;
+
+    fn block(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    #[test]
+    fn returns_only_needed_environment_keys() {
+        let environment = stop_process_environment_from_block(&block(
+            "=C:=C:\\work\0OTHER=hidden\0APPDATA=C:\\Users\\test\\AppData\\Roaming\0CODEX_ELECTRON_USER_DATA_PATH=C:\\isolated\0CODEX_ELECTRON_AGENT_RUN_ID=agent\0\0",
+        ))
+        .unwrap();
+        assert_eq!(
+            environment.app_data.as_deref(),
+            Some(r"C:\Users\test\AppData\Roaming")
+        );
+        assert_eq!(environment.user_data.as_deref(), Some(r"C:\isolated"));
+        assert_eq!(environment.agent_run_id.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn missing_truncated_malformed_and_duplicate_environment_fail_closed() {
+        for text in [
+            "APPDATA=C:\\test\0",
+            "APPDATA=C:\\test\0\0trailing",
+            "malformed\0\0",
+            "APPDATA=C:\\test\0appdata=C:\\test\0\0",
+            "CODEX_ELECTRON_USER_DATA_PATH=C:\\one\0codex_electron_user_data_path=C:\\one\0\0",
+        ] {
+            assert!(stop_process_environment_from_block(&block(text)).is_err());
+        }
+        assert!(stop_process_environment_from_block(&[0xd800, 0, 0]).is_err());
+        let empty = stop_process_environment_from_block(&[0, 0]).unwrap();
+        assert!(empty.app_data.is_none());
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
@@ -1541,5 +1907,104 @@ mod tests {
             command_line.to_ascii_lowercase().contains(&executable_name),
             "命令行里应包含自身可执行文件名：{command_line}"
         );
+    }
+
+    #[test]
+    fn windows_argv_keeps_quoted_directory_values_together() {
+        let arguments = command_line_arguments(
+            r#""C:\Program Files\Codex\ChatGPT.exe" --user-data-dir "C:\a path\instance" --remote-debugging-port=52106"#,
+        )
+        .unwrap();
+        assert_eq!(
+            arguments,
+            [
+                r"C:\Program Files\Codex\ChatGPT.exe",
+                "--user-data-dir",
+                r"C:\a path\instance",
+                "--remote-debugging-port=52106",
+            ]
+        );
+    }
+
+    #[test]
+    #[ignore = "仅由 owned_child_environment_and_owner_are_read_from_held_handles 启动"]
+    fn stop_identity_child_process() {
+        if std::env::var_os("CODEX_PLUS_STOP_IDENTITY_TEST_CHILD")
+            != Some(OsString::from("owned-helper"))
+        {
+            return;
+        }
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::io::stdin().read_to_end(&mut bytes).unwrap();
+    }
+
+    #[test]
+    fn owned_child_environment_and_owner_are_read_from_held_handles() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        struct OwnedTestChild(Child);
+        impl Drop for OwnedTestChild {
+            fn drop(&mut self) {
+                // Child 的原始进程句柄只指向本测试明确创建的 helper。
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let fixture_root = std::env::temp_dir().join("codex-stop-identity-fixture");
+        let app_data = fixture_root.join("app-data");
+        let user_data = fixture_root.join("user-data");
+        let mut child = OwnedTestChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "windows_integration::tests::stop_identity_child_process",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("CODEX_PLUS_STOP_IDENTITY_TEST_CHILD", "owned-helper")
+                .env("APPDATA", &app_data)
+                .env("CODEX_ELECTRON_USER_DATA_PATH", &user_data)
+                .env("CODEX_ELECTRON_AGENT_RUN_ID", "owned-agent")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        );
+        let held = VerifiedStopProcess::capture(child.0.id(), false)
+            .unwrap()
+            .unwrap();
+        assert!(held.is_alive().unwrap());
+        assert_eq!(child_process_birth_id(&child.0), Some(held.birth_id));
+        let environment = held.stop_environment().unwrap();
+        assert_eq!(
+            environment.app_data.as_deref(),
+            app_data.to_str()
+        );
+        assert_eq!(
+            environment.user_data.as_deref(),
+            user_data.to_str()
+        );
+        assert_eq!(environment.agent_run_id.as_deref(), Some("owned-agent"));
+        let manager = VerifiedStopProcess::capture(std::process::id(), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.stop_owner().unwrap(), manager.stop_owner().unwrap());
+        drop(child.0.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.0.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "本次测试 helper 未在宽限内退出");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!held.is_alive().unwrap());
     }
 }

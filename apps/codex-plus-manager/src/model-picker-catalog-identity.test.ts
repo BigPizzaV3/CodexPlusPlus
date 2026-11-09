@@ -9,7 +9,8 @@ function runtime(catalog: any) {
     "codexPlusModelPickerNormalizeLoose", "codexPlusModelPickerNativeLabelKey",
     "codexPlusModelPickerSplitLabel", "providerNameOf", "codexPlusModelPickerCatalogEntries",
     "codexPlusModelPickerCatalogAliases", "codexPlusModelPickerCanRestoreProvider", "codexPlusModelPickerCatalogProviderMap",
-    "codexPlusModelPickerCatalogExactMap", "codexPlusModelPickerRowModel",
+    "codexPlusModelPickerCatalogExactMap", "codexPlusModelPickerPrice",
+    "codexPlusModelPickerCatalogPriceMap", "codexPlusModelPickerRowSlug", "codexPlusModelPickerRowModel",
     "codexPlusModelPickerRememberProvider", "codexPlusModelPickerRows", "codexPlusModelPickerGroups"];
   const functions = names.map(name => {
     const found = source.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"));
@@ -19,6 +20,7 @@ function runtime(catalog: any) {
   const state = { providerNames: new Map(), defaultProviderName: "" };
   const context = vm.createContext({
     codexModelCatalog: catalog, codexPlusModelPickerGroupsState: state,
+    codexPlusModelPickerDomState: new WeakMap(),
     codexPlusModelPickerGroupNameMaxLength: 24,
     codexPlusModelPickerDefaultGroupId: () => "provider:a",
     codexPlusModelPickerDefaultProviderName: () => "Provider A",

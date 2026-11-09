@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::managed_mcp::{self, ManagedMcp};
+// 交给 Node 的插件根目录使用普通路径，避免与依赖扫描得到的路径混用两种表示。
+use crate::paths::strip_verbatim_prefix;
 use crate::user_scripts::{ExtensionWrite, UserScriptManager};
 
 pub use crate::managed_mcp::RegistrationStatus;
@@ -593,20 +595,6 @@ pub fn locate_program(name: &str) -> Option<PathBuf> {
     dirs.into_iter()
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|path| path.is_file())
-}
-
-/// 去掉 Windows canonicalize 带上的 `\\?\` verbatim 前缀（`\\?\UNC\` 换回 `\\`）。
-/// 交给 Node 的插件根目录使用普通路径，避免与依赖扫描得到的路径混用两种表示。
-fn strip_verbatim_prefix(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    match text.strip_prefix(r"\\?\") {
-        // 只处理盘符路径；`\\?\Volume{...}` 之类去掉前缀就不是合法路径了。
-        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
-        _ => path.to_path_buf(),
-    }
 }
 
 /// 子进程的 PATH：npm 是 Node 脚本，需要能找到 node。

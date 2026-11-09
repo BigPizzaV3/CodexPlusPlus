@@ -556,7 +556,7 @@ pub const DEVECO_CODE: AgentSpec = AgentSpec {
 fn pi_model(entry: &ModelEntry) -> Value {
     let mut model = json!({
         "id": entry.id,
-        "name": entry.id,
+        "name": entry.display_name,
         "reasoning": false,
         "input": ["text"],
     });
@@ -751,7 +751,8 @@ fn omp_provider(wiring: &Wiring) -> Value {
         .models
         .iter()
         .map(|entry| {
-            let mut model = json!({ "id": entry.id, "name": entry.id, "reasoning": false });
+            let mut model =
+                json!({ "id": entry.id, "name": entry.display_name, "reasoning": false });
             if let Some(window) = entry.context_window {
                 model["contextWindow"] = json!(window);
                 model["maxTokens"] = json!(output_limit(window));
@@ -997,7 +998,7 @@ fn write_crush(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
             let window = entry.context_window.unwrap_or(128_000);
             json!({
                 "id": entry.id,
-                "name": entry.id,
+                "name": entry.display_name,
                 "context_window": window,
                 "default_max_tokens": output_limit(window),
             })
@@ -1068,7 +1069,7 @@ fn write_command_code(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> any
     let dir = command_code_dir(env);
     let mut models = Map::new();
     for entry in &wiring.models {
-        models.insert(entry.id.clone(), json!({ "name": entry.id }));
+        models.insert(entry.id.clone(), json!({ "name": entry.display_name }));
     }
     let providers = set.json(&dir.join("providers.json"))?;
     object_entry(providers, "provider").insert(
@@ -1203,7 +1204,7 @@ fn write_qwen(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Res
     for entry in &wiring.models {
         let mut model = json!({
             "id": entry.id,
-            "name": entry.id,
+            "name": entry.display_name,
             "baseUrl": wiring.v1(),
             "envKey": QWEN_ENV_KEY,
         });
@@ -1247,11 +1248,13 @@ mod tests {
             models: vec![
                 ModelEntry {
                     id: "ds/deepseek-chat".to_string(),
+                    display_name: "ds/deepseek-chat".to_string(),
                     context_window: Some(128_000),
                     reasoning_levels: Vec::new(),
                 },
                 ModelEntry {
                     id: "group/daily".to_string(),
+                    display_name: "group/daily".to_string(),
                     context_window: None,
                     reasoning_levels: Vec::new(),
                 },

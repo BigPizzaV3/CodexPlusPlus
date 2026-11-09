@@ -129,7 +129,12 @@ test("all full saves require their own revision and conflicts preserve the calle
   find(app);
   assert.ok(initializer);
   let request: any;
-  const context = vm.createContext({ invoke: async (_command: string, args: unknown) => { request = args; return { message: "settings_revision_conflict: newer settings exist", status: "failed" }; } });
+  // 冲突自动恢复在真实组件里会拉最新设置重试；这里注入不可恢复的桩，
+  // 验证恢复失败时仍按原逻辑抛 settings_revision_conflict 并保留草稿。
+  const context = vm.createContext({
+    invoke: async (_command: string, args: unknown) => { request = args; return { message: "settings_revision_conflict: newer settings exist", status: "failed" }; },
+    retrySaveSettingsAfterConflict: async () => null,
+  });
   vm.runInContext(ts.transpileModule(`const call = ${initializer}; globalThis.callTest = call;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const draft = { revision: "old", model: "draft-model" };
   await assert.rejects(context.callTest("save_settings", { settings: draft }), /settings_revision_conflict/);

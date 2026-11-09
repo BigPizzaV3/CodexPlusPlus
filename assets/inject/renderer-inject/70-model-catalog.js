@@ -253,15 +253,33 @@
           }
         }
         if (!current()) return codexModelCatalog;
-        const changed = JSON.stringify(codexModelCatalog) !== JSON.stringify(nextCatalog);
+        const previousCatalog = codexModelCatalog;
+        const changed = JSON.stringify(previousCatalog) !== JSON.stringify(nextCatalog);
+        const previousMetadata = previousCatalog.modelMetadata || previousCatalog.model_metadata || {};
+        const nextMetadata = nextCatalog.modelMetadata || nextCatalog.model_metadata || {};
+        const groupNamesChanged = Object.entries(nextMetadata).some(([model, metadata]) =>
+          model.startsWith("group/") && metadata?.displayName !== previousMetadata[model]?.displayName);
+        window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.(previousCatalog, nextCatalog);
         codexModelCatalog = codexModelCatalogRuntime.catalog = nextCatalog;
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
-        if (changed) window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.();
         if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
+        syncCodexPlusGroupModelQueries();
         scheduleCodexModelWhitelistRefresh();
+        if (groupNamesChanged && codexPlusModelUnlockEnabled()) {
+          const client = findCodexQueryClient();
+          if (client) {
+            // 原生输入框也读取这份查询；让活跃查询重新取数并通知 React，不能只改菜单文字。
+            void client.invalidateQueries({
+              queryKey: ["models", "list", "local"],
+              predicate: (query) => query.queryKey[3] !== "team",
+            }).catch((error) => {
+              sendCodexPlusDiagnostic("model_catalog_query_refresh_failed", { error: String(error?.message || error) });
+            });
+          }
+        }
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -295,6 +313,35 @@
       : null;
     const value = exact || (matchedKey ? metadata[matchedKey] : null);
     return value && typeof value === "object" ? value : null;
+  }
+
+  function syncCodexPlusGroupModelQueries() {
+    if (!codexPlusModelUnlockEnabled()) return;
+    const client = findCodexQueryClient();
+    if (!client) return;
+    const queries = client.getQueryCache().findAll({
+      queryKey: ["models", "list", "local"],
+      predicate: (query) => query.queryKey[3] !== "team",
+    });
+    for (const query of queries) {
+      const response = query.state.data;
+      if (!Array.isArray(response?.data)) continue;
+      let changed = false;
+      const models = response.data.map((model) => {
+        if (!model.model.startsWith("group/")) return model;
+        const metadata = codexPlusModelMetadata(model.model);
+        if (!metadata) return model;
+        const next = { ...model };
+        for (const key of ["displayName", "description"]) {
+          if (typeof metadata[key] === "string" && metadata[key]) next[key] = metadata[key];
+        }
+        if (next.displayName === model.displayName && next.description === model.description) return model;
+        changed = true;
+        return next;
+      });
+      // 原生悬停和输入框都订阅此缓存；发布新对象，并保留网络请求的更新时间。
+      if (changed) client.setQueryData(query.queryKey, { ...response, data: models }, { updatedAt: query.state.dataUpdatedAt });
+    }
   }
 
   function modelReasoningEfforts(modelName) {
@@ -1407,6 +1454,7 @@
   function runCodexModelWhitelistRefreshPass() {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
     try {
+      syncCodexPlusGroupModelQueries();
       patchStatsigModelWhitelist();
       installAppServerModelRequestPatch();
     } catch (error) {

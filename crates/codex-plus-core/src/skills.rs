@@ -120,6 +120,17 @@ impl Default for SkillsState {
     }
 }
 
+/// 仓库 key 变化但 repo_path 命名空间不变（例如只切分支）时，把已安装记录迁到新 key。
+/// 安装记录保留首次安装的 legacy id（源目录、软链都不用动），只需更新 repo_key，
+/// 之后合并视图和更新守卫都能按新 key 匹配。
+fn migrate_installed_repo_key(state: &mut SkillsState, old_key: &str, new_key: &str) {
+    for record in state.installed.values_mut() {
+        if record.repo_key == old_key {
+            record.repo_key = new_key.to_string();
+        }
+    }
+}
+
 /// 首次启动种下的仓库源。第一个是 codex 官方 curated 列表（内置 skill-installer
 /// 用的就是它），后三个与常见第三方管理工具预置的 `skill_repos` 重合。
 pub fn default_skill_repos() -> Vec<SkillRepo> {
@@ -806,7 +817,21 @@ impl SkillsManager {
             if state.repos.iter().any(|item| item.key() == key) {
                 anyhow::bail!("目标仓库已存在");
             }
+            let previous = state
+                .repos
+                .iter()
+                .find(|item| item.key() == previous_key)
+                .cloned();
             state.repos.retain(|item| item.key() != previous_key);
+            // 仓库根以下的路径空间没变（例如只改分支）时，已安装记录跟随迁到新 key；
+            // owner/name/subdir 变了 repo_path 全部失效，记录保持原样，成为看得见的孤儿项。
+            if previous.is_some_and(|previous| {
+                previous.owner == repo.owner
+                    && previous.name == repo.name
+                    && previous.subdir == repo.subdir
+            }) {
+                migrate_installed_repo_key(&mut state, previous_key, &key);
+            }
         }
         match state.repos.iter_mut().find(|item| item.key() == key) {
             Some(existing) => *existing = repo,
@@ -899,6 +924,7 @@ impl SkillsManager {
         }
         let repo = state.repos.iter_mut().find(|repo| repo.key() == old_key).unwrap();
         *repo = resolved;
+        migrate_installed_repo_key(&mut state, &old_key, &new_key);
         self.save_state_unlocked(&state)?;
         coordination.changed_repo(self.coordination_scope(), &old_key);
         coordination.changed_repo(self.coordination_scope(), &new_key);
@@ -4955,6 +4981,88 @@ mod tests {
         assert!(first.save_resolved_repo_if_unchanged(&guard, resolved.clone()).unwrap());
         assert!(!first.list_repos().iter().any(|item| item.key() == repo.key()));
         assert!(first.list_repos().iter().any(|item| item.key() == resolved.key()));
+    }
+
+    #[test]
+    fn repo_branch_change_migrates_installed_records_and_keeps_them_updatable() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let repo = guarded_repo(&manager);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "alpha v1")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        manager.install_from_zip(&skill, &zip).unwrap();
+
+        // 仓库只改分支：已安装记录迁到新 key，合并视图不再出现「未安装 + 孤儿」双条目。
+        let mut renamed = repo.clone();
+        renamed.branch = "master".into();
+        manager.save_repo(renamed.clone(), Some(&repo.key())).unwrap();
+        let state = manager.load_state();
+        assert_eq!(state.installed[&skill.id].repo_key, renamed.key());
+        assert_eq!(state.installed[&skill.id].repo_path, skill.repo_path);
+
+        let remote = parse_skills_from_zip(&renamed, &zip, &BTreeMap::new()).unwrap();
+        let entries = manager.merge_entries(&remote);
+        let matched: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.repo_key == renamed.key() && entry.repo_path == skill.repo_path)
+            .collect();
+        assert_eq!(matched.len(), 1, "同一 Skill 不应出现重复条目");
+        assert!(matched[0].installed);
+        assert_eq!(matched[0].id, skill.id);
+
+        // 迁移后更新守卫放行，真实更新流程走通。
+        let newer_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "alpha v2")]);
+        let guard = manager
+            .capture_download_guard(&skill.id, &renamed.key(), false)
+            .unwrap();
+        manager.install_downloaded_zip(&newer_zip, &guard).unwrap();
+        let state = manager.load_state();
+        assert_eq!(state.installed[&skill.id].repo_key, renamed.key());
+        assert_eq!(
+            state.installed[&skill.id].content_hash,
+            zip_skill(&renamed, &newer_zip, "alpha").content_hash
+        );
+    }
+
+    #[test]
+    fn repo_subdir_change_does_not_migrate_installed_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let repo = guarded_repo(&manager);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "alpha")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        manager.install_from_zip(&skill, &zip).unwrap();
+
+        // subdir 变化会让 repo_path 命名空间整个改变，记录不能迁移，保持孤儿可见可卸载。
+        let mut moved = repo.clone();
+        moved.subdir = "plugins".into();
+        manager.save_repo(moved, Some(&repo.key())).unwrap();
+        assert_eq!(
+            manager.load_state().installed[&skill.id].repo_key,
+            repo.key()
+        );
+    }
+
+    #[test]
+    fn repository_fallback_migrates_installed_repo_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let repo = guarded_repo(&manager);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "alpha")]);
+        let skill = zip_skill(&repo, &zip, "alpha");
+        manager.install_from_zip(&skill, &zip).unwrap();
+
+        // 上游删了 main 分支、自动回退到 master：已安装记录跟随迁移。
+        let mut resolved = repo.clone();
+        resolved.branch = "master".into();
+        let guard = manager.capture_repo_guard(&repo.key()).unwrap();
+        assert!(manager
+            .save_resolved_repo_if_unchanged(&guard, resolved.clone())
+            .unwrap());
+        assert_eq!(
+            manager.load_state().installed[&skill.id].repo_key,
+            resolved.key()
+        );
     }
 
     #[test]

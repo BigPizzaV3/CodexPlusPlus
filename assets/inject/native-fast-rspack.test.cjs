@@ -12,6 +12,20 @@ const fixtures = () => [
   { key: "Queue", source: 'Queue(e,t,n){const read=n.read;e.exports={defaults:function(manager,{runtime:runtime},before,changed){let pending=null;return{async readServiceTier(model){for(;null!=pending;)await pending.catch(()=>void 0);return before(),read(manager.requestClient,manager.logger,model,async()=>{if("local"===manager.getHostId()&&await runtime.isUsingCopilotInference())return!1;let result=await manager.getAccount({priority:"critical"});return result.account?.type==="chatgpt"||result.account?.type==="amazonBedrock"})},async writeServiceTier(t,a){}}},explicit:function(manager,{settings:settings,storage:storage,filesystem:filesystem,runtime:runtime},readDefault,other,last){return async(conversation,message)=>{let options=message.submissionOptions,work=message.context.workPermissions,hasWork=null!=work,host=options?.executionHostId??manager.getHostId();let readTier=async()=>{if(null==options)return readDefault(conversation?.latestModel||null);if(null==options.serviceTier)return null;let{account:account}=await manager.getAccount({priority:"critical"});return account?.type==="chatgpt"||account?.type==="amazonBedrock"?options.serviceTier:null},[tier,permissions]=await Promise.all([readTier(),options?.usePermissionSelection??settings.readPermissionRefreshEnabled()]);return tier}}}}' },
 ];
 
+const inlineFixtures = () => fixtures().map(({ key, source }) => {
+  if (key === "Request") {
+    source = source.replace("async function access(scope,host)", "const access=async function(scope,host)")
+      .replace("}e.exports=access}", "};e.exports=access}");
+  }
+  return {
+    key,
+    source: source
+      .replace("return before(),read(manager.requestClient", 'return before(),async function(client,logger,model,eligible){return await eligible()?"priority":null}(manager.requestClient')
+      .replace("let readTier=async()=>{", "let[tier,permissions]=await Promise.all([(async()=>{")
+      .replace("},[tier,permissions]=await Promise.all([readTier(),", "})(),"),
+  };
+});
+
 function load(source, window, dependency) {
   const key = source.slice(0, source.indexOf("("));
   const factory = vm.runInNewContext(`({${source}})`, { window })[key];
@@ -39,6 +53,31 @@ test("Rspack requires all four gates exactly once across factories", () => {
   assert.equal(rspack.planFactories([...fixtures(), duplicate]).diagnostics.reason, "ambiguous-gates");
 });
 
+test("Rspack supports inlined gates and rejects ambiguity across old and new shapes", () => {
+  const result = rspack.planFactories(inlineFixtures());
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+  assert.deepEqual(Object.values(result.diagnostics.matches), [1, 1, 1, 1]);
+  for (const factory of result.factories) new vm.Script(`({${factory.source}})`);
+  for (const key of ["Request", "Queue"]) {
+    const extra = inlineFixtures().find(f => f.key === key);
+    const duplicate = { key: "Other", source: extra.source.replace(key, "Other") };
+    assert.equal(rspack.planFactories([...fixtures(), duplicate]).diagnostics.reason, "ambiguous-gates");
+  }
+  const changed = inlineFixtures();
+  changed[2].source = changed[2].source.replace("})(),options?.usePermissionSelection", "})(),other?.usePermissionSelection");
+  assert.equal(rspack.planFactories(changed).diagnostics.reason, "incomplete-gates");
+  for (const [before, after] of [
+    ["}(manager.requestClient", "}(other.requestClient"],
+    ["await runtime.isUsingCopilotInference()", "await other.isUsingCopilotInference()"],
+    ["readDefault(conversation?.latestModel||null)", "other(conversation?.latestModel||null)"],
+    ["return await eligible()", "/*" + "x".repeat(1800) + "*/return await eligible()"],
+  ]) {
+    const changed = inlineFixtures();
+    changed[2].source = changed[2].source.replace(before, after);
+    assert.equal(rspack.planFactories(changed).diagnostics.reason, "incomplete-gates");
+  }
+});
+
 test("Rspack factory discovery keeps originals on re-prepare without executing modules", async () => {
   const source = 'const original=({UI(e,t){throw Error("readServiceTier must not execute")}}).UI;const replacement=({UI(e,t){throw Error("patched factory must not execute")}}).UI;replacement.__codexPlusNativeFastOriginal=original;export const __webpack_require__={m:{UI:replacement,ignored:()=>null}};';
   const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 1);
@@ -55,64 +94,71 @@ test("Rspack rejects invalid, shadowed and already patched factories", () => {
   assert.equal(rspack.planFactories([...fixtures(), fixtures()[0]]).ok, false);
   assert.equal(rspack.planFactories([{ key: "UI", source: "Other(e,t){}" }]).ok, false);
   assert.equal(rspack.planFactories([{ key: "UI", source: "UI(e,t){return import.meta.url}" }]).ok, false);
-  const factories = fixtures();
-  factories[2].source = factories[2].source.replaceAll("account:account", "account:runtime").replaceAll("account?.type", "runtime?.type");
-  assert.equal(rspack.planFactories(factories).diagnostics.reason, "shadowed-bindings");
-  assert.equal(rspack.planFactories(rspack.planFactories(fixtures()).factories).ok, false);
-});
-
-test("Rspack UI and request access preserve auth, host and opt-in boundaries", async () => {
-  const factories = rspack.planFactories(fixtures()).factories;
-  for (const enabled of [true, false]) for (const localApi of [true, false]) {
-    const window = context(enabled, localApi);
-    for (const host of ["local", "remote"]) for (const auth of ["apikey", "apiKey", "chatgpt", "personalAccessToken", "amazonBedrock", "copilot", null]) {
-      const official = ["chatgpt", "personalAccessToken", "amazonBedrock"].includes(auth);
-      const expected = official || enabled && host === "local" && (["apikey", "apiKey"].includes(auth) || auth == null && localApi);
-      const ui = load(factories.find(f => f.key === "UI").source, window, { account: () => auth == null ? null : { authMethod: auth } });
-      assert.equal(!!ui({ hostId: host }).serviceTierAccess, expected);
-      let queries = 0;
-      const request = load(factories.find(f => f.key === "Request").source, window, {
-        auth: async () => auth, requirements: async () => { queries++; return { fast: true }; }, parse: v => v,
-      });
-      assert.equal(!!await request({ query: { setData() {} } }, host), expected);
-      assert.equal(queries, expected ? 1 : 0);
-    }
+  for (const makeFixtures of [fixtures, inlineFixtures]) {
+    const factories = makeFixtures();
+    factories[2].source = factories[2].source.replaceAll("account:account", "account:runtime").replaceAll("account?.type", "runtime?.type");
+    assert.equal(rspack.planFactories(factories).diagnostics.reason, "shadowed-bindings");
+    assert.equal(rspack.planFactories(rspack.planFactories(makeFixtures()).factories).ok, false);
   }
 });
 
-test("Rspack queue gates preserve Standard, priority, ultrafast, Copilot and remote behavior", async () => {
-  const source = rspack.planFactories(fixtures()).factories.find(f => f.key === "Queue").source;
-  for (const enabled of [true, false]) for (const copilot of [true, false]) for (const host of ["local", "remote"]) {
-    const queue = load(source, context(enabled), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
-    let reads = 0;
-    const manager = { getHostId: () => host, getAccount: async () => { reads++; return { account: { type: "apiKey" } }; } };
-    const deps = { runtime: { isUsingCopilotInference: async () => copilot }, settings: { readPermissionRefreshEnabled: () => true } };
-    const expected = enabled && host === "local" && !copilot;
-    assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), expected ? "priority" : null);
-    assert.equal(reads, host === "local" && copilot ? 0 : 1);
-    const submit = queue.explicit(manager, deps, async () => "inherited");
-    for (const tier of [null, "default", "priority", "ultrafast"]) {
-      reads = 0;
-      assert.equal(await submit({}, { submissionOptions: { serviceTier: tier }, context: {} }), expected ? tier : null);
-      assert.equal(reads, tier == null ? 0 : 1);
-      assert.equal(await submit({}, { submissionOptions: { serviceTier: tier, executionHostId: "remote" }, context: {} }), null);
+for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures]]) {
+  test(`Rspack ${shape} UI and request access preserve auth, host and opt-in boundaries`, async () => {
+    const factories = rspack.planFactories(makeFixtures()).factories;
+    for (const enabled of [true, false]) for (const localApi of [true, false]) {
+      const window = context(enabled, localApi);
+      for (const host of ["local", "remote"]) for (const auth of ["apikey", "apiKey", "chatgpt", "personalAccessToken", "amazonBedrock", "copilot", null]) {
+        const official = ["chatgpt", "personalAccessToken", "amazonBedrock"].includes(auth);
+        const expected = official || enabled && host === "local" && (["apikey", "apiKey"].includes(auth) || auth == null && localApi);
+        const ui = load(factories.find(f => f.key === "UI").source, window, { account: () => auth == null ? null : { authMethod: auth } });
+        assert.equal(!!ui({ hostId: host }).serviceTierAccess, expected);
+        let queries = 0;
+        const request = load(factories.find(f => f.key === "Request").source, window, {
+          auth: async () => auth, requirements: async () => { queries++; return { fast: true }; }, parse: v => v,
+        });
+        assert.equal(!!await request({ query: { setData() {} } }, host), expected);
+        assert.equal(queries, expected ? 1 : 0);
+      }
     }
-    assert.equal(await submit({}, { context: {} }), "inherited");
-  }
-  const queue = load(source, context(true, true), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
-  for (const auth of ["chatgpt", "amazonBedrock", null]) {
-    const manager = { getHostId: () => "local", getAccount: async () => ({ account: auth == null ? null : { type: auth } }) };
-    const deps = { runtime: { isUsingCopilotInference: async () => false }, settings: { readPermissionRefreshEnabled: () => true } };
-    assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), "priority");
-    assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), "priority");
-    if (auth == null) {
-      deps.runtime = {};
-      assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), null);
+  });
+
+  test(`Rspack ${shape} queue gates preserve Standard, priority, ultrafast, Copilot and remote behavior`, async () => {
+    const source = rspack.planFactories(makeFixtures()).factories.find(f => f.key === "Queue").source;
+    for (const enabled of [true, false]) for (const copilot of [true, false]) for (const host of ["local", "remote"]) {
+      const queue = load(source, context(enabled), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
+      let reads = 0;
+      const manager = { getHostId: () => host, getAccount: async () => { reads++; return { account: { type: "apiKey" } }; } };
+      const deps = { runtime: { isUsingCopilotInference: async () => copilot }, settings: { readPermissionRefreshEnabled: () => true } };
+      const expected = enabled && host === "local" && !copilot;
+      assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), expected ? "priority" : null);
+      assert.equal(reads, host === "local" && copilot ? 0 : 1);
+      const submit = queue.explicit(manager, deps, async () => "inherited");
+      for (const tier of [null, "default", "priority", "ultrafast"]) {
+        reads = 0;
+        assert.equal(await submit({}, { submissionOptions: { serviceTier: tier }, context: {} }), expected ? tier : null);
+        assert.equal(reads, tier == null ? 0 : 1);
+        assert.equal(await submit({}, { submissionOptions: { serviceTier: tier, executionHostId: "remote" }, context: {} }), null);
+      }
+      assert.equal(await submit({}, { context: {} }), "inherited");
     }
-  }
-});
+    const queue = load(source, context(true, true), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
+    for (const auth of ["chatgpt", "amazonBedrock", null]) {
+      const manager = { getHostId: () => "local", getAccount: async () => ({ account: auth == null ? null : { type: auth } }) };
+      const deps = { runtime: { isUsingCopilotInference: async () => false }, settings: { readPermissionRefreshEnabled: () => true } };
+      assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), "priority");
+      assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), "priority");
+      if (auth == null) {
+        deps.runtime = {};
+        assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), null);
+      }
+    }
+  });
+}
 
 const runtimeSource = 'const require={m:{},o:(o,k)=>Object.prototype.hasOwnProperty.call(o,k),O(){}};const register=chunk=>{var key,unused,ids=chunk.__rspack_esm_ids,modules=chunk.__webpack_modules__,run=chunk.__rspack_esm_runtime,i=0;for(key in modules)require.o(modules,key)&&(require.m[key]=modules[key]);for(run&&run(require);i<ids.length;i++){}require.O()};require.C=register;import*as support from"./782259.abcdef.js";require.C(support);export{require as __webpack_require__,register};';
+const reorderedRuntimeSource = runtimeSource
+  .replace("var key,unused,ids=chunk.__rspack_esm_ids,modules=chunk.__webpack_modules__,run=chunk.__rspack_esm_runtime,i=0;", "var key,modules=chunk.__webpack_modules__,run=chunk.__rspack_esm_runtime;")
+  .replace("for(run&&run(require);i<ids.length;i++)", "run&&run(require);for(var ids=chunk.__rspack_esm_ids,i=0;i<ids.length;i++)");
 const chunkSource = 'export const __rspack_esm_id=782259;export const __rspack_esm_ids=[782259];export const __webpack_modules__={};';
 
 test("Rspack registration replaces duplicate chunk factories without touching other modules", () => {
@@ -142,7 +188,18 @@ test("Rspack runtime preparation fails closed on missing or ambiguous registrati
   assert.equal(select(runtimeSource.replace("require.m[key]=modules[key]", "require.m[key]=null")), null);
   assert.equal(select(runtimeSource + runtimeSource), null);
   assert.equal(select(runtimeSource.replace("./782259.abcdef.js", "https://example.com/782259.abcdef.js")), null);
+  assert.equal(select(reorderedRuntimeSource), "app://-/assets/782259.abcdef.js");
+  for (const changed of [
+    reorderedRuntimeSource + reorderedRuntimeSource,
+    runtimeSource + reorderedRuntimeSource,
+    reorderedRuntimeSource.replace("require.m[key]=modules[key]", "require.m[key]=null"),
+    reorderedRuntimeSource.replace("run&&run(require)", "run&&run(other)"),
+    reorderedRuntimeSource.replace("ids=chunk.__rspack_esm_ids", "ids=other.__rspack_esm_ids"),
+    reorderedRuntimeSource.replace("./782259.abcdef.js", "https://example.com/782259.abcdef.js"),
+  ]) assert.equal(select(changed), null);
   const prepare = source => rspack.prepare(source, "app://-/assets/782259.abcdef.js", fixtures(), source => ({ source }), source => source);
+  assert.equal(prepare(chunkSource.replace("export const __rspack_esm_id=782259;", "")).ok, true);
+  assert.equal(prepare(chunkSource.replace("__rspack_esm_ids=[782259]", "__rspack_esm_ids=[782259,123]")).ok, false);
   assert.equal(prepare(chunkSource + "export const __rspack_esm_runtime=()=>{};").ok, false);
   assert.equal(prepare(chunkSource + "const __codexPlusFastFactories={};").ok, false);
 });
@@ -164,6 +221,14 @@ test("Rspack document preparation discovers numbered entries and preserves the i
   assert.equal(result.modules[0].url, support);
   assert.ok(result.modules[0].patchedSource.includes(`const base="${support}"`));
   assert.ok(result.modules[0].patchedSource.includes('window.__codexPlusNativeFastCompiled="v1"'));
+
+  const inlined = await api.prepareDocumentModules({
+    ...options, fetchText: async value => value === url ? reorderedRuntimeSource : chunkSource.replace("export const __rspack_esm_id=782259;", ""),
+    readRspackFactories: async () => inlineFixtures(),
+  });
+  assert.equal(inlined.ok, true, JSON.stringify(inlined.diagnostics));
+  assert.equal(inlined.modules[0].url, support);
+  assert.deepEqual(Object.values(inlined.diagnostics.matches), [1, 1, 1, 1]);
 
   for (const expression of ['import("../"+other.u(id))', 'import("../"+require.u(id+1))', 'import(name)', 'import("../../"+require.u(id))']) {
     const result = await api.prepareDocumentModules({ ...options, fetchText: async value => value === url ? runtimeSource : chunkSource + `function load(id){return ${expression}}` });
