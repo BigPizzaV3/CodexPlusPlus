@@ -6104,6 +6104,18 @@ async fn upstream_request_parts(
                 }),
             );
         }
+        let callless_outputs = downgrade_callless_function_outputs(&mut body);
+        if !callless_outputs.is_empty() {
+            // 只记录条数与工具名，不记录 output 内容。
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.callless_function_output_downgraded",
+                json!({
+                    "relayId": relay.id,
+                    "count": callless_outputs.len(),
+                    "names": callless_outputs,
+                }),
+            );
+        }
         dedupe_responses_tool_search_outputs(&mut body);
         normalize_responses_item_ids(&mut body);
     }
@@ -7832,6 +7844,52 @@ fn normalize_responses_item_ids(body: &mut Value) {
         Value::Object(_) => normalize_responses_item_id(input),
         _ => {}
     }
+}
+
+/// Codex Desktop 在跨任务委派（`create_thread` / `send_message_to_thread`）和定时任务
+/// （`automation_update`）时，会在 input 里注入一条**没有 `call_id`** 的
+/// `function_call_output` 作为 bootstrap。HTTP 的 Responses 上游一律拒绝缺 call_id 的
+/// function_call_output（「continuation via previous_response_id is only supported on
+/// Responses WebSocket v2」，#2997 / #3000，参考 openai/codex#42014、#42088）。
+/// 把这类条目原位降级成普通 user 消息——只命中上游必然拒绝的形态，不加开关。
+/// 返回每条降级条目的原 `name`（缺失记 `""`），`.len()` 即降级条数。
+fn downgrade_callless_function_outputs(body: &mut Value) -> Vec<String> {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for item in items.iter_mut() {
+        if item.get("type").and_then(Value::as_str) != Some("function_call_output") {
+            continue;
+        }
+        let has_call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty());
+        if has_call_id {
+            continue;
+        }
+        names.push(
+            item.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        );
+        // 不保留原 id / name / namespace 等字段，避免 fco_ 前缀与 message 类型冲突。
+        let output = item.get("output").cloned().unwrap_or(Value::Null);
+        let content = match output {
+            Value::String(text) => vec![json!({"type": "input_text", "text": text})],
+            Value::Array(parts) if !parts.is_empty() => parts,
+            Value::Null => vec![json!({"type": "input_text", "text": ""})],
+            Value::Array(_) => vec![json!({"type": "input_text", "text": ""})],
+            other => vec![json!({
+                "type": "input_text",
+                "text": serde_json::to_string(&other).unwrap_or_default()
+            })],
+        };
+        *item = json!({"type": "message", "role": "user", "content": content});
+    }
+    names
 }
 
 /// Responses 上游要求同一请求里的 namespace 名称唯一。
@@ -14100,5 +14158,141 @@ mod parallel_tool_call_pairing_tests {
                 "{kind} {call_id} 找不到同类型调用：{body}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod callless_function_output_tests {
+    use super::*;
+
+    /// #2997 / #3000：Codex Desktop 的委派 / 定时任务 bootstrap 注入没有 call_id 的
+    /// function_call_output，HTTP Responses 上游必然拒绝，原位降级成 user 消息。
+    #[test]
+    fn delegation_bootstrap_output_becomes_a_user_message() {
+        let mut body = json!({"input": [
+            {"type":"function_call_output","id":"fco_x","name":"create_thread","namespace":"codex_app",
+             "output":"<codex_delegation>\n  <source_thread_id>t</source_thread_id>\n  <input>只回复 TEST_OK</input>\n</codex_delegation>"}
+        ]});
+        assert_eq!(downgrade_callless_function_outputs(&mut body), ["create_thread"]);
+        let item = &body["input"][0];
+        assert_eq!(item["type"], "message");
+        assert_eq!(item["role"], "user");
+        assert_eq!(item["content"][0]["type"], "input_text");
+        assert_eq!(
+            item["content"][0]["text"],
+            "<codex_delegation>\n  <source_thread_id>t</source_thread_id>\n  <input>只回复 TEST_OK</input>\n</codex_delegation>"
+        );
+        for key in ["id", "name", "namespace", "call_id", "output"] {
+            assert!(item.get(key).is_none(), "降级后不保留 {key}");
+        }
+    }
+
+    /// 空串与纯空白 call_id 同样会被上游拒绝，一并降级。
+    #[test]
+    fn blank_call_id_outputs_are_downgraded() {
+        for call_id in ["", "  "] {
+            let mut body = json!({"input": [
+                {"type":"function_call_output","call_id":call_id,"output":"x"}
+            ]});
+            assert_eq!(downgrade_callless_function_outputs(&mut body).len(), 1);
+            assert_eq!(body["input"][0]["type"], "message");
+        }
+    }
+
+    /// 带 call_id 的工具调用链原样保留。
+    #[test]
+    fn paired_function_call_output_is_untouched() {
+        let mut body = json!({"input": [
+            {"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"}
+        ]});
+        let before = body.clone();
+        assert!(downgrade_callless_function_outputs(&mut body).is_empty());
+        assert_eq!(body, before);
+    }
+
+    /// output 为部件数组时原样作为 message content（本来就是合法 content 类型）。
+    #[test]
+    fn array_output_is_reused_as_message_content() {
+        let mut body = json!({"input": [
+            {"type":"function_call_output","output":[
+                {"type":"input_text","text":"a"},
+                {"type":"input_image","image_url":"data:image/png;base64,AA"}
+            ]}
+        ]});
+        assert_eq!(downgrade_callless_function_outputs(&mut body).len(), 1);
+        assert_eq!(
+            body["input"][0]["content"],
+            json!([
+                {"type":"input_text","text":"a"},
+                {"type":"input_image","image_url":"data:image/png;base64,AA"}
+            ])
+        );
+    }
+
+    /// 混合顺序里只动缺 call_id 的那一条，长度与顺序不变。
+    #[test]
+    fn mixed_input_only_rewrites_callless_entries() {
+        let mut body = json!({"input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call_output","name":"automation_update","output":"schedule"},
+            {"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"}
+        ]});
+        assert_eq!(downgrade_callless_function_outputs(&mut body), ["automation_update"]);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 4);
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(input[1]["content"][0]["text"], "schedule");
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[3]["type"], "function_call_output");
+    }
+
+    /// input 不是数组时不改任何东西。
+    #[test]
+    fn non_array_input_is_ignored() {
+        let mut body = json!({"input": "text"});
+        let before = body.clone();
+        assert!(downgrade_callless_function_outputs(&mut body).is_empty());
+        assert_eq!(body, before);
+    }
+
+    /// 端到端：经 Responses 供应商转发后，上游收到的 input 里不再有缺 call_id 的输出。
+    #[tokio::test]
+    async fn responses_upstream_never_sees_a_callless_function_output() {
+        let relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            base_url: "https://relay.example.test/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let body = json!({"model": "gpt-5.6-sol", "input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call_output","id":"fco_x","name":"create_thread","namespace":"codex_app","output":"delegate"},
+            {"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"}
+        ]});
+        let (_, out, _, _) = upstream_request_parts(
+            &relay,
+            body,
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        )
+        .await
+        .unwrap();
+        let input = out["input"].as_array().unwrap();
+        assert_eq!(input.len(), 4);
+        assert!(
+            input.iter().all(|item| item["type"] != "function_call_output"
+                || item["call_id"].as_str().is_some_and(|id| !id.trim().is_empty())),
+            "上游收到的 input 里不应再有缺 call_id 的 function_call_output：{out}"
+        );
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["content"][0]["text"], "delegate");
     }
 }
