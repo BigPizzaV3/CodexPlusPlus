@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; height: 100vh; display: grid; place-items: center;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    background: #f5f4ef; color: #1f1e1c;
+  }
+  .card {
+    width: min(460px, 86vw); background: #fff; border: 1px solid #e6e3da;
+    border-radius: 18px; padding: 36px 32px; box-shadow: 0 18px 60px rgba(0,0,0,.08);
+  }
+  .logo { width: 40px; height: 40px; border-radius: 12px; background: #d97757; }
+  h1 { font-size: 22px; margin: 20px 0 6px; letter-spacing: -.01em; }
+  p { margin: 0 0 20px; color: #6b665c; font-size: 14px; line-height: 1.6; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: #faf9f5; border-radius: 12px; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #2f9e66; }
+  .badge { margin-left: auto; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: #efe7ff; color: #6b3fd1; }
+  code { font-size: 12px; color: #8a8478; }
+  .hint { margin-top: 18px; font-size: 12px; color: #8a8478; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"></div>
+    <h1>Claude（本地后端）</h1>
+    <p>这是 claude-local 的演示页。它证明 Claude.app 已经通过本地 MITM 加载到我们提供的页面，并且 <code>/api/bootstrap</code> 返回了本地账号。</p>
+    <div class="row"><span class="dot"></span> 已登录 · Local User <span class="badge">Max</span></div>
+    <div class="hint" id="api">正在读取 /api/bootstrap…</div>
+  </div>
+  <script>
+    fetch('/api/bootstrap').then(r => r.json()).then(d => {
+      document.getElementById('api').textContent =
+        'bootstrap: ' + (d.account?.email || '?') + ' / plan=' + (d.account?.plan || '?') +
+        ' / flags=' + Object.keys(d.feature_flags || {}).length;
+    }).catch(e => {
+      document.getElementById('api').textContent = 'bootstrap 读取失败: ' + e.message;
+    });
+  </script>
+</body>
+</html>

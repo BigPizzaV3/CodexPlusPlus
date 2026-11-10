@@ -782,10 +782,57 @@
   border: 0;
 }
 
+:root .shell .claude-local-settings {
+  display: grid;
+  gap: 12px;
+}
+
+:root .shell .claude-local-settings select {
+  width: min(100%, 320px);
+  min-width: 0;
+}
+
+:root .shell .claude-local-advanced {
+  border-top: 1px solid hsl(var(--cx-row-divider));
+}
+
+:root .shell .claude-local-advanced > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 4px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+:root .shell .claude-local-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+:root .shell .claude-local-advanced[open] > summary > svg {
+  transform: rotate(90deg);
+}
+
+:root .shell .claude-local-advanced-body {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 :root .shell .claude-localization-page > .claude-l10n-hint {
   margin: 0;
   padding: 0 4px;
   border: 0;
+}
+
+/* 补丁 Desktop 页：副本块变成整页主体，去掉折叠块那条分隔线。 */
+:root .shell .claude-local-advanced-page {
+  border-top: 0;
 }
 
 :root .shell .claude-localization-page .claude-l10n-progress {

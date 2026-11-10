@@ -84,7 +84,7 @@ test("Windows 启动的 Claude 主进程继承完整插件目录列表", async (
   assert.equal(spawned.options.detached, true);
 });
 
-test("开关仅通过管理器命令保存，插件生成只在增强版启动分支执行", () => {
+test("开关仅通过管理器命令保存，插件生成只在补丁版启动分支执行", () => {
   const core = read("crates/codex-plus-core/src/claude_localization.rs");
   const branchStart = core.indexOf('if script.starts_with("inject-cn.")');
   const launchBranch = core.slice(branchStart, core.indexOf("let mut child = command", branchStart));

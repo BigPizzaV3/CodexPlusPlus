@@ -13,6 +13,11 @@
 # on the Windows runner only (macOS/Linux check out LF either way).
 *.rs text eol=lf
 
+# Frontend sources are read back by node --test source-contract tests and compared
+# line-by-line; same CRLF hazard as *.rs on Windows checkouts (core.autocrlf=true).
+*.ts text eol=lf
+*.tsx text eol=lf
+
 # First-party scripts are embedded with include_str! and inspected by source-contract tests.
 assets/inject/*.js text eol=lf
 assets/inject/**/*.js text eol=lf

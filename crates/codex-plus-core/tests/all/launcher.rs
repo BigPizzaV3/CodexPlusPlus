@@ -1915,6 +1915,61 @@ async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() 
 }
 
 #[tokio::test]
+async fn launch_upgrades_legacy_context_catalog_before_starting_codex() {
+    let _state = crate::common::IsolatedTestState::new();
+    for invalid in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Codex.app");
+        std::fs::create_dir(&app_dir).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = FakeHooks::new(events.clone());
+        let home = hooks.codex_home_dir();
+        std::fs::create_dir(home.join("model-catalogs")).unwrap();
+        let catalog_path = home.join("model-catalogs/legacy.json");
+        let original = if invalid { "{bad" } else {
+            r#"{"models":[{"slug":"chosen","context_window":131072,"max_context_window":131072}]}"#
+        };
+        std::fs::write(&catalog_path, original).unwrap();
+        let original_config =
+            "model = 'chosen'\nmodel_catalog_json = 'model-catalogs/legacy.json'\n";
+        std::fs::write(home.join("config.toml"), original_config).unwrap();
+        let result = launch_and_inject_with_hooks(
+            LaunchOptions {
+                app_dir: Some(app_dir),
+                status_store: StatusStore::new(temp.path().join("latest-status.json")),
+                ..Default::default()
+            },
+            &hooks,
+        ).await;
+        let handle = result.unwrap();
+        if invalid {
+            assert!(events.lock().unwrap().iter().any(|event| event.starts_with("launch:")));
+            assert_eq!(
+                std::fs::read_to_string(home.join("config.toml")).unwrap(),
+                original_config
+            );
+            assert_eq!(std::fs::read_to_string(&catalog_path).unwrap(), original);
+            let log =
+                std::fs::read_to_string(codex_plus_core::diagnostic_log::diagnostic_log_path())
+                    .unwrap();
+            assert!(log.contains("launcher.model_catalog_pointer_migration_failed"));
+            assert!(log.contains("解析待升级模型目录失败"));
+        } else {
+            let config: toml_edit::DocumentMut =
+                std::fs::read_to_string(home.join("config.toml")).unwrap().parse().unwrap();
+            assert_eq!(config["model"].as_str(), Some("chosen"));
+            let migrated = Path::new(config["model_catalog_json"].as_str().unwrap());
+            assert_ne!(migrated, catalog_path);
+            let catalog: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(migrated).unwrap()).unwrap();
+            assert!(catalog["models"][0]["max_context_window"].is_null());
+            assert_eq!(std::fs::read_to_string(&catalog_path).unwrap(), original);
+        }
+        handle.wait_for_codex_exit().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabled() {
     let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();

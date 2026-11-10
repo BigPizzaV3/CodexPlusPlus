@@ -36,3 +36,42 @@ test("详情折叠标题保留原生交互，路径与模型选择器可伸缩",
   assert.match(styles, /gw-agent-row\.cx-row \{[^}]*flex-wrap: wrap;/);
   assert.match(styles, /gw-picker-button > \.gw-picker-label \{[^}]*flex: none;/);
 });
+
+test("Codex 行有启动 / 停止键：只有主窗口传了 codexRun 才显示，缺省不显示", () => {
+  // 主窗口把侧栏那份运行时对象透传下来；总览里的接入弹窗不传，就只留模型与开关。
+  assert.match(source, /export type CodexRunControls = \{/);
+  assert.match(source, /codexRun\?: CodexRunControls;/);
+  assert.match(source, /\{isCodex && codexRun \? \(/);
+  assert.match(source, /aria-label=\{codexRun\.running \? t\("停止 Codex"\) : t\("启动 Codex"\)\}/);
+  // 未运行 Play「启动 Codex」、运行中 Square「停止 Codex」、busy 转圈；不可用时置灰并把原因放进 title。
+  assert.match(source, /disabled=\{codexRun\.busy \|\| \(!codexRun\.running && Boolean\(codexRun\.unavailableReason\)\)\}/);
+  assert.match(source, /title=\{codexRun\.busy \? t\("处理中…"\) : codexRun\.running \? t\("停止 Codex"\) : codexRun\.unavailableReason \?\? t\("启动 Codex"\)\}/);
+  assert.match(source, /\(codexRun\.running \? codexRun\.onStop : codexRun\.onStart\)\(\);/);
+  assert.match(source, /<Switch disabled=\{busy !== null\} label=\{tf\("\{0\} 接入 Codex\+\+"/);
+  // 和 Claude 行同一个位置：模型选择器和接入开关之间。
+  const controls = source.slice(source.indexOf('<div className="cx-row-controls">'), source.indexOf("<Switch", source.indexOf('<div className="cx-row-controls">')));
+  assert.match(controls, /<ModelPicker/);
+  assert.match(controls, /isCodex && codexRun/);
+  assert.match(controls, /canLaunchClaudeDesktop && claudeRun/);
+});
+
+test("Claude Desktop 行有本地启动 / 停止键，其它 Agent 不显示", () => {
+  // 只有 Claude Desktop 有可启停的本地启动器；Codex 的启动入口在侧栏和总览，Grok 没有本地启动器。
+  // 绑定 id 是 `claude-desktop`（`claude` 是 Claude Code 命令行），两者都要认成 Claude。
+  assert.match(source, /const isClaude = agent\.agent === "claude" \|\| agent\.agent === "claude-desktop";/);
+  assert.match(source, /const canLaunchClaudeDesktop = agent\.agent === "claude-desktop";/);
+  assert.match(source, /\{canLaunchClaudeDesktop && claudeRun \? \(/);
+  assert.doesNotMatch(source, /\{isClaude && claudeRun \? \(/, "Claude Code 行不该出现本地启动键");
+  assert.match(source, /if \(canLaunchClaudeDesktop\) void refreshClaudeRun\(\);/);
+  assert.match(source, /className="gw-icon-button gw-agent-run"/);
+  assert.match(source, /data-running=\{claudeRun\.running\}/);
+  assert.match(source, /invoke<ClaudeLocalRunStatus>\("claude_local_status"\)/);
+  assert.match(source, /invoke<ClaudeLocalRunStatus>\("claude_local_action", \{ action \}\)/);
+  // 放在模型选择器和接入开关之间，和页面里其它图标按钮同尺寸。
+  const controls = source.slice(source.indexOf('<div className="cx-row-controls">'), source.indexOf("<Switch", source.indexOf('<div className="cx-row-controls">')));
+  assert.match(controls, /<ModelPicker/);
+  assert.match(controls, /gw-agent-run/);
+  assert.doesNotMatch(source, /agent\.agent === "grok" && claudeRun/);
+  // 失败走页面已有的 notify，不自己弹 alert。
+  assert.match(source, /await notify\(t\("Claude 本地模式"\), result\.message \?\? t\("操作失败"\), "failed"\)/);
+});

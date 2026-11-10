@@ -4236,6 +4236,7 @@ pub(crate) fn managed_catalog_pointer(home: &Path, relative: &str, config: &str)
 
 /// 只迁移当前 home 内的受管目录，不重放供应商配置或改写用户外部目录。
 /// 原生 Windows 需要绝对路径（#2529），WSL 则保留共享 home 下的相对路径（#2591）。
+/// 升级时另发一份无固定窗口上限的目录，让随后启动的进程支持上下文热更新。
 pub fn migrate_managed_model_catalog_pointer_in_home(
     home: &Path,
     settings: &BackendSettings,
@@ -4299,11 +4300,45 @@ pub fn migrate_managed_model_catalog_pointer_in_home(
             return Ok(false);
         }
     }
+    let catalog_text = std::fs::read_to_string(&catalog_path).context("读取待升级模型目录失败")?;
+    let mut catalog: Value = serde_json::from_str(&catalog_text).context("解析待升级模型目录失败")?;
+    let models = catalog.get_mut("models").and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("待升级模型目录缺少 models 数组"))?;
+    let mut context_changed = false;
+    for model in models {
+        if model.get("max_context_window").is_some_and(Value::is_number) {
+            model["max_context_window"] = Value::Null;
+            context_changed = true;
+        }
+    }
+    let relative = if context_changed {
+        // 旧目录可能正被其他进程读取，也可能是聚合目录的不可变发布产物。
+        let migrated_bytes = serde_json::to_vec_pretty(&catalog)?;
+        let digest = format!("{:x}", sha2::Sha256::digest(&migrated_bytes));
+        let migrated = Path::new("model-catalogs").join(format!(
+            "{}-context-{}.json",
+            catalog_path.file_stem().unwrap().to_string_lossy(),
+            digest,
+        ));
+        let migrated_path = home.join(&migrated);
+        match std::fs::read(&migrated_path) {
+            Ok(existing) if existing == migrated_bytes => {}
+            Ok(_) => anyhow::bail!("已存在的升级模型目录内容不匹配"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::settings::atomic_write(&migrated_path, &migrated_bytes)
+                    .context("发布升级后的模型目录失败")?;
+            }
+            Err(error) => return Err(error).context("读取升级后的模型目录失败"),
+        }
+        migrated
+    } else {
+        relative.to_path_buf()
+    };
     let pointer = managed_catalog_pointer(home, &relative.to_string_lossy(), &contents)?;
     if raw_path == pointer { return Ok(false); }
     doc["model_catalog_json"] = toml_edit::value(pointer);
     crate::settings::atomic_write(&config_path, doc.to_string().as_bytes())
-        .context("迁移模型 catalog 绝对路径失败")?;
+        .context("更新升级后的模型目录指针失败")?;
     Ok(true)
 }
 
@@ -5278,7 +5313,7 @@ fn is_cc_switch_model_catalog(path: &str) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case(CC_SWITCH_MODEL_CATALOG_FILENAME))
 }
 
-fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
+pub(crate) fn is_codex_plus_managed_model_catalog(home: &Path, path: &str) -> bool {
     let normalized = path.trim().replace('\\', "/");
     let relative = normalized.trim_start_matches("./");
     if relative.to_ascii_lowercase().starts_with("model-catalogs/") {

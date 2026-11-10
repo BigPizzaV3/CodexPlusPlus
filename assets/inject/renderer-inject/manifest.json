@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1034
+      "lines": 1049
     },
     {
       "name": "31-config-read-deadline.js",
@@ -83,7 +83,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1509
+      "lines": 1575
     },
     {
       "name": "71-model-picker-groups.js",
@@ -93,7 +93,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 623
+      "lines": 664
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -133,7 +133,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1113
+      "lines": 1114
     },
     {
       "name": "91-extension-api.js",
@@ -143,12 +143,12 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1385
+      "lines": 1455
     },
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 432
+      "lines": 615
     },
     {
       "name": "92-extension-host.js",

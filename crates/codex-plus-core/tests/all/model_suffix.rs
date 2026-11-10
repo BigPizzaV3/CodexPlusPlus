@@ -195,7 +195,7 @@ fn build_catalog_json_writes_context_window_and_strips_suffix() {
     let catalog = build_model_catalog_json(&entries, None);
     assert!(catalog.contains(r#""slug": "deepseek-v4-pro""#));
     assert!(catalog.contains(r#""context_window": 1000000"#));
-    assert!(catalog.contains(r#""max_context_window": 1000000"#));
+    assert!(catalog.contains(r#""max_context_window": null"#));
     assert!(catalog.contains(r#""slug": "claude-sonnet-4""#));
     assert!(catalog.contains(r#""context_window": 200000"#));
     // 后缀不得进入 catalog
@@ -274,8 +274,8 @@ fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
             .filter_map(|entry| entry["effort"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(model["context_window"], 272_000);
-        // 官方 gpt-5.6 目录为 272000/872000：未显式配置窗口时保留官方上限（issue #2191）。
-        assert_eq!(model["max_context_window"], 872_000);
+        // 默认窗口不变，但不把可覆盖窗口固定在启动时目录的上限。
+        assert!(model["max_context_window"].is_null());
         assert_eq!(model["default_reasoning_level"], default_reasoning);
         assert_eq!(efforts, expected_efforts);
         assert!(!efforts.contains(&"minimal"));
@@ -340,8 +340,7 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
     assert_eq!(model["default_reasoning_level"], "medium");
     assert_eq!(metadata["defaultReasoningEffort"], "medium");
     assert_eq!(model["context_window"], 272_000);
-    // 官方 gpt-6-astra 目录为 272000/872000：未显式配置窗口时保留官方上限（issue #2191）。
-    assert_eq!(model["max_context_window"], 872_000);
+    assert!(model["max_context_window"].is_null());
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["supports_image_detail_original"], true);
     assert_eq!(model["use_responses_lite"], false);
@@ -357,8 +356,8 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
     let overridden: serde_json::Value =
         serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
     assert_eq!(overridden["models"][0]["context_window"], 200_000);
-    // 显式配置窗口（profile 全局 / 每模型）时两字段同值，产品语义不变（issue #2191）。
-    assert_eq!(overridden["models"][0]["max_context_window"], 200_000);
+    // 默认值随配置改变，运行时覆盖不受旧目录上限截断。
+    assert!(overridden["models"][0]["max_context_window"].is_null());
 }
 
 #[test]
@@ -404,7 +403,7 @@ fn gpt61_sol_metadata_exposes_max_ultra_fast_and_272k_default() {
     assert_eq!(model["default_reasoning_level"], "medium");
     assert_eq!(ui["defaultReasoningEffort"], "medium");
     assert_eq!(model["context_window"], 272_000);
-    assert_eq!(model["max_context_window"], 872_000);
+    assert!(model["max_context_window"].is_null());
     assert_eq!(model["effective_context_window_percent"], 100);
     assert!(model["auto_compact_token_limit"].is_null());
     assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
@@ -429,7 +428,7 @@ fn gpt61_sol_metadata_exposes_max_ultra_fast_and_272k_default() {
         let overridden: serde_json::Value =
             serde_json::from_str(&build_model_catalog_json(entries, fallback)).unwrap();
         assert_eq!(overridden["models"][0]["context_window"], expected_window);
-        assert_eq!(overridden["models"][0]["max_context_window"], expected_window);
+        assert!(overridden["models"][0]["max_context_window"].is_null());
     }
 }
 
@@ -529,9 +528,9 @@ fn build_catalog_json_prefers_runtime_models_cache_entry() {
     // 运行时缓存命中：display_name / shell_type 来自 models_cache.json（issue #2141）
     assert_eq!(model["display_name"], "GPT-5.5 Runtime");
     assert_eq!(model["shell_type"], "unified_exec");
-    // 窗口仍由 builder 权威生成：未显式配置时保留缓存的上限（#2191 语义）
+    // 默认窗口来自缓存，不把缓存的 max 固定成运行时覆盖上限。
     assert_eq!(model["context_window"], 272_000);
-    assert_eq!(model["max_context_window"], 872_000);
+    assert!(model["max_context_window"].is_null());
 }
 
 #[test]
@@ -567,7 +566,7 @@ fn catalog_metadata_matches_slug_case_insensitively() {
 #[test]
 fn bundled_template_matches_slug_case_insensitively() {
     // codex bundled catalog 全小写 slug，界面填大写（GPT-5.4）也应命中模板：
-    // 命中时保留官方 max_context_window 1000000，未命中回落首条模板的 272000。
+    // 命中时保留模板默认窗口，运行时覆盖不受模板 max 限制。
     // 隔离 CODEX_HOME：否则查找链会先命中本机官方 models_cache.json，机器相关。
     let _lock = runtime_cache_env_lock();
     let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
@@ -576,15 +575,14 @@ fn bundled_template_matches_slug_case_insensitively() {
         serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
     assert_eq!(catalog["models"][0]["slug"], "GPT-5.4");
     assert_eq!(catalog["models"][0]["context_window"], 272_000);
-    assert_eq!(catalog["models"][0]["max_context_window"], 1_000_000);
+    assert!(catalog["models"][0]["max_context_window"].is_null());
 }
 
 #[test]
 fn vendor_metadata_chain_matches_all_providers() {
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
-    // 未配置窗口时，供应商元数据直接提供窗口与展示字段（#2191：未显式配置
-    // 保留官方 max 上限），不再回落 272000 裸模板。
+    // 未配置窗口时，供应商元数据直接提供默认窗口与展示字段。
     assert!(requires_bundled_metadata_catalog("kimi-k3"));
     let entries = collect_catalog_entries(
         "kimi-k3\nglm-5.3\nqwen3.8-max\ngrok-4.7\nMiniMax-M3",
@@ -606,7 +604,7 @@ fn vendor_metadata_chain_matches_all_providers() {
     let k3 = find("kimi-k3");
     assert_eq!(k3["display_name"], "Kimi K3");
     assert_eq!(k3["context_window"], 1_048_576);
-    assert_eq!(k3["max_context_window"], 1_048_576);
+    assert!(k3["max_context_window"].is_null());
     assert_eq!(k3["apply_patch_tool_type"], "freeform");
     let efforts = effort_list(&k3);
     assert_eq!(efforts, vec!["low", "high", "max"]);
@@ -618,7 +616,7 @@ fn vendor_metadata_chain_matches_all_providers() {
 
     let qwen = find("qwen3.8-max");
     assert_eq!(qwen["context_window"], 1_000_000);
-    assert_eq!(qwen["max_context_window"], 1_000_000);
+    assert!(qwen["max_context_window"].is_null());
     assert_eq!(effort_list(&qwen), vec!["low", "medium", "xhigh"]);
 
     let grok = find("grok-4.7");
@@ -679,7 +677,7 @@ fn compat_overlay_composes_with_runtime_cache_base() {
     let model = &catalog["models"][0];
     // 精调覆盖：窗口与 Fast 档保持产品级取值
     assert_eq!(model["context_window"], 272_000);
-    assert_eq!(model["max_context_window"], 872_000);
+    assert!(model["max_context_window"].is_null());
     assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
     // 官方流入：精调未定义的截断策略取缓存最新值
     assert_eq!(model["truncation_policy"]["limit"], 999);
@@ -895,7 +893,7 @@ fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
         assert_eq!(model["default_reasoning_level"], "medium");
         assert_eq!(ui["defaultReasoningEffort"], "medium");
         assert_eq!(model["context_window"], 272_000);
-        assert_eq!(model["max_context_window"], 872_000);
+        assert!(model["max_context_window"].is_null());
         assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
         assert_eq!(ui["additionalSpeedTiers"], model["additional_speed_tiers"]);
         assert_eq!(model["service_tiers"][0]["id"], "priority");
@@ -910,7 +908,7 @@ fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
         serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
     for model in overridden["models"].as_array().unwrap() {
         assert_eq!(model["context_window"], 200_000);
-        assert_eq!(model["max_context_window"], 200_000);
+        assert!(model["max_context_window"].is_null());
     }
 }
 

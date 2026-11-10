@@ -1427,6 +1427,16 @@ span.gw-popover-check {
   white-space: nowrap;
 }
 
+/* Claude 行的启动 / 停止键：和行内其它图标键同尺寸，运行中换成强调色。 */
+.gw-agent-run[data-running="true"] {
+  color: hsl(var(--brand-accent));
+}
+
+.gw-agent-run:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .gw-chevron {
   display: inline-flex;
   align-items: center;

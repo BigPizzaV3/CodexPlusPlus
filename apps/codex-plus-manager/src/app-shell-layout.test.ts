@@ -54,11 +54,17 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sidebar, /tone: "direct"/);
   const access = sidebar.slice(sidebar.indexOf("const access ="), sidebar.indexOf("return (", sidebar.indexOf("const access =")));
   assert.doesNotMatch(access, /running/);
-  // 只有 Codex 行有播放 / 停止：命令行 Agent 没有常驻进程可启停。
+  // 只有 Codex 和 Claude 行有播放 / 停止：其它命令行 Agent 没有常驻进程可启停。
   assert.match(sidebar, /\{tool\.id === "codex" && tool\.switchable \? \(\(\) => \{/);
   assert.match(sidebar, /const label = unattached \? t\("重启并挂载"\) : codexRun\.running \? t\("停止 Codex"\) : t\("启动 Codex"\);/);
   assert.match(sidebar, /aria-label=\{label\}/);
   assert.match(sidebar, /onClick=\{unattached \? codexRun\.onRestart : codexRun\.running \? codexRun\.onStop : codexRun\.onStart\}/);
+  // Claude 行同样有播放 / 停止（Claude Desktop 本地模式），视觉与 Codex 行一致。
+  assert.match(sidebar, /\{tool\.id === "claude" \? \(\(\) => \{/);
+  assert.match(sidebar, /const label = claudeRun\.running \? t\("停止本地服务"\) : t\("启动 Claude"\);/);
+  assert.match(sidebar, /onClick=\{claudeRun\.running \? claudeRun\.onStop : claudeRun\.onStart\}/);
+  assert.match(sidebar, /title=\{claudeRun\.busy \? t\("处理中…"\) : claudeRun\.running \? t\("停止本地服务"\) : claudeRun\.unavailableReason \?\? t\("启动 Claude"\)\}/);
+  assert.match(sidebar, /className="cx-side-run"\n\s*data-running=\{claudeRun\.running\}/);
   // 主动停止写 user_stopped，崩溃检测不把它当成意外停止。
   assert.match(text, /const stoppedByUser = result\.latest_launch\?\.phase === "user_stopped";/);
   const lib = readSource("../src-tauri/src/lib.rs");
@@ -124,7 +130,10 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /tool\.id === "codex" && tool\.switchable \? "has-run" : ""/);
   assert.match(sidebar, /disabled=\{codexRun\.busy \|\| \(!codexRun\.running && Boolean\(codexRun\.unavailableReason\)\)\}/);
-  assert.match(entry, /codexRun=\{\{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch\.unavailableReason, onStart: codexLaunch\.onLaunch,/);
+  // 侧栏与「Agent 接入」里的 Codex 行共用同一份运行时对象，不再各写一份。
+  assert.match(entry, /const codexRun = \{\n\s*running: codexAppRunning,\n\s*unattached: Boolean\(overview\?\.runtime_health\?\.codex_unattached\),\n\s*busy: launchPending,\n\s*unavailableReason: codexLaunch\.unavailableReason,\n\s*onStart: codexLaunch\.onLaunch,/);
+  assert.match(entry, /codexRun=\{codexRun\}/);
+  assert.match(entry, /<GatewayPage[\s\S]*?codexRun=\{codexRun\}/);
   assert.match(styles, /\.shell \.side-agent-run \{\n(?:  [^\n]*\n)*  width: 24px;\n  height: 24px;/);
   assert.match(styles, /\.shell \.side-agent-run\[data-running="false"\] \{\n  background: hsl\(var\(--status-success\) \/ 0\.14\);\n  color: hsl\(var\(--status-success\)\);/);
   assert.doesNotMatch(styles, /:hover \.side-agent-run|\.side-agent-run \{[^}]*(?:opacity: 0;|visibility: hidden)/);
@@ -688,4 +697,38 @@ test("供应商详情页不再 absolute 盖住吸顶标题：打开时 .screen �
   assert.match(rule, /position: relative;/);
   assert.match(rule, /inset: auto;/);
   assert.match(rule, /flex: 1 1 auto;/);
+});
+
+test("侧栏 Claude 播放键读 claude_local_status / claude_local_action，不做轮询", () => {
+  const entry = functionSource("App");
+  // App 传进侧栏的是一份轻量状态：running / busy / unavailableReason + 启停回调。
+  assert.match(entry, /claudeRun=\{claudeRun\}/);
+  // 代理活着、或 Claude 还挂在我们的代理端口上（代理已退）都算在跑，按钮才会给「停止」。
+  assert.match(entry, /const claudeAttached = Boolean\(claudeRunStatus\?\.running \|\| claudeRunStatus\?\.localProcess\);/);
+  assert.match(entry, /const claudeRun = \{\n\s*running: claudeAttached,/);
+  assert.match(entry, /unavailableReason: !claudeRunStatus\n\s*\? null/);
+  assert.match(entry, /onStart: \(\) => void claudeLocalRunAction\("launch"\),\n\s*onStop: \(\) => void claudeLocalRunAction\("stop"\),/);
+  // 探测一次就够：读状态要查进程和钥匙串，App 层不轮询。
+  assert.match(entry, /invoke<CommandResult<ClaudeLocalStatus>>\("claude_local_status"\)/);
+  assert.match(entry, /invoke<CommandResult<ClaudeLocalStatus>>\("claude_local_action", \{ action \}\)/);
+  assert.doesNotMatch(
+    entry.slice(entry.indexOf("const refreshClaudeLocalRun"), entry.indexOf("const claudeRunStatus")),
+    /setTimeout|setInterval/,
+  );
+  // Claude 正开着时 launch 会被后端拒绝，前端直接置灰并给原因。
+  assert.match(entry, /Claude 正在运行，请先完全退出，再从 Codex\+\+ 启动/);
+});
+
+test("「Agent 接入」的 Codex 行复用同一份启动状态；Claude 页把新状态回传给 App 的侧栏键", () => {
+  const entry = functionSource("App");
+  // 只穿一层：App → GatewayPage → AgentsView，总览的接入弹窗不传就不显示按钮。
+  assert.match(entry, /<GatewayPage[\s\S]*?codexRun=\{codexRun\}/);
+  const gatewayPage = readSource("./GatewayPage.tsx");
+  assert.match(gatewayPage, /codexRun\?: CodexRunControls/);
+  assert.match(gatewayPage, /<AgentsView busy=\{busy\} codexRun=\{codexRun\}/);
+  // 页面里启动 / 停止后回调把状态交给 App，侧栏按键不用轮询。
+  assert.match(entry, /onLocalStatus=\{\(status\) => \{/);
+  assert.match(entry, /claudeLocalMemo\.status = status;/);
+  assert.match(entry, /setClaudeLocalRun\(\(current\) => \(sameClaudeRunState\(current, status\) \? current : status\)\)/);
+  assert.match(text, /function sameClaudeRunState\(/);
 });
