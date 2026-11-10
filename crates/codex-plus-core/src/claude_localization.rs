@@ -220,7 +220,7 @@ fn source_app(_deadline: Instant) -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn source_app(deadline: Instant) -> Result<PathBuf> {
+pub(crate) fn source_app(deadline: Instant) -> Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home_dir);
     let program = std::env::var_os("ProgramFiles").map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
@@ -279,7 +279,7 @@ fn claude_package_locations(bytes: &[u8]) -> Result<Vec<String>> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn is_claude_msix_path(path: &Path) -> bool {
+pub(crate) fn is_claude_msix_path(path: &Path) -> bool {
     let text = path.to_string_lossy().replace('/', "\\");
     let parts = text
         .split('\\')
@@ -315,7 +315,7 @@ fn is_claude_msix_path(path: &Path) -> bool {
 /// 别名是重解析点，所在目录是放满各应用别名的 `Microsoft\WindowsApps`，
 /// 不能当成 Claude 应用目录整个复制；只有包内真实的 `app\Claude.exe` 才能复制成副本。
 #[cfg(any(target_os = "windows", test))]
-fn is_claude_msix_alias(path: &Path) -> bool {
+pub(crate) fn is_claude_msix_alias(path: &Path) -> bool {
     let text = path.to_string_lossy().replace('/', "\\");
     let name = text.rsplit('\\').next().unwrap_or_default();
     is_claude_msix_path(path) && name.eq_ignore_ascii_case("claude-desktop.exe")
@@ -809,7 +809,7 @@ fn app_version(app: &Path, key: &str, deadline: Instant) -> Result<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn app_version(app: &Path, _key: &str, deadline: Instant) -> Result<String> {
+pub(crate) fn app_version(app: &Path, _key: &str, deadline: Instant) -> Result<String> {
     if !app.is_file() { return Ok(String::new()); }
     let escaped = app.to_string_lossy().replace('\'', "''");
     let output = probe_output(Command::new("powershell.exe")

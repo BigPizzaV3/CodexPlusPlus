@@ -177,6 +177,36 @@ fn home_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
+/// 原版 Claude 本地模式支持的平台：macOS 与 Windows。
+fn platform_supported() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+/// Windows 上解析 Claude.exe 要走 PowerShell 查 Appx 包，冷启动很慢（status 每 3 秒
+/// 轮询），结果做进程内缓存：缓存路径已不存在且不是 MSIX 路径时才重新解析。
+#[cfg(target_os = "windows")]
+fn source_app() -> PathBuf {
+    static CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut slot = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(path) = slot.as_ref()
+        && (path.is_file() || crate::claude_localization::is_claude_msix_path(path))
+    {
+        return path.clone();
+    }
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join("AppData/Local"));
+    let fallback = local.join(r"Programs\Claude\Claude.exe");
+    let resolved = crate::claude_localization::source_app(
+        Instant::now() + Duration::from_secs(12),
+    )
+    .unwrap_or(fallback);
+    *slot = Some(resolved.clone());
+    resolved
+}
+
+#[cfg(not(target_os = "windows"))]
 fn source_app() -> PathBuf {
     let system = PathBuf::from("/Applications/Claude.app");
     if system.is_dir() {
@@ -187,7 +217,37 @@ fn source_app() -> PathBuf {
 }
 
 fn executable(source: &Path) -> PathBuf {
-    source.join("Contents/MacOS/Claude")
+    if cfg!(windows) {
+        source.to_path_buf()
+    } else {
+        source.join("Contents/MacOS/Claude")
+    }
+}
+
+/// 官方应用自带的页面资源目录：mac 在 bundle 里，Windows 在 exe 旁边的 `resources/`。
+fn desktop_resources(source: &Path) -> PathBuf {
+    if cfg!(windows) {
+        source
+            .parent()
+            .map(|dir| dir.join("resources"))
+            .unwrap_or_default()
+    } else {
+        source.join("Contents/Resources")
+    }
+}
+
+/// 状态栏的「已安装」判断：Windows 商店版（MSIX）在 WindowsApps 里有 ACL，
+/// `is_file` 可能误报，路径形状匹配也算安装。
+fn source_supported(source: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        return executable(source).is_file()
+            || crate::claude_localization::is_claude_msix_path(source);
+    }
+    #[cfg(not(windows))]
+    {
+        cfg!(target_os = "macos") && executable(source).is_file()
+    }
 }
 
 fn private_dir(path: &Path) -> Result<()> {
@@ -230,15 +290,94 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 const SWITCH_STATE_FILE: &str = "real-profile-switch.json";
 const CONFIG_LIBRARY_BACKUP: &str = "configLibrary.codex-plus-backup";
 
-fn app_support_dir() -> PathBuf {
-    home_dir().join("Library/Application Support")
+/// Claude Desktop 的一组 profile 目录：data 放 1p 的 userData（claude_desktop_config.json、Cache、claude-code-sessions），
+/// mode 是写 deploymentMode 的 Claude 目录，three_p 是 3p 模式的 userData。macOS 上 data 与 mode 相同。
+struct ProfileSet {
+    data: PathBuf,
+    mode: PathBuf,
+    three_p: PathBuf,
 }
 
-fn desktop_config_paths(app_support: &Path) -> [PathBuf; 2] {
-    [
-        app_support.join("Claude/claude_desktop_config.json"),
-        app_support.join("Claude-3p/claude_desktop_config.json"),
-    ]
+fn profile_sets() -> Vec<ProfileSet> {
+    #[cfg(target_os = "windows")]
+    {
+        let roaming = std::env::var_os("APPDATA").map(PathBuf::from);
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        return profile_sets_for(true, &home_dir(), roaming.as_deref(), local.as_deref());
+    }
+    #[cfg(not(target_os = "windows"))]
+    profile_sets_for(false, &home_dir(), None, None)
+}
+
+/// 纯计算部分：目录由调用方注入，可在 mac 上测 Windows 布局。
+///
+/// Windows 下第一组是 classic 安装（data 在 `%APPDATA%`，mode/3p 在 `%LOCALAPPDATA%`）；
+/// 之后 `%LOCALAPPDATA%\Packages` 里每个 `Claude_*` / `AnthropicPBC.Claude_*` 包
+/// （大小写不敏感、排序后）各一组 MSIX 虚拟化目录。APPDATA/LOCALAPPDATA 缺失时
+/// 回退 `home\AppData\Roaming|Local`。返回的第一组是主集合。
+fn profile_sets_for(
+    windows: bool,
+    home: &Path,
+    roaming: Option<&Path>,
+    local: Option<&Path>,
+) -> Vec<ProfileSet> {
+    if !windows {
+        let support = home.join("Library/Application Support");
+        return vec![ProfileSet {
+            data: support.join("Claude"),
+            mode: support.join("Claude"),
+            three_p: support.join("Claude-3p"),
+        }];
+    }
+    let roaming = roaming
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join("AppData").join("Roaming"));
+    let local = local
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join("AppData").join("Local"));
+    let mut sets = vec![ProfileSet {
+        data: roaming.join("Claude"),
+        mode: local.join("Claude"),
+        three_p: local.join("Claude-3p"),
+    }];
+    let mut packages: Vec<PathBuf> = fs::read_dir(local.join("Packages"))
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            ["Claude_", "AnthropicPBC.Claude_"].iter().any(|prefix| {
+                name.get(..prefix.len())
+                    .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+            }) && entry.path().is_dir()
+        })
+        .map(|entry| entry.path())
+        .collect();
+    // read_dir 顺序不稳定，排序后结果可复现。
+    packages.sort();
+    for package in packages {
+        let cache = package.join("LocalCache");
+        sets.push(ProfileSet {
+            data: cache.join("Roaming").join("Claude"),
+            mode: cache.join("Local").join("Claude"),
+            three_p: cache.join("Local").join("Claude-3p"),
+        });
+    }
+    sets
+}
+
+/// 各组的 deploymentMode 配置：按 data、mode、three_p 的顺序取，去重。
+fn desktop_config_paths(sets: &[ProfileSet]) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for set in sets {
+        for dir in [&set.data, &set.mode, &set.three_p] {
+            let path = dir.join("claude_desktop_config.json");
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }
 
 fn switch_state_path(root: &Path) -> PathBuf {
@@ -251,46 +390,67 @@ fn switch_state_path(root: &Path) -> PathBuf {
 /// 中途被删）就会卡在这里：备份一直在，`apply_real_profile_one_p` 每次启动都拒绝。
 /// 于是按现场情况收尾：目标不在就把备份放回去；目标还在（Claude 自己重建过）
 /// 就保留目标，把备份归档到 state 的 `backups/` 里，谁也不丢。
-fn recover_orphan_config_library(app_support: &Path, root: &Path) -> Result<Option<String>> {
-    let target = app_support.join("Claude-3p/configLibrary");
-    let backup = target.with_file_name(CONFIG_LIBRARY_BACKUP);
-    if !backup.exists() {
-        return Ok(None);
-    }
+fn recover_orphan_config_library(sets: &[ProfileSet], root: &Path) -> Result<Option<String>> {
     // 状态文件还认这份备份：属于正常切换流程，交给 restore_real_profile。
-    let tracked = fs::read(switch_state_path(root))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|state| state["configLibraryMoved"].as_bool())
-        == Some(true);
-    if tracked {
-        return Ok(None);
+    // 新旧两种格式都认：新格式逐个列在 configLibraryBackups，旧格式是单条
+    // configLibraryMoved + configLibraryBackup。
+    let tracked = |backup: &Path| {
+        let backup = backup.to_string_lossy().into_owned();
+        let Some(state) = fs::read(switch_state_path(root))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        else {
+            return false;
+        };
+        if let Some(list) = state["configLibraryBackups"].as_array() {
+            return list
+                .iter()
+                .any(|entry| entry["backup"].as_str() == Some(backup.as_str()));
+        }
+        state["configLibraryMoved"].as_bool() == Some(true)
+            && state["configLibraryBackup"].as_str() == Some(backup.as_str())
+    };
+    let mut notes = Vec::new();
+    for set in sets {
+        let target = set.three_p.join("configLibrary");
+        let backup = target.with_file_name(CONFIG_LIBRARY_BACKUP);
+        if !backup.exists() || tracked(&backup) {
+            continue;
+        }
+        if !target.exists() {
+            fs::rename(&backup, &target)
+                .with_context(|| format!("无法恢复 {}", target.display()))?;
+            notes.push(format!(
+                "已恢复上次遗留的 configLibrary 备份：{}",
+                target.display()
+            ));
+            continue;
+        }
+        let archive = root.join("backups");
+        private_dir(&archive)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or_default();
+        let mut archived = archive.join(format!("configLibrary-orphan-{stamp}"));
+        for index in 1.. {
+            if !archived.exists() {
+                break;
+            }
+            archived = archive.join(format!("configLibrary-orphan-{stamp}-{index}"));
+        }
+        fs::rename(&backup, &archived)
+            .with_context(|| format!("无法归档遗留的 {}", backup.display()))?;
+        notes.push(format!(
+            "已把上次遗留的 configLibrary 备份归档到 {}",
+            archived.display()
+        ));
     }
-    if !target.exists() {
-        fs::rename(&backup, &target)
-            .with_context(|| format!("无法恢复 {}", target.display()))?;
-        return Ok(Some(format!(
-            "已恢复上次遗留的 configLibrary 备份：{}",
-            target.display()
-        )));
-    }
-    let archive = root.join("backups");
-    private_dir(&archive)?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or_default();
-    let archived = archive.join(format!("configLibrary-orphan-{stamp}"));
-    fs::rename(&backup, &archived)
-        .with_context(|| format!("无法归档遗留的 {}", backup.display()))?;
-    Ok(Some(format!(
-        "已把上次遗留的 configLibrary 备份归档到 {}",
-        archived.display()
-    )))
+    Ok((!notes.is_empty()).then(|| notes.join("\n")))
 }
 
-fn apply_real_profile_one_p(app_support: &Path, root: &Path) -> Result<()> {
-    recover_orphan_config_library(app_support, root)?;
+fn apply_real_profile_one_p(sets: &[ProfileSet], root: &Path) -> Result<()> {
+    recover_orphan_config_library(sets, root)?;
     let state_path = switch_state_path(root);
     if state_path.exists() {
         // 已按记录切换过：校验仍在 1p 状态即可（幂等）。
@@ -303,7 +463,7 @@ fn apply_real_profile_one_p(app_support: &Path, root: &Path) -> Result<()> {
     }
     private_dir(root)?;
     let mut original = serde_json::Map::new();
-    for config_path in desktop_config_paths(app_support) {
+    for config_path in desktop_config_paths(sets) {
         let key = config_path.to_string_lossy().into_owned();
         if fs::symlink_metadata(&config_path).is_ok_and(|m| m.file_type().is_symlink()) {
             bail!("Claude 配置不能是符号链接: {}", config_path.display());
@@ -333,33 +493,42 @@ fn apply_real_profile_one_p(app_support: &Path, root: &Path) -> Result<()> {
             Err(error) => return Err(error.into()),
         }
     }
-    let mut config_library_moved = false;
-    let config_library = app_support.join("Claude-3p/configLibrary");
-    let backup = config_library.with_file_name(CONFIG_LIBRARY_BACKUP);
-    if backup.exists() {
-        bail!(
-            "Claude-3p 已存在未恢复的 configLibrary 备份，请先处理 {}",
-            backup.display()
-        );
+    // 每组 profile 各自的 configLibrary 都要挪开（Windows 可能 classic + MSIX 多组）。
+    let mut libraries = Vec::new();
+    for set in sets {
+        let library = set.three_p.join("configLibrary");
+        let backup = library.with_file_name(CONFIG_LIBRARY_BACKUP);
+        if backup.exists() {
+            bail!(
+                "Claude-3p 已存在未恢复的 configLibrary 备份，请先处理 {}",
+                backup.display()
+            );
+        }
+        if library.exists() {
+            libraries.push((library, backup));
+        }
     }
-    if config_library.exists() {
-        fs::rename(&config_library, &backup)
-            .with_context(|| format!("无法挪开 {}", config_library.display()))?;
-        config_library_moved = true;
+    let mut moved = Vec::new();
+    for (library, backup) in libraries {
+        fs::rename(&library, &backup)
+            .with_context(|| format!("无法挪开 {}", library.display()))?;
+        moved.push(json!({
+            "target": library.to_string_lossy(),
+            "backup": backup.to_string_lossy(),
+        }));
     }
     let state = json!({
         "applied": true,
         "deploymentMode": Value::Object(original),
-        "configLibraryMoved": config_library_moved,
-        "configLibraryBackup": backup.to_string_lossy(),
+        "configLibraryBackups": Value::Array(moved),
     });
     crate::settings::atomic_write(&state_path, &serde_json::to_vec_pretty(&state)?)?;
     Ok(())
 }
 
-fn restore_real_profile(app_support: &Path, root: &Path) -> Result<()> {
+fn restore_real_profile(sets: &[ProfileSet], root: &Path) -> Result<()> {
     // 状态文件丢了也得先把遗留备份收尾，否则切回 3p 之后它还会一直卡着下次启动。
-    recover_orphan_config_library(app_support, root)?;
+    recover_orphan_config_library(sets, root)?;
     let state_path = switch_state_path(root);
     if !state_path.exists() {
         return Ok(());
@@ -387,10 +556,22 @@ fn restore_real_profile(app_support: &Path, root: &Path) -> Result<()> {
             crate::settings::atomic_write(&config_path, &serde_json::to_vec_pretty(&config)?)?;
         }
     }
-    if state["configLibraryMoved"].as_bool() == Some(true) {
+    if let Some(list) = state["configLibraryBackups"].as_array() {
+        for entry in list {
+            let backup = PathBuf::from(entry["backup"].as_str().unwrap_or_default());
+            let target = PathBuf::from(entry["target"].as_str().unwrap_or_default());
+            if backup.exists() && !target.exists() {
+                fs::rename(&backup, &target)
+                    .with_context(|| format!("无法恢复 {}", target.display()))?;
+            }
+        }
+    } else if state["configLibraryMoved"].as_bool() == Some(true) {
+        // 旧格式（只记了主集合的一份备份）也要能读回。
         let backup = PathBuf::from(state["configLibraryBackup"].as_str().unwrap_or(""));
-        let target = app_support.join("Claude-3p/configLibrary");
-        if backup.exists() && !target.exists() {
+        if let Some(target) = sets.first().map(|set| set.three_p.join("configLibrary"))
+            && backup.exists()
+            && !target.exists()
+        {
             fs::rename(&backup, &target)
                 .with_context(|| format!("无法恢复 {}", target.display()))?;
         }
@@ -533,24 +714,34 @@ fn claude_pids_on_proxy(listing: &str, port: u16) -> Vec<u32> {
 /// 关掉「经本机代理启动」的 Claude：`--proxy-server=http://127.0.0.1:<port>` 是它独有的标记，
 /// 按端口整词匹配就不会误伤用户自己开的 Claude。返回是否真的动过进程。
 fn quit_claude_with_proxy(port: u16) -> Result<bool> {
-    if !cfg!(target_os = "macos") {
+    if !platform_supported() {
         return Ok(false);
     }
     let pids = claude_pids_on_proxy(&claude_processes()?, port);
     if pids.is_empty() {
         return Ok(false);
     }
-    for pid in &pids {
-        let _ = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    #[cfg(target_os = "macos")]
+    {
+        for pid in &pids {
+            let _ = Command::new("/bin/kill")
+                .args(["-TERM", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+    #[cfg(windows)]
+    {
+        for pid in &pids {
+            crate::windows_integration::request_process_close(*pid);
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline && pids.iter().any(|pid| process_alive(*pid)) {
         std::thread::sleep(Duration::from_millis(50));
     }
+    #[cfg(target_os = "macos")]
     for pid in pids.iter().filter(|pid| process_alive(**pid)) {
         let _ = Command::new("/bin/kill")
             .args(["-KILL", &pid.to_string()])
@@ -558,16 +749,47 @@ fn quit_claude_with_proxy(port: u16) -> Result<bool> {
             .stderr(Stdio::null())
             .status();
     }
+    #[cfg(windows)]
+    for pid in pids.iter().filter(|pid| process_alive(**pid)) {
+        crate::windows_integration::close_process_tree(*pid, true);
+    }
     Ok(true)
 }
 
 fn process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        return matches!(
+            crate::windows_integration::process_lifetime(pid),
+            Ok(Some((_, exited))) if !exited
+        );
+    }
+    #[cfg(not(windows))]
     Command::new("/bin/ps")
         .args(["-p", &pid.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// 该进程是不是 Claude Desktop（而不是 Claude Code CLI 的 claude.exe）：
+/// 路径读不到算，WindowsApps 包路径算，旁边有 `resources\app.asar` 的算；
+/// 其余（`~/.local/bin/claude.exe`、`claude-code\<ver>\claude.exe` 这类 CLI）不算。
+#[cfg(any(windows, test))]
+fn is_desktop_claude_image(exe_file: &str, path: Option<&Path>) -> bool {
+    if !exe_file.eq_ignore_ascii_case("Claude.exe") {
+        return false;
+    }
+    let Some(path) = path else {
+        return true;
+    };
+    let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    if text.contains(r"\windowsapps\") {
+        return true;
+    }
+    path.parent()
+        .is_some_and(|dir| dir.join("resources").join("app.asar").is_file())
 }
 
 fn claude_processes() -> Result<String> {
@@ -583,12 +805,27 @@ fn claude_processes() -> Result<String> {
             String::new()
         });
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        // 与 pgrep -fl 同一形状：`{pid} {command_line}`，pids_on_proxy/use_proxy 原样可用。
+        let mut listing = String::new();
+        for info in crate::windows_integration::enumerate_processes() {
+            if !is_desktop_claude_image(&info.exe_file, info.executable_path.as_deref()) {
+                continue;
+            }
+            let command_line = crate::windows_integration::process_command_line(info.process_id)
+                .unwrap_or_default();
+            listing.push_str(&format!("{} {}\n", info.process_id, command_line));
+        }
+        return Ok(listing);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     Ok(String::new())
 }
 
+#[cfg(target_os = "macos")]
 fn version(source: &Path) -> String {
-    if !source.is_dir() || !cfg!(target_os = "macos") {
+    if !source.is_dir() {
         return String::new();
     }
     probe(
@@ -604,6 +841,36 @@ fn version(source: &Path) -> String {
     .unwrap_or_default()
 }
 
+/// Windows 版本号走 PowerShell 读 ProductVersion（冷启动慢），
+/// 按 （路径， 修改时间） 缓存，避免每 3 秒一次的状态轮询反复起 PowerShell。
+#[cfg(target_os = "windows")]
+fn version(source: &Path) -> String {
+    static CACHE: OnceLock<Mutex<(PathBuf, Option<std::time::SystemTime>, String)>> =
+        OnceLock::new();
+    let modified = fs::metadata(source).and_then(|meta| meta.modified()).ok();
+    let cache = CACHE.get_or_init(|| Mutex::new((PathBuf::new(), None, String::new())));
+    let mut slot = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if slot.0 == source && slot.1 == modified {
+        return slot.2.clone();
+    }
+    let resolved = crate::claude_localization::app_version(
+        source,
+        "",
+        Instant::now() + Duration::from_secs(12),
+    )
+    .unwrap_or_default();
+    // 读失败（超时等）不缓存空值，下次轮询再试。
+    if !resolved.is_empty() {
+        *slot = (source.to_path_buf(), modified, resolved.clone());
+    }
+    resolved
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn version(_source: &Path) -> String {
+    String::new()
+}
+
 fn ca_ready(root: &Path) -> bool {
     ["ca.pem", "ca.key", "server.crt", "server.key"]
         .iter()
@@ -612,18 +879,55 @@ fn ca_ready(root: &Path) -> bool {
         })
 }
 
+/// CA 证书的 SHA-1 指纹（大写十六进制、无冒号）：certutil 按它定位信任条目。
+#[cfg(any(windows, test))]
+fn ca_thumbprint(pem: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(pem).ok()?;
+    let begin = "-----BEGIN CERTIFICATE-----";
+    let end = "-----END CERTIFICATE-----";
+    let start = text.find(begin)? + begin.len();
+    let stop = text[start..].find(end)? + start;
+    let encoded: String = text[start..stop]
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    use base64::Engine;
+    let der = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    let digest = <sha1::Sha1 as sha1::Digest>::digest(&der);
+    Some(digest.iter().map(|byte| format!("{byte:02X}")).collect())
+}
+
 fn ca_trusted(root: &Path) -> bool {
-    if !cfg!(target_os = "macos") || !ca_ready(root) {
+    if !ca_ready(root) {
         return false;
     }
-    probe(
-        Command::new("/usr/bin/security")
-            .args(["verify-cert", "-q", "-L", "-c"])
-            .arg(root.join("ca/server.crt"))
-            .args(["-p", "ssl", "-n", "claude.ai"]),
-        PROBE_TIMEOUT,
-    )
-    .is_ok_and(|(success, _)| success)
+    #[cfg(target_os = "macos")]
+    {
+        return probe(
+            Command::new("/usr/bin/security")
+                .args(["verify-cert", "-q", "-L", "-c"])
+                .arg(root.join("ca/server.crt"))
+                .args(["-p", "ssl", "-n", "claude.ai"]),
+            PROBE_TIMEOUT,
+        )
+        .is_ok_and(|(success, _)| success);
+    }
+    #[cfg(windows)]
+    {
+        let Some(thumbprint) = fs::read(root.join("ca/ca.pem"))
+            .ok()
+            .and_then(|pem| ca_thumbprint(&pem))
+        else {
+            return false;
+        };
+        return probe(
+            hidden_command("certutil").args(["-user", "-store", "Root", &thumbprint]),
+            Duration::from_secs(10),
+        )
+        .is_ok_and(|(success, _)| success);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    false
 }
 
 fn prepare_ca(root: &Path) -> Result<()> {
@@ -662,6 +966,23 @@ DNS.9=localhost
 IP.1=127.0.0.1
 "#,
     )?;
+    #[cfg(windows)]
+    let openssl = {
+        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
+        let program_w6432 = std::env::var_os("ProgramW6432").map(PathBuf::from);
+        let local_programs = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|dir| dir.join("Programs"));
+        openssl_candidates(
+            program_files.as_deref(),
+            program_w6432.as_deref(),
+            local_programs.as_deref(),
+        )
+        .into_iter()
+        .find(|path| path.is_file())
+        .context("未找到 OpenSSL，无法准备本地证书；请安装 Git for Windows（自带 OpenSSL）或把 openssl.exe 加入 PATH")?
+    };
+    #[cfg(not(windows))]
     let openssl = crate::dsh_plugins::locate_program("openssl")
         .context("未找到 OpenSSL，无法准备本地证书")?;
     let mut command = hidden_command(&openssl);
@@ -744,11 +1065,37 @@ IP.1=127.0.0.1
     Ok(())
 }
 
+/// openssl 候选路径：先 PATH 里的 openssl；Windows 上 Git for Windows 自带
+/// openssl 但没进 PATH，再按惯例位置依次试。
+#[cfg(any(windows, test))]
+fn openssl_candidates(
+    program_files: Option<&Path>,
+    program_w6432: Option<&Path>,
+    local_programs: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(found) = crate::dsh_plugins::locate_program("openssl") {
+        candidates.push(found);
+    }
+    for base in [program_files, program_w6432, local_programs]
+        .into_iter()
+        .flatten()
+    {
+        candidates.push(base.join(r"Git\mingw64\bin\openssl.exe"));
+        candidates.push(base.join(r"Git\usr\bin\openssl.exe"));
+    }
+    candidates
+}
+
 fn trust_ca(root: &Path) -> Result<()> {
-    ensure!(cfg!(target_os = "macos"), "本地证书信任目前仅支持 macOS");
+    ensure!(
+        platform_supported(),
+        "本地证书信任目前仅支持 macOS 和 Windows"
+    );
     if ca_trusted(root) {
         return Ok(());
     }
+    #[cfg(target_os = "macos")]
     checked(
         Command::new("/usr/bin/security")
             .args(["add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k"])
@@ -756,6 +1103,15 @@ fn trust_ca(root: &Path) -> Result<()> {
             .arg(root.join("ca/ca.pem")),
         Duration::from_secs(120),
         "本地证书尚未信任，请在系统授权窗口中允许后重试",
+    )?;
+    // certutil -addstore 会弹 Windows 安全警告，用户点「是」才会返回成功。
+    #[cfg(windows)]
+    checked(
+        hidden_command("certutil")
+            .args(["-user", "-addstore", "Root"])
+            .arg(root.join("ca/ca.pem")),
+        Duration::from_secs(120),
+        "本地证书尚未信任，请在 Windows 弹出的安全警告中点击“是”后重试",
     )?;
     ensure!(ca_trusted(root), "本地证书信任未生效，请重新检查系统授权");
     Ok(())
@@ -785,21 +1141,45 @@ fn assets_digest() -> &'static str {
 /// 完整功能模式靠这枚 CA 拦截 claude.ai 的 TLS；不再使用时它不该继续留在钥匙串里：
 /// 私钥就在应用状态目录（0600），一条残留的信任条目等于给本机留了个长期中间人。
 fn untrust_ca(root: &Path) -> Result<()> {
-    ensure!(cfg!(target_os = "macos"), "本地证书信任目前仅支持 macOS");
+    ensure!(
+        platform_supported(),
+        "本地证书信任目前仅支持 macOS 和 Windows"
+    );
     let cert = root.join("ca/ca.pem");
     if !cert.is_file() {
         return Ok(());
     }
-    let _ = Command::new("/usr/bin/security")
-        .args(["remove-trusted-cert", "-d"])
-        .arg(&cert)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    ensure!(
-        !ca_trusted(root),
-        "本地证书仍在信任列表中，请在“钥匙串访问”里删除 Codex++ Local CA"
-    );
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/usr/bin/security")
+            .args(["remove-trusted-cert", "-d"])
+            .arg(&cert)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        ensure!(
+            !ca_trusted(root),
+            "本地证书仍在信任列表中，请在“钥匙串访问”里删除 Codex++ Local CA"
+        );
+    }
+    // certutil -delstore 同样会弹确认框，给足用户点确认的时间。
+    #[cfg(windows)]
+    {
+        let Some(thumbprint) = fs::read(&cert)
+            .ok()
+            .and_then(|pem| ca_thumbprint(&pem))
+        else {
+            bail!("无法读取本地证书指纹，无法取消信任");
+        };
+        let _ = probe(
+            hidden_command("certutil").args(["-user", "-delstore", "Root", &thumbprint]),
+            Duration::from_secs(120),
+        );
+        ensure!(
+            !ca_trusted(root),
+            "本地证书仍在信任列表中，请运行 certmgr.msc，在“受信任的根证书颁发机构”里删除 Codex++ Claude Local CA"
+        );
+    }
     Ok(())
 }
 
@@ -1132,7 +1512,7 @@ fn resume_port(
 /// 管理器重启后代理随之退出，而 Claude 还指着那个端口：在原端口把代理拉起来，
 /// Claude 的重试就能自己连上（换端口它永远连不上）。
 pub fn resume_attached_proxy() -> Result<Option<u16>> {
-    if !cfg!(target_os = "macos") {
+    if !platform_supported() {
         return Ok(None);
     }
     let config = SettingsStore::default().load()?.claude_desktop_local;
@@ -1286,7 +1666,7 @@ pub fn status() -> Result<ClaudeLocalStatus> {
             .filter(|text| !text.is_empty())
     };
     Ok(ClaudeLocalStatus {
-        supported: cfg!(target_os = "macos") && executable(&source).is_file(),
+        supported: source_supported(&source),
         version: version(&source),
         source_app: source.to_string_lossy().into_owned(),
         claude_running,
@@ -1351,16 +1731,28 @@ fn wait_backend_ready(
 fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
     let cache = root.join(".cache");
     private_dir(&cache)?;
-    let original_cache = home_dir().join("Library/Application Support/Claude/Cache/Cache_Data");
+    // 各 profile 组的 electron 缓存目录都要试（Windows 可能 classic + MSIX 多组）；
+    // 只取已存在的，都不存在就用主集合的那份保持原语义。
+    let sets = profile_sets();
+    let mut electron_caches: Vec<PathBuf> = sets
+        .iter()
+        .map(|set| set.data.join("Cache").join("Cache_Data"))
+        .filter(|dir| dir.is_dir())
+        .collect();
+    if electron_caches.is_empty()
+        && let Some(main) = sets.first()
+    {
+        electron_caches.push(main.data.join("Cache").join("Cache_Data"));
+    }
     let mut last_error = None;
-    for electron_cache in [&original_cache] {
+    for electron_cache in electron_caches {
         let drain = probe(
             hidden_command(node)
                 .arg(root.join("scripts/patch-dictation-drain.mjs"))
                 .args(["--apply", "--cache-dir"])
                 .arg(&cache)
                 .arg("--electron-cache-dir")
-                .arg(electron_cache)
+                .arg(&electron_cache)
                 .env("CLAUDE_LOCAL_MODE", "mock"),
             Duration::from_secs(20),
         );
@@ -1374,7 +1766,7 @@ fn prepare_dictation(root: &Path, node: &Path) -> Result<()> {
                         .as_str(),
                 )
                 .arg(&cache)
-                .arg(electron_cache)
+                .arg(&electron_cache)
                 .env("CLAUDE_LOCAL_MODE", "mock"),
             Duration::from_secs(20),
         );
@@ -1427,7 +1819,7 @@ fn start_backend(
         .env("CLAUDE_LOCAL_WEB_I18N_DIR", root.join("catalogs"))
         .env(
             "CLAUDE_LOCAL_DESKTOP_RESOURCES",
-            source_app().join("Contents/Resources"),
+            desktop_resources(&source_app()),
         )
         .env("CLAUDE_LOCAL_GATEWAY_URL", wiring.root)
         .env("CLAUDE_LOCAL_GATEWAY_KEY", wiring.token)
@@ -1564,6 +1956,74 @@ fn sync_model_compact_windows(root: &Path, config: &ClaudeLocalSettings) {
     let _ = write_model_compact_windows(root, &windows);
 }
 
+/// 把一个已拼好参数/环境变量的 Command 换成另一个可执行文件（MSIX 别名重试用）。
+#[cfg(windows)]
+fn clone_command_to(command: &Command, program: &Path) -> Command {
+    let mut copy = hidden_command(program);
+    copy.args(command.get_args());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => {
+                copy.env(key, value);
+            }
+            None => {
+                copy.env_remove(key);
+            }
+        }
+    }
+    if let Some(dir) = command.get_current_dir() {
+        copy.current_dir(dir);
+    }
+    copy
+}
+
+/// spawn 一个 detached 的 Claude 进程并交给等待线程。
+///
+/// Windows 的 MSIX 包内路径直接 spawn 可能因重解析点权限失败：若 source 是 MSIX
+/// 路径且 `%LOCALAPPDATA%\Microsoft\WindowsApps\claude-desktop.exe` 别名存在，
+/// 用别名原样重试一次（不用包激活，环境变量才能传进去）。
+fn spawn_detached(command: &mut Command, source: &Path, failure: &'static str) -> Result<()> {
+    let _ = source;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match command.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
+        Err(error) => {
+            #[cfg(windows)]
+            {
+                let local = std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home_dir().join("AppData").join("Local"));
+                let alias = local.join(r"Microsoft\WindowsApps\claude-desktop.exe");
+                if crate::claude_localization::is_claude_msix_path(source)
+                    && alias != executable(source)
+                    && alias.is_file()
+                {
+                    let mut retry = clone_command_to(command, &alias);
+                    retry
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    if let Ok(mut child) = retry.spawn() {
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                        return Ok(());
+                    }
+                }
+            }
+            Err(error).context(failure)
+        }
+    }
+}
+
 fn launch_original(
     source: &Path,
     root: &Path,
@@ -1590,7 +2050,7 @@ fn launch_original(
         }
         // 完整功能模式与 PoC 一致：直接用真实 Claude profile（无 --user-data-dir），
         // 启动前把真实配置切到 1p 并记录回滚信息。
-        apply_real_profile_one_p(&app_support_dir(), root)?;
+        apply_real_profile_one_p(&profile_sets(), root)?;
         private_dir(&root.join("claude-code"))?;
         // 与 3p 路径一致：把 Codex++ 配置的每模型窗口/推理档传给内置 Claude Code。
         let helper_port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
@@ -1610,22 +2070,14 @@ fn launch_original(
             command.env("CLAUDE_CODE_MODEL_CAPABILITIES", capabilities);
         }
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("无法启动原版 Claude Desktop")?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    spawn_detached(&mut command, source, "无法启动原版 Claude Desktop")?;
     Ok(())
 }
 
 fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> Result<()> {
     stop_backend();
     // 切回 3p 前先恢复真实 profile（enable_binding 会重写 configLibrary，顺序不能反）。
-    restore_real_profile(&app_support_dir(), root)?;
+    restore_real_profile(&profile_sets(), root)?;
     GatewayStore::default().update(|gateway| {
         if let Some(binding) = gateway.bindings.get_mut(AGENT_ID) {
             binding.enabled = false;
@@ -1680,15 +2132,7 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     {
         command.env("CLAUDE_CODE_MODEL_CAPABILITIES", capabilities);
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("无法启动原版 Claude Desktop 的 3p 模式")?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+    spawn_detached(&mut command, source, "无法启动原版 Claude Desktop 的 3p 模式")?;
     Ok(())
 }
 
@@ -1744,22 +2188,36 @@ pub fn reap_stale_proxy(root: &Path) {
 }
 
 /// TERM → 最多等 2 秒（用 `is_our_proxy` 探活）→ 仍活着就 KILL。
+/// Windows 没有 TERM/KILL 之分，直接 TerminateProcess 后最多等 2 秒确认。
 fn terminate_pid(pid: u32, root: &Path) {
-    let _ = Command::new("/bin/kill")
-        .args(["-TERM", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while is_our_proxy(pid, root) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(25));
+    #[cfg(windows)]
+    {
+        let _ = root;
+        crate::windows_integration::terminate_process(pid);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        return;
     }
-    if is_our_proxy(pid, root) {
+    #[cfg(not(windows))]
+    {
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &pid.to_string()])
+            .args(["-TERM", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while is_our_proxy(pid, root) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        if is_our_proxy(pid, root) {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 }
 
@@ -1791,25 +2249,56 @@ fn reap_orphan_proxies(root: &Path) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn reap_orphan_proxies(root: &Path) {
+    let current_child = runtime_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(|runtime| runtime.child.id());
+    for info in crate::windows_integration::enumerate_processes() {
+        if !info.exe_file.eq_ignore_ascii_case("node.exe") {
+            continue;
+        }
+        let pid = info.process_id;
+        if pid == 0 || pid == std::process::id() || Some(pid) == current_child {
+            continue;
+        }
+        if is_our_proxy(pid, root) {
+            terminate_pid(pid, root);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn reap_orphan_proxies(_root: &Path) {}
 
 /// pid 还活着，且命令行就是本目录的 `proxy.mjs`（与 `ready.json` 里的旧记录核对）。
 fn is_our_proxy(pid: u32, root: &Path) -> bool {
-    let output = Command::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(output) = output else { return false };
-    let command = String::from_utf8_lossy(&output.stdout);
-    command.contains("proxy.mjs") && command.contains(&root.to_string_lossy().to_string())
+    #[cfg(windows)]
+    {
+        return crate::windows_integration::process_command_line(pid).is_some_and(|command| {
+            command.contains("proxy.mjs")
+                && command.contains(&root.to_string_lossy().to_string())
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else { return false };
+        let command = String::from_utf8_lossy(&output.stdout);
+        command.contains("proxy.mjs") && command.contains(&root.to_string_lossy().to_string())
+    }
 }
 
 pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
     ensure!(
-        cfg!(target_os = "macos"),
-        "原版 Claude 本地模式目前仅支持 macOS"
+        platform_supported(),
+        "原版 Claude 本地模式目前仅支持 macOS 和 Windows"
     );
     ensure!(
         ["launch", "stop", "trust", "untrust", "prepare", "sync_sessions"].contains(&action),
@@ -1830,7 +2319,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
             stop_backend();
             // 先让 Claude 退出，再还原 profile：Claude 退出时还会回写自己的配置。
             let quit = port.map(quit_claude_with_proxy).transpose()?.unwrap_or(false);
-            restore_real_profile(&app_support_dir(), &root)?;
+            restore_real_profile(&profile_sets(), &root)?;
             if quit {
                 "Claude 本地服务已停止，经它启动的 Claude 已退出。".to_string()
             } else {
@@ -1861,10 +2350,12 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 claude_processes()?.is_empty(),
                 "请先完全退出 Claude 再同步会话"
             );
+            let sets = profile_sets();
+            let main = sets.first().context("无法定位 Claude 的 profile 目录")?;
             let report = crate::claude_session_sync::sync_sessions(
-                &app_support_dir().join("Claude-3p/claude-code-sessions"),
+                &main.three_p.join("claude-code-sessions"),
                 &[root.join("claude-code-3p"), home_dir().join(".claude")],
-                &app_support_dir().join("Claude/claude-code-sessions"),
+                &main.data.join("claude-code-sessions"),
                 &[root.join("claude-code"), home_dir().join(".claude")],
                 &root.join("backups/session-sync"),
             )?;
@@ -1879,7 +2370,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
         }
         "launch" => {
             ensure!(
-                executable(&source).is_file(),
+                source_supported(&source),
                 "未安装 Claude Desktop，请先安装官方应用"
             );
             ensure!(
@@ -1887,10 +2378,12 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 "Claude 正在运行，请先完全退出，再从 Codex++ 启动以应用本地模式"
             );
             if config.session_sync {
+                let sets = profile_sets();
+                let main = sets.first().context("无法定位 Claude 的 profile 目录")?;
                 match crate::claude_session_sync::sync_sessions(
-                    &app_support_dir().join("Claude-3p/claude-code-sessions"),
+                    &main.three_p.join("claude-code-sessions"),
                     &[root.join("claude-code-3p"), home_dir().join(".claude")],
-                    &app_support_dir().join("Claude/claude-code-sessions"),
+                    &main.data.join("claude-code-sessions"),
                     &[root.join("claude-code"), home_dir().join(".claude")],
                     &root.join("backups/session-sync"),
                 ) {
@@ -2008,24 +2501,34 @@ mod tests {
         assert_eq!(available_models(&gateway), vec!["openai/gpt-6"]);
     }
 
-    fn orphan_fixture(temp: &tempfile::TempDir) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
-        let app_support = temp.path().join("support");
+    /// mac 形状的单组 sets，与 `profile_sets_for(false, …)` 一致。
+    fn mac_sets_at(support: &Path) -> Vec<ProfileSet> {
+        vec![ProfileSet {
+            data: support.join("Claude"),
+            mode: support.join("Claude"),
+            three_p: support.join("Claude-3p"),
+        }]
+    }
+
+    fn orphan_fixture(temp: &tempfile::TempDir) -> (Vec<ProfileSet>, PathBuf, PathBuf, PathBuf) {
+        let support = temp.path().join("support");
         let root = temp.path().join("state");
-        let target = app_support.join("Claude-3p/configLibrary");
+        let sets = mac_sets_at(&support);
+        let target = support.join("Claude-3p/configLibrary");
         let backup = target.with_file_name(CONFIG_LIBRARY_BACKUP);
         fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&app_support).unwrap();
-        (app_support, root, target, backup)
+        fs::create_dir_all(&support).unwrap();
+        (sets, root, target, backup)
     }
 
     #[test]
     fn orphan_config_library_backup_is_put_back_when_target_is_gone() {
         let temp = tempfile::tempdir().unwrap();
-        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        let (sets, root, target, backup) = orphan_fixture(&temp);
         fs::create_dir_all(&backup).unwrap();
         fs::write(backup.join("00000000.json"), b"{}").unwrap();
 
-        let note = recover_orphan_config_library(&app_support, &root).unwrap();
+        let note = recover_orphan_config_library(&sets, &root).unwrap();
         assert!(note.is_some(), "收尾之后要给用户一句说明");
         assert!(target.join("00000000.json").is_file(), "目标不在就把备份放回去");
         assert!(!backup.exists());
@@ -2034,13 +2537,13 @@ mod tests {
     #[test]
     fn orphan_config_library_backup_is_archived_when_target_exists() {
         let temp = tempfile::tempdir().unwrap();
-        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        let (sets, root, target, backup) = orphan_fixture(&temp);
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("fresh.json"), b"{}").unwrap();
         fs::create_dir_all(&backup).unwrap();
         fs::write(backup.join("old.json"), b"{}").unwrap();
 
-        recover_orphan_config_library(&app_support, &root).unwrap();
+        recover_orphan_config_library(&sets, &root).unwrap();
         assert!(target.join("fresh.json").is_file(), "Claude 重建的那份保持不动");
         assert!(!backup.exists(), "遗留备份不再卡住启动");
         let archived: Vec<_> = fs::read_dir(root.join("backups")).unwrap()
@@ -2053,7 +2556,7 @@ mod tests {
     #[test]
     fn tracked_config_library_backup_is_left_to_the_restore_step() {
         let temp = tempfile::tempdir().unwrap();
-        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        let (sets, root, target, backup) = orphan_fixture(&temp);
         fs::create_dir_all(&target).unwrap();
         fs::create_dir_all(&backup).unwrap();
         crate::settings::atomic_write(
@@ -2068,30 +2571,27 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(recover_orphan_config_library(&app_support, &root).unwrap(), None);
+        assert_eq!(recover_orphan_config_library(&sets, &root).unwrap(), None);
         assert!(backup.exists(), "正常流程里的备份交给 restore_real_profile");
     }
 
     #[test]
     fn one_p_switch_no_longer_fails_on_a_leftover_backup() {
         let temp = tempfile::tempdir().unwrap();
-        let (app_support, root, target, backup) = orphan_fixture(&temp);
+        let (sets, root, target, backup) = orphan_fixture(&temp);
         for app in ["Claude", "Claude-3p"] {
-            fs::create_dir_all(app_support.join(app)).unwrap();
-            fs::write(
-                app_support.join(app).join("claude_desktop_config.json"),
-                b"{\"mcpServers\":{}}",
-            )
-            .unwrap();
+            let dir = temp.path().join("support").join(app);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("claude_desktop_config.json"), b"{\"mcpServers\":{}}").unwrap();
         }
         fs::create_dir_all(&target).unwrap();
         fs::create_dir_all(&backup).unwrap();
 
-        apply_real_profile_one_p(&app_support, &root).unwrap();
+        apply_real_profile_one_p(&sets, &root).unwrap();
         assert!(switch_state_path(&root).is_file(), "这次要正常记下切换状态");
         assert!(backup.exists() && !target.exists(), "configLibrary 已挪开");
         let config: Value = serde_json::from_slice(
-            &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
+            &fs::read(temp.path().join("support/Claude/claude_desktop_config.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(config["deploymentMode"], json!("1p"));
@@ -2493,9 +2993,10 @@ server.listen(0,'127.0.0.1',()=>{
         .unwrap();
         fs::write(app_support.join("Claude-3p/configLibrary/lib"), b"lib").unwrap();
 
-        apply_real_profile_one_p(&app_support, &state_root).unwrap();
+        let sets = mac_sets_at(&app_support);
+        apply_real_profile_one_p(&sets, &state_root).unwrap();
         // 幂等：第二次 apply 不重复写状态
-        apply_real_profile_one_p(&app_support, &state_root).unwrap();
+        apply_real_profile_one_p(&sets, &state_root).unwrap();
 
         let one_p: Value = serde_json::from_slice(
             &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
@@ -2517,7 +3018,7 @@ server.listen(0,'127.0.0.1',()=>{
         );
         assert!(state_root.join(SWITCH_STATE_FILE).is_file());
 
-        restore_real_profile(&app_support, &state_root).unwrap();
+        restore_real_profile(&sets, &state_root).unwrap();
         let restored: Value = serde_json::from_slice(
             &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
         )
@@ -2531,7 +3032,7 @@ server.listen(0,'127.0.0.1',()=>{
         assert!(app_support.join("Claude-3p/configLibrary/lib").is_file());
         assert!(!state_root.join(SWITCH_STATE_FILE).exists());
         // 恢复后再次 restore 是空操作
-        restore_real_profile(&app_support, &state_root).unwrap();
+        restore_real_profile(&sets, &state_root).unwrap();
     }
 
     #[test]
@@ -2546,13 +3047,14 @@ server.listen(0,'127.0.0.1',()=>{
             r#"{"preferences":{"theme":"dark"}}"#,
         )
         .unwrap();
-        apply_real_profile_one_p(&app_support, &state_root).unwrap();
+        let sets = mac_sets_at(&app_support);
+        apply_real_profile_one_p(&sets, &state_root).unwrap();
         let applied: Value = serde_json::from_slice(
             &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(applied["deploymentMode"], json!("1p"));
-        restore_real_profile(&app_support, &state_root).unwrap();
+        restore_real_profile(&sets, &state_root).unwrap();
         let restored: Value = serde_json::from_slice(
             &fs::read(app_support.join("Claude/claude_desktop_config.json")).unwrap(),
         )
@@ -2733,5 +3235,311 @@ server.listen(0,'127.0.0.1',()=>{
         assert_eq!(claude_pids_on_proxy(&listing, 63917), vec![77248]);
         assert!(claude_pids_on_proxy(&listing, 5351).is_empty());
         assert!(claude_pids_on_proxy("", 53514).is_empty());
+    }
+
+    #[test]
+    fn profile_sets_cover_mac_and_windows_layouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let sets = profile_sets_for(false, &home, None, None);
+        assert_eq!(sets.len(), 1);
+        let support = home.join("Library/Application Support");
+        assert_eq!(sets[0].data, support.join("Claude"));
+        assert_eq!(sets[0].mode, support.join("Claude"), "mac 上 data 与 mode 相同");
+        assert_eq!(sets[0].three_p, support.join("Claude-3p"));
+
+        let roaming = temp.path().join("roaming");
+        let local = temp.path().join("local");
+        let packages = local.join("Packages");
+        for name in [
+            "Claude_pzs8sxrjxfjjc",
+            "AnthropicPBC.Claude_fnn82j28hfe8t",
+            "Other_x",
+        ] {
+            fs::create_dir_all(packages.join(name)).unwrap();
+        }
+        let sets = profile_sets_for(true, &home, Some(&roaming), Some(&local));
+        assert_eq!(sets.len(), 3, "classic + 两组 packaged，Other 被忽略");
+        assert_eq!(sets[0].data, roaming.join("Claude"));
+        assert_eq!(sets[0].mode, local.join("Claude"));
+        assert_eq!(sets[0].three_p, local.join("Claude-3p"));
+        // 排序后 AnthropicPBC.Claude_… 在 Claude_… 之前。
+        for (set, package) in sets[1..].iter().zip([
+            "AnthropicPBC.Claude_fnn82j28hfe8t",
+            "Claude_pzs8sxrjxfjjc",
+        ]) {
+            let cache = packages.join(package).join("LocalCache");
+            assert_eq!(set.data, cache.join("Roaming").join("Claude"));
+            assert_eq!(set.mode, cache.join("Local").join("Claude"));
+            assert_eq!(set.three_p, cache.join("Local").join("Claude-3p"));
+        }
+    }
+
+    #[test]
+    fn desktop_config_paths_preserve_mac_order_and_dedupe() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let sets = profile_sets_for(false, &home, None, None);
+        let support = home.join("Library/Application Support");
+        assert_eq!(
+            desktop_config_paths(&sets),
+            vec![
+                support.join("Claude/claude_desktop_config.json"),
+                support.join("Claude-3p/claude_desktop_config.json"),
+            ],
+            "macOS 的结果与顺序必须保持不变"
+        );
+
+        let roaming = temp.path().join("roaming");
+        let local = temp.path().join("local");
+        fs::create_dir_all(local.join("Packages").join("Claude_abc")).unwrap();
+        let sets = profile_sets_for(true, &home, Some(&roaming), Some(&local));
+        let paths = desktop_config_paths(&sets);
+        assert_eq!(paths.len(), sets.len() * 3, "每组 data/mode/three_p 各一份");
+        let mut sorted = paths.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(paths.len(), sorted.len(), "不能有重复路径");
+    }
+
+    #[test]
+    fn real_profile_switch_handles_multiple_windows_profile_sets() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let roaming = temp.path().join("roaming");
+        let local = temp.path().join("local");
+        fs::create_dir_all(local.join("Packages").join("Claude_abc")).unwrap();
+        let sets = profile_sets_for(true, &home, Some(&roaming), Some(&local));
+        assert_eq!(sets.len(), 2, "classic + 一组 packaged");
+        let root = temp.path().join("state");
+        for set in &sets {
+            for dir in [&set.data, &set.mode, &set.three_p] {
+                fs::create_dir_all(dir).unwrap();
+                fs::write(
+                    dir.join("claude_desktop_config.json"),
+                    r#"{"deploymentMode":"3p"}"#,
+                )
+                .unwrap();
+            }
+            let library = set.three_p.join("configLibrary");
+            fs::create_dir_all(&library).unwrap();
+            fs::write(library.join("lib"), b"lib").unwrap();
+        }
+
+        apply_real_profile_one_p(&sets, &root).unwrap();
+        for set in &sets {
+            for dir in [&set.data, &set.mode, &set.three_p] {
+                let config: Value = serde_json::from_slice(
+                    &fs::read(dir.join("claude_desktop_config.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(config["deploymentMode"], json!("1p"), "{}", dir.display());
+            }
+            let backup = set
+                .three_p
+                .join("configLibrary")
+                .with_file_name(CONFIG_LIBRARY_BACKUP);
+            assert!(!set.three_p.join("configLibrary").exists());
+            assert!(backup.join("lib").is_file(), "{}", backup.display());
+        }
+
+        restore_real_profile(&sets, &root).unwrap();
+        for set in &sets {
+            for dir in [&set.data, &set.mode, &set.three_p] {
+                let config: Value = serde_json::from_slice(
+                    &fs::read(dir.join("claude_desktop_config.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(config["deploymentMode"], json!("3p"), "{}", dir.display());
+            }
+            assert!(set.three_p.join("configLibrary/lib").is_file());
+            assert!(
+                !set
+                    .three_p
+                    .join("configLibrary")
+                    .with_file_name(CONFIG_LIBRARY_BACKUP)
+                    .exists()
+            );
+        }
+        assert!(!root.join(SWITCH_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn legacy_switch_state_still_restores_config_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sets, root, target, backup) = orphan_fixture(&temp);
+        fs::create_dir_all(&target).unwrap();
+        let support = temp.path().join("support");
+        fs::create_dir_all(support.join("Claude")).unwrap();
+        fs::write(
+            support.join("Claude/claude_desktop_config.json"),
+            r#"{"deploymentMode":"1p"}"#,
+        )
+        .unwrap();
+        // 旧格式状态文件：单条 configLibraryMoved + configLibraryBackup。
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("lib"), b"lib").unwrap();
+        fs::remove_dir_all(&target).unwrap();
+        crate::settings::atomic_write(
+            &switch_state_path(&root),
+            &serde_json::to_vec_pretty(&json!({
+                "applied": true,
+                "deploymentMode": {
+                    support.join("Claude/claude_desktop_config.json").to_string_lossy(): "3p",
+                },
+                "configLibraryMoved": true,
+                "configLibraryBackup": backup.to_string_lossy(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        restore_real_profile(&sets, &root).unwrap();
+        assert!(target.join("lib").is_file(), "旧格式记录的备份要能放回");
+        assert!(!backup.exists());
+        let config: Value = serde_json::from_slice(
+            &fs::read(support.join("Claude/claude_desktop_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(config["deploymentMode"], json!("3p"));
+        assert!(!root.join(SWITCH_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn orphan_backup_tracked_by_legacy_state_is_left_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sets, root, _target, backup) = orphan_fixture(&temp);
+        fs::create_dir_all(&backup).unwrap();
+        // 旧格式只记主集合那份备份：路径一致才算被跟踪。
+        crate::settings::atomic_write(
+            &switch_state_path(&root),
+            &serde_json::to_vec_pretty(&json!({
+                "applied": true,
+                "configLibraryMoved": true,
+                "configLibraryBackup": backup.to_string_lossy(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(recover_orphan_config_library(&sets, &root).unwrap(), None);
+        assert!(backup.exists(), "被旧格式状态文件跟踪的备份交给 restore");
+    }
+
+    #[test]
+    fn orphan_recovery_handles_each_profile_set_independently() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let roaming = temp.path().join("roaming");
+        let local = temp.path().join("local");
+        fs::create_dir_all(local.join("Packages").join("Claude_abc")).unwrap();
+        let sets = profile_sets_for(true, &home, Some(&roaming), Some(&local));
+        assert_eq!(sets.len(), 2);
+        let root = temp.path().join("state");
+        fs::create_dir_all(&root).unwrap();
+        // 第一组：目标不在 → 备份放回。
+        let backup0 = sets[0]
+            .three_p
+            .join("configLibrary")
+            .with_file_name(CONFIG_LIBRARY_BACKUP);
+        fs::create_dir_all(&backup0).unwrap();
+        // 第二组：目标也在 → 备份归档。
+        let target1 = sets[1].three_p.join("configLibrary");
+        let backup1 = target1.with_file_name(CONFIG_LIBRARY_BACKUP);
+        fs::create_dir_all(&target1).unwrap();
+        fs::create_dir_all(&backup1).unwrap();
+
+        let note = recover_orphan_config_library(&sets, &root).unwrap().unwrap();
+        assert!(sets[0].three_p.join("configLibrary").is_dir(), "目标不在的放回");
+        assert!(target1.is_dir() && !backup1.exists(), "目标还在的归档");
+        let archived: Vec<_> = fs::read_dir(root.join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(note.lines().count(), 2, "两组各一句说明");
+    }
+
+    #[test]
+    fn ca_thumbprint_matches_openssl_sha1_fingerprint() {
+        // 测试证书由 `openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=test` 生成，
+        // 期望值是 `openssl x509 -noout -fingerprint -sha1` 去掉冒号。
+        let pem = b"-----BEGIN CERTIFICATE-----\n\
+MIICmjCCAYICCQCpYaxH1PIjyzANBgkqhkiG9w0BAQsFADAPMQ0wCwYDVQQDDAR0\n\
+ZXN0MB4XDTI2MTExMDE0MjQwNFoXDTI2MTExMTE0MjQwNFowDzENMAsGA1UEAwwE\n\
+dGVzdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALUXi/kw+Wb9kU9x\n\
+dQfgaKAMqWFo92iPmOrkE7w3TuS4GbToKOLe6hr0CNPsgmbiNusef+n1mQGHFsZL\n\
+BofAtXU93+gvpQbFmW0oKxNpfuoLdCMYZlZ17DdSffQIMwK8YR11dNafjks3eaIX\n\
+8gffHZKkWYLZ5YdhT1fpJK90vdylyHHtPW2SlMpGmdkojACxzGKkzHyFZdtXB2lp\n\
+VaHcXTyvoTYMLrF19UuQHi394h0/0XYqZINks3M+BgMOUDcXjKwJxW58N73id2JF\n\
+EdQhIOM7Mok8Wfwf+x9/EqNiANKL4RG0RU3SRbh022AT0tpabaEF8Bbcnkn+W4vU\n\
+mm6LprECAwEAATANBgkqhkiG9w0BAQsFAAOCAQEANiM68FroLYEdyxX++l8rS521\n\
+a1zbJqt/22R/T4FV+4/28wLNBlI0zsm0ajW6MF+F0EGQXkiP7wtp4/x8BZkp6LU8\n\
+30hdyepra0mf/qc35JGuOnH3qwRQuXdDYsLFpTuP+wHHZlw6XV3PY/Pg0hNmMViP\n\
+E2ZwvQab9tv86m7gd4KrWAq6rwYCeVy7CA/Y/tTZgaDZrmAtfKAYuMtw5mK7DT6n\n\
+RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
+9soF6shq4Ugxrbr27r195accXSekHve+EcgH3gw2mOkeb6MbidqYBUYFcf+Suw==\n\
+-----END CERTIFICATE-----\n";
+        assert_eq!(
+            ca_thumbprint(pem).as_deref(),
+            Some("60772CEDC0B873CCC34DAA9C0D371AB3D338398E")
+        );
+        assert_eq!(ca_thumbprint(b"not a pem"), None);
+    }
+
+    #[test]
+    fn is_desktop_claude_image_distinguishes_desktop_from_cli() {
+        let temp = tempfile::tempdir().unwrap();
+        // 父目录下有 resources/app.asar → 桌面版
+        let app_dir = temp.path().join("Claude");
+        fs::create_dir_all(app_dir.join("resources")).unwrap();
+        fs::write(app_dir.join("resources").join("app.asar"), b"asar").unwrap();
+        let exe = app_dir.join("Claude.exe");
+        assert!(is_desktop_claude_image("Claude.exe", Some(&exe)));
+        // 只有 claude.exe 没有 resources → Claude Code CLI
+        let cli_dir = temp.path().join("cli");
+        fs::create_dir_all(&cli_dir).unwrap();
+        assert!(!is_desktop_claude_image("claude.exe", Some(&cli_dir.join("claude.exe"))));
+        // WindowsApps 包路径 → 桌面版
+        let msix = Path::new(r"C:\Program Files\WindowsApps\AnthropicPBC.Claude_1_x64__p\app\Claude.exe");
+        assert!(is_desktop_claude_image("Claude.exe", Some(msix)));
+        // 读不到路径（权限不足）也算，由后续命令行判断兜底
+        assert!(is_desktop_claude_image("Claude.exe", None));
+        // 名字不是 Claude.exe 一律不算
+        assert!(!is_desktop_claude_image("node.exe", None));
+    }
+
+    #[test]
+    fn claude_pids_on_proxy_reads_windows_listing() {
+        let listing = format!(
+            "1234 \"C:\\Program Files\\WindowsApps\\AnthropicPBC.Claude_1_x64__p\\app\\Claude.exe\" {} --lang=zh-CN",
+            proxy_flag(5000)
+        );
+        assert_eq!(claude_pids_on_proxy(&listing, 5000), vec![1234]);
+        assert!(claude_pids_on_proxy(&listing, 500).is_empty(), "端口不整词匹配");
+    }
+
+    #[test]
+    fn openssl_candidates_check_path_then_git_bundles() {
+        let pf = Path::new("/pf");
+        let w6432 = Path::new("/w6432");
+        let local = Path::new("/local/Programs");
+        let candidates = openssl_candidates(Some(pf), Some(w6432), Some(local));
+        // PATH 里找到的排在最前（本机装了 openssl 就是 1 条，没装就是 0 条）。
+        let located = crate::dsh_plugins::locate_program("openssl");
+        assert_eq!(
+            candidates.len(),
+            located.iter().count() + 6,
+            "每个 base 两个 Git 位置"
+        );
+        if let Some(found) = &located {
+            assert_eq!(&candidates[0], found);
+        }
+        let tail = &candidates[located.iter().count()..];
+        assert_eq!(tail[0], pf.join(r"Git\mingw64\bin\openssl.exe"));
+        assert_eq!(tail[1], pf.join(r"Git\usr\bin\openssl.exe"));
+        assert_eq!(tail[2], w6432.join(r"Git\mingw64\bin\openssl.exe"));
+        assert_eq!(tail[3], w6432.join(r"Git\usr\bin\openssl.exe"));
+        assert_eq!(tail[4], local.join(r"Git\mingw64\bin\openssl.exe"));
+        assert_eq!(tail[5], local.join(r"Git\usr\bin\openssl.exe"));
     }
 }
