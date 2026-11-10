@@ -102,6 +102,24 @@ function snapshotRuntime(read?: (payload: any) => Promise<any>) {
 }
 
 describe("pure API persisted model snapshot", () => {
+  it("keeps loaded matching-provider settings instead of restoring an older disk snapshot", async () => {
+    for (const status of ["idle", "active"]) {
+      for (const metadataFails of [false, true]) {
+        const api = snapshotRuntime(async ({ thread_id }) => {
+          if (metadataFails) throw new Error("snapshot unavailable");
+          return { status: "ok", threadId: thread_id, model: "older-model", reasoningEffort: "high" };
+        });
+        const params = { threadId: "a", config: { model_context_window: 500000 } };
+        const result = await api.prepare("thread/resume", params, "local", false,
+          async () => ({ thread: { id: "a", status: { type: status }, modelProvider: "custom" },
+            model: "user-chosen-model", reasoningEffort: "low" }));
+        assert.equal(result, params);
+        assert.equal(Object.hasOwn(result, "model"), false);
+        assert.equal(Object.hasOwn(result.config, "model_reasoning_effort"), false);
+      }
+    }
+  });
+
   it("restores each saved model and effort with the current provider without changing caller objects", async () => {
     const api = snapshotRuntime(async ({ thread_id }) => ({ status: "ok", threadId: thread_id,
       model: `saved-${thread_id}`, reasoningEffort: thread_id === "a" ? "ultra" : "low" }));
@@ -466,6 +484,8 @@ describe("pure API persisted model snapshot", () => {
         appServerModelRequestMethod: (method: string, params: any) => method === "send-cli-request-for-host" ? params.method : method,
         loadBackendSettingsState: async () => scenario !== "refresh-failed", loadCodexModelCatalog: async () => ({}),
         prepareCodexManagedSessionConnection: async (_method: string, params: any) => params,
+        prepareCodexThreadContextStart: async (_method: string, params: any) => params,
+        noteCodexThreadRuntimeContext() {},
         codexManagedSessionConnection: () => null, refreshCodexThreadModelBeforeTurn: async () => null,
         sendCodexManagedSessionTurn: async () => null, noteCodexManagedSessionStart() {},
         codexThreadModelRequestState: () => ({}), codexPlusModelUnlockEnabled: () => false,

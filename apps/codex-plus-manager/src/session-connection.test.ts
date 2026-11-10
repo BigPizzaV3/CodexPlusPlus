@@ -282,18 +282,11 @@ describe("managed aggregate session connection", () => {
       catalog.indexOf("  const appServerModelRequestPatchMaxMisses"));
     for (const mode of ["instance", "prototype", "envelope"]) {
       const calls: string[] = [];
-      let allowContextResume = false;
-      let rejectContextResume = false;
       const nativeSend = async function(this: any, method: string, params: any): Promise<any> {
         assert.equal(this.hostId, "local", "preserve the native method receiver during upgrade");
         if (method === "send-cli-request-for-host") return nativeSend.call(this, params.method, params.params);
         calls.push(method);
-        if (method === "thread/resume") {
-          if (!allowContextResume) throw new Error("no rollout found for thread id fresh");
-          assert.equal(params.model, "new");
-          assert.equal(params.modelProvider, "codex_plus_managed");
-          if (rejectContextResume) throw new Error("context refresh failed");
-        }
+        if (method === "thread/resume") throw new Error("no rollout found for thread id fresh");
         return method === "thread/start" ? { thread: { id: "fresh" } } : { turn: { id: "first" } };
       };
       class Client {
@@ -338,6 +331,9 @@ describe("managed aggregate session connection", () => {
         verifyCodexPureApiResumeResult() {},
         applyCodexServiceTierRequestOnly: (_method: string, params: any) => params,
         loadBackendSettingsState: async () => { calls.push("settings/get"); return true; },
+        loadCodexModelCatalog: async () => ({ runtimeContext: null }),
+        codexModelCatalog: { runtimeContext: null },
+        modelResponseHostId: (params: any, hostId: string) => params?.hostId || hostId,
         codexAppServerPreparationTimeoutMs: 1500,
         sendCodexPlusDiagnostic() {}, codexPlusModelUnlockEnabled: () => false,
         codexPluginMarketplacePatchEnabled: () => false, codexPlusSettings: () => ({}),
@@ -358,34 +354,16 @@ describe("managed aggregate session connection", () => {
       await send("turn/start", { threadId: "fresh", model: "selected" });
       assert.deepEqual(calls, ["turn/start"], mode);
       assert.equal((client as any).__codexPlusModelRequestPatch, version);
-      allowContextResume = true;
-      // 使用真实刷新函数，分别覆盖窗口、压缩和 metadata 配置。
+      // 外部或尚未迁移的目录不因模型名变化触发无效的 warm resume。
       for (const key of ["modelWindows", "modelAutoCompact", "modelMetadata"]) {
         profile[key] = '{"old":200000,"new":1000000}';
         await send("thread/start", { model: "old" });
         calls.length = 0;
         await send("turn/start", { threadId: "fresh", model: "new" });
-        assert.deepEqual(calls, ["thread/resume", "turn/start"], `${mode}:${key}`);
+        assert.deepEqual(calls, ["turn/start"], `${mode}:${key}`);
         calls.length = 0;
         await send("turn/start", { threadId: "fresh", model: "new" });
         assert.deepEqual(calls, ["turn/start"], `${mode}:unchanged`);
-        // 同线程正在恢复时不得抢先刷新上下文或发送消息。
-        await send("thread/start", { model: "old" });
-        (context.window as any).__codexPlusConnectionRecoveryPending = new Set(["fresh"]);
-        calls.length = 0;
-        await assert.rejects(send("turn/start", { threadId: "fresh", model: "new" }), /正在检查连接/);
-        assert.deepEqual(calls, []);
-        (context.window as any).__codexPlusConnectionRecoveryPending.clear();
-        // 刷新失败不能由受管发送覆盖缓存，下一条消息仍应重试刷新。
-        await send("thread/start", { model: "old" });
-        rejectContextResume = true;
-        calls.length = 0;
-        await send("turn/start", { threadId: "fresh", model: "new" });
-        assert.deepEqual(calls, ["thread/resume", "turn/start"]);
-        rejectContextResume = false;
-        calls.length = 0;
-        await send("turn/start", { threadId: "fresh", model: "new" });
-        assert.deepEqual(calls, ["thread/resume", "turn/start"], `${mode}:retry`);
         delete profile[key];
       }
     }

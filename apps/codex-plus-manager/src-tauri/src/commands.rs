@@ -4565,6 +4565,16 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
                     );
                 }
             };
+            if let Err(error) =
+                codex_plus_core::relay_config::migrate_managed_model_catalog_pointer_in_home(
+                    &home, &settings,
+                )
+            {
+                log_manager_event(
+                    "manager.model_catalog_migration_failed",
+                    json!({ "message": format!("{error:#}") }),
+                );
+            }
             ok(
                 "设置已加载。",
                 SettingsPayload {

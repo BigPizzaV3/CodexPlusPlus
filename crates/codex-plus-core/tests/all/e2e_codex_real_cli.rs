@@ -270,10 +270,7 @@ base_url = "https://relay.example.test/v1"
     let catalog = apply_profile(temp_a.path(), "gpt-5.6-sol");
     let model = &catalog["models"][0];
     assert_eq!(model["context_window"], 272_000, "精调窗口覆盖官方缓存值");
-    assert_eq!(
-        model["max_context_window"], 872_000,
-        "精调 max 覆盖官方缓存值"
-    );
+    assert!(model["max_context_window"].is_null(), "受管目录不固定运行时覆盖上限");
     assert_eq!(model["display_name"], "GPT-5.6-Sol", "精调展示名覆盖缓存值");
     assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
     assert_eq!(
@@ -317,10 +314,7 @@ base_url = "https://relay.example.test/v1"
                     .iter()
                     .find(|m| m["slug"] == *slug)
                     .unwrap();
-                assert_eq!(
-                    model["max_context_window"], 872_000,
-                    "{slug}：精调 max 上限保持"
-                );
+                assert!(model["max_context_window"].is_null(), "{slug}：受管目录不固定覆盖上限");
                 // 精调文件未定义的字段（truncation_policy / shell_type 等）必须与真实官方缓存一致
                 for key in ["truncation_policy", "shell_type"] {
                     if cache_entry.get(key).is_some() {
