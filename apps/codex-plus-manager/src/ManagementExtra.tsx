@@ -80,7 +80,7 @@ function parseRepoInput(value: string, current: Repo): Repo | null {
 }
 /** 后端 `LOCAL_IMPORT_REPO_KEY`：从本地目录导入的 Skill（#511）。 */
 const LOCAL_IMPORT_REPO_KEY = "local";
-function sourceLabel(skill: Skill) { if (skill.displayInstances) return t("多个 Agent 安装"); if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch" || (skill.conflict && !skill.repoKey)) return t("本地（来源未确认）"); if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey ? skill.repoKey.split("@", 1)[0] : t("用户"); }
+function sourceLabel(skill: Skill) { if (skill.displayInstances) return t("多个 Agent 安装"); if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch" || !skill.repoKey) return t("本地"); if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey.split("@", 1)[0]; }
 function skillChannelLabel(skill: Skill) {
   return skill.installChannel === "cc-switch" || (skill.repoKey === "cc-switch" && skill.sourceVerified)
     ? "cc-switch" : skill.installChannel === "github" ? "GitHub" : skill.installChannel === "system" ? t("内置") : skill.installChannel === "local" || skill.repoKey === "cc-switch" ? t("本地安装") : t("未记录");
@@ -257,7 +257,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}>
     {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.displayInstances ? t("各 Agent 的安装内容或来源可能不同，请分别查看。") : skill.conflict}</p>}
     <dl className="mg-detail">
-      <dt>{t("上游来源")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : skill.bundled ? t("内置") : t("来源未确认")}{associatedOriginal && <small> · {t("仅关联所选安装位置")}</small>}</dd>
+      <dt>{t(!skill.displayInstances && !url && !skill.bundled ? "来源" : "上游来源")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : skill.bundled ? t("内置") : t("本地")}{associatedOriginal && <small> · {t("仅关联所选安装位置")}</small>}</dd>
       <dt>{t("安装渠道")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : channel}</dd>
       <dt>{t("更新方式")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : owner}</dd>
       <dt>{t("Skill ID")}</dt><dd>{skill.id}</dd>
@@ -275,7 +275,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
           {(skill.conflict || skill.displayInstances) && <SkillFileTimes id={skill.id} rootKind={location.rootKind}/>}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
           {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
-          {(instance || (location.selectable && location.originalPath)) && <><br/>{t("上游来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("来源未确认")}
+          {(instance || (location.selectable && location.originalPath)) && <><br/>{t(hasRepo ? "上游来源" : "来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")}
             {hasRepo && <><br/>{t("更新方式")}：{locationOwner === "in_place" ? t("Codex++ 原位维护") : locationOwner === "manager" ? t("Codex++ 管理") : t("未接管")}</>}
             {location.selectable && location.originalPath && (skill.displayInstances || skill.conflictKind === "equal-independent") && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(location.originalPath || undefined)}>{t(hasRepo ? "重新关联此安装位置" : "关联此安装位置")}</Button>
               {hasRepo && locationOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];

@@ -50,7 +50,11 @@ test("legacy cc-switch markers do not claim a verified upstream source", () => {
   vm.createContext(context);
   vm.runInContext(sourceLabelCode, context);
   const label = (context as any).sourceLabel;
-  assert.equal(label(skill("legacy", "cc-switch")), "本地（来源未确认）");
+  assert.equal(label(skill("legacy", "cc-switch")), "本地");
+  assert.equal(label(skill("local", "")), "本地");
+  assert.equal(label({ ...skill("conflict", ""), conflict: "内容不同" }), "本地");
+  assert.equal(label(skill("import", "local")), "本地导入");
+  assert.equal(label(skill("bundled", "", true)), "内置");
   assert.equal(label(skill("repository", "owner/repo@main")), "owner/repo");
 });
 
@@ -238,7 +242,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
     aggregateSkillGroupItems, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
-    sourceLabel: (item: FixtureSkill) => item.displayInstances ? "多个 Agent 安装" : item.bundled ? "内置" : item.repoKey === "cc-switch" ? "本地（来源未确认）" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
+    sourceLabel: (item: FixtureSkill) => item.displayInstances ? "多个 Agent 安装" : item.bundled ? "内置" : item.repoKey === "cc-switch" || !item.repoKey ? "本地" : item.repoKey === "local" ? "本地导入" : item.repoKey.split("@", 1)[0],
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
@@ -1481,7 +1485,7 @@ test("shared IDs support independent choices while retaining legacy assignments 
   assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.repoKey).sort(), ["a/repo@main", "z/repo@main"]);
   assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.repoKey), ["local", "cc-switch"]);
   assert.ok(ui.rowElements("user", "local", "local-import").some((node) => node.type === "small" && node.children.includes("本地导入")));
-  assert.ok(ui.rowElements("user", "cc-switch", "cc-import").some((node) => node.type === "small" && node.children.includes("本地（来源未确认）")));
+  assert.ok(ui.rowElements("user", "cc-switch", "cc-import").some((node) => node.type === "small" && node.children.includes("本地")));
   assert.equal(ui.rowElements("builtin", "", "shared").some((node) => node.props.className === "mg-menu-label"), false);
   assert.ok(ui.rowElements("custom:Manual", "a/repo@main", "shared").some((node) => node.props.className === "mg-menu-label"));
   assert.deepEqual(ui.savedState().assignments, { shared: "Manual" });
