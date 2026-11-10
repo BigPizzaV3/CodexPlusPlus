@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codex++ — 让 AI 编程 Agent 更顺手</title>
-<meta name="description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池，按模型名路由、出错自动换下一家。">
+<meta name="description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池；Claude Desktop 完整功能模式不登录账号也能用完整界面，模型走你自己的 API。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Codex++">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:title" content="Codex++ — 让 AI 编程 Agent 更顺手">
-<meta property="og:description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池，按模型名路由、出错自动换下一家。">
+<meta property="og:description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池；Claude Desktop 完整功能模式不登录账号也能用完整界面，模型走你自己的 API。">
 <meta property="og:url" content="https://codexpp.cc/">
 <meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -18,7 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/site.css?v=20261031-1">
+<link rel="stylesheet" href="css/site.css?v=20261110-1">
 <script>
   // 主题与 js 标记要在首帧前定好，避免闪一下
   (function () {
@@ -38,6 +38,7 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links" aria-label="页面导航">
+      <a href="#claude">Claude</a>
       <a href="#create">拓展</a>
       <a href="#gateway">网关</a>
       <a href="#features">功能</a>
@@ -47,7 +48,7 @@
       <a href="#faq">问答</a>
     </nav>
     <div class="nav-actions">
-      <span class="nav-version mono" data-site-version>v2.2.0</span>
+      <span class="nav-version mono" data-site-version>v2.6.0</span>
       <a class="lang-link" href="en.html" hreflang="en" lang="en">EN</a>
       <button class="icon-btn" type="button" data-theme-toggle aria-label="切换明暗主题">
         <svg class="i-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -68,15 +69,15 @@
 <section class="hero">
   <div class="wrap">
     <div class="hero-copy">
-      <a class="hero-badge" href="#create"><b>新</b>万物皆拓展：在 Codex 对话里说一句，就能造拓展 →</a>
+      <a class="hero-badge claude" href="#claude"><b>新</b>Claude Desktop 完整功能模式：像官方订阅一样接入 API，保留全部完整功能 →</a>
       <h1>万物皆拓展，<br><em>Codex 由你来改</em></h1>
-      <p class="hero-sub">界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。内置本地网关，让 Codex、Claude Code 等 50 多个 Agent 共用一份供应商池。</p>
+      <p class="hero-sub">界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。内置本地网关，让 Codex、Claude Code 等 50 多个 Agent 共用一份供应商池；原版 Claude Desktop 也能接进来，完整界面一样不少。</p>
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          下载 <span data-site-version>v2.2.0</span>
+          下载 <span data-site-version>v2.6.0</span>
         </a>
-        <a class="btn btn-ghost btn-lg" href="#create">看看怎么造拓展</a>
+        <a class="btn btn-ghost btn-lg" href="#claude">看看完整的 Claude</a>
       </div>
       <p class="hero-meta"><span>Windows · macOS</span><span>开源 · AGPL-3.0</span><span>数据只存本机</span><span>不改官方应用文件</span></p>
     </div>
@@ -120,6 +121,103 @@
         <li class="more">等 50+ Agent</li>
       </ul>
     </div>
+  </div>
+</section>
+
+<!-- ========== Claude 完整功能模式 ========== -->
+<section class="section tint claude-sec" id="claude">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Claude Desktop · 完整功能模式</span>
+      <h2>像官方订阅一样接入 API，<br><em>保留全部完整功能</em></h2>
+      <p>常见的接入办法只给 Claude Code 改一个 <code>ANTHROPIC_BASE_URL</code>，或把 Claude Desktop 切到官方的 3p（第三方推理）部署：模型换成了你的，界面和功能却跟着缩水。Codex++ 的「完整功能模式」换了个思路——在本机给原版 Claude Desktop 当服务端：界面是 claude.ai 的完整版，账号、套餐和功能开关由本地服务应答，回复走你的 Codex++ 供应商池。</p>
+    </div>
+
+    <figure class="claude-shot reveal">
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>Claude Desktop · 完整功能模式</span><b class="tag">实测</b></div>
+        <a href="assets/claude-full-chat.webp" data-zoom><img src="assets/claude-full-chat.webp" alt="实测：原版 Claude Desktop 没有登录 Claude 账号，侧栏有项目、定时任务、Artifacts、自定义，左下角显示本地账号 · Ultra；回复由 Codex++ 网关里的 GPT-6.1 Sol 生成" width="2880" height="1514" loading="lazy"></a>
+      </div>
+      <figcaption>实测：原版 Claude Desktop，没有登录 Claude 账号；这条回复来自 Codex++ 网关里的 GPT-6.1 Sol。</figcaption>
+    </figure>
+
+    <div class="claude-points">
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        <h3>完整界面，不用账号</h3>
+        <p>项目、Artifacts、定时任务、自定义都在；显示名和套餐（Free / Pro / Max / Ultra）自己定，只影响界面显示。</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.83L3 3"/><path d="m15 9 6-6"/></svg>
+        <h3>模型来自你的供应商池</h3>
+        <p>模型选择器里直接列出池里的模型，显示友好名和供应商；按模型名路由、多 Key 轮换、出错换下一家。</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+        <h3>听写、电脑控制、后台模式</h3>
+        <p>本地 SenseVoice 听写，结果只进输入框、不自动发送；Computer Use 入口与后台模式可用。</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>
+        <h3>每个模型，各自的窗口</h3>
+        <p>网关为每个模型声明的上下文窗口写进 Claude 的设置，切换模型不必重启，不再一律按 200k 算。</p>
+      </article>
+    </div>
+
+    <div class="cmp-wrap reveal">
+      <table class="cmp-table">
+        <caption>和常见接入方式比一比</caption>
+        <thead>
+          <tr><th scope="col">能力</th><th scope="col">常见接入：改 Base URL / 3p 部署</th><th scope="col" class="ours">Codex++ 完整功能模式</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">接入范围</th><td data-label="常见接入">多数只管 Claude Code 命令行</td><td class="ours" data-label="完整功能模式">Claude Desktop 的聊天、Cowork、Code 整套界面，外加内置的 Claude Code</td></tr>
+          <tr><th scope="row">界面</th><td data-label="常见接入">3p 部署走的是第三方推理版界面</td><td class="ours" data-label="完整功能模式">claude.ai 完整界面：项目、Artifacts、定时任务、自定义入口都在</td></tr>
+          <tr><th scope="row">账号</th><td data-label="常见接入">想要完整界面就得登录 Anthropic 账号</td><td class="ours" data-label="完整功能模式">不需要登录 Claude 账号；本地账号的显示名与套餐可自定</td></tr>
+          <tr><th scope="row">Computer Use 与后台模式</th><td data-label="常见接入">3p 部署会过滤这类远端功能开关，入口不可用</td><td class="ours" data-label="完整功能模式">入口与后台模式可用（仍需在系统里授予辅助功能和屏幕录制权限）</td></tr>
+          <tr><th scope="row">语音输入</th><td data-label="常见接入">官方听写依赖 Claude 账号</td><td class="ours" data-label="完整功能模式">本地 SenseVoice 识别，结果只进输入框</td></tr>
+          <tr><th scope="row">上下文窗口</th><td data-label="常见接入">没有声明时一律按 200k</td><td class="ours" data-label="完整功能模式">逐模型声明，切换模型不必重启</td></tr>
+          <tr><th scope="row">供应商</th><td data-label="常见接入">一个 Base URL 对一家</td><td class="ours" data-label="完整功能模式">整个 Codex++ 供应商池，协议自动互转</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="cmp-note reveal">「常见接入」泛指只改 Base URL，或使用 Claude Desktop 官方 3p 部署配置的做法，具体工具可能有差异。</p>
+
+    <div class="claude-pair">
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/claude-full-picker.webp" data-zoom><img src="assets/claude-full-picker.webp" alt="Claude 的模型选择器：Claude 自带档位之外，列出供应商池里的 GPT-6.1 Sol、GPT-5.6 Terra 等模型，副标题是供应商名" width="1440" height="920" loading="lazy"></a>
+        <figcaption><b>Claude 的模型选择器里，是你自己的模型</b><span>池里的模型显示友好名，副标题是供应商（图中为演示名）。</span></figcaption>
+      </figure>
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/claude-local-settings.webp" data-zoom><img src="assets/claude-local-settings.webp" alt="Codex++「Desktop 增强」页：启动模式选完整功能模式，本地证书已信任，语音识别与运行环境已就绪，界面汉化、原生听写、电脑控制、后台模式各自开关" width="2880" height="2000" loading="lazy"></a>
+        <figcaption><b>在 Codex++ 里一页配好</b><span>「Claude → Desktop 增强」：启动模式、证书、用户名与套餐、四项能力开关。</span></figcaption>
+      </figure>
+    </div>
+
+    <div class="claude-modes">
+      <article class="mode featured reveal">
+        <span class="badge">推荐 · macOS</span>
+        <h3>完整功能模式</h3>
+        <p>原版 Claude 经本地服务启动，还原 claude.ai 完整界面与听写、Computer Use、后台模式。需要信任一枚本机证书，可随时一键取消。</p>
+        <p class="fit"><b>适合：</b>想用 Claude Desktop 全部功能，又不想登录 Claude 账号。</p>
+      </article>
+      <article class="mode reveal">
+        <h3>3p 模式</h3>
+        <p>原版 Claude 用隔离的配置目录直连 Codex++ 网关，不装证书，最省事。</p>
+        <p class="fit"><b>适合：</b>只聊天、写代码，用不到那几项远端功能。</p>
+      </article>
+      <article class="mode reveal">
+        <h3>补丁版</h3>
+        <p>在 Claude.app 的副本上加中文界面、听写与 Computer Use，官方原件不动；还能解锁 Claude Code 的 Bash 时间限制。</p>
+        <p class="fit"><b>适合：</b>继续用自己的 Claude 账号，只想补几项功能。</p>
+      </article>
+    </div>
+    <ol class="claude-steps">
+      <li class="reveal"><b>选模型</b>在「网关 → Agent 接入」的 Claude Desktop 行选默认模型。</li>
+      <li class="reveal"><b>选模式、信任证书</b>侧栏「Claude → Desktop 增强」，启动模式选「完整功能模式」，准备并信任本机证书。</li>
+      <li class="reveal"><b>启动 Claude</b>先完全退出 Claude，再点「启动 Claude」或侧栏 Claude 行的启动键。</li>
+    </ol>
+    <div class="chips safe reveal"><span class="chip">不改 Claude.app 安装包</span><span class="chip">证书只在本机，可一键取消信任</span><span class="chip">切回 3p 时还原 Claude 的部署配置</span><span class="chip">两种模式之间可同步 Code 会话</span></div>
   </div>
 </section>
 
@@ -391,14 +489,15 @@
       </article>
       <article class="card w3 reveal">
         <div class="card-body">
-          <h3>Claude Desktop 增强版</h3>
+          <h3>补丁版 Claude Desktop</h3>
           <ul>
             <li>中文界面、输入框语音输入、Computer Use</li>
-            <li>增强在副本上生效，官方 Claude.app 原样不动</li>
+            <li>改动只在副本上，官方 Claude.app 原样不动</li>
             <li>可解锁 Claude Code 的 Bash 时间限制</li>
+            <li>不想登录账号？用 <a href="#claude" style="color:var(--brand-ink)">完整功能模式</a></li>
           </ul>
         </div>
-        <a class="card-shot" href="assets/claude-enhance.webp" data-zoom><img src="assets/claude-enhance.webp" alt="Claude 增强版：受管增强版已准备，可开关界面汉化、语音输入与 Computer Use" loading="lazy"></a>
+        <a class="card-shot" href="assets/claude-enhance.webp" data-zoom><img src="assets/claude-enhance.webp" alt="补丁版 Claude：副本已准备，可开关界面汉化、语音输入与 Computer Use" loading="lazy"></a>
       </article>
 
       <article class="card reveal">
@@ -546,7 +645,7 @@ your-model<span class="h">[128000]</span></pre>
     <div class="sec-head reveal">
       <span class="eyebrow">Get started</span>
       <h2>三步，<em>接上就用</em></h2>
-      <p>Codex 功能配合官方 Codex / ChatGPT 桌面应用使用；Claude、Grok 相关功能需安装对应客户端。</p>
+      <p>Codex 功能配合官方 Codex / ChatGPT 桌面应用使用；Claude、Grok 相关功能需安装对应客户端。想用 Claude 完整功能模式，看 <a href="#claude" style="color:var(--brand-ink)">上面的三步</a>。</p>
     </div>
     <ol class="steps">
       <li class="step reveal">
@@ -602,6 +701,18 @@ your-model<span class="h">[128000]</span></pre>
         <h2>先问，<em>先答</em></h2>
       </div>
       <div class="faq-list">
+        <details class="faq-item" id="faq-claude-full">
+          <summary>Claude 完整功能模式和别的工具接 Claude 有什么不一样？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>多数工具只改 Claude Code 的 Base URL，或者让 Claude Desktop 用官方的 3p 部署，后者界面是第三方推理版，Computer Use 等远端功能开关也会被过滤。完整功能模式由 Codex++ 在本机应答 claude.ai 的账号与功能接口，界面是完整版，回复走你的供应商池，所以听写、Computer Use、后台模式这些入口都能用，而且不需要登录 Claude 账号。</p></div>
+        </details>
+        <details class="faq-item" id="faq-claude-full-setup">
+          <summary>完整功能模式需要什么条件？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>目前仅支持 macOS，需要装好 Claude Desktop 和 Node.js。在「网关 → Agent 接入」给 Claude Desktop 选默认模型，再到「Claude → Desktop 增强」把启动模式切到「完整功能模式」，准备并信任本机证书。启动前先完全退出 Claude，再从 Codex++ 启动；已经打开的 Claude 不会自动接上。</p></div>
+        </details>
+        <details class="faq-item" id="faq-claude-cert">
+          <summary>要信任的本机证书安全吗？能撤销吗？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>证书和私钥由 Codex++ 在本机生成，放在它自己的状态目录里，只用于本地服务应答发往 claude.ai 的请求；只有从 Codex++ 启动、指向本地服务的 Claude 才会经过它。不用时在同一页点「取消信任证书」即可从钥匙串移除；切回 3p 模式时，Codex++ 会还原它改过的 Claude 部署配置。</p></div>
+        </details>
         <details class="faq-item" id="faq-extension-safety">
           <summary>装别人的拓展安全吗？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>精选与官方拓展经 Codex++ 审核，安装锁定到审核过的那次提交。社区拓展未经审核，作者可以在新版本里加入任意代码：安装前会列出它声明的全部能力（后台进程、钩子、网关中间件、模型工具、路由、页面脚本），装完默认不启用，请只安装你信任的作者的拓展。</p></div>
@@ -684,7 +795,7 @@ your-model<span class="h">[128000]</span></pre>
       <h2>你的 Codex，<em>由你来改</em></h2>
       <p>免费开源 · AGPL-3.0 · Windows 与 macOS。拓展、配置与会话数据都留在你自己的电脑上。</p>
       <div class="hero-cta">
-        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载 <span data-site-version>v2.2.0</span></a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载 <span data-site-version>v2.6.0</span></a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">在 GitHub 上点个 Star</a>
       </div>
     </div>
@@ -724,6 +835,6 @@ your-model<span class="h">[128000]</span></pre>
   <p></p>
 </dialog>
 
-<script src="js/site.js?v=20261031-1"></script>
+<script src="js/site.js?v=20261110-1"></script>
 </body>
 </html>

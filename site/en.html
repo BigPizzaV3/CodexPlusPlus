@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codex++ — Make your AI coding agents nicer to use</title>
-<meta name="description" content="Codex++ is built on an everything-is-an-extension architecture: UI, commands, model tools, agent hooks, and the requests and replies sent to models can all be taken over by extensions, and you can build one by asking in a Codex chat. A built-in local gateway lets 50+ agents share one provider pool, routed by model name with automatic failover.">
+<meta name="description" content="Codex++ is built on an everything-is-an-extension architecture: UI, commands, model tools, agent hooks, and the requests and replies sent to models can all be taken over by extensions, and you can build one by asking in a Codex chat. A built-in local gateway lets 50+ agents share one provider pool, and Claude Desktop full mode gives you the complete app on your own API, no Claude account needed.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Codex++">
 <meta property="og:locale" content="en_US">
 <meta property="og:title" content="Codex++ — Make your AI coding agents nicer to use">
-<meta property="og:description" content="Codex++ is built on an everything-is-an-extension architecture: UI, commands, model tools, agent hooks, and the requests and replies sent to models can all be taken over by extensions, and you can build one by asking in a Codex chat. A built-in local gateway lets 50+ agents share one provider pool, routed by model name with automatic failover.">
+<meta property="og:description" content="Codex++ is built on an everything-is-an-extension architecture: UI, commands, model tools, agent hooks, and the requests and replies sent to models can all be taken over by extensions, and you can build one by asking in a Codex chat. A built-in local gateway lets 50+ agents share one provider pool, and Claude Desktop full mode gives you the complete app on your own API, no Claude account needed.">
 <meta property="og:url" content="https://codexpp.cc/en.html">
 <meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -18,7 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/site.css?v=20261031-1">
+<link rel="stylesheet" href="css/site.css?v=20261110-1">
 <script>
   // Set the theme and the js flag before first paint to avoid a flash
   (function () {
@@ -38,6 +38,7 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links" aria-label="Page navigation">
+      <a href="#claude">Claude</a>
       <a href="#create">Extensions</a>
       <a href="#gateway">Gateway</a>
       <a href="#features">Features</a>
@@ -47,7 +48,7 @@
       <a href="#faq">FAQ</a>
     </nav>
     <div class="nav-actions">
-      <span class="nav-version mono" data-site-version>v2.2.0</span>
+      <span class="nav-version mono" data-site-version>v2.6.0</span>
       <a class="lang-link" href="index.html" hreflang="zh-CN" lang="zh-CN">中文</a>
       <button class="icon-btn" type="button" data-theme-toggle aria-label="Toggle light and dark theme">
         <svg class="i-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -68,15 +69,15 @@
 <section class="hero">
   <div class="wrap">
     <div class="hero-copy">
-      <a class="hero-badge" href="#create"><b>New</b>Everything is an extension: build one by asking in a Codex chat →</a>
+      <a class="hero-badge claude" href="#claude"><b>New</b>Claude Desktop full mode: your API, like an official subscription, every feature kept →</a>
       <h1>Everything is an extension.<br><em>Make Codex yours.</em></h1>
-      <p class="hero-sub">UI, commands, tools for the model, agent-loop hooks, and the requests and replies sent to models can all be taken over by extensions. A built-in local gateway lets Codex, Claude Code, and 50+ other agents share one provider pool.</p>
+      <p class="hero-sub">UI, commands, tools for the model, agent-loop hooks, and the requests and replies sent to models can all be taken over by extensions. A built-in local gateway lets Codex, Claude Code, and 50+ other agents share one provider pool, and the original Claude Desktop can join with its full interface intact.</p>
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download <span data-site-version>v2.2.0</span>
+          Download <span data-site-version>v2.6.0</span>
         </a>
-        <a class="btn btn-ghost btn-lg" href="#create">See how to build one</a>
+        <a class="btn btn-ghost btn-lg" href="#claude">See the full Claude</a>
       </div>
       <p class="hero-meta"><span>Windows · macOS</span><span>Open source · AGPL-3.0</span><span>Data stays on your machine</span><span>No official app files modified</span></p>
     </div>
@@ -120,6 +121,103 @@
         <li class="more">and 50+ more</li>
       </ul>
     </div>
+  </div>
+</section>
+
+<!-- ========== Claude 完整功能模式 ========== -->
+<section class="section tint claude-sec" id="claude">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Claude Desktop · Full mode</span>
+      <h2>Connect your API like an official subscription.<br><em>Keep every feature.</em></h2>
+      <p>The usual approach either points Claude Code at a new <code>ANTHROPIC_BASE_URL</code>, or switches Claude Desktop to Anthropic's official 3p (third-party inference) deployment. Your model is in, but the app shrinks around it. Codex++ full mode works the other way round: it acts as the server for the original Claude Desktop, on your own machine. You get the complete claude.ai interface, the account, plan and feature flags are answered locally, and replies come from your Codex++ provider pool.</p>
+    </div>
+
+    <figure class="claude-shot reveal">
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>Claude Desktop · full mode</span><b class="tag">Real capture</b></div>
+        <a href="assets/claude-full-chat.webp" data-zoom><img src="assets/claude-full-chat.webp" alt="Real capture: the original Claude Desktop, not signed in to a Claude account, with Projects, Scheduled tasks, Artifacts and Customize in the sidebar and a local Ultra account; the reply comes from GPT-6.1 Sol through the Codex++ gateway" width="2880" height="1514" loading="lazy"></a>
+      </div>
+      <figcaption>Real capture (Chinese UI): the original Claude Desktop, no Claude account signed in; the reply comes from GPT-6.1 Sol in the Codex++ gateway.</figcaption>
+    </figure>
+
+    <div class="claude-points">
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        <h3>The full app, no account</h3>
+        <p>Projects, Artifacts, Scheduled tasks and Customize are all there. Pick the display name and plan (Free / Pro / Max / Ultra) yourself; it only changes what the UI shows.</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.83L3 3"/><path d="m15 9 6-6"/></svg>
+        <h3>Models from your own pool</h3>
+        <p>Claude's model picker lists the models in your pool, with friendly names and providers. Routing by model name, key rotation and failover all apply.</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+        <h3>Dictation, computer use, background mode</h3>
+        <p>Local SenseVoice dictation fills the composer and never sends on its own. The Computer Use entry and background mode are available.</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>
+        <h3>A context window per model</h3>
+        <p>The window the gateway declares for each model goes into Claude's settings, so switching models needs no restart and nothing is capped at 200k.</p>
+      </article>
+    </div>
+
+    <div class="cmp-wrap reveal">
+      <table class="cmp-table">
+        <caption>How it compares</caption>
+        <thead>
+          <tr><th scope="col">Capability</th><th scope="col">Usual: Base URL / 3p deployment</th><th scope="col" class="ours">Codex++ full mode</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Coverage</th><td data-label="Usual">Mostly just the Claude Code CLI</td><td class="ours" data-label="Full mode">Claude Desktop's Chat, Cowork and Code, plus the built-in Claude Code</td></tr>
+          <tr><th scope="row">Interface</th><td data-label="Usual">3p deployments get the third-party-inference UI</td><td class="ours" data-label="Full mode">The complete claude.ai UI: Projects, Artifacts, Scheduled tasks, Customize</td></tr>
+          <tr><th scope="row">Account</th><td data-label="Usual">The full UI requires signing in to Anthropic</td><td class="ours" data-label="Full mode">No sign-in needed; choose the local display name and plan</td></tr>
+          <tr><th scope="row">Computer Use &amp; background mode</th><td data-label="Usual">3p filters these remote feature flags out</td><td class="ours" data-label="Full mode">Entry and background mode available (you still grant Accessibility and Screen Recording)</td></tr>
+          <tr><th scope="row">Dictation</th><td data-label="Usual">Official dictation depends on a Claude account</td><td class="ours" data-label="Full mode">Local SenseVoice; text only lands in the composer</td></tr>
+          <tr><th scope="row">Context window</th><td data-label="Usual">200k unless declared</td><td class="ours" data-label="Full mode">Declared per model, no restart when switching</td></tr>
+          <tr><th scope="row">Providers</th><td data-label="Usual">One Base URL, one provider</td><td class="ours" data-label="Full mode">Your whole Codex++ provider pool, with protocol conversion</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="cmp-note reveal">"Usual" means setups that only change the Base URL or use Claude Desktop's official 3p deployment config; individual tools may differ.</p>
+
+    <div class="claude-pair">
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/claude-full-picker.webp" data-zoom><img src="assets/claude-full-picker.webp" alt="Claude's model picker: besides Claude's own tiers it lists pool models such as GPT-6.1 Sol and GPT-5.6 Terra, with the provider as the subtitle" width="1440" height="920" loading="lazy"></a>
+        <figcaption><b>Your models, in Claude's own picker</b><span>Pool models show friendly names with the provider underneath (demo names here).</span></figcaption>
+      </figure>
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/claude-local-settings-en.webp" data-zoom><img src="assets/claude-local-settings-en.webp" alt="Codex++ Desktop enhancements page: launch mode set to full mode, local certificate trusted, dictation and runtime ready, and switches for localization, dictation, computer use and background mode" width="2880" height="2000" loading="lazy"></a>
+        <figcaption><b>Set it up on one page</b><span>Claude → Desktop enhancements: launch mode, certificate, name and plan, and four feature switches.</span></figcaption>
+      </figure>
+    </div>
+
+    <div class="claude-modes">
+      <article class="mode featured reveal">
+        <span class="badge">Recommended · macOS</span>
+        <h3>Full mode</h3>
+        <p>The original Claude starts through the local service, with the complete claude.ai UI plus dictation, Computer Use and background mode. Needs one local certificate trusted, removable in one click.</p>
+        <p class="fit"><b>For:</b> everything Claude Desktop offers, without a Claude account.</p>
+      </article>
+      <article class="mode reveal">
+        <h3>3p mode</h3>
+        <p>The original Claude uses an isolated config directory and talks straight to the Codex++ gateway. No certificate, least setup.</p>
+        <p class="fit"><b>For:</b> chat and code only, without the remote features.</p>
+      </article>
+      <article class="mode reveal">
+        <h3>Patched copy</h3>
+        <p>Adds a Chinese UI, dictation and Computer Use to a copy of Claude.app, leaving the original alone; can also lift Claude Code's Bash time limits.</p>
+        <p class="fit"><b>For:</b> keeping your own Claude account and adding a few features.</p>
+      </article>
+    </div>
+    <ol class="claude-steps">
+      <li class="reveal"><b>Pick a model</b>Choose the default model on the Claude Desktop row under Gateway → Agent access.</li>
+      <li class="reveal"><b>Pick the mode, trust the certificate</b>In Claude → Desktop enhancements, set launch mode to full mode, then prepare and trust the local certificate.</li>
+      <li class="reveal"><b>Start Claude</b>Quit Claude completely, then click Start Claude or the play button on the sidebar's Claude row.</li>
+    </ol>
+    <div class="chips safe reveal"><span class="chip">Claude.app's install is never modified</span><span class="chip">Certificate stays local, revocable in one click</span><span class="chip">Switching back to 3p restores Claude's deployment config</span><span class="chip">Code sessions can sync between the two modes</span></div>
   </div>
 </section>
 
@@ -391,14 +489,15 @@
       </article>
       <article class="card w3 reveal">
         <div class="card-body">
-          <h3>Enhanced Claude Desktop</h3>
+          <h3>Patched Claude Desktop</h3>
           <ul>
             <li>Chinese UI, composer dictation, and Computer Use</li>
-            <li>Applied to a managed copy; the official Claude.app stays untouched</li>
+            <li>Changes live in a copy; the official Claude.app stays untouched</li>
             <li>Optionally lift Claude Code's Bash time limits</li>
+            <li>No Claude account? Use <a href="#claude" style="color:var(--brand-ink)">full mode</a></li>
           </ul>
         </div>
-        <a class="card-shot" href="assets/claude-enhance.webp" data-zoom><img src="assets/claude-enhance.webp" alt="Claude enhancements: the managed copy is ready, with switches for localization, dictation, and Computer Use" loading="lazy"></a>
+        <a class="card-shot" href="assets/claude-enhance.webp" data-zoom><img src="assets/claude-enhance.webp" alt="Patched Claude: the copy is ready, with switches for localization, dictation, and Computer Use" loading="lazy"></a>
       </article>
 
       <article class="card reveal">
@@ -546,7 +645,7 @@ your-model<span class="h">[128000]</span></pre>
     <div class="sec-head reveal">
       <span class="eyebrow">Get started</span>
       <h2>Three steps,<em> connected</em></h2>
-      <p>Codex features work with the official Codex / ChatGPT desktop app; Claude and Grok features need their own clients installed.</p>
+      <p>Codex features work with the official Codex / ChatGPT desktop app; Claude and Grok features need their own clients installed. For Claude full mode, see <a href="#claude" style="color:var(--brand-ink)">the three steps above</a>.</p>
     </div>
     <ol class="steps">
       <li class="step reveal">
@@ -602,6 +701,18 @@ your-model<span class="h">[128000]</span></pre>
         <h2>Asked, <em>answered</em></h2>
       </div>
       <div class="faq-list">
+        <details class="faq-item" id="faq-claude-full">
+          <summary>How is Claude full mode different from other ways of connecting Claude?<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>Most tools only change Claude Code's Base URL, or run Claude Desktop in Anthropic's official 3p deployment, which uses the third-party-inference UI and filters out remote feature flags such as Computer Use. In full mode Codex++ answers claude.ai's account and feature endpoints on your machine, so you get the complete interface, replies come from your provider pool, and dictation, Computer Use and background mode are available, with no Claude account needed.</p></div>
+        </details>
+        <details class="faq-item" id="faq-claude-full-setup">
+          <summary>What does full mode need?<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>macOS only for now, with Claude Desktop and Node.js installed. Pick a default model for Claude Desktop under Gateway → Agent access, then in Claude → Desktop enhancements switch the launch mode to full mode and prepare and trust the local certificate. Quit Claude completely first and start it from Codex++; a Claude that is already open will not attach on its own.</p></div>
+        </details>
+        <details class="faq-item" id="faq-claude-cert">
+          <summary>Is the local certificate safe? Can I remove it?<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>Codex++ generates the certificate and key on your machine and keeps them in its own state directory; they are only used by the local service to answer requests to claude.ai, and only a Claude started from Codex++ and pointed at that service goes through it. Click "Remove certificate trust" on the same page to take it out of the keychain; switching back to 3p mode restores the Claude deployment config Codex++ changed.</p></div>
+        </details>
         <details class="faq-item" id="faq-extension-safety">
           <summary>Is it safe to install other people's extensions?<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>Featured and official extensions are reviewed by Codex++ and install the exact reviewed commit. Community extensions are not reviewed and authors can add any code in a new version: before install you see every capability they declare (background processes, hooks, gateway middleware, model tools, routes, page scripts), and installs start disabled. Only install extensions from authors you trust.</p></div>
@@ -684,7 +795,7 @@ your-model<span class="h">[128000]</span></pre>
       <h2>Your Codex, <em>your way</em></h2>
       <p>Free and open source · AGPL-3.0 · Windows and macOS. Extensions, config, and session data stay on your own computer.</p>
       <div class="hero-cta">
-        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Download <span data-site-version>v2.2.0</span></a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">Download <span data-site-version>v2.6.0</span></a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">Star on GitHub</a>
       </div>
     </div>
@@ -724,6 +835,6 @@ your-model<span class="h">[128000]</span></pre>
   <p></p>
 </dialog>
 
-<script src="js/site.js?v=20261031-1"></script>
+<script src="js/site.js?v=20261110-1"></script>
 </body>
 </html>

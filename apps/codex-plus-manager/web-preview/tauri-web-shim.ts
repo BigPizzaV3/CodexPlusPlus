@@ -617,6 +617,30 @@ const demoClaudeEnhance = {
   computerUseSupported: true,
   bashTimeout: { enabled: false, defaultEnabled: false, defaultSeconds: 120, maxEnabled: false, maxSeconds: 600 },
 };
+// Claude 本地模式演示数据：原版 Claude 以完整功能模式连着本地服务，证书已信任、听写与运行环境就绪。
+const demoClaudeLocal = {
+  supported: true,
+  sourceApp: "/Applications/Claude.app",
+  version: "1.3.12",
+  claudeRunning: true,
+  running: true,
+  localProcess: true,
+  connected: true,
+  port: 63140,
+  caReady: true,
+  caTrusted: true,
+  nodeAvailable: true,
+  dictationReady: true,
+  config: {
+    enabled: true, model: "deepseek-v4-pro", localization: true, voiceInput: true, computerUse: true, backgroundMode: false,
+    displayName: "", plan: "max", sessionSync: true, listAllModels: false,
+  },
+  models: ["deepseek/deepseek-v4-pro", "chatgpt-pro/gpt-6.1-sol", "kimi/kimi-k2-turbo", "group/coding"],
+  contextWindow: 1_000_000,
+  hiddenModels: [],
+  warning: null,
+  needsRestart: false,
+};
 
 // 本地拓展演示数据：一个单文件脚本、一个已加载的拓展包、一个清单有误的拓展包。
 const demoBuiltins = [
@@ -793,6 +817,12 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.6.0", at: Date.now() - 120_000 } }) as T;
     // Claude 增强演示数据：增强版已制作，开了界面汉化与 Computer Use。
     case "claude_localization_status": return ok(demoClaudeEnhance) as T;
+    case "claude_local_status":
+    case "claude_local_action": return ok(demoClaudeLocal) as T;
+    case "claude_local_configure": {
+      Object.assign(demoClaudeLocal.config, (args as { config?: object }).config ?? {});
+      return ok(demoClaudeLocal) as T;
+    }
     case "claude_localization_set_extensions": {
       demoClaudeEnhance.extensions = Boolean(args.enabled);
       demoSettings.claudeAppExtensions = Boolean(args.enabled);

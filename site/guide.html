@@ -94,7 +94,7 @@
       <li class="toc-group">各个 Agent</li>
       <li><a href="#codex-enhance">Codex 增强</a></li>
       <li><a href="#direct">Codex 直连模式与多开</a></li>
-      <li><a href="#claude">Claude 增强版</a></li>
+      <li><a href="#claude">Claude Desktop</a></li>
       <li class="toc-group">工具与管理</li>
       <li><a href="#computer-use">Computer Use 共享</a></li>
       <li><a href="#collab">子 Agent 协作</a></li>
@@ -392,19 +392,46 @@ another-model<span class="h">[128000]</span></code></pre>
     <!-- Claude -->
     <section id="claude">
       <p class="kicker">11 · CLAUDE</p>
-      <h2>Claude 增强版</h2>
-      <p>Claude Desktop 的增强通过一个「受管增强版」副本实现：官方 Claude.app 与 app.asar 保持原样，增强在副本启动时注入。</p>
+      <h2>Claude Desktop：完整功能模式、3p 模式与补丁版</h2>
+      <p>Claude Desktop 有三种用法。前两种直接启动<b>原版</b> Claude、模型走 Codex++ 供应商池，不需要登录 Claude 账号；补丁版则是在 Claude.app 的副本上加功能，继续用你自己的账号。</p>
+      <div class="g-table">
+        <table>
+          <thead><tr><th>用法</th><th>做法</th><th>适合</th></tr></thead>
+          <tbody>
+            <tr><td>完整功能模式（推荐，macOS）</td><td>原版 Claude 经 Codex++ 本地服务启动，还原 claude.ai 完整界面（项目、Artifacts、定时任务、自定义），听写、Computer Use、后台模式可用；需要信任一枚本机证书。</td><td>想要 Claude Desktop 的全部功能，又不想登录账号</td></tr>
+            <tr><td>3p 模式</td><td>原版 Claude 用隔离的配置目录直连 Codex++ 网关，不装证书。</td><td>只聊天、写代码</td></tr>
+            <tr><td>补丁版</td><td>在副本上加中文界面、听写、Computer Use，可解锁 Claude Code 的 Bash 时间限制；官方 Claude.app 不动。</td><td>继续用自己的 Claude 账号</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>用完整功能模式启动</h3>
       <ol class="g-steps">
-        <li><b>制作增强版</b>在侧栏点 <b>Claude Code</b> 进入 <span class="ui">增强</span> 页，确认检测到官方 Claude 后点「制作增强版」。</li>
-        <li><b>开启需要的增强</b>界面汉化、语音输入、Computer Use、解锁 Bash 时间限制等各自独立开关，互不影响。</li>
-        <li><b>启动增强版</b>点右上角「启动增强版」。之后改动增强开关，需要重启副本才会应用。</li>
+        <li><b>选默认模型</b>打开 <span class="ui">网关 → Agent 接入</span>，在 Claude Desktop 那一行选默认模型。改完要重新启动本地服务。</li>
+        <li><b>切到完整功能模式</b>侧栏点 <b>Claude</b> 进入 <span class="ui">Desktop 增强</span> 页，「启动模式」选「完整功能模式」。</li>
+        <li><b>准备并信任证书</b>「本地证书」一行点「准备证书」，再点「信任证书」（会弹一次系统授权）。「语音识别」「运行环境」显示已就绪即可。</li>
+        <li><b>启动 Claude</b>先完全退出 Claude，再点右上角「启动 Claude」或侧栏 Claude 行的启动键。状态变成「本地模式已连接」就好了。</li>
       </ol>
       <figure class="g-shot">
-        <a href="assets/guide/claude.webp" target="_blank" rel="noopener"><img src="assets/guide/claude.webp" width="1600" height="625" loading="lazy" alt="Claude 受管增强版已准备，可开关界面汉化、语音输入、Computer Use 与解锁 Bash 时间限制"></a>
-        <figcaption>Claude 增强：三步完成，官方应用原样不动。</figcaption>
+        <a href="assets/claude-local-settings.webp" target="_blank" rel="noopener"><img src="assets/claude-local-settings.webp" width="2880" height="2000" loading="lazy" alt="Desktop 增强页：启动模式为完整功能模式，本地证书已信任，语音识别与运行环境已就绪，界面汉化、原生听写、电脑控制、后台模式各自开关"></a>
+        <figcaption>Desktop 增强页：本地模式已连接，四项能力各自开关。</figcaption>
+      </figure>
+      <ul>
+        <li><b>用户名与套餐</b>：只改 Claude 里显示的账号信息，从 Codex++ 启动后生效。</li>
+        <li><b>列出全部模型</b>：默认只列窗口不小于默认模型的模型；打开后池里的聊天模型全列出来。</li>
+        <li><b>会话同步</b>：启动前在 3p 模式与完整功能模式之间同步 Code 会话，也可以点「立即同步」。</li>
+        <li><b>停止</b>：点「停止本地服务」或侧栏 Claude 行的停止键，会一并退出挂在本地服务上的 Claude。</li>
+      </ul>
+      <div class="g-note">
+        <p>不用时可在同一页「取消信任证书」，从钥匙串移除；切回 3p 模式时，Codex++ 会还原它改过的 Claude 部署配置。Claude.app 的安装包始终不改。</p>
+      </div>
+      <h3>补丁版</h3>
+      <p>侧栏 <b>Claude</b> 下的 <span class="ui">补丁 Desktop</span> 页：点「制作补丁版」创建副本，按需打开界面汉化、语音输入、Computer Use、解锁 Bash 时间限制，再点「启动补丁版」。改动开关后重启补丁版才会应用。</p>
+      <figure class="g-shot">
+        <a href="assets/guide/claude.webp" target="_blank" rel="noopener"><img src="assets/guide/claude.webp" width="1600" height="625" loading="lazy" alt="补丁版 Claude 已准备，可开关界面汉化、语音输入、Computer Use 与解锁 Bash 时间限制"></a>
+        <figcaption>补丁版：改动只在副本上，官方应用原样不动。</figcaption>
       </figure>
       <div class="g-note">
-        <p>增强版里的电脑控制和「设置 → Computer Use」给 Claude Desktop 接入的 <code>codex-plus-cu</code> 是两套独立实现，<b>同一个 Claude Desktop 里二选一即可</b>，不要同时开。</p>
+        <p>补丁版里的电脑控制和「设置 → Computer Use」给 Claude Desktop 接入的 <code>codex-plus-cu</code> 是两套独立实现，<b>同一个 Claude Desktop 里二选一即可</b>，不要同时开。</p>
       </div>
     </section>
 
