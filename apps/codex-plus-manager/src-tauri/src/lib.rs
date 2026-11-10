@@ -558,6 +558,7 @@ pub fn run() {
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
+            commands::list_skill_file_times,
             commands::find_skill_repository_matches,
             commands::apply_skill_repository_matches,
             commands::discover_skill_source_evidence,

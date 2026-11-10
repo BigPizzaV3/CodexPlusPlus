@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react";
 import { ManagementDrawer } from "./ManagementPages";
 import { appConfirm } from "./app-dialog";
 import { t } from "./i18n";
+import { SkillFileTimes } from "./SkillFileTimes";
 import "./SkillSourceMatchDrawer.css";
 
 type Duplicate = { id: string; sharedPath: string; codexPath: string; status: "identical-managed" | "different" | "unmanaged" | "unsupported" | "enabled-only-copy"; detail?: string | null };
@@ -49,7 +50,7 @@ export function SkillDuplicatesDrawer({ onClose, onArchive }: {
     {preview && !preview.candidates.length && <p className="mg-muted">{t("没有发现可比较的重复副本。")}</p>}
     {preview?.candidates.map((item) => <section key={item.id} className="mg-source-row">
       <div><strong>{item.id}</strong><small>{statusLabel(item.status)}</small>{item.detail && <small>{item.detail}</small>}</div>
-      <div><dl className="mg-detail"><dt>{t("共享位置")}</dt><dd>{item.sharedPath}</dd><dt>Codex</dt><dd>{item.codexPath}</dd></dl>
+      <div><dl className="mg-detail"><dt>{t("共享位置")}</dt><dd>{item.sharedPath}<SkillFileTimes id={item.id} rootKind="shared"/></dd><dt>Codex</dt><dd>{item.codexPath}<SkillFileTimes id={item.id} rootKind="codex"/></dd></dl>
         {item.status === "identical-managed" && <button type="button" className="cx-secondary" disabled={busy} onClick={() => void archive(item)}>{t("归档副本")}</button>}
       </div>
     </section>)}

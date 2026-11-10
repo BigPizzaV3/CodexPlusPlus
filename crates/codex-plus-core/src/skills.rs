@@ -286,6 +286,7 @@ pub struct SkillEntry {
     pub agents: Vec<String>,
     /// Codex++ 的受控源目录里有它（安装或导入过）；只在某个 Agent 自己目录里的 Skill 为 false。
     pub managed: bool,
+    pub managed_source_dir: Option<PathBuf>,
     pub locations: Vec<SkillLocation>,
     pub source_verified: bool,
     pub install_channel: String,
@@ -324,6 +325,14 @@ pub struct SkillBackup {
     pub purpose: Option<String>,
     pub restore_blocked_reason: Option<String>,
     pub delete_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillFileTime {
+    pub path: String,
+    pub modified_at_ms: i64,
+    pub is_link: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1491,6 +1500,7 @@ impl SkillsManager {
                         .unwrap_or(false),
                     agents: Vec::new(),
                     managed: false,
+                    managed_source_dir: None,
                     locations: Vec::new(),
                     source_verified: installed.is_some_and(|item| item.verified_cc_switch),
                     install_channel: installed.map(|item| item.install_channel.clone()).unwrap_or_default(),
@@ -1525,6 +1535,7 @@ impl SkillsManager {
                 update_available: false,
                 agents: Vec::new(),
                 managed: false,
+                managed_source_dir: None,
                 locations: Vec::new(),
                 source_verified: installed.verified_cc_switch,
                 install_channel: installed.install_channel.clone(),
@@ -1567,6 +1578,7 @@ impl SkillsManager {
                         update_available: false,
                         agents: Vec::new(),
                         managed: false,
+                        managed_source_dir: None,
                         locations: Vec::new(),
                         source_verified: false,
                         install_channel: "local".into(),
@@ -1601,6 +1613,7 @@ impl SkillsManager {
                         update_available: false,
                         agents: vec![agent.clone()],
                         managed: false,
+                        managed_source_dir: None,
                         locations: Vec::new(),
                         source_verified: false,
                         install_channel: "local".into(),
@@ -1617,6 +1630,8 @@ impl SkillsManager {
                 continue;
             }
             entry.managed = self.source_dir.join(&entry.id).is_dir();
+            let source = self.source_dir.join(&entry.id);
+            entry.managed_source_dir = source.join(SKILL_MANIFEST_FILE).is_file().then_some(source);
             let managed_association_path = self.unclaimed_managed_source(&entry.id, &state);
             let mut agents = Vec::new();
             let codex_path = if entry.bundled {
@@ -1979,6 +1994,7 @@ impl SkillsManager {
                 update_available: false,
                 agents: Vec::new(),
                 managed: false,
+                managed_source_dir: None,
                 locations: Vec::new(),
                 source_verified: false,
                 install_channel: "local".into(),
@@ -2296,6 +2312,7 @@ impl SkillsManager {
                 update_available: false,
                 agents: Vec::new(),
                 managed: false,
+                managed_source_dir: None,
                 locations: Vec::new(),
                 source_verified: false,
                 install_channel: "system".into(),
@@ -3078,6 +3095,55 @@ impl SkillsManager {
         Ok((self.backups_dir.join(id), id.to_string()))
     }
 
+    pub fn skill_file_times(&self, id: &str, root_kind: &str, backup_id: Option<&str>) -> anyhow::Result<Vec<SkillFileTime>> {
+        validate_skill_id(id)?;
+        let root = if let Some(backup_id) = backup_id {
+            let (path, name) = self.resolve_backup(backup_id)?;
+            anyhow::ensure!(split_backup_id(&name).0 == id, "备份与 Skill 不匹配");
+            let metadata = std::fs::symlink_metadata(&path)?;
+            anyhow::ensure!(metadata.is_dir() && !metadata_is_link(&metadata), "Skill 备份不是实体目录");
+            path
+        } else {
+            let dir = match root_kind {
+                "codex" => self.linked_dir(),
+                "system" => self.linked_dir().join(BUNDLED_SKILLS_DIR),
+                "shared" => self.shared_skills_dir.clone().context("未配置共享 Skill 目录")?,
+                "source" => self.source_dir.clone(),
+                agent => self.agent_dir(agent)?,
+            };
+            let path = dir.join(id);
+            anyhow::ensure!(path.join(SKILL_MANIFEST_FILE).is_file(), "Skill 安装位置不存在");
+            path
+        };
+        fn collect(root: &Path, dir: &Path, files: &mut Vec<SkillFileTime>) -> anyhow::Result<()> {
+            for entry in std::fs::read_dir(dir).with_context(|| format!("读取目录失败：{}", dir.display()))? {
+                let entry = entry?;
+                let path = entry.path();
+                let metadata = std::fs::symlink_metadata(&path)
+                    .with_context(|| format!("读取文件信息失败：{}", path.display()))?;
+                if metadata.is_dir() && !metadata_is_link(&metadata) {
+                    collect(root, &path, files)?;
+                } else if metadata.is_file() || metadata_is_link(&metadata) {
+                    let modified = metadata.modified()?;
+                    let modified_at_ms = match modified.duration_since(std::time::UNIX_EPOCH) {
+                        Ok(duration) => i64::try_from(duration.as_millis())?,
+                        Err(error) => -i64::try_from(error.duration().as_millis())?,
+                    };
+                    files.push(SkillFileTime {
+                        path: path.strip_prefix(root)?.to_string_lossy().into_owned(),
+                        modified_at_ms,
+                        is_link: metadata_is_link(&metadata),
+                    });
+                }
+            }
+            Ok(())
+        }
+        let mut files = Vec::new();
+        collect(&root, &root, &mut files)?;
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(files)
+    }
+
     pub fn list_backups(&self) -> Vec<SkillBackup> {
         self.try_list_backups().expect("读取 Skill 备份记录失败")
     }
@@ -3102,7 +3168,7 @@ impl SkillsManager {
             let Ok(dir) = std::fs::read_dir(root) else { continue };
             for entry in dir.flatten() {
                 let path = entry.path();
-                if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_dir()) { continue; }
+                if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir() && !metadata_is_link(&metadata)) { continue; }
                 let Some(id) = path.file_name().and_then(|name| name.to_str()) else { continue };
                 if id.starts_with('.') { continue; }
                 let (skill_id, backed_up_at) = split_backup_id(id);
@@ -3125,7 +3191,8 @@ impl SkillsManager {
         }
         for backup_id in state.backup_origins.keys().filter(|id| id.starts_with("@external/")) {
             let (path, name) = self.resolve_backup(backup_id)?;
-            if !std::fs::symlink_metadata(&path)?.file_type().is_dir() {
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata_is_link(&metadata) {
                 anyhow::bail!("Skill 备份不是实体目录：{}", path.display());
             }
             let (skill_id, backed_up_at) = split_backup_id(&name);
@@ -3148,9 +3215,10 @@ impl SkillsManager {
     pub fn restore_backup(&self, backup_id: &str) -> anyhow::Result<SkillsState> {
         let mut coordination = skills_coordination();
         let (backup, backup_name) = self.resolve_backup(backup_id)?;
-        if !backup.is_dir() {
-            anyhow::bail!("备份不存在：{}", backup.display());
-        }
+        let metadata = std::fs::symlink_metadata(&backup)
+            .with_context(|| format!("读取备份失败：{}", backup.display()))?;
+        anyhow::ensure!(metadata.is_dir() && !metadata_is_link(&metadata),
+            "备份不是实体目录：{}", backup.display());
         let (skill_id, _) = split_backup_id(&backup_name);
         validate_skill_id(&skill_id)?;
         let mut current = self.load_state_checked_unlocked()?;
@@ -3176,6 +3244,10 @@ impl SkillsManager {
             for member in &group.backup_ids {
                 let origin = current.backup_origins.get(member).context("更新备份组不完整")?;
                 let (old_backup, name) = self.resolve_backup(member)?;
+                let metadata = std::fs::symlink_metadata(&old_backup)
+                    .with_context(|| format!("读取备份失败：{}", old_backup.display()))?;
+                anyhow::ensure!(metadata.is_dir() && !metadata_is_link(&metadata),
+                    "备份不是实体目录：{}", old_backup.display());
                 anyhow::ensure!(split_backup_id(&name).0 == skill_id && origin.purpose == "update"
                     && seen.insert(origin.path.clone()), "更新备份组包含无效或重复的路径");
                 let original = installed.original_dir.as_ref().and_then(|path| path.canonicalize().ok())
@@ -3413,7 +3485,7 @@ impl SkillsManager {
         let staging = self.staging_dir(&skill_id);
         std::fs::create_dir(&staging)
             .with_context(|| format!("创建 Skill 暂存目录失败：{}", staging.display()))?;
-        if let Err(error) = copy_dir_all(&backup, &staging) {
+        if let Err(error) = copy_dir_all_inner(&backup, &staging, true) {
             return Err(retain_staging_context(error, &staging));
         }
         let (name, description) =
@@ -3459,11 +3531,11 @@ impl SkillsManager {
         anyhow::ensure!(!name.starts_with('.'), "临时目录不是可删除的 Skill 备份");
         let metadata = std::fs::symlink_metadata(&backup)
             .with_context(|| format!("读取备份失败：{}", backup.display()))?;
-        anyhow::ensure!(metadata.file_type().is_dir(), "备份不是实体目录，未删除：{}", backup.display());
+        anyhow::ensure!(metadata.is_dir() && !metadata_is_link(&metadata),
+            "备份不是实体目录，未删除：{}", backup.display());
         let identity = skill_path_identity(&backup)?;
         let staged = recover_published_path(&backup, identity)?
             .context("备份已不存在，未删除")?;
-        let original_state = state.clone();
         let mut state_changed = state.backup_origins.remove(backup_id).is_some();
         if let Some(group_id) = group {
             let group = state.update_backup_groups.get_mut(&group_id).unwrap();
@@ -3482,18 +3554,14 @@ impl SkillsManager {
                 };
             }
         }
-        if let Err(error) = std::fs::remove_dir_all(&staged) {
-            let mut failures = Vec::new();
-            if let Err(rollback) = restore_skill_backup(&staged, &backup, identity) {
-                failures.push(format!("备份残余保留在 {}：{rollback:#}", staged.display()));
-            }
-            if state_changed {
-                if let Err(rollback) = self.save_state_unlocked(&original_state) {
-                    failures.push(format!("备份记录恢复失败：{rollback:#}"));
-                }
-            }
-            let error = anyhow::Error::new(error).context(format!("删除备份失败，备份内容可能已部分删除：{}", backup.display()));
-            return if failures.is_empty() { Err(error) } else { Err(error.context(failures.join("；"))) };
+        drop(_guard);
+        #[cfg(test)]
+        let removal = DELETE_SKILL_BACKUP_HOOK.with(|hook| hook.borrow_mut().take().map(|hook| hook(&staged)))
+            .unwrap_or_else(|| std::fs::remove_dir_all(&staged));
+        #[cfg(not(test))]
+        let removal = std::fs::remove_dir_all(&staged);
+        if let Err(error) = removal {
+            anyhow::bail!("删除备份失败，残余文件可能不完整，保留在 {}：{error}", staged.display());
         }
         self.try_list_backups()
     }
@@ -4932,6 +5000,7 @@ fn is_cross_device_error(error: &anyhow::Error) -> bool {
 thread_local! {
     static FORCE_CROSS_DEVICE_BACKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_SKILL_STATE_SAVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DELETE_SKILL_BACKUP_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path) -> std::io::Result<()>>>> = const { std::cell::RefCell::new(None) };
 }
 
 fn move_skill_to_backup(source: &Path, target: &Path) -> anyhow::Result<()> {
@@ -5084,7 +5153,21 @@ fn symlink_dir(source: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(source, link)
 }
 
+fn metadata_is_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    { metadata.file_type().is_symlink() }
+}
+
 fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    copy_dir_all_inner(source, destination, false)
+}
+
+fn copy_dir_all_inner(source: &Path, destination: &Path, reject_links: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(destination)
         .with_context(|| format!("创建目录失败：{}", destination.display()))?;
     for entry in
@@ -5097,8 +5180,11 @@ fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
         }
         let from = entry.path();
         let to = destination.join(entry.file_name());
+        if reject_links && metadata_is_link(&std::fs::symlink_metadata(&from)?) {
+            anyhow::bail!("备份包含无法自动恢复的链接：{}", from.display());
+        }
         if from.is_dir() {
-            copy_dir_all(&from, &to)?;
+            copy_dir_all_inner(&from, &to, reject_links)?;
         } else {
             std::fs::copy(&from, &to).with_context(|| format!("复制 {} 失败", from.display()))?;
         }
@@ -5222,6 +5308,90 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
     use std::sync::Arc;
+
+    #[test]
+    fn skill_file_times_list_each_file_for_locations_and_backups() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp).with_shared_skills_dir(temp.path().join("shared"));
+        let shared = temp.path().join("shared").join("alpha");
+        let backup = temp.path().join("skill-backups").join("alpha-123");
+        let second_backup = temp.path().join("skill-backups").join("alpha-456");
+        let source = temp.path().join("skills").join("alpha");
+        write_skill(&shared, "shared");
+        write_skill(&backup, "backup");
+        write_skill(&second_backup, "second backup");
+        write_skill(&source, "source");
+        let first_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let second_time = first_time + std::time::Duration::from_secs(60);
+        for (path, time) in [(&backup, first_time), (&second_backup, second_time)] {
+            std::fs::OpenOptions::new().write(true).open(path.join("SKILL.md")).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(time)).unwrap();
+        }
+        std::fs::create_dir_all(shared.join("scripts")).unwrap();
+        std::fs::write(shared.join("scripts").join("run.js"), "run").unwrap();
+        std::fs::write(backup.join("notes.txt"), "old").unwrap();
+
+        let shared_files = manager.skill_file_times("alpha", "shared", None).unwrap();
+        assert_eq!(shared_files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            vec!["SKILL.md", if cfg!(windows) { "scripts\\run.js" } else { "scripts/run.js" }]);
+        let actual_modified = std::fs::metadata(shared.join("SKILL.md")).unwrap().modified().unwrap()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        assert_eq!(shared_files[0].modified_at_ms, actual_modified);
+        let backup_files = manager.skill_file_times("alpha", "", Some("alpha-123")).unwrap();
+        assert_eq!(backup_files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), vec!["SKILL.md", "notes.txt"]);
+        let second_files = manager.skill_file_times("alpha", "", Some("alpha-456")).unwrap();
+        assert_eq!(second_files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), vec!["SKILL.md"]);
+        assert_eq!(backup_files[0].modified_at_ms, 1_700_000_000_000);
+        assert_eq!(second_files[0].modified_at_ms, 1_700_000_060_000);
+        assert_eq!(manager.skill_file_times("alpha", "source", None).unwrap()[0].path, "SKILL.md");
+        assert!(shared_files.iter().all(|file| !file.is_link));
+        assert!(manager.skill_file_times("other", "", Some("alpha-123")).is_err());
+        assert!(manager.skill_file_times("../alpha", "shared", None).is_err());
+        assert!(manager.skill_file_times("alpha", "unknown", None).is_err());
+    }
+
+    #[test]
+    fn skill_file_times_follow_root_links_but_mark_nested_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let target = temp.path().join("target");
+        let nested_target = temp.path().join("nested-target");
+        write_skill(&target, "shared");
+        write_skill(&nested_target, "not traversed");
+        std::fs::create_dir_all(&shared).unwrap();
+        #[cfg(windows)]
+        for (link, destination) in [(shared.join("alpha"), &target), (target.join("nested"), &nested_target)] {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"]).arg(link).arg(destination).output().unwrap();
+            assert!(output.status.success(), "could not create directory junction: {output:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, shared.join("alpha")).unwrap();
+            std::os::unix::fs::symlink(&nested_target, target.join("nested")).unwrap();
+        }
+        let files = manager(&temp).with_shared_skills_dir(&shared)
+            .skill_file_times("alpha", "shared", None).unwrap();
+        assert_eq!(files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), vec!["SKILL.md", "nested"]);
+        assert!(!files[0].is_link);
+        assert!(files[1].is_link);
+    }
+
+    #[test]
+    fn conflicting_independent_installation_exposes_the_compared_managed_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let source = temp.path().join("skills").join("alpha");
+        write_skill(&shared.join("alpha"), "independent");
+        write_skill(&source, "old managed source");
+        let manager = manager(&temp).with_shared_skills_dir(&shared);
+        let entries = manager.try_local_inventory().unwrap();
+        let alpha = entry(&entries, "alpha");
+        assert!(alpha.conflict.is_some());
+        assert_eq!(alpha.managed_source_dir.as_deref(), Some(source.as_path()));
+        assert!(alpha.locations.iter().all(|location| !location.managed));
+        assert_eq!(manager.skill_file_times("alpha", "source", None).unwrap()[0].path, "SKILL.md");
+    }
 
     fn manager(temp: &tempfile::TempDir) -> SkillsManager {
         SkillsManager::new(
@@ -6775,6 +6945,95 @@ mod tests {
         assert!(!backup.exists());
         assert!(other.exists() && hidden.exists());
         assert!(!manager.load_state().backup_origins.contains_key("alpha-123"));
+    }
+
+    #[test]
+    fn partially_deleted_backup_remains_out_of_restore_and_releases_the_lock() {
+        for grouped in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let manager = manager(&temp);
+            let first = manager.backups_dir.join("alpha-123");
+            let second = manager.backups_dir.join("alpha-124");
+            write_skill(&first, "first");
+            std::fs::write(first.join("remaining.txt"), "remaining").unwrap();
+            if grouped {
+                write_skill(&second, "second");
+                let original = temp.path().join("original/alpha");
+                write_skill(&original, "current");
+                manager.import_from_local_directory("alpha", &original).unwrap();
+                let mut state = manager.load_state();
+                for id in ["alpha-123", "alpha-124"] {
+                    state.backup_origins.insert(id.into(), SkillBackupOrigin {
+                        path: original.clone(), purpose: "update".into(),
+                    });
+                }
+                state.update_backup_groups.insert("group".into(), SkillUpdateBackupGroup {
+                    installed: state.installed["alpha"].clone(),
+                    backup_ids: vec!["alpha-123".into(), "alpha-124".into()],
+                    published: Vec::new(), instance_path: None, partially_deleted: false,
+                });
+                manager.save_state_unlocked(&state).unwrap();
+            }
+            DELETE_SKILL_BACKUP_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(|staged| {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _guard = skills_coordination();
+                    sender.send(()).unwrap();
+                });
+                receiver.recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("删除备份时仍持有 Skill 协调锁");
+                std::fs::remove_file(staged.join(SKILL_MANIFEST_FILE))?;
+                Err(std::io::Error::other("模拟部分删除失败"))
+            })));
+
+            let error = manager.delete_backup("alpha-123").unwrap_err().to_string();
+            assert!(!first.exists());
+            let staged = std::fs::read_dir(&manager.backups_dir).unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".codex-plus-recovery-"))
+                .unwrap();
+            assert!(error.contains(&staged.to_string_lossy().to_string()));
+            assert!(staged.join("remaining.txt").is_file());
+            assert!(!staged.join(SKILL_MANIFEST_FILE).exists());
+            let backups = manager.try_list_backups().unwrap();
+            assert!(backups.iter().all(|item| item.id != "alpha-123"));
+            if grouped {
+                assert!(manager.load_state().update_backup_groups["group"].partially_deleted);
+                assert!(backups.iter().find(|item| item.id == "alpha-124").unwrap().restore_blocked_reason.is_some());
+                assert!(manager.restore_backup("alpha-124").is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_backup_restore_rejects_root_links_and_nested_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        std::fs::create_dir_all(&manager.backups_dir).unwrap();
+        let target = temp.path().join("target");
+        write_skill(&target, "target");
+        let linked_backup = manager.backups_dir.join("alpha-123");
+        let cyclic_backup = manager.backups_dir.join("beta-123");
+        write_skill(&cyclic_backup, "beta");
+        let nested_link = cyclic_backup.join("loop");
+        #[cfg(windows)]
+        for (link, destination) in [(&linked_backup, &target), (&nested_link, &cyclic_backup)] {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"]).arg(link).arg(destination).output().unwrap();
+            assert!(output.status.success(), "could not create directory junction: {output:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, &linked_backup).unwrap();
+            std::os::unix::fs::symlink(&cyclic_backup, &nested_link).unwrap();
+        }
+        let root_error = manager.restore_backup("alpha-123").unwrap_err().to_string();
+        assert!(root_error.contains("备份不是实体目录"));
+        let nested_error = format!("{:#}", manager.restore_backup("beta-123").unwrap_err());
+        assert!(nested_error.contains("备份包含无法自动恢复的链接"));
+        assert_eq!(std::fs::read_to_string(target.join(SKILL_MANIFEST_FILE)).unwrap(), "target");
+        assert!(cyclic_backup.join(SKILL_MANIFEST_FILE).is_file());
+        assert!(!manager.source_dir.join("beta").exists());
     }
 
     #[test]

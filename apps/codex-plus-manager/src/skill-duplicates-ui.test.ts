@@ -42,7 +42,7 @@ test("a verified managed duplicate can be archived despite other independent sam
       { id: "other", sharedPath: "C:/agents/other", codexPath: "C:/codex/other", status: "different" },
       { id: "unknown", sharedPath: "C:/agents/unknown", codexPath: "C:/codex/unknown", status: "unsupported", detail: "无法确定名称规则的启用状态" },
     ] }),
-    ManagementDrawer: "ManagementDrawer", RefreshCw: "RefreshCw",
+    ManagementDrawer: "ManagementDrawer", RefreshCw: "RefreshCw", SkillFileTimes: "SkillFileTimes",
   };
   vm.createContext(context);
   vm.runInContext(code, context);
@@ -66,6 +66,7 @@ test("a verified managed duplicate can be archived despite other independent sam
   const buttons = elements.filter((node) => node.type === "button" && node.children.includes("归档副本"));
   assert.equal(buttons.length, 1);
   assert.ok(elements.some((node) => node.type === "small" && node.children.includes("无法确定名称规则的启用状态")));
+  assert.equal(elements.filter((node) => node.type === "SkillFileTimes").length, 6);
   assert.equal(buttons[0].props.disabled, false);
   await buttons[0].props.onClick();
   await tick();

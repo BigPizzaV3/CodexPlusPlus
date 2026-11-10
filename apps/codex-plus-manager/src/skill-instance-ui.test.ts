@@ -32,7 +32,7 @@ test("independent installations retain their own source and actions", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", t: (value: string) => value, repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/example/repo" : "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
-    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", CloudDownload: "CloudDownload", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", CloudDownload: "CloudDownload", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight", SkillFileTimes: "SkillFileTimes",
   };
   vm.createContext(context);
   vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
@@ -102,6 +102,28 @@ test("the detail view displays the reason for an unknown location status", () =>
   assert.ok(location.children.includes("状态未知"));
   assert.equal(location.children.includes("未启用"), false);
   assert.ok(collect(location).some((item) => item.props.role === "alert" && item.children.includes("无法确定名称规则的启用状态")));
+});
+
+test("a conflicting unclaimed managed source has a path and file dates without an association action", () => {
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      conflict: "内容不同", conflictKind: "independent", managedSourceDir: "C:/managed/alpha",
+      locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", rootKind: "shared", managed: false, enabled: true }] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: () => {}, onRestore: () => {}, onDeleteBackup: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+  }));
+  const source = elements.find((item) => item.type === "dd" && item.children.includes("C:/managed/alpha"))!;
+  assert.ok(source);
+  assert.ok(collect(source).some((item) => item.type === "SkillFileTimes" && item.props.rootKind === "source"));
+  assert.equal(collect(source).some((item) => item.type === "Button" && item.children.includes("关联受控源")), false);
 });
 
 test("update preview separates managed copies, following paths and skipped locations", async () => {

@@ -25,6 +25,7 @@ import { SkillInPlaceUpdateDrawer } from "./SkillInPlaceUpdateDrawer";
 import { ReaUpdatePreviewDrawer } from "./ReaUpdatePreviewDrawer";
 import { ImpeccableVersions } from "./ImpeccableVersions";
 import { TopbarActions } from "./TopbarActions";
+import { SkillFileTimes } from "./SkillFileTimes";
 
 type Result = { status: string; message: string };
 type Notify = (title: string, message: string, status?: "ok" | "failed") => Promise<void>;
@@ -35,6 +36,7 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
   agents?: string[];
   /** Codex++ 的受控源里有它；只在某个 Agent 自己目录里的 Skill 为 false。 */
   managed?: boolean;
+  managedSourceDir?: string | null;
   sourceVerified?: boolean;
   installChannel?: string;
   originalDir?: string | null;
@@ -47,11 +49,20 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
   displayInstances?: Skill[] };
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
 type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; restoreBlockedReason?: string | null; deleteWarning?: string | null };
-type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string>; backups?: SkillBackup[] };
+type SkillPayload = Result & { skills: Skill[]; inventoryOk: boolean; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string>; backups?: SkillBackup[]; backupsOk: boolean };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 type SourceApplyResult = SkillPayload & { applied: Array<{ localId: string; fromRepoKey: string; toRepoKey: string; localPath?: string | null }> };
 const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
 const skillBatchRegistry = new SkillBatchRegistry();
+const skillPageCache: {
+  value: SkillPayload | null;
+  localStartedAt: number;
+  catalogStartedAt: number;
+  localPending: Promise<SkillPayload> | null;
+  catalogPending: Promise<SkillPayload> | null;
+  mounted: number;
+} = { value: null, localStartedAt: 0, catalogStartedAt: 0, localPending: null, catalogPending: null, mounted: 0 };
+skillBatchRegistry.subscribeSettled(() => { skillPageCache.localStartedAt = 0; });
 const ok = (r: Result) => r.status === "ok";
 function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={primary ? "cx-primary" : "cx-secondary"} onClick={onClick} disabled={disabled}>{children}</button>; }
 function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) { return <div className="mg-search"><Search size={14} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>; }
@@ -217,6 +228,7 @@ function SkillBackupList({ backups, busy, onRestore, onDelete }: {
     <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
       <small>{t("备份位置")}：{backup.backupPath || t("未知")}</small>
       <small>{t("恢复位置")}：{backup.restorePath || t("未记录")}</small>
+      <SkillFileTimes id={backup.skillId} backupId={backup.id}/>
       {backup.restoreBlockedReason && <small className="mg-warning">{backup.restoreBlockedReason}</small>}
       <div className="mg-row-actions"><Button disabled={busy || !!backup.restoreBlockedReason} onClick={() => onRestore(backup)}>{t("恢复")}</Button>
         <button type="button" className="mg-icon-button" disabled={busy} title={t("删除备份")} aria-label={`${t("删除备份")} ${backup.name || backup.skillId}`} onClick={() => onDelete(backup)}><Trash2 size={14}/></button></div></div>
@@ -239,7 +251,8 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
   const selectableOriginal = skill.conflictKind === "independent" && !!skill.originalDir
     && skill.locations?.some((location) => !location.managed);
   const associatedOriginal = skill.conflictKind === "equal-independent" && !!skill.originalDir && !!url;
-  const managedSourcePath = skill.locations?.find((location) => location.associationPath)?.associationPath;
+  const managedAssociationPath = skill.locations?.find((location) => location.associationPath)?.associationPath;
+  const managedSourcePath = skill.managedSourceDir || managedAssociationPath;
   const rootLabel: Record<string, string> = { shared: t("共享"), codex: "Codex", claude: "Claude Code", grok: "Grok" };
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}>
     {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.displayInstances ? t("各 Agent 的安装内容或来源可能不同，请分别查看。") : skill.conflict}</p>}
@@ -259,6 +272,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
         const locationOwner = location.updateOwner || instance?.updateOwner;
         const hasRepo = !!repoFromKey(locationRepo);
         return [<dt key={`${location.manifestPath}:label`}>{rootLabel[location.rootKind] || location.rootKind}</dt>, <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}
+          {(skill.conflict || skill.displayInstances) && <SkillFileTimes id={skill.id} rootKind={location.rootKind}/>}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
           {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
           {(instance || (location.selectable && location.originalPath)) && <><br/>{t("上游来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("来源未确认")}
@@ -267,7 +281,8 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
               {hasRepo && locationOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
       })}
       {managedSourcePath && (skill.conflict || skill.displayInstances) && <>
-        <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}<div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(managedSourcePath)}>{t("关联受控源")}</Button></div></dd>
+        <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}<SkillFileTimes id={skill.id} rootKind="source"/>
+          {managedAssociationPath && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(managedAssociationPath)}>{t("关联受控源")}</Button></div>}</dd>
       </>}
     </dl>
     {skill.id === "impeccable" && (skill.displayInstances ? skill.displayInstances.map((instance) => <section key={skillIdentityKey(instance)}>
@@ -295,7 +310,8 @@ function GroupAgentSelect({ group, agent, busy, operations, count, prepareSkill,
   for (const operation of operations) {
     if (operation.agent !== agent) continue;
     const settled = new Set(operation.settledSkillIds);
-    for (const id of operation.skillIds) if (!settled.has(id)) pendingById.set(id, operation.enabled);
+    const successful = new Set(operation.successfulSkillIds || []);
+    for (const id of operation.skillIds) if (!settled.has(id) || successful.has(id)) pendingById.set(id, operation.enabled);
   }
   const state = skillBatchState(group.items.map((skill) => {
     skill = prepareSkill(skill, agent);
@@ -315,8 +331,9 @@ function GroupAgentSelect({ group, agent, busy, operations, count, prepareSkill,
   </button>;
 }
 export function SkillsPage({ notify }: { notify: Notify }) {
-  const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>({ version: 0, value: null });
+  const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>(() => ({ version: 0, value: skillPageCache.value }));
   const data = dataState.value;
+  useEffect(() => { skillPageCache.value = data; }, [data]);
   const [tab, setTab] = useState<"discover" | "installed">("installed");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -325,7 +342,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const updateFailures = useSyncExternalStore(skillBatchRegistry.subscribeFailures, skillBatchRegistry.getFailures, skillBatchRegistry.getFailures);
   const batchOwner = useRef(Symbol("skills-page"));
   const mounted = useRef(false);
+  const loadingRequests = useRef(0);
   const dataRequest = useRef(0);
+  const localReload = useRef<{ pending: Promise<void> | null; dirty: boolean }>({ pending: null, dirty: false });
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
   const [matchTarget, setMatchTarget] = useState<{ id?: string; localPath?: string } | null>(null);
@@ -354,47 +373,116 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const reloadLocal = async () => {
-    const request = ++dataRequest.current;
-    try {
-      const result = await invoke<SkillPayload>("list_installed_skills");
-      if (!mounted.current || request !== dataRequest.current) return;
-      startTransition(() => setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version
-        ? { version: request, value: result } : current));
-    } catch (error) {
-      if (mounted.current) await notify("Skills", String(error), "failed");
+  const requestPayload = (command: string) => {
+    const local = command === "list_installed_skills";
+    const pendingKey = local ? "localPending" : "catalogPending";
+    const startedKey = local ? "localStartedAt" : "catalogStartedAt";
+    let pending = skillPageCache[pendingKey];
+    if (!pending) {
+      const startedAt = Date.now();
+      skillPageCache[startedKey] = startedAt;
+      pending = invoke<SkillPayload>(command);
+      skillPageCache[pendingKey] = pending;
+      const completed = () => {
+        if (skillPageCache[pendingKey] !== pending) return;
+        skillPageCache[pendingKey] = null;
+        if (skillPageCache[startedKey] === startedAt) {
+          skillPageCache[startedKey] = skillPageCache.mounted ? Date.now() : 0;
+        }
+      };
+      void pending.then(completed, completed);
     }
+    return pending;
   };
-  const applyCurrentPayload = (request: number, payload: SkillPayload) => {
+  const reloadLocal = () => {
+    const state = localReload.current;
+    if (state.pending) { state.dirty = true; return state.pending; }
+    state.pending = (async () => {
+      try {
+        do {
+          state.dirty = false;
+          const pending = skillPageCache.localPending;
+          if (pending) {
+            try { await pending; }
+            catch (error) { if (mounted.current) await notify("Skills", String(error), "failed"); }
+            if (!mounted.current) return;
+          }
+          state.dirty = false;
+          const request = ++dataRequest.current;
+          try {
+            const result = await requestPayload("list_installed_skills");
+            if (!mounted.current) return;
+            if (request === dataRequest.current) startTransition(() => applyCurrentPayload(request, result));
+            if (!ok(result)) await notify("Skills", result.message, "failed");
+          } catch (error) {
+            if (mounted.current) await notify("Skills", String(error), "failed");
+          }
+        } while (state.dirty && mounted.current);
+      } finally {
+        state.pending = null;
+      }
+    })();
+    return state.pending;
+  };
+  const applyCurrentPayload = (request: number, payload: SkillPayload, reloadIfStale = true) => {
     if (!mounted.current) return;
-    if (request !== dataRequest.current) { void reloadLocal(); return; }
-    setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version
-      ? { version: request, value: payload } : current);
+    if (request !== dataRequest.current) { if (reloadIfStale) void reloadLocal(); return; }
+    setDataState((current) => {
+      if (!mounted.current || request !== dataRequest.current || request < current.version) return current;
+      const previous = current.value;
+      const value = previous ? {
+        ...payload,
+        ...(!payload.inventoryOk && { skills: previous.skills, repos: previous.repos,
+          repositorySkills: previous.repositorySkills, repoCounts: previous.repoCounts }),
+        ...(!payload.backupsOk && { backups: previous.backups }),
+      } : payload;
+      return { version: request, value };
+    });
   };
-  const load = async (command = "refresh_skill_catalog") => {
+  const load = async (command = "refresh_skill_catalog", automatic = false) => {
+    const local = command === "list_installed_skills";
+    const pendingKey = local ? "localPending" : "catalogPending";
+    const startedKey = local ? "localStartedAt" : "catalogStartedAt";
+    if (automatic && local && skillPageCache.value && skillBatchRegistry.getSnapshot().length) return;
+    if (automatic && !skillPageCache[pendingKey] && skillPageCache.value
+      && Date.now() - skillPageCache[startedKey] < (local ? 30_000 : 300_000)) return;
+    loadingRequests.current++;
     setLoading(true);
     const request = ++dataRequest.current;
     try {
-      const r = await invoke<SkillPayload>(command);
-      startTransition(() => applyCurrentPayload(request, r));
-      if (!ok(r)) await notify("Skills", r.message, "failed");
+      const r = await requestPayload(command);
+      if (local && !skillPageCache.localStartedAt) {
+        if (mounted.current) void reloadLocal();
+      } else {
+        startTransition(() => applyCurrentPayload(request, r, !local));
+      }
+      if (mounted.current && !ok(r)) await notify("Skills", r.message, "failed");
     } catch (e) {
-      await notify("Skills", String(e), "failed");
+      if (mounted.current) await notify("Skills", String(e), "failed");
     } finally {
-      setLoading(false);
+      loadingRequests.current--;
+      if (mounted.current && !loadingRequests.current) setLoading(false);
     }
   };
   useEffect(() => {
     let active = true;
     mounted.current = true;
+    skillPageCache.mounted++;
+    const catalogPending = skillPageCache.catalogPending;
+    if (catalogPending) void load("refresh_skill_catalog", true);
     void (async () => {
-      await load("list_installed_skills");
-      if (active) await load();
+      await load("list_installed_skills", true);
+      const pending = skillPageCache.localPending;
+      if (active && pending) {
+        try { await pending; }
+        catch (error) { if (mounted.current) await notify("Skills", String(error), "failed"); }
+      }
+      if (active && !catalogPending) await load("refresh_skill_catalog", true);
     })();
-    return () => { active = false; mounted.current = false; dataRequest.current++; };
+    return () => { active = false; mounted.current = false; skillPageCache.mounted--; dataRequest.current++; };
   }, []);
-  useEffect(() => skillBatchRegistry.subscribeSettled((owner) => {
-    if (mounted.current && owner !== batchOwner.current) void reloadLocal();
+  useEffect(() => skillBatchRegistry.subscribeSettled((owner, batchProgress) => {
+    if (mounted.current && owner !== batchOwner.current && !batchProgress) return reloadLocal();
   }), []);
   const run = async (command: string, args: Record<string, unknown>) => {
     const uninstallId = command === "uninstall_skill" && typeof args.id === "string" ? args.id : null;
@@ -465,10 +553,11 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       await notify("Skills", enabled ? t("该组没有可启用的 Skill") : t("该组没有可停用的 Skill"), "ok");
       return;
     }
-    let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [], owner: batchOwner.current };
+    let operation: PendingSkillBatchOperation = { groupKey: group.key, agent, enabled, skillIds: targets.map((skill) => skill.id), settledSkillIds: [], successfulSkillIds: [], owner: batchOwner.current };
     skillBatchRegistry.add(operation);
     let completed = 0;
     let failed = 0;
+    let acceptedInventory = false;
     const errors: string[] = [];
     const recordFailure = (skill: Skill, reason: string) => {
       failed++;
@@ -477,31 +566,51 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       errors.push(detail.length > 240 ? `${detail.slice(0, 239).replace(/[\uD800-\uDBFF]$/, "")}…` : detail);
     };
     try {
-      for (const skill of targets) {
+      for (const [index, skill] of targets.entries()) {
+        const last = index === targets.length - 1;
+        let success = false;
         try {
           const { request, result } = await skillBatchRegistry.run(async () => {
             const request = ++dataRequest.current;
-            const result = await invoke<SkillPayload>("set_skill_enabled_for", { agent, id: skill.id, enabled });
+            const result = await invoke<Result & Partial<SkillPayload>>("set_skill_enabled_for", {
+              agent, id: skill.id, enabled, ...(!last && { includeInventory: false }),
+            });
             return { request, result };
           });
-          if (mounted.current && request === dataRequest.current) {
+          if (last && mounted.current && request === dataRequest.current && result.skills) {
+            applyCurrentPayload(request, result as SkillPayload);
+            acceptedInventory = Boolean(result.inventoryOk);
+          } else if (mounted.current && request === dataRequest.current && ok(result)) {
             setDataState((current) => {
-              if (!mounted.current || request < current.version || !current.value || !result.skills) return current;
-              return { version: request, value: { ...current.value, skills: mergeSkillAgentResult(current.value.skills, result.skills, skill.id, agent) } };
+              if (!mounted.current || request < current.version || !current.value) return current;
+              const skills = result.skills || current.value.skills.filter((item) => item.id === skill.id).map((item) => {
+                const agents = skillAgents(item).filter((value) => value !== agent);
+                if (enabled) agents.push(agent);
+                return { ...item, agents, enabled: agent === "codex" ? enabled : item.enabled };
+              });
+              return { version: request, value: { ...current.value, skills: mergeSkillAgentResult(current.value.skills, skills, skill.id, agent) } };
             });
-          } else if (mounted.current) void reloadLocal();
-          if (ok(result)) completed++;
+          } else if (mounted.current && request !== dataRequest.current) void reloadLocal();
+          if (ok(result)) { completed++; success = true; }
           else recordFailure(skill, result.message);
         } catch (error) { recordFailure(skill, String(error)); }
         finally {
           const previous = operation;
-          operation = { ...operation, settledSkillIds: [...operation.settledSkillIds, skill.id] };
+          operation = { ...operation, settledSkillIds: [...operation.settledSkillIds, skill.id],
+            successfulSkillIds: success ? [...operation.successfulSkillIds!, skill.id] : operation.successfulSkillIds };
           skillBatchRegistry.replace(previous, operation);
         }
       }
     } finally {
-      skillBatchRegistry.remove(operation);
-      if (mounted.current) void reloadLocal();
+      try {
+        await Promise.all([
+          skillBatchRegistry.notifySettledAndWait(batchOwner.current),
+          mounted.current && !acceptedInventory ? reloadLocal() : Promise.resolve(),
+        ]);
+        if (mounted.current && acceptedInventory) skillPageCache.localStartedAt = Date.now();
+      } finally {
+        skillBatchRegistry.remove(operation);
+      }
     }
     const message = tf("已批量{0} {1} 个 Skill", [enabled ? t("启用") : t("停用"), completed]);
     await notify("Skills", failed ? `${message}；${tf("{0} 个 Skill 失败", [failed])}：${errors.join("；")}` : message, failed ? "failed" : "ok");
@@ -699,7 +808,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     });
   };
   const handleGroupDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id || query.trim() || busy || loading) return;
+    if (!over || active.id === over.id || query.trim() || busy) return;
     const movable = new Set(groups.filter((group) => group.kind === "repo" || group.kind === "custom").map((group) => group.key));
     if (!movable.has(String(active.id)) || !movable.has(String(over.id))) return;
     setGroupOrder(moveSkillGroup(allGroups, String(active.id), String(over.id)));
@@ -738,8 +847,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
           const safeDisable = conflict && s.conflictKind === "managed-modified"
             && s.safeDisableAgents?.includes(agent) && skillAgents(s).includes(agent);
           const safeCodex = conflict && agent === "codex" && canToggleSharedCodex(s);
+          const batchSuccess = batchOperations.find((operation) => operation.agent === agent && operation.successfulSkillIds?.includes(s.id));
           return <AgentToggle agent={agent} key={agent} name={s.name || s.id}
-            enabled={s.installed && !(agent === "codex" && statusError) && skillAgents(s).includes(agent)}
+            enabled={s.installed && !(agent === "codex" && statusError) && (batchSuccess ? batchSuccess.enabled : skillAgents(s).includes(agent))}
             statusUnknown={agent === "codex" && !!statusError}
             disabled={busy || !s.installed || s.bundled || (agent === "codex" && !!statusError) || (conflict && !safeDisable && !safeCodex) || skillBatchHasPending(batchOperations, [s], agent)}
             title={data?.agentSkillsDirs?.[agent]}
@@ -787,10 +897,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       items={[{ id: "installed", label: t("已安装"), count: installedCount }, { id: "discover", label: t("发现"), count: discoverCount }]}
       trailing={<>
         <button type="button" className="mg-icon-button" title={t("匹配仓库")} aria-label={t("匹配仓库")}
-          disabled={busy || loading} onClick={() => setMatchTarget({})}><Search size={16}/></button>
+          disabled={busy || !data} onClick={() => setMatchTarget({})}><Search size={16}/></button>
         <button type="button" className="mg-icon-button" title={t("新建分组")} aria-label={t("新建分组")}
           onClick={createCustomGroup}><FolderPlus size={16}/></button>
-        <button type="button" className="mg-icon-button" disabled={busy || loading}
+        <button type="button" className="mg-icon-button" disabled={busy || !data}
           aria-label={sortLabel}
           title={`${t("按名称排序")} (${groupSortDirection === "asc" ? "Z-A" : "A-Z"})`} onClick={() => {
             const direction = nextSkillGroupSortDirection(groupSortDirection);
@@ -808,7 +918,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       detail={<ul className="cx-skill-failures" tabIndex={0} aria-label={t("失败的 Skill 列表")}>{updateFailures.details.map((detail) => <li key={JSON.stringify([detail.repoKey, detail.id])}><span>{detail.repoKey}</span> · <strong>{detail.id}</strong>：{detail.message}</li>)}</ul>}>
       <button type="button" className="mg-icon-button" aria-label={t("关闭 Skill 失败摘要")} title={t("关闭 Skill 失败摘要")} onClick={skillBatchRegistry.clearFailures}><X size={16}/></button>
     </CxBanner>}
-    {data?.repoErrors?.length ? <CxBanner tone="warn" icon={<Link />} title={t("部分仓库读取失败")} detail={<span className="cx-skill-repo-errors">{data.repoErrors.map((e) => <span key={e}>{e}</span>)}</span>} /> : null}
+    {data?.repoErrors?.length ? <CxBanner tone="warn" icon={<Link />} title={t(data.inventoryOk && data.backupsOk ? "部分仓库读取失败" : "Skill 数据读取失败")} detail={<span className="cx-skill-repo-errors">{data.repoErrors.map((e) => <span key={e}>{e}</span>)}</span>} /> : null}
     <div className="cx-skill-groups" aria-busy={loading} data-columns={agentColumns.length}>
       {!groups.length ? <CxCard><CxEmpty title={loading ? t("正在扫描…") : t("没有匹配的 Skill")} /></CxCard> :
         <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
@@ -820,7 +930,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         const hasUpdates = pendingUpdates > 0 || updateTargets.length > 0;
         const updateLabel = `${group.label} · ${tf("更新组内可更新 Skill（{0}）", [updateTargets.length])}${pendingUpdates ? ` · ${tf("进行中或排队 {0} 项", [pendingUpdates])}` : ""}`;
         const movable = group.kind === "repo" || group.kind === "custom";
-        return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy || loading}>{(handle) => <>
+        return <SortableSkillGroup group={group} key={group.key} disabled={!movable || !!query.trim() || busy}>{(handle) => <>
           <header className="cx-skill-group-head">
             {handle}
             <button type="button" className="cx-skill-group-toggle" aria-expanded={!collapsed} onClick={() => setExpandedGroups((old) => { const next = new Set(old); next.has(group.key) ? next.delete(group.key) : next.add(group.key); return next; })}>
@@ -834,7 +944,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
                   busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
                   prepareSkill={batchSkill}
                   count={agentCount(agent)}
-                  onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
+                  onChange={(enabled) => { void runBatch(group, agent, enabled).catch((error) => notify("Skills", String(error), "failed")); }}/>)}
               </div>
               {group.kind === "custom" ? <Menu label={tf("{0} 的更多操作", [group.label])}>
                 <MenuItem disabled={busy} onClick={() => renameCustomGroup(group.label)}>{t("重命名")}</MenuItem>

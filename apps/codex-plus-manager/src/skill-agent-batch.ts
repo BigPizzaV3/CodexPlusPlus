@@ -1,7 +1,7 @@
 export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[]; conflict?: string | null;
   locations?: Array<{ statusError?: string | null }> };
 export type SkillBatchOperation = { groupKey: string; agent: string; enabled: boolean; skillIds: string[] };
-export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; owner: symbol };
+export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; successfulSkillIds?: string[]; owner: symbol };
 
 const MAX_SKILL_UPDATES = 4;
 const MAX_SKILL_UPDATES_PER_REPO = 2;
@@ -83,11 +83,12 @@ export class SkillBatchRegistry {
   }
   private operations: PendingSkillBatchOperation[] = [];
   private listeners = new Set<() => void>();
-  private settledListeners = new Set<(owner: symbol) => void>();
+  private settledListeners = new Set<(owner: symbol, batchProgress: boolean) => void | Promise<void>>();
   private tail: Promise<void> = Promise.resolve();
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
-  subscribeSettled = (listener: (owner: symbol) => void) => { this.settledListeners.add(listener); return () => { this.settledListeners.delete(listener); }; };
-  notifySettled(owner: symbol) { for (const listener of this.settledListeners) listener(owner); }
+  subscribeSettled = (listener: (owner: symbol, batchProgress: boolean) => void | Promise<void>) => { this.settledListeners.add(listener); return () => { this.settledListeners.delete(listener); }; };
+  notifySettled(owner: symbol, batchProgress = false) { for (const listener of this.settledListeners) listener(owner, batchProgress); }
+  async notifySettledAndWait(owner: symbol) { await Promise.all([...this.settledListeners].map((listener) => listener(owner, false))); }
   getSnapshot = () => this.operations;
   run<T>(work: () => Promise<T>): Promise<T> {
     const result = this.tail.then(work, work);
@@ -102,7 +103,7 @@ export class SkillBatchRegistry {
   replace(previous: PendingSkillBatchOperation, next: PendingSkillBatchOperation) {
     this.publish(this.operations.map((item) => item === previous ? next : item));
     if (next.settledSkillIds.length > previous.settledSkillIds.length) {
-      this.notifySettled(next.owner);
+      this.notifySettled(next.owner, true);
     }
   }
   remove(operation: PendingSkillBatchOperation) { this.publish(this.operations.filter((item) => item !== operation)); }

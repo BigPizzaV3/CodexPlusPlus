@@ -304,7 +304,7 @@ test("pending operations remain visible and only lock matching Skills and Agents
   const first = { groupKey: "one", agent: "codex", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[], owner: Symbol("first") };
   const second = { groupKey: "one", agent: "claude", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[], owner: Symbol("second") };
   const settled: symbol[] = [];
-  const unsubscribe = registry.subscribeSettled((owner) => settled.push(owner));
+  const unsubscribe = registry.subscribeSettled((owner) => { settled.push(owner); });
   registry.add(first);
   registry.add(second);
   assert.equal(skillBatchHasPending(registry.getSnapshot(), [{ id: "a" }], "codex"), true);

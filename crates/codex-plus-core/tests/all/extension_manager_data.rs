@@ -205,6 +205,7 @@ fn skills_view_excludes_paths_descriptions_and_uninstalled_entries() {
         update_available: false,
         agents: vec!["codex".into()],
         managed: true,
+        managed_source_dir: Some("SECRET_SOURCE".into()),
         locations: Vec::new(),
         source_verified: false,
         install_channel: String::new(),

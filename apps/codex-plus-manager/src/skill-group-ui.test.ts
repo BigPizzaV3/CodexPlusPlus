@@ -10,7 +10,7 @@ type Element = { type: any; props: Record<string, any>; children: any[] };
 type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean; originalDir?: string | null; updateOwner?: string; instanceKey?: string; conflict?: string | null; conflictKind?: "independent" | "equal-independent" | "managed-modified" | null; safeDisableAgents?: string[]; locations?: Array<{ manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; associationPath?: string | null; selectable?: boolean }>; displayInstances?: FixtureSkill[] };
 type FixtureRepo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
 type FixtureBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; restoreBlockedReason?: string | null; deleteWarning?: string | null };
-type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; backups: FixtureBackup[] };
+type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; inventoryOk: boolean; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; backups: FixtureBackup[]; backupsOk: boolean };
 
 const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
 const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -18,6 +18,12 @@ const page = file.statements.find((node) => ts.isFunctionDeclaration(node) && no
 assert.ok(page);
 const code = ts.transpileModule(page.getText(file), {
   compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const cacheListener = file.statements.find((node) => ts.isExpressionStatement(node)
+  && node.getText(file).startsWith("skillBatchRegistry.subscribeSettled("));
+assert.ok(cacheListener);
+const cacheListenerCode = ts.transpileModule(cacheListener.getText(file), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const sourceLabelNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "sourceLabel");
 assert.ok(sourceLabelNode);
@@ -50,7 +56,7 @@ test("legacy cc-switch markers do not claim a verified upstream source", () => {
 
 test("backup list shows the backup location separately from its restore destination", () => {
   const context = { jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2" };
+    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2", SkillFileTimes: "SkillFileTimes" };
   vm.createContext(context);
   const render = vm.runInContext(`${backupListCode}\nSkillBackupList`, context);
   const selected: string[] = [];
@@ -67,13 +73,14 @@ test("backup list shows the backup location separately from its restore destinat
   collect(root);
   assert.ok(nodes.some((node) => node.type === "small" && node.children.includes("C:/backups/alpha")));
   assert.ok(nodes.some((node) => node.type === "small" && node.children.includes("C:/skills/alpha")));
+  assert.equal(nodes.find((node) => node.type === "SkillFileTimes")?.props.backupId, "backup");
   nodes.find((node) => node.type === "button" && node.props.title === "删除备份")!.props.onClick();
   assert.deepEqual(selected, ["backup"]);
 });
 
 test("an incomplete update backup remains deletable but cannot be restored", () => {
   const context = { jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2" };
+    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2", SkillFileTimes: "SkillFileTimes" };
   vm.createContext(context);
   const render = vm.runInContext(`${backupListCode}\nSkillBackupList`, context);
   const root = render({ backups: [{ id: "backup", skillId: "alpha", name: "alpha", backedUpAt: "today",
@@ -104,7 +111,7 @@ test("grouped details keep source matching, updates and impeccable versions tied
     t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: (item: { installChannel: string }) => item.installChannel,
     repoFromKey: (value: string) => value.includes("/") ? {} : null, skillIdentityKey,
   };
-  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList"]) context[name] = name;
+  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes"]) context[name] = name;
   vm.createContext(context);
   const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
   const root = render({ skill: { ...first, conflict: "内容不同", locations: [...first.locations, ...second.locations], displayInstances: [first, second] },
@@ -121,6 +128,7 @@ test("grouped details keep source matching, updates and impeccable versions tied
   const matchButtons = elements.filter((node) => node.type === "Button" && node.children.some((child) =>
     child === "关联此安装位置" || child === "重新关联此安装位置"));
   assert.equal(matchButtons.length, 2);
+  assert.deepEqual(elements.filter((node) => node.type === "SkillFileTimes").map((node) => node.props.rootKind), ["shared", "claude"]);
   matchButtons[0].props.onClick();
   matchButtons[1].props.onClick();
   assert.deepEqual(selected, ["C:/shared/impeccable", "C:/claude/impeccable"]);
@@ -135,7 +143,7 @@ test("conflicting managed installs can associate their explicit source directory
     t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "local",
     repoFromKey: () => null, skillIdentityKey,
   };
-  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList"]) context[name] = name;
+  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes"]) context[name] = name;
   vm.createContext(context);
   const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
   const selected: string[] = [];
@@ -152,6 +160,7 @@ test("conflicting managed installs can associate their explicit source directory
     node.children?.forEach(collect);
   };
   collect(root);
+  assert.deepEqual(elements.filter((node) => node.type === "SkillFileTimes").map((node) => node.props.rootKind), ["codex", "source"]);
   const button = elements.find((node) => node.type === "Button" && node.children.includes("关联受控源"));
   assert.ok(button);
   button.props.onClick();
@@ -175,7 +184,10 @@ test("shared skills do not offer uninstall while local Codex skills still do", a
   ui.unmount();
 });
 
-function createHarness(saved = "{}", shared?: { server: FixtureServer; registry: SkillBatchRegistry }) {
+type FixtureCache = { value: FixtureServer | null; localStartedAt: number; catalogStartedAt: number;
+  localPending: Promise<FixtureServer> | null; catalogPending: Promise<FixtureServer> | null; mounted: number };
+
+function createHarness(saved = "{}", shared?: { server: FixtureServer; registry: SkillBatchRegistry; cache?: FixtureCache }) {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
   const cleanups = new Map<number, () => void>();
@@ -186,8 +198,9 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const notices: Array<{ title: string; message: string; status: string }> = [];
   const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: (message: string) => Promise<boolean> } = {};
   const server = shared?.server ?? { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
-    repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "", backups: [] as FixtureBackup[] };
+    inventoryOk: true, repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "", backups: [] as FixtureBackup[], backupsOk: true };
   const registry = shared?.registry ?? new SkillBatchRegistry();
+  const cache: FixtureCache = shared?.cache ?? { value: null, localStartedAt: 0, catalogStartedAt: 0, localPending: null, catalogPending: null, mounted: 0 };
   let cursor = 0;
   let elements: Element[] = [];
   const context: Record<string, any> = {
@@ -229,12 +242,13 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
-    mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry,
+    mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry, skillPageCache: cache,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
   for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillBackupsDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillDuplicatesDrawer", "SkillInPlaceUpdateDrawer", "ReaUpdatePreviewDrawer", "BookOpen", "RefreshCw", "Search", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
+  if (!shared?.cache) vm.runInContext(cacheListenerCode, context);
   vm.runInContext(code, context);
   const collect = (node: any, result: Element[]) => {
     if (!node || typeof node !== "object") return;
@@ -299,8 +313,326 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const drag = (from: string, to: string) => { find((node) => node.type === "DndContext").props.onDragEnd({ active: { id: from }, over: { id: to } }); render(); };
   const savedState = () => JSON.parse(storage.get("codex-plus-plus.skill-groups.v1")!);
   const unmount = () => { for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
-  return { render, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, calls, requests, notices, hooks };
+  return { render, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, cache, calls, requests, notices, hooks };
 }
+
+test("reopening shows the last committed inventory until the background scan completes", async () => {
+  const first = createHarness();
+  let finishFirstScan!: (result: FixtureServer) => void;
+  first.hooks.list = (command) => command === "list_installed_skills"
+    ? new Promise((resolve) => { finishFirstScan = resolve; }) : Promise.resolve(structuredClone(first.server));
+  first.render();
+  assert.equal(first.order().includes("repo:a/repo"), false);
+  finishFirstScan(structuredClone(first.server));
+  await tick(); first.render();
+  assert.ok(first.order().includes("repo:a/repo"));
+  first.unmount();
+
+  first.server.skills = [skill("new", "new/repo@main")];
+  first.cache.localStartedAt = 0;
+  first.cache.catalogStartedAt = 0;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishScan!: (result: FixtureServer) => void;
+  reopened.hooks.list = (command) => command === "list_installed_skills"
+    ? new Promise((resolve) => { finishScan = resolve; }) : Promise.resolve(structuredClone(first.server));
+  reopened.render();
+  assert.ok(reopened.order().includes("repo:a/repo"));
+  assert.equal(reopened.order().includes("repo:new/repo"), false);
+  finishScan(structuredClone(first.server));
+  await tick(); reopened.render();
+  assert.ok(reopened.order().includes("repo:new/repo"));
+  assert.equal(reopened.order().includes("repo:a/repo"), false);
+  reopened.unmount();
+});
+
+test("failed reads preserve the previous inventory and backups while valid partial results update", async () => {
+  const first = createHarness();
+  first.server.backups = [{ id: "backup", skillId: "alpha", name: "alpha", backedUpAt: "today" }];
+  first.server.repos = [{ owner: "empty", name: "repo", branch: "main", subdir: "", enabled: true }];
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.localStartedAt = 0;
+  first.cache.catalogStartedAt = 0;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishRefresh!: (result: FixtureServer) => void;
+  reopened.hooks.list = (command) => command === "list_installed_skills"
+    ? Promise.resolve({ ...structuredClone(first.server), status: "failed", message: "读取失败", skills: [], repos: [], inventoryOk: false,
+      backups: [], backupsOk: false, repoErrors: ["读取失败"] })
+    : new Promise((resolve) => { finishRefresh = resolve; });
+  reopened.render(); await tick(); reopened.render();
+  assert.ok(reopened.order().includes("repo:a/repo"));
+  assert.ok(reopened.order().includes("repo:empty/repo"));
+  assert.equal(reopened.find((node) => node.type === "CxBanner").props.title, "Skill 数据读取失败");
+  reopened.find((node) => node.type === "MenuItem" && node.children.includes("查看 Skill 备份")).props.onClick();
+  reopened.render();
+  assert.equal(reopened.find((node) => node.type === "SkillBackupsDrawer").props.backups[0].id, "backup");
+  assert.ok(reopened.notices.some((notice) => notice.message === "读取失败"));
+  finishRefresh({ ...structuredClone(first.server), status: "failed", message: "仓库读取失败", skills: [],
+    backups: [], repoErrors: ["仓库读取失败"] });
+  await tick(); reopened.render();
+  assert.equal(reopened.order().includes("repo:a/repo"), false);
+  assert.equal(reopened.find((node) => node.type === "SkillBackupsDrawer").props.backups.length, 0);
+  assert.ok(reopened.notices.some((notice) => notice.message === "仓库读取失败"));
+  reopened.unmount();
+});
+
+test("a rejected scan retains the cached view and reports the failure", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.localStartedAt = 0;
+  first.cache.catalogStartedAt = 0;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishRefresh!: (result: FixtureServer) => void;
+  reopened.hooks.list = (command) => command === "list_installed_skills"
+    ? Promise.reject(new Error("scan unavailable")) : new Promise((resolve) => { finishRefresh = resolve; });
+  reopened.render(); await tick(); reopened.render();
+  assert.ok(reopened.order().includes("repo:a/repo"));
+  assert.ok(reopened.notices.some((notice) => notice.message.includes("scan unavailable")));
+  finishRefresh(structuredClone(first.server));
+  await tick(); reopened.render();
+  reopened.unmount();
+});
+
+test("an old scan after a cached page mutation cannot replace the new state", async () => {
+  const first = createHarness();
+  first.server.skills = [skill("alpha", "a/repo@main")];
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.localStartedAt = 0;
+  first.cache.catalogStartedAt = 0;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  const stale = structuredClone(first.server);
+  let finishScan!: (result: FixtureServer) => void;
+  let initial = true;
+  reopened.hooks.list = (command) => {
+    if (initial && command === "list_installed_skills") {
+      initial = false;
+      return new Promise((resolve) => { finishScan = resolve; });
+    }
+    return Promise.resolve(structuredClone(first.server));
+  };
+  reopened.hooks.mutation = async (_command, args) => {
+    first.server.skills[0].agents = args.enabled ? ["codex"] : [];
+    first.server.skills[0].enabled = Boolean(args.enabled);
+    return structuredClone(first.server);
+  };
+  reopened.render();
+  const toggle = reopened.rowElements("repo:a/repo", "a/repo@main", "alpha")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!;
+  await toggle.props.onToggle(); reopened.render();
+  finishScan(stale);
+  await tick(); reopened.render();
+  const enabled = reopened.rowElements("repo:a/repo", "a/repo@main", "alpha")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!;
+  assert.equal(enabled.props.enabled, true);
+  assert.equal(reopened.cache.value?.skills[0].enabled, true);
+  reopened.unmount();
+});
+
+test("quick page switches reuse recent scans, while a manual refresh runs immediately", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render(); await tick(); reopened.render();
+  assert.ok(reopened.order().includes("repo:a/repo"));
+  assert.deepEqual(reopened.calls, []);
+  reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  await tick();
+  assert.deepEqual(reopened.calls, ["refresh_skill_catalog"]);
+  reopened.unmount();
+});
+
+test("local scans and repository refreshes have independent intervals", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.localStartedAt = Date.now() - 31_000;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render(); await tick(); reopened.render();
+  assert.deepEqual(reopened.calls, ["list_installed_skills"]);
+  reopened.unmount();
+  first.cache.catalogStartedAt = Date.now() - 301_000;
+  const later = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  later.render(); await tick(); later.render();
+  assert.deepEqual(later.calls, ["refresh_skill_catalog"]);
+  later.unmount();
+});
+
+test("a scan in progress is shared across page remounts", async () => {
+  const first = createHarness();
+  let finishScan!: (result: FixtureServer) => void;
+  first.hooks.list = () => new Promise((resolve) => { finishScan = resolve; });
+  first.render(); first.unmount();
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render();
+  assert.deepEqual(reopened.calls, []);
+  finishScan(structuredClone(first.server));
+  await tick(); reopened.render();
+  assert.ok(reopened.order().includes("repo:a/repo"));
+  assert.deepEqual(reopened.calls, ["refresh_skill_catalog"]);
+  reopened.unmount();
+});
+
+test("a repository refresh finishing during a reopened page's local scan is not lost", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.catalogStartedAt = 0;
+  const oldPage = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishCatalog!: (result: FixtureServer) => void;
+  oldPage.hooks.list = () => new Promise((resolve) => { finishCatalog = resolve; });
+  oldPage.render(); await tick(); oldPage.unmount();
+
+  first.cache.localStartedAt = 0;
+  const stale = structuredClone(first.server);
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishLocal!: (result: FixtureServer) => void;
+  let localScans = 0;
+  reopened.hooks.list = (command) => {
+    assert.equal(command, "list_installed_skills");
+    localScans++;
+    return localScans === 1
+      ? new Promise((resolve) => { finishLocal = resolve; })
+      : Promise.resolve(structuredClone(first.server));
+  };
+  reopened.render();
+  first.server.skills = [skill("new", "new/repo@main")];
+  finishCatalog(structuredClone(first.server));
+  await tick(); reopened.render();
+  assert.equal(reopened.find((node) => node.props.className === "cx-skill-groups").props["aria-busy"], true);
+  finishLocal(stale);
+  await tick(); await tick(); reopened.render();
+  assert.ok(reopened.order().includes("repo:new/repo"));
+  assert.equal(reopened.order().includes("repo:a/repo"), false);
+  assert.equal(localScans, 2);
+  reopened.unmount();
+});
+
+test("a settled background operation waits for the initial local scan before rescanning", async () => {
+  const ui = createHarness();
+  let finishInitial!: (result: FixtureServer) => void;
+  let finishFinal!: (result: FixtureServer) => void;
+  let scans = 0;
+  ui.hooks.list = (command) => {
+    if (command !== "list_installed_skills") return Promise.resolve(structuredClone(ui.server));
+    scans++;
+    return new Promise((resolve) => { if (scans === 1) finishInitial = resolve; else finishFinal = resolve; });
+  };
+  ui.render();
+  ui.registry.notifySettled(Symbol("other"));
+  ui.registry.notifySettled(Symbol("other"));
+  ui.registry.notifySettled(Symbol("other"));
+  assert.equal(scans, 1);
+  finishInitial(structuredClone(ui.server));
+  await tick();
+  assert.equal(scans, 2);
+  assert.deepEqual(ui.calls, ["list_installed_skills", "list_installed_skills"]);
+  finishFinal(structuredClone(ui.server));
+  await tick(); ui.render();
+  assert.equal(scans, 2);
+  assert.equal(ui.calls.filter((command) => command === "refresh_skill_catalog").length, 1);
+  ui.unmount();
+});
+
+test("an operation finishing while the page is closed invalidates the cached inventory", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  first.server.skills = [skill("new", "new/repo@main")];
+  first.registry.notifySettled(Symbol("other"));
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render();
+  assert.ok(reopened.order().includes("repo:a/repo"));
+  await tick(); reopened.render();
+  assert.ok(reopened.calls.includes("list_installed_skills"));
+  assert.ok(reopened.order().includes("repo:new/repo"));
+  reopened.unmount();
+});
+
+test("an invalidated scan reused after reopening is followed by a fresh local read", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.localStartedAt = 0;
+  const oldPage = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  const stale = structuredClone(first.server);
+  let finishOldScan!: (result: FixtureServer) => void;
+  oldPage.hooks.list = () => new Promise((resolve) => { finishOldScan = resolve; });
+  oldPage.render(); oldPage.unmount();
+
+  first.server.skills = [skill("new", "new/repo@main")];
+  first.registry.notifySettled(Symbol("other"));
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render();
+  assert.deepEqual(reopened.calls, []);
+  finishOldScan(stale);
+  await tick(); await tick(); reopened.render();
+  assert.deepEqual(reopened.calls, ["list_installed_skills"]);
+  assert.ok(reopened.order().includes("repo:new/repo"));
+  reopened.unmount();
+});
+
+test("a repository refresh finishing after an edit is merged with fresh local state", async () => {
+  const first = createHarness();
+  first.server.skills = [skill("alpha", "a/repo@main")];
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.catalogStartedAt = 0;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishRefresh!: (result: FixtureServer) => void;
+  reopened.hooks.list = (command) => command === "refresh_skill_catalog"
+    ? new Promise((resolve) => { finishRefresh = resolve; }) : Promise.resolve(structuredClone(first.server));
+  reopened.hooks.mutation = async (_command, args) => {
+    first.server.skills[0].agents = args.enabled ? ["codex"] : [];
+    first.server.skills[0].enabled = Boolean(args.enabled);
+    return structuredClone(first.server);
+  };
+  reopened.render(); await tick(); reopened.render();
+  const toggle = reopened.rowElements("repo:a/repo", "a/repo@main", "alpha")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!;
+  await toggle.props.onToggle(); reopened.render();
+  first.server.skills.push(skill("remote", "new/repo@main"));
+  finishRefresh({ ...structuredClone(first.server), skills: [skill("alpha", "a/repo@main"), skill("remote", "new/repo@main")] });
+  await tick(); await tick(); reopened.render();
+  assert.equal(reopened.calls.filter((command) => command === "list_installed_skills").length, 1);
+  assert.ok(reopened.order().includes("repo:new/repo"));
+  assert.equal(reopened.rowElements("repo:a/repo", "a/repo@main", "alpha")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!.props.enabled, true);
+  reopened.unmount();
+});
+
+test("a background repository refresh does not block actions on cached skills", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render(); first.unmount();
+  first.cache.catalogStartedAt = 0;
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishRefresh!: (result: FixtureServer) => void;
+  reopened.hooks.list = (command) => command === "refresh_skill_catalog"
+    ? new Promise((resolve) => { finishRefresh = resolve; }) : Promise.resolve(structuredClone(first.server));
+  reopened.render(); await tick(); reopened.render();
+  assert.equal(reopened.find((node) => node.type === "button" && node.props["aria-label"] === "匹配仓库").props.disabled, false);
+  assert.equal(reopened.sort().props.disabled, false);
+  assert.equal(reopened.group("repo:a/repo").props.disabled, false);
+  reopened.drag("repo:z/repo", "repo:a/repo");
+  assert.ok(reopened.order().indexOf("repo:z/repo") < reopened.order().indexOf("repo:a/repo"));
+  finishRefresh(structuredClone(first.server));
+  await tick(); reopened.unmount();
+});
+
+test("background operation bursts coalesce local rescans and still perform a final read", async () => {
+  const ui = createHarness();
+  ui.render(); await tick(); ui.render();
+  let finishScan!: (result: FixtureServer) => void;
+  let scans = 0;
+  ui.hooks.list = (command) => {
+    assert.equal(command, "list_installed_skills");
+    scans++;
+    return scans === 1 ? new Promise((resolve) => { finishScan = resolve; }) : Promise.resolve(structuredClone(ui.server));
+  };
+  ui.registry.notifySettled(Symbol("other"));
+  ui.registry.notifySettled(Symbol("other"));
+  ui.registry.notifySettled(Symbol("other"));
+  assert.equal(scans, 1);
+  ui.server.skills = [skill("new", "new/repo@main")];
+  finishScan({ ...structuredClone(ui.server), skills: [skill("old", "old/repo@main")] });
+  await tick(); ui.render();
+  assert.equal(scans, 2);
+  assert.ok(ui.order().includes("repo:new/repo"));
+  ui.unmount();
+});
 
 test("installed groups default closed and preserve interactions as new groups load", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
@@ -364,7 +696,7 @@ test("collapsed installed groups support per-agent batch enable and disable", as
     item.agents = item.agents.filter((agent) => agent !== args.agent);
     if (args.enabled) item.agents.push(String(args.agent));
     item.enabled = item.agents.includes("codex");
-    return structuredClone(ui.server);
+    return args.includeInventory === false ? { status: "ok", message: "ok" } : structuredClone(ui.server);
   };
   ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
   for (let index = 0; index < 20 && ui.registry.getSnapshot().length; index++) await tick();
@@ -377,10 +709,97 @@ test("collapsed installed groups support per-agent batch enable and disable", as
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], false);
   assert.deepEqual(ui.server.skills.map((item) => item.agents), [[], ["claude"], []]);
   assert.deepEqual(ui.requests.filter((request) => request.command === "set_skill_enabled_for")
-    .map(({ args }) => [args.agent, args.id, args.enabled]), [
-    ["codex", "alpha", true], ["codex", "beta", true],
-    ["codex", "alpha", false], ["codex", "beta", false],
+    .map(({ args }) => [args.agent, args.id, args.enabled, args.includeInventory]), [
+    ["codex", "alpha", true, false], ["codex", "beta", true, undefined],
+    ["codex", "alpha", false, false], ["codex", "beta", false, undefined],
   ]);
+  assert.equal(ui.requests.filter((request) => request.command === "list_installed_skills").length, 1);
+  ui.unmount();
+});
+
+test("a rejected final batch request refreshes once and preserves the successful changes", async () => {
+  const ui = createHarness();
+  ui.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "a/repo@main")];
+  ui.render(); await tick(); ui.render();
+  ui.hooks.mutation = async (_command, args) => {
+    if (args.id === "beta") throw new Error("beta failed");
+    ui.server.skills[0].agents = ["codex"];
+    ui.server.skills[0].enabled = true;
+    return { status: "ok", message: "ok" };
+  };
+  ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
+  for (let index = 0; index < 20 && ui.registry.getSnapshot().length; index++) await tick();
+  await tick(); ui.render();
+  assert.equal(ui.requests.filter((request) => request.command === "list_installed_skills").length, 2);
+  assert.equal(ui.rowElements("repo:a/repo", "a/repo@main", "alpha")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!.props.enabled, true);
+  assert.equal(ui.rowElements("repo:a/repo", "a/repo@main", "beta")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!.props.enabled, false);
+  assert.ok(ui.notices.some((notice) => notice.status === "failed" && notice.message.includes("beta failed")));
+  ui.unmount();
+});
+
+test("a remounted page keeps batch progress until an overlapping refresh and its follow-up complete", async () => {
+  const first = createHarness();
+  first.server.skills = [skill("alpha", "a/repo@main"), skill("beta", "a/repo@main")];
+  first.render(); await tick(); first.render();
+  let finishBatch!: () => void;
+  first.hooks.mutation = async (_command, args) => {
+    const item = first.server.skills.find((entry) => entry.id === args.id)!;
+    if (args.id === "beta") await new Promise<void>((resolve) => { finishBatch = resolve; });
+    item.agents = ["codex"];
+    item.enabled = true;
+    return args.includeInventory === false ? { status: "ok", message: "ok" } : structuredClone(first.server);
+  };
+  first.groupSelect("repo:a/repo", "codex").props.onChange(true);
+  await tick();
+  first.unmount();
+
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  let finishInitial!: (result: FixtureServer) => void;
+  let finishFollowUp!: (result: FixtureServer) => void;
+  let scans = 0;
+  reopened.hooks.list = (command) => {
+    assert.equal(command, "list_installed_skills");
+    scans++;
+    return new Promise((resolve) => { if (scans === 1) finishInitial = resolve; else finishFollowUp = resolve; });
+  };
+  reopened.render(); await tick(); reopened.render();
+  assert.equal(scans, 0);
+  const stale = structuredClone(first.server);
+  reopened.registry.notifySettled(Symbol("other"));
+  assert.equal(scans, 1);
+  finishBatch();
+  await tick(); await tick(); reopened.render();
+  assert.equal(reopened.registry.getSnapshot().length, 1);
+  assert.equal(reopened.groupSelect("repo:a/repo", "codex").props.busy, true);
+  finishInitial(stale);
+  await tick(); reopened.render();
+  assert.equal(scans, 2);
+  assert.equal(reopened.registry.getSnapshot().length, 1);
+  finishFollowUp(structuredClone(first.server));
+  for (let index = 0; index < 20 && reopened.registry.getSnapshot().length; index++) await tick();
+  reopened.render();
+  assert.equal(reopened.registry.getSnapshot().length, 0);
+  assert.equal(reopened.rowElements("repo:a/repo", "a/repo@main", "beta")
+    .find((node) => node.type === "AgentToggle" && node.props.agent === "codex")!.props.enabled, true);
+  assert.equal(scans, 2);
+  reopened.unmount();
+});
+
+test("a failed batch completion notification releases the operation and reports the error", async () => {
+  const ui = createHarness();
+  ui.server.skills = [skill("alpha", "a/repo@main")];
+  ui.render(); await tick(); ui.render();
+  const unsubscribe = ui.registry.subscribeSettled((_owner, progress) => {
+    if (!progress) throw new Error("refresh notification failed");
+  });
+  ui.hooks.mutation = async () => structuredClone(ui.server);
+  ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
+  for (let index = 0; index < 20 && !ui.notices.some((notice) => notice.status === "failed"); index++) await tick();
+  assert.equal(ui.registry.getSnapshot().length, 0);
+  assert.ok(ui.notices.some((notice) => notice.message.includes("refresh notification failed")));
+  unsubscribe();
   ui.unmount();
 });
 
@@ -905,7 +1324,7 @@ test("queued updates survive remount and invalidate an older list response", asy
   assert.equal(button(ui, "gamma", "排队中").props.disabled, true);
   ui.unmount();
 
-  const reopened = createHarness("{}", { server: ui.server, registry: ui.registry });
+  const reopened = createHarness("{}", { server: ui.server, registry: ui.registry, cache: ui.cache });
   reopened.render(); await tick(); reopened.render(); reopened.selectTab("已安装");
   assert.equal(button(reopened, "alpha", "更新中").props.disabled, true);
   assert.equal(button(reopened, "beta", "更新中").props.disabled, true);
@@ -1037,7 +1456,7 @@ test("filtered batch survives page remount and changes only visible Skills", asy
   ui.groupSelect("repo:a/repo", "codex").props.onChange(true);
   await tick();
   ui.unmount();
-  const reopened = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"), { server: ui.server, registry: ui.registry });
+  const reopened = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"), { server: ui.server, registry: ui.registry, cache: ui.cache });
   reopened.render(); await tick(); reopened.render(); reopened.selectTab("已安装");
   assert.equal(reopened.groupSelect("repo:a/repo", "codex").props.busy, true);
   assert.equal(reopened.groupSelect("repo:a/repo", "claude").props.busy, false);

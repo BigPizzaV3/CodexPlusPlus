@@ -912,10 +912,12 @@ pub struct ScriptMarketPayload {
 #[serde(rename_all = "camelCase")]
 pub struct SkillsPayload {
     pub skills: Vec<codex_plus_core::skills::SkillEntry>,
+    pub inventory_ok: bool,
     pub repos: Vec<codex_plus_core::skills::SkillRepo>,
     pub repository_skills: Vec<codex_plus_core::skills::SkillEntry>,
     pub repo_counts: std::collections::BTreeMap<String, usize>,
     pub backups: Vec<codex_plus_core::skills::SkillBackup>,
+    pub backups_ok: bool,
     /// 单个仓库拉取失败不该让整块面板空掉，把错误单独带回前端提示。
     pub repo_errors: Vec<String>,
     pub skills_dir: String,
@@ -7251,7 +7253,7 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
 ///
 /// 单个仓库失败（限流、网络、仓库删了）不影响其它仓库，错误单独收集回前端。
 #[tauri::command]
-pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
+pub async fn refresh_skill_catalog() -> Result<CommandResult<SkillsPayload>, String> {
     let manager = default_skills_manager();
     let repos = manager.list_repos();
     let mut repo_errors = Vec::new();
@@ -7302,24 +7304,36 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
     } else {
         format!("Skills 列表已刷新，{} 个仓库拉取失败。", repo_errors.len())
     };
-    let payload = skills_payload(&manager, &all_cached_repo_skills(), repo_errors);
-    if payload.repo_errors.is_empty() {
+    let payload = tauri::async_runtime::spawn_blocking(move ||
+        skills_payload(&manager, &all_cached_repo_skills(), repo_errors))
+        .await.map_err(|error| format!("读取 Skill 状态失败：{error}"))?;
+    Ok(if payload.repo_errors.is_empty() {
         ok(&message, payload)
     } else {
         failed(&message, payload)
-    }
+    })
 }
 
 /// 只读本地状态，不联网。切到 Skills 页时先用它把已装的列出来。
 #[tauri::command]
-pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    let payload = current_skills_payload(&manager);
-    if payload.repo_errors.is_empty() {
-        ok("已加载本地 Skills。", payload)
-    } else {
-        failed("读取本地 Skills 失败，请检查错误详情。", payload)
-    }
+pub async fn list_installed_skills() -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let manager = default_skills_manager();
+        let payload = current_skills_payload(&manager);
+        if payload.repo_errors.is_empty() {
+            ok("已加载本地 Skills。", payload)
+        } else {
+            failed("读取本地 Skills 失败，请检查错误详情。", payload)
+        }
+    }).await.map_err(|error| format!("读取本地 Skills 失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn list_skill_file_times(id: String, root_kind: String, backup_id: Option<String>) -> Result<Vec<codex_plus_core::skills::SkillFileTime>, String> {
+    tauri::async_runtime::spawn_blocking(move ||
+        default_skills_manager().skill_file_times(&id, &root_kind, backup_id.as_deref())
+            .map_err(|error| format!("读取文件修改时间失败：{error:#}")))
+        .await.map_err(|error| format!("读取文件修改时间失败：{error}"))?
 }
 
 async fn resolve_skill_repo_for_operation(
@@ -7350,13 +7364,15 @@ pub async fn find_skill_repository_matches(
         let skills = resolve_skill_repo_for_operation(&manager, &repo_key).await?;
         let repo = manager.list_repos().into_iter().find(|repo| repo.key() == repo_key)
             .ok_or_else(|| anyhow::anyhow!("仓库已不存在"))?;
-        match (id.as_deref(), local_path.as_deref()) {
-            (Some(id), Some(path)) => manager.preview_repository_matches_for_instance(
-                &repo, &skills, id, std::path::Path::new(path),
-            ),
-            (None, Some(_)) => anyhow::bail!("选择安装位置时必须指定 Skill"),
-            (_, None) => manager.preview_repository_matches(&repo, &skills, id.as_deref()),
-        }
+        tauri::async_runtime::spawn_blocking(move || {
+            match (id.as_deref(), local_path.as_deref()) {
+                (Some(id), Some(path)) => manager.preview_repository_matches_for_instance(
+                    &repo, &skills, id, std::path::Path::new(path),
+                ),
+                (None, Some(_)) => anyhow::bail!("选择安装位置时必须指定 Skill"),
+                (_, None) => manager.preview_repository_matches(&repo, &skills, id.as_deref()),
+            }
+        }).await?
     }.await;
     match result {
         Ok(preview) => ok("来源候选已检查，请确认后关联。", preview),
@@ -7379,7 +7395,7 @@ pub struct SkillRepositoryApplyPayload {
 #[tauri::command]
 pub async fn apply_skill_repository_matches(
     selections: Vec<codex_plus_core::skills::SkillRepositoryMatchSelection>,
-) -> CommandResult<SkillRepositoryApplyPayload> {
+) -> Result<CommandResult<SkillRepositoryApplyPayload>, String> {
     let manager = default_skills_manager();
     let keys: std::collections::BTreeSet<_> = selections.iter()
         .map(|selection| selection.repo_key.clone()).collect();
@@ -7397,26 +7413,28 @@ pub async fn apply_skill_repository_matches(
     }
     let valid: Vec<_> = selections.into_iter()
         .filter(|selection| available.contains(&selection.repo_key)).collect();
-    let applied = match manager.apply_repository_matches(&valid, &remote) {
-        Ok(outcome) => {
-            errors.extend(outcome.errors);
-            outcome.applied
+    tauri::async_runtime::spawn_blocking(move || {
+        let applied = match manager.apply_repository_matches(&valid, &remote) {
+            Ok(outcome) => {
+                errors.extend(outcome.errors);
+                outcome.applied
+            }
+            Err(error) => {
+                errors.push(format!("{error:#}"));
+                Vec::new()
+            }
+        };
+        let payload = SkillRepositoryApplyPayload {
+            skills: current_skills_payload(&manager),
+            applied,
+            errors,
+        };
+        if payload.errors.is_empty() {
+            ok("已关联所选来源，更新方式未改变。", payload)
+        } else {
+            failed(&format!("部分来源未关联：{}", payload.errors.join("；")), payload)
         }
-        Err(error) => {
-            errors.push(format!("{error:#}"));
-            Vec::new()
-        }
-    };
-    let payload = SkillRepositoryApplyPayload {
-        skills: current_skills_payload(&manager),
-        applied,
-        errors,
-    };
-    if payload.errors.is_empty() {
-        ok("已关联所选来源，更新方式未改变。", payload)
-    } else {
-        failed(&format!("部分来源未关联：{}", payload.errors.join("；")), payload)
-    }
+    }).await.map_err(|error| format!("关联 Skill 来源失败：{error}"))
 }
 
 #[derive(Serialize)]
@@ -7426,42 +7444,48 @@ pub struct SkillSourceEvidencePayload {
 }
 
 #[tauri::command]
-pub fn discover_skill_source_evidence(id: String, local_path: Option<String>) -> CommandResult<SkillSourceEvidencePayload> {
-    let manager = default_skills_manager();
-    let evidence = match local_path.as_deref() {
-        Some(path) => manager.discover_skill_source_evidence_for_instance(id.trim(), std::path::Path::new(path)),
-        None => manager.discover_skill_source_evidence(id.trim()),
-    };
-    match evidence {
-        Ok(evidence) => ok("已检查本地来源线索。", SkillSourceEvidencePayload { evidence }),
-        Err(error) => failed(
-            &format!("检查来源线索失败：{error:#}"),
-            SkillSourceEvidencePayload { evidence: Vec::new() },
-        ),
-    }
+pub async fn discover_skill_source_evidence(id: String, local_path: Option<String>) -> Result<CommandResult<SkillSourceEvidencePayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let evidence = match local_path.as_deref() {
+            Some(path) => manager.discover_skill_source_evidence_for_instance(id.trim(), std::path::Path::new(path)),
+            None => manager.discover_skill_source_evidence(id.trim()),
+        };
+        match evidence {
+            Ok(evidence) => ok("已检查本地来源线索。", SkillSourceEvidencePayload { evidence }),
+            Err(error) => failed(
+                &format!("检查来源线索失败：{error:#}"),
+                SkillSourceEvidencePayload { evidence: Vec::new() },
+            ),
+        }
+    }).await.map_err(|error| format!("检查来源线索失败：{error}"))
 }
 
 #[tauri::command]
-pub fn preview_skill_duplicates() -> CommandResult<codex_plus_core::skills::SkillDuplicatePreview> {
-    match default_skills_manager().preview_skill_duplicates() {
-        Ok(preview) => ok("重复副本已检查。", preview),
-        Err(error) => failed(
-            &format!("检查重复副本失败：{error:#}"),
-            codex_plus_core::skills::SkillDuplicatePreview {
-                preview_id: String::new(),
-                candidates: Vec::new(),
-            },
-        ),
-    }
+pub async fn preview_skill_duplicates() -> Result<CommandResult<codex_plus_core::skills::SkillDuplicatePreview>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        match default_skills_manager().preview_skill_duplicates() {
+            Ok(preview) => ok("重复副本已检查。", preview),
+            Err(error) => failed(
+                &format!("检查重复副本失败：{error:#}"),
+                codex_plus_core::skills::SkillDuplicatePreview {
+                    preview_id: String::new(),
+                    candidates: Vec::new(),
+                },
+            ),
+        }
+    }).await.map_err(|error| format!("检查重复副本失败：{error}"))
 }
 
 #[tauri::command]
-pub fn archive_skill_duplicate(preview_id: String, id: String) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    match manager.archive_skill_duplicate(&preview_id, &id) {
-        Ok(_) => ok("重复副本已归档，可恢复至原位置。", current_skills_payload(&manager)),
-        Err(error) => failed(&format!("归档重复副本失败：{error:#}"), current_skills_payload(&manager)),
-    }
+pub async fn archive_skill_duplicate(preview_id: String, id: String) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        match manager.archive_skill_duplicate(&preview_id, &id) {
+            Ok(_) => ok("重复副本已归档，可恢复至原位置。", current_skills_payload(&manager)),
+            Err(error) => failed(&format!("归档重复副本失败：{error:#}"), current_skills_payload(&manager)),
+        }
+    }).await.map_err(|error| format!("归档重复副本失败：{error}"))
 }
 
 #[tauri::command]
@@ -7771,27 +7795,31 @@ pub fn uninstall_skill(id: String) -> CommandResult<SkillsPayload> {
 }
 
 #[tauri::command]
-pub fn restore_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    match manager.restore_backup(backup_id.trim()) {
-        Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
-        Err(error) => failed(
-            &format!("从备份恢复失败：{error}"),
-            current_skills_payload(&manager),
-        ),
-    }
+pub async fn restore_skill_backup(backup_id: String) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        match manager.restore_backup(backup_id.trim()) {
+            Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
+            Err(error) => failed(
+                &format!("从备份恢复失败：{error:#}"),
+                current_skills_payload(&manager),
+            ),
+        }
+    }).await.map_err(|error| format!("从备份恢复失败：{error}"))
 }
 
 #[tauri::command]
-pub fn delete_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    match manager.delete_backup(backup_id.trim()) {
-        Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
-        Err(error) => failed(
-            &format!("删除备份失败：{error}"),
-            current_skills_payload(&manager),
-        ),
-    }
+pub async fn delete_skill_backup(backup_id: String) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        match manager.delete_backup(backup_id.trim()) {
+            Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
+            Err(error) => failed(
+                &format!("删除备份失败：{error:#}"),
+                current_skills_payload(&manager),
+            ),
+        }
+    }).await.map_err(|error| format!("删除备份失败：{error}"))
 }
 
 #[tauri::command]
@@ -7955,15 +7983,37 @@ fn skills_payload(
 ) -> SkillsPayload {
     let repos = manager.list_repos();
     let all_remote = all_cached_repo_skills();
-    let repository_skills = match manager.try_merge_entries(&all_remote) {
-        Ok(entries) => entries.into_iter()
-            .filter(|skill| {
-                all_remote.iter().any(|r| r.id == skill.id && r.repo_key == skill.repo_key)
-            })
-            .collect(),
-        Err(error) => {
-            repo_errors.push(format!("读取 Skill 状态失败：{error:#}"));
-            Vec::new()
+    let remote: Vec<_> = remote
+        .iter()
+        .filter(|skill| {
+            repos
+                .iter()
+                .any(|repo| repo.enabled && repo.key() == skill.repo_key)
+        })
+        .cloned()
+        .collect();
+    let mut reused_inventory = None;
+    let repository_skills = if all_remote.is_empty() {
+        Vec::new()
+    } else {
+        match manager.try_merge_entries(&all_remote) {
+            Ok(entries) => {
+                let repository = entries.iter()
+                    .filter(|skill| all_remote.iter().any(|r| r.id == skill.id && r.repo_key == skill.repo_key))
+                    .cloned().collect();
+                if remote == all_remote {
+                    reused_inventory = Some(Ok(entries));
+                }
+                repository
+            }
+            Err(error) => {
+                if remote == all_remote {
+                    reused_inventory = Some(Err(error));
+                } else {
+                    repo_errors.push(format!("读取 Skill 状态失败：{error:#}"));
+                }
+                Vec::new()
+            }
         }
     };
     let repo_counts = repo_skill_cache()
@@ -7981,20 +8031,14 @@ fn skills_payload(
                 .collect()
         })
         .unwrap_or_default();
-    let remote: Vec<_> = remote
-        .iter()
-        .filter(|skill| {
-            repos
-                .iter()
-                .any(|repo| repo.enabled && repo.key() == skill.repo_key)
-        })
-        .cloned()
-        .collect();
-    let skills = if remote.is_empty() {
-        manager.try_local_inventory()
-    } else {
-        manager.try_merge_entries(&remote)
-    };
+    let skills = reused_inventory.unwrap_or_else(|| {
+        if remote.is_empty() {
+            manager.try_local_inventory()
+        } else {
+            manager.try_merge_entries(&remote)
+        }
+    });
+    let inventory_ok = skills.is_ok();
     let skills = match skills {
         Ok(skills) => skills,
         Err(error) => {
@@ -8005,18 +8049,23 @@ fn skills_payload(
             Vec::new()
         }
     };
+    let backups = manager.try_list_backups();
+    let backups_ok = backups.is_ok();
+    let backups = match backups {
+        Ok(backups) => backups,
+        Err(error) => {
+            repo_errors.push(format!("读取 Skill 备份失败：{error:#}"));
+            Vec::new()
+        }
+    };
     SkillsPayload {
         skills,
+        inventory_ok,
         repos,
         repository_skills,
         repo_counts,
-        backups: match manager.try_list_backups() {
-            Ok(backups) => backups,
-            Err(error) => {
-                repo_errors.push(format!("读取 Skill 备份失败：{error:#}"));
-                Vec::new()
-            }
-        },
+        backups,
+        backups_ok,
         repo_errors,
         skills_dir: manager.source_dir().to_string_lossy().to_string(),
         codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
@@ -8061,31 +8110,36 @@ pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager
 
 /// 把 Skill 启用到 / 停用于某个 Agent（codex / claude / grok）。
 #[tauri::command]
-pub fn set_skill_enabled_for(
+pub async fn set_skill_enabled_for(
     agent: String,
     id: String,
     enabled: bool,
-) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    let name = match agent.as_str() {
-        "claude" => "Claude Code",
-        "grok" => "Grok",
-        _ => "Codex",
-    };
-    match manager.set_enabled_for(agent.trim(), id.trim(), enabled) {
-        Ok(()) => ok(
-            &if enabled {
-                format!("已启用到 {name}，下次对话生效。")
-            } else {
-                format!("已在 {name} 停用。")
-            },
-            current_skills_payload(&manager),
-        ),
-        Err(error) => failed(
-            &format!("Skill 启停失败：{error:#}"),
-            current_skills_payload(&manager),
-        ),
-    }
+    include_inventory: Option<bool>,
+) -> Result<CommandResult<Option<SkillsPayload>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let name = match agent.as_str() {
+            "claude" => "Claude Code",
+            "grok" => "Grok",
+            _ => "Codex",
+        };
+        let result = manager.set_enabled_for(agent.trim(), id.trim(), enabled);
+        let payload = include_inventory.unwrap_or(true).then(|| current_skills_payload(&manager));
+        match result {
+            Ok(()) => ok(
+                &if enabled {
+                    format!("已启用到 {name}，下次对话生效。")
+                } else {
+                    format!("已在 {name} 停用。")
+                },
+                payload,
+            ),
+            Err(error) => failed(
+                &format!("Skill 启停失败：{error:#}"),
+                payload,
+            ),
+        }
+    }).await.map_err(|error| format!("Skill 启停失败：{error}"))
 }
 
 /// 上一次成功拉取的远端清单，按仓库 key 存。
@@ -11510,6 +11564,47 @@ mod tests {
                 .skills
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn skills_payload_distinguishes_local_read_errors_from_repository_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("skills.json");
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            &state_path,
+            temp.path().join("home"),
+        );
+        let partial = skills_payload(&manager, &[], vec!["仓库读取失败".into()]);
+        assert!(partial.inventory_ok);
+        assert!(partial.backups_ok);
+        assert!(partial.skills.is_empty());
+
+        std::fs::write(state_path, "{invalid").unwrap();
+        let failed = skills_payload(&manager, &[], Vec::new());
+        assert!(!failed.inventory_ok);
+        assert!(!failed.backups_ok);
+        assert!(!failed.repo_errors.is_empty());
+    }
+
+    #[test]
+    fn optional_skill_payload_keeps_the_existing_flattened_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            temp.path().join("skills.json"),
+            temp.path().join("home"),
+        );
+        let full = serde_json::to_value(ok("done", Some(skills_payload(&manager, &[], Vec::new())))).unwrap();
+        assert_eq!(full["status"], "ok");
+        assert!(full["skills"].is_array());
+        assert_eq!(full["inventoryOk"], true);
+        assert!(full.get("payload").is_none());
+
+        let light = serde_json::to_value(ok("done", None::<SkillsPayload>)).unwrap();
+        assert_eq!(light, serde_json::json!({ "status": "ok", "message": "done" }));
     }
 
     /// 进程级全局状态的测试锁。
