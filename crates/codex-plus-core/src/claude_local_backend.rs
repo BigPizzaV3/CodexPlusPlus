@@ -936,155 +936,79 @@ fn prepare_ca(root: &Path) -> Result<()> {
     }
     let ca = root.join("ca");
     private_dir(&ca)?;
-    let config = ca.join("openssl.cnf");
-    write_private(
-        &config,
-        br#"[req]
-distinguished_name=dn
-prompt=no
-[dn]
-CN=Codex++ Claude Local
-[v3_ca]
-basicConstraints=critical,CA:TRUE
-keyUsage=critical,keyCertSign,cRLSign
-subjectKeyIdentifier=hash
-[v3_leaf]
-basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
-extendedKeyUsage=serverAuth
-subjectAltName=@alt
-[alt]
-DNS.1=claude.ai
-DNS.2=*.claude.ai
-DNS.3=claude.com
-DNS.4=*.claude.com
-DNS.5=anthropic.com
-DNS.6=*.anthropic.com
-DNS.7=claudeusercontent.com
-DNS.8=*.claudeusercontent.com
-DNS.9=localhost
-IP.1=127.0.0.1
-"#,
-    )?;
-    #[cfg(windows)]
-    let openssl = {
-        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
-        let program_w6432 = std::env::var_os("ProgramW6432").map(PathBuf::from);
-        let local_programs = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .map(|dir| dir.join("Programs"));
-        openssl_candidates(
-            program_files.as_deref(),
-            program_w6432.as_deref(),
-            local_programs.as_deref(),
-        )
-        .into_iter()
-        .find(|path| path.is_file())
-        .context("未找到 OpenSSL，无法准备本地证书；请安装 Git for Windows（自带 OpenSSL）或把 openssl.exe 加入 PATH")?
-    };
-    #[cfg(not(windows))]
-    let openssl = crate::dsh_plugins::locate_program("openssl")
-        .context("未找到 OpenSSL，无法准备本地证书")?;
-    let mut command = hidden_command(&openssl);
-    command
-        .args(["genrsa", "-out"])
-        .arg(ca.join("ca.key"))
-        .arg("2048");
-    checked(
-        &mut command,
-        Duration::from_secs(20),
-        "生成本地 CA 私钥失败",
-    )?;
-    let mut command = hidden_command(&openssl);
-    command
-        .args(["req", "-x509", "-new", "-key"])
-        .arg(ca.join("ca.key"))
-        .args([
-            "-sha256",
-            "-days",
-            "3650",
-            "-subj",
-            &format!("/CN={CA_NAME}"),
-            "-out",
-        ])
-        .arg(ca.join("ca.pem"))
-        .args(["-extensions", "v3_ca", "-config"])
-        .arg(&config);
-    checked(
-        &mut command,
-        Duration::from_secs(20),
-        "生成本地 CA 证书失败",
-    )?;
-    let mut command = hidden_command(&openssl);
-    command
-        .args(["genrsa", "-out"])
-        .arg(ca.join("server.key"))
-        .arg("2048");
-    checked(
-        &mut command,
-        Duration::from_secs(20),
-        "生成本地服务私钥失败",
-    )?;
-    let mut command = hidden_command(&openssl);
-    command
-        .args(["req", "-new", "-key"])
-        .arg(ca.join("server.key"))
-        .args(["-subj", "/CN=claude.ai", "-out"])
-        .arg(ca.join("server.csr"))
-        .arg("-config")
-        .arg(&config);
-    checked(
-        &mut command,
-        Duration::from_secs(20),
-        "生成本地服务证书请求失败",
-    )?;
-    let mut command = hidden_command(&openssl);
-    command
-        .args(["x509", "-req", "-in"])
-        .arg(ca.join("server.csr"))
-        .arg("-CA")
-        .arg(ca.join("ca.pem"))
-        .arg("-CAkey")
-        .arg(ca.join("ca.key"))
-        .args(["-CAcreateserial", "-days", "825", "-sha256", "-extfile"])
-        .arg(&config)
-        .args(["-extensions", "v3_leaf", "-out"])
-        .arg(ca.join("server.crt"));
-    checked(
-        &mut command,
-        Duration::from_secs(20),
-        "签发本地服务证书失败",
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for name in ["ca.key", "server.key"] {
-            fs::set_permissions(ca.join(name), fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    Ok(())
+    generate_ca(&ca)
 }
 
-/// openssl 候选路径：先 PATH 里的 openssl；Windows 上 Git for Windows 自带
-/// openssl 但没进 PATH，再按惯例位置依次试。
-#[cfg(any(windows, test))]
-fn openssl_candidates(
-    program_files: Option<&Path>,
-    program_w6432: Option<&Path>,
-    local_programs: Option<&Path>,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(found) = crate::dsh_plugins::locate_program("openssl") {
-        candidates.push(found);
-    }
-    for base in [program_files, program_w6432, local_programs]
-        .into_iter()
-        .flatten()
-    {
-        candidates.push(base.join(r"Git\mingw64\bin\openssl.exe"));
-        candidates.push(base.join(r"Git\usr\bin\openssl.exe"));
-    }
-    candidates
+/// 用 rcgen 在进程内生成整套本地 CA 材料，不再调用外部 openssl
+/// （Windows 系统不自带 openssl，之前还得去找 Git for Windows 附带的那枚）。
+/// 只在 `ca_ready` 为假时调用：磁盘上已有的证书（含旧版 RSA 证书）继续沿用。
+fn generate_ca(ca: &Path) -> Result<()> {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DistinguishedName, DnType,
+        ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SerialNumber,
+    };
+    let now = time::OffsetDateTime::now_utc();
+    // 随机序列号：uuid v4 的 16 字节，最高位清零避免被当成负数。
+    let serial = || {
+        let mut bytes = *uuid::Uuid::new_v4().as_bytes();
+        bytes[0] &= 0x7f;
+        SerialNumber::from_slice(&bytes)
+    };
+    let distinguished_name = |name: &str| {
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, name);
+        dn
+    };
+
+    // 本地 CA：默认 ECDSA P-256 自签，只用来签本机这一枚服务证书。
+    let ca_key = KeyPair::generate().context("生成本地 CA 私钥失败")?;
+    let mut ca_params = CertificateParams::default();
+    ca_params.distinguished_name = distinguished_name(CA_NAME);
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.serial_number = Some(serial());
+    ca_params.not_before = now - time::Duration::days(1);
+    ca_params.not_after = now + time::Duration::days(3650);
+    let ca_cert = ca_params
+        .self_signed(&ca_key)
+        .context("生成本地 CA 证书失败")?;
+
+    // 服务端证书：本地代理拦截 claude.ai 系 TLS 用。SAN 覆盖官方域名与 localhost；
+    // "127.0.0.1" 会被解析成 IpAddress 类型的 SAN（不是 DNS）。有效期不超过 825 天
+    // （Apple 对 TLS 服务端证书的要求），取 824 天留一天余量。
+    let server_key = KeyPair::generate().context("生成本地服务私钥失败")?;
+    let mut server_params = CertificateParams::new(vec![
+        "claude.ai".into(),
+        "*.claude.ai".into(),
+        "claude.com".into(),
+        "*.claude.com".into(),
+        "anthropic.com".into(),
+        "*.anthropic.com".into(),
+        "claudeusercontent.com".into(),
+        "*.claudeusercontent.com".into(),
+        "localhost".into(),
+        "127.0.0.1".into(),
+    ])
+    .context("本地服务证书参数无效")?;
+    server_params.distinguished_name = distinguished_name("claude.ai");
+    server_params.is_ca = IsCa::NoCa;
+    server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    server_params.use_authority_key_identifier_extension = true;
+    server_params.serial_number = Some(serial());
+    server_params.not_before = now - time::Duration::days(1);
+    server_params.not_after = now + time::Duration::days(824);
+    let issuer = Issuer::new(ca_params, &ca_key);
+    let server_cert = server_params
+        .signed_by(&server_key, &issuer)
+        .context("签发本地服务证书失败")?;
+
+    // 私钥在前证书在后；PEM 私钥是 PKCS#8，Node 的 tls.createSecureContext 能直接读。
+    write_private(&ca.join("ca.key"), ca_key.serialize_pem().as_bytes())?;
+    write_private(&ca.join("server.key"), server_key.serialize_pem().as_bytes())?;
+    write_private(&ca.join("ca.pem"), ca_cert.pem().as_bytes())?;
+    write_private(&ca.join("server.crt"), server_cert.pem().as_bytes())?;
+    Ok(())
 }
 
 fn trust_ca(root: &Path) -> Result<()> {
@@ -3518,28 +3442,37 @@ RGvMS5OzZFvnFlekIHE6c+6QK9QtWD7P+PkIpRa1D01cb9SwsRHqGfs7o2UbaZxs\n\
         assert!(claude_pids_on_proxy(&listing, 500).is_empty(), "端口不整词匹配");
     }
 
+    /// 进程内生成的 CA 材料：四件齐全、PEM 头正确（私钥是 PKCS#8）、
+    /// ca.pem 能算出 SHA-1 指纹。
     #[test]
-    fn openssl_candidates_check_path_then_git_bundles() {
-        let pf = Path::new("/pf");
-        let w6432 = Path::new("/w6432");
-        let local = Path::new("/local/Programs");
-        let candidates = openssl_candidates(Some(pf), Some(w6432), Some(local));
-        // PATH 里找到的排在最前（本机装了 openssl 就是 1 条，没装就是 0 条）。
-        let located = crate::dsh_plugins::locate_program("openssl");
-        assert_eq!(
-            candidates.len(),
-            located.iter().count() + 6,
-            "每个 base 两个 Git 位置"
-        );
-        if let Some(found) = &located {
-            assert_eq!(&candidates[0], found);
+    fn generate_ca_writes_complete_pem_material() {
+        let temp = tempfile::tempdir().unwrap();
+        let ca = temp.path().join("ca");
+        fs::create_dir_all(&ca).unwrap();
+        generate_ca(&ca).unwrap();
+
+        assert!(ca_ready(temp.path()), "四个文件都要有内容");
+        for name in ["ca.key", "server.key"] {
+            let pem = fs::read(ca.join(name)).unwrap();
+            assert!(
+                pem.starts_with(b"-----BEGIN PRIVATE KEY-----"),
+                "{name} 应是 PKCS#8 PEM 私钥"
+            );
         }
-        let tail = &candidates[located.iter().count()..];
-        assert_eq!(tail[0], pf.join(r"Git\mingw64\bin\openssl.exe"));
-        assert_eq!(tail[1], pf.join(r"Git\usr\bin\openssl.exe"));
-        assert_eq!(tail[2], w6432.join(r"Git\mingw64\bin\openssl.exe"));
-        assert_eq!(tail[3], w6432.join(r"Git\usr\bin\openssl.exe"));
-        assert_eq!(tail[4], local.join(r"Git\mingw64\bin\openssl.exe"));
-        assert_eq!(tail[5], local.join(r"Git\usr\bin\openssl.exe"));
+        for name in ["ca.pem", "server.crt"] {
+            let pem = fs::read(ca.join(name)).unwrap();
+            assert!(
+                pem.starts_with(b"-----BEGIN CERTIFICATE-----"),
+                "{name} 应是 PEM 证书"
+            );
+        }
+        let thumbprint = ca_thumbprint(&fs::read(ca.join("ca.pem")).unwrap()).unwrap();
+        assert_eq!(thumbprint.len(), 40, "SHA-1 指纹 40 位十六进制");
+        assert!(thumbprint.chars().all(|ch| ch.is_ascii_digit() || ('A'..='F').contains(&ch)));
+
+        // 已有证书不重复生成：再调 prepare_ca 不动磁盘上的材料。
+        let ca_pem = fs::read(ca.join("ca.pem")).unwrap();
+        prepare_ca(temp.path()).unwrap();
+        assert_eq!(fs::read(ca.join("ca.pem")).unwrap(), ca_pem);
     }
 }
