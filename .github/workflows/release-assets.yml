@@ -113,12 +113,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # 只读复用 main 上 PR build 写的第三方依赖缓存（tag 运行能读默认分支的缓存）。
-      # shared-key 必须与 pr-build.yml 一致：rust-cache 默认把 job id 拼进键，两边 job 名不同就永远命中不了。
+      # 只读复用 release-cache.yml 在 main 上预热的 release 依赖缓存（tag 运行能读默认分支的缓存）。
+      # shared-key 必须与 release-cache.yml 一致：rust-cache 默认把 job id 拼进键，两边 job 名不同就永远命中不了。
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: windows
+          shared-key: windows-release
           save-if: false
 
       - name: Install NSIS
@@ -232,12 +232,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # 只读复用 main 上 PR build 的 macOS 缓存（它两个架构都编，两边都能命中）。
-      # shared-key 必须与 pr-build.yml 的 macOS job 一致。
+      # 只读复用 release-cache.yml 按架构预热的 release 依赖缓存，shared-key 必须与它一致。
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: macos-universal
+          shared-key: macos-release-${{ matrix.target }}
           save-if: false
 
       - name: Install frontend dependencies
