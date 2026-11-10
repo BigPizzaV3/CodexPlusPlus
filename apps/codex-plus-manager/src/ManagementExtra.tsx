@@ -37,6 +37,8 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
   /** Codex++ 的受控源里有它；只在某个 Agent 自己目录里的 Skill 为 false。 */
   managed?: boolean;
   managedSourceDir?: string | null;
+  managedSourceStatus?: "stored" | "referenced" | "matching" | "different" | "unknown" | null;
+  managedSourceError?: string | null;
   sourceVerified?: boolean;
   installChannel?: string;
   originalDir?: string | null;
@@ -226,7 +228,7 @@ function SkillBackupList({ backups, busy, onRestore, onDelete }: {
 }) {
   return <>{backups.map((backup) => <div key={backup.id} className="mg-source-row">
     <div><strong>{backup.name || backup.skillId}</strong><small>{backup.backedUpAt}</small></div>
-    <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
+    <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "managed-source" ? t("受控源归档") : backup.purpose === "disabled" ? t("停用副本备份") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
       <small>{t("备份位置")}：{backup.backupPath || t("未知")}</small>
       <small>{t("恢复位置")}：{backup.restorePath || t("未记录")}</small>
       <SkillFileTimes id={backup.skillId} backupId={backup.id}/>
@@ -242,9 +244,9 @@ function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete }: {
     {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDelete}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
   </ManagementDrawer>;
 }
-function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onReaPreview }: {
+function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onReaPreview, onManageSource }: {
   skill: Skill; count?: number; backups: SkillBackup[]; busy: boolean; onClose: () => void; onOpenUrl: (url: string) => void;
-  onOpenRepo: () => void; onMatch: (localPath?: string) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void;
+  onOpenRepo: () => void; onMatch: (localPath?: string) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void; onManageSource: () => void;
 }) {
   const url = repoUrl(skill);
   const channel = skillChannelLabel(skill);
@@ -294,6 +296,12 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
       })}
       {managedSourcePath && <>
         <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}<SkillFileTimes id={skill.id} rootKind="source"/>
+          <button type="button" className="mg-icon-button" disabled={busy} title={t("管理受控源")} aria-label={t("管理受控源")} onClick={onManageSource}><FolderOpen size={14}/></button>
+          {skill.managedSourceStatus === "referenced" && <small>{t("正在被安装位置引用")}</small>}
+          {skill.managedSourceStatus === "matching" && <small>{t("未被目录链接引用，内容与安装位置一致")}</small>}
+          {skill.managedSourceStatus === "stored" && <small>{t("保留的工作源，可用于重新启用")}</small>}
+          {skill.managedSourceStatus === "different" && <small className="mg-warning">{t("未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理")}</small>}
+          {skill.managedSourceStatus === "unknown" && <small className="mg-warning">{t("无法比较受控源")}：{skill.managedSourceError}</small>}
           {managedAssociationPath && !matchAtRepoPath && (skill.conflict || skill.displayInstances || matchTargets.size > 1) && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(managedAssociationPath)}>{t("关联受控源")}</Button></div>}</dd>
       </>}
     </dl>
@@ -988,6 +996,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     {currentDetail && <SkillDetailDrawer skill={conflictIds.has(currentDetail.id) && !currentDetail.conflict ? { ...currentDetail, conflict: t("同名 Skill 内容存在冲突，请先确认各安装位置。") } : currentDetail}
       count={data?.repoCounts?.[currentDetail.repoKey]} backups={(data?.backups || []).filter((backup) => backup.skillId === currentDetail.id)} busy={busy}
       onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(currentDetail.repoKey)}
+      onManageSource={() => { setDetail(null); setDuplicatesOpen(true); }}
       onMatch={(localPath) => { setDetail(null); setMatchTarget({ id: currentDetail.id, localPath: localPath || (currentDetail.conflictKind === "independent" ? currentDetail.originalDir || undefined : undefined) }); }}
       onRestore={(backup) => void restoreBackup(backup)}
       onDeleteBackup={(backup) => void deleteBackup(backup)}
@@ -997,7 +1006,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       localSkillIds={knownSkills.filter((skill) => skill.installed && !skill.bundled
         && (!skill.repoPath || !skill.repoKey.includes("/"))).map((skill) => skill.id)}
       onClose={() => setMatchTarget(null)} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}
-    {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => setDuplicatesOpen(false)} onArchive={(previewId, id) => run("archive_skill_duplicate", { previewId, id })}/>}
+    {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => setDuplicatesOpen(false)} onArchive={(previewId, id, kind) => run("archive_skill_duplicate", { previewId, id, kind })}/>}
     {backupsOpen && <SkillBackupsDrawer backups={data?.backups || []} busy={busy} onClose={() => setBackupsOpen(false)} onRestore={(backup) => void restoreBackup(backup)} onDelete={(backup) => void deleteBackup(backup)}/>}
     {updateTarget && <SkillInPlaceUpdateDrawer id={updateTarget.id} repoKey={updateTarget.repoKey} localPath={updateTarget.localPath} onClose={() => setUpdateTarget(null)} onExecute={(previewId) => run("execute_skill_in_place_update", { previewId })}/>}
     {reaPreviewOpen && <ReaUpdatePreviewDrawer onClose={() => setReaPreviewOpen(false)}/>}

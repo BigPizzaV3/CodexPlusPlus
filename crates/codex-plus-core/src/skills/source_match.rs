@@ -419,7 +419,10 @@ impl SkillsManager {
                     snapshot.update(digest);
                     if root != self.source_dir
                         && !managed_root.as_ref().is_some_and(|managed| target.starts_with(managed))
-                        && !target.join(MANAGED_COPY_MARKER).exists()
+                        && (!target.join(MANAGED_COPY_MARKER).exists()
+                            || instance_target.as_ref().is_some_and(|recorded|
+                                recorded.path.canonicalize().ok().as_ref() == Some(&target)
+                                    && skill_path_identity(&recorded.path).ok() == Some(recorded.identity)))
                     {
                         originals.entry(target.clone()).or_insert_with(|| path.clone());
                     }
@@ -432,9 +435,13 @@ impl SkillsManager {
                             anyhow::ensure!(managed_source.as_ref() == Some(&path),
                                 "受控源属于其他安装位置，请选择该安装位置关联");
                         }
-                        anyhow::ensure!(std::fs::symlink_metadata(selected.unwrap())?.file_type().is_dir()
-                            && !is_managed_copy(selected.unwrap()), "所选路径不是可单独管理的实体原件");
                         let selected_path = selected.unwrap();
+                        let recorded_original = instance_target.as_ref().is_some_and(|recorded|
+                            recorded.path.canonicalize().ok().as_ref() == Some(&target)
+                                && skill_path_identity(&recorded.path).ok() == Some(recorded.identity));
+                        anyhow::ensure!(std::fs::symlink_metadata(selected_path)?.file_type().is_dir()
+                            && (!is_managed_copy(selected_path) || recorded_original),
+                            "所选路径不是可单独管理的实体原件");
                         let (name, description) = read_skill_manifest(&selected_path.join(SKILL_MANIFEST_FILE), id);
                         selected_identity = Some(skill_path_identity(selected_path)?);
                         selected_digest = Some(digest);

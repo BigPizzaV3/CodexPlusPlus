@@ -115,7 +115,7 @@ test("grouped details keep source matching, updates and impeccable versions tied
     t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: (item: { installChannel: string }) => item.installChannel,
     repoFromKey: (value: string) => value.includes("/") ? {} : null, skillIdentityKey,
   };
-  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes"]) context[name] = name;
+  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes", "FolderOpen"]) context[name] = name;
   vm.createContext(context);
   const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
   const root = render({ skill: { ...first, conflict: "内容不同", locations: [...first.locations, ...second.locations], displayInstances: [first, second] },
@@ -147,7 +147,7 @@ test("conflicting managed installs can associate their explicit source directory
     t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "local",
     repoFromKey: () => null, skillIdentityKey,
   };
-  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes"]) context[name] = name;
+  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes", "FolderOpen"]) context[name] = name;
   vm.createContext(context);
   const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
   const selected: string[] = [];
@@ -1189,7 +1189,7 @@ test("the detail repository link opens matching for the physical location or man
       sourceLabel: () => "", skillChannelLabel: () => "本地安装", repoFromKey: (value: string) => value ? {} : null,
       skillIdentityKey,
     };
-    for (const name of ["ManagementDrawer", "Button", "SkillFileTimes", "Edit3", "ExternalLink", "CloudDownload", "ArrowRight"]) context[name] = name;
+    for (const name of ["ManagementDrawer", "Button", "SkillFileTimes", "Edit3", "ExternalLink", "CloudDownload", "ArrowRight", "FolderOpen"]) context[name] = name;
     vm.createContext(context);
     const renderDetail = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
     const nodes: Element[] = [];

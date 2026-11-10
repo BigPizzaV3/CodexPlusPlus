@@ -19,7 +19,8 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 test("a verified managed duplicate can be archived despite other independent same-name skills", async () => {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
-  const archives: Array<[string, string]> = [];
+  const archives: Array<[string, string, string]> = [];
+  const confirmations: string[] = [];
   let cursor = 0;
   let elements: Element[] = [];
   const context: Record<string, any> = {
@@ -36,9 +37,10 @@ test("a verified managed duplicate can be archived despite other independent sam
       if (!previous || deps.some((value, position) => !Object.is(value, previous[position]))) effects.push(run);
       slots[index] = deps;
     },
-    t: (value: string) => value, appConfirm: async () => true,
+    t: (value: string) => value, appConfirm: async (message: string) => { confirmations.push(message); return true; },
     invoke: async () => ({ status: "ok", previewId: "verified-preview", candidates: [
       { id: "rea", sharedPath: "C:/agents/rea", codexPath: "C:/codex/rea", status: "identical-managed" },
+      { id: "rea", kind: "source", sharedPath: "C:/codex/rea", codexPath: "C:/managed/rea", originalRootKind: "codex", status: "identical-source" },
       { id: "other", sharedPath: "C:/agents/other", codexPath: "C:/codex/other", status: "different" },
       { id: "unknown", sharedPath: "C:/agents/unknown", codexPath: "C:/codex/unknown", status: "unsupported", detail: "无法确定名称规则的启用状态" },
     ] }),
@@ -55,7 +57,7 @@ test("a verified managed duplicate can be archived despite other independent sam
   };
   const props = {
     onClose: () => {},
-    onArchive: async (previewId: string, id: string) => { archives.push([previewId, id]); return true; },
+    onArchive: async (previewId: string, id: string, kind: string) => { archives.push([previewId, id, kind]); return true; },
   };
   const render = () => {
     cursor = 0; elements = []; effects.length = 0;
@@ -64,11 +66,14 @@ test("a verified managed duplicate can be archived despite other independent sam
   };
   render(); await tick(); render();
   const buttons = elements.filter((node) => node.type === "button" && node.children.includes("归档副本"));
-  assert.equal(buttons.length, 1);
+  assert.equal(buttons.length, 2);
   assert.ok(elements.some((node) => node.type === "small" && node.children.includes("无法确定名称规则的启用状态")));
-  assert.equal(elements.filter((node) => node.type === "SkillFileTimes").length, 6);
+  assert.equal(elements.filter((node) => node.type === "SkillFileTimes").length, 8);
   assert.equal(buttons[0].props.disabled, false);
   await buttons[0].props.onClick();
+  await buttons[1].props.onClick();
   await tick();
-  assert.deepEqual(archives, [["verified-preview", "rea"]]);
+  assert.deepEqual(archives, [["verified-preview", "rea", "shared"], ["verified-preview", "rea", "source"]]);
+  assert.ok(confirmations[1].includes("C:/managed/rea"));
+  assert.ok(confirmations[1].includes("C:/codex/rea"));
 });

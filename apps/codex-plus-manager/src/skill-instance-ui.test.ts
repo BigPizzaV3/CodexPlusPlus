@@ -130,7 +130,7 @@ test("multiple association targets stay tied to their locations", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
-    ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
   vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
@@ -179,7 +179,7 @@ test("a conflicting unclaimed managed source has a path and file dates without a
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
-    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
   vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
@@ -202,7 +202,7 @@ test("a managed source directory is visible without a conflict", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
-    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
   vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
@@ -224,6 +224,31 @@ test("a managed source directory is visible without a conflict", () => {
   assert.ok(icon);
   icon.props.onClick();
   assert.deepEqual(matched, ["C:/managed/alpha"]);
+});
+
+test("an unused managed source reports its status without a name conflict", () => {
+  let opened = false;
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3", FolderOpen: "FolderOpen",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      managedSourceDir: "C:/managed/alpha", managedSourceStatus: "different",
+      locations: [{ manifestPath: "C:/codex/alpha/SKILL.md", rootKind: "codex", managed: true, enabled: true }] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: () => {}, onRestore: () => {}, onDeleteBackup: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+    onManageSource: () => { opened = true; },
+  }));
+  const source = elements.find((item) => item.type === "dd" && item.children.includes("C:/managed/alpha"))!;
+  assert.ok(collect(source).some((item) => item.children.includes("未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理")));
+  assert.equal(elements.some((item) => item.props.role === "alert"), false);
+  collect(source).find((item) => item.props["aria-label"] === "管理受控源")!.props.onClick();
+  assert.equal(opened, true);
 });
 
 test("update preview separates managed copies, following paths and skipped locations", async () => {

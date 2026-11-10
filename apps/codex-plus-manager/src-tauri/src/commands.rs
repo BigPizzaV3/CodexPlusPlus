@@ -7478,10 +7478,15 @@ pub async fn preview_skill_duplicates() -> Result<CommandResult<codex_plus_core:
 }
 
 #[tauri::command]
-pub async fn archive_skill_duplicate(preview_id: String, id: String) -> Result<CommandResult<SkillsPayload>, String> {
+pub async fn archive_skill_duplicate(preview_id: String, id: String, kind: Option<String>) -> Result<CommandResult<SkillsPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = default_skills_manager();
-        match manager.archive_skill_duplicate(&preview_id, &id) {
+        let result = match kind.as_deref() {
+            None | Some("shared") => manager.archive_skill_duplicate(&preview_id, &id),
+            Some("source") => manager.archive_skill_managed_source(&preview_id, &id),
+            Some(_) => Err(anyhow::anyhow!("未知的重复副本类型")),
+        };
+        match result {
             Ok(_) => ok("重复副本已归档，可恢复至原位置。", current_skills_payload(&manager)),
             Err(error) => failed(&format!("归档重复副本失败：{error:#}"), current_skills_payload(&manager)),
         }
