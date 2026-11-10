@@ -1220,6 +1220,10 @@ impl LaunchHooks for LauncherHooks {
         codex_plus_core::watcher::find_session_index_cleanup_blocking_processes().is_empty()
     }
 
+    fn codex_desktop_running(&self) -> bool {
+        !codex_plus_core::watcher::find_session_index_cleanup_blocking_processes().is_empty()
+    }
+
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()> {
         let outcomes = tokio::task::spawn_blocking(|| {
             let requests = codex_plus_core::remote_control_recovery::load_pending_remote_control_recoveries(None)?;

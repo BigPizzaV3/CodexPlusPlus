@@ -479,6 +479,8 @@ type BackendSettings = WhaleBalanceSettings & {
   /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
   managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
+  /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
+  keepProjectsWithoutAccount?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
   /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
@@ -1575,6 +1577,7 @@ const defaultSettings: BackendSettings = {
   providerSyncEnabled: false,
   sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
+  keepProjectsWithoutAccount: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
   updateSkippedVersion: "",
@@ -10874,6 +10877,17 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                   aria-label={t("切换模型后旧会话跟随新默认")}
                   checked={Boolean(form.threadModelFollowSwitchEnabled)}
                   onChange={(event) => onFormChange({ ...form, threadModelFollowSwitchEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
+            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t("非官方登录时保留本地项目")}
+                  checked={Boolean(form.keepProjectsWithoutAccount)}
+                  onChange={(event) => onFormChange({ ...form, keepProjectsWithoutAccount: event.currentTarget.checked })}
                   type="checkbox"
                 />
                 <ToggleVisual />

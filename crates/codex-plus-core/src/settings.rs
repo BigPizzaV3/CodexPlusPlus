@@ -1214,6 +1214,11 @@ pub struct BackendSettings {
     /// 默认关闭；用户手动改过模型的会话不受影响。
     #[serde(rename = "threadModelFollowSwitchEnabled", default)]
     pub thread_model_follow_switch_enabled: bool,
+    /// 非官方登录（API Key / 网关 / 聚合）时保留本地项目（#2947 / #3018）。
+    /// Codex 登录过 ChatGPT 后会建账号隔离容器，匿名身份的项目每次启动都被清空；
+    /// 打开后启动前把容器挪走、项目留在顶层，切回官方登录时再放回。默认关闭。
+    #[serde(rename = "keepProjectsWithoutAccount", default)]
+    pub keep_projects_without_account: bool,
     /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。
     #[serde(rename = "nativeAuthSelection", default)]
     pub native_auth_selection: Option<NativeAuthSelection>,
@@ -1620,6 +1625,7 @@ impl Default for BackendSettings {
             provider_sync_enabled: false,
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
+            keep_projects_without_account: false,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
@@ -2998,6 +3004,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         .and_then(Value::as_bool)
     {
         target.insert("threadModelFollowSwitchEnabled".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("keepProjectsWithoutAccount")
+        .and_then(Value::as_bool)
+    {
+        target.insert("keepProjectsWithoutAccount".to_string(), Value::Bool(value));
     }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(

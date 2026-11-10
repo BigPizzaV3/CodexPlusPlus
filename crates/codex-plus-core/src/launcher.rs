@@ -461,6 +461,10 @@ pub trait LaunchHooks: Send + Sync {
     fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
         true
     }
+    /// Codex 桌面端是否在运行。运行中改 `.codex-global-state.json` 会被它的内存状态覆盖回去。
+    fn codex_desktop_running(&self) -> bool {
+        false
+    }
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
@@ -923,6 +927,13 @@ where
                 "launcher.after_provider_sync",
             );
         }
+        // #2947 / #3018：非官方登录时 Codex 每次启动都清空匿名身份的项目，开关打开时启动前挪走账号容器。
+        crate::codex_app_state::reconcile_account_scope_nonfatal(
+            &home,
+            &settings,
+            hooks.codex_desktop_running(),
+            "launcher.before_launch",
+        );
         if hooks.has_pending_remote_control_session_recoveries()
             && hooks.remote_control_session_recovery_is_safe_to_run()
         {
@@ -1334,6 +1345,10 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
         crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
+    }
+
+    fn codex_desktop_running(&self) -> bool {
+        !crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
