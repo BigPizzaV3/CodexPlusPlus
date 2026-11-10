@@ -94,7 +94,17 @@ if (!skipBuild) {
     "--release",
     "-p",
     "codex-plus-manager",
-  ], { cwd: root, env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}` } });
+  ], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}`,
+      // 本地实测用的 release 打开增量编译：时间几乎全花在本仓库 crate（core 25 万行）上，
+      // 改一处函数体从 2 分半降到 25 秒左右；产物大小基本不变，增量缓存约占 2 GB。
+      // 只作用于本脚本，CI 与发版仍是默认的非增量 release。
+      CARGO_PROFILE_RELEASE_INCREMENTAL: "true",
+    },
+  });
 }
 
 if (!existsSync(builtBinary)) {
