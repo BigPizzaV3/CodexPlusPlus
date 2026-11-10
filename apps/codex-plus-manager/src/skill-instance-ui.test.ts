@@ -86,6 +86,73 @@ test("independent installations retain their own source and actions", () => {
   assert.deepEqual(updates[1], ["two/repo@main", "C:/claude/alpha"]);
 });
 
+test("a selectable physical installation associates its exact path with or without an existing source", () => {
+  const matched: string[] = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value,
+    repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/owner/repo" : "",
+    sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes",
+    ArrowRight: "ArrowRight", ExternalLink: "ExternalLink", Edit3: "Edit3",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  for (const [repoKey, label] of [
+    ["", "关联 GitHub 仓库"],
+    ["owner/repo@main", "修改 GitHub 仓库关联"],
+  ]) {
+    const elements = collect(context.SkillDetailDrawer({
+      skill: { id: "alpha", name: "Alpha", repoKey, description: "", installed: true, bundled: false,
+        repoPath: repoKey ? "skills/alpha" : "", locations: [
+          { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", rootKind: "shared",
+            managed: false, enabled: true, selectable: true, repoKey },
+        ] },
+      backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+      onMatch: (path: string) => matched.push(path), onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+    }));
+    const repoPath = elements.findIndex((item) => item.type === "dt" && item.children.includes("仓库路径"));
+    assert.ok(repoPath >= 0);
+    const button = collect(elements[repoPath + 1]).find((item) => item.type === "button" && item.props["aria-label"] === label);
+    assert.ok(button);
+    assert.equal(button.props.title, label);
+    assert.ok(button.children.some((item: Element) => item.type === "Edit3"));
+    assert.equal(elements.some((item) => item.type === "Button" && item.children.includes("关联此安装位置")), false);
+    assert.equal(elements.some((item) => item.type === "Button" && item.children.includes("重新关联此安装位置")), false);
+    button.props.onClick();
+  }
+  assert.deepEqual(matched, ["C:/agents/alpha", "C:/agents/alpha"]);
+});
+
+test("multiple association targets stay tied to their locations", () => {
+  const matched: string[] = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      managedSourceDir: "C:/managed/alpha", locations: [
+        { manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", rootKind: "shared",
+          managed: false, enabled: true, selectable: true },
+        { manifestPath: "C:/codex/alpha/SKILL.md", associationPath: "C:/managed/alpha", rootKind: "codex",
+          managed: true, enabled: true },
+      ] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: (path: string) => matched.push(path), onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+  }));
+  const repoPath = elements.findIndex((item) => item.type === "dt" && item.children.includes("仓库路径"));
+  assert.equal(collect(elements[repoPath + 1]).some((item) => item.type === "button"), false);
+  elements.find((item) => item.type === "Button" && item.children.includes("关联此安装位置"))!.props.onClick();
+  elements.find((item) => item.type === "Button" && item.children.includes("关联受控源"))!.props.onClick();
+  assert.deepEqual(matched, ["C:/agents/alpha", "C:/managed/alpha"]);
+});
+
 test("the detail view displays the reason for an unknown location status", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
@@ -128,6 +195,35 @@ test("a conflicting unclaimed managed source has a path and file dates without a
   assert.ok(source);
   assert.ok(collect(source).some((item) => item.type === "SkillFileTimes" && item.props.rootKind === "source"));
   assert.equal(collect(source).some((item) => item.type === "Button" && item.children.includes("关联受控源")), false);
+});
+
+test("a managed source directory is visible without a conflict", () => {
+  const matched: Array<string | undefined> = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      managedSourceDir: "C:/managed/alpha", locations: [
+        { manifestPath: "C:/codex/alpha/SKILL.md", rootKind: "codex", managed: true, enabled: true,
+          associationPath: "C:/managed/alpha" },
+      ] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: (path: string | undefined) => matched.push(path), onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+  }));
+  const source = elements.find((item) => item.type === "dd" && item.children.includes("C:/managed/alpha"));
+  assert.ok(source);
+  assert.ok(collect(source).some((item) => item.type === "SkillFileTimes" && item.props.rootKind === "source"));
+  assert.equal(collect(source).some((item) => item.type === "Button"), false);
+  const icon = elements.find((item) => item.type === "button" && item.props["aria-label"] === "关联 GitHub 仓库");
+  assert.ok(icon);
+  icon.props.onClick();
+  assert.deepEqual(matched, ["C:/managed/alpha"]);
 });
 
 test("update preview separates managed copies, following paths and skipped locations", async () => {

@@ -270,6 +270,7 @@ pub struct SkillEntry {
     pub conflict: Option<String>,
     pub conflict_kind: Option<String>,
     pub safe_disable_agents: Vec<String>,
+    pub safe_toggle_agents: Vec<String>,
     pub name: String,
     pub description: String,
     pub repo_key: String,
@@ -1080,8 +1081,7 @@ impl SkillsManager {
 
     /// 没有受控源时，从 Codex 或其它 Agent 目录里找到这个 Skill 的真实目录，纳入受控源。
     ///
-    /// - 在 Codex 目录里：走一遍「停用 → 启用」，停用会把真实目录复制成受控源（原目录进备份），
-    ///   启用再软链回来，Codex 照常可用；
+    /// - 在 Codex 目录里：复制一份成受控源，Codex 原目录保持不动；
     /// - 只在其它 Agent 目录里：复制一份成受控源，那个 Agent 自己的目录保持不动。
     fn ensure_managed_source_unlocked(
         &self,
@@ -1090,6 +1090,13 @@ impl SkillsManager {
     ) -> anyhow::Result<()> {
         if self.source_dir.join(id).is_dir() {
             let state = self.load_state_checked_unlocked()?;
+            let codex = self.linked_dir().join(id);
+            if state.installed.get(id).is_some_and(|item| item.original_dir.is_none())
+                && is_managed_copy(&codex)
+                && skill_directory_digest(&codex)? != skill_directory_digest(&self.source_dir.join(id))?
+            {
+                anyhow::bail!("Codex Skill 副本与受控源内容不同，不能使用旧副本启用到其他 Agent");
+            }
             if let Some(original) = state.installed.get(id).and_then(|item| item.original_dir.as_ref()) {
                 let mut roots = vec![self.linked_dir()];
                 roots.extend(self.shared_skills_dir.iter().cloned());
@@ -1128,8 +1135,20 @@ impl SkillsManager {
             }
         }
         if physical(&codex) {
-            self.set_enabled_unlocked(id, false, coordination)?;
-            return self.set_enabled_unlocked(id, true, coordination);
+            let identity = skill_path_identity(&codex)?;
+            let (staging, mut installed) = self.stage_directory_import(id, &codex, LOCAL_IMPORT_REPO_KEY)?;
+            let result = (|| {
+                anyhow::ensure!(skill_path_identity(&codex)? == identity
+                    && skill_directory_digest(&codex)? == skill_directory_digest(&staging)?,
+                    "创建受控源期间 Codex Skill 原件已改变");
+                installed.update_owner.clear();
+                if let Some(existing) = self.load_state_checked_unlocked()?.installed.get(id) {
+                    installed = existing.clone();
+                }
+                self.commit_staged_skill_unlocked(&staging, installed, false, true, None, true, Some(&codex), coordination)?;
+                Ok(())
+            })();
+            return result.map_err(|error| retain_staging_context(error, &staging));
         }
         if std::fs::symlink_metadata(&codex).is_ok() {
             // Codex 目录里同名的是别的东西（例如断掉的软链），导入会把它挪进备份；交给用户处理。
@@ -1479,6 +1498,7 @@ impl SkillsManager {
                     conflict: None,
                     conflict_kind: None,
                     safe_disable_agents: Vec::new(),
+                    safe_toggle_agents: Vec::new(),
                     name: skill.name.clone(),
                     description: skill.description.clone(),
                     repo_key: skill.repo_key.clone(),
@@ -1518,6 +1538,7 @@ impl SkillsManager {
                 conflict: None,
                 conflict_kind: None,
                 safe_disable_agents: Vec::new(),
+                safe_toggle_agents: Vec::new(),
                 name: if installed.name.is_empty() {
                     id.clone()
                 } else {
@@ -1565,6 +1586,7 @@ impl SkillsManager {
                         conflict: None,
                         conflict_kind: None,
                         safe_disable_agents: Vec::new(),
+                        safe_toggle_agents: Vec::new(),
                         name,
                         description,
                         repo_key: String::new(),
@@ -1600,6 +1622,7 @@ impl SkillsManager {
                         conflict: None,
                         conflict_kind: None,
                         safe_disable_agents: Vec::new(),
+                        safe_toggle_agents: Vec::new(),
                         name,
                         description,
                         repo_key: String::new(),
@@ -1893,6 +1916,19 @@ impl SkillsManager {
                             agent => Some(agent.to_string()),
                         })
                         .collect();
+                    if self.shared_skills_dir.as_ref()
+                        .is_none_or(|root| !root.join(&instance.id).join(SKILL_MANIFEST_FILE).is_file())
+                        && instance.locations.iter().any(|location| {
+                            location.root_kind == "codex" && location.managed
+                                && location.status_error.is_none()
+                                && std::fs::symlink_metadata(self.linked_dir().join(&instance.id))
+                                    .is_ok_and(|metadata| metadata.file_type().is_dir()
+                                        && !metadata_is_link(&metadata))
+                        })
+                        && self.ensure_skill_name_aliases_only(&instance.id, &state).is_ok()
+                    {
+                        instance.safe_toggle_agents.push("codex".into());
+                    }
                 }
                 let record = state.instance_record(&entry.id, &path);
                 // 旧安装记录没有原目录和实例索引；仅受控源及其副本可继承该记录。
@@ -1981,6 +2017,7 @@ impl SkillsManager {
                 conflict: None,
                 conflict_kind: None,
                 safe_disable_agents: Vec::new(),
+                safe_toggle_agents: Vec::new(),
                 name,
                 description,
                 repo_key: String::new(),
@@ -2030,6 +2067,16 @@ impl SkillsManager {
         repo_key: &str,
     ) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
+        if repo_key == LOCAL_IMPORT_REPO_KEY {
+            // 用户选择的本地目录若已被发现，不应通过导入覆盖原目录。
+            if let Ok(external) = external_dir.canonicalize() {
+                for (root, label) in [(self.linked_dir(), "Codex 的 skills 目录"), (self.source_dir.clone(), "Codex++ 的 Skills 受控目录")] {
+                    if root.canonicalize().is_ok_and(|root| external.starts_with(root)) {
+                        anyhow::bail!("{} 已在{label}里，Codex++ 会直接识别，无需导入", external_dir.display());
+                    }
+                }
+            }
+        }
         let generation = {
             let coordination = skills_coordination();
             self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
@@ -2064,16 +2111,6 @@ impl SkillsManager {
         repo_key: &str,
     ) -> anyhow::Result<(PathBuf, InstalledSkill)> {
         validate_skill_id(id)?;
-        if repo_key == LOCAL_IMPORT_REPO_KEY {
-            // Codex 的 skills 目录本来就会被扫描显示；从这里「导入」会把原目录挪进备份，反而让它从 Codex 消失。
-            if let Ok(external) = external_dir.canonicalize() {
-                for (root, label) in [(self.linked_dir(), "Codex 的 skills 目录"), (self.source_dir.clone(), "Codex++ 的 Skills 受控目录")] {
-                    if root.canonicalize().is_ok_and(|root| external.starts_with(root)) {
-                        anyhow::bail!("{} 已在{label}里，Codex++ 会直接识别，无需导入", external_dir.display());
-                    }
-                }
-            }
-        }
         let manifest = external_dir.join(SKILL_MANIFEST_FILE);
         if !manifest.is_file() {
             anyhow::bail!("{} 下没有 SKILL.md，不是有效的 Skill", external_dir.display());
@@ -2299,6 +2336,7 @@ impl SkillsManager {
                 conflict: None,
                 conflict_kind: None,
                 safe_disable_agents: Vec::new(),
+                safe_toggle_agents: Vec::new(),
                 name,
                 description,
                 repo_key: String::new(),
@@ -2582,7 +2620,7 @@ impl SkillsManager {
         result.map_err(|error| retain_staging_context(error, &staging))
     }
 
-    /// 启用 = 在 `$CODEX_HOME/skills/` 下建一个指向源目录的软链；停用 = 删掉它。
+    /// Codex 实体目录通过原生路径规则启停；受控软链沿用建链和移除。
     pub fn set_enabled(&self, id: &str, enabled: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
         let mut coordination = skills_coordination();
@@ -2632,7 +2670,14 @@ impl SkillsManager {
         let native_config = self.read_native_skill_config()?;
         let existing_manifest = link.join(SKILL_MANIFEST_FILE);
         if existing_manifest.is_file() {
-            native_config.name_for_matching(&existing_manifest, id)?;
+            let (name, _) = read_skill_manifest(&existing_manifest, id);
+            native_config.name_for_matching(&existing_manifest, &name)?;
+            if std::fs::symlink_metadata(&link).is_ok_and(|metadata|
+                metadata.file_type().is_dir() && !metadata_is_link(&metadata))
+            {
+                self.set_native_skill_paths_from_config(&[(existing_manifest, name)], enabled, &native_config)?;
+                return Ok(());
+            }
         }
         if !enabled {
             let state = self.load_state_checked_unlocked()?;
@@ -5675,13 +5720,23 @@ mod tests {
 
     #[test]
     fn codex_shared_toggle_rejects_different_codex_copy() {
-        let temp = tempfile::tempdir().unwrap();
-        let shared = temp.path().join("shared");
-        let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
-        write_skill(&shared.join("alpha"), "---\nname: alpha\n---\noriginal");
-        write_skill(&manager.linked_dir().join("alpha"), "---\nname: alpha\n---\ndifferent");
-        assert!(manager.set_enabled_for("codex", "alpha", false).is_err());
-        assert!(!manager.codex_home.join("config.toml").exists());
+        for managed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let shared = temp.path().join("shared");
+            let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+            let codex = manager.linked_dir().join("alpha");
+            write_skill(&shared.join("alpha"), "---\nname: alpha\n---\noriginal");
+            write_skill(&codex, "---\nname: alpha\n---\ndifferent");
+            if managed {
+                std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
+            }
+            let entries = manager.try_local_inventory().unwrap();
+            assert!(entries.iter().filter(|item| item.id == "alpha")
+                .all(|item| item.safe_toggle_agents.is_empty()));
+            assert!(manager.set_enabled_for("codex", "alpha", false).is_err());
+            assert!(manager.set_enabled_for("codex", "alpha", true).is_err());
+            assert!(!manager.codex_home.join("config.toml").exists());
+        }
     }
 
     #[test]
@@ -5940,10 +5995,12 @@ mod tests {
         assert_ne!(found[0].instance_key, found[1].instance_key);
         assert!(found.iter().all(|item| item.conflict.is_some() && item.repo_key.is_empty()));
         assert!(found.iter().all(|item| item.conflict_kind.as_deref() == Some("independent")
-            && item.safe_disable_agents.is_empty()));
+            && item.safe_disable_agents.is_empty() && item.safe_toggle_agents.is_empty()));
         assert!(found.iter().all(|item| item.locations.len() == 1));
         manager.set_enabled_for("codex", "alpha", false).unwrap();
         assert!(!manager.read_native_skill_config().unwrap().enabled(&shared.join("alpha/SKILL.md"), "shared"));
+        assert!(manager.try_local_inventory().unwrap().iter().filter(|item| item.id == "alpha")
+            .all(|item| item.safe_toggle_agents.is_empty()));
         assert_eq!(std::fs::read_to_string(temp.path().join("claude-skills/alpha/SKILL.md")).unwrap(),
             "---\nname: claude\n---\nsecond");
         manager.set_enabled("alpha", true).unwrap();
@@ -6756,15 +6813,169 @@ mod tests {
     fn codex_local_skill_is_adopted_and_stays_enabled_in_codex() {
         let temp = tempfile::tempdir().unwrap();
         let manager = multi_agent_manager(&temp);
-        write_skill(&manager.linked_dir().join("beta"), "codex local");
+        let codex = manager.linked_dir().join("beta");
+        write_skill(&codex, "codex local");
+        let identity = skill_path_identity(&codex).unwrap();
 
         manager.set_enabled_for("claude", "beta", true).unwrap();
-        assert_eq!(std::fs::read_to_string(manager.linked_dir().join("beta/SKILL.md")).unwrap(), "codex local", "Codex 照常可用");
+        assert_eq!(std::fs::read_to_string(codex.join("SKILL.md")).unwrap(), "codex local", "Codex 照常可用");
         assert_eq!(std::fs::read_to_string(temp.path().join("claude-skills/beta/SKILL.md")).unwrap(), "codex local");
         assert!(manager.source_dir.join("beta/SKILL.md").is_file());
+        assert_eq!(skill_path_identity(&codex).unwrap(), identity);
+        assert!(manager.try_list_backups().unwrap().is_empty());
+        assert_eq!(manager.load_state().installed["beta"].original_dir.as_deref(), Some(codex.as_path()));
         let entries = manager.local_inventory();
         let agents = &entry(&entries, "beta").agents;
         assert!(agents.contains(&"codex".to_string()) && agents.contains(&"claude".to_string()));
+    }
+
+    #[test]
+    fn enabling_another_agent_does_not_reenable_a_disabled_codex_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let codex = manager.linked_dir().join("alpha");
+        write_skill(&codex, "---\nname: alpha\n---\noriginal");
+        let identity = skill_path_identity(&codex).unwrap();
+        manager.set_enabled_for("codex", "alpha", false).unwrap();
+        let config = std::fs::read(manager.codex_home.join("config.toml")).unwrap();
+
+        manager.set_enabled_for("claude", "alpha", true).unwrap();
+        assert_eq!(std::fs::read(manager.codex_home.join("config.toml")).unwrap(), config);
+        assert_eq!(skill_path_identity(&codex).unwrap(), identity);
+        assert_eq!(std::fs::read_to_string(codex.join(SKILL_MANIFEST_FILE)).unwrap(),
+            "---\nname: alpha\n---\noriginal");
+        assert_eq!(std::fs::read_to_string(temp.path().join("claude-skills/alpha/SKILL.md")).unwrap(),
+            "---\nname: alpha\n---\noriginal");
+        assert!(!entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
+        assert!(manager.try_list_backups().unwrap().is_empty());
+
+        write_skill(&codex, "---\nname: alpha\n---\nchanged");
+        let error = manager.set_enabled_for("grok", "alpha", true).unwrap_err();
+        assert!(format!("{error:#}").contains("不能使用旧副本"));
+        assert!(!temp.path().join("grok-skills/alpha").exists());
+        assert_eq!(std::fs::read_to_string(temp.path().join("claude-skills/alpha/SKILL.md")).unwrap(),
+            "---\nname: alpha\n---\noriginal");
+    }
+
+    #[test]
+    fn adopted_legacy_codex_copy_is_not_published_after_it_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let codex = manager.linked_dir().join("alpha");
+        write_skill(&codex, "---\nname: alpha\n---\noriginal");
+        std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
+        let mut state = manager.load_state();
+        state.installed.insert("alpha".into(), InstalledSkill {
+            id: "alpha".into(), name: "alpha".into(), description: String::new(),
+            repo_key: "example/repo@main".into(), repo_path: "alpha".into(),
+            content_hash: String::new(), installed_at: String::new(), verified_cc_switch: false,
+            install_channel: String::new(), original_dir: None, update_owner: "manager".into(),
+        });
+        manager.save_state_unlocked(&state).unwrap();
+
+        manager.set_enabled_for("claude", "alpha", true).unwrap();
+        assert_eq!(manager.load_state().installed["alpha"], state.installed["alpha"]);
+        write_skill(&codex, "---\nname: alpha\n---\nchanged");
+        let error = manager.set_enabled_for("grok", "alpha", true).unwrap_err();
+        assert!(format!("{error:#}").contains("不能使用旧副本"));
+        assert!(!temp.path().join("grok-skills/alpha").exists());
+        assert_eq!(std::fs::read_to_string(codex.join(SKILL_MANIFEST_FILE)).unwrap(),
+            "---\nname: alpha\n---\nchanged");
+        assert_eq!(std::fs::read_to_string(temp.path().join("claude-skills/alpha/SKILL.md")).unwrap(),
+            "---\nname: alpha\n---\noriginal");
+        assert!(manager.try_list_backups().unwrap().is_empty());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn native_toggle_keeps_modified_codex_copy_and_other_agent_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let external = temp.path().join("external/alpha");
+        write_skill(&external, "---\nname: alpha\n---\nsource");
+        manager.import_from_directory("alpha", &external).unwrap();
+        let source = manager.source_dir.join("alpha");
+        let codex = manager.linked_dir().join("alpha");
+        let claude = temp.path().join("claude-skills").join("alpha");
+        write_skill(&codex, "---\nname: alpha\n---\nmodified copy");
+        std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &claude).unwrap();
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"]).arg(&claude).arg(&source).output().unwrap();
+            assert!(output.status.success(), "could not create directory junction: {:?}", output);
+        }
+        let source_identity = skill_path_identity(&source).unwrap();
+        let codex_identity = skill_path_identity(&codex).unwrap();
+        let state = manager.load_state();
+
+        for enabled in [true, false, false, true, true] {
+            manager.set_enabled_for("codex", "alpha", enabled).unwrap();
+            let config = manager.read_native_skill_config().unwrap();
+            assert_eq!(config.enabled(&codex.join(SKILL_MANIFEST_FILE), "alpha"), enabled);
+            let entries = manager.try_local_inventory().unwrap();
+            let codex_entry = entries.iter().find(|entry| entry.locations.iter()
+                .any(|location| location.root_kind == "codex")).unwrap();
+            assert_eq!(codex_entry.conflict_kind.as_deref(), Some("managed-modified"));
+            assert_eq!(codex_entry.safe_toggle_agents, vec!["codex"]);
+            assert_eq!(codex_entry.safe_disable_agents, if enabled { vec!["codex"] } else { vec![] });
+            assert_eq!(codex_entry.enabled, enabled);
+            assert!(entries.iter().filter(|entry| entry.locations.iter()
+                .any(|location| location.root_kind == "claude"))
+                .all(|entry| entry.safe_toggle_agents.is_empty()));
+            assert_eq!(skill_path_identity(&source).unwrap(), source_identity);
+            assert_eq!(skill_path_identity(&codex).unwrap(), codex_identity);
+            assert_eq!(std::fs::read_to_string(codex.join(SKILL_MANIFEST_FILE)).unwrap(),
+                "---\nname: alpha\n---\nmodified copy");
+            assert_eq!(std::fs::read_to_string(claude.join(SKILL_MANIFEST_FILE)).unwrap(),
+                "---\nname: alpha\n---\nsource");
+            assert_eq!(manager.load_state(), state);
+            assert!(manager.try_list_backups().unwrap().is_empty());
+        }
+        #[cfg(windows)]
+        std::fs::remove_dir(claude).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn managed_link_with_a_modified_agent_copy_is_not_reported_as_a_native_toggle() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let external = temp.path().join("external/alpha");
+        write_skill(&external, "---\nname: alpha\n---\nsource");
+        manager.import_from_directory("alpha", &external).unwrap();
+        let source = manager.source_dir.join("alpha");
+        let codex = manager.linked_dir().join("alpha");
+        let claude = temp.path().join("claude-skills/alpha");
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &codex).unwrap();
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"]).arg(&codex).arg(&source).output().unwrap();
+            assert!(output.status.success(), "could not create directory junction: {:?}", output);
+        }
+        write_skill(&claude, "---\nname: alpha\n---\nmodified");
+        std::fs::write(claude.join(MANAGED_COPY_MARKER), "").unwrap();
+
+        let entries = manager.try_local_inventory().unwrap();
+        let linked = entries.iter().find(|entry| entry.locations.iter()
+            .any(|location| location.root_kind == "codex")).unwrap();
+        assert_eq!(linked.conflict_kind.as_deref(), Some("managed-modified"));
+        assert_eq!(linked.safe_disable_agents, vec!["codex"]);
+        assert!(linked.safe_toggle_agents.is_empty());
+        manager.set_enabled_for("codex", "alpha", false).unwrap();
+        assert!(!codex.exists());
+        let remaining = manager.try_local_inventory().unwrap();
+        assert!(remaining.iter().any(|entry| entry.conflict_kind.as_deref() == Some("managed-modified")));
+        assert!(remaining.iter().all(|entry| entry.safe_toggle_agents.is_empty()));
+        assert_eq!(std::fs::read_to_string(source.join(SKILL_MANIFEST_FILE)).unwrap(),
+            "---\nname: alpha\n---\nsource");
+        assert!(manager.try_list_backups().unwrap().is_empty());
     }
 
     #[test]
@@ -8026,7 +8237,7 @@ mod tests {
         let new_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "new")]);
         let new = zip_skill(&repo, &new_zip, "alpha");
         first.install_downloaded_zip_if_unchanged(&new, &new_zip, &guard).unwrap();
-        assert!(!is_linked(&first.linked_dir().join(&old.id)));
+        assert!(!entry(&first.try_local_inventory().unwrap(), &old.id).enabled);
         assert!(!first.list_repos().iter().find(|item| item.key() == repo.key()).unwrap().enabled);
 
         let guard = first.capture_download_guard(&old.id, &repo.key(), false).unwrap();
@@ -8035,6 +8246,7 @@ mod tests {
         let newer = zip_skill(&repo, &newer_zip, "alpha");
         first.install_downloaded_zip_if_unchanged(&newer, &newer_zip, &guard).unwrap();
         assert!(is_linked(&first.linked_dir().join(&old.id)));
+        assert!(entry(&first.try_local_inventory().unwrap(), &old.id).enabled);
         assert_eq!(first.load_state().installed[&old.id].content_hash, newer.content_hash);
     }
 
@@ -8103,7 +8315,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_edited_copy_preserves_content_and_invalidates_download() {
+    fn disabling_edited_copy_preserves_both_versions_and_rejects_stale_download() {
         let temp = tempfile::tempdir().unwrap();
         let first = manager(&temp);
         let second = manager(&temp);
@@ -8120,14 +8332,12 @@ mod tests {
         second.set_enabled(&skill.id, false).unwrap();
         assert_eq!(
             std::fs::read_to_string(first.source_dir.join(&skill.id).join(SKILL_MANIFEST_FILE)).unwrap(),
-            "copy edit",
+            "original",
         );
+        assert_eq!(std::fs::read_to_string(link.join(SKILL_MANIFEST_FILE)).unwrap(), "copy edit");
+        assert!(!entry(&first.try_local_inventory().unwrap(), &skill.id).enabled);
         assert!(first.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
-        let contents: BTreeSet<_> = first.list_backups().iter()
-            .map(|backup| std::fs::read_to_string(first.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
-            .collect();
-        assert!(contents.contains("original"));
-        assert!(contents.contains("copy edit"));
+        assert!(first.try_list_backups().unwrap().is_empty());
     }
 
     #[test]
@@ -8148,7 +8358,8 @@ mod tests {
         let new_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
         let updated = zip_skill(&repo, &new_zip, "alpha");
         first.install_downloaded_zip_if_unchanged(&updated, &new_zip, &guard).unwrap();
-        assert!(!is_linked(&link));
+        assert!(link.join(SKILL_MANIFEST_FILE).is_file());
+        assert!(!entry(&first.try_local_inventory().unwrap(), &skill.id).enabled);
         assert_eq!(first.load_state().installed[&skill.id].content_hash, updated.content_hash);
     }
 
@@ -10485,7 +10696,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_removes_the_link_but_keeps_the_source() {
+    fn disabling_keeps_the_source_and_stops_codex_discovery() {
         let temp = tempfile::tempdir().unwrap();
         let manager = manager(&temp);
         let zip = repo_zip(&[("skills-main/alpha/SKILL.md", "---\nname: alpha\n---\n")]);
@@ -10493,8 +10704,11 @@ mod tests {
             .install_from_zip(&sample_skill("alpha", "alpha", "hash-1"), &zip)
             .unwrap();
 
+        let link = manager.linked_dir().join("alpha");
+        let was_symlink = std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink();
         manager.set_enabled("alpha", false).unwrap();
-        assert!(!manager.linked_dir().join("alpha").exists());
+        assert!(!entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
+        assert_eq!(link.exists(), !was_symlink);
         assert!(manager.source_dir().join("alpha").is_dir());
         // 停用只能删链接：如果误用 remove_dir_all 顺着软链删下去，
         // SSOT 里的真实文件会一起没掉，停用就成了毁数据。
@@ -10507,6 +10721,7 @@ mod tests {
         );
 
         manager.set_enabled("alpha", true).unwrap();
+        assert!(entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
         assert!(
             manager
                 .linked_dir()
@@ -10516,8 +10731,7 @@ mod tests {
         );
     }
 
-    /// 停用 → 重新启用 → 再停用，反复切换不该残留或报错。
-    /// Windows 上目录软链必须用 remove_dir 删，用 remove_file 会 Access denied。
+    /// 停用和启用应始终反映 Codex 原生状态。
     #[test]
     fn toggling_enabled_repeatedly_is_stable() {
         let temp = tempfile::tempdir().unwrap();
@@ -10531,8 +10745,9 @@ mod tests {
 
         for _ in 0..3 {
             manager.set_enabled("alpha", false).unwrap();
-            assert!(!manager.linked_dir().join("alpha").exists());
+            assert!(!entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
             manager.set_enabled("alpha", true).unwrap();
+            assert!(entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
             assert!(
                 manager
                     .linked_dir()
@@ -10744,15 +10959,19 @@ mod tests {
         let local = manager.linked_dir().join("my-own-skill");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(local.join(SKILL_MANIFEST_FILE), "---\nname: local\n---\n").unwrap();
+        let identity = skill_path_identity(&local).unwrap();
 
         manager.set_enabled("my-own-skill", false).unwrap();
 
-        assert!(!manager.linked_dir().join("my-own-skill").exists());
-        assert!(manager.source_dir().join("my-own-skill").join(SKILL_MANIFEST_FILE).exists());
+        assert_eq!(skill_path_identity(&local).unwrap(), identity);
+        assert!(!manager.source_dir().join("my-own-skill").exists());
+        assert!(manager.try_list_backups().unwrap().is_empty());
         assert!(!manager.merge_entries(&[]).iter().find(|entry| entry.id == "my-own-skill").unwrap().enabled);
 
         manager.set_enabled("my-own-skill", true).unwrap();
-        assert!(manager.linked_dir().join("my-own-skill").exists());
+        assert_eq!(skill_path_identity(&local).unwrap(), identity);
+        assert!(manager.merge_entries(&[]).iter().find(|entry| entry.id == "my-own-skill").unwrap().enabled);
+        assert!(manager.try_list_backups().unwrap().is_empty());
     }
 
     /// 没有 SKILL.md 的目录、以及 `.system` 自带目录，都不应被当成「本地自建」重复收录。

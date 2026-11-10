@@ -2996,6 +2996,10 @@ export const EN_PLAIN: Record<string, string> = {
 
   // Skills 面板
   "Skills": "Skills",
+  "关联 GitHub 仓库": "Link GitHub repository",
+  "修改 GitHub 仓库关联": "Change GitHub repository link",
+  "只修改 Codex 的技能启用状态": "Only changes whether the skill is enabled in Codex",
+  "停用并备份已修改的受控副本": "Disable and back up the modified managed copy",
   "Skills 技能": "Skills",
   "Skills 仓库源": "Skill repositories",
   "从 GitHub 仓库安装 Skill 到 Codex。启用后软链到 ~/.codex/skills/，下次对话即可用。":

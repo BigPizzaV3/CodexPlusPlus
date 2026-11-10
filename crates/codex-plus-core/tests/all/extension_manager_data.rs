@@ -192,6 +192,7 @@ fn skills_view_excludes_paths_descriptions_and_uninstalled_entries() {
         conflict: None,
         conflict_kind: None,
         safe_disable_agents: Vec::new(),
+        safe_toggle_agents: Vec::new(),
         name: "Skill".into(),
         description: "SECRET_DESCRIPTION".into(),
         repo_key: "SECRET_REPO".into(),

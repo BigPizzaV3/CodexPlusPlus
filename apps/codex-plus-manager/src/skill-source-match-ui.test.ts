@@ -105,7 +105,8 @@ test("batch discovery exposes local evidence and submits only preview-bound choi
   assert.equal(closed, true);
 });
 
-test("instance matching binds the selected installation path to preview and confirmation", async () => {
+test("single-skill matching binds the ID and optional installation path to preview and confirmation", async () => {
+  for (const localPath of ["C:/agents/impeccable", undefined]) {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
   const calls: Array<{ command: string; args: any }> = [];
@@ -154,7 +155,7 @@ test("instance matching binds the selected installation path to preview and conf
     if (node.props?.footer) collect(node.props.footer);
   };
   const props = {
-    id: "impeccable", localPath: "C:/agents/impeccable",
+    id: "impeccable", localPath,
     repos: [{ owner: "owner", name: "repo", branch: "main", subdir: "", enabled: true }],
     localSkillIds: [], onClose: () => {}, onAddRepo: async () => null,
     onApply: async (items: any[]) => { selections.push(...items); return { status: "ok", message: "" }; },
@@ -165,8 +166,11 @@ test("instance matching binds the selected installation path to preview and conf
     effects.splice(0).forEach((run) => run());
   };
   render(); await tick(); await tick(); render();
-  assert.equal(calls.find((call) => call.command === "discover_skill_source_evidence")?.args.localPath, props.localPath);
-  assert.equal(calls.find((call) => call.command === "find_skill_repository_matches")?.args.localPath, props.localPath);
+  for (const command of ["discover_skill_source_evidence", "find_skill_repository_matches"]) {
+    const request = calls.find((call) => call.command === command);
+    assert.equal(request?.args.id, props.id);
+    assert.equal(request?.args.localPath, props.localPath || null);
+  }
   const checkbox = elements.find((node) => node.type === "input" && node.props.type === "checkbox");
   assert.ok(checkbox);
   checkbox.props.onChange({ currentTarget: { checked: true } }); render();
@@ -177,13 +181,19 @@ test("instance matching binds the selected installation path to preview and conf
     "owner/zzz@main / skills/impeccable",
     "owner/aaa@main / skills/unrelated",
   ]);
-  assert.ok(elements.some((node) => node.type === "small" && node.children.includes(props.localPath)));
-  assert.ok(!elements.some((node) => node.type === "small" && node.children.includes("C:/agents/other")));
+  if (localPath) {
+    assert.ok(elements.some((node) => node.type === "small" && node.children.includes(localPath)));
+    assert.ok(!elements.some((node) => node.type === "small" && node.children.includes("C:/agents/other")));
+  } else {
+    assert.ok(elements.some((node) => node.type === "small" && node.children.includes("C:/agents/other")));
+  }
   const confirm = elements.find((node) => node.type === "button" && node.children.includes("关联所选 1 项"));
   assert.ok(confirm);
   await confirm.props.onClick(); await tick();
   assert.equal(selections[0].localPath, props.localPath);
   assert.equal(selections[0].previewId, "instance-preview");
+  assert.equal(selections[0].localId, props.id);
+  }
 });
 
 test("background scanning can be paused for a manual association and restarted after an expired preview", async () => {

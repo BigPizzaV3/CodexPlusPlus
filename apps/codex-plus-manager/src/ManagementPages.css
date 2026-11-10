@@ -47,11 +47,12 @@
 .mg-skills-page .mg-drawer>header>.mg-icon-button{flex-shrink:0}
 .mg-skill-detail{display:flex;flex-direction:column;gap:10px;min-width:0}
 .mg-skill-detail>.mg-notice{margin:0;padding:8px 10px}
-.mg-skill-detail .mg-detail{grid-template-columns:minmax(70px,max-content) minmax(0,1fr);gap:6px 12px;line-height:1.45}
+.mg-skill-detail .mg-detail{grid-template-columns:100px minmax(0,1fr);gap:6px 12px;line-height:1.45}
 .mg-skill-detail .mg-link-button{max-width:100%;min-width:0}
 .mg-skill-detail .mg-row-actions{justify-content:flex-start;flex-wrap:wrap;gap:6px;margin-top:4px}
 .mg-skill-detail>section h3{margin:0 0 6px;font-size:13px}
-.mg-skill-detail .mg-source-row{grid-template-columns:minmax(90px,.45fr) minmax(0,1fr);gap:8px;padding:7px 0}
+.mg-skill-detail .mg-source-row{grid-template-columns:minmax(0,1fr);gap:4px;padding:7px 0}
+.mg-skill-detail .mg-source-row>div:first-child{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;min-width:0}
 .mg-skill-detail .mg-source-row strong{overflow-wrap:anywhere}
 .mg-skill-detail .mg-source-row small{margin-top:2px}
 @media (max-width:900px){.mg-skill-head,.mg-skill-row{grid-template-columns:minmax(0,1fr) 110px 124px 116px;gap:8px}}
@@ -346,8 +347,9 @@
 /* 多 Agent 表头（MCP / Skills）：Agent 列是图标 + 名字 + 数量三行，比普通表头高，上下留出边距 */
 .shell .mg-agent-matrix .mg-matrix-head { padding-top: 8px; padding-bottom: 8px; }
 .shell .mg-agent-matrix .mg-agent-column { gap: 3px; }
-.mg-skill-file-times { margin-top:6px; font-size:12px; }
-.mg-skill-file-times summary { cursor:pointer; color:hsl(var(--muted-foreground)); }
+.mg-skill-file-times { position:relative; margin-top:6px; font-size:12px; }
+.mg-skill-file-times summary { min-height:26px; padding-right:32px; line-height:26px; cursor:pointer; color:hsl(var(--muted-foreground)); }
+.mg-skill-file-times>button.mg-icon-button { position:absolute; top:0; right:0; width:26px; height:26px; }
 .mg-skill-file-times ul { display:grid; gap:4px; max-height:220px; margin:6px 0; padding:0; overflow:auto; list-style:none; }
 .mg-skill-file-times li { display:flex; flex-wrap:wrap; justify-content:space-between; gap:2px 12px; overflow-wrap:anywhere; }
 .mg-skill-file-times time { white-space:nowrap; color:hsl(var(--muted-foreground)); }
