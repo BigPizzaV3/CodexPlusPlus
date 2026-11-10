@@ -8866,7 +8866,7 @@ fn image_part_to_chat(part: &Value) -> Option<Value> {
 /// 已确认的 multi_agent v2 agent_message 明文形态：
 /// content[] 同时包含以 `Payload:` 结尾的 input_text 头部和 encrypted_content 载荷片段。
 /// 只有这一种结构允许把 encrypted_content 片段按明文文本透传；其余一律 fail closed。
-fn agent_message_has_confirmed_plaintext_shape(content: &Value) -> bool {
+pub(crate) fn agent_message_has_confirmed_plaintext_shape(content: &Value) -> bool {
     let Some(parts) = content.as_array() else {
         return false;
     };
@@ -8979,7 +8979,7 @@ fn responses_content_to_chat_content(
 ///    ASCII 文本，可打印占比高，不命中后半段。
 ///
 /// 两个条件都不满足即按明文透传。
-fn encrypted_content_value_is_opaque(value: &str) -> bool {
+pub(crate) fn encrypted_content_value_is_opaque(value: &str) -> bool {
     if value
         .chars()
         .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
