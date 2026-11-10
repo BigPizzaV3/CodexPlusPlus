@@ -46,7 +46,8 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: windows
+          # release-assets.yml 用同一个 shared-key 只读复用这份缓存；用 key 会被拼上 job id，发版那边命中不了。
+          shared-key: windows
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install NSIS
@@ -205,7 +206,8 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-universal
+          # release-assets.yml 用同一个 shared-key 只读复用这份缓存；用 key 会被拼上 job id，发版那边命中不了。
+          shared-key: macos-universal
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
