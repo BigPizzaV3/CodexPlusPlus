@@ -1159,9 +1159,13 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
 }
 
 /// 把模型 slug 拼成给人看的样子：`gpt-6.1-sol` → `GPT-6.1 Sol`、
-/// `deepseek-v4-flash` → `DeepSeek V4 Flash`、`kimi-k3` → `Kimi K3`。
+/// `deepseek-v4-flash` → `DeepSeek V4 Flash`、`kimi-k3` → `Kimi K3`、
+/// `claude-opus-4-6` → `Claude Opus 4.6`。
 /// 只用于界面显示，发给上游的 model id 一个字都不改。
 fn friendly_model_name(slug: &str) -> String {
+    // Claude 系 slug 用连字符分隔版本号（`opus-4-6` 即 4.6）：相邻的 1–2 位纯数字段用点连起来；
+    // 日期（`20251001`）、`4k` 这类不算版本号，照旧空格分隔。
+    let version_digit = |part: &str| (1..=2).contains(&part.len()) && part.chars().all(|c| c.is_ascii_digit());
     let parts: Vec<String> = slug
         .split(['-', '_'])
         .filter(|part| !part.is_empty())
@@ -1174,7 +1178,13 @@ fn friendly_model_name(slug: &str) -> String {
             // `GPT-6.1` / `GLM-5.3`：前缀后面紧跟版本号时用连字符，其余用空格。
             let previous = parts[index - 1].as_str();
             let digit = part.chars().next().is_some_and(|c| c.is_ascii_digit());
-            out.push(if (previous == "GPT" || previous == "GLM") && digit { '-' } else { ' ' });
+            out.push(if (previous == "GPT" || previous == "GLM") && digit {
+                '-'
+            } else if version_digit(previous) && version_digit(part) {
+                '.'
+            } else {
+                ' '
+            });
         }
         out.push_str(part);
     }
@@ -1202,7 +1212,7 @@ fn friendly_model_word(raw: &str, first: bool) -> String {
         "grok" => "Grok".to_string(),
         "mimo" => "MiMo".to_string(),
         "mini" | "pro" | "flash" | "sol" | "terra" | "luna" | "astra" | "fast" | "codex"
-        | "opus" | "sonnet" | "haiku" | "turbo" | "lite" | "reasoner" | "thinking" | "image" => {
+        | "opus" | "sonnet" | "haiku" | "fable" | "turbo" | "lite" | "reasoner" | "thinking" | "image" => {
             capitalized()
         }
         // `v4` / `v2.5`：大写 V
@@ -2416,7 +2426,13 @@ mod tests {
         assert_eq!(friendly_model_name("deepseek-v4-flash"), "DeepSeek V4 Flash");
         assert_eq!(friendly_model_name("kimi-k3"), "Kimi K3");
         assert_eq!(friendly_model_name("glm-5.3"), "GLM-5.3");
-        assert_eq!(friendly_model_name("claude-opus-4-6"), "Claude Opus 4 6");
+        // Claude 系用连字符分版本号：还原成点；日期段照旧空格分隔
+        assert_eq!(friendly_model_name("claude-opus-4-6"), "Claude Opus 4.6");
+        assert_eq!(friendly_model_name("claude-opus-5-5"), "Claude Opus 5.5");
+        assert_eq!(friendly_model_name("claude-fable-5"), "Claude Fable 5");
+        assert_eq!(friendly_model_name("claude-fable-5-1"), "Claude Fable 5.1");
+        assert_eq!(friendly_model_name("claude-haiku-4-5-20251001"), "Claude Haiku 4.5 20251001");
+        assert_eq!(friendly_model_name("claude-3-5-sonnet-20241022"), "Claude 3.5 Sonnet 20241022");
         // 不认识的词保持原样，不会凭空变形
         assert_eq!(friendly_model_name("gpt-image-2-4k"), "GPT Image 2 4k");
     }
