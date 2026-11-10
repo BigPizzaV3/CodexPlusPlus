@@ -633,7 +633,7 @@ const demoClaudeLocal = {
   dictationReady: true,
   config: {
     enabled: true, model: "deepseek-v4-pro", localization: true, voiceInput: true, computerUse: true, backgroundMode: false,
-    displayName: "", plan: "max", sessionSync: true, listAllModels: false,
+    displayName: "", plan: "max", sessionSync: true, listAllModels: false, hideUnroutedModels: true,
   },
   models: ["deepseek/deepseek-v4-pro", "chatgpt-pro/gpt-6.1-sol", "kimi/kimi-k2-turbo", "group/coding"],
   contextWindow: 1_000_000,

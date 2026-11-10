@@ -64,6 +64,9 @@ pub struct ClaudeLocalSettings {
     /// （Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）。
     /// 打开后池里的聊天模型全列出来，代价是切到小窗口模型时可能超上限。
     pub list_all_models: bool,
+    /// 隐藏 Claude 自带、供应商池里没有对应路由的模型（Opus / Sonnet / Haiku 等原生条目，默认开）。
+    /// 这些条目选了也会被换成默认模型；关掉则照旧显示。
+    pub hide_unrouted_models: bool,
 }
 
 impl Default for ClaudeLocalSettings {
@@ -80,6 +83,7 @@ impl Default for ClaudeLocalSettings {
             plan: "ultra".into(),
             session_sync: false,
             list_all_models: false,
+            hide_unrouted_models: true,
         }
     }
 }

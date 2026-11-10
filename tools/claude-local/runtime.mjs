@@ -108,6 +108,9 @@ export function runtimeConfig(env = process.env) {
     voiceInput: flag("VOICE_INPUT"),
     computerUse: flag("COMPUTER_USE"),
     backgroundMode: flag("BACKGROUND_MODE"),
+    // 录制 bootstrap 里自带的原生模型（Opus / Sonnet / Haiku …）不对应任何供应商，
+    // 选了也会被 gatewayModel 换成默认模型；默认从选择器里拿掉，只留供应商池里的。
+    hideUnroutedModels: flag("HIDE_UNROUTED_MODELS"),
     displayName: displayName(env.CLAUDE_LOCAL_DISPLAY_NAME),
     email: email(env.CLAUDE_LOCAL_EMAIL),
     plan: Object.hasOwn(PLANS, env.CLAUDE_LOCAL_PLAN ?? "") ? env.CLAUDE_LOCAL_PLAN : "ultra",
@@ -150,6 +153,38 @@ export function gatewayBody(config, raw) {
   if (isRecord(value.metadata)) delete value.metadata.diagnostics;
   value.model = gatewayModel(config, value.model);
   return Buffer.from(JSON.stringify(value));
+}
+
+/**
+ * 从录制 bootstrap 的各份模型清单里删掉供应商池之外的条目（就地修改）。
+ *
+ * 这些条目是 Claude 官方模型，池里没有对应的路由：选中后请求会被
+ * `gatewayModel` 悄悄换成默认模型，名字与实际不符。只动选择器读的几份清单；
+ * growthbook 不碰（池模型本来就不在那里，删空了前端怎么兜底说不准）。
+ */
+export function dropUnroutedModels(bootstrap, config) {
+  if (!isRecord(bootstrap) || !config.models.length) return;
+  const routable = new Set(config.models);
+  const keep = (list, key) => Array.isArray(list)
+    ? list.filter((entry) => !isRecord(entry) || routable.has(entry[key]))
+    : list;
+  const orgs = [
+    bootstrap.activeOrganization,
+    ...(Array.isArray(bootstrap.account?.memberships) ? bootstrap.account.memberships.map((m) => m?.organization) : []),
+  ];
+  for (const org of orgs) {
+    if (isRecord(org) && Array.isArray(org.claude_ai_bootstrap_models_config)) {
+      org.claude_ai_bootstrap_models_config = keep(org.claude_ai_bootstrap_models_config, "model");
+    }
+  }
+  if (isRecord(bootstrap.claude_ai_available_models)) {
+    bootstrap.claude_ai_available_models.models = keep(bootstrap.claude_ai_available_models.models, "model_id");
+  }
+  if (Array.isArray(bootstrap.model_selector_config)) {
+    for (const selector of bootstrap.model_selector_config) {
+      if (isRecord(selector)) selector.models = keep(selector.models, "id");
+    }
+  }
 }
 
 /** 选择器里的名称与副标题：有友好名用友好名（副标题是供应商），否则名称沿用模型 id、副标题为空。 */

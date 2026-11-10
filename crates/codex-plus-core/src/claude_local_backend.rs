@@ -1792,6 +1792,7 @@ fn start_backend(
         .env("CLAUDE_LOCAL_VOICE_INPUT", flag(config.voice_input))
         .env("CLAUDE_LOCAL_COMPUTER_USE", flag(config.computer_use))
         .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
+        .env("CLAUDE_LOCAL_HIDE_UNROUTED_MODELS", flag(config.hide_unrouted_models))
         .env("CLAUDE_LOCAL_DISPLAY_NAME", config.effective_display_name())
         .env("CLAUDE_LOCAL_EMAIL", config.effective_email())
         .env("CLAUDE_LOCAL_PLAN", config.normalized_plan());
@@ -3164,6 +3165,17 @@ server.listen(0,'127.0.0.1',()=>{
         assert_eq!(config.effective_display_name().chars().count(), 64);
         config.display_name = " \t\n ".into();
         assert_eq!(config.effective_display_name(), "Local User");
+    }
+
+    /// 「隐藏无供应商的模型」默认开：老配置里没有这个键也按开处理，显式关掉能存住。
+    #[test]
+    fn hide_unrouted_models_defaults_on_for_old_configs() {
+        let old: ClaudeLocalSettings = serde_json::from_value(json!({"enabled": true})).unwrap();
+        assert!(old.hide_unrouted_models);
+        let off: ClaudeLocalSettings =
+            serde_json::from_value(json!({"hideUnroutedModels": false})).unwrap();
+        assert!(!off.hide_unrouted_models);
+        assert_eq!(flag(off.hide_unrouted_models), "0");
     }
 
     /// 完整功能模式不把继承来的代理变量交给 Claude：大小写两套都显式删除。

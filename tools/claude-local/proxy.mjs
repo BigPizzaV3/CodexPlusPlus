@@ -25,7 +25,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createConversationService } from "./conversation-service.mjs";
 import { isPatchedStartupAsset, startupAssets } from "./scripts/patch-dictation-start.mjs";
-import { createStateStore, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, dropUnroutedModels, gatewayBody, gatewayModel, gatewayTarget, modelLabel, modelList, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -620,8 +620,9 @@ function localBootstrap() {
 const friendlyName = (id) => modelLabel(runtime, id).name;
 const friendlyDescription = (id) => modelLabel(runtime, id).description || id;
 
-// PoC 数据路径下：把网关池模型并入录制 bootstrap 的模型字段，
-// 让 Chat/Code 选择器同时提供原生条目（界面需要）与池内 provider/model 条目。
+// PoC 数据路径下：把网关池模型并入录制 bootstrap 的模型字段。
+// 原生条目先拿来当新条目的模板；`hideUnroutedModels`（默认开）时最后再把它们删掉，
+// 选择器里只剩池内 provider/model 条目。
 function mergePoolModels(j) {
   const ids = runtime.models;
   if (!j || typeof j !== "object" || !ids.length) return;
@@ -685,6 +686,7 @@ function mergePoolModels(j) {
       ? { ...s, model: runtime.model, thinking_by_model: ids.map((id) => ({ id, thinking })) }
       : s);
   }
+  if (runtime.hideUnroutedModels) dropUnroutedModels(j, runtime);
 }
 
 function mockEdgeApi(req, res, url) {

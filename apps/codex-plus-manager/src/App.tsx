@@ -16352,6 +16352,7 @@ type ClaudeLocalConfig = {
   plan?: string;
   sessionSync?: boolean;
   listAllModels?: boolean;
+  hideUnroutedModels?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -16896,6 +16897,24 @@ function ClaudeLocalizationScreen(
                 type="checkbox"
               />
               <span>{local?.config.listAllModels ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
+          </CxRow>
+          <CxRow
+            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留供应商池里的模型；改完需要重新启动本地服务。")}
+            title={t("隐藏无供应商的模型")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("隐藏无供应商的模型")}
+                checked={local?.config.hideUnroutedModels ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, hideUnroutedModels: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{local?.config.hideUnroutedModels ?? true ? t("已开启") : t("已关闭")}</span>
               <ToggleVisual />
             </label>
           </CxRow>

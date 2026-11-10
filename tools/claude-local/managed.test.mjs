@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { decode, get, asMsg, asStr, ld, vi } from "./rpc.mjs";
 import { createOfficialAssets } from "./official-assets.mjs";
-import { createStateStore, gatewayModel, gatewayTarget, modelLabel, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
+import { createStateStore, dropUnroutedModels, gatewayModel, gatewayTarget, modelLabel, modelSelectors, modelWindow, planProfile, runtimeConfig } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const modelIds = ["alpha/claude-opus-4-6", "beta/gpt-6", "gamma/grok-4", "alpha/shared", "beta/shared"];
@@ -554,6 +554,39 @@ test("gateway contracts keep duplicate model names distinct and old sessions use
   assert.equal(gatewayModel(config, undefined), modelIds[0]);
   assert.equal(gatewayModel(config, "claude-native-default"), modelIds[0]);
   assert.equal(gatewayModel(config, "claude-haiku-4-5"), modelIds[2]);
+});
+
+test("native bootstrap models without a provider are dropped from every picker list", () => {
+  const base = {
+    CLAUDE_LOCAL_MANAGED: "1", CLAUDE_LOCAL_GATEWAY_URL: "https://localhost/gw/test/",
+    CLAUDE_LOCAL_GATEWAY_MODEL: modelIds[0], CLAUDE_LOCAL_GATEWAY_KEY: "test",
+    CLAUDE_LOCAL_GATEWAY_MODELS: JSON.stringify(modelIds),
+  };
+  // 默认开；显式写 0 才关
+  assert.equal(runtimeConfig(base).hideUnroutedModels, true);
+  assert.equal(runtimeConfig({ ...base, CLAUDE_LOCAL_HIDE_UNROUTED_MODELS: "0" }).hideUnroutedModels, false);
+
+  const config = runtimeConfig(base);
+  const org = () => ({ claude_ai_bootstrap_models_config: [{ model: "claude-opus-5-5" }, { model: modelIds[1] }] });
+  const growthbookModels = [{ model_id: "claude-sonnet-5-5" }];
+  const bootstrap = {
+    activeOrganization: org(),
+    account: { memberships: [{ organization: org() }, {}] },
+    claude_ai_available_models: { models: [{ model_id: "claude-haiku-5-5" }, { model_id: modelIds[0] }] },
+    model_selector_config: [
+      { id: "chat", models: [{ id: "claude-fable-5-1" }, { id: modelIds[2] }, { id: "beta/shared" }] },
+      { id: "empty" },
+    ],
+    org_growthbook: { features: { list: { defaultValue: { models: growthbookModels } } } },
+  };
+  dropUnroutedModels(bootstrap, config);
+  assert.deepEqual(bootstrap.activeOrganization.claude_ai_bootstrap_models_config.map((m) => m.model), [modelIds[1]]);
+  assert.deepEqual(bootstrap.account.memberships[0].organization.claude_ai_bootstrap_models_config.map((m) => m.model), [modelIds[1]]);
+  assert.deepEqual(bootstrap.claude_ai_available_models.models.map((m) => m.model_id), [modelIds[0]]);
+  assert.deepEqual(bootstrap.model_selector_config[0].models.map((m) => m.id), [modelIds[2], "beta/shared"]);
+  assert.equal(bootstrap.model_selector_config[1].models, undefined);
+  // growthbook 不动
+  assert.deepEqual(bootstrap.org_growthbook.features.list.defaultValue.models, growthbookModels);
 });
 
 test("recorded data dir opts managed mode into the PoC data path", () => {
