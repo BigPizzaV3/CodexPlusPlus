@@ -190,6 +190,92 @@ fn safe_css_matches_the_dreamskin_value_policy() {
 }
 
 #[test]
+fn shell_layout_css_is_opt_in_and_windows_scoped() {
+    let unchanged = compile_safe_css("[data-ds-part=\"sidebar\"] { color: #fff; }").unwrap();
+    assert!(!unchanged.contains("@layer theme {"));
+    assert!(!unchanged.contains("margin-top"));
+
+    let aligned = compile_safe_css(
+        "[data-ds-part=\"sidebar\"] { margin-top: 0; }\n\
+         [data-ds-part=\"header\"] { margin-inline-end: 0; height: 52px; }",
+    )
+    .unwrap();
+    let custom = compile_safe_css(
+        "[data-ds-part=\"sidebar\"] { margin-top: 6px; color: #fff; }\n\
+         [data-ds-part=\"header\"] { margin-inline-end: 12px; height: 64px; }",
+    )
+    .unwrap();
+    let (appearance, layout) = custom.split_once("@layer theme {\n").unwrap();
+    assert!(appearance.contains("color: #fff !important;"));
+    assert!(!appearance.contains("margin-top"));
+    assert!(!appearance.contains("height:"));
+    assert!(layout.contains(
+        "html[data-dream-skin=\"active\"][data-codex-os=\"win32\"] [data-ds-part=\"sidebar\"]"
+    ));
+    assert!(layout.contains("margin-top: 6px !important;"));
+    assert!(layout.contains("margin-inline-end: 12px !important;"));
+    assert!(layout.contains("height: 64px !important;"));
+
+    // 可选导出实际编译结果，供 Chromium 回归验证原生 important 的层叠与切换恢复。
+    if let Some(path) = std::env::var_os("CODEX_THEME_LAYOUT_CSS_OUTPUT") {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({
+                "unchanged": unchanged,
+                "aligned": aligned,
+                "custom": custom,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn shell_layout_css_validates_parts_units_and_bounds() {
+    for css in [
+        "[data-ds-part=\"sidebar\"] { margin-top: 0px; }",
+        "[data-ds-part=\"sidebar\"] { margin-top: 64px; }",
+        "[data-ds-part=\"header\"] { margin-inline-end: 0; height: 32px; }",
+        "[data-ds-part=\"header\"] { margin-inline-end: 64px; height: 128px; }",
+    ] {
+        assert!(compile_safe_css(css).is_ok(), "rejected layout CSS: {css}");
+    }
+    for css in [
+        "[data-ds-part=\"root\"] { height: 52px; }",
+        "[data-ds-part=\"composer\"] { height: 52px; }",
+        "[data-ds-part=\"header\"] { margin-top: 8px; }",
+        "[data-ds-part=\"sidebar\"] { margin-inline-end: 8px; }",
+        "[data-ds-part=\"sidebar\"] { margin-top: -8px; }",
+        "[data-ds-part=\"sidebar\"] { margin-top: 65px; }",
+        "[data-ds-part=\"header\"] { margin-inline-end: 8%; }",
+        "[data-ds-part=\"header\"] { height: 0; }",
+        "[data-ds-part=\"header\"] { height: 31px; }",
+        "[data-ds-part=\"header\"] { height: 129px; }",
+        "[data-ds-part=\"header\"] { height: calc(50px + 2px); }",
+        "[data-ds-part=\"header\"] { height: var(--native-height); }",
+        "[data-ds-part=\"sidebar\"] { margin-top: 0 !important; }",
+    ] {
+        assert!(compile_safe_css(css).is_err(), "accepted invalid layout CSS: {css}");
+    }
+}
+
+#[test]
+fn installed_package_preserves_and_activates_shell_layout_css() {
+    let temp = tempfile::tempdir().unwrap();
+    let css = br#"[data-ds-part="sidebar"] { margin-top: 6px; }
+[data-ds-part="header"] { margin-inline-end: 12px; height: 64px; }"#;
+    let package = validate_and_read_package(&package_bytes("windows", css, None), "windows").unwrap();
+    save_validated_dream_skin_package(temp.path(), &package).unwrap();
+    let stored = load_stored_dream_skin_theme(temp.path(), "community.theme").unwrap();
+    prepare_dream_skin_activation(temp.path(), &stored).unwrap();
+    assert_eq!(
+        std::fs::read(temp.path().join("dream-skin/theme/current.css")).unwrap(),
+        css
+    );
+}
+
+#[test]
 fn installed_package_preserves_and_activates_safe_css() {
     let temp = tempfile::tempdir().unwrap();
     let css = br#"[data-ds-part="message"] { border-color: #44aa88; }"#;

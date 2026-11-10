@@ -396,7 +396,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "37";
+  const codexDeleteStyleVersion = "38";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1187,12 +1187,11 @@
         letter-spacing: -0.15px;
         white-space: nowrap;
       }
-      /*
-       * 提升定位包装层，避免只改 tooltip/menu 子节点仍被父级堆叠上下文困住。
-       * 新版 Codex 还把弹出层挂在一个 z-60 的固定视口容器里（zoom-adjusted-viewport），
-       * 只提升里面的节点逃不出这个堆叠上下文，所以直接父容器也一起提升。
-       */
-      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *),
+      ${codexPlusIsWindowsPlatform ? "" : `
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *) {
+        z-index: 2147483645 !important;
+      }
+      `}
       html[data-codex-plus-page-open] [data-radix-popper-content-wrapper]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="tooltip"]:not(.${codexPlusPageClass} *),
       html[data-codex-plus-page-open] [role="menu"]:not(.${codexPlusPageClass} *),
@@ -2504,6 +2503,27 @@
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-group-head,
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-empty { display: none; }
         .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  function syncCodexPlusPagePopupStyle(open) {
+    const id = `${styleId}-page-popups`;
+    const existing = document.getElementById(id);
+    if (!codexPlusIsWindowsPlatform || !open) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    // Windows 仅在管理页打开时提升原生弹层的直接定位容器。即使根条件不命中，
+    // 常驻的 :has() 仍会增加聊天 DOM 变化时的样式失效开销。
+    const style = document.createElement("style");
+    style.id = id;
+    style.setAttribute("data-codex-plus-ext", "page-popup-style");
+    style.textContent = `
+      html[data-codex-plus-page-open] div:has(> [data-radix-popper-content-wrapper], > [role="tooltip"], > [role="menu"]):not(.${codexPlusPageClass} *) {
+        z-index: 2147483645 !important;
       }
     `;
     document.documentElement.appendChild(style);
@@ -6640,7 +6660,9 @@
   function syncCodexPlusRailNativeSelection() {
     const root = document.documentElement;
     if (!root) return;
-    if (!document.querySelector(`.${codexPlusPageClass}`)) {
+    const open = Boolean(document.querySelector(`.${codexPlusPageClass}`));
+    syncCodexPlusPagePopupStyle(open);
+    if (!open) {
       root.removeAttribute("data-codex-plus-page-open");
       root.style.removeProperty("--codex-plus-rail-dim");
       return;
