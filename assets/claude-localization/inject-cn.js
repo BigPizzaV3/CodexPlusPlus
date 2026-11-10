@@ -286,9 +286,9 @@ async function evaluate(c, expression) {
       if (response.exceptionDetails || !response.result?.value) throw new Error('未收到 Cowork Bash 适配结果');
       const result = response.result.value;
       log('CODEX_PLUS_CLAUDE_BASH_RESULT=' + JSON.stringify(result));
-      if (result.error) log('提示：Cowork Bash 时限增强未生效，其他增强继续启动：' + result.error);
+      if (result.error) log('提示：Cowork Bash 时限补丁未生效，其他补丁继续启动：' + result.error);
     } catch (error) {
-      log('提示：Cowork Bash 适配结果不可用，其他增强继续启动：' + error.message);
+      log('提示：Cowork Bash 适配结果不可用，其他补丁继续启动：' + error.message);
     }
 
     try {

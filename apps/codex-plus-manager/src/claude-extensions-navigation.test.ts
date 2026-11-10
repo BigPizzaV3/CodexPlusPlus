@@ -313,7 +313,7 @@ test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排�
   assert.equal(nodes.some((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展"), false);
   assert.equal(nodes.some((node) => node.props.role === "tab"), false);
   assert.equal(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")), false);
-  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 增强版"));
+  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 补丁版"));
   assert.ok(open);
   open.props.onClick();
   assert.deepEqual(h.calls, [["openClaude"]]);
@@ -496,7 +496,7 @@ test("Codex 保存动作默认省略 host 参数并保留热重载", async () =>
   }
 });
 
-test("Claude 总开关传递 host 并只同步相关设置字段及增强版缓存", async () => {
+test("Claude 总开关传递 host 并只同步相关设置字段及补丁版缓存", async () => {
   for (const enabled of [true, false]) {
     const result = extensionActionResult(enabled);
     const h = extensionActionHarness(result);

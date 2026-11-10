@@ -178,7 +178,7 @@ function findElements(element: any, type: string): Element[] {
   return [...(element.type === type ? [element] : []), ...findElements(element.props.children, type)];
 }
 function enhancedLaunch(screen: ReturnType<typeof harness>) {
-  return buttons(screen.render()).find((button) => button.props.title === "启动增强版" || button.props.title === "制作副本并启动增强版")!;
+  return buttons(screen.render()).find((button) => button.props.title === "启动补丁版" || button.props.title === "制作副本并启动补丁版")!;
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const ready = {
@@ -202,7 +202,7 @@ test("首次进入自动检测一次，再次进入沿用上次结果；手动�
   await tick();
   page = screen.render();
   assert.match(text(page), /未检测到 Claude，请先安装官方应用/);
-  assert.equal(buttons(page).find((button) => text(button) === "制作增强版")!.props.disabled, true);
+  assert.equal(buttons(page).find((button) => text(button) === "制作补丁版")!.props.disabled, true);
   screen.unmount();
 
   // Codex++ 没退出，再次进入：直接显示上次结果，不再自动探测。
@@ -233,7 +233,7 @@ test("检查副本失败或检测超时保留最后有效状态，同时显示�
   screen.render();
   screen.calls[0].resolve(ready);
   await tick();
-  buttons(screen.render()).find((button) => text(button) === "检查增强版")!.props.onClick();
+  buttons(screen.render()).find((button) => text(button) === "检查补丁版")!.props.onClick();
   screen.calls[1].resolve({ status: "failed", message: "副本检查失败", data: {} });
   await tick();
   assert.match(text(screen.render()), /1\.2\.3/);
@@ -270,7 +270,7 @@ test("原版启动放在页头，默认不探测或制作增强副本", async ()
   assert.ok(buttons(screen.topbar()).some((button) => text(button) === "启动中…"));
 });
 
-test("增强版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开时，提示二选一", async () => {
+test("补丁版电脑控制与 Claude Desktop 接入的 codex-plus-cu 同时开时，提示二选一", async () => {
   const conflict = { targets: { claudeDesktop: { state: "registered" } } };
   const screen = harness(undefined, conflict, { mode: "patch" });
   screen.render();
@@ -353,27 +353,27 @@ test("Cowork 已准备但未确认加载时显示中性提示，检测后保持�
   const pendingStatus = {
     ...ready,
     bashTimeout: { ...ready.bashTimeout, enabled: true },
-    bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。",
+    bashTimeoutWarning: "已准备，暂未确认。将在补丁版启动后自动确认。",
   };
   const screen = harness({ status: pendingStatus, autoDetected: true }, {}, { mode: "patch" });
   screen.render();
   let page = screen.render();
-  assert.match(text(page), /Bash时限解锁增强: 已准备，暂未确认。将在增强版启动后自动确认。/);
-  assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
+  assert.match(text(page), /Bash 时限补丁： 已准备，暂未确认。将在补丁版启动后自动确认。/);
+  assert.doesNotMatch(text(page), /Cowork Bash 时限补丁未生效/);
   assert.equal(enhancedLaunch(screen).props.disabled, false);
   buttons(page).find((button) => text(button) === "检测 Claude")!.props.onClick();
   assert.equal(screen.calls[0].command, "claude_localization_status");
   screen.calls[0].resolve(pendingStatus);
   await tick();
   page = screen.render();
-  assert.match(text(page), /Bash时限解锁增强: 已准备，暂未确认。将在增强版启动后自动确认。/);
-  assert.doesNotMatch(text(page), /Cowork Bash 时限增强未生效/);
+  assert.match(text(page), /Bash 时限补丁： 已准备，暂未确认。将在补丁版启动后自动确认。/);
+  assert.doesNotMatch(text(page), /Cowork Bash 时限补丁未生效/);
   assert.equal(enhancedLaunch(screen).props.disabled, false);
 });
 
 test("启动后自动确认并撤下顶部黄字提示，每次启动重新确认且不重置输入草稿", async () => {
   const pendingStatus = { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
-    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
+    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在补丁版启动后自动确认。" };
   const screen = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
   screen.render(); screen.render();
   enhancedLaunch(screen).props.onClick();
@@ -381,7 +381,7 @@ test("启动后自动确认并撤下顶部黄字提示，每次启动重新确�
   await tick();
   let page = screen.render();
   assert.match(text(page), /已准备，暂未确认/);
-  assert.ok(text(page).indexOf("已准备，暂未确认") < text(page).indexOf("重新制作增强版"));
+  assert.ok(text(page).indexOf("已准备，暂未确认") < text(page).indexOf("重新制作补丁版"));
   const advanced = findElements(page, "section")[0];
   assert.ok(advanced, "补丁页应有常开的副本块");
   assert.ok(JSON.stringify(advanced).indexOf("claude-l10n-warning") < JSON.stringify(advanced).indexOf("claude-l10n-actions"));
@@ -405,7 +405,7 @@ test("启动后自动确认并撤下顶部黄字提示，每次启动重新确�
 
 test("重新启动时，上一次尚在返回的确认不能撤下本次启动提示", async () => {
   const pendingStatus = { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
-    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" };
+    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在补丁版启动后自动确认。" };
   const screen = harness({ status: pendingStatus, autoDetected: true }, {}, { mode: "patch" });
   screen.render(); screen.render();
   screen.runTimer();
@@ -421,7 +421,7 @@ test("重新启动时，上一次尚在返回的确认不能撤下本次启动�
 
 test("确认读取失败会重试，离开页面后取消轮询且迟到结果不写状态", async () => {
   const memo = { status: { ...ready, running: true, bashTimeout: { ...ready.bashTimeout, enabled: true },
-    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在增强版启动后自动确认。" }, autoDetected: true };
+    bashTimeoutPending: true, bashTimeoutWarning: "已准备，暂未确认。将在补丁版启动后自动确认。" }, autoDetected: true };
   const screen = harness(memo, {}, { mode: "patch" });
   screen.render(); screen.render();
   screen.runTimer();
@@ -535,7 +535,7 @@ test("Bash 秒数允许清空后重输，失焦才显示规范值并保存数字
   }
 });
 
-test("仅手动启动可选增强版时先制作副本；制作失败就不启动", async () => {
+test("仅手动启动可选补丁版时先制作副本；制作失败就不启动", async () => {
   const unprepared = { ...ready, prepared: false, copyVersion: "" };
   const screen = harness({ status: unprepared, autoDetected: true }, {}, { mode: "patch" });
   screen.render(); screen.render();
@@ -655,7 +655,7 @@ test("默认模型不在这一页选：只留一句说明，不放下拉也不�
   assert.equal(screen.calls.length, 0, "页面不写配置");
 });
 
-test("完整功能模式的四项能力分别保存，不修改增强版开关或代点系统权限", async () => {
+test("完整功能模式的四项能力分别保存，不修改补丁版开关或代点系统权限", async () => {
   const saved = { ...localReady, config: { ...localReady.config, enabled: true } };
   const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
   let config = saved.config;
@@ -772,16 +772,17 @@ test("上下文窗口按供应商声明显示，未声明时说明 Claude 按 20
 });
 
 
-test("补丁 Desktop 页：说明卡 + 常开的副本块，没有本地状态与页头启动", () => {
+test("补丁 Desktop 页：常开的副本块，无重复说明卡、没有本地状态与页头启动", () => {
   const screen = harness({ status: ready, autoDetected: true }, {}, { mode: "patch" });
   const page = screen.render();
-  assert.match(text(page), /补丁 Desktop/);
+  assert.equal(JSON.stringify(page).includes("claude-l10n-patch-intro"), false, "补丁页不再有与标题重复的说明卡");
   assert.doesNotMatch(text(page), /给改过代码的 Desktop 副本用/);
   assert.doesNotMatch(text(page), /关闭 asar 完整性校验/);
   assert.ok(findElements(page, "section").length > 0, "副本块是常开的 section");
   assert.equal(findElements(page, "details").length, 0, "补丁页不再用折叠块");
-  assert.match(text(page), /受管增强版/);
+  assert.match(text(page), /补丁版 Claude/);
   assert.equal(screen.topbar(), null, "补丁页不往页头塞原版启动按钮");
+  assert.doesNotMatch(text(page), /增强/, "补丁页整体不再出现「增强」字眼");
   assert.doesNotMatch(text(page), /Claude Desktop 卡|本地证书|运行环境/);
   assert.doesNotMatch(text(page), /账号、套餐与用量显示来自本地合成数据/);
 });
@@ -791,7 +792,7 @@ test("Desktop 增强页不再提副本：没有副本块，也没有指向补丁
   const page = screen.render();
   assert.doesNotMatch(text(page), /搬到了「补丁 Desktop」页/);
   assert.doesNotMatch(text(page), /打开「补丁 Desktop」/);
-  assert.equal(text(page).includes("受管增强版"), false, "副本块不再出现在完整功能模式");
+  assert.equal(text(page).includes("补丁版 Claude"), false, "副本块不再出现在完整功能模式");
   assert.equal(findElements(page, "details").length, 0, "完整功能模式里连折叠块也没有了");
   assert.equal(buttons(page).some((button) => text(button).includes("补丁 Desktop")), false, "不放跳转按钮");
 });

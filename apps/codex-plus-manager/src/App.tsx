@@ -10716,7 +10716,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
           {t("热重载拓展")}
         </button> : <button className="cx-secondary" onClick={onOpenClaude} type="button">
           <AppWindow />
-          {t("Claude 增强版")}
+          {t("Claude 补丁版")}
         </button>}
         {/* 不常用的整体开关收进三点菜单；关着时页面顶部会有一条提示带「启用」。 */}
         <Menu label={t("更多操作")}>
@@ -10733,7 +10733,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
       {/* 顶部最多一条状态提示：整体关闭优先，其次是「下次启动跳过」。 */}
       {inventory && !localEnabled ? (
         <CxBanner
-          detail={codexHost ? t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") : t("重启 Claude 增强版后应用")}
+          detail={codexHost ? t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") : t("重启 Claude 补丁版后应用")}
           icon={<PowerOff />}
           title={codexHost ? t("本地拓展已整体关闭") : t("Claude 拓展已关闭")}
           tone="warn"
@@ -16639,7 +16639,7 @@ function ClaudeLocalizationScreen(
       const awaitingConfirmation = Boolean(timeout?.enabled && (timeout.defaultEnabled || timeout.maxEnabled));
       setStatus((current) => current?.status === "ok" ? {
         ...current,
-        bashTimeoutWarning: awaitingConfirmation ? "已准备，暂未确认。将在增强版启动后自动确认。" : null,
+        bashTimeoutWarning: awaitingConfirmation ? "已准备，暂未确认。将在补丁版启动后自动确认。" : null,
         bashTimeoutPending: awaitingConfirmation,
       } : current);
     }
@@ -16804,8 +16804,8 @@ function ClaudeLocalizationScreen(
     : s?.needsRebuild
       ? t("更新副本")
       : s?.prepared
-        ? t("重新制作增强版")
-        : t("制作增强版");
+        ? t("重新制作补丁版")
+        : t("制作补丁版");
   const prepareHint = t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。");
   const local = localStatus;
   const localState = !local ? t("未检测")
@@ -16989,17 +16989,6 @@ function ClaudeLocalizationScreen(
         ) : null}
       </CxSection> : null}
       {patchOnly || advancedOpen ? <section className={`claude-local-advanced${patchOnly ? " claude-local-advanced-page" : ""}`}>
-        {patchOnly ? (
-          /* 补丁页顶部说明：这页只管副本，完整功能模式在「Desktop 增强」。 */
-          <CxCard className="claude-l10n-patch-intro">
-            <CxRow
-              detail={t("制作/更新/检查/启动增强版副本；原件与 app.asar 不动。")}
-              icon={<CxStatusIcon tone={s?.prepared && !s.needsRebuild ? "ok" : "off"}><PackageOpen /></CxStatusIcon>}
-              title={t("补丁 Desktop")}
-            />
-
-          </CxCard>
-        ) : null}
         <fieldset className="claude-local-advanced-body" disabled={localBusy !== null}>
       {/* 顶部最多几条一次性的提示：检测中 / 未安装、错误、Bash 时限确认、制作进度。 */}
       {!s ? (
@@ -17011,7 +17000,7 @@ function ClaudeLocalizationScreen(
       ) : null}
       {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
       {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
-        <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
+        <div className="claude-l10n-warning" role="status">{t("Bash 时限补丁：")} {t(s.bashTimeoutWarning)}</div>
       ) : null}
       {progress ? (
         <div
@@ -17038,16 +17027,16 @@ function ClaudeLocalizationScreen(
       <CxCard className="claude-l10n-hero">
         <CxRow
           badges={<CxBadge tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "neutral"}>{statusText}</CxBadge>}
-          detail={<span title={t("所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。")}>{s && !s.supported
+          detail={<span title={t("所有补丁的前置条件：官方 Claude.app 与 app.asar 保持原样，补丁通过副本和启动时注入生效。")}>{s && !s.supported
             ? t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")
-            : s?.supported && !s.prepared ? t("首次启动会先制作独立副本，官方应用不改动") : meta}</span>}
+            : s?.supported && !s.prepared ? t("首次启动会先制作独立副本；官方 Claude.app 与 app.asar 不改动") : meta}</span>}
           icon={<CxStatusIcon tone={statusTone === "ok" ? "ok" : statusTone === "warn" ? "warn" : "off"}><PackageOpen /></CxStatusIcon>}
-          title={t("受管增强版")}
+          title={t("补丁版 Claude")}
         >
           {/* 增强副本仅在这里手动制作和启动；检查与重新检测收进菜单。 */}
           <div className="claude-l10n-actions">
-            <button className="cx-secondary" disabled={busy !== null || localBusy !== null || !canLaunch} onClick={() => void launchEnhanced()} title={needsPrepare ? t("制作副本并启动增强版") : t("启动增强版")} type="button">
-              <Rocket />{busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动增强版")}
+            <button className="cx-secondary" disabled={busy !== null || localBusy !== null || !canLaunch} onClick={() => void launchEnhanced()} title={needsPrepare ? t("制作副本并启动补丁版") : t("启动补丁版")} type="button">
+              <Rocket />{busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动补丁版")}
             </button>
             {needsPrepare || !s ? (
               <button className="cx-secondary" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={prepareHint} type="button">
@@ -17059,7 +17048,7 @@ function ClaudeLocalizationScreen(
               {needsPrepare || !s ? null : (
                 <MenuItem disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>{prepareLabel}</MenuItem>
               )}
-              <MenuItem disabled={busy !== null || !s?.prepared} onClick={() => void act("check")}>{t("检查增强版")}</MenuItem>
+              <MenuItem disabled={busy !== null || !s?.prepared} onClick={() => void act("check")}>{t("检查补丁版")}</MenuItem>
               <MenuItem disabled={busy !== null} onClick={() => void refresh()}>{busy === "detect" ? t("检测中…") : t("检测 Claude")}</MenuItem>
             </Menu>
           </div>
@@ -17068,12 +17057,12 @@ function ClaudeLocalizationScreen(
       {/* 增强开关一节：每项一行，各自独立、即点即存，重启增强版后应用。 */}
       <CxSection
         aside={s?.supported && !s.prepared ? (
-          <span className="claude-l10n-section-note">{t("增强版还没制作：开关会先存下来，等你在上方制作好增强版并启动后生效。")}</span>
+          <span className="claude-l10n-section-note">{t("补丁版还没制作：开关会先存下来，制作并启动补丁版后生效。")}</span>
         ) : (
-          <span className="claude-l10n-section-note" title={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}>{t("重启增强版后应用")}</span>
+          <span className="claude-l10n-section-note" title={t("各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。")}>{t("重启补丁版后应用")}</span>
         )}
         className="claude-l10n-features"
-        title={t("增强功能")}
+        title={t("补丁项")}
       >
         <CxCard className="claude-l10n-feature-grid">
           <label className="switch-row compact">
@@ -17113,10 +17102,10 @@ function ClaudeLocalizationScreen(
               <strong>{t("Computer Use")}</strong>
               <small title={s?.computerUseSupported === false
                 ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
-                : `${t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}\n${t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}`}
+                : `${t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动补丁版会提示授权辅助功能与屏幕录制。")}\n${t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}`}
               >{s?.computerUseSupported === false
                 ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
-                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动增强版会提示授权辅助功能与屏幕录制。")}</small>
+                : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动补丁版会提示授权辅助功能与屏幕录制。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -17139,7 +17128,7 @@ function ClaudeLocalizationScreen(
             />
             <span>
               <strong>{t("解锁 Bash 时间限制")}</strong>
-              <small title={t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
+              <small title={t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他补丁。重启补丁版后应用。")}>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他补丁。重启补丁版后应用。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -17854,7 +17843,7 @@ function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "c
   if (host === "claude") {
     if (state === "off") return { label: t("已关闭"), hint: t("该拓展已在 Claude 中关闭") };
     if (state === "globalOff") return { label: t("整体已关闭"), hint: t("Claude 拓展整体开关已关闭") };
-    return { label: t("重启后应用"), hint: t("重启 Claude 增强版后应用") };
+    return { label: t("重启后应用"), hint: t("重启 Claude 补丁版后应用") };
   }
   switch (state) {
     case "off":
@@ -17893,7 +17882,7 @@ function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionH
       <p className="ext-hero-lead" title={host === "codex" ? `${t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}\n${extensionCapabilities.map((label) => t(label)).join(" · ")}` : undefined}>
         {host === "codex"
           ? t("界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。")
-          : t("给 Claude 增强版装拓展：只显示声明了适配 Claude 的拓展。")}
+          : t("给 Claude 补丁版装拓展：只显示声明了适配 Claude 的拓展。")}
       </p>
       {hosts.length > 1 ? (
         <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>

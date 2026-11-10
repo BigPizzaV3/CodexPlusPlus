@@ -122,7 +122,7 @@ pub async fn claude_local_action(action: String) -> CommandResult<Value> {
 pub async fn claude_localization_status() -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(codex_plus_core::claude_localization::status).await {
         Ok(Ok(status)) => ok(
-            "Claude 增强状态已读取。",
+            "补丁 Desktop 状态已读取。",
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
@@ -167,7 +167,7 @@ pub async fn claude_localization_action(
             serde_json::to_value(payload.status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
-        Err(error) => failed(&format!("Claude 增强操作失败：{error}"), json!({})),
+        Err(error) => failed(&format!("补丁 Desktop 操作失败：{error}"), json!({})),
     }
 }
 
@@ -205,9 +205,9 @@ pub async fn claude_localization_set_extensions(enabled: bool) -> CommandResult<
     {
         Ok(Ok(status)) => ok(
             if enabled {
-                "Claude 拓展已开启，重启增强版后应用。"
+                "Claude 拓展已开启，重启补丁版后应用。"
             } else {
-                "Claude 拓展已关闭，重启增强版后应用。"
+                "Claude 拓展已关闭，重启补丁版后应用。"
             },
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
@@ -264,7 +264,7 @@ pub async fn claude_localization_set_bash_timeout(
         codex_plus_core::claude_localization::set_bash_timeout(timeout)
     }).await {
         Ok(Ok(status)) => ok(
-            "Bash 时间限制设置已保存；重启增强版后生效。",
+            "Bash 时间限制设置已保存；重启补丁版后生效。",
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
@@ -7022,7 +7022,7 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
     match result {
         Ok(_) => settings_payload(
             if claude && enabled {
-                "Claude Desktop 拓展已开启，重新启动增强版 Claude 后加载。"
+                "Claude Desktop 拓展已开启，重新启动补丁版 Claude 后加载。"
             } else if claude {
                 "Claude Desktop 拓展已关闭。"
             } else if enabled {
@@ -7202,7 +7202,7 @@ pub fn set_user_script_enabled(key: String, enabled: bool, host: Option<String>)
     match result {
         Ok(_) => settings_payload(
             if claude && enabled {
-                "Claude Desktop 拓展已启用，重新启动增强版 Claude 后加载。"
+                "Claude Desktop 拓展已启用，重新启动补丁版 Claude 后加载。"
             } else if claude {
                 "Claude Desktop 拓展已停用。"
             } else if enabled {
