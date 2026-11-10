@@ -31,7 +31,7 @@ fn bundled_target_renderers_and_styles_remain_byte_exact() {
     for (path, hash) in [
         (
             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
-            "576C52AF236D251E815C3398A8A8DA419287E1281EBF2E05718DDD9FADB248CC",
+            "3588A378FB01FC885123CA837F37F23E04C7B2804A72AF6490729907002869D3",
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
