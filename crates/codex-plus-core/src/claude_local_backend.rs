@@ -1961,6 +1961,25 @@ fn spawn_detached(command: &mut Command, source: &Path, failure: &'static str) -
     }
 }
 
+/// 完整功能模式启动 Claude 前要清掉的代理变量（大小写两套都清，Windows 下环境变量不分大小写）。
+const INHERITED_PROXY_VARS: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
+
+/// Desktop 只在环境里没有代理变量时，才把 --proxy-server（本地服务）交给内置 Claude Code；
+/// 继承来的 HTTPS_PROXY（系统代理、终端里 export 的）会被原样沿用，
+/// Claude Code 就绕过本地服务直连官方，拿本地假令牌被拒 401。
+fn strip_inherited_proxy(command: &mut Command) {
+    for name in INHERITED_PROXY_VARS {
+        command.env_remove(name);
+    }
+}
+
 fn launch_original(
     source: &Path,
     root: &Path,
@@ -1977,6 +1996,7 @@ fn launch_original(
         command.env_remove(name);
     }
     if let Some(port) = port {
+        strip_inherited_proxy(&mut command);
         let gateway = GatewayStore::default().load()?;
         let binding = gateway
             .active_binding(&ToolId::Unknown(AGENT_ID.into()))
@@ -3144,6 +3164,22 @@ server.listen(0,'127.0.0.1',()=>{
         assert_eq!(config.effective_display_name().chars().count(), 64);
         config.display_name = " \t\n ".into();
         assert_eq!(config.effective_display_name(), "Local User");
+    }
+
+    /// 完整功能模式不把继承来的代理变量交给 Claude：大小写两套都显式删除。
+    #[test]
+    fn full_mode_launch_strips_inherited_proxy_vars() {
+        let mut command = Command::new("claude");
+        command.env("HTTPS_PROXY", "http://127.0.0.1:7897");
+        strip_inherited_proxy(&mut command);
+        let removed: Vec<String> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            assert!(removed.iter().any(|key| key == name), "{name} 未被删除：{removed:?}");
+        }
     }
 
     /// 邮箱：缺字段/空串走默认，合法值 trim 后落盘，格式不对拒绝保存。

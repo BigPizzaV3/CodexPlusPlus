@@ -209,7 +209,13 @@ if (iconUpdated) {
 if (!noOpen) {
   console.log("4/4 启动");
   // 正式版可同时运行且 bundle id 相同；强制启动这个路径，避免仅激活正式版。
-  spawn("open", ["-n", bundle], { detached: true, stdio: "ignore" }).unref();
+  // open 会把调用方的环境变量带给应用：从 Claude Code / 终端里跑本脚本时，
+  // 会话变量（CLAUDE_CODE_*、ANTHROPIC_*）和代理变量会一路漏进 Codex++ 拉起的 Claude，
+  // 让完整功能模式的 Claude Code 绕过本地服务直连官方而 401。按访达启动的干净环境来。
+  const launchEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^(CLAUDE_CODE_|CLAUDECODE$|ANTHROPIC_|(HTTPS?|ALL|NO)_PROXY$)/i.test(name)),
+  );
+  spawn("open", ["-n", bundle], { detached: true, stdio: "ignore", env: launchEnv }).unref();
 } else {
   console.log("4/4 已跳过启动（--no-open）");
 }
