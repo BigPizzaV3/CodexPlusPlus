@@ -54,6 +54,8 @@ pub struct ClaudeLocalSettings {
     pub background_mode: bool,
     /// Claude 里显示的用户名；空串按「Local User」。
     pub display_name: String,
+    /// Claude 里显示的邮箱；空串按「local@claude.local」。
+    pub email: String,
     /// Claude 里显示的套餐：free / pro / max / ultra。
     pub plan: String,
     /// 启动前同步 3p 模式与完整功能模式的 Code 会话（默认关）。
@@ -74,6 +76,7 @@ impl Default for ClaudeLocalSettings {
             computer_use: false,
             background_mode: false,
             display_name: String::new(),
+            email: String::new(),
             plan: "ultra".into(),
             session_sync: false,
             list_all_models: false,
@@ -108,6 +111,32 @@ impl ClaudeLocalSettings {
             name.to_string()
         }
     }
+
+    /// 用户填的邮箱是否可用：去首尾空白后为空，或形如 `a@b`
+    /// （最长 254 字符、不含空白与控制字符、`@` 两侧都非空）。
+    pub fn email_is_valid(&self) -> bool {
+        normalized_email(&self.email).is_some()
+    }
+
+    /// 显示邮箱：空或格式不对都按默认「local@claude.local」。
+    pub fn effective_email(&self) -> String {
+        normalized_email(&self.email)
+            .filter(|email| !email.is_empty())
+            .unwrap_or_else(|| "local@claude.local".to_string())
+    }
+}
+
+/// 邮箱规范化：`Some("")` 表示没填，`None` 表示格式不对。
+fn normalized_email(raw: &str) -> Option<String> {
+    let email = raw.trim();
+    if email.is_empty() {
+        return Some(String::new());
+    }
+    if email.chars().count() > 254 || email.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return None;
+    }
+    let (local, domain) = email.rsplit_once('@')?;
+    (!local.is_empty() && !domain.is_empty()).then(|| email.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

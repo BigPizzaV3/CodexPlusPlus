@@ -130,14 +130,14 @@ const cert = fs.readFileSync(path.join(CA_DIR, "server.crt"));
 const ctx = tls.createSecureContext({ key, cert });
 
 // ── mock 数据 ────────────────────────────────────────────────
-// 显示给 Claude 的账号信息：用户名与套餐来自本地设置。
+// 显示给 Claude 的账号信息：用户名、邮箱与套餐来自本地设置。
 const plan = planProfile(runtime.plan);
 const displayName = runtime.displayName;
 const isMax = plan.capabilities.includes("claude_max");
 const ACCOUNT = {
   id: "c46bd1eb-fbbf-4e5a-9bb3-5ebe8521eb54",
   uuid: "c46bd1eb-fbbf-4e5a-9bb3-5ebe8521eb54",
-  email: "local@claude.local",
+  email: runtime.email,
   name: displayName,
   full_name: displayName,
   plan_type: plan.plan,
@@ -213,7 +213,7 @@ const BOOTSTRAP = {
   user: ACCOUNT,
   organization: ORG,
   organizations: [ORG],
-  memberships: [{ uuid: "11111111-2222-4333-8444-555555555556", organization: ORG, role: "admin", status: "active", seat_tier: "full_member", email_address: "local@claude.local", created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z" }],
+  memberships: [{ uuid: "11111111-2222-4333-8444-555555555556", organization: ORG, role: "admin", status: "active", seat_tier: "full_member", email_address: ACCOUNT.email, created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z" }],
   statsig: { user: { userID: ACCOUNT.id }, values: {}, dynamic_configs: {}, feature_gates: {} },
   feature_flags: Object.fromEntries(
     [

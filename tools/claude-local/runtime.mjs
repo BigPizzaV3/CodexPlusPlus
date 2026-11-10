@@ -109,6 +109,7 @@ export function runtimeConfig(env = process.env) {
     computerUse: flag("COMPUTER_USE"),
     backgroundMode: flag("BACKGROUND_MODE"),
     displayName: displayName(env.CLAUDE_LOCAL_DISPLAY_NAME),
+    email: email(env.CLAUDE_LOCAL_EMAIL),
     plan: Object.hasOwn(PLANS, env.CLAUDE_LOCAL_PLAN ?? "") ? env.CLAUDE_LOCAL_PLAN : "ultra",
   };
 }
@@ -117,6 +118,14 @@ export function runtimeConfig(env = process.env) {
 function displayName(value) {
   const name = String(value ?? "").trim().replace(/[\u0000-\u001F\u007F]/g, "").slice(0, 64).trim();
   return name || "Local User";
+}
+
+// 邮箱：trim 后须形如 a@b（最长 254、无空白与控制字符）；空或不合法按默认。
+function email(value) {
+  const text = String(value ?? "").trim();
+  const at = text.lastIndexOf("@");
+  const valid = text.length <= 254 && !/[\s\u0000-\u001F\u007F]/.test(text) && at > 0 && at < text.length - 1;
+  return valid ? text : "local@claude.local";
 }
 
 export function gatewayTarget(config, requestPath) {

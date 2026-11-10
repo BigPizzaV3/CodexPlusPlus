@@ -1345,6 +1345,8 @@ fn validate_config(mut config: ClaudeLocalSettings) -> Result<ClaudeLocalSetting
     }
     // 显示名与套餐按白名单落盘：界面改哪一格都不影响其它字段的规范化。
     config.display_name = config.effective_display_name();
+    ensure!(config.email_is_valid(), "邮箱格式不正确");
+    config.email = config.effective_email();
     config.plan = config.normalized_plan().to_string();
     Ok(config)
 }
@@ -1781,6 +1783,7 @@ fn start_backend(
         .env("CLAUDE_LOCAL_COMPUTER_USE", flag(config.computer_use))
         .env("CLAUDE_LOCAL_BACKGROUND_MODE", flag(config.background_mode))
         .env("CLAUDE_LOCAL_DISPLAY_NAME", config.effective_display_name())
+        .env("CLAUDE_LOCAL_EMAIL", config.effective_email())
         .env("CLAUDE_LOCAL_PLAN", config.normalized_plan());
     if let Some(dir) = recorded_data_dir() {
         command.env("CLAUDE_LOCAL_RECORDED_DIR", dir);
@@ -3125,6 +3128,40 @@ server.listen(0,'127.0.0.1',()=>{
         assert_eq!(config.effective_display_name().chars().count(), 64);
         config.display_name = " \t\n ".into();
         assert_eq!(config.effective_display_name(), "Local User");
+    }
+
+    /// 邮箱：缺字段/空串走默认，合法值 trim 后落盘，格式不对拒绝保存。
+    #[test]
+    fn email_defaults_normalization_and_validation() {
+        let config: crate::settings::ClaudeLocalSettings =
+            serde_json::from_str("{}").unwrap();
+        assert_eq!(config.email, "");
+        assert_eq!(config.effective_email(), "local@claude.local");
+
+        let saved = validate_config(crate::settings::ClaudeLocalSettings {
+            email: "  me@example.com  ".into(),
+            ..crate::settings::ClaudeLocalSettings::default()
+        })
+        .unwrap();
+        assert_eq!(saved.email, "me@example.com");
+
+        let saved = validate_config(crate::settings::ClaudeLocalSettings {
+            email: " \t ".into(),
+            ..crate::settings::ClaudeLocalSettings::default()
+        })
+        .unwrap();
+        assert_eq!(saved.email, "local@claude.local");
+
+        let too_long = format!("{}@b.c", "a".repeat(260));
+        for bad in ["no-at", "@b.c", "a@", "a b@c.d", "a@b\nc", too_long.as_str()] {
+            let config = crate::settings::ClaudeLocalSettings {
+                email: bad.into(),
+                ..crate::settings::ClaudeLocalSettings::default()
+            };
+            assert!(validate_config(config.clone()).is_err(), "{bad:?}");
+            // 手改设置文件写坏时，启动仍按默认邮箱。
+            assert_eq!(config.effective_email(), "local@claude.local", "{bad:?}");
+        }
     }
 
     /// 代理端口按整词匹配：5351 不能误伤 53514、535140，行尾无空格也算。

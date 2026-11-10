@@ -584,6 +584,11 @@ test("runtime config parses display name and plan with safe defaults", () => {
   assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: "a\nb\t" }).displayName, "ab");
   assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: "x".repeat(80) }).displayName.length, 64);
   assert.equal(runtimeConfig({ CLAUDE_LOCAL_DISPLAY_NAME: " \t\n " }).displayName, "Local User");
+  assert.equal(runtimeConfig({}).email, "local@claude.local");
+  assert.equal(runtimeConfig({ CLAUDE_LOCAL_EMAIL: "  me@example.com  " }).email, "me@example.com");
+  for (const bad of ["", "no-at", "@b.c", "a@", "a b@c.d", "a@b\nc", `${"a".repeat(260)}@b.c`]) {
+    assert.equal(runtimeConfig({ CLAUDE_LOCAL_EMAIL: bad }).email, "local@claude.local", bad);
+  }
   for (const [raw, expected] of [["free", "free"], ["pro", "pro"], ["max", "max"], ["ultra", "ultra"], ["vip", "ultra"], ["", "ultra"]]) {
     assert.equal(runtimeConfig({ CLAUDE_LOCAL_PLAN: raw }).plan, expected, raw);
   }
