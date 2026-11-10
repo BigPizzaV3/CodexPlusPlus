@@ -93,7 +93,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 623
+      "lines": 664
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -133,7 +133,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1113
+      "lines": 1114
     },
     {
       "name": "91-extension-api.js",

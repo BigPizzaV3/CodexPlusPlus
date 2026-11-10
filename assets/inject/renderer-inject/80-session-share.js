@@ -139,7 +139,7 @@
       .replaceAll("'", "&#39;");
   }
 
-  function confirmDelete(title, hostId = "local") {
+  function confirmDelete(title, hostId = "local", uncreated = false) {
     document.querySelectorAll(".codex-delete-confirm-overlay").forEach((node) => node.remove());
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
@@ -147,7 +147,7 @@
       overlay.innerHTML = `
         <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除会话">
           <div class="codex-delete-confirm-title">删除会话</div>
-          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？${hostId !== "local" ? "这将永久删除远端任务及其子任务，无法撤销。" : ""}</div>
+          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？${uncreated ? "这将关闭尚未创建成功的会话，无法撤销。" : hostId !== "local" ? "这将永久删除远端任务及其子任务，无法撤销。" : ""}</div>
           <div class="codex-delete-confirm-actions">
             <button type="button" data-codex-delete-cancel="true">取消</button>
             <button type="button" data-codex-delete-confirm="true">删除</button>
@@ -459,6 +459,12 @@
     event.stopPropagation();
     event.stopImmediatePropagation?.();
     releaseDeleteFocus(row, button);
+    if (!ref.session_id) {
+      if (isClientNewThreadId(row.getAttribute("data-app-action-sidebar-thread-id"))) {
+        return deleteUncreatedSession(row, button);
+      }
+      return;
+    }
     if (!ref.host_id) {
       const evidence = sessionHostEvidenceFromRow(row, ref.session_id);
       sendCodexPlusDiagnostic("delete_session_host_unresolved", {
@@ -524,6 +530,51 @@
     showToast(result.message || "导出失败", null);
   }
 
+  function uncreatedSessionActionFromRow(row) {
+    const rawId = row.getAttribute("data-app-action-sidebar-thread-id") || "";
+    if (!isClientNewThreadId(rawId) || sessionRefFromRow(row).session_id) return null;
+    const clientId = rawId.replace(/^local:/i, "");
+    const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
+    let fiber = fiberKey ? row[fiberKey] : null;
+    let onArchive = null;
+    for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
+      const props = fiber.memoizedProps || fiber.pendingProps;
+      // 原生 pending 行把清理回调和同一行的 dataAttributes 一起传给行组件。
+      if (props?.dataAttributes?.["data-app-action-sidebar-thread-id"] === rawId
+          && typeof props.onArchive === "function") onArchive = props.onArchive;
+      const pending = props?.pending;
+      if (!pending) continue;
+      const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id");
+      if (pending.clientThreadId !== clientId || !pending.hostId
+          || (hostId && hostId !== pending.hostId)) return null;
+      return onArchive ? { rawId, pending, onArchive } : null;
+    }
+    return null;
+  }
+
+  async function deleteUncreatedSession(row, button) {
+    const action = uncreatedSessionActionFromRow(row);
+    if (!action) {
+      showToast("未找到此待创建会话的原生关闭入口，请使用原生会话菜单", null);
+      return;
+    }
+    const title = sessionRefFromRow(row).title;
+    if (!await confirmDelete(title, action.pending.hostId, true)) return;
+    const current = row.isConnected ? uncreatedSessionActionFromRow(row) : null;
+    if (!current || current.rawId !== action.rawId || current.pending !== action.pending) {
+      showToast("会话已变化，请重新选择后删除", null);
+      return;
+    }
+    releaseDeleteFocus(row, button);
+    try {
+      // 原生 dismiss 会清理 pending、置顶和草稿状态，并处理迟到的创建结果。
+      await current.onArchive();
+      showToast("已关闭未创建成功的会话", null);
+    } catch (error) {
+      showToast(`关闭待创建会话失败：${error?.message || error}`, null);
+    }
+  }
+
   function installDeleteButtonEventDelegation() {
     document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
     const handler = (event) => {
@@ -531,16 +582,6 @@
       const row = button?.closest?.("[data-app-action-sidebar-thread-id]");
       if (!button || !row) return;
       const ref = sessionRefFromRow(row);
-      if (!ref.session_id) {
-        const placeholderId = row.getAttribute("data-app-action-sidebar-thread-id");
-        if (isClientNewThreadId(placeholderId)) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation?.();
-          showToast("会话仍在同步，请稍后重试", null);
-        }
-        return;
-      }
       openDeleteConfirmForRow(row, button, ref, event);
     };
     window.__codexSessionDeleteDocumentDeleteHandler = handler;

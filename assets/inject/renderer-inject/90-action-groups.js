@@ -366,7 +366,10 @@
   }
 
   function attachButton(row) {
-    const items = sessionRowActionItems();
+    const ref = sessionRefFromRow(row);
+    const uncreated = !ref.session_id && isClientNewThreadId(row.getAttribute("data-app-action-sidebar-thread-id"));
+    const items = sessionRowActionItems().filter((item) => ref.session_id
+      || (uncreated && item.scriptKey === "builtin:session-delete"));
     const inlineItems = items.filter((item) => item.placement === "inline");
     // 菜单指纹：项变了（拓展注册 / 注销）就整组重建；空串表示没有菜单项，不渲染「…」按钮。
     const moreMenuKey = items.filter((item) => item.placement !== "inline").map((item) => `ext:${item.id}`).join("|");
@@ -390,8 +393,6 @@
     }
     removeActionGroups(row);
     row.dataset.codexDeleteRow = "false";
-    const ref = sessionRefFromRow(row);
-    if (!ref.session_id) return;
     row.dataset.codexDeleteRow = "true";
     const group = document.createElement("div");
     group.className = actionGroupClass;
