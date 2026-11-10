@@ -15599,7 +15599,7 @@ function RelayFileEditors({
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.relayPreserveNonproviderSettings === true}
               onChange={(event) => onFormChange({ ...form, relayPreserveNonproviderSettings: event.currentTarget.checked })} />
-            {t("切换时保留缺失的项目信任设置与通知命令")}
+            {t("切换时保留缺失的项目信任设置、通知命令，以及实时配置里改过的 MCP 条目")}
           </label>
           <SyncedTextarea
             className="relay-file-textarea"

@@ -2535,6 +2535,7 @@ export const EN_PLAIN: Record<string, string> = {
   "接入模式": "Access mode",
   "推荐内容": "Recommendations",
   "提取当前供应商配置": "Extract current provider config",
+  "切换时保留缺失的项目信任设置、通知命令，以及实时配置里改过的 MCP 条目": "When switching, keep missing project trust settings and the notify command, plus MCP entries edited in the live config",
   "插件": "Plugins",
   "拓展": "Extensions",
   "插件市场解锁": "Plugin marketplace unlock",

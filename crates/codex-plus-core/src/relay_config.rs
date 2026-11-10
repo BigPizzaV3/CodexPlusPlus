@@ -1142,6 +1142,29 @@ pub fn preserve_live_nonprovider_settings(home: &Path, config: &str) -> anyhow::
     if target.get("notify").is_none() {
         if let Some(notify) = live.get("notify") { target["notify"] = notify.clone(); }
     }
+    // opt-in（#3016）：MCP 条目由独立的 MCP 页管理，live 的形状是权威——
+    // 模板快照里的同 id 旧条目只是陈旧副本（例如旧 args 路径），用 live 覆盖。
+    // 例外：Codex++ / Codex 自己生成并按实例补全的条目以目标为准。
+    if let Some(live_servers) = live.get("mcp_servers").and_then(Item::as_table_like) {
+        for (id, item) in live_servers.iter() {
+            if CODEX_PLUS_OWNED_MCP_SERVER_IDS.contains(&id)
+                || !item
+                    .as_table_like()
+                    .is_some_and(mcp_server_entry_has_transport)
+            {
+                continue;
+            }
+            if target.get("mcp_servers").is_none() {
+                target["mcp_servers"] = toml_edit::table();
+            }
+            if let Some(target_servers) = target
+                .get_mut("mcp_servers")
+                .and_then(Item::as_table_like_mut)
+            {
+                target_servers.insert(id, item.clone());
+            }
+        }
+    }
     Ok(normalize_optional_toml(target))
 }
 
@@ -2673,6 +2696,21 @@ fn preserve_unmanaged_context_table(
         }
     }
 }
+
+/// 以目标（模板）为准、不被 live 同 id 旧副本覆盖的 `[mcp_servers.<id>]`：
+/// Codex 桌面版自己的 `codex_app`（端口随实例生成），以及 Codex++ 托管的 MCP 条目
+/// （协作 / dsh 插件 / 拓展创作 / 电脑控制，各自的 `ManagedMcp.server_id`）——
+/// 这些条目由生成方按当前实例补全，live 里的旧端口 / 旧路径是过期值（#3016）。
+const CODEX_PLUS_OWNED_MCP_SERVER_IDS: &[&str] = &[
+    "codex_app",
+    crate::agent_collaboration::integration::SERVER_ID,
+    crate::dsh_plugins::SERVER_ID,
+    crate::extension_creator::SERVER_ID,
+    crate::extension_creator::LEGACY_SERVER_ID,
+    crate::computer_use::SERVER_ID,
+    crate::computer_use::BROWSER_SERVER_ID,
+    crate::computer_use::CODEX_SERVER_ID,
+];
 
 fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
     for table_name in ["mcp_servers", "skills", "plugins"] {

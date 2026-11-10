@@ -3,7 +3,7 @@ use codex_plus_core::relay_config::{
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
-    apply_relay_profile_to_home_with_switch_rules_and_proxy_port,
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port, apply_relay_profile_with_preservation,
     backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
     chatgpt_auth_status_from_home, cleanup_unsupported_approval_policies_in_home,
     clear_managed_proxy_config_for_uninstall, clear_relay_config_to_home,
@@ -812,6 +812,114 @@ enabled = false
     assert!(updated.contains("enabled = false"));
     // 同时不能破坏既有的供应商隔离行为。
     assert!(updated.contains("[model_providers.custom]"));
+}
+
+/// 回归（#3016，opt-in）：打开「切换时保留」后，profile 快照里同 id 的
+/// 旧 MCP 条目不能让用户在 live 里改好的配置回退；live 的完整条目覆盖模板副本。
+#[test]
+fn preserved_apply_keeps_live_mcp_entry_over_stale_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+
+[mcp_servers.my_tool]
+command = "/opt/tools/new/bin"
+args = ["--config", "/opt/tools/new/config.json"]
+
+[mcp_servers.my_tool.env]
+API_TOKEN = "new-token"
+"#,
+    )
+    .unwrap();
+    let profile = pure_api_profile_named(
+        "中转",
+        r#"model = "qwen3-coder"
+
+[mcp_servers.my_tool]
+command = "/opt/tools/old/bin"
+args = ["--config", "/opt/tools/old/config.json"]
+"#,
+    );
+
+    apply_relay_profile_with_preservation(temp.path(), &profile, "", 57321, true).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains("/opt/tools/new/bin"), "{updated}");
+    assert!(updated.contains("/opt/tools/new/config.json"));
+    assert!(updated.contains("API_TOKEN"));
+    assert!(
+        !updated.contains("/opt/tools/old"),
+        "模板里的旧路径不能回退 live 的新配置：{updated}"
+    );
+}
+
+/// #3016 例外：Codex++ 自己生成并按实例补全的 MCP 条目仍以目标（模板）为准，
+/// 不能被 live 里的旧端口 / 旧路径盖回。
+#[test]
+fn preserved_apply_keeps_snapshot_for_owned_mcp_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+
+[mcp_servers.codex_plus_collaboration]
+command = "/old/codex-plus"
+args = ["--codex-plus-agent-mcp", "--port", "1111"]
+"#,
+    )
+    .unwrap();
+    let profile = pure_api_profile_named(
+        "中转",
+        r#"model = "qwen3-coder"
+
+[mcp_servers.codex_plus_collaboration]
+command = "/current/codex-plus"
+args = ["--codex-plus-agent-mcp", "--port", "2222"]
+"#,
+    );
+
+    apply_relay_profile_with_preservation(temp.path(), &profile, "", 57321, true).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains("/current/codex-plus"), "{updated}");
+    assert!(updated.contains("2222"));
+    assert!(
+        !updated.contains("/old/codex-plus"),
+        "托管条目不能被 live 的旧副本覆盖：{updated}"
+    );
+}
+
+/// #3016 默认行为不变：不开「切换时保留」时模板快照里的同 id 条目仍胜出。
+#[test]
+fn unpreserved_apply_keeps_snapshot_mcp_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+
+[mcp_servers.my_tool]
+command = "/opt/tools/new/bin"
+"#,
+    )
+    .unwrap();
+    let profile = pure_api_profile_named(
+        "中转",
+        r#"model = "qwen3-coder"
+
+[mcp_servers.my_tool]
+command = "/opt/tools/old/bin"
+"#,
+    );
+
+    apply_relay_profile_with_preservation(temp.path(), &profile, "", 57321, false).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(updated.contains("/opt/tools/old/bin"), "{updated}");
+    assert!(
+        !updated.contains("/opt/tools/new/bin"),
+        "未开保留时模板仍胜出：{updated}"
+    );
 }
 
 /// 上式负例：live 里本来就没有 plugins 时不得凭空注入空段。
@@ -8433,7 +8541,11 @@ fn issue_2583_profile(mode: RelayMode, snapshot: &str) -> RelayProfile {
     }
 }
 
-fn issue_2583_assert_live_paths_win(home: &std::path::Path, config: &str) {
+fn issue_2583_assert_live_paths_win(
+    home: &std::path::Path,
+    config: &str,
+    live_mcp_entry_wins: bool,
+) {
     let p = |text: &str| issue_2583_paths(home, text);
     let value: toml::Value = config.parse().unwrap();
     let servers = &value["mcp_servers"];
@@ -8468,12 +8580,18 @@ fn issue_2583_assert_live_paths_win(home: &std::path::Path, config: &str) {
     let expected_notify =
         p(r"C:\Users\u\AppData\Local\OpenAI\Codex\runtimes\cua_node\1fb7137c46617d50\bin\codex-computer-use.exe");
     assert_eq!(notify, vec![expected_notify.as_str(), "turn-ended"]);
-    // 用户自己的 MCP 条目仍以快照为准，live 只补缺。
-    assert_eq!(servers["my_tool"]["command"].as_str(), Some("snapshot-tool"));
-    assert_eq!(
-        servers["my_tool"]["args"].as_array().unwrap()[0].as_str(),
-        Some("--from-snapshot")
-    );
+    // 用户自己的 MCP 条目：默认仍以快照为准，live 只补缺；
+    // 打开「切换时保留」后（#3016）以 live 为准。
+    if live_mcp_entry_wins {
+        assert_eq!(servers["my_tool"]["command"].as_str(), Some("live-tool"));
+        assert!(servers["my_tool"].get("args").is_none());
+    } else {
+        assert_eq!(servers["my_tool"]["command"].as_str(), Some("snapshot-tool"));
+        assert_eq!(
+            servers["my_tool"]["args"].as_array().unwrap()[0].as_str(),
+            Some("--from-snapshot")
+        );
+    }
 }
 
 #[test]
@@ -8487,7 +8605,7 @@ fn apply_pure_api_profile_keeps_live_codex_managed_mcp_paths() {
     apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    issue_2583_assert_live_paths_win(temp.path(), &config);
+    issue_2583_assert_live_paths_win(temp.path(), &config, false);
 }
 
 #[test]
@@ -8538,7 +8656,7 @@ fn launcher_preservation_path_keeps_live_codex_managed_mcp_paths() {
     .unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    issue_2583_assert_live_paths_win(temp.path(), &config);
+    issue_2583_assert_live_paths_win(temp.path(), &config, true);
 }
 
 #[test]
