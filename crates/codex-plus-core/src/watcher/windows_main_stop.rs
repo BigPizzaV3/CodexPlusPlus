@@ -142,11 +142,19 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
 }
 
 fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Result<()> {
-    anyhow::ensure!(
-        target_matches(facts, context)?,
-        "已接管的 Codex 监听进程与待停止的用户数据上下文不一致，未结束任何进程"
-    );
-    Ok(())
+    // 把不一致的具体项带进错误（#3010）：判定规则不变，只说清哪一项对不上。
+    match classify_target(facts, context)? {
+        TargetClassification::Main => Ok(()),
+        TargetClassification::Mismatch(reason) => anyhow::bail!(
+            "已接管的 Codex 监听进程与待停止的用户数据上下文不一致（{reason}），未结束任何进程"
+        ),
+        TargetClassification::Child => {
+            anyhow::bail!("已接管的 Codex 监听进程是 Chromium 子进程而非主实例，未结束任何进程")
+        }
+        TargetClassification::Irrelevant => {
+            anyhow::bail!("已接管的 Codex 监听进程不属于当前入口或用户会话，未结束任何进程")
+        }
+    }
 }
 
 fn stop_context(
@@ -969,6 +977,37 @@ mod tests {
         );
         assert!(!target_matches(&facts(&[]), &expected).unwrap());
         assert!(!target_matches(&facts(&["--user-data-dir=C:\\test\\other"]), &expected).unwrap());
+    }
+
+    #[test]
+    fn listener_mismatch_error_names_the_mismatched_item() {
+        // #3010：拒绝文案要指出是哪一项不一致，而不是只有「不一致」。
+        let mut wrong_app_data = facts(&[]);
+        wrong_app_data.environment.app_data = Some(r"C:\Users\other\AppData\Roaming".to_owned());
+        let error = ensure_listener_matches(&wrong_app_data, &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("APPDATA"), "{message}");
+
+        let error = ensure_listener_matches(
+            &facts(&[r"--user-data-dir=C:\test\other"]),
+            &context(None),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("用户数据目录"), "{message}");
+
+        let error =
+            ensure_listener_matches(&facts(&["--type=renderer"]), &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("子进程"), "{message}");
+
+        let mut unrelated = facts(&[]);
+        unrelated.owner.user_sid.push(9);
+        let error = ensure_listener_matches(&unrelated, &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("入口或用户会话"), "{message}");
+
+        ensure_listener_matches(&facts(&[]), &context(None)).unwrap();
     }
 
     #[test]
