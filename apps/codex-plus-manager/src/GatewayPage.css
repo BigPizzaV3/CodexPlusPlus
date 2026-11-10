@@ -88,6 +88,8 @@
   margin: 0 auto;
   padding-top: 6px;
   padding-bottom: 28px;
+  /* 「未接入」展开把内容顶出滚动条时不再挤压布局（#2971）。 */
+  scrollbar-gutter: stable;
 }
 
 .gw-alert {
