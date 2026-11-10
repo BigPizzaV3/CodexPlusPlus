@@ -58,6 +58,10 @@ pub struct ClaudeLocalSettings {
     pub plan: String,
     /// 启动前同步 3p 模式与完整功能模式的 Code 会话（默认关）。
     pub session_sync: bool,
+    /// 交给 Claude 的模型是否按窗口过滤：默认只列窗口不小于默认模型的那些
+    /// （Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）。
+    /// 打开后池里的聊天模型全列出来，代价是切到小窗口模型时可能超上限。
+    pub list_all_models: bool,
 }
 
 impl Default for ClaudeLocalSettings {
@@ -72,6 +76,7 @@ impl Default for ClaudeLocalSettings {
             display_name: String::new(),
             plan: "ultra".into(),
             session_sync: false,
+            list_all_models: false,
         }
     }
 }

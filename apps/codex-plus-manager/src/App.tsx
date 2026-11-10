@@ -16350,6 +16350,7 @@ type ClaudeLocalConfig = {
   displayName?: string;
   plan?: string;
   sessionSync?: boolean;
+  listAllModels?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -16879,6 +16880,24 @@ function ClaudeLocalizationScreen(
           </CxRow>
           {/* 模型跟着「Agent 接入」里的 Claude Desktop 绑定走：这里只说明，不放第二个入口。 */}
           <CxRow detail={t("模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。")} title={t("默认模型")} />
+          <CxRow
+            detail={t("默认只列窗口不小于默认模型的模型（Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）；打开后池里的聊天模型全列出来，代价是切到小窗口模型可能超上限。")}
+            title={t("列出全部模型")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("列出全部模型")}
+                checked={Boolean(local?.config.listAllModels)}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, listAllModels: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{local?.config.listAllModels ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
+          </CxRow>
           <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("用户名")}>
             <Input
               aria-label={t("用户名")}

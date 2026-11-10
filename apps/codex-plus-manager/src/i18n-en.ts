@@ -3485,6 +3485,8 @@ export const EN_PLAIN: Record<string, string> = {
   "制作/更新/检查/启动增强版副本；原件与 app.asar 不动。": "Build, update, check and launch the enhanced copy; the original app and its app.asar are untouched.",
   "上下文窗口 未声明（Claude 按 200k）": "Context window undeclared (Claude assumes 200k)",
   "取消信任证书": "Remove certificate trust",
+  "列出全部模型": "List every model",
+  "默认只列窗口不小于默认模型的模型（Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）；打开后池里的聊天模型全列出来，代价是切到小窗口模型可能超上限。": "By default only models whose context window is at least the default model's are listed (Claude takes one global window at start-up, and switching to a smaller model does not shrink it); turn this on to list every chat model in the pool, at the cost of risking an overflow after switching to one with a smaller window.",
   "等": " and others",
   // cx-pages:agents —— Claude 本地模式：模型入口搬到「Agent 接入」、侧栏 / 行内的启动键
   "模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。": "The model is chosen on the Claude Desktop row under Agent connections; restart the local service after changing it.",
