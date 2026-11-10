@@ -3,11 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
-type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean; originalDir?: string | null; updateOwner?: string; instanceKey?: string; conflict?: string | null; conflictKind?: "independent" | "equal-independent" | "managed-modified" | null; safeDisableAgents?: string[]; locations?: Array<{ manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; selectable?: boolean }> };
+type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean; originalDir?: string | null; updateOwner?: string; instanceKey?: string; conflict?: string | null; conflictKind?: "independent" | "equal-independent" | "managed-modified" | null; safeDisableAgents?: string[]; locations?: Array<{ manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; selectable?: boolean }>; displayInstances?: FixtureSkill[] };
 type FixtureRepo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
 type FixtureBackup = { id: string; skillId: string; name: string; backedUpAt: string; restorePath?: string | null; purpose?: string | null };
 type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; backups: FixtureBackup[] };
@@ -24,6 +24,11 @@ assert.ok(sourceLabelNode);
 const sourceLabelCode = ts.transpileModule(sourceLabelNode.getText(file), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const detailNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillDetailDrawer");
+assert.ok(detailNode);
+const detailCode = ts.transpileModule(detailNode.getText(file), {
+  compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 },
+}).outputText;
 
 const skill = (id: string, repoKey: string, bundled = false): FixtureSkill => ({ id, name: id, description: "", repoKey,
   installed: true, enabled: false, bundled, updateAvailable: false, agents: [], managed: true });
@@ -36,6 +41,44 @@ test("legacy cc-switch markers do not claim a verified upstream source", () => {
   const label = (context as any).sourceLabel;
   assert.equal(label(skill("legacy", "cc-switch")), "本地（来源未确认）");
   assert.equal(label(skill("repository", "owner/repo@main")), "owner/repo");
+});
+
+test("grouped details keep source matching, updates and impeccable versions tied to their locations", () => {
+  const first = { ...skill("impeccable", ""), instanceKey: "first", installChannel: "local",
+    locations: [{ manifestPath: "C:/shared/impeccable/SKILL.md", originalPath: "C:/shared/impeccable", selectable: true, rootKind: "shared", managed: false, enabled: true }] };
+  const second = { ...skill("impeccable", "owner/repo@main"), instanceKey: "second", repoPath: "skills/impeccable",
+    updateOwner: "in_place", installChannel: "github",
+    locations: [{ manifestPath: "C:/claude/impeccable/SKILL.md", originalPath: "C:/claude/impeccable", selectable: true, rootKind: "claude", managed: false, enabled: true }] };
+  const selected: string[] = [];
+  const updates: string[][] = [];
+  const context: Record<string, any> = {
+    jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
+    t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: (item: { installChannel: string }) => item.installChannel,
+    repoFromKey: (value: string) => value.includes("/") ? {} : null, skillIdentityKey,
+  };
+  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList"]) context[name] = name;
+  vm.createContext(context);
+  const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
+  const root = render({ skill: { ...first, conflict: "内容不同", locations: [...first.locations, ...second.locations], displayInstances: [first, second] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: (path: string) => selected.push(path), onRestore: () => {}, onUpdate: (repo: string, path: string) => updates.push([repo, path]), onReaPreview: () => {} });
+  const elements: Element[] = [];
+  const collect = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    elements.push(node);
+    node.children?.forEach(collect);
+  };
+  collect(root);
+  const matchButtons = elements.filter((node) => node.type === "Button" && node.children.some((child) =>
+    child === "关联此安装位置" || child === "重新关联此安装位置"));
+  assert.equal(matchButtons.length, 2);
+  matchButtons[0].props.onClick();
+  matchButtons[1].props.onClick();
+  assert.deepEqual(selected, ["C:/shared/impeccable", "C:/claude/impeccable"]);
+  elements.find((node) => node.type === "Button" && node.children.includes("预览此位置更新"))!.props.onClick();
+  assert.deepEqual(updates, [["owner/repo@main", "C:/claude/impeccable"]]);
+  assert.deepEqual(elements.filter((node) => node.type === "ImpeccableVersions").map((node) => node.props.instanceKey), ["first", "second"]);
 });
 
 test("shared skills do not offer uninstall while local Codex skills still do", async () => {
@@ -103,9 +146,9 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     },
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
-    groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
+    aggregateSkillGroupItems, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
-    sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "cc-switch" ? "本地（来源未确认）" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
+    sourceLabel: (item: FixtureSkill) => item.displayInstances ? "多个 Agent 安装" : item.bundled ? "内置" : item.repoKey === "cc-switch" ? "本地（来源未确认）" : item.repoKey === "local" ? "本地导入" : item.repoKey ? item.repoKey.split("@", 1)[0] : "用户",
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
@@ -339,8 +382,9 @@ test("a split physical installation retains the previously assigned group after 
   ui.render();
   assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(retained)], "custom:Manual");
   assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey(selected)], "custom:Manual");
-  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey),
-    [retained.instanceKey, selected.instanceKey]);
+  const items = ui.group("custom:Manual").props.group.items as FixtureSkill[];
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].displayInstances?.map((item) => item.instanceKey), [retained.instanceKey, selected.instanceKey]);
   ui.unmount();
 });
 
@@ -388,6 +432,65 @@ test("updates of an associated original open a preview instead of entering the o
   assert.equal(preview.props.id, "original");
   assert.equal(preview.props.localPath, "C:\\skills\\original");
   assert.equal(ui.registry.getUpdates().length, 0);
+  ui.unmount();
+});
+
+test("different Agent installations share a group row without losing paths, status or assignments", async () => {
+  const instances: FixtureSkill[] = [
+    { ...skill("alpha", ""), instanceKey: "alpha:C:/agents/alpha", conflict: "内容不同", conflictKind: "independent",
+      agents: ["codex"], enabled: true, description: "Codex copy",
+      locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true }] },
+    { ...skill("alpha", ""), instanceKey: "alpha:C:/claude/alpha", conflict: "内容不同", conflictKind: "independent",
+      agents: ["claude"], description: "Claude copy",
+      locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true, rootKind: "claude", managed: false, enabled: true }] },
+    { ...skill("alpha", ""), instanceKey: "alpha:C:/grok/alpha", conflict: "内容不同", conflictKind: "independent",
+      agents: ["grok"], description: "Grok unique",
+      locations: [{ manifestPath: "C:/grok/alpha/SKILL.md", originalPath: "C:/grok/alpha", selectable: true, rootKind: "grok", managed: false, enabled: true }] },
+  ];
+  const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
+  ui.server.skills = instances;
+  ui.render(); await tick(); ui.render();
+  assert.equal(ui.group("user").props.group.items.length, 1);
+  assert.equal(ui.find((node) => node.type === "CxFilters").props.items.find((item: { id: string }) => item.id === "installed").count, 1);
+  const row = ui.rowElements("user", "", "alpha", instances[0]);
+  const toggles = row.filter((node) => node.type === "AgentToggle");
+  assert.ok(toggles.every((node) => node.props.enabled));
+  const codex = toggles.find((node) => node.props.agent === "codex")!;
+  assert.equal(codex.props.disabled, false);
+  assert.ok(toggles.filter((node) => node.props.agent !== "codex").every((node) => node.props.disabled));
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "set_skill_enabled_for");
+    assert.equal(args.agent, "codex");
+    assert.equal(args.id, "alpha");
+    instances[0].agents = args.enabled ? ["codex"] : [];
+    instances[0].enabled = Boolean(args.enabled);
+    instances[0].locations![0].enabled = Boolean(args.enabled);
+    return structuredClone(ui.server);
+  };
+  await codex.props.onToggle(); ui.render();
+  assert.deepEqual(instances.slice(1).map((item) => item.agents), [["claude"], ["grok"]]);
+  ui.groupSelect("user", "claude").props.onChange(false);
+  await tick();
+  assert.equal(ui.requests.filter((request) => request.command === "set_skill_enabled_for").length, 1);
+  ui.groupSelect("user", "codex").props.onChange(true);
+  for (let index = 0; index < 20 && ui.registry.getSnapshot().length; index++) await tick();
+  await tick(); ui.render();
+  assert.deepEqual(ui.requests.filter((request) => request.command === "set_skill_enabled_for").map((request) =>
+    JSON.parse(JSON.stringify(request.args))), [
+    { agent: "codex", id: "alpha", enabled: false },
+    { agent: "codex", id: "alpha", enabled: true },
+  ]);
+  assert.deepEqual(instances.slice(1).map((item) => item.agents), [["claude"], ["grok"]]);
+  ui.search("Grok unique");
+  const found = ui.group("user").props.group.items[0] as FixtureSkill;
+  assert.equal(found.displayInstances?.length, 3);
+  assert.deepEqual(found.locations?.map((location) => location.manifestPath),
+    instances.flatMap((item) => item.locations!.map((location) => location.manifestPath)));
+  ui.search("");
+  ui.rowElements("user", "", "alpha", instances[0]).find((node) => node.type === "MenuItem" && node.children.includes("Manual"))!.props.onClick();
+  ui.render();
+  assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
+  for (const item of instances) assert.equal(ui.savedState().assignmentsByIdentity[skillGroupIdentityKey(item)], "custom:Manual");
   ui.unmount();
 });
 
@@ -469,22 +572,26 @@ test("unknown native status disables only the Codex control and batch", async ()
   ui.unmount();
 });
 
-test("a conflicting independent instance opens source matching for its exact path", async () => {
+test("a grouped independent instance opens source matching for its exact path", async () => {
   const ui = createHarness();
   const original: FixtureSkill = { ...skill("impeccable", ""), instanceKey: "impeccable:C:/agents/impeccable",
     conflict: "内容不同", conflictKind: "independent", originalDir: "C:/agents/impeccable",
-    locations: [{ manifestPath: "C:/agents/impeccable/SKILL.md", rootKind: "shared", managed: false, enabled: true }],
+    locations: [{ manifestPath: "C:/agents/impeccable/SKILL.md", originalPath: "C:/agents/impeccable", selectable: true, rootKind: "shared", managed: false, enabled: true }],
     agents: ["codex"] };
   const other: FixtureSkill = { ...original, instanceKey: "impeccable:C:/claude/impeccable",
     originalDir: "C:/claude/impeccable", agents: ["claude"],
-    locations: [{ manifestPath: "C:/claude/impeccable/SKILL.md", rootKind: "claude", managed: false, enabled: true }] };
+    locations: [{ manifestPath: "C:/claude/impeccable/SKILL.md", originalPath: "C:/claude/impeccable", selectable: true, rootKind: "claude", managed: false, enabled: true }] };
   ui.server.skills = [original, other];
   ui.render(); await tick(); ui.render();
   const menu = ui.rowElements("user", "", "impeccable", original)
     .find((node) => node.type === "MenuItem" && node.children.includes("重新关联来源"));
   assert.ok(menu);
-  assert.equal(menu.props.disabled, false);
-  menu.props.onClick(); ui.render();
+  assert.equal(menu.props.disabled, true);
+  ui.rowElements("user", "", "impeccable", original).find((node) => node.type === "CxRow")!.props.onClick(); ui.render();
+  const detail = ui.find((node) => node.type === "SkillDetailDrawer");
+  assert.deepEqual(detail.props.skill.locations.map((location: { manifestPath: string }) => location.manifestPath),
+    original.locations!.concat(other.locations!).map((location) => location.manifestPath));
+  detail.props.onMatch(original.originalDir); ui.render();
   const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
   assert.equal(drawer.props.id, "impeccable");
   assert.equal(drawer.props.localPath, original.originalDir);
@@ -560,6 +667,22 @@ test("different confirmed repositories keep split rows, groups and update target
   ui.unmount();
 });
 
+test("different confirmed repositories stay separate even in the same custom group", async () => {
+  const first: FixtureSkill = { ...skill("alpha", "one/repo@main"), instanceKey: "alpha:C:/agents/alpha",
+    conflict: "不同来源", conflictKind: "independent", agents: ["codex"],
+    locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", rootKind: "shared", managed: false, enabled: true }] };
+  const second: FixtureSkill = { ...first, repoKey: "two/repo@main", instanceKey: "alpha:C:/claude/alpha", agents: ["claude"],
+    locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", rootKind: "claude", managed: false, enabled: true }] };
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignmentsByIdentity: {
+    [skillIdentityKey(first)]: "custom:Manual", [skillIdentityKey(second)]: "custom:Manual",
+  } }));
+  ui.server.skills = [first, second];
+  ui.render(); await tick(); ui.render();
+  assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.repoKey),
+    ["one/repo@main", "two/repo@main"]);
+  ui.unmount();
+});
+
 test("a modified managed copy allows only its listed agent to be disabled and backed up", async () => {
   const ui = createHarness();
   const original: FixtureSkill = { ...skill("same", ""), instanceKey: "same:C:/shared/same",
@@ -572,15 +695,15 @@ test("a modified managed copy allows only its listed agent to be disabled and ba
     agents: ["claude"] };
   ui.server.skills = [original, copy];
   ui.render(); await tick(); ui.render();
-  const first = ui.rowElements("user", "", "same", original);
-  const second = ui.rowElements("user", "", "same", copy);
-  assert.ok(first.filter((node) => node.type === "AgentToggle").every((node) => node.props.disabled));
-  const toggles = second.filter((node) => node.type === "AgentToggle");
+  const row = ui.rowElements("user", "", "same", original);
+  assert.equal(ui.group("user").props.group.items.length, 1);
+  const toggles = row.filter((node) => node.type === "AgentToggle");
   const claude = toggles.find((node) => node.props.agent === "claude");
   assert.ok(claude);
   assert.equal(claude.props.disabled, false);
   assert.equal(claude.props.hint, "停用并备份已修改的受控副本");
-  assert.ok(toggles.filter((node) => node.props.agent !== "claude").every((node) => node.props.disabled));
+  assert.equal(toggles.find((node) => node.props.agent === "codex")?.props.disabled, false);
+  assert.equal(toggles.find((node) => node.props.agent === "grok")?.props.disabled, true);
 
   ui.hooks.confirm = async () => false;
   await claude.props.onToggle();

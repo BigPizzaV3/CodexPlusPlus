@@ -17,7 +17,7 @@ import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
-import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
+import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
 import { SkillSourceMatchDrawer, type SourceSelection } from "./SkillSourceMatchDrawer";
 import { SkillDuplicatesDrawer } from "./SkillDuplicatesDrawer";
@@ -43,7 +43,8 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
   conflict?: string | null;
   conflictKind?: "independent" | "equal-independent" | "managed-modified" | null;
   safeDisableAgents?: string[];
-  locations?: SkillLocation[] };
+  locations?: SkillLocation[];
+  displayInstances?: Skill[] };
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
 type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: string; restorePath?: string | null; purpose?: string | null };
 type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string>; backups?: SkillBackup[] };
@@ -68,7 +69,11 @@ function parseRepoInput(value: string, current: Repo): Repo | null {
 }
 /** 后端 `LOCAL_IMPORT_REPO_KEY`：从本地目录导入的 Skill（#511）。 */
 const LOCAL_IMPORT_REPO_KEY = "local";
-function sourceLabel(skill: Skill) { if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch" || (skill.conflict && !skill.repoKey)) return t("本地（来源未确认）"); if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey ? skill.repoKey.split("@", 1)[0] : t("用户"); }
+function sourceLabel(skill: Skill) { if (skill.displayInstances) return t("多个 Agent 安装"); if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch" || (skill.conflict && !skill.repoKey)) return t("本地（来源未确认）"); if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey ? skill.repoKey.split("@", 1)[0] : t("用户"); }
+function skillChannelLabel(skill: Skill) {
+  return skill.installChannel === "cc-switch" || (skill.repoKey === "cc-switch" && skill.sourceVerified)
+    ? "cc-switch" : skill.installChannel === "github" ? "GitHub" : skill.installChannel === "system" ? t("内置") : skill.installChannel === "local" || skill.repoKey === "cc-switch" ? t("本地安装") : t("未记录");
+}
 function repoUrl(skill: Skill) {
   if (!skill.repoKey || skill.repoKey === "cc-switch" || skill.repoKey === LOCAL_IMPORT_REPO_KEY) return "";
   const parts = skill.repoKey.split("@")[0].split("/");
@@ -226,35 +231,42 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
   onOpenRepo: () => void; onMatch: (localPath?: string) => void; onRestore: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void;
 }) {
   const url = repoUrl(skill);
-  const channel = skill.installChannel === "cc-switch" || (skill.repoKey === "cc-switch" && skill.sourceVerified)
-    ? "cc-switch" : skill.installChannel === "github" ? "GitHub" : skill.installChannel === "system" ? t("内置") : skill.installChannel === "local" || skill.repoKey === "cc-switch" ? t("本地安装") : t("未记录");
+  const channel = skillChannelLabel(skill);
   const owner = skill.id === "reverse-engineer-anything" ? t("需确认安装器") : skill.updateOwner === "in_place" ? t("Codex++ 原位维护") : skill.updateOwner === "manager" ? t("Codex++ 管理") : t("未接管");
   const selectableOriginal = skill.conflictKind === "independent" && !!skill.originalDir
     && skill.locations?.some((location) => !location.managed);
   const associatedOriginal = skill.conflictKind === "equal-independent" && !!skill.originalDir && !!url;
   const rootLabel: Record<string, string> = { shared: t("共享"), codex: "Codex", claude: "Claude Code", grok: "Grok" };
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}>
-    {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.conflict}</p>}
+    {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.displayInstances ? t("各 Agent 的安装内容或来源可能不同，请分别查看。") : skill.conflict}</p>}
     <dl className="mg-detail">
-      <dt>{t("上游来源")}</dt><dd>{url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : skill.bundled ? t("内置") : t("来源未确认")}{associatedOriginal && <small> · {t("仅关联所选安装位置")}</small>}</dd>
-      <dt>{t("安装渠道")}</dt><dd>{channel}</dd>
-      <dt>{t("更新方式")}</dt><dd>{owner}</dd>
+      <dt>{t("上游来源")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : skill.bundled ? t("内置") : t("来源未确认")}{associatedOriginal && <small> · {t("仅关联所选安装位置")}</small>}</dd>
+      <dt>{t("安装渠道")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : channel}</dd>
+      <dt>{t("更新方式")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : owner}</dd>
       <dt>{t("Skill ID")}</dt><dd>{skill.id}</dd>
       <dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}</dd>
       <dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>
       {url && <><dt>GitHub</dt><dd><button className="mg-link-button" type="button" onClick={() => onOpenUrl(url)}><ExternalLink size={13}/>{url}</button></dd></>}
       {skill.originalDir && <><dt>{t(associatedOriginal ? "关联来源的安装目录" : "原安装目录")}</dt><dd>{skill.originalDir}</dd></>}
       {skill.locations?.flatMap((location) => {
-        const hasRepo = !!repoFromKey(location.repoKey || null);
+        const instance = skill.displayInstances?.find((item) => item.locations?.some((itemLocation) => itemLocation.manifestPath === location.manifestPath));
+        const locationRepo = location.repoKey || instance?.repoKey || "";
+        const locationRepoPath = location.repoPath || instance?.repoPath || "";
+        const locationOwner = location.updateOwner || instance?.updateOwner;
+        const hasRepo = !!repoFromKey(locationRepo);
         return [<dt key={`${location.manifestPath}:label`}>{rootLabel[location.rootKind] || location.rootKind}</dt>, <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
-          {location.selectable && location.originalPath && <><br/>{t("上游来源")}：{hasRepo ? `${location.repoKey}${location.repoPath ? ` / ${location.repoPath}` : ""}` : t("来源未确认")}
-            {hasRepo && <><br/>{t("更新方式")}：{location.updateOwner === "in_place" ? t("Codex++ 原位维护") : location.updateOwner === "manager" ? t("Codex++ 管理") : t("未接管")}</>}
-            {skill.conflictKind === "equal-independent" && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(location.originalPath || undefined)}>{t(hasRepo ? "重新关联此安装位置" : "关联此安装位置")}</Button>
-              {hasRepo && location.updateOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(location.repoKey!, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
+          {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
+          {(instance || (location.selectable && location.originalPath)) && <><br/>{t("上游来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("来源未确认")}
+            {hasRepo && <><br/>{t("更新方式")}：{locationOwner === "in_place" ? t("Codex++ 原位维护") : locationOwner === "manager" ? t("Codex++ 管理") : t("未接管")}</>}
+            {location.selectable && location.originalPath && (skill.displayInstances || skill.conflictKind === "equal-independent") && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(location.originalPath || undefined)}>{t(hasRepo ? "重新关联此安装位置" : "关联此安装位置")}</Button>
+              {hasRepo && locationOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
       })}
     </dl>
-    {skill.id === "impeccable" && <ImpeccableVersions instanceKey={skill.instanceKey || skill.id}/>}
+    {skill.id === "impeccable" && (skill.displayInstances ? skill.displayInstances.map((instance) => <section key={skillIdentityKey(instance)}>
+      <h3>{instance.locations?.map((location) => rootLabel[location.rootKind] || location.rootKind).join(" / ")}</h3>
+      <ImpeccableVersions instanceKey={instance.instanceKey || instance.id}/>
+    </section>) : <ImpeccableVersions instanceKey={skill.instanceKey || skill.id}/>)}
     {skill.installed && !skill.bundled && (!skill.conflict || selectableOriginal || associatedOriginal || skill.id === "reverse-engineer-anything") && <div className="mg-row-actions">
       {(!skill.conflict || selectableOriginal) && <Button disabled={busy} onClick={() => onMatch()}><Search size={14}/>{t("重新关联来源")}</Button>}
       {(!skill.conflict || selectableOriginal || associatedOriginal) && url && skill.originalDir && skill.updateOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(skill.repoKey, skill.originalDir || undefined)}><CloudDownload size={14}/>{t("预览原位更新")}</Button>}
@@ -271,7 +283,7 @@ function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<S
     style={{ transform: CSS.Transform.toString(transform), transition }}>{children(handle)}</section>;
 }
 /** 分组标题上的批量开关：和行里的 Agent 胶囊同一列，一组全开是实心、部分开是半实心；点一下全开或全关。 */
-function GroupAgentSelect({ group, agent, busy, operations, count, conflictIds, onChange }: { group: SkillGroup<Skill>; agent: McpAgentId; busy: boolean; operations: PendingSkillBatchOperation[]; count?: number; conflictIds: Set<string>; onChange: (enabled: boolean) => void }) {
+function GroupAgentSelect({ group, agent, busy, operations, count, prepareSkill, onChange }: { group: SkillGroup<Skill>; agent: McpAgentId; busy: boolean; operations: PendingSkillBatchOperation[]; count?: number; prepareSkill: (skill: Skill, agent: McpAgentId) => Skill; onChange: (enabled: boolean) => void }) {
   const pendingById = new Map<string, boolean>();
   for (const operation of operations) {
     if (operation.agent !== agent) continue;
@@ -279,7 +291,7 @@ function GroupAgentSelect({ group, agent, busy, operations, count, conflictIds, 
     for (const id of operation.skillIds) if (!settled.has(id)) pendingById.set(id, operation.enabled);
   }
   const state = skillBatchState(group.items.map((skill) => {
-    if (conflictIds.has(skill.id)) return { ...skill, conflict: skill.conflict || t("同名 Skill 内容存在冲突") };
+    skill = prepareSkill(skill, agent);
     const pending = pendingById.get(skill.id);
     if (pending === undefined) return skill;
     const agents = skillAgents(skill).filter((value) => value !== agent);
@@ -441,7 +453,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const runBatch = async (group: SkillGroup<Skill>, agent: McpAgentId, enabled: boolean) => {
     const groupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
     if (skillBatchHasPending(skillBatchRegistry.getSnapshot(), groupItems, agent)) return;
-    const targets = skillBatchTargets(group.items.filter((skill) => !conflictIds.has(skill.id)), agent, enabled);
+    const targets = skillBatchTargets(group.items.map((skill) => batchSkill(skill, agent)), agent, enabled);
     if (!targets.length) {
       await notify("Skills", enabled ? t("该组没有可启用的 Skill") : t("该组没有可停用的 Skill"), "ok");
       return;
@@ -599,26 +611,37 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     return result;
   }, [data]);
   const knownSkills = useMemo(() => data?.skills || [], [data]);
+  const canToggleSharedCodex = (skill: Skill) => Boolean(skill.locations?.some((location) => location.rootKind === "shared")
+    && knownSkills.filter((item) => item.id === skill.id && item.installed
+      && item.locations?.some((location) => location.rootKind === "codex" || location.rootKind === "shared")).length === 1);
+  const batchSkill = (skill: Skill, agent: McpAgentId): Skill => {
+    if (!conflictIds.has(skill.id)) return skill;
+    return { ...skill, conflict: agent === "codex" && canToggleSharedCodex(skill) ? null : skill.conflict || t("同名 Skill 内容存在冲突") };
+  };
   useEffect(() => {
     setAssignmentsByIdentity((old) => migrateSkillInstanceAssignments(old, customGroupAssignments, knownSkills, customGroupNames));
   }, [knownSkills, customGroupAssignments, customGroupNames]);
   const items = useMemo(() => knownSkills
-    .filter((s) => (tab === "installed" ? s.installed : !s.installed || s.bundled))
-    .filter((s) => matchesManagementQuery([s.id, s.name, s.description, s.repoKey, sourceLabel(s), ...(s.locations || []).map((location) => location.manifestPath)], deferredQuery)), [knownSkills, tab, deferredQuery]);
+    .filter((s) => (tab === "installed" ? s.installed : !s.installed || s.bundled)), [knownSkills, tab]);
   const knownRepositories = useMemo(() => data?.repos || [], [data]);
   const builtinGroupLabel = t("内置");
   const userGroupLabel = t("用户");
   const localGroupLabel = t("本地导入");
   const allGroups = useMemo(() => {
     const result = groupSkills(knownSkills, knownSkills, customGroupNames, customGroupAssignments, groupOrder,
-      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, true, groupAliases, assignmentsByIdentity, knownRepositories);
+      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, true, groupAliases, assignmentsByIdentity, knownRepositories)
+      .map((group) => ({ ...group, items: aggregateSkillGroupItems(group.items) }));
     return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
   }, [knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel]);
   const groups = useMemo(() => {
     const result = groupSkills(items, knownSkills, customGroupNames, customGroupAssignments, groupOrder,
-      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, !query.trim(), groupAliases, assignmentsByIdentity, knownRepositories);
+      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, !query.trim(), groupAliases, assignmentsByIdentity, knownRepositories)
+      .map((group) => ({ ...group, items: aggregateSkillGroupItems(group.items).filter((skill) =>
+        (skill.displayInstances || [skill]).some((item) => matchesManagementQuery(
+          [item.id, item.name, item.description, item.repoKey, sourceLabel(item), ...(item.locations || []).map((location) => location.manifestPath)], deferredQuery))) }))
+      .filter((group) => !query.trim() || group.items.length);
     return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
-  }, [items, knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel, query]);
+  }, [items, knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel, query, deferredQuery]);
   const openUrl = async (url: string) => {
     try { await invoke("open_external_url", { url }); }
     catch (e) { await notify("Skills", String(e), "failed"); }
@@ -656,7 +679,11 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setExpandedGroups((old) => { const next = new Set(old); next.delete(customSkillGroupKey(name)); return next; });
   };
   const assignSkillGroup = (skill: Skill, group: string) => {
-    setAssignmentsByIdentity((old) => ({ ...old, [skillGroupIdentityKey(skill)]: group ? customSkillGroupKey(group) : "" }));
+    setAssignmentsByIdentity((old) => {
+      const next = { ...old };
+      for (const item of skill.displayInstances || [skill]) next[skillGroupIdentityKey(item)] = group ? customSkillGroupKey(group) : "";
+      return next;
+    });
   };
   const handleGroupDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id || query.trim() || busy || loading) return;
@@ -665,7 +692,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setGroupOrder(moveSkillGroup(allGroups, String(active.id), String(over.id)));
     setGroupSortDirection(null);
   };
-  const agentCount = (agent: McpAgentId) => (data?.skills || []).filter((s) => s.installed && (agent !== "codex" || !skillCodexStatusError(s)) && skillAgents(s).includes(agent)).length;
+  const agentCount = (agent: McpAgentId) => new Set((data?.skills || []).filter((s) =>
+    s.installed && (agent !== "codex" || !skillCodexStatusError(s)) && skillAgents(s).includes(agent)).map((s) => s.id)).size;
   // 参照 MCP 页（Cursor 的 Customize）：每个 Skill 一行，右侧是各 Agent 的开关胶囊；分组是卡片外的小标题，
   // 标题右侧同一列位置是这一组的批量开关。详情、分组、卸载收进行末的三点菜单。
   const renderSkillRow = (s: Skill) => {
@@ -687,7 +715,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       badges={<>
         <small className="cx-skill-source" title={s.repoKey === "cc-switch" ? sourceLabel(s) : s.repoKey || sourceLabel(s)}>{sourceLabel(s)}</small>
         {statusError && <CxBadge tone="warn">{t("Codex 状态未知")}</CxBadge>}
-        {conflict ? <CxBadge tone="warn">{t(s.conflictKind === "equal-independent" ? "多个独立安装" : "同名冲突")}</CxBadge> : s.updateAvailable ? <CxBadge tone="warn">{t("可更新")}</CxBadge> : null}
+        {conflict && !s.displayInstances ? <CxBadge tone="warn">{t(s.conflictKind === "equal-independent" ? "多个独立安装" : "同名冲突")}</CxBadge> : s.updateAvailable ? <CxBadge tone="warn">{t("可更新")}</CxBadge> : null}
       </>}
       detail={<span title={detail}>{detail}</span>}
       onClick={() => setDetail(s)}>
@@ -696,8 +724,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         {agentColumns.map((agent) => {
           const safeDisable = conflict && s.conflictKind === "managed-modified"
             && s.safeDisableAgents?.includes(agent) && skillAgents(s).includes(agent);
-          const safeCodex = conflict && agent === "codex" && s.conflictKind === "equal-independent"
-            && s.locations?.some((location) => location.rootKind === "shared");
+          const safeCodex = conflict && agent === "codex" && canToggleSharedCodex(s);
           return <AgentToggle agent={agent} key={agent} name={s.name || s.id}
             enabled={s.installed && !(agent === "codex" && statusError) && skillAgents(s).includes(agent)}
             statusUnknown={agent === "codex" && !!statusError}
@@ -714,7 +741,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </div>
       <Menu>
         <MenuItem onClick={() => setDetail(s)}>{t("查看详情")}</MenuItem>
-        {s.installed && !s.bundled ? <MenuItem disabled={conflict && !selectableOriginal} onClick={() => setMatchTarget({ id: s.id, localPath: selectableOriginal ? s.originalDir || undefined : undefined })}>{t("重新关联来源")}</MenuItem> : null}
+        {s.installed && !s.bundled ? <MenuItem disabled={Boolean(s.displayInstances) || (conflict && !selectableOriginal)} onClick={() => setMatchTarget({ id: s.id, localPath: selectableOriginal ? s.originalDir || undefined : undefined })}>{t("重新关联来源")}</MenuItem> : null}
         {repoUrl(s) ? <MenuItem onClick={() => openRepo(s.repoKey)}>{t("管理仓库")}</MenuItem> : null}
         {!s.bundled && (!s.conflict || s.instanceKey) && customGroupNames.length ? <>
           <div className="mg-menu-label">{t("分组")}</div>
@@ -726,9 +753,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     </CxRow>;
   };
   const discoverCount = (data?.skills || []).filter((s) => !s.installed || s.bundled).length;
-  const installedCount = (data?.skills || []).filter((s) => s.installed).length;
+  const installedCount = aggregateSkillGroupItems((data?.skills || []).filter((s) => s.installed)).length;
   const sortLabel = `${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`;
-  const currentDetail = detail ? knownSkills.find((skill) => skillIdentityKey(skill) === skillIdentityKey(detail))
+  const currentDetail = detail ? allGroups.flatMap((group) => group.items).find((skill) => skillIdentityKey(skill) === skillIdentityKey(detail))
     || (conflictIds.has(detail.id) ? null : detail) : null;
   return <div className="mg-page cx-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
@@ -792,7 +819,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
               <div className="cx-agent-toggles" role="group" aria-label={`${group.label} · ${t("全选")}`}>
                 {agentColumns.map((agent) => <GroupAgentSelect group={group} agent={agent} key={agent}
                   busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
-                  conflictIds={conflictIds}
+                  prepareSkill={batchSkill}
                   count={agentCount(agent)}
                   onChange={(enabled) => void runBatch(group, agent, enabled)}/>)}
               </div>

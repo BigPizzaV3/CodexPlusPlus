@@ -960,7 +960,12 @@ impl SkillsManager {
         let mut coordination = skills_coordination();
         let shared_codex = agent == "codex" && self.shared_skills_dir.as_ref()
             .is_some_and(|dir| dir.join(id).join(SKILL_MANIFEST_FILE).is_file());
-        self.ensure_skill_name_not_aliased_for(id, &self.load_state_checked_unlocked()?, shared_codex)?;
+        let state = self.load_state_checked_unlocked()?;
+        if shared_codex {
+            self.ensure_skill_name_aliases_only(id, &state)?;
+        } else {
+            self.ensure_skill_name_not_aliased(id, &state)?;
+        }
         let result = (|| {
             if agent == "codex" {
                 let shared = self.shared_skills_dir.as_ref()
@@ -2486,7 +2491,12 @@ impl SkillsManager {
         let mut coordination = skills_coordination();
         let shared = self.shared_skills_dir.as_ref()
             .is_some_and(|dir| dir.join(id).join(SKILL_MANIFEST_FILE).is_file());
-        self.ensure_skill_name_not_aliased_for(id, &self.load_state_checked_unlocked()?, shared)?;
+        let state = self.load_state_checked_unlocked()?;
+        if shared {
+            self.ensure_skill_name_aliases_only(id, &state)?;
+        } else {
+            self.ensure_skill_name_not_aliased(id, &state)?;
+        }
         let result = self.set_enabled_unlocked(id, enabled, &mut coordination);
         coordination.changed_nested_skill(self.coordination_scope(), id);
         result
@@ -5616,7 +5626,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_skill_instances_are_separate_and_id_writes_are_rejected() {
+    fn different_agent_instances_allow_only_the_shared_codex_toggle() {
         let temp = tempfile::tempdir().unwrap();
         let shared = temp.path().join("shared");
         let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
@@ -5630,8 +5640,14 @@ mod tests {
         assert!(found.iter().all(|item| item.conflict_kind.as_deref() == Some("independent")
             && item.safe_disable_agents.is_empty()));
         assert!(found.iter().all(|item| item.locations.len() == 1));
-        assert!(manager.set_enabled_for("codex", "alpha", false).is_err());
+        manager.set_enabled_for("codex", "alpha", false).unwrap();
+        assert!(!manager.read_native_skill_config().unwrap().enabled(&shared.join("alpha/SKILL.md"), "shared"));
+        assert_eq!(std::fs::read_to_string(temp.path().join("claude-skills/alpha/SKILL.md")).unwrap(),
+            "---\nname: claude\n---\nsecond");
+        manager.set_enabled("alpha", true).unwrap();
+        assert!(manager.read_native_skill_config().unwrap().enabled(&shared.join("alpha/SKILL.md"), "shared"));
         assert!(manager.set_enabled_for("grok", "alpha", true).is_err());
+        assert!(!temp.path().join("grok-skills/alpha").exists());
     }
 
     #[test]

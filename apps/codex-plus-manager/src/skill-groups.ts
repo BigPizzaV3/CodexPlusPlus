@@ -2,6 +2,14 @@ export type GroupableSkill = { id: string; repoKey: string; bundled: boolean; in
 export type GroupableRepository = { owner: string; name: string };
 export type SkillGroup<T> = { key: string; label: string; kind: "builtin" | "user" | "repo" | "custom"; items: T[] };
 export type SkillGroupSortDirection = "asc" | "desc";
+type DisplayableSkill = GroupableSkill & {
+  installed: boolean;
+  enabled: boolean;
+  agents?: string[];
+  repoPath?: string;
+  locations?: Array<{ rootKind: string }>;
+  safeDisableAgents?: string[];
+};
 type SkillGroupStorage = Record<string, unknown> & {
   names: string[];
   assignments: Record<string, string>;
@@ -20,6 +28,44 @@ export const skillIdentityKey = (skill: Pick<GroupableSkill, "repoKey" | "id" | 
     ? ["instance", skill.id, skill.instanceKey] : [skill.repoKey, skill.id]);
 export const skillGroupIdentityKey = (skill: GroupableSkill) => skill.conflictKind === "equal-independent"
   ? JSON.stringify(["aggregate", skill.id]) : skillIdentityKey(skill);
+
+/** 同组内不同 Agent 的安装共用一行，仍保留每个物理安装的身份。 */
+export function aggregateSkillGroupItems<T extends DisplayableSkill>(skills: T[]): Array<T & { displayInstances?: T[] }> {
+  const candidates = new Map<string, T[]>();
+  for (const skill of skills) {
+    if (!skill.installed || skill.bundled) continue;
+    candidates.set(skill.id, [...(candidates.get(skill.id) || []), skill]);
+  }
+  const merged = new Map<string, T & { displayInstances: T[] }>();
+  for (const [id, instances] of candidates) {
+    if (instances.length < 2 || instances.some((item) => !item.locations?.length)) continue;
+    const owners = new Set<string>();
+    let overlaps = false;
+    for (const item of instances) {
+      const agents = new Set(item.locations!.map((location) => location.rootKind === "shared" ? "codex" : location.rootKind));
+      if ([...agents].some((agent) => owners.has(agent))) overlaps = true;
+      for (const agent of agents) owners.add(agent);
+    }
+    const sources = new Set(instances.filter((item) => skillRepositoryName(item.repoKey))
+      .map((item) => JSON.stringify([item.repoKey, item.repoPath || ""])));
+    if (overlaps || sources.size > 1) continue;
+    const agents = [...new Set(instances.flatMap((item) => item.agents ?? (item.enabled ? ["codex"] : [])))];
+    merged.set(id, {
+      ...instances[0], repoKey: "", repoPath: "", originalDir: null, updateOwner: "", updateAvailable: false,
+      agents, enabled: agents.includes("codex"), locations: instances.flatMap((item) => item.locations || []),
+      safeDisableAgents: [...new Set(instances.flatMap((item) => item.safeDisableAgents || []))],
+      displayInstances: instances,
+    } as T & { displayInstances: T[] });
+  }
+  const emitted = new Set<string>();
+  return skills.flatMap((skill) => {
+    const item = skill.installed && !skill.bundled ? merged.get(skill.id) : undefined;
+    if (!item) return [skill];
+    if (emitted.has(skill.id)) return [];
+    emitted.add(skill.id);
+    return [item];
+  });
+}
 
 function aggregateLegacyAssignment(
   skill: GroupableSkill,
