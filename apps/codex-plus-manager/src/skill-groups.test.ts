@@ -54,6 +54,23 @@ test("configured and discovered sources of the same repository create only one g
   assert.deepEqual(groups.find((group) => group.key === "repo:owner/repo")?.items, [item]);
 });
 
+test("a display-only source groups identical installations without changing their identity or assignments", () => {
+  const inferred = { ...skill("alpha"), instanceKey: "alpha:C:/claude/alpha",
+    conflict: "different installs", displayGroupRepoKey: "owner/repo@main" };
+  const confirmed = { ...skill("alpha", "owner/repo@main"), instanceKey: "alpha:C:/codex/alpha",
+    conflict: "different installs" };
+  const other = { ...skill("alpha"), instanceKey: "alpha:C:/other/alpha", conflict: "different installs" };
+  const items = [inferred, confirmed, other];
+  const groups = groupSkills(items, items, ["Manual"], {}, [], labels);
+  assert.equal(groups.find((group) => group.key === "repo:owner/repo")?.label, "owner/repo");
+  assert.deepEqual(groups.find((group) => group.key === "repo:owner/repo")?.items, [inferred, confirmed]);
+  assert.deepEqual(groups.find((group) => group.key === "user")?.items, [other]);
+  assert.equal(inferred.repoKey, "");
+  const assignments = { [skillIdentityKey(inferred)]: "custom:Manual" };
+  const assigned = groupSkills(items, items, ["Manual"], {}, [], labels, true, {}, assignments);
+  assert.deepEqual(assigned.find((group) => group.key === "custom:Manual")?.items, [inferred]);
+});
+
 test("import channels default to the user group and both generations of custom assignments are preserved", () => {
   const items = [skill("builtin", "", true), skill("user"), skill("local", "local"), skill("cc", "cc-switch"),
     skill("repository", "owner/repo@main:skills"), skill("old"), skill("new"), skill("assigned-builtin", "", true)];

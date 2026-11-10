@@ -31,7 +31,7 @@ test("independent installations retain their own source and actions", () => {
   const updates: Array<[string, string]> = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/example/repo" : "", sourceLabel: () => "",
+    fragment: "fragment", t: (value: string) => value, repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/example/repo" : "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", CloudDownload: "CloudDownload", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight",
   };
   vm.createContext(context);
@@ -85,7 +85,7 @@ test("independent installations retain their own source and actions", () => {
 test("the detail view displays the reason for an unknown location status", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "",
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search",
   };
   vm.createContext(context);

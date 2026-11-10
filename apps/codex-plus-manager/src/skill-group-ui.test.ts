@@ -7,9 +7,9 @@ import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkill
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
-type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean; originalDir?: string | null; updateOwner?: string; instanceKey?: string; conflict?: string | null; conflictKind?: "independent" | "equal-independent" | "managed-modified" | null; safeDisableAgents?: string[]; locations?: Array<{ manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; selectable?: boolean }>; displayInstances?: FixtureSkill[] };
+type FixtureSkill = { id: string; name: string; description: string; repoKey: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean; agents: string[]; managed: boolean; originalDir?: string | null; updateOwner?: string; instanceKey?: string; conflict?: string | null; conflictKind?: "independent" | "equal-independent" | "managed-modified" | null; safeDisableAgents?: string[]; locations?: Array<{ manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; associationPath?: string | null; selectable?: boolean }>; displayInstances?: FixtureSkill[] };
 type FixtureRepo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
-type FixtureBackup = { id: string; skillId: string; name: string; backedUpAt: string; restorePath?: string | null; purpose?: string | null };
+type FixtureBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; restoreBlockedReason?: string | null; deleteWarning?: string | null };
 type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; backups: FixtureBackup[] };
 
 const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
@@ -29,6 +29,11 @@ assert.ok(detailNode);
 const detailCode = ts.transpileModule(detailNode.getText(file), {
   compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const backupListNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillBackupList");
+assert.ok(backupListNode);
+const backupListCode = ts.transpileModule(backupListNode.getText(file), {
+  compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 },
+}).outputText;
 
 const skill = (id: string, repoKey: string, bundled = false): FixtureSkill => ({ id, name: id, description: "", repoKey,
   installed: true, enabled: false, bundled, updateAvailable: false, agents: [], managed: true });
@@ -41,6 +46,49 @@ test("legacy cc-switch markers do not claim a verified upstream source", () => {
   const label = (context as any).sourceLabel;
   assert.equal(label(skill("legacy", "cc-switch")), "本地（来源未确认）");
   assert.equal(label(skill("repository", "owner/repo@main")), "owner/repo");
+});
+
+test("backup list shows the backup location separately from its restore destination", () => {
+  const context = { jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2" };
+  vm.createContext(context);
+  const render = vm.runInContext(`${backupListCode}\nSkillBackupList`, context);
+  const selected: string[] = [];
+  const backup = { id: "backup", skillId: "alpha", name: "alpha", backedUpAt: "today",
+    backupPath: "C:/backups/alpha", restorePath: "C:/skills/alpha" };
+  const root = render({ backups: [backup], busy: false, onRestore: () => {}, onDelete: (item: FixtureBackup) => selected.push(item.id) });
+  const nodes: Element[] = [];
+  const collect = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    nodes.push(node);
+    node.children?.forEach(collect);
+  };
+  collect(root);
+  assert.ok(nodes.some((node) => node.type === "small" && node.children.includes("C:/backups/alpha")));
+  assert.ok(nodes.some((node) => node.type === "small" && node.children.includes("C:/skills/alpha")));
+  nodes.find((node) => node.type === "button" && node.props.title === "删除备份")!.props.onClick();
+  assert.deepEqual(selected, ["backup"]);
+});
+
+test("an incomplete update backup remains deletable but cannot be restored", () => {
+  const context = { jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2" };
+  vm.createContext(context);
+  const render = vm.runInContext(`${backupListCode}\nSkillBackupList`, context);
+  const root = render({ backups: [{ id: "backup", skillId: "alpha", name: "alpha", backedUpAt: "today",
+    backupPath: "C:/backups/alpha", restoreBlockedReason: "更新备份组已有成员被删除，无法整体恢复" }],
+  busy: false, onRestore: () => {}, onDelete: () => {} });
+  const nodes: Element[] = [];
+  const collect = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    nodes.push(node);
+    node.children?.forEach(collect);
+  };
+  collect(root);
+  assert.equal(nodes.find((node) => node.type === "Button" && node.children.includes("恢复"))?.props.disabled, true);
+  assert.equal(nodes.find((node) => node.type === "button" && node.props.title === "删除备份")?.props.disabled, false);
 });
 
 test("grouped details keep source matching, updates and impeccable versions tied to their locations", () => {
@@ -81,6 +129,35 @@ test("grouped details keep source matching, updates and impeccable versions tied
   assert.deepEqual(elements.filter((node) => node.type === "ImpeccableVersions").map((node) => node.props.instanceKey), ["first", "second"]);
 });
 
+test("conflicting managed installs can associate their explicit source directory", () => {
+  const context: Record<string, any> = {
+    jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
+    t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "local",
+    repoFromKey: () => null, skillIdentityKey,
+  };
+  for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList"]) context[name] = name;
+  vm.createContext(context);
+  const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
+  const selected: string[] = [];
+  const root = render({ skill: { ...skill("alpha", ""), conflict: "内容不同", conflictKind: "managed-modified",
+    locations: [{ manifestPath: "C:/codex/alpha/SKILL.md", associationPath: "C:/managed/alpha",
+      rootKind: "codex", managed: true, enabled: true }] },
+  backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+  onMatch: (path: string) => selected.push(path), onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {} });
+  const elements: Element[] = [];
+  const collect = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    elements.push(node);
+    node.children?.forEach(collect);
+  };
+  collect(root);
+  const button = elements.find((node) => node.type === "Button" && node.children.includes("关联受控源"));
+  assert.ok(button);
+  button.props.onClick();
+  assert.deepEqual(selected, ["C:/managed/alpha"]);
+});
+
 test("shared skills do not offer uninstall while local Codex skills still do", async () => {
   const ui = createHarness();
   const shared = { manifestPath: "C:/agents/shared/SKILL.md", rootKind: "shared", managed: false, enabled: true };
@@ -107,7 +184,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const calls: string[] = [];
   const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
   const notices: Array<{ title: string; message: string; status: string }> = [];
-  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: () => Promise<boolean> } = {};
+  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: (message: string) => Promise<boolean> } = {};
   const server = shared?.server ?? { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
     repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "", backups: [] as FixtureBackup[] };
   const registry = shared?.registry ?? new SkillBatchRegistry();
@@ -153,7 +230,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
     agentVisible: () => true, useAgentFocus: () => "all",
     mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry,
-    appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => hooks.confirm ? hooks.confirm() : true,
+    appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
   for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillBackupsDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillDuplicatesDrawer", "SkillInPlaceUpdateDrawer", "ReaUpdatePreviewDrawer", "BookOpen", "RefreshCw", "Search", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
@@ -750,7 +827,7 @@ test("a saved assignment follows its physical skill through conflict and resolut
 test("backups remain accessible without a skill and while its instances conflict", async () => {
   const ui = createHarness();
   const backup: FixtureBackup = { id: "backup", skillId: "same", name: "same", backedUpAt: "1",
-    purpose: "duplicate", restorePath: "C:/codex/same" };
+    purpose: "duplicate", backupPath: "C:/backups/same", restorePath: "C:/codex/same" };
   ui.server.skills = [];
   ui.server.backups = [backup];
   ui.render(); await tick(); ui.render();
@@ -758,6 +835,7 @@ test("backups remain accessible without a skill and while its instances conflict
   ui.render();
   const drawer = ui.find((node) => node.type === "SkillBackupsDrawer");
   assert.equal(drawer.props.backups[0].restorePath, backup.restorePath);
+  assert.equal(drawer.props.backups[0].backupPath, backup.backupPath);
   ui.hooks.mutation = async (command, args) => {
     assert.equal(command, "restore_skill_backup");
     assert.equal(args.backupId, backup.id);
@@ -767,6 +845,23 @@ test("backups remain accessible without a skill and while its instances conflict
   await tick(); await tick(); ui.render();
   assert.equal(ui.notices.at(-1)?.status, "failed");
   assert.equal(ui.notices.at(-1)?.message, "原位置已有内容，未覆盖");
+  ui.hooks.confirm = async () => false;
+  drawer.props.onDelete(backup);
+  await tick();
+  assert.equal(ui.calls.includes("delete_skill_backup"), false);
+  let confirmation = "";
+  ui.hooks.confirm = async (message) => { confirmation = message; return true; };
+  backup.deleteWarning = "删除后，此更新备份组将无法整体恢复；其他备份文件会保留";
+  ui.hooks.mutation = async (command, args) => {
+    assert.equal(command, "delete_skill_backup");
+    assert.equal(args.backupId, backup.id);
+    return { ...structuredClone(ui.server), message: "备份已删除" };
+  };
+  drawer.props.onDelete(backup);
+  await tick(); await tick(); ui.render();
+  assert.ok(confirmation.includes(backup.backupPath!));
+  assert.ok(confirmation.includes(backup.deleteWarning));
+  assert.ok(ui.calls.includes("delete_skill_backup"));
   drawer.props.onClose(); ui.render();
 
   const conflict = { ...skill("same", ""), instanceKey: "same:C:/agents/same", conflict: "内容不同" };

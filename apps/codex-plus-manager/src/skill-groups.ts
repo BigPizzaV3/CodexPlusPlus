@@ -1,4 +1,4 @@
-export type GroupableSkill = { id: string; repoKey: string; bundled: boolean; instanceKey?: string; conflict?: string | null; conflictKind?: string | null };
+export type GroupableSkill = { id: string; repoKey: string; bundled: boolean; instanceKey?: string; conflict?: string | null; conflictKind?: string | null; displayGroupRepoKey?: string | null };
 export type GroupableRepository = { owner: string; name: string };
 export type SkillGroup<T> = { key: string; label: string; kind: "builtin" | "user" | "repo" | "custom"; items: T[] };
 export type SkillGroupSortDirection = "asc" | "desc";
@@ -153,7 +153,7 @@ export function skillRepositoryName(repoKey: string): string | null {
 
 export function defaultSkillGroupKey(skill: GroupableSkill): string {
   if (skill.bundled) return BUILTIN_SKILL_GROUP;
-  const repository = skillRepositoryName(skill.repoKey);
+  const repository = skillRepositoryName(skill.repoKey) || skillRepositoryName(skill.displayGroupRepoKey || "");
   return repository ? repositorySkillGroupKey(repository) : USER_SKILL_GROUP;
 }
 
@@ -218,7 +218,9 @@ export function groupSkills<T extends GroupableSkill>(
   knownRepositories: GroupableRepository[] = [],
 ): SkillGroup<T>[] {
   const groups = new Map<string, SkillGroup<T>>();
-  const sourceLabels = new Map(known.map((skill) => [defaultSkillGroupKey(skill), labels.source(skill)]));
+  const sourceLabels = new Map(known.map((skill) => [defaultSkillGroupKey(skill),
+    skillRepositoryName(skill.repoKey) ? labels.source(skill)
+      : skillRepositoryName(skill.displayGroupRepoKey || "") || labels.source(skill)]));
   const add = (key: string, label: string, kind: SkillGroup<T>["kind"]) => {
     if (!groups.has(key)) groups.set(key, { key, label, kind, items: [] });
   };
@@ -227,10 +229,10 @@ export function groupSkills<T extends GroupableSkill>(
     add(USER_SKILL_GROUP, labels.user, "user");
     for (const name of customNames) add(customSkillGroupKey(name), name, "custom");
     for (const skill of known) {
-      const name = !skill.bundled && skillRepositoryName(skill.repoKey);
+      const name = !skill.bundled && (skillRepositoryName(skill.repoKey) || skillRepositoryName(skill.displayGroupRepoKey || ""));
       if (name) {
         const key = repositorySkillGroupKey(name);
-        add(key, aliases[key] || labels.source(skill) || name, "repo");
+        add(key, aliases[key] || (skillRepositoryName(skill.repoKey) ? labels.source(skill) : name) || name, "repo");
       }
     }
     // 与后端仓库配置的 owner/name 规则一致，导入渠道本身不创建仓库组。

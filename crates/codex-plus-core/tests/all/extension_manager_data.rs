@@ -196,6 +196,7 @@ fn skills_view_excludes_paths_descriptions_and_uninstalled_entries() {
         description: "SECRET_DESCRIPTION".into(),
         repo_key: "SECRET_REPO".into(),
         repo_path: "SECRET_PATH".into(),
+        display_group_repo_key: Some("SECRET_GROUP".into()),
         installed: true,
         enabled: true,
         bundled: false,

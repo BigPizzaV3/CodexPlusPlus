@@ -94,6 +94,7 @@ struct MatchSnapshot {
     instance_records: Option<BTreeMap<PathBuf, SkillInstanceRecord>>,
     selected_identity: Option<SkillPathIdentity>,
     selected_digest: Option<[u8; 32]>,
+    selected_managed_source: bool,
     local_paths: Vec<PathBuf>,
     conflict: Option<String>,
 }
@@ -240,9 +241,9 @@ impl SkillsManager {
             let path = root.join(id);
             if path.join(SKILL_MANIFEST_FILE).is_file() {
                 let target = path.canonicalize()?;
-                if local_path.is_none_or(|selected| root != self.source_dir
-                    && !managed_root.as_ref().is_some_and(|managed| target.starts_with(managed))
-                    && (selected == path || selected == target))
+                if local_path.is_none_or(|selected| (selected == path || selected == target)
+                    && (root == self.source_dir
+                        || !managed_root.as_ref().is_some_and(|managed| target.starts_with(managed))))
                 {
                     targets.insert(target);
                 }
@@ -372,14 +373,15 @@ impl SkillsManager {
 
     fn repository_match_snapshot(&self, id: &str, repo: &SkillRepo, selected: Option<&Path>) -> anyhow::Result<MatchSnapshot> {
         validate_skill_id(id)?;
-        let (scope, skill_generation, repo_generation, installed, instance_target, instance_records) = {
+        let (scope, skill_generation, repo_generation, installed, instance_target, instance_records, managed_source) = {
             let coordination = skills_coordination();
             let state = self.load_state_checked_unlocked()?;
             anyhow::ensure!(state.repos.contains(repo), "仓库配置已变化，请重新匹配");
             let scope = self.coordination_scope();
             let skill_generation = coordination.mutation_generation(&scope, id);
             let repo_generation = coordination.repo_change_generation(&scope, &repo.key());
-            (scope, skill_generation, repo_generation, state.installed.get(id).cloned(), state.instance_targets.get(id).cloned(), state.instance_records.get(id).cloned())
+            (scope, skill_generation, repo_generation, state.installed.get(id).cloned(), state.instance_targets.get(id).cloned(),
+                state.instance_records.get(id).cloned(), self.unclaimed_managed_source(id, &state))
         };
 
         let mut snapshot = Sha256::new();
@@ -395,6 +397,7 @@ impl SkillsManager {
         let mut divergent = false;
         let mut selected_identity = None;
         let mut selected_digest = None;
+        let mut selected_managed_source = false;
         let managed_root = self.source_dir.canonicalize().ok();
         for root in self.repository_match_roots() {
             let path = root.join(id);
@@ -420,16 +423,22 @@ impl SkillsManager {
                     {
                         originals.entry(target.clone()).or_insert_with(|| path.clone());
                     }
-                    if root != self.source_dir
-                        && !managed_root.as_ref().is_some_and(|managed| target.starts_with(managed))
-                        && selected.is_some_and(|selected| selected == path || selected == target)
+                    if selected.is_some_and(|selected| selected == path || selected == target)
+                        && (root == self.source_dir
+                            || !managed_root.as_ref().is_some_and(|managed| target.starts_with(managed)))
                     {
+                        let is_managed_source = root == self.source_dir;
+                        if is_managed_source {
+                            anyhow::ensure!(managed_source.as_ref() == Some(&path),
+                                "受控源属于其他安装位置，请选择该安装位置关联");
+                        }
                         anyhow::ensure!(std::fs::symlink_metadata(selected.unwrap())?.file_type().is_dir()
                             && !is_managed_copy(selected.unwrap()), "所选路径不是可单独管理的实体原件");
                         let selected_path = selected.unwrap();
                         let (name, description) = read_skill_manifest(&selected_path.join(SKILL_MANIFEST_FILE), id);
                         selected_identity = Some(skill_path_identity(selected_path)?);
                         selected_digest = Some(digest);
+                        selected_managed_source = is_managed_source;
                         let local_hash = local_repository_hash(selected_path)?;
                         anyhow::ensure!(skill_directory_digest(selected_path)? == Some(digest),
                             "读取期间 Skill 内容已变化，请重新匹配");
@@ -453,8 +462,12 @@ impl SkillsManager {
         let recorded = installed.as_ref().and_then(|item| item.original_dir.as_ref())
             .and_then(|path| path.canonicalize().ok())
             .filter(|path| originals.contains_key(path));
-        let original_dir = selected.map(Path::to_path_buf).or_else(|| recorded.and_then(|path| originals.get(&path).cloned())
-            .or_else(|| (originals.len() == 1).then(|| originals.values().next().cloned()).flatten()));
+        let original_dir = if selected_managed_source {
+            None
+        } else {
+            selected.map(Path::to_path_buf).or_else(|| recorded.and_then(|path| originals.get(&path).cloned())
+                .or_else(|| (originals.len() == 1).then(|| originals.values().next().cloned()).flatten()))
+        };
         let conflict = if selected.is_some() {
             None
         } else if divergent {
@@ -490,6 +503,7 @@ impl SkillsManager {
             instance_records,
             selected_identity,
             selected_digest,
+            selected_managed_source,
             local_paths: originals.into_values().collect(),
             conflict,
         })
@@ -655,7 +669,9 @@ impl SkillsManager {
                 anyhow::ensure!(!state.installed.values().any(|item|
                     item.id != selection.local_id && item.repo_key == selection.repo_key
                         && item.repo_path == selection.repo_path), "仓库路径已关联其他 Skill");
-                let previous = if let Some(path) = &selection.local_path {
+                let previous = if snapshot.selected_managed_source {
+                    snapshot.installed.clone()
+                } else if let Some(path) = &selection.local_path {
                     let canonical = path.canonicalize()?;
                     state.instance_record(&selection.local_id, &canonical).map(|record| record.installed.clone())
                         .or_else(|| snapshot.instance_target.as_ref().filter(|target| {
@@ -708,7 +724,9 @@ impl SkillsManager {
                         item.original_dir = Some(original);
                     }
                 }
-                if let Some(path) = &selection.local_path {
+                if snapshot.selected_managed_source {
+                    state.installed.insert(selection.local_id.clone(), item);
+                } else if let Some(path) = &selection.local_path {
                     if let (Some(installed), Some(target)) = (&snapshot.installed, &snapshot.instance_target) {
                         state.instance_records.entry(selection.local_id.clone()).or_default()
                             .entry(target.path.clone()).or_insert_with(|| SkillInstanceRecord {
@@ -844,6 +862,80 @@ mod tests {
         let unrelated = temp.path().join("unrelated");
         std::fs::create_dir(&unrelated).unwrap();
         assert!(manager.discover_skill_source_evidence_for_instance("alpha", &unrelated).is_err());
+    }
+
+    #[test]
+    fn selected_managed_source_can_be_associated_without_claiming_an_independent_install() {
+        let (temp, manager, repo) = fixture();
+        let source = manager.source_dir.join("alpha");
+        let independent = temp.path().join("shared/alpha");
+        write_skill(&manager.source_dir, "alpha", "managed");
+        write_skill(&temp.path().join("shared"), "alpha", "independent");
+        write_skill(&temp.path().join("claude"), "alpha", "managed");
+        std::fs::write(temp.path().join("claude/alpha").join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::write(source.join("scripts.txt"), "managed content").unwrap();
+        let mut state = manager.load_state();
+        state.installed.insert("alpha".into(), InstalledSkill {
+            id: "alpha".into(), name: "alpha".into(), description: String::new(),
+            repo_key: LOCAL_IMPORT_REPO_KEY.into(), repo_path: String::new(), content_hash: String::new(),
+            installed_at: String::new(), verified_cc_switch: false, install_channel: "local".into(),
+            original_dir: None, update_owner: String::new(),
+        });
+        manager.save_state_unlocked(&state).unwrap();
+        let inventory = manager.try_local_inventory().unwrap();
+        assert!(inventory.iter().flat_map(|item| &item.locations)
+            .any(|location| location.managed && location.association_path.as_ref() == Some(&source)));
+        let remote = vec![candidate(&repo, "skills/alpha", local_repository_hash(&source).unwrap())];
+        let preview = manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", &source).unwrap();
+        assert!(preview.matches[0].exact);
+        assert!(preview.matches[0].conflict.is_none());
+        let result = manager.apply_repository_matches(&[selection(&preview, &preview.matches[0], false)], &remote).unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let state = manager.load_state();
+        assert_eq!(state.installed["alpha"].repo_key, repo.key());
+        assert_eq!(state.installed["alpha"].repo_path, "skills/alpha");
+        assert!(state.installed["alpha"].original_dir.is_none());
+        assert!(state.instance_records.get("alpha").is_none());
+        assert_eq!(std::fs::read_to_string(source.join("scripts.txt")).unwrap(), "managed content");
+        assert!(std::fs::read_to_string(independent.join("SKILL.md")).unwrap().contains("independent"));
+    }
+
+    #[test]
+    fn managed_source_association_rejects_claimed_sources_and_changed_files() {
+        let (temp, manager, repo) = fixture();
+        let source = manager.source_dir.join("alpha");
+        let original = temp.path().join("shared/alpha");
+        write_skill(&manager.source_dir, "alpha", "managed");
+        write_skill(&temp.path().join("shared"), "alpha", "original");
+        let mut state = manager.load_state();
+        let installed = InstalledSkill {
+            id: "alpha".into(), name: "alpha".into(), description: String::new(),
+            repo_key: LOCAL_IMPORT_REPO_KEY.into(), repo_path: String::new(), content_hash: String::new(),
+            installed_at: String::new(), verified_cc_switch: false, install_channel: "local".into(),
+            original_dir: None, update_owner: String::new(),
+        };
+        state.installed.insert("alpha".into(), installed.clone());
+        state.instance_records.entry("alpha".into()).or_default().insert(original.clone(), SkillInstanceRecord {
+            installed, target: SkillInstanceTarget { path: original.clone(), identity: skill_path_identity(&original).unwrap() },
+            managed_copies: vec![SkillInstanceTarget { path: source.clone(), identity: skill_path_identity(&source).unwrap() }],
+        });
+        manager.save_state_unlocked(&state).unwrap();
+        let inventory = manager.try_local_inventory().unwrap();
+        assert!(inventory.iter().flat_map(|item| &item.locations)
+            .all(|location| location.association_path.is_none()));
+        let remote = vec![candidate(&repo, "skills/alpha", local_repository_hash(&source).unwrap())];
+        let preview = manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", &source).unwrap();
+        assert!(preview.matches.is_empty());
+        assert!(preview.warnings.iter().any(|warning| warning.contains("其他安装位置")));
+
+        state.instance_records.clear();
+        manager.save_state_unlocked(&state).unwrap();
+        let preview = manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", &source).unwrap();
+        std::fs::write(source.join("details.txt"), "changed").unwrap();
+        let result = manager.apply_repository_matches(&[selection(&preview, &preview.matches[0], false)], &remote).unwrap();
+        assert!(result.applied.is_empty());
+        assert!(!result.errors.is_empty());
+        assert_eq!(manager.load_state().installed["alpha"].repo_key, LOCAL_IMPORT_REPO_KEY);
     }
 
     fn selection(preview: &SkillRepositoryMatchPreview, found: &SkillRepositoryMatch, manual: bool) -> SkillRepositoryMatchSelection {

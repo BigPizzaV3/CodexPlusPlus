@@ -461,6 +461,7 @@ impl SkillsManager {
                     SkillUpdateBackupGroup {
                         installed: update.installed.clone(),
                         backup_ids,
+                        partially_deleted: false,
                         instance_path: update.instance_record.as_ref().map(|record| record.target.path.clone()),
                         published: update.paths.iter().map(|path| {
                             Ok(SkillPublishedSnapshot {

@@ -29,8 +29,8 @@ import { TopbarActions } from "./TopbarActions";
 type Result = { status: string; message: string };
 type Notify = (title: string, message: string, status?: "ok" | "failed") => Promise<void>;
 type SkillLocation = { manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; selectable?: boolean;
-  repoKey?: string; repoPath?: string; contentHash?: string; remoteHash?: string; updateAvailable?: boolean; updateOwner?: string };
-type Skill = { id: string; name: string; description: string; repoKey: string; repoPath?: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean;
+  associationPath?: string | null; repoKey?: string; repoPath?: string; contentHash?: string; remoteHash?: string; updateAvailable?: boolean; updateOwner?: string };
+type Skill = { id: string; name: string; description: string; repoKey: string; repoPath?: string; displayGroupRepoKey?: string | null; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean;
   /** 已经启用到哪些 Agent（codex / claude / grok）。 */
   agents?: string[];
   /** Codex++ 的受控源里有它；只在某个 Agent 自己目录里的 Skill 为 false。 */
@@ -46,7 +46,7 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
   locations?: SkillLocation[];
   displayInstances?: Skill[] };
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
-type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: string; restorePath?: string | null; purpose?: string | null };
+type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; restoreBlockedReason?: string | null; deleteWarning?: string | null };
 type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string>; backups?: SkillBackup[] };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 type SourceApplyResult = SkillPayload & { applied: Array<{ localId: string; fromRepoKey: string; toRepoKey: string; localPath?: string | null }> };
@@ -209,26 +209,29 @@ function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, updates, co
     </div>
   </ManagementDrawer>;
 }
-function SkillBackupList({ backups, busy, onRestore }: {
-  backups: SkillBackup[]; busy: boolean; onRestore: (backup: SkillBackup) => void;
+function SkillBackupList({ backups, busy, onRestore, onDelete }: {
+  backups: SkillBackup[]; busy: boolean; onRestore: (backup: SkillBackup) => void; onDelete: (backup: SkillBackup) => void;
 }) {
   return <>{backups.map((backup) => <div key={backup.id} className="mg-source-row">
     <div><strong>{backup.name || backup.skillId}</strong><small>{backup.backedUpAt}</small></div>
     <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
-      <small>{backup.restorePath || t("恢复位置未记录")}</small>
-      <Button disabled={busy} onClick={() => onRestore(backup)}>{t("恢复")}</Button></div>
+      <small>{t("备份位置")}：{backup.backupPath || t("未知")}</small>
+      <small>{t("恢复位置")}：{backup.restorePath || t("未记录")}</small>
+      {backup.restoreBlockedReason && <small className="mg-warning">{backup.restoreBlockedReason}</small>}
+      <div className="mg-row-actions"><Button disabled={busy || !!backup.restoreBlockedReason} onClick={() => onRestore(backup)}>{t("恢复")}</Button>
+        <button type="button" className="mg-icon-button" disabled={busy} title={t("删除备份")} aria-label={`${t("删除备份")} ${backup.name || backup.skillId}`} onClick={() => onDelete(backup)}><Trash2 size={14}/></button></div></div>
   </div>)}</>;
 }
-function SkillBackupsDrawer({ backups, busy, onClose, onRestore }: {
-  backups: SkillBackup[]; busy: boolean; onClose: () => void; onRestore: (backup: SkillBackup) => void;
+function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete }: {
+  backups: SkillBackup[]; busy: boolean; onClose: () => void; onRestore: (backup: SkillBackup) => void; onDelete: (backup: SkillBackup) => void;
 }) {
   return <ManagementDrawer title={t("Skill 备份")} dismissOnBackdrop={false} onClose={onClose}>
-    {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
+    {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDelete}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
   </ManagementDrawer>;
 }
-function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onUpdate, onReaPreview }: {
+function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onReaPreview }: {
   skill: Skill; count?: number; backups: SkillBackup[]; busy: boolean; onClose: () => void; onOpenUrl: (url: string) => void;
-  onOpenRepo: () => void; onMatch: (localPath?: string) => void; onRestore: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void;
+  onOpenRepo: () => void; onMatch: (localPath?: string) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void;
 }) {
   const url = repoUrl(skill);
   const channel = skillChannelLabel(skill);
@@ -236,6 +239,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
   const selectableOriginal = skill.conflictKind === "independent" && !!skill.originalDir
     && skill.locations?.some((location) => !location.managed);
   const associatedOriginal = skill.conflictKind === "equal-independent" && !!skill.originalDir && !!url;
+  const managedSourcePath = skill.locations?.find((location) => location.associationPath)?.associationPath;
   const rootLabel: Record<string, string> = { shared: t("共享"), codex: "Codex", claude: "Claude Code", grok: "Grok" };
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}>
     {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.displayInstances ? t("各 Agent 的安装内容或来源可能不同，请分别查看。") : skill.conflict}</p>}
@@ -262,6 +266,9 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
             {location.selectable && location.originalPath && (skill.displayInstances || skill.conflictKind === "equal-independent") && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(location.originalPath || undefined)}>{t(hasRepo ? "重新关联此安装位置" : "关联此安装位置")}</Button>
               {hasRepo && locationOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
       })}
+      {managedSourcePath && (skill.conflict || skill.displayInstances) && <>
+        <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}<div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(managedSourcePath)}>{t("关联受控源")}</Button></div></dd>
+      </>}
     </dl>
     {skill.id === "impeccable" && (skill.displayInstances ? skill.displayInstances.map((instance) => <section key={skillIdentityKey(instance)}>
       <h3>{instance.locations?.map((location) => rootLabel[location.rootKind] || location.rootKind).join(" / ")}</h3>
@@ -272,7 +279,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
       {(!skill.conflict || selectableOriginal || associatedOriginal) && url && skill.originalDir && skill.updateOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(skill.repoKey, skill.originalDir || undefined)}><CloudDownload size={14}/>{t("预览原位更新")}</Button>}
       {skill.id === "reverse-engineer-anything" && <Button disabled={busy} onClick={onReaPreview}><CloudDownload size={14}/>{t("预览安装器更新")}</Button>}
     </div>}
-    {backups.length > 0 && <section><h3>{t("备份")}</h3><SkillBackupList backups={backups} busy={busy} onRestore={onRestore}/></section>}
+    {backups.length > 0 && <section><h3>{t("备份")}</h3><SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDeleteBackup}/></section>}
   </ManagementDrawer>;
 }
 function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<Skill>; disabled: boolean; children: (handle: ReactNode) => ReactNode }) {
@@ -571,7 +578,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         for (const change of changes) {
           if (!change.localPath) continue;
           const includesPath = (skill: Skill) => skill.id === change.localId
-            && skill.locations?.some((location) => location.originalPath === change.localPath);
+            && skill.locations?.some((location) => location.originalPath === change.localPath || location.associationPath === change.localPath);
           const previous = data?.skills.find(includesPath);
           const current = result.skills?.find(includesPath);
           if (!previous || !current) continue;
@@ -597,6 +604,12 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     const destination = backup.restorePath ? `\n${backup.restorePath}` : "";
     if (!(await appConfirm(`${t("恢复此备份？")}${destination}`, { title: t("恢复 Skill 备份"), confirmText: t("恢复") }))) return;
     await run("restore_skill_backup", { backupId: backup.id });
+  };
+  const deleteBackup = async (backup: SkillBackup) => {
+    const path = backup.backupPath ? `\n${backup.backupPath}` : "";
+    const warning = backup.deleteWarning ? `\n\n${backup.deleteWarning}` : "";
+    if (!(await appConfirm(`${tf("删除 Skill 备份“{0}”？", [backup.name || backup.skillId])}${path}${warning}`, { title: t("删除 Skill 备份"), confirmText: t("删除"), danger: true }))) return;
+    await run("delete_skill_backup", { backupId: backup.id });
   };
   const openRepo = (key: string) => { setRepoSelection(key); setDetail(null); setRepoOpen(true); };
   const deferredQuery = useDeferredValue(query);
@@ -840,6 +853,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(currentDetail.repoKey)}
       onMatch={(localPath) => { setDetail(null); setMatchTarget({ id: currentDetail.id, localPath: localPath || (currentDetail.conflictKind === "independent" ? currentDetail.originalDir || undefined : undefined) }); }}
       onRestore={(backup) => void restoreBackup(backup)}
+      onDeleteBackup={(backup) => void deleteBackup(backup)}
       onUpdate={(repoKey, localPath) => { setUpdateTarget({ id: currentDetail.id, repoKey, localPath }); setDetail(null); }}
       onReaPreview={() => { setDetail(null); setReaPreviewOpen(true); }}/>}
     {matchTarget && <SkillSourceMatchDrawer repos={data?.repos || []} id={matchTarget.id} localPath={matchTarget.localPath}
@@ -847,7 +861,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         && (!skill.repoPath || !skill.repoKey.includes("/"))).map((skill) => skill.id)}
       onClose={() => setMatchTarget(null)} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}
     {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => setDuplicatesOpen(false)} onArchive={(previewId, id) => run("archive_skill_duplicate", { previewId, id })}/>}
-    {backupsOpen && <SkillBackupsDrawer backups={data?.backups || []} busy={busy} onClose={() => setBackupsOpen(false)} onRestore={(backup) => void restoreBackup(backup)}/>}
+    {backupsOpen && <SkillBackupsDrawer backups={data?.backups || []} busy={busy} onClose={() => setBackupsOpen(false)} onRestore={(backup) => void restoreBackup(backup)} onDelete={(backup) => void deleteBackup(backup)}/>}
     {updateTarget && <SkillInPlaceUpdateDrawer id={updateTarget.id} repoKey={updateTarget.repoKey} localPath={updateTarget.localPath} onClose={() => setUpdateTarget(null)} onExecute={(previewId) => run("execute_skill_in_place_update", { previewId })}/>}
     {reaPreviewOpen && <ReaUpdatePreviewDrawer onClose={() => setReaPreviewOpen(false)}/>}
   </div>;
