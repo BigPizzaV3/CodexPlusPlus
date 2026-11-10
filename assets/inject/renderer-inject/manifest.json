@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2836
+      "lines": 2837
     },
     {
       "name": "20-menu.js",
@@ -68,7 +68,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1904
+      "lines": 2032
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -183,7 +183,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 423
+      "lines": 441
     },
     {
       "name": "96-paste-fix.js",
@@ -208,7 +208,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 43
+      "lines": 44
     },
     {
       "name": "99-tail.js",

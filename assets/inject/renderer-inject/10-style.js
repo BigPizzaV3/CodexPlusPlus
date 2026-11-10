@@ -2778,6 +2778,7 @@
 
   /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
   function stopThreadScrollRestore() {
+    if (window.__codexThreadScrollRuntime?.activeScroller) bindThreadScrollListener(null);
     clearTimeout(window.__codexThreadScrollSaveTimer);
     window.__codexThreadScrollSaveTimer = null;
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
