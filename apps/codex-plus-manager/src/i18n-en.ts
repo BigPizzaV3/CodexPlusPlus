@@ -5,6 +5,8 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "跨账号保留本地项目": "Keep local projects across accounts",
+  "同一 Codex 工作目录共用普通本地项目与会话分类。云项目、远端项目和登录信息保持隔离。": "Share ordinary local projects and thread assignments within one Codex home. Cloud projects, remote projects, and sign-in information stay separate.",
   "Codex 登录": "Codex sign-in",
   "额度待刷新": "Usage awaiting refresh",
   "待刷新": "Awaiting refresh",

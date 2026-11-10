@@ -52,6 +52,7 @@
       { id: "offline-auto-review", name: "拿不到远程开关时补开「替我审批」", apply: codexPlusOfflineAutoReviewExtension },
       { id: "statsig-overrides", name: "Statsig 界面增强", apply: codexPlusStatsigOverridesExtension },
       { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
+      { id: "local-project-continuity", name: "跨账号保留本地项目", apply: codexPlusLocalProjectContinuityExtension },
       // 悬浮球是独立运行时，自己按停用集合判断；这两项让它在装卸、改设置时重新算一次。
       { id: "stepwise", name: "下一步建议", apply: codexPlusStepwiseExtension },
       { id: "answer-outline", name: "回答大纲", apply: codexPlusStepwiseExtension },
