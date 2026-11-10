@@ -3035,6 +3035,8 @@ export const EN_PLAIN: Record<string, string> = {
   "子目录": "Subdirectory",
   "例如 skills/.curated，留空表示仓库根": "e.g. skills/.curated — leave empty for the repository root",
   "添加仓库源": "Add repository",
+  "刷新目录": "Refresh catalog",
+  "刷新目录中": "Refreshing catalog",
   "卸载备份": "Uninstall backups",
   "卸载 Skill 前会把源目录整体挪到备份目录。备份只累积不自动清理，需要时手动删。":
     "Uninstalling moves the source directory into the backup folder. Backups accumulate and are never pruned automatically — delete them yourself when you no longer need them.",

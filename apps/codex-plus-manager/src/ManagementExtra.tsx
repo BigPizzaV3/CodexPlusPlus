@@ -255,6 +255,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
   const managedSourcePath = skill.managedSourceDir || managedAssociationPath;
   const rootLabel: Record<string, string> = { shared: t("共享"), codex: "Codex", claude: "Claude Code", grok: "Grok" };
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}>
+    <div className="mg-skill-detail">
     {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.displayInstances ? t("各 Agent 的安装内容或来源可能不同，请分别查看。") : skill.conflict}</p>}
     <dl className="mg-detail">
       <dt>{t(!skill.displayInstances && !url && !skill.bundled ? "来源" : "上游来源")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : skill.bundled ? t("内置") : t("本地")}{associatedOriginal && <small> · {t("仅关联所选安装位置")}</small>}</dd>
@@ -295,6 +296,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
       {skill.id === "reverse-engineer-anything" && <Button disabled={busy} onClick={onReaPreview}><CloudDownload size={14}/>{t("预览安装器更新")}</Button>}
     </div>}
     {backups.length > 0 && <section><h3>{t("备份")}</h3><SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDeleteBackup}/></section>}
+    </div>
   </ManagementDrawer>;
 }
 function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<Skill>; disabled: boolean; children: (handle: ReactNode) => ReactNode }) {
@@ -343,6 +345,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const batchOwner = useRef(Symbol("skills-page"));
   const mounted = useRef(false);
   const loadingRequests = useRef(0);
+  const catalogRequests = useRef(0);
   const dataRequest = useRef(0);
   const localReload = useRef<{ pending: Promise<void> | null; dirty: boolean }>({ pending: null, dirty: false });
   const [repoOpen, setRepoOpen] = useState(false);
@@ -354,6 +357,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [reaPreviewOpen, setReaPreviewOpen] = useState(false);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshingCatalog, setRefreshingCatalog] = useState(() => !!skillPageCache.catalogPending);
   // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
   const focus = useAgentFocus();
   const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
@@ -448,6 +452,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       && Date.now() - skillPageCache[startedKey] < (local ? 30_000 : 300_000)) return;
     loadingRequests.current++;
     setLoading(true);
+    if (!local) {
+      catalogRequests.current++;
+      setRefreshingCatalog(true);
+    }
     const request = ++dataRequest.current;
     try {
       const r = await requestPayload(command);
@@ -462,6 +470,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     } finally {
       loadingRequests.current--;
       if (mounted.current && !loadingRequests.current) setLoading(false);
+      if (!local) {
+        catalogRequests.current--;
+        if (mounted.current && !catalogRequests.current) setRefreshingCatalog(false);
+      }
     }
   };
   useEffect(() => {
@@ -470,6 +482,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     skillPageCache.mounted++;
     const catalogPending = skillPageCache.catalogPending;
     if (catalogPending) void load("refresh_skill_catalog", true);
+    else setRefreshingCatalog(false);
     void (async () => {
       await load("list_installed_skills", true);
       const pending = skillPageCache.localPending;
@@ -882,7 +895,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     || (conflictIds.has(detail.id) ? null : detail) : null;
   return <div className="mg-page cx-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
-      <Button onClick={() => void load()} disabled={busy || loading}><RefreshCw size={14}/>{t("刷新目录")}</Button>
+      <Button onClick={() => void load()} disabled={busy || loading || refreshingCatalog}><RefreshCw size={14}/>{t(refreshingCatalog ? "刷新目录中" : "刷新目录")}</Button>
       <Menu>
         <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
         <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>

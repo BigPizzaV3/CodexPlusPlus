@@ -263,10 +263,11 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     // 骨架组件把一部分内容放在属性里：页面操作、筛选条尾部按钮、行标题旁的小标签与说明。
     for (const key of ["actions", "trailing", "badges", "detail"]) if (node.props?.[key]) collect(node.props[key], result);
   };
-  const render = () => {
+  const flushEffects = () => effects.splice(0).forEach((run) => run());
+  const render = (flush = true) => {
     cursor = 0; elements = []; effects.length = 0;
     collect(context.exports.SkillsPage({ notify: async (title: string, message: string, status: string) => { notices.push({ title, message, status }); } }), elements);
-    effects.splice(0).forEach((run) => run());
+    if (flush) flushEffects();
   };
   const find = (predicate: (node: Element) => boolean) => {
     const result = elements.find(predicate);
@@ -317,7 +318,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const drag = (from: string, to: string) => { find((node) => node.type === "DndContext").props.onDragEnd({ active: { id: from }, over: { id: to } }); render(); };
   const savedState = () => JSON.parse(storage.get("codex-plus-plus.skill-groups.v1")!);
   const unmount = () => { for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
-  return { render, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, cache, calls, requests, notices, hooks };
+  return { render, flushEffects, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, cache, calls, requests, notices, hooks };
 }
 
 test("reopening shows the last committed inventory until the background scan completes", async () => {
@@ -441,6 +442,72 @@ test("quick page switches reuse recent scans, while a manual refresh runs immedi
   reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
   await tick();
   assert.deepEqual(reopened.calls, ["refresh_skill_catalog"]);
+  reopened.unmount();
+});
+
+test("catalog refresh shows progress without confusing a local scan, and clears it on failure", async () => {
+  const ui = createHarness();
+  let finishLocal!: (result: FixtureServer) => void;
+  let finishCatalog!: (result: FixtureServer) => void;
+  ui.hooks.list = (command) => new Promise((resolve) => {
+    if (command === "list_installed_skills") finishLocal = resolve;
+    else finishCatalog = resolve;
+  });
+  ui.render(); ui.render();
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, true);
+  finishLocal(structuredClone(ui.server));
+  await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  finishCatalog(structuredClone(ui.server));
+  await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+
+  let failRefresh!: (error: Error) => void;
+  ui.hooks.list = () => new Promise((_resolve, reject) => { failRefresh = reject; });
+  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  ui.render();
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  failRefresh(new Error("catalog unavailable"));
+  await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.ok(ui.notices.some((notice) => notice.message.includes("catalog unavailable")));
+  ui.unmount();
+});
+
+test("a catalog refresh remains visible when reopening the page", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render();
+  let finishRefresh!: (result: FixtureServer) => void;
+  first.hooks.list = () => new Promise((resolve) => { finishRefresh = resolve; });
+  first.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  first.unmount();
+
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render();
+  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.deepEqual(reopened.calls, []);
+  finishRefresh(structuredClone(first.server));
+  await tick(); reopened.render();
+  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  reopened.unmount();
+});
+
+test("a refresh settling before mount effects does not leave its progress stuck", async () => {
+  const first = createHarness();
+  first.render(); await tick(); first.render();
+  let finishRefresh!: (result: FixtureServer) => void;
+  first.hooks.list = () => new Promise((resolve) => { finishRefresh = resolve; });
+  first.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  first.unmount();
+
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.render(false);
+  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  finishRefresh(structuredClone(first.server));
+  await tick();
+  reopened.flushEffects();
+  await tick(); reopened.render();
+  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
   reopened.unmount();
 });
 
