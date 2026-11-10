@@ -2535,7 +2535,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, offlineAutoReview: false, statsigOverrides: false, reportedUsageCompaction: false, localProjectContinuity: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, offlineAutoReview: false, statsigOverrides: false, reportedUsageCompaction: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2561,7 +2561,6 @@
     offlineAutoReview: "codexAppOfflineAutoReview",
     statsigOverrides: "codexAppStatsigOverrides",
     reportedUsageCompaction: "codexAppReportedUsageCompaction",
-    localProjectContinuity: "codexAppLocalProjectContinuity",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -2600,7 +2599,6 @@
         offlineAutoReview: "offline-auto-review",
         statsigOverrides: "statsig-overrides",
         reportedUsageCompaction: "reported-usage-compaction",
-        localProjectContinuity: "local-project-continuity",
         stepwise: "stepwise",
         answerOutline: "answer-outline",
         petRealMouseLook: "pet-real-mouse",
@@ -2622,7 +2620,6 @@
         offlineAutoReview: false,
         statsigOverrides: false,
         reportedUsageCompaction: false,
-        localProjectContinuity: false,
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
@@ -5601,7 +5598,45 @@
   }
   // Keep only ordinary local project metadata in an unscoped, per-home record.
   // Native account selection, atoms, cloud projects and pending messages stay native.
-  function createCodexLocalProjectContinuity({ services, locks, enabled, onError = () => {} }) {
+  function codexLocalProjectServicesFromModule(module) {
+    const candidates = Object.values(module || {}).filter((value) => {
+      if (!value || typeof value !== "object") return false;
+      try {
+        return ["applicationState", "projects", "threadProjectAssignments", "executionPaths"]
+          .every((name) => Object.prototype.hasOwnProperty.call(value, name));
+      } catch { return false; }
+    });
+    const unique = [...new Set(candidates)];
+    return unique.length === 1 ? unique[0] : null;
+  }
+
+  async function loadCodexLocalProjectServices({
+    urls = Array.from(document.scripts || []).map((script) => script.src),
+    importModule = (url) => import(url),
+    legacy = () => codexHostServices(),
+  } = {}) {
+    // New Rspack builds have numeric assets. Inspect only modules already executed
+    // by the native page; running a factory again would create a second RPC client.
+    const services = new Set();
+    for (const url of [...new Set(urls)].filter((url) => /\/assets\/\d+\.[a-f\d]+\.js(?:\?.*)?$/.test(url))) {
+      let runtime;
+      try { runtime = (await importModule(url)).__webpack_require__; } catch { continue; }
+      if (!runtime?.c) continue;
+      for (const module of Object.values(runtime.c)) {
+        try {
+          const candidate = codexLocalProjectServicesFromModule(module?.exports);
+          if (candidate) services.add(candidate);
+        } catch {}
+      }
+    }
+    if (services.size > 1) throw Error("Ambiguous native local project services");
+    if (services.size === 1) return [...services][0];
+    const candidate = codexLocalProjectServicesFromModule({ services: await legacy() });
+    if (!candidate) throw Error("Native local project services unavailable");
+    return candidate;
+  }
+
+  function createCodexLocalProjectContinuity({ services, locks, enabled = () => true, onError = () => {}, onReady = () => {} }) {
     const key = "codex-plus-shared-local-projects-v1";
     const ownerKey = "electron-account-renderer-state-v1";
     const projectKey = "local-projects";
@@ -5949,6 +5984,8 @@
             view = await restore(token, shared, view);
             restorePending = false;
           }
+          onReady({ status: "ready", revision: shared.revision,
+            projects: Object.keys(shared.projects).length, memberships: Object.keys(shared.memberships).length });
           return await operation({ token, shared, view });
         } finally {
           restoreSeen = null;
@@ -6108,33 +6145,42 @@
     };
   }
 
-  function codexPlusLocalProjectContinuityExtension(ctx) {
+  function installCodexLocalProjectContinuity() {
+    window.__codexPlusLocalProjectContinuity?.dispose();
     let runtime = null;
     let starting = null;
     let disposed = false;
-    let wasEnabled = false;
-    const enabled = () => !disposed && codexPlusSettings().localProjectContinuity === true;
-    const report = (message) => {
-      window.__codexPlusLocalProjectContinuityStatus = { status: "unavailable", message };
+    let retry = null;
+    let attempts = 0;
+    const enabled = () => !disposed;
+    const report = (message, error) => {
+      const reason = error?.name === "CodexLocalProjectScopeChanged" ? "scope-changed" : "native-service-unavailable";
+      window.__codexPlusLocalProjectContinuityStatus = { status: "unavailable", message, reason };
       if (typeof sendCodexPlusDiagnostic === "function")
-        sendCodexPlusDiagnostic("local_project_continuity_unavailable", {});
+        sendCodexPlusDiagnostic("local_project_continuity_unavailable", { reason });
+    };
+    const ready = (status) => {
+      const wasReady = window.__codexPlusLocalProjectContinuityStatus?.status === "ready";
+      window.__codexPlusLocalProjectContinuityStatus = status;
+      if (!wasReady && typeof sendCodexPlusDiagnostic === "function")
+        sendCodexPlusDiagnostic("local_project_continuity_ready", { projects: status.projects, memberships: status.memberships });
     };
     const sync = async () => {
-      const changed = wasEnabled !== enabled();
-      wasEnabled = enabled();
-      if (!wasEnabled) return;
-      if (runtime) return changed ? runtime.resume() : undefined;
+      if (disposed) return;
+      if (runtime) return runtime.reconcile();
       if (starting) return starting;
       starting = (async () => {
-        const services = await codexHostServices();
+        const services = await loadCodexLocalProjectServices();
         if (disposed) return;
-        for (const name of ["applicationState", "projects", "threadProjectAssignments", "executionPaths"])
-          if (!Object.prototype.hasOwnProperty.call(services, name)) throw Error("Native project service unavailable");
-        runtime = createCodexLocalProjectContinuity({ services, locks: navigator.locks, enabled, onError: report });
-        window.__codexPlusLocalProjectContinuityStatus = { status: "ready" };
+        runtime = createCodexLocalProjectContinuity({ services, locks: navigator.locks, enabled, onError: report, onReady: ready });
         await runtime.reconcile();
-      })().catch(() => report("Local project continuity is unavailable in this Codex version."))
-        .finally(() => { starting = null; });
+      })().catch((error) => report("Local project continuity is unavailable in this Codex version.", error))
+        .finally(() => {
+          starting = null;
+          if (!disposed && !runtime && attempts < 8) {
+            retry = setTimeout(() => { retry = null; void sync(); }, Math.min(5000, 250 * 2 ** attempts++));
+          }
+        });
       return starting;
     };
     const incoming = (event) => {
@@ -6143,14 +6189,14 @@
       runtime?.notify(event.data);
     };
     window.addEventListener("message", incoming);
-    ctx.on("settings/loaded", sync);
-    ctx.on("settings/changed", sync);
-    ctx.setTimeout(sync, 0);
-    ctx.effect(() => () => {
+    const dispose = () => {
       disposed = true;
+      if (retry !== null) clearTimeout(retry);
       window.removeEventListener("message", incoming);
       runtime?.dispose();
-    });
+    };
+    window.__codexPlusLocalProjectContinuity = { dispose };
+    void sync();
   }
   async function loadBackendSettings() {
     const loaded = await loadBackendSettingsState();
@@ -25216,7 +25262,6 @@
       { id: "offline-auto-review", name: "拿不到远程开关时补开「替我审批」", apply: codexPlusOfflineAutoReviewExtension },
       { id: "statsig-overrides", name: "Statsig 界面增强", apply: codexPlusStatsigOverridesExtension },
       { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
-      { id: "local-project-continuity", name: "跨账号保留本地项目", apply: codexPlusLocalProjectContinuityExtension },
       // 悬浮球是独立运行时，自己按停用集合判断；这两项让它在装卸、改设置时重新算一次。
       { id: "stepwise", name: "下一步建议", apply: codexPlusStepwiseExtension },
       { id: "answer-outline", name: "回答大纲", apply: codexPlusStepwiseExtension },
@@ -26928,6 +26973,7 @@
   installCodexConfigReadDeadline();
   void installCodexForkReadinessFallback();
   installCodexForkStatsigFallback();
+  if (typeof installCodexLocalProjectContinuity === "function") installCodexLocalProjectContinuity();
   installCodexPlusForceChineseLocale();
   // 打字特效、桌宠（含大肥鱼）由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;

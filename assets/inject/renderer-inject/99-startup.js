@@ -1,6 +1,7 @@
   installCodexConfigReadDeadline();
   void installCodexForkReadinessFallback();
   installCodexForkStatsigFallback();
+  if (typeof installCodexLocalProjectContinuity === "function") installCodexLocalProjectContinuity();
   installCodexPlusForceChineseLocale();
   // 打字特效、桌宠（含大肥鱼）由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;

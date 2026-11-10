@@ -1321,9 +1321,6 @@ pub struct BackendSettings {
     /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
     #[serde(rename = "codexAppReportedUsageCompaction", default)]
     pub codex_app_reported_usage_compaction: bool,
-    /// Only ordinary local project metadata is shared inside one Codex home. Default off.
-    #[serde(rename = "codexAppLocalProjectContinuity", default)]
-    pub codex_app_local_project_continuity: bool,
     /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
     /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
     #[serde(rename = "managerAgentFocus", default)]
@@ -1636,7 +1633,6 @@ impl Default for BackendSettings {
             codex_app_offline_auto_review: false,
             codex_app_statsig_overrides: false,
             codex_app_reported_usage_compaction: false,
-            codex_app_local_project_continuity: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
@@ -3086,7 +3082,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppStatsigOverrides");
     merge_bool_setting(target, source, "codexAppReportedUsageCompaction");
-    merge_bool_setting(target, source, "codexAppLocalProjectContinuity");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
     {
@@ -6188,18 +6183,6 @@ experimental_bearer_token = "sk-existing""#
         assert!(store.load().unwrap().codex_app_turn_rewind);
         store.update(json!({ "codexAppTurnRewind": false })).unwrap();
         assert!(!store.load().unwrap().codex_app_turn_rewind);
-    }
-
-    #[test]
-    fn local_project_continuity_is_opt_in_and_round_trips() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = SettingsStore::new(temp.path().join("settings.json"));
-        assert!(!BackendSettings::default().codex_app_local_project_continuity);
-        store.save(&BackendSettings::default()).unwrap();
-        store.update(json!({ "codexAppLocalProjectContinuity": true })).unwrap();
-        assert!(store.load().unwrap().codex_app_local_project_continuity);
-        store.update(json!({ "codexAppLocalProjectContinuity": false })).unwrap();
-        assert!(!store.load().unwrap().codex_app_local_project_continuity);
     }
 
     #[test]

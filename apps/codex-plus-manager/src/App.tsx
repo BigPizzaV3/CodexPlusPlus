@@ -521,7 +521,6 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppStatsigOverrides: boolean;
   /** Codex App 和 CLI 已经经过本地代理的请求按上报用量判断压缩，默认关。 */
   codexAppReportedUsageCompaction: boolean;
-  codexAppLocalProjectContinuity: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
@@ -1610,7 +1609,6 @@ const defaultSettings: BackendSettings = {
   codexAppOfflineAutoReview: false,
   codexAppStatsigOverrides: false,
   codexAppReportedUsageCompaction: false,
-  codexAppLocalProjectContinuity: false,
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,

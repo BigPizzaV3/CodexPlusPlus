@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const source = readFileSync(new URL("../../../assets/inject/renderer-inject/35-local-project-continuity.js", import.meta.url), "utf8");
 const create = new Function(`${source}\nreturn createCodexLocalProjectContinuity;`)();
+const loadServices = new Function(`${source}\nreturn loadCodexLocalProjectServices;`)();
 const copy = (value: any) => value === undefined ? undefined : structuredClone(value);
 const project = (id: string, name = id) => ({
   id, name, rootPaths: [`C:/work/${id}`], createdAt: 1, updatedAt: 2,
@@ -199,7 +200,7 @@ const baseline = () => ({
   "thread-project-assignments": { t: assignment("p") },
 });
 
-test("default-off does not read or change native state", async () => {
+test("an inactive test lifecycle does not read or change native state", async () => {
   const f = fixture(baseline());
   f.enable(false);
   f.start();
@@ -373,7 +374,7 @@ test("no-op notifications and repeated reconciliation do not write or loop", asy
   assert.equal(f.calls.length, count);
   f.runtime.dispose();
 });
-test("re-enable forces restoration after disabled same-owner reset", async () => {
+test("resuming a paused test lifecycle restores a same-owner reset", async () => {
   const f = fixture({ ...baseline(), "electron-account-renderer-state-v1": { owner: null, inactive: {} } });
   f.start();
   await f.runtime.reconcile();
@@ -593,4 +594,83 @@ test("explicit unassignment stays false when native cwd inference runs", async (
   assert.deepEqual(f.causes, []);
   assert.deepEqual(f.errors, []);
   f.runtime.dispose();
+});
+test("numeric Rspack services are discovered from executed modules without running factories", async () => {
+  const f = fixture(baseline());
+  let factoryRuns = 0;
+  let legacyCalls = 0;
+  const runtime = {
+    c: { GaA7: { exports: { appServices: f.services } } },
+    m: { unused() { factoryRuns++; } },
+  };
+  const services = await loadServices({
+    urls: ["app://-/assets/782259.7a3e865ee5.js", "app://-/assets/348410.fcfef000d0.js"],
+    importModule: async (url: string) => url.includes("348410") ? { __webpack_require__: runtime } : { __webpack_modules__: runtime.m },
+    legacy: async () => { legacyCalls++; throw Error("named assets absent"); },
+  });
+  assert.equal(services, f.services);
+  assert.equal(factoryRuns, 0);
+  assert.equal(legacyCalls, 0);
+  f.start({ services, enabled: undefined });
+  await f.runtime.reconcile();
+  f.reset(null);
+  await f.drain();
+  assert.equal(f.data["electron-account-renderer-state-v1"].owner, null);
+  assert.deepEqual(f.data["local-projects"], baseline()["local-projects"]);
+  assert.deepEqual(f.data["thread-project-assignments"], { t: assignment("p") });
+  assert.deepEqual(f.errors, []);
+  f.runtime.dispose();
+});
+test("ambiguous Rspack services are refused rather than choosing an account or home", async () => {
+  await assert.rejects(loadServices({
+    urls: ["app://-/assets/348410.fcfef000d0.js"],
+    importModule: async () => ({ __webpack_require__: { c: {
+      a: { exports: { services: fixture().services } }, b: { exports: { services: fixture().services } },
+    } } }),
+    legacy: async () => { throw Error("must not fall back after ambiguity"); },
+  }), /Ambiguous/);
+});
+test("legacy named-module services still work", async () => {
+  const f = fixture();
+  assert.equal(await loadServices({ urls: [], legacy: async () => f.services }), f.services);
+});
+test("compatibility is started automatically and has no visible setting or extension", () => {
+  const startup = readFileSync(new URL("../../../assets/inject/renderer-inject/99-startup.js", import.meta.url), "utf8");
+  const catalog = readFileSync(new URL("../../../crates/codex-plus-core/assets/enhancement-settings.json", import.meta.url), "utf8");
+  const builtins = readFileSync(new URL("../../../assets/inject/renderer-inject/96-builtin-extensions.js", import.meta.url), "utf8");
+  assert.match(startup, /installCodexLocalProjectContinuity\(\)/);
+  assert.doesNotMatch(catalog, /codexAppLocalProjectContinuity|local-project-continuity/);
+  assert.doesNotMatch(builtins, /local-project-continuity/);
+  assert.doesNotMatch(source, /codexPlusSettings\(\)\.localProjectContinuity/);
+});
+test("automatic installer retries late services and disposes old generation on reinjection", async () => {
+  const f = fixture(baseline());
+  const listeners = new Set<any>();
+  const timers: Array<() => any> = [];
+  const window: any = {
+    location: { origin: "app://-" },
+    addEventListener(name: string, listener: any) { assert.equal(name, "message"); listeners.add(listener); },
+    removeEventListener(_name: string, listener: any) { listeners.delete(listener); },
+  };
+  let loads = 0;
+  const install = new Function("window", "navigator", "setTimeout", "clearTimeout", "loader", `${source}
+    loadCodexLocalProjectServices=loader;
+    return installCodexLocalProjectContinuity;`)(
+    window, { locks: { request: async (_name: string, callback: any) => callback() } },
+    (callback: () => any) => { timers.push(callback); return timers.length; }, () => {},
+    async () => { if (++loads === 1) throw Error("services still initializing"); return f.services; });
+  install();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(window.__codexPlusLocalProjectContinuityStatus.status, "unavailable");
+  assert.equal(timers.length, 1);
+  timers.shift()!();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(window.__codexPlusLocalProjectContinuityStatus.status, "ready");
+  const oldServices = f.services.projects;
+  install();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(listeners.size, 1);
+  assert.notEqual(f.services.projects, oldServices);
+  window.__codexPlusLocalProjectContinuity.dispose();
+  assert.equal(listeners.size, 0);
 });

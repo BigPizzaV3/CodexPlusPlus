@@ -195,18 +195,6 @@
       ]
     },
     {
-      "key": "codexAppLocalProjectContinuity",
-      "builtin": "local-project-continuity",
-      "group": "chat",
-      "control": "bool",
-      "title": "跨账号保留本地项目",
-      "description": "同一 Codex 工作目录共用普通本地项目与会话分类。云项目、远端项目和登录信息保持隔离。",
-      "surfaces": [
-        "manager",
-        "codex"
-      ]
-    },
-    {
       "key": "codexAppSessionDelete",
       "builtin": "session-delete",
       "group": "chat",
