@@ -19636,6 +19636,42 @@
     return null;
   }
 
+  // issue #3044：新版 Codex（rolldown + ESM 分块）把管理器原子从 app-initial-* 搬到
+  // app-shared-*，导出名每次构建都变。旧逻辑只按块名和数字分块找，全部落空后报
+  // 「版本不兼容」。改为按能力识别：遍历候选 ESM 块的全部导出，认「scope.get 出来的
+  // 值带 forHost」的那一个。块名只做排序提示，不影响正确性。
+  const codexPlusAppServerModuleHints = ["app-shared-", "app-initial-", "app-main-", "app-primary-", "index.client-", "chatg"];
+  const codexPlusAppServerModuleScanLimit = 16;
+
+  function codexPlusAppServerModuleRank(url) {
+    const name = (url.split("/").pop() || "").toLowerCase();
+    const hint = codexPlusAppServerModuleHints.findIndex((part) => name.includes(part));
+    return hint < 0 ? codexPlusAppServerModuleHints.length : hint;
+  }
+
+  async function codexPlusFindManagerByCapability(scope, managerFrom) {
+    const urls = codexAppAssetCandidateUrls()
+      .filter((url) => !url.includes("__codexPlusNativeFastCompiled"))
+      .sort((left, right) => codexPlusAppServerModuleRank(left) - codexPlusAppServerModuleRank(right));
+    let scanned = 0;
+    for (const url of urls) {
+      if (scanned >= codexPlusAppServerModuleScanLimit) break;
+      let module;
+      try {
+        module = await import(url);
+      } catch {
+        continue; // 块还没落地或已失效，跳过不标记
+      }
+      scanned += 1;
+      for (const value of Object.values(module || {})) {
+        if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+        const manager = managerFrom(value);
+        if (manager) return { manager, atom: value, url };
+      }
+    }
+    return { manager: null, scanned };
+  }
+
   async function codexPlusAppServerClient(hostId = "local") {
     const scope = codexPlusFindAppScope();
     if (!scope) throw new Error("Codex 界面还没准备好，稍后再试");
@@ -19649,7 +19685,20 @@
     };
     let manager = codexPlusManagerAtom ? managerFrom(codexPlusManagerAtom) : null;
     if (!manager) {
-      // 数字分块只检查当前页面已执行的模块缓存，不执行候选工厂或新加载懒模块。
+      // 优先按能力识别：遍历 ESM 块导出，认 scope.get 出来带 forHost 的值。
+      const found = await codexPlusFindManagerByCapability(scope, managerFrom);
+      if (found.manager) {
+        manager = found.manager;
+        codexPlusManagerAtom = found.atom;
+      } else {
+        sendCodexPlusDiagnostic("app_server_client_atom_missing", {
+          scannedModules: found.scanned,
+          candidateUrls: codexAppAssetCandidateUrls().length,
+        });
+      }
+    }
+    if (!manager) {
+      // 回退：旧版 webpack 数字分块（兼容 2.6.2 及更早）。
       const entries = Array.from(document.scripts || []).map((script) => script.src)
         .filter((url) => /\/assets\/\d+\.[a-f\d]+\.js$/.test(url));
       for (const url of entries) {
@@ -19673,6 +19722,7 @@
       }
     }
     if (!manager) {
+      // 最后回退：只试 app-initial-（旧版 ESM 布局）。
       const module = await loadOptionalCodexAppModule("app-initial-");
       for (const value of Object.values(module || {})) {
         if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
