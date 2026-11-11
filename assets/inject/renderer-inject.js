@@ -3451,6 +3451,7 @@
 
   /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
   function stopThreadScrollRestore() {
+    if (window.__codexThreadScrollRuntime?.activeScroller) bindThreadScrollListener(null);
     clearTimeout(window.__codexThreadScrollSaveTimer);
     window.__codexThreadScrollSaveTimer = null;
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
@@ -9823,6 +9824,12 @@
     return match ? decodeURIComponent(match[1]) : "";
   }
 
+  function threadScrollRestoreEnabled() {
+    return codexPlusBackendSettingsLoaded
+      && codexPlusBackendSettings.codexAppThreadScrollRestore === true
+      && codexPlusSettings().threadScrollRestore;
+  }
+
   function finiteNonNegativeNumber(value) {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
@@ -9848,9 +9855,15 @@
     return { session_id: locationThreadId(), title: "" };
   }
 
+  function currentThreadScrollSessionId() {
+    return validThreadScrollSessionKey(currentSessionRef().session_id)
+      || validThreadScrollSessionKey(codexPlusCurrentSessionId());
+  }
+
   function readThreadScrollEntries() {
     if (window.__codexThreadScrollEntries && typeof window.__codexThreadScrollEntries === "object") {
-      return { ...window.__codexThreadScrollEntries };
+      return Object.fromEntries(Object.entries(window.__codexThreadScrollEntries)
+        .filter(([, value]) => finiteNonNegativeNumber(value?.scrollHeight) > 0 && finiteNonNegativeNumber(value?.clientHeight) > 0));
     }
     try {
       const parsed = JSON.parse(localStorage.getItem(codexThreadScrollKey) || "{}");
@@ -9863,12 +9876,14 @@
       Object.entries(rawEntries).forEach(([key, value]) => {
         const safeKey = validThreadScrollSessionKey(key);
         if (!safeKey || !value || typeof value !== "object") return;
+        if (!finiteNonNegativeNumber(value.scrollHeight) || !finiteNonNegativeNumber(value.clientHeight)) return;
         entries[safeKey] = {
           top: finiteScrollNumber(value.top),
           scrollHeight: finiteNonNegativeNumber(value.scrollHeight),
           clientHeight: finiteNonNegativeNumber(value.clientHeight),
           at: finiteNonNegativeNumber(value.at),
         };
+        if (typeof value.atBottom === "boolean") entries[safeKey].atBottom = value.atBottom;
       });
       window.__codexThreadScrollEntries = entries;
       return { ...entries };
@@ -9907,8 +9922,10 @@
   }
 
   function currentThreadScroller() {
-    const explicit = document.querySelector(".thread-scroll-container");
-    if (explicit?.isConnected) return explicit;
+    const explicit = [...document.querySelectorAll(".thread-scroll-container")];
+    if (explicit.length) {
+      return explicit.find((node) => node.isConnected && node.clientWidth > 0 && node.clientHeight > 0) || null;
+    }
     const root = conversationRoot();
     if (!root?.isConnected) return document.scrollingElement || document.documentElement;
     const style = getComputedStyle(root);
@@ -9950,13 +9967,15 @@
     threadScrollRuntime().restoreLock = null;
   }
 
-  function cancelThreadScrollRestoreForUserIntent() {
+  function cancelThreadScrollRestoreForUserIntent(sessionId) {
     const runtime = threadScrollRuntime();
-    const cancelledSessionId = validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
-      || validThreadScrollSessionKey(currentSessionRef().session_id)
+    const cancelledSessionId = validThreadScrollSessionKey(sessionId)
+      || validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
+      || currentThreadScrollSessionId()
       || validThreadScrollSessionKey(runtime.activeSessionId);
     runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
     runtime.userCancelledRestoreSessionId = cancelledSessionId;
+    runtime.pendingNavigation = null;
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
     window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
     clearThreadScrollRestoreTimers();
@@ -10011,6 +10030,9 @@
     runtime.restoreLock = {
       sessionId: key,
       targetTop: finiteScrollNumber(entry.top),
+      scrollHeight: entry.scrollHeight,
+      clientHeight: entry.clientHeight,
+      atBottom: entry.atBottom,
       expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
     };
     return runtime.restoreLock;
@@ -10022,9 +10044,12 @@
     if (entry) startThreadScrollRestoreLock(key, entry);
   }
 
-  function threadScrollTargetTop(scroller, targetTop) {
+  function threadScrollTargetTop(scroller, entry) {
     const range = threadScrollRange(scroller);
-    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
+    const targetTop = finiteScrollNumber(entry.targetTop ?? entry.top);
+    const savedBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
+    const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom : Math.abs(targetTop - savedBottom) <= 2;
+    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, targetTop));
   }
 
   function threadScrollNearBottom(scroller, top) {
@@ -10046,10 +10071,10 @@
   function shouldBlockThreadScrollAutobottom(scroller, top) {
     const runtime = threadScrollRuntime();
     const lock = currentThreadScrollRestoreLock();
-    if (!lock || !codexPlusSettings().threadScrollRestore) return false;
+    if (!lock || !threadScrollRestoreEnabled()) return false;
     const guardScroller = threadScrollGuardScroller(scroller);
     if (runtime.applyingRestore || !guardScroller) return false;
-    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
+    const targetTop = threadScrollTargetTop(guardScroller, lock);
     return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
   }
 
@@ -10172,13 +10197,13 @@
     }
     runtime.activeScroller = scroller;
     runtime.scrollListenerUsesWindow = nextUsesWindow;
-    if (!scroller || !codexPlusSettings().threadScrollRestore) return;
+    if (!scroller || !threadScrollRestoreEnabled()) return;
     const target = nextUsesWindow ? window : scroller;
     target.addEventListener("scroll", runtime.scrollListener, true);
   }
 
   function saveThreadScrollPositionNow(sessionId = threadScrollRuntime().activeSessionId, scroller = threadScrollRuntime().activeScroller) {
-    if (!codexPlusSettings().threadScrollRestore) return;
+    if (!threadScrollRestoreEnabled()) return;
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
     if (!key || !scroller) return;
@@ -10189,6 +10214,10 @@
       clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
       at: Date.now(),
     };
+    if (!snapshot.scrollHeight || !snapshot.clientHeight) return;
+    // 会话加载时的空容器不能覆盖之前的阅读位置。
+    if (snapshot.scrollHeight <= snapshot.clientHeight && !scroller.querySelector("[data-turn-key]")) return;
+    snapshot.atBottom = Math.abs(threadScrollRange(scroller).bottom - snapshot.top) <= 2;
     if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
     const entries = readThreadScrollEntries();
     entries[key] = snapshot;
@@ -10199,7 +10228,7 @@
   }
 
   function scheduleThreadScrollSave() {
-    if (!codexPlusSettings().threadScrollRestore || window.__codexThreadScrollSaveTimer) return;
+    if (!threadScrollRestoreEnabled() || window.__codexThreadScrollSaveTimer) return;
     window.__codexThreadScrollSaveTimer = setTimeout(() => {
       window.__codexThreadScrollSaveTimer = null;
       saveThreadScrollPositionNow();
@@ -10209,14 +10238,15 @@
   function restoreThreadScrollPosition(sessionId) {
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    if (!threadScrollRestoreEnabled() || !key || runtime.activeSessionId !== key
+        || currentThreadScrollSessionId() !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
     const lock = activeThreadScrollRestoreLock(key);
     const entry = lock || readThreadScrollEntries()[key];
     if (!entry) return;
     const scroller = currentThreadScroller();
     if (!scroller) return;
     bindThreadScrollListener(scroller);
-    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
+    const targetTop = threadScrollTargetTop(scroller, entry);
     if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
     runtime.applyingRestore = true;
     try {
@@ -10236,7 +10266,7 @@
   function scheduleThreadScrollRestore(sessionId) {
     clearThreadScrollRestoreTimers();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    if (!threadScrollRestoreEnabled() || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
     const entry = readThreadScrollEntries()[key];
     if (!entry) {
       clearThreadScrollRestoreLock();
@@ -10253,10 +10283,9 @@
 
   function syncThreadScrollState(forceRestore = false) {
     const runtime = threadScrollRuntime();
-    const currentRef = currentSessionRef();
-    const nextSessionId = validThreadScrollSessionKey(currentRef.session_id);
+    const nextSessionId = currentThreadScrollSessionId();
     if (!nextSessionId) return;
-    if (!codexPlusSettings().threadScrollRestore) {
+    if (!threadScrollRestoreEnabled()) {
       bindThreadScrollListener(null);
       clearThreadScrollRestoreTimers();
       clearThreadScrollRestoreLock();
@@ -10283,7 +10312,7 @@
   }
 
   function scheduleThreadScrollSyncAttempts(forceRestore = true) {
-    const currentKey = validThreadScrollSessionKey(currentSessionRef().session_id) || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
+    const currentKey = currentThreadScrollSessionId() || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
     if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;
     clearThreadScrollSyncTimers();
     const syncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
@@ -10295,7 +10324,7 @@
   }
 
   function captureThreadScrollNavigation(targetSessionId) {
-    if (!codexPlusSettings().threadScrollRestore) return;
+    if (!threadScrollRestoreEnabled()) return;
     const runtime = threadScrollRuntime();
     const targetKey = validThreadScrollSessionKey(targetSessionId);
     const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId;
@@ -10318,6 +10347,14 @@
   }
 
   function eventTargetsActiveThreadScroller(event) {
+    if (event?.type === "click") {
+      const button = event.target?.closest?.("button");
+      const root = currentThreadScroller()?.closest?.("[data-request-input-activity-root]");
+      return !!root && !!button?.classList?.contains("group/scroll-to-bottom")
+        && !!button.closest("[data-thread-scroll-footer], .conversation-footer")
+        && button.closest("[data-request-input-activity-root]") === root
+        && !button.closest("dialog, [role='dialog']");
+    }
     const runtime = threadScrollRuntime();
     const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
     if (!scroller) return false;
@@ -10327,8 +10364,12 @@
   }
 
   function markThreadScrollUserIntent(event) {
-    if (!codexPlusSettings().threadScrollRestore || !eventTargetsActiveThreadScroller(event)) return;
-    cancelThreadScrollRestoreForUserIntent();
+    const waitingForSettings = (!codexPlusBackendSettingsLoaded
+      || typeof codexPlusBackendSettings.codexAppThreadScrollRestore !== "boolean")
+      && codexPlusBackendSettings.enhancementsEnabled !== false
+      && !globalThis.__codexPlusBuiltinInactive?.has("thread-scroll-restore");
+    if ((!threadScrollRestoreEnabled() && !waitingForSettings) || !eventTargetsActiveThreadScroller(event)) return;
+    cancelThreadScrollRestoreForUserIntent(event?.type === "click" ? currentThreadScrollSessionId() : null);
   }
 
   function markThreadScrollKeyboardIntent(event) {
@@ -10378,19 +10419,20 @@
     document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
     document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
     const navigationHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
+      if (!threadScrollRestoreEnabled()) return;
       const row = event.target?.closest?.(selectors.sidebarThread);
       if (!row) return;
       window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
     };
     const clickHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
+      window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+      if (!threadScrollRestoreEnabled()) return;
       const row = event.target?.closest?.(selectors.sidebarThread);
       if (!row) return;
       window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
     };
     const keyboardHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
+      if (!threadScrollRestoreEnabled()) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       const row = event.target?.closest?.(selectors.sidebarThread);
       if (!row) return;
@@ -24885,12 +24927,27 @@
       scheduleThreadScrollSync(true);
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
-    const stopWhenOff = () => {
-      if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
+    let enabled = threadScrollRestoreEnabled();
+    let disabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.codexAppThreadScrollRestore === false;
+    const onSettings = () => {
+      const nextEnabled = threadScrollRestoreEnabled();
+      if (enabled && !nextEnabled) {
+        stopThreadScrollRestore();
+        threadScrollRuntime().activeSessionId = currentThreadScrollSessionId();
+      }
+      if (!enabled && nextEnabled) {
+        clearThreadScrollRestoreTimers();
+        if (disabled) threadScrollRuntime().activeSessionId = currentThreadScrollSessionId();
+        syncThreadScrollState();
+        if (!disabled) scheduleThreadScrollSyncAttempts(true);
+      }
+      enabled = nextEnabled;
+      disabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.codexAppThreadScrollRestore === false;
     };
-    ctx.on("settings/changed", () => runScanStep(stopWhenOff));
+    ctx.on("settings/changed", () => runScanStep(onSettings));
+    ctx.on("settings/loaded", () => runScanStep(onSettings));
     codexPlusAlignWith(ctx, () => {
-      stopWhenOff();
+      if (!threadScrollRestoreEnabled()) stopThreadScrollRestore();
       scheduleDeferredScan();
     });
   }
