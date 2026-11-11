@@ -60,7 +60,7 @@ export function ProviderFormDialog({
   busy: string | null;
   onSubmit: (draft: ProviderDraft) => void;
   onCancel: () => void;
-  /** 新添加时显示「给哪些 Agent 用」，编辑时不传。 */
+  /** 新添加时显示「给哪些 Agent 用」，编辑时传「给这些 Agent 用」的开关行。 */
   agentPicks?: ReactNode;
   /** 编辑时：这个供应商的最新数据（显示已填的上下文窗口）。新添加时不传，模型还没保存，不显示窗口入口。 */
   windowsEntry?: GatewayPoolEntry;

@@ -13,7 +13,7 @@ const reload = service.slice(service.indexOf("  function codexThreadReloadParams
 function runtime() {
   const calls: { method: string; params: any; options: any }[] = [];
   const state = {
-    relayMode: "aggregate", profileEnabled: true, hostId: "local", status: "idle", turns: 1, fail: "", unloaded: false,
+    relayMode: "aggregate", profileEnabled: true, hostId: "local", status: "idle", turns: 1, fail: "", unloaded: false, ephemeral: false,
     runtime: { status: "ok", models: {
       selected: { model_context_window: 131072, model_auto_compact_token_limit: 117964 },
       other: { model_context_window: 65536, model_auto_compact_token_limit: 50000 },
@@ -29,7 +29,7 @@ function runtime() {
   const send = async (method: string, params: any, options: any) => {
     calls.push({ method, params, options });
     if (state.fail === method && (method !== "thread/resume" || params.config)) throw new Error("fixture failure");
-    if (method === "thread/read") return { thread: { status: { type: state.unloaded ? "notLoaded" : state.status } } };
+    if (method === "thread/read") return { thread: { ephemeral: state.ephemeral, status: { type: state.unloaded ? "notLoaded" : state.status } } };
     if (method === "thread/turns/list") return { data: state.turns ? [{}] : [] };
     if (method === "thread/unsubscribe") state.unloaded = true;
     if (method === "thread/resume") { state.unloaded = false; return snapshot; }
@@ -114,6 +114,18 @@ describe("runtime context refresh", () => {
     assert.equal(env.calls.some(call => call.method === "thread/unsubscribe"), false);
     env.state.turns = 1;
     await env.refresh();
+  });
+
+  // #3041：侧边聊天是 ephemeral 分叉，没有历史也不能卸载恢复；不报「尚无历史」，也不重建。
+  it("skips ephemeral side-chat forks instead of rejecting them", async () => {
+    const env = runtime();
+    env.state.ephemeral = true;
+    env.state.turns = 0;
+    assert.equal(await env.refresh(), null);
+    assert.deepEqual(env.calls.map(call => call.method), ["thread/read"]);
+    env.calls.length = 0;
+    assert.equal(await env.refresh(), null);
+    assert.deepEqual(env.calls.map(call => call.method), [], "the fork's signature is remembered");
   });
 
   it("does not remember failed restores and retries on the next submission", async () => {

@@ -378,7 +378,9 @@ test("native hover descriptions recover from late query discovery and stale resp
         assert.equal(query.state.data.data[index].description, `${displayName} · 模型组`);
         assert.equal(stale[index].description, `${model} · 模型组`, "old descriptors stay immutable");
       }
-      assert.equal(query.state.data.data[3], ordinary);
+      // 网关是 pureApi：目录外的旧条目与请求包装路径一样被剔除（#3038）。
+      assert.equal(query.state.data.data.length, 3);
+      assert.ok(!query.state.data.data.includes(ordinary));
       assert.equal(query.state.data.nextCursor, "next");
     }
     for (const query of queries.slice(2)) assert.equal(query.state.data.data[0], stale[0]);
@@ -399,6 +401,50 @@ test("native hover descriptions recover from late query discovery and stale resp
       }
     }
     assert.equal(writes, 5, "all group identities update even when old names are reused or shared");
+  } finally {
+    app.window.__codexPlusModelPickerGroupsRuntime.dispose();
+  }
+});
+
+test("stale native model/list gains new gateway models and drops removed ones without a request wrapper (#3038)", async () => {
+  const names = { "group/new": "新组", "newprov/model-a": "Model A", "newprov/model-b": "Model B", "deepseek-v4-pro": "DeepSeek" };
+  const app = runtime(catalog(names), true);
+  app.api.setBackendSettings({ codexAppModelWhitelistUnlock: true });
+  // app-server 启动时的旧目录：没有新供应商和新组，还留着已删掉的 kimi-k3。
+  const stale = [
+    Object.freeze({ model: "deepseek-v4-pro", displayName: "DeepSeek", description: "DeepSeek", hidden: false }),
+    Object.freeze({ model: "kimi-k3", displayName: "Kimi", description: "Kimi", hidden: false }),
+  ];
+  const query = { queryKey: ["models", "list", "local", "apikey", 100], state: { data: Object.freeze({ data: Object.freeze([...stale]), nextCursor: null }), dataUpdatedAt: 456 } };
+  let writes = 0;
+  const queryClient = {
+    invalidateQueries: async () => {},
+    getQueryCache: () => ({
+      findAll: (filters: { queryKey: unknown[]; predicate(entry: typeof query): boolean }) =>
+        [query].filter((entry) => filters.queryKey.every((part, index) => entry.queryKey[index] === part) && filters.predicate(entry)),
+    }),
+    setQueryData(_key: unknown[], data: typeof query.state.data, options: { updatedAt: number }) {
+      assert.equal(options.updatedAt, 456, "display sync preserves network freshness");
+      query.state.data = data;
+      writes += 1;
+    },
+  };
+  try {
+    await app.api.loadModelCatalog(true);
+    app.window.document.documentElement.__reactContainer$native = { memoizedProps: { client: queryClient } };
+    app.harness.refresh();
+    const models = query.state.data.data.map((entry: { model: string }) => entry.model);
+    for (const model of Object.keys(names)) assert.ok(models.includes(model), `${model} missing: ${models}`);
+    assert.ok(!models.includes("kimi-k3"), `stale kimi-k3 kept: ${models}`);
+    assert.equal(stale[1].model, "kimi-k3", "native descriptors stay untouched");
+    assert.equal(writes, 1);
+    app.harness.refresh();
+    assert.equal(writes, 1, "reconciled list does not republish");
+    // 旧目录的重新查询晚到，下一轮刷新再次修正。
+    query.state.data = Object.freeze({ data: Object.freeze([...stale]), nextCursor: null });
+    app.harness.refresh();
+    assert.equal(writes, 2);
+    assert.ok(!query.state.data.data.some((entry: { model: string }) => entry.model === "kimi-k3"));
   } finally {
     app.window.__codexPlusModelPickerGroupsRuntime.dispose();
   }

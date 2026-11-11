@@ -128,7 +128,13 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
         || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
     )?;
-    ensure_no_live_targets(candidates()?, VerifiedStopProcess::capture, &context)?;
+    ensure_no_live_targets(
+        candidates()?,
+        VerifiedStopProcess::capture,
+        &context,
+        Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
+        || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
+    )?;
     if let Some(listener) = listener {
         anyhow::ensure!(!listener.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
     }
@@ -446,14 +452,27 @@ fn ensure_no_live_targets<P: HeldMainProcess>(
     ids: impl IntoIterator<Item = u32>,
     mut capture: impl FnMut(u32, bool) -> Result<Option<P>>,
     context: &StopContext,
+    timeout: Duration,
+    mut wait: impl FnMut(),
 ) -> Result<()> {
+    let deadline = Instant::now() + timeout;
     for id in ids {
         let Some(process) =
             capture(id, false).with_context(|| format!("无法复核 Codex 候选 PID {id}"))?
         else {
             continue;
         };
-        let Some(facts) = candidate_facts(&process, context)? else {
+        // 刚结束的主进程的子进程可能还在退出：句柄未 signaled、映像却已读不到（#3040）。
+        // 用同一个句柄有限等它退出；到期仍存活且读不到才 fail closed。
+        let facts = loop {
+            match candidate_facts(&process, context) {
+                Ok(facts) => break facts,
+                Err(_) if !process.alive()? => break None,
+                Err(error) if Instant::now() >= deadline => return Err(error),
+                Err(_) => wait(),
+            }
+        };
+        let Some(facts) = facts else {
             continue;
         };
         if !process.alive()? {
@@ -753,6 +772,8 @@ mod tests {
         window_present: bool,
         close_requests: Cell<usize>,
         events: Rc<RefCell<Vec<u32>>>,
+        /// 正在退出：读映像一直失败，`alive()` 再返回这么多次 true 后变为 false。
+        exiting_after_alive_checks: Option<Cell<u32>>,
     }
 
     impl HeldMainProcess for FakeProcess {
@@ -761,10 +782,16 @@ mod tests {
         }
 
         fn alive(&self) -> Result<bool> {
+            if let Some(remaining) = &self.0.exiting_after_alive_checks {
+                let left = remaining.get();
+                remaining.set(left.saturating_sub(1));
+                return Ok(left > 0);
+            }
             Ok(!self.0.terminated.get() || self.0.stubborn)
         }
 
         fn possible_target(&self, context: &StopContext) -> Result<Option<bool>> {
+            anyhow::ensure!(self.0.exiting_after_alive_checks.is_none(), "模拟映像已读不到");
             let facts = &self.0.facts[0];
             let image = normalized_path(&facts.image)?;
             if !image_matches(&context.executable, &image) {
@@ -815,6 +842,7 @@ mod tests {
             window_present: false,
             close_requests: Cell::new(0),
             events: events.clone(),
+            exiting_after_alive_checks: None,
         }))
     }
 
@@ -960,10 +988,54 @@ mod tests {
     fn post_stop_snapshot_rejects_a_new_matching_main_process() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let replacement = fake(3, vec![facts(&[])], &events);
-        let result =
-            ensure_no_live_targets([3], |_, _| Ok(Some(replacement.clone())), &context(None));
+        let result = ensure_no_live_targets(
+            [3],
+            |_, _| Ok(Some(replacement.clone())),
+            &context(None),
+            Duration::ZERO,
+            || panic!("零超时测试不应等待"),
+        );
         assert!(result.is_err());
         assert!(events.borrow().is_empty());
+    }
+
+    fn exiting(id: u32, alive_checks: u32, events: &Rc<RefCell<Vec<u32>>>) -> FakeProcess {
+        let process = fake(id, vec![facts(&[])], events);
+        let mut state = Rc::try_unwrap(process.0).ok().unwrap();
+        state.exiting_after_alive_checks = Some(Cell::new(alive_checks));
+        FakeProcess(Rc::new(state))
+    }
+
+    /// #3040：停止后复扫时，正在退出的子进程映像读不到，不能误报「未确认退出」。
+    #[test]
+    fn post_stop_rescan_waits_out_an_exiting_child() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let child = exiting(7, 3, &events);
+        let mut waits = 0;
+        let result = ensure_no_live_targets(
+            [7],
+            |_, _| Ok(Some(child.clone())),
+            &context(None),
+            Duration::from_secs(5),
+            || waits += 1,
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert!(waits >= 1);
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn post_stop_rescan_fails_closed_for_a_live_unreadable_process() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let stuck = exiting(8, u32::MAX, &events);
+        let result = ensure_no_live_targets(
+            [8],
+            |_, _| Ok(Some(stuck.clone())),
+            &context(None),
+            Duration::ZERO,
+            || panic!("零超时测试不应等待"),
+        );
+        assert!(result.is_err());
     }
 
     #[test]
