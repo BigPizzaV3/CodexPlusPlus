@@ -719,11 +719,21 @@ impl SkillsManager {
         &self,
         manifests: &[(PathBuf, String)],
         enabled: bool,
+        skip_unknown: bool,
     ) -> anyhow::Result<Option<(Option<Vec<u8>>, Vec<u8>)>> {
         let config = self.read_native_skill_config()?;
         let mut changes = Vec::new();
         for (path, name) in manifests {
-            let name = config.name_for_matching(path, name)?;
+            let name = match config.name_for_matching(path, name) {
+                Ok(name) => name,
+                Err(_) if skip_unknown => continue,
+                Err(error) => return Err(error),
+            };
+            if skip_unknown && config.matching_rule(path, &name)
+                .is_some_and(|(_, rule)| rule.enabled.is_none())
+            {
+                continue;
+            }
             if config.enabled(path, &name)? != enabled {
                 changes.push((path, name));
             }
@@ -1717,7 +1727,7 @@ impl SkillsManager {
                 if new_install {
                     let manifest = link.join(SKILL_MANIFEST_FILE);
                     let (name, _) = read_skill_manifest(&manifest, &id);
-                    native_change = self.set_native_skill_paths(&[(manifest, name)], true)?;
+                    native_change = self.set_native_skill_paths(&[(manifest, name)], true, true)?;
                 }
             }
             for (copy, _) in &agent_copies {
@@ -2095,7 +2105,7 @@ impl SkillsManager {
                 let (name, _) = read_skill_manifest(&manifest, id);
                 (manifest, name)
             }).collect::<Vec<_>>();
-            return self.set_native_skill_paths(&manifests, enabled).map(|_| ());
+            return self.set_native_skill_paths(&manifests, enabled, false).map(|_| ());
         }
         let existing_manifest = link.join(SKILL_MANIFEST_FILE);
         if existing_manifest.is_file() {
@@ -2104,7 +2114,7 @@ impl SkillsManager {
                 (metadata.file_type().is_dir() && !metadata_is_link(&metadata))
                     || (metadata_is_link(&metadata) && !is_managed_link(&link, &source)))
             {
-                return self.set_native_skill_paths(&[(existing_manifest, name)], enabled).map(|_| ());
+                return self.set_native_skill_paths(&[(existing_manifest, name)], enabled, false).map(|_| ());
             }
         }
         if !enabled {
@@ -2149,7 +2159,7 @@ impl SkillsManager {
         }
         if link.join(SKILL_MANIFEST_FILE).is_file() {
             let (name, _) = read_skill_manifest(&existing_manifest, id);
-            return self.set_native_skill_paths(&[(existing_manifest, name)], true).map(|_| ());
+            return self.set_native_skill_paths(&[(existing_manifest, name)], true, false).map(|_| ());
         }
         if std::fs::symlink_metadata(&link).is_ok() {
             anyhow::bail!("启用位置已存在其他内容，未覆盖：{}", link.display());
@@ -2162,7 +2172,7 @@ impl SkillsManager {
         let identity = link_or_copy(&source, &link)?;
         let manifest = link.join(SKILL_MANIFEST_FILE);
         let (name, _) = read_skill_manifest(&manifest, id);
-        if let Err(error) = self.set_native_skill_paths(&[(manifest, name)], true) {
+        if let Err(error) = self.set_native_skill_paths(&[(manifest, name)], true, false) {
             return match recover_published_path(&link, identity) {
                 Ok(Some(path)) => Err(error.context(format!("新建的 Skill 内容保留在 {}", path.display()))),
                 Ok(None) => Err(error),
@@ -4341,6 +4351,36 @@ mod tests {
         manager.uninstall("alpha").unwrap();
         manager.install_from_zip(&skill, &zip).unwrap();
         assert!(entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
+    }
+
+    #[test]
+    fn install_preserves_unrecognized_native_rule_and_reports_unknown() {
+        for (original, manifest) in [
+            ("[[skills.config]]\nname = 'alpha'\nenabled = 'yes'\n", "---\nname: alpha\n---\n"),
+            ("[[skills.config]]\nname = 'alpha'\nenabled = false\n", "---\nname: &alias alpha\n---\n"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let manager = manager(&temp);
+            std::fs::create_dir_all(&manager.codex_home).unwrap();
+            let config = manager.codex_home.join("config.toml");
+            std::fs::write(&config, original).unwrap();
+            let zip = repo_zip(&[("kit-main/alpha/SKILL.md", manifest)]);
+            let skill = sample_skill("alpha", "alpha", "hash");
+
+            manager.install_from_zip(&skill, &zip).unwrap();
+
+            assert_eq!(std::fs::read_to_string(config).unwrap(), original);
+            assert!(manager.source_dir.join("alpha/SKILL.md").is_file());
+            assert!(manager.linked_dir().join("alpha/SKILL.md").is_file());
+            assert!(manager.load_state().installed.contains_key("alpha"));
+            assert!(entry(&manager.try_local_inventory().unwrap(), "alpha").locations[0].status_error.is_some());
+            for root in [&manager.source_dir, &manager.linked_dir()] {
+                assert!(!std::fs::read_dir(root).unwrap().any(|entry| {
+                    entry.unwrap().file_name().to_string_lossy().starts_with(".codex-plus-recovery-")
+                }));
+            }
+            assert!(manager.set_enabled("alpha", true).is_err());
+        }
     }
 
     #[test]
