@@ -62,6 +62,12 @@ pub fn default_app_state_dir() -> PathBuf {
     default_state_base_dir()
 }
 
+/// Codex++ 自己的状态目录（`~/.codex-session-delete`），不看 `CODEX_PLUS_STATE_DIR` 覆盖。
+/// 给换了状态目录的进程（ClaudeMom）读 Codex++ 的网关配置用。
+pub fn codex_plus_plus_state_dir() -> PathBuf {
+    default_state_base_dir()
+}
+
 fn default_state_base_dir() -> PathBuf {
     if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
         return home_dir.join(APP_STATE_DIR);

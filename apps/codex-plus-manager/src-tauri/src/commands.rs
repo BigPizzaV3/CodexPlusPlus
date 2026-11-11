@@ -8202,8 +8202,23 @@ pub fn skip_update_version(version: String) -> CommandResult<SettingsPayload> {
     }
 }
 
+/// ClaudeMom 还没有自己的发布渠道：Codex++ 的更新包装上去会把它换成 Codex++，所以检查、下载、安装都拦住。
+const CLAUDE_MOM_UPDATE_UNSUPPORTED: &str = "ClaudeMom 暂不支持自动更新，请重新构建。";
+
 #[tauri::command]
 pub async fn check_update() -> CommandResult<Value> {
+    if crate::flavor::is_claude_mom() {
+        return CommandResult {
+            status: "not_checked".to_string(),
+            message: CLAUDE_MOM_UPDATE_UNSUPPORTED.to_string(),
+            payload: json!({
+                "currentVersion": codex_plus_core::version::VERSION,
+                "updateAvailable": false,
+                "downloaded": false,
+                "progress": 0
+            }),
+        };
+    }
     match codex_plus_core::update::check_for_update(codex_plus_core::version::VERSION).await {
         Ok(update) => {
             let status = if update.update_available {
@@ -8268,6 +8283,9 @@ pub async fn download_update(
     app: tauri::AppHandle,
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
+    if crate::flavor::is_claude_mom() {
+        return failed(CLAUDE_MOM_UPDATE_UNSUPPORTED, json!({ "downloaded": false }));
+    }
     let Some(release) = release else {
         return failed(
             "请先检查更新并选择可下载的 Release asset。",
@@ -8348,6 +8366,12 @@ async fn perform_update_inner<F>(
 where
     F: FnMut(codex_plus_core::update::UpdateProgress) + Send,
 {
+    if crate::flavor::is_claude_mom() {
+        return failed(
+            CLAUDE_MOM_UPDATE_UNSUPPORTED,
+            json!({ "currentVersion": codex_plus_core::version::VERSION, "progress": 0 }),
+        );
+    }
     let Some(release) = release else {
         return failed(
             "请先检查更新并选择可下载的 Release asset。",

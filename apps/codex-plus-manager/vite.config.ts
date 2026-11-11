@@ -18,6 +18,13 @@ export default defineConfig({
     // 正则后行断言也降不了，源码里不要用（legacy-webkit.test.ts 守着）。
     target: ["es2020", "safari14", "chrome87", "edge88", "firefox78"],
     cssTarget: ["safari14", "chrome87", "edge88", "firefox78"],
+    // 两个页面：Codex++ 的 index.html 与 ClaudeMom 的 claude-mom.html（同一份产物，两个程序各自加载自己的页面）。
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        claudeMom: path.resolve(__dirname, "claude-mom.html"),
+      },
+    },
   },
   server: {
     host: "127.0.0.1",

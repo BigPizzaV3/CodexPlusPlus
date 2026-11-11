@@ -12,6 +12,11 @@
 //   node scripts/relaunch-local.mjs                 # 构建前端 + cargo，替换固定 bundle，重启，清理旧构建
 //   node scripts/relaunch-local.mjs --skip-build    # 跳过构建，用现有 target/release 二进制重装并重启
 //   node scripts/relaunch-local.mjs --no-open       # 不自动启动（只替换 bundle）
+//   node scripts/relaunch-local.mjs --claude-mom    # 改为构建 / 启动 ClaudeMom（dist/local-build/ClaudeMom.app）
+//
+// ClaudeMom 与 Codex++ 是同一份代码的两个二进制（见 src-tauri/src/flavor.rs）。它的固定 bundle
+// 第一次由 Codex++.app 复制出来，换成自己的名字、bundle id 和独立的 state（dist/local-build/claude-mom-state），
+// 之后同样只替换二进制。
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -19,13 +24,35 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const args = new Set(process.argv.slice(2));
+const skipBuild = args.has("--skip-build");
+const noOpen = args.has("--no-open");
+const claudeMom = args.has("--claude-mom");
+
+/** 两个产品各自的固定 bundle。端口与 Codex++ 的 63122 / 63123 错开，两个实例可以同时开。 */
+const products = {
+  codex: { app: "Codex++.app", executable: "CodexPlusPlus", bin: "codex-plus-plus" },
+  claudeMom: {
+    app: "ClaudeMom.app",
+    executable: "ClaudeMom",
+    bin: "claude-mom",
+    name: "ClaudeMom",
+    bundleId: "com.bigpizzav3.claudemom.local",
+    stateDir: "claude-mom-state",
+    managerGuardPort: "63124",
+    launcherGuardPort: "63125",
+  },
+};
+const product = claudeMom ? products.claudeMom : products.codex;
+
 const distDir = path.join(root, "dist");
 const bundleDir = path.join(distDir, "local-build");
-const bundle = path.join(bundleDir, "Codex++.app");
-const bundleBinary = path.join(bundle, "Contents", "MacOS", "CodexPlusPlus");
-const builtBinary = path.join(root, "target", "release", "codex-plus-plus");
+const bundle = path.join(bundleDir, product.app);
+const bundleBinary = path.join(bundle, "Contents", "MacOS", product.executable);
+const builtBinary = path.join(root, "target", "release", product.bin);
 const stagingDir = path.join(distDir, ".local-build-staging");
-const stagingBundle = path.join(stagingDir, "Codex++.app");
+const stagingBundle = path.join(stagingDir, product.app);
+const codexBundle = path.join(bundleDir, products.codex.app);
 const pruneScript = path.join(root, "scripts", "prune-local-builds.mjs");
 
 /**
@@ -68,14 +95,53 @@ function localBundleProcessPattern(bundle) {
   return `${bundle}/Contents/MacOS/`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-const args = new Set(process.argv.slice(2));
-const skipBuild = args.has("--skip-build");
-const noOpen = args.has("--no-open");
-
 const run = (command, argv, options = {}) => {
   console.log(`$ ${command} ${argv.join(" ")}`);
   execFileSync(command, argv, { stdio: "inherit", ...options });
 };
+
+/** 第一次构建 ClaudeMom：从 Codex++ 的固定 bundle 复制一份，改成 ClaudeMom 自己的身份与独立 state。 */
+function createClaudeMomBundle() {
+  if (!existsSync(codexBundle)) return false;
+  const plistBuddy = "/usr/libexec/PlistBuddy";
+  const target = path.join(stagingDir, products.claudeMom.app);
+  rmSync(stagingDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+  cpSync(codexBundle, target, { recursive: true, verbatimSymlinks: true });
+  rmSync(path.join(target, "Contents", "MacOS", products.codex.executable), { force: true });
+  rmSync(path.join(target, "Contents", "_CodeSignature"), { recursive: true, force: true });
+  const plist = path.join(target, "Contents", "Info.plist");
+  const set = (key, value) => {
+    try {
+      execFileSync(plistBuddy, ["-c", `Set :${key} ${value}`, plist], { stdio: "ignore" });
+    } catch {
+      execFileSync(plistBuddy, ["-c", `Add :${key} string ${value}`, plist], { stdio: "ignore" });
+    }
+  };
+  const p = products.claudeMom;
+  set("CFBundleName", p.name);
+  set("CFBundleDisplayName", p.name);
+  set("CFBundleExecutable", p.executable);
+  set("CFBundleIdentifier", p.bundleId);
+  try {
+    execFileSync(plistBuddy, ["-c", "Delete :LSEnvironment", plist], { stdio: "ignore" });
+  } catch {
+    // 原 bundle 没有 LSEnvironment
+  }
+  execFileSync(plistBuddy, ["-c", "Add :LSEnvironment dict", plist], { stdio: "ignore" });
+  set("LSEnvironment:CODEX_PLUS_STATE_DIR", path.join(bundleDir, p.stateDir));
+  set("LSEnvironment:CODEX_PLUS_MANAGER_GUARD_PORT", p.managerGuardPort);
+  set("LSEnvironment:CODEX_PLUS_LAUNCHER_GUARD_PORT", p.launcherGuardPort);
+  renameSync(target, bundle);
+  rmSync(stagingDir, { recursive: true, force: true });
+  console.log(`已创建 ClaudeMom 固定开发实例：${path.relative(root, bundle)}（state：dist/local-build/${p.stateDir}）`);
+  return true;
+}
+
+if (!existsSync(bundle) && claudeMom && !createClaudeMomBundle()) {
+  console.error(`缺少 ${codexBundle}，ClaudeMom 的固定 bundle 要从它复制，先按 AGENTS.md 准备好 Codex++ 的固定开发实例。`);
+  process.exit(1);
+}
 
 if (!existsSync(bundle)) {
   console.error(
@@ -94,6 +160,8 @@ if (!skipBuild) {
     "--release",
     "-p",
     "codex-plus-manager",
+    "--bin",
+    product.bin,
   ], {
     cwd: root,
     env: {
@@ -108,7 +176,7 @@ if (!skipBuild) {
 }
 
 if (!existsSync(builtBinary)) {
-  console.error(`找不到构建产物：${builtBinary}，先执行 cargo build --release -p codex-plus-manager`);
+  console.error(`找不到构建产物：${builtBinary}，先执行 cargo build --release -p codex-plus-manager --bin ${product.bin}`);
   process.exit(1);
 }
 
@@ -117,8 +185,8 @@ console.log(`3/4 原地替换 ${bundle}`);
 rmSync(stagingDir, { recursive: true, force: true });
 mkdirSync(stagingDir, { recursive: true });
 cpSync(bundle, stagingBundle, { recursive: true, verbatimSymlinks: true });
-cpSync(builtBinary, path.join(stagingBundle, "Contents", "MacOS", "CodexPlusPlus"));
-chmodSync(path.join(stagingBundle, "Contents", "MacOS", "CodexPlusPlus"), 0o755);
+cpSync(builtBinary, path.join(stagingBundle, "Contents", "MacOS", product.executable));
+chmodSync(path.join(stagingBundle, "Contents", "MacOS", product.executable), 0o755);
 const iconUpdated = refreshBundleIcon(stagingBundle);
 // Developer ID 证书按 Team ID 记账，重建后 TCC 授权（屏幕录制等）不会因 cdhash 变化而失效。
 // ad-hoc（"-"）则每次都产生新 cdhash，必须在系统设置里重新授权。
@@ -199,7 +267,7 @@ const stopOldInstance = () => {
 stopOldInstance();
 
 // 只换 .app，保留 bundle 目录下的 state / 日志，测试配置不丢。
-const previousBundle = path.join(bundleDir, ".Codex++.app.previous");
+const previousBundle = path.join(bundleDir, `.${product.app}.previous`);
 rmSync(previousBundle, { recursive: true, force: true });
 renameSync(bundle, previousBundle);
 renameSync(stagingBundle, bundle);

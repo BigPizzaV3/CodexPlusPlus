@@ -94,6 +94,20 @@
 
 不要在只跑完测试就交付；构建启动属于交付的一部分。
 
+### ClaudeMom（同一份代码的第二个程序）
+
+ClaudeMom 是只做 Claude Desktop 完整功能模式的独立小工具：manager 里的第二个二进制 `claude-mom`
+（`src-tauri/src/claude_mom.rs`），和 Codex++ 共用库与子命令入口，但界面是自己的一页：
+
+- 后端变体 `src-tauri/src/flavor.rs`：状态目录默认 `~/.claude-mom`，锁端口、协议代理端口在 Codex++ 基础上 +100，可与 Codex++ 同时运行；
+  主窗口加载 `claude-mom.html`；不做 Codex 接管 / 启动、皮肤、钩子同步、微信、网关、托盘快捷面板；自动更新整体拦住。
+- 不经网关，直连上游：`core::claude_mom` 管多组 Base URL + Key（`<state>/claude-mom/upstreams.json`），可从 cc-switch、
+  Magpie（当上游网关）、Codex++（当上游网关）导入；选中的那组经 `claude_local_backend::set_direct_upstream` 交给本地服务。
+  Codex++ 从不设置直连，行为不变。命令在 `src-tauri/src/claude_mom_commands.rs`。
+- 前端 `src/claude-mom/`（入口 `claude-mom.html`，`vite.config.ts` 两个 input），不引用 Codex++ 的 App。
+- 改到 Claude 相关或共用代码时，ClaudeMom 也要构建启动：`node scripts/relaunch-local.mjs --claude-mom`
+  （固定 bundle `dist/local-build/ClaudeMom.app`，state 在 `dist/local-build/claude-mom-state`，首次从 Codex++.app 复制生成）。
+
 ## 提交与合入
 
 - 默认直接提交并合入 `main`。

@@ -1,6 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-fn main() {
+// ClaudeMom 的入口（claude_mom.rs）把本文件当子模块引入后调用这里，所以是 pub(crate)。
+pub(crate) fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     // MCP 是独立 stdio 进程，必须在 GUI、单实例锁和启动日志之前处理。
     if args.get(1).is_some_and(|arg| arg == "--codex-plus-cu-mcp") {

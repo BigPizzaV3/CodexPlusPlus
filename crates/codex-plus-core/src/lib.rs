@@ -20,6 +20,7 @@ pub mod cdp;
 mod claude_ion_asar;
 pub mod claude_hooks;
 pub mod claude_local_backend;
+pub mod claude_mom;
 pub mod claude_session_sync;
 pub mod claude_localization;
 pub mod codex_app_state;

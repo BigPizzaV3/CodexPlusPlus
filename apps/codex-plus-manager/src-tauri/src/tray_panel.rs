@@ -39,7 +39,8 @@ fn cache() -> &'static AtomicBool {
 
 /// 是否打开了快捷面板（读缓存）。
 pub fn enabled() -> bool {
-    cache().load(Ordering::Relaxed)
+    // 快捷面板是 Codex++ 的（启动 Codex、切供应商）；ClaudeMom 只用普通托盘菜单。
+    !crate::flavor::is_claude_mom() && cache().load(Ordering::Relaxed)
 }
 
 fn set_cached(value: bool) {
