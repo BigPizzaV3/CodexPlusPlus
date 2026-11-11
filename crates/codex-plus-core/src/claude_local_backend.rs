@@ -1929,7 +1929,16 @@ fn start_backend(
     command
         .arg(root.join("proxy.mjs"))
         // 恢复挂接时优先在原端口重启：Claude 只认启动时的 --proxy-server 端口。
-        .args(["--port", &preferred_port.unwrap_or(0).to_string(), "--mode", "mock", "--log", "0", "--ca"])
+        // 请求日志默认关（会记下访问的路径）；排障时在管理器环境里设 CODEX_PLUS_CLAUDE_LOCAL_LOG=1 打开，写进 proxy.log。
+        .args([
+            "--port",
+            &preferred_port.unwrap_or(0).to_string(),
+            "--mode",
+            "mock",
+            "--log",
+            if std::env::var("CODEX_PLUS_CLAUDE_LOCAL_LOG").is_ok_and(|value| value == "1") { "1" } else { "0" },
+            "--ca",
+        ])
         .arg(root.join("ca"))
         .current_dir(root)
         .env("CLAUDE_LOCAL_MANAGED", "1")

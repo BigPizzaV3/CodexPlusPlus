@@ -383,6 +383,18 @@ test("clean managed runtime uses synthetic bootstrap and configured catalogs wit
   assert.deepEqual(defaultLocaleCatalog.json, { message: "translated" });
 });
 
+test("organization detail never resets the active-org cookie (Desktop re-checks the allowlist on every change)", async () => {
+  // Desktop 主进程监听 lastActiveOrg cookie，一变就请求 /api/organizations/<id> 查插件白名单；
+  // 这个接口再下发 cookie 就是死循环（实测 1600+ 次/秒，主进程卡死、窗口点不动）。
+  const detail = await request(service, "/api/organizations/e0e877d3-8475-44a1-a501-4fc431b085ab", { host: "claude.ai" });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json.uuid, "e0e877d3-8475-44a1-a501-4fc431b085ab");
+  assert.equal(detail.headers["set-cookie"], undefined);
+  // 活动组织仍由 bootstrap 入口设置。
+  const bootstrap = await request(service, "/api/bootstrap", { host: "claude.ai" });
+  assert.ok(String(bootstrap.headers["set-cookie"]).includes("lastActiveOrg="));
+});
+
 test("managed organization discovery stays on the already joined local organization", async () => {
   const discoverable = await request(service, "/api/organizations/discoverable", { host: "claude.ai" });
   assert.equal(discoverable.status, 200);

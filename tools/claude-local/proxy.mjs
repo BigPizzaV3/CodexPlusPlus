@@ -1092,8 +1092,11 @@ function mockApi(req, res, url) {
       is_member: true,
     });
   }
+  // 组织详情不能带 Set-Cookie：Desktop 主进程监听 lastActiveOrg cookie，一变就重查插件白名单，
+  // 而白名单检查正是请求这个接口——每次响应都重写 cookie 会形成死循环，主进程卡死、窗口点不动。
+  // 活动组织的 cookie 由 bootstrap / account 等入口设置一次就够了。
   if (/^\/api\/organizations\/[^/]+$/.test(p)) {
-    return jsonWithActiveOrg(res, ORG);
+    return json(res, ORG);
   }
   if (/\/chat_conversations$/.test(p)) {
     if (method === "GET") return json(res, [...CONV_STATE.values()].map(convToRest));
