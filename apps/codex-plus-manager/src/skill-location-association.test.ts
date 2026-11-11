@@ -18,6 +18,7 @@ test("each Agent installation associates its own repository path", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "本地",
+    skillChannelLabel: () => "本地安装", SkillFileTimes: "SkillFileTimes", CloudDownload: "CloudDownload",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Edit3: "Edit3", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight",
   };
   vm.createContext(context);
@@ -31,7 +32,7 @@ test("each Agent installation associates its own repository path", () => {
   const element = context.SkillDetailDrawer({
     skill: { id: "alpha", name: "alpha", description: "", repoKey: "", installed: true, bundled: false,
       locations, displayInstances: locations.map((location) => ({ repoKey: location.repoKey, repoPath: location.repoPath, locations: [location] })) },
-    busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {}, onUpdate: () => {},
     onMatch: (path: string, details: Record<string, string>) => selected.push([path, details]),
   });
   const collect = (node: any, result: Element[] = []): Element[] => {
@@ -41,7 +42,7 @@ test("each Agent installation associates its own repository path", () => {
     node.children?.forEach((child: any) => collect(child, result));
     return result;
   };
-  const buttons = collect(element).filter((item) => item.type === "Button" && item.children.includes("关联此安装位置"));
+  const buttons = collect(element).filter((item) => item.type === "Button" && item.children.includes("重新关联此安装位置"));
   assert.equal(buttons.length, 2);
   buttons.forEach((button) => button.props.onClick());
   assert.deepEqual(selected.map(([path, detail]) => [path, detail.currentRepoPath]), [
