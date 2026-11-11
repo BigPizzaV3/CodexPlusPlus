@@ -822,10 +822,15 @@ impl Decoder for DevinDecoder {
             if self.buffer.len() < 5 + len {
                 break;
             }
-            let data: Vec<u8> = self.buffer.drain(..5 + len).skip(5).collect();
-            if flags & 1 != 0 {
-                return Err(fail(502, "Devin 返回了压缩的数据帧，暂不支持"));
-            }
+            let raw: Vec<u8> = self.buffer.drain(..5 + len).skip(5).collect();
+            // Flag bit 0 is the Connect compression bit. Requests already use gzip.
+            let data = if flags & 1 != 0 {
+                gunzip(&raw).map_err(|error| {
+                    fail(502, format!("Devin 返回了无法解压的压缩数据帧：{error}"))
+                })?
+            } else {
+                raw
+            };
             if flags & 2 != 0 {
                 let text = String::from_utf8_lossy(&data);
                 let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -844,10 +849,31 @@ impl Decoder for DevinDecoder {
     fn end(&mut self) -> anyhow::Result<Vec<u8>> {
         if !self.done && !self.buffer.is_empty() {
             self.done = true;
+            // `push` already consumed every complete frame. A leftover that
+            // starts with the compression bit is a partial gzip frame.
+            if self.buffer[0] & 1 != 0 {
+                return Err(fail(502, "Devin 返回了被截断的压缩数据帧"));
+            }
             return Err(fail(502, "Devin 的数据流意外中断"));
         }
         self.finish()
     }
+}
+
+/// Inflate one gzip frame. Truncation, a bad CRC, or trailing bytes are errors.
+fn gunzip(compressed: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Cursor, Read};
+
+    let mut input = Cursor::new(compressed);
+    let mut decoder = flate2::bufread::GzDecoder::new(&mut input);
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .context("gzip 数据不完整或校验失败")?;
+    if input.position() != compressed.len() as u64 {
+        anyhow::bail!("gzip 帧尾部有多余字节");
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,6 +1482,88 @@ mod tests {
             status(failure(500, r#"{"code":"unavailable","message":"x"}"#)),
             503
         );
+    }
+
+    fn gzip_bytes(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn status_of(error: anyhow::Error) -> (u16, String) {
+        let message = error.to_string();
+        let status = error
+            .downcast_ref::<crate::gateway::subscriptions::SubscriptionError>()
+            .unwrap()
+            .status;
+        (status, message)
+    }
+
+    #[test]
+    fn decodes_gzip_compressed_frames() {
+        let mut message = Pb::default();
+        message.string(3, "压缩后的回复");
+        let mut bytes = frame(1, &gzip_bytes(&message.0));
+        bytes.extend(frame(2, b"{}"));
+        // Split the frame so a partial chunk waits instead of failing as bad gzip.
+        let parts: Vec<&[u8]> = bytes.chunks(5).collect();
+        let (text, error) = run_decoder(DevinDecoder::new("m"), &parts);
+        assert!(error.is_none(), "{error:?}");
+        let completion = aggregate(&text, "m").unwrap();
+        assert_eq!(
+            completion["choices"][0]["message"]["content"],
+            "压缩后的回复"
+        );
+
+        // Request bodies use stored deflate blocks; accept that gzip form too.
+        let mut stored = frame(1, &gzip_stored(&message.0));
+        stored.extend(frame(2, b"{}"));
+        let (text, error) = run_decoder(DevinDecoder::new("m"), &[&stored]);
+        assert!(error.is_none(), "{error:?}");
+        let completion = aggregate(&text, "m").unwrap();
+        assert_eq!(
+            completion["choices"][0]["message"]["content"],
+            "压缩后的回复"
+        );
+
+        // End-of-stream frames can carry the compression bit as well.
+        let end = frame(
+            3,
+            &gzip_bytes(br#"{"error":{"code":"unavailable","message":"down"}}"#),
+        );
+        let (_, error) = run_decoder(DevinDecoder::new("m"), &[&end]);
+        let (status, message) = status_of(error.expect("compressed end frame"));
+        assert_eq!(status, 503, "{message}");
+    }
+
+    #[test]
+    fn rejects_invalid_or_truncated_compressed_frames() {
+        let (_, error) = run_decoder(DevinDecoder::new("m"), &[&frame(1, b"not-gzip")]);
+        let (status, message) = status_of(error.expect("invalid gzip"));
+        assert_eq!(status, 502, "{message}");
+        assert!(message.contains("无法解压"), "{message}");
+
+        let mut truncated_member = gzip_bytes(b"hello");
+        truncated_member.truncate(truncated_member.len().saturating_sub(8));
+        let (_, error) = run_decoder(DevinDecoder::new("m"), &[&frame(1, &truncated_member)]);
+        let (status, message) = status_of(error.expect("truncated gzip member"));
+        assert_eq!(status, 502, "{message}");
+        assert!(message.contains("无法解压"), "{message}");
+
+        let mut trailing = gzip_bytes(b"hello");
+        trailing.push(0xff);
+        let (_, error) = run_decoder(DevinDecoder::new("m"), &[&frame(1, &trailing)]);
+        let (status, message) = status_of(error.expect("trailing bytes"));
+        assert_eq!(status, 502, "{message}");
+        assert!(message.contains("多余字节"), "{message}");
+
+        let mut partial = frame(1, &gzip_bytes(b"hello"));
+        partial.truncate(8);
+        let (_, error) = run_decoder(DevinDecoder::new("m"), &[&partial]);
+        let (status, message) = status_of(error.expect("truncated frame"));
+        assert_eq!(status, 502, "{message}");
+        assert!(message.contains("被截断"), "{message}");
     }
 
     #[test]
