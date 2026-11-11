@@ -1939,6 +1939,7 @@ fn start_backend(
         )
         .env("CLAUDE_LOCAL_CACHE_DIR", root.join(".cache"))
         .env("CLAUDE_LOCAL_WEB_I18N_DIR", root.join("catalogs"))
+        .env("CLAUDE_LOCAL_UPSTREAM_PROXY", upstream_web_proxy().unwrap_or_default())
         .env(
             "CLAUDE_LOCAL_DESKTOP_RESOURCES",
             desktop_resources(&source_app()),
@@ -2004,6 +2005,27 @@ fn start_backend(
             Err(error)
         }
     }
+}
+
+/// 本地服务抓 claude.ai 网页（首次写穿缓存的外壳与资源）用的出站代理。
+/// 受限地区直连会被 302 到 app-unavailable-in-region；Node 不读系统代理，要显式交给它。
+/// 继承的代理变量优先，其次系统代理；只给 `http://` 的 CONNECT 代理（Node 端只会这一种）。
+fn upstream_web_proxy() -> Option<String> {
+    let inherited = INHERITED_PROXY_VARS
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.trim().is_empty()));
+    pick_upstream_web_proxy(
+        inherited,
+        crate::proxy::detect_system_proxy_for_url("https://claude.ai"),
+    )
+}
+
+fn pick_upstream_web_proxy(inherited: Option<String>, system: Option<String>) -> Option<String> {
+    let usable = |value: String| {
+        let value = value.trim().to_string();
+        value.to_ascii_lowercase().starts_with("http://").then_some(value)
+    };
+    inherited.and_then(usable).or_else(|| system.and_then(usable))
 }
 
 fn flag(enabled: bool) -> &'static str {
@@ -2610,6 +2632,17 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_web_proxy_prefers_inherited_then_system_and_only_http() {
+        let some = |value: &str| Some(value.to_string());
+        assert_eq!(pick_upstream_web_proxy(some("http://10.0.0.1:8080"), some("http://127.0.0.1:7897")), some("http://10.0.0.1:8080"));
+        assert_eq!(pick_upstream_web_proxy(None, some(" http://127.0.0.1:7897 ")), some("http://127.0.0.1:7897"));
+        // socks 代理 Node 端不支持：跳过继承的，退回系统代理；都不行就直连。
+        assert_eq!(pick_upstream_web_proxy(some("socks5://127.0.0.1:7898"), some("http://127.0.0.1:7897")), some("http://127.0.0.1:7897"));
+        assert_eq!(pick_upstream_web_proxy(some("socks5://127.0.0.1:7898"), None), None);
+        assert_eq!(pick_upstream_web_proxy(None, None), None);
+    }
 
     /// Desktop 更新（app.asar 变了）算配置变化：本地服务要重启才能换上新的官方页面。
     #[test]

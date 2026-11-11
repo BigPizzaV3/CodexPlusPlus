@@ -301,43 +301,49 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
   assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
 });
 
-test("installed template only pairs with a recorded shell; without one the whole managed official path is used", async () => {
-  // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template）。模板数据只和同一线上版本的录制外壳配套：
-  // 新装的 state 里没有录制外壳时，外壳、资源、启动数据、汉化都要来自受管路径，不能混用（会卡住、缺汉化），
-  // 也不能去线上抓（受限地区 302）。
+test("installed template fetches the first shell through the configured upstream proxy, then replays it", async () => {
+  // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template）：模板数据配线上外壳写穿缓存。
+  // 受限地区直连 claude.ai 会被 302，首次抓外壳要经后端传入的出站代理（CONNECT 隧道）。
+  const connects = [];
+  const upstreamProxy = http.createServer();
+  upstreamProxy.on("connect", (req, socket) => {
+    connects.push(req.url);
+    socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+  });
+  upstreamProxy.listen(0, "127.0.0.1");
+  await once(upstreamProxy, "listening");
+  upstreamProxy.unref();
   const runtimeDir = path.join(root, "template-runtime");
   fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
   fs.writeFileSync(path.join(runtimeDir, "mock", ".codex-plus-template"), "");
-  const fresh = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache") }, runtimeDir);
+  const env = {
+    CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache"),
+    CLAUDE_LOCAL_UPSTREAM_PROXY: `http://127.0.0.1:${upstreamProxy.address().port}`,
+  };
+  const fresh = await start(env, runtimeDir);
   try {
-    for (const pathname of ["/new", "/settings/general"]) {
-      const shell = await request(fresh, pathname, { host: "claude.ai" });
-      assert.equal(shell.status, 200, pathname);
-      assert.match(shell.bytes.toString("utf8"), /data-build-id="fixture-build"/, pathname);
-    }
-    const asset = await request(fresh, "/assets/v1/main.js", { host: "claude.ai" });
-    assert.equal(asset.bytes.toString("utf8"), "export const localOfficialAsset = true;");
-    const catalog = await request(fresh, "/i18n/zh-Hans.json?v=1.1", { host: "claude.ai" });
-    assert.deepEqual(catalog.json, { message: "translated" }, "汉化走配置的目录");
-    const bootstrap = await request(fresh, "/api/bootstrap", { host: "claude.ai" });
-    assert.equal(bootstrap.json.privateFixture, undefined, "不拿模板数据配官方外壳");
-    assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
+    const shell = await request(fresh, "/settings/general", { host: "claude.ai" });
+    assert.notEqual(shell.status, 200, "代理拒绝时不能假装拿到了外壳");
+    assert.deepEqual(connects, ["claude.ai:443"], "首次外壳经出站代理去 claude.ai");
   } finally {
     await stop(fresh);
   }
 
-  // 录制外壳在场时才走录制模板路径。
+  // 录制（或已写穿）的外壳在场时直接回放，不再联网。
+  connects.length = 0;
   const shellKey = crypto.createHash("sha1").update("claude.ai/epitaxy").digest("hex");
   fs.mkdirSync(path.join(runtimeDir, ".cache"), { recursive: true });
   fs.writeFileSync(path.join(runtimeDir, ".cache", shellKey), `<html data-build-id="recorded">${"x".repeat(5000)}</html>`);
   fs.writeFileSync(path.join(runtimeDir, ".cache", `${shellKey}.json`), JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, url: "claude.ai/epitaxy" }));
-  const recorded = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache") }, runtimeDir);
+  const recorded = await start(env, runtimeDir);
   try {
     const shell = await request(recorded, "/settings/general", { host: "claude.ai" });
     assert.equal(shell.status, 200);
     assert.match(shell.bytes.toString("utf8"), /data-build-id="recorded"/);
+    assert.deepEqual(connects, []);
   } finally {
     await stop(recorded);
+    upstreamProxy.close();
   }
 });
 

@@ -96,21 +96,7 @@ const CACHE_DIR = process.env.CLAUDE_LOCAL_CACHE_DIR || path.join(here, ".cache"
 // 或由后端 install_assets 写入代理旁的内嵌模板（mock/.codex-plus-template 标记）。
 // 代理目录里来历不明的 mock 一律忽略（托管测试用 privateFixture 守住这条）。
 const TRUSTED_TEMPLATE = fs.existsSync(path.join(here, "mock", ".codex-plus-template"));
-// 内嵌模板只和录制外壳配套：模板数据、录制外壳、录制汉化是同一个线上版本。新装的 state 里没有录制外壳时
-// 不能拿模板去配安装包里的官方外壳（版本不同，界面会卡住、汉化缺失），整体走受管数据路径：
-// 安装包同版本的官方外壳与资源 + 合成启动数据 + 配置的汉化目录。也不去线上抓外壳（受限地区会 302）。
-function hasRecordedShell(dir) {
-  for (const key of ["claude.ai/epitaxy", "claude.ai/login", "claude.ai/new", "claude.ai/"]) {
-    const file = path.join(dir, crypto.createHash("sha1").update(key).digest("hex"));
-    try {
-      const meta = JSON.parse(fs.readFileSync(`${file}.json`, "utf8"));
-      if (meta.status === 200 && fs.statSync(file).size >= 4096) return true;
-    } catch { /* 没有或损坏：继续看下一个 */ }
-  }
-  return false;
-}
-const TEMPLATE_USABLE = TRUSTED_TEMPLATE && hasRecordedShell(path.join(here, ".cache"));
-const POC_DIR = runtime.recordedDir || (TEMPLATE_USABLE ? here : null);
+const POC_DIR = runtime.recordedDir || (TRUSTED_TEMPLATE ? here : null);
 const POC_MOCK = path.join(POC_DIR ?? here, "mock");
 const POC_I18N = path.join(POC_DIR ?? here, "i18n");
 // 托管模式在存在 PoC 数据（dev 录制目录或安装的内嵌 mock 模板）时走 PoC 数据路径；
@@ -1318,26 +1304,18 @@ function serveDocShell(req, res, url) {
     });
     return res.end(cached);
   }
-  // 没有录制外壳时用安装包里同版本的官方外壳，不去线上抓：受限地区 claude.ai 会 302 到
-  // app-unavailable-in-region，走代理也常被 Cloudflare 403，页面就只剩一行「302 Found」。
-  if (officialShell && host === "claude.ai") {
-    res.writeHead(200, {
-      "content-type": "text/html; charset=utf-8",
-      "content-length": Buffer.byteLength(officialShell),
-      "cache-control": "no-cache",
-    });
-    return res.end(officialShell);
-  }
   const base = UPSTREAM_MAP[host] || `https://${host}`;
   const target = new URL("/epitaxy", base);
-  const client = target.protocol === "http:" ? http : https;
-  const up = client.request(
+  // 带上 Claude Desktop 自己的浏览器 UA：只写「Claude」会被 Cloudflare 当成机器人 403。
+  const userAgent = String(req.headers["user-agent"] || "") || "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude Chrome Safari/537.36";
+  const up = upstreamRequest(
+    target,
     {
       hostname: target.hostname,
       port: target.port || 443,
       path: "/epitaxy",
       method: "GET",
-      headers: { accept: "text/html", host, "user-agent": "Claude" },
+      headers: { accept: "text/html", host, "user-agent": userAgent },
       timeout: 15000,
     },
     (r) => {
@@ -1404,6 +1382,60 @@ const UPSTREAM_MAP = (() => {
   try { return JSON.parse(process.env.CLAUDE_LOCAL_UPSTREAM_MAP || "{}"); } catch { return {}; }
 })();
 
+// 抓 claude.ai 网页（首次写穿缓存的外壳、静态资源）可选经出站代理：受限地区直连会被 302 到
+// app-unavailable-in-region。代理地址由后端检测系统代理后传入（只支持 http:// 的 CONNECT 代理）。
+// 本机地址一律直连。
+const UPSTREAM_PROXY = (() => {
+  try {
+    const proxy = new URL(process.env.CLAUDE_LOCAL_UPSTREAM_PROXY || "");
+    return proxy.protocol === "http:" && proxy.hostname ? proxy : null;
+  } catch {
+    return null;
+  }
+})();
+
+function isLoopbackHost(hostname) {
+  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(String(hostname).toLowerCase());
+}
+
+/** 发往上游网页的请求：https 且配置了出站代理时先 CONNECT 打通隧道，再在隧道上做 TLS。 */
+function upstreamRequest(target, options, callback) {
+  const client = target.protocol === "http:" ? http : https;
+  if (!UPSTREAM_PROXY || target.protocol !== "https:" || isLoopbackHost(target.hostname)) {
+    return client.request(options, callback);
+  }
+  const port = Number(options.port || 443);
+  const authority = `${options.hostname}:${port}`;
+  const proxyAuth = UPSTREAM_PROXY.username
+    ? { "proxy-authorization": `Basic ${Buffer.from(`${decodeURIComponent(UPSTREAM_PROXY.username)}:${decodeURIComponent(UPSTREAM_PROXY.password)}`).toString("base64")}` }
+    : {};
+  return https.request({
+    ...options,
+    agent: undefined,
+    // ClientRequest 支持回调式 createConnection：隧道建好后再交出 TLS socket。
+    createConnection: (_options, done) => {
+      const connect = http.request({
+        host: UPSTREAM_PROXY.hostname,
+        port: Number(UPSTREAM_PROXY.port || 80),
+        method: "CONNECT",
+        path: authority,
+        headers: { host: authority, ...proxyAuth },
+        timeout: options.timeout || 20000,
+      });
+      connect.once("connect", (response, socket) => {
+        if (response.statusCode !== 200) {
+          socket.destroy();
+          return done(new Error(`upstream proxy CONNECT ${response.statusCode}`));
+        }
+        done(null, tls.connect({ socket, servername: options.hostname }));
+      });
+      connect.once("timeout", () => connect.destroy(new Error("upstream proxy timeout")));
+      connect.once("error", (error) => done(error));
+      connect.end();
+    },
+  }, callback);
+}
+
 function proxyUpstream(req, res, url) {
   const cacheKey = `${url.host}${url.pathname}${url.search}`;
   const cp = cachePathFor(cacheKey);
@@ -1415,12 +1447,12 @@ function proxyUpstream(req, res, url) {
   // 保留原始主机（downloads.claude.ai 等），不再统一改写到 claude.ai。
   const base = UPSTREAM_MAP[url.host] || `https://${url.host || "claude.ai"}`;
   const target = new URL(url.pathname + url.search, base);
-  const client = target.protocol === "http:" ? http : https;
   const headers = { ...req.headers, host: url.host || target.host };
   delete headers["proxy-connection"];
   delete headers["accept-encoding"];
 
-  const upstreamReq = client.request(
+  const upstreamReq = upstreamRequest(
+    target,
     {
       hostname: target.hostname,
       port: target.port || 443,
@@ -1538,10 +1570,8 @@ function handle(req, res, hostHeader) {
     return res.end(req.method === "HEAD" ? undefined : body);
   }
 
-  // 官方静态资源：受管数据路径下是唯一来源；录制模板路径下作兜底（外壳用的是官方外壳时，
-  // 它引用的资源只在安装包里，线上同样会被地区限制）。哈希文件名不会和录制资源串版本。
   const officialResourcePath = (() => {
-    if (!officialAssets || !["GET", "HEAD"].includes(req.method)) return null;
+    if (!dataManaged || !["GET", "HEAD"].includes(req.method)) return null;
     const mapI18nPath = (pathname) => {
       const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
       if (!match) return pathname;
@@ -1575,8 +1605,7 @@ function handle(req, res, hostHeader) {
   if (officialResourcePath) {
     const resource = officialAssets.read(officialResourcePath);
     if (!resource) {
-      // 录制模板路径：安装包里没有就继续走缓存 / 线上，不能直接 404 掉录制资源。
-      if (dataManaged && hostName !== "assets-proxy.anthropic.com") {
+      if (hostName !== "assets-proxy.anthropic.com") {
         res.writeHead(404, { "cache-control": "no-store" });
         return res.end();
       }
