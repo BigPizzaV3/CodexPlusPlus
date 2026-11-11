@@ -326,7 +326,7 @@ function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false, 
     render: () => {
       cursor = 0;
       return exports.PanelAgentRow({
-        agent: { ...agent(), enabled: connected, requiresDisconnectPreview },
+        agent: { ...agent(), enabled: connected, requiresDisconnectPreview, defaultModel: group && !group.disabled ? "group/daily" : "gpt" },
         payload: group ? { groups: [{ id: "daily", name: "Daily", disabled: group.disabled }], gateway: { bindings: {} } } : null,
         onRun: async (command: string, args: Record<string, unknown>) => { calls.push({ command, args }); return true; },
       }) as Element;
@@ -340,7 +340,7 @@ test("托盘在模型组停用时显示回退模型，重新启用后恢复原�
   let tree = tray.render();
   let picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
   assert.match(text(picker), /GPT/);
-  assert.equal(picker.props.title, "原模型组「Daily」已停用，当前使用 GPT");
+  assert.equal(picker.props.title, "原模型组「Daily」已停用，网关默认回退为 GPT");
   assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "gpt");
 
   group.disabled = false;
