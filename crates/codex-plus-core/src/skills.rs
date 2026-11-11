@@ -2021,7 +2021,13 @@ impl SkillsManager {
                         .insert((installed.repo_key.clone(), installed.repo_path.clone()));
                 }
             }
-            if comparison_error.is_none() && hashes.len() <= 1 && sources.len() <= 1 {
+            let associated_originals = originals.len() > 1 && sources.len() == 1
+                && entry.locations.iter().filter(|location| !location.managed || location.selectable)
+                    .all(|location| parse_repo_key(&location.repo_key).is_some()
+                        && !location.repo_path.is_empty());
+            if comparison_error.is_none() && hashes.len() <= 1 && sources.len() <= 1
+                && !associated_originals
+            {
                 if let Some(path) = originals.iter().next().or_else(|| groups.keys().next()) {
                     entry.instance_key = format!("{}:{}", entry.id, path.display());
                 }
@@ -2062,6 +2068,8 @@ impl SkillsManager {
                 }
                 originals.len() > 1 || independent_hashes.len() > 1
             };
+            let mut instances = Vec::new();
+            let mut managed_copy_changed = false;
             for (path, locations) in groups {
                 let mut instance = entry.clone();
                 instance.instance_key = format!("{}:{}", instance.id, path.display());
@@ -2082,6 +2090,9 @@ impl SkillsManager {
                 instance.enabled = instance.agents.iter().any(|agent| agent == "codex");
                 let managed_instance = instance.locations.iter().all(|location| location.managed)
                     || source.canonicalize().ok().as_ref() == Some(&path);
+                if managed_instance && source_hash != path_hashes.get(&path).copied() {
+                    managed_copy_changed = true;
+                }
                 instance.managed = managed_instance || instance.locations.iter().any(|location| location.managed);
                 if !independent {
                     instance.safe_disable_agents = instance.locations.iter()
@@ -2147,8 +2158,36 @@ impl SkillsManager {
                     instance.update_owner = "manager".into();
                 }
                 instance.original_dir = (!managed_instance).then_some(path);
-                visible.push(instance);
+                instances.push(instance);
             }
+            let mut owners = BTreeSet::new();
+            let same_repository = instances.first().map(|instance| instance.repo_key.as_str());
+            if independent && comparison_error.is_none() && !managed_copy_changed
+                && instances.len() > 1
+                && instances.iter().all(|instance| {
+                    parse_repo_key(&instance.repo_key).is_some()
+                        && !instance.repo_path.is_empty()
+                        && Some(instance.repo_key.as_str()) == same_repository
+                        && instance.locations.iter().map(|location| match location.root_kind.as_str() {
+                            "shared" => "codex",
+                            agent => agent,
+                        }).collect::<BTreeSet<_>>().into_iter().all(|agent| owners.insert(agent))
+                })
+            {
+                for instance in &mut instances {
+                    instance.conflict = None;
+                    instance.conflict_kind = None;
+                    if instance.locations.iter().any(|location| {
+                        location.root_kind == "codex" && location.status_error.is_none()
+                            && std::fs::symlink_metadata(self.linked_dir().join(&instance.id))
+                                .is_ok_and(|metadata| metadata.file_type().is_dir()
+                                    && !metadata_is_link(&metadata))
+                    }) && self.ensure_skill_name_aliases_only(&instance.id, &state).is_ok() {
+                        instance.safe_toggle_agents.push("codex".into());
+                    }
+                }
+            }
+            visible.extend(instances);
         }
         Ok(visible)
     }
@@ -6635,6 +6674,77 @@ mod tests {
         assert!(manager.read_native_skill_config().unwrap().enabled(&shared.join("alpha/SKILL.md"), "shared"));
         assert!(manager.set_enabled_for("grok", "alpha", true).is_err());
         assert!(!temp.path().join("grok-skills/alpha").exists());
+    }
+
+    #[test]
+    fn same_repository_agent_variants_keep_their_own_paths_without_conflict() {
+        for (other_repo, modified_copy, same_agent) in [
+            (false, false, false), (true, false, false),
+            (false, true, false), (false, false, true),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let shared = temp.path().join("shared");
+            let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+            let source = manager.source_dir.join("alpha");
+            let codex = manager.linked_dir().join("alpha");
+            let claude = temp.path().join("claude-skills/alpha");
+            write_skill(&source, "---\nname: alpha\n---\ncodex version");
+            copy_dir_all(&source, &codex).unwrap();
+            std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
+            write_skill(&claude, "---\nname: alpha\n---\nclaude version");
+            if modified_copy {
+                std::fs::write(codex.join("local-edit.txt"), "modified").unwrap();
+            }
+
+            let mut state = manager.load_state();
+            let codex_record: InstalledSkill = serde_json::from_value(json!({
+                "id": "alpha", "repoKey": "example/repo@main",
+                "repoPath": ".agents/skills/alpha"
+            })).unwrap();
+            state.installed.insert("alpha".into(), codex_record.clone());
+            let mut claude_record = codex_record.clone();
+            claude_record.repo_key = if other_repo { "other/repo@main" } else { "example/repo@main" }.into();
+            claude_record.repo_path = ".codex/skills/alpha".into();
+            claude_record.original_dir = Some(claude.clone());
+            state.instance_records.entry("alpha".into()).or_default().insert(claude.clone(), SkillInstanceRecord {
+                installed: claude_record,
+                target: SkillInstanceTarget { path: claude.clone(), identity: skill_path_identity(&claude).unwrap() },
+                managed_copies: Vec::new(),
+            });
+            if same_agent {
+                let extra = shared.join("alpha");
+                write_skill(&extra, "---\nname: alpha\n---\nshared version");
+                let mut record = codex_record;
+                record.original_dir = Some(extra.clone());
+                state.instance_records.entry("alpha".into()).or_default().insert(extra.clone(), SkillInstanceRecord {
+                    installed: record,
+                    target: SkillInstanceTarget { path: extra.clone(), identity: skill_path_identity(&extra).unwrap() },
+                    managed_copies: Vec::new(),
+                });
+            }
+            manager.save_state_unlocked(&state).unwrap();
+
+            let entries = manager.try_local_inventory().unwrap();
+            let found = entries.iter().filter(|item| item.id == "alpha").collect::<Vec<_>>();
+            assert_eq!(found.len(), if same_agent { 3 } else { 2 });
+            let should_conflict = other_repo || modified_copy || same_agent;
+            assert!(found.iter().all(|item| item.conflict.is_some() == should_conflict),
+                "other_repo={other_repo}, modified_copy={modified_copy}, same_agent={same_agent}");
+            if !should_conflict {
+                let codex_entry = found.iter().find(|item| item.locations[0].root_kind == "codex").unwrap();
+                let claude_entry = found.iter().find(|item| item.locations[0].root_kind == "claude").unwrap();
+                assert_eq!(codex_entry.repo_path, ".agents/skills/alpha");
+                assert_eq!(claude_entry.repo_path, ".codex/skills/alpha");
+                assert_eq!(claude_entry.original_dir.as_deref(), Some(claude.canonicalize().unwrap().as_path()));
+                assert!(claude_entry.update_owner.is_empty());
+                assert_eq!(codex_entry.safe_toggle_agents, vec!["codex"]);
+                manager.set_enabled_for("codex", "alpha", false).unwrap();
+                assert_eq!(std::fs::read_to_string(claude.join(SKILL_MANIFEST_FILE)).unwrap(),
+                    "---\nname: alpha\n---\nclaude version");
+                assert!(manager.set_enabled_for("grok", "alpha", true).is_err());
+            }
+            assert_eq!(manager.load_state(), state);
+        }
     }
 
     #[test]

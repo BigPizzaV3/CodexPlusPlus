@@ -1063,6 +1063,37 @@ test("different Agent installations share a group row without losing paths, stat
   ui.unmount();
 });
 
+test("the same repository can provide different Agent paths without a conflict warning", async () => {
+  const codex = { ...skill("alpha", "owner/repo@main"), instanceKey: "alpha:C:/codex/alpha",
+    repoPath: ".agents/skills/alpha", updateOwner: "manager", agents: ["codex"], enabled: true,
+    safeToggleAgents: ["codex"],
+    locations: [{ manifestPath: "C:/codex/alpha/SKILL.md", rootKind: "codex", managed: true, enabled: true }] };
+  const claude = { ...skill("alpha", "owner/repo@main"), instanceKey: "alpha:C:/claude/alpha",
+    repoPath: ".codex/skills/alpha", originalDir: "C:/claude/alpha", updateOwner: "", agents: ["claude"],
+    locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha",
+      selectable: true, rootKind: "claude", managed: false, enabled: true }] };
+  const ui = createHarness();
+  ui.server.skills = [codex, claude];
+  ui.render(); await tick(); ui.render();
+
+  const items = ui.group("repo:owner/repo").props.group.items as FixtureSkill[];
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].displayInstances?.map((item: any) => item.repoPath),
+    [".agents/skills/alpha", ".codex/skills/alpha"]);
+  const row = ui.rowElements("repo:owner/repo", "", "alpha", codex);
+  assert.equal(row.some((node) => node.type === "CxBadge" && node.children.includes("同名冲突")), false);
+  assert.equal(row.find((node) => node.type === "AgentToggle" && node.props.agent === "codex")?.props.disabled, false);
+  assert.equal(row.find((node) => node.type === "AgentToggle" && node.props.agent === "claude")?.props.hint, "请按安装位置管理");
+  row.find((node) => node.type === "CxRow")!.props.onClick(); ui.render();
+  const detail = ui.find((node) => node.type === "SkillDetailDrawer");
+  assert.equal(detail.props.skill.conflict, undefined);
+  detail.props.onUpdate(claude.repoKey, claude.originalDir); ui.render();
+  const preview = ui.find((node) => node.type === "SkillInPlaceUpdateDrawer");
+  assert.equal(preview.props.repoKey, claude.repoKey);
+  assert.equal(preview.props.localPath, claude.originalDir);
+  ui.unmount();
+});
+
 test("conflicting same-name locations remain separate and cannot perform id-based writes", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual"] }));
   const first: FixtureSkill = { ...skill("same", ""), instanceKey: "shared:C:/agents/same", conflict: "内容不同",

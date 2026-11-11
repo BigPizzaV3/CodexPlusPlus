@@ -47,7 +47,7 @@ export function aggregateSkillGroupItems<T extends DisplayableSkill>(skills: T[]
       for (const agent of agents) owners.add(agent);
     }
     const sources = new Set(instances.filter((item) => skillRepositoryName(item.repoKey))
-      .map((item) => JSON.stringify([item.repoKey, item.repoPath || ""])));
+      .map((item) => item.repoKey));
     if (overlaps || sources.size > 1) continue;
     const agents = [...new Set(instances.flatMap((item) => item.agents ?? (item.enabled ? ["codex"] : [])))];
     merged.set(id, {

@@ -748,6 +748,85 @@ mod tests {
     }
 
     #[test]
+    fn same_repository_agent_paths_update_only_the_selected_installation() {
+        let (temp, manager, repo, _, _) = fixture();
+        let first = temp.path().join("shared/alpha").canonicalize().unwrap();
+        let second = temp.path().join("agent/alpha").canonicalize().unwrap();
+        std::fs::remove_file(second.join(MANAGED_COPY_MARKER)).unwrap();
+        std::fs::write(second.join("details.txt"), "claude old").unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for (path, details) in [(".agents/skills/alpha", "codex new"), (".codex/skills/alpha", "claude new")] {
+            writer.start_file(format!("skills-main/{path}/SKILL.md"), options).unwrap();
+            writer.write_all(b"---\nname: alpha\n---\nnew").unwrap();
+            writer.start_file(format!("skills-main/{path}/details.txt"), options).unwrap();
+            writer.write_all(details.as_bytes()).unwrap();
+        }
+        let zip = writer.finish().unwrap().into_inner();
+        let candidates = parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).unwrap();
+        let codex_remote = candidates.iter().find(|item| item.repo_path == ".agents/skills/alpha").unwrap();
+        let claude_remote = candidates.iter().find(|item| item.repo_path == ".codex/skills/alpha").unwrap();
+        for (path, remote) in [(&first, codex_remote), (&second, claude_remote)] {
+            let preview = manager.preview_repository_matches_for_instance(
+                &repo, &[remote.clone()], "alpha", path,
+            ).unwrap();
+            let selection = SkillRepositoryMatchSelection {
+                preview_id: preview.preview_id, local_id: "alpha".into(), repo_key: repo.key(),
+                repo_path: remote.repo_path.clone(), local_path: Some(path.clone()), manual: false,
+            };
+            let result = manager.apply_repository_matches(&[selection], &[remote.clone()]).unwrap();
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+        }
+
+        let inventory = manager.try_merge_entries(&candidates).unwrap();
+        let instances = inventory.iter().filter(|item| item.id == "alpha" && item.installed).collect::<Vec<_>>();
+        assert_eq!(instances.len(), 2);
+        assert!(instances.iter().all(|item| item.conflict.is_none()));
+        let preview = manager.preview_skill_in_place_update_for_instance(
+            "alpha", &first, codex_remote.clone(), zip.clone(),
+        ).unwrap();
+        assert!(preview.conflicts.is_empty(), "{:?}", preview.conflicts);
+        assert!(preview.skipped_paths.iter().any(|path| path.canonicalize().ok().as_ref() == Some(&second)));
+        manager.execute_skill_in_place_update(&preview.preview_id, codex_remote).unwrap();
+        assert_eq!(std::fs::read_to_string(first.join("details.txt")).unwrap(), "codex new");
+        assert_eq!(std::fs::read_to_string(second.join("details.txt")).unwrap(), "claude old");
+
+        let preview = manager.preview_skill_in_place_update_for_instance(
+            "alpha", &second, claude_remote.clone(), zip,
+        ).unwrap();
+        assert!(preview.conflicts.is_empty(), "{:?}", preview.conflicts);
+        assert!(preview.skipped_paths.iter().any(|path| path.canonicalize().ok().as_ref() == Some(&first)));
+        manager.execute_skill_in_place_update(&preview.preview_id, claude_remote).unwrap();
+        assert_eq!(std::fs::read_to_string(first.join("details.txt")).unwrap(), "codex new");
+        assert_eq!(std::fs::read_to_string(second.join("details.txt")).unwrap(), "claude new");
+    }
+
+    #[test]
+    fn equal_agent_installations_with_the_same_repository_are_not_conflicts() {
+        let (temp, manager, repo, remote, _) = fixture();
+        let first = temp.path().join("shared/alpha").canonicalize().unwrap();
+        let second = temp.path().join("agent/alpha").canonicalize().unwrap();
+        std::fs::remove_file(second.join(MANAGED_COPY_MARKER)).unwrap();
+        for path in [&first, &second] {
+            let preview = manager.preview_repository_matches_for_instance(
+                &repo, &[remote.clone()], "alpha", path,
+            ).unwrap();
+            let selection = SkillRepositoryMatchSelection {
+                preview_id: preview.preview_id, local_id: "alpha".into(), repo_key: repo.key(),
+                repo_path: remote.repo_path.clone(), local_path: Some(path.clone()), manual: false,
+            };
+            let result = manager.apply_repository_matches(&[selection], &[remote.clone()]).unwrap();
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+        }
+        let inventory = manager.try_local_inventory().unwrap();
+        let instances = inventory.iter().filter(|item| item.id == "alpha").collect::<Vec<_>>();
+        assert_eq!(instances.len(), 2);
+        assert!(instances.iter().all(|item| item.conflict.is_none()));
+        assert_eq!(instances.iter().filter_map(|item| item.original_dir.clone()).collect::<BTreeSet<_>>(),
+            BTreeSet::from([first, second]));
+    }
+
+    #[test]
     fn confirmed_managed_copies_update_and_restore_with_original() {
         let (temp, manager, repo, remote, zip) = fixture();
         let original = temp.path().join("shared/alpha");
