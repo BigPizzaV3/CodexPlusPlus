@@ -3182,7 +3182,10 @@ server.listen(0,'127.0.0.1',()=>{
     #[test]
     fn full_mode_launch_strips_inherited_proxy_vars() {
         let mut command = Command::new("claude");
-        command.env("HTTPS_PROXY", "http://127.0.0.1:7897");
+        for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            command.env(name, "http://127.0.0.1:7897");
+        }
+        command.env("CODEX_PLUS_PROXY_TEST_KEEP", "preserved");
         strip_inherited_proxy(&mut command);
         let removed: Vec<String> = command
             .get_envs()
@@ -3190,8 +3193,15 @@ server.listen(0,'127.0.0.1',()=>{
             .map(|(key, _)| key.to_string_lossy().into_owned())
             .collect();
         for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-            assert!(removed.iter().any(|key| key == name), "{name} 未被删除：{removed:?}");
+            // Windows 环境变量名不区分大小写，Command 会合并大小写别名。
+            assert!(removed.iter().any(|key| if cfg!(windows) {
+                key.eq_ignore_ascii_case(name)
+            } else {
+                key == name
+            }), "{name} 未被删除：{removed:?}");
         }
+        assert!(command.get_envs().any(|(key, value)| key == "CODEX_PLUS_PROXY_TEST_KEEP"
+            && value == Some(std::ffi::OsStr::new("preserved"))));
     }
 
     /// 邮箱：缺字段/空串走默认，合法值 trim 后落盘，格式不对拒绝保存。

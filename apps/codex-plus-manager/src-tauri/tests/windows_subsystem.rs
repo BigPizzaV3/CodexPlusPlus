@@ -336,11 +336,27 @@ fn github_release_workflow_builds_one_universal_macos_dmg() {
         .join(".github/workflows/release-assets.yml");
     let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
 
-    // 通用包：单个 job 在两个 target 上各编一遍，由 build-universal.sh
-    // 用 lipo 合并。两个架构的 std 都要装。
-    assert!(workflow.contains("macos-14"));
-    assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
-    assert!(workflow.contains("build-universal.sh \"$VERSION\""));
+    let workflow = workflow.replace("\r\n", "\n");
+    let (_, builds) = workflow.split_once("\n  macos-build:\n").expect("macOS build job");
+    let (builds, package) = builds.split_once("\n  macos-dmg:\n").expect("universal DMG job");
+    let package = package.split("\n  latest-json:\n").next().unwrap();
+
+    // 两个架构并行编译，但最后仍由一个 job 合并为单个 universal DMG。
+    assert!(builds.contains("runs-on: macos-15"));
+    assert!(builds.contains("target: [x86_64-apple-darwin, aarch64-apple-darwin]"));
+    assert!(builds.contains("targets: ${{ matrix.target }}"));
+    assert!(builds.contains("cargo build --release --target ${{ matrix.target }}"));
+    assert!(builds.contains("name: macos-bin-${{ matrix.target }}"));
+    assert!(builds.contains("target/${{ matrix.target }}/release/codex-plus-plus"));
+    assert!(builds.contains("target/${{ matrix.target }}/release/codex-plus-legacy-shim"));
+    assert!(package.contains("needs: [prepare, macos-build]"));
+    assert!(package.contains("runs-on: macos-15"));
+    for target in ["x86_64-apple-darwin", "aarch64-apple-darwin"] {
+        assert!(package.contains(&format!("name: macos-bin-{target}")));
+        assert!(package.contains(&format!("path: target/{target}/release")));
+    }
+    assert!(package.contains("UNIVERSAL_SKIP_BUILD: \"1\""));
+    assert!(package.contains("build-universal.sh \"$VERSION\""));
 
     // 分架构的 matrix 形态不应再出现，否则会回到「用户自己挑架构」的老问题。
     assert!(!workflow.contains("matrix.arch"));
