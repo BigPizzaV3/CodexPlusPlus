@@ -1950,6 +1950,70 @@ fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
     assert!(off.get("reasoning_effort").is_none());
 }
 
+/// #3026：Kimi 这类非官方原生 Responses 上游不接受 Codex 私有的
+/// `include` 值 `output.encrypted_content`（整单 HTTP 400）。代理转发时去掉它，
+/// 保留 `reasoning.encrypted_content` 和其他合法项；滤完为空则去掉整个字段。
+#[tokio::test]
+async fn kimi_responses_strips_private_output_encrypted_content() {
+    async fn capture(body: Value) -> Value {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            r#"{"id":"resp_kimi","object":"response"}"#.to_string(),
+        ));
+        let mut settings =
+            session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+        settings.relay_profiles[0].name = "Kimi".to_string();
+        let result = open_responses_proxy_request_with_settings_for_path(
+            &body.to_string(),
+            settings,
+            "/v1/responses",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, sent) = server.await.unwrap();
+        assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+        sent
+    }
+
+    let kept = capture(json!({
+        "model": "k3.1-pro",
+        "stream": false,
+        "input": "hello",
+        "include": [
+            "reasoning.encrypted_content",
+            "output.encrypted_content",
+            "message.output_text.logprobs"
+        ]
+    }))
+    .await;
+    assert_eq!(kept["model"], "k3.1-pro");
+    assert_eq!(
+        kept["include"],
+        json!([
+            "reasoning.encrypted_content",
+            "message.output_text.logprobs"
+        ])
+    );
+
+    let emptied = capture(json!({
+        "model": "k3.1-pro",
+        "stream": false,
+        "input": "hello",
+        "include": ["output.encrypted_content"]
+    }))
+    .await;
+    assert!(
+        emptied.get("include").is_none(),
+        "过滤后为空应去掉整个 include：{emptied}"
+    );
+}
+
 #[test]
 fn kimi_k3_standard_protocol_avoids_adaptive_and_preserves_opt_in_vendor_behavior() {
     for model in ["kimi-k3", "k3-256k"] {

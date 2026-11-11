@@ -5886,6 +5886,57 @@ fn strip_reasoning_parameters(body: &mut Value) {
     }
 }
 
+/// Codex 客户端放进 Responses `include`、只有官方 ChatGPT 认得的值。
+/// 第三方原生 Responses（Kimi 等）收到未知项会整单 400（#3026）。
+/// 后续客户端再加私有项时，补进这个列表，避免再次原样转发出去。
+const CODEX_PRIVATE_RESPONSES_INCLUDES: &[&str] = &["output.encrypted_content"];
+
+/// 官方 ChatGPT 路径（产品后端 chatgpt.com，以及公开 API api.openai.com）认得
+/// 上面的私有 `include` 值，请求体保持原样。
+fn official_chatgpt_responses_base(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    host == "api.openai.com" || host == "chatgpt.com" || host.ends_with(".chatgpt.com")
+}
+
+/// 从 `include` 去掉 Codex 私有项，保留 `reasoning.encrypted_content` 和其他合法项。
+/// 滤完为空则去掉整个字段；不是数组的 `include` 不动。
+/// 做法对齐 xAI 的 `tidy_include`，但 xAI 只留 `reasoning.encrypted_content`，
+/// 这里不能照搬：Kimi 还要放行其它合法项。
+fn strip_codex_private_responses_include(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let kept = object
+        .get("include")
+        .and_then(Value::as_array)
+        .map(|include| {
+            include
+                .iter()
+                .filter(|value| {
+                    value
+                        .as_str()
+                        .is_none_or(|item| !CODEX_PRIVATE_RESPONSES_INCLUDES.contains(&item))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+    match kept {
+        Some(kept) if kept.is_empty() => {
+            object.remove("include");
+        }
+        Some(kept) => {
+            object.insert("include".to_string(), Value::Array(kept));
+        }
+        None => {}
+    }
+}
+
 /// 用户明确选择严格上游契约时才投影请求；不修改 rollout，也不验证/伪造账号密文。
 fn project_strict_reasoning_history(body: &mut Value) -> anyhow::Result<()> {
     let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else { return Ok(()); };
@@ -6185,6 +6236,11 @@ async fn upstream_request_parts(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(relay.base_url.trim());
+    // #3026：非官方原生 Responses（Kimi 等）不接受 Codex 私有的 include 项。
+    // 官方 ChatGPT 路径不改写。xAI 之后还会用自己的 tidy_include 再收窄一次。
+    if wire_api == UpstreamWireApi::Responses && !official_chatgpt_responses_base(endpoint_base) {
+        strip_codex_private_responses_include(&mut body);
+    }
     Ok((
         match relay.protocol {
             // v2 压缩请求走普通 /responses 端点（compaction_trigger 在 input 里）；
@@ -14294,5 +14350,121 @@ mod callless_function_output_tests {
         );
         assert_eq!(input[1]["type"], "message");
         assert_eq!(input[1]["content"][0]["text"], "delegate");
+    }
+}
+
+#[cfg(test)]
+mod responses_include_tests {
+    use super::*;
+
+    /// #3026：Kimi 等非官方 Responses 去掉 `output.encrypted_content`，
+    /// 官方 ChatGPT（chatgpt.com 与 api.openai.com）原样保留。
+    #[tokio::test]
+    async fn non_official_responses_drop_private_include_but_official_chatgpt_keeps_it() {
+        let request = json!({
+            "model": "k3.1-pro",
+            "input": "hello",
+            "include": [
+                "reasoning.encrypted_content",
+                "output.encrypted_content",
+                "message.output_text.logprobs"
+            ]
+        });
+        async fn shaped(base_url: &str, official_base: Option<&str>, request: Value) -> Value {
+            let relay = crate::settings::RelayProfile {
+                protocol: RelayProtocol::Responses,
+                base_url: base_url.to_string(),
+                api_key: "sk-test".into(),
+                name: "Kimi".into(),
+                ..Default::default()
+            };
+            let (_, out, wire, _) = upstream_request_parts(
+                &relay,
+                request,
+                "/v1/responses",
+                None,
+                false,
+                official_base,
+                ProxySessionHeaders::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(wire, UpstreamWireApi::Responses);
+            out
+        }
+
+        let kimi = shaped("https://api.kimi.com/coding/v1", None, request.clone()).await;
+        assert_eq!(
+            kimi["include"],
+            json!([
+                "reasoning.encrypted_content",
+                "message.output_text.logprobs"
+            ])
+        );
+
+        let mut only_private = request.clone();
+        only_private["include"] = json!(["output.encrypted_content"]);
+        let relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            base_url: "https://api.kimi.com/coding/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let (_, emptied, _, _) = upstream_request_parts(
+            &relay,
+            only_private,
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        )
+        .await
+        .unwrap();
+        assert!(emptied.get("include").is_none(), "{emptied}");
+
+        let mut untouched = request.clone();
+        untouched["include"] = json!("output.encrypted_content");
+        let (_, literal, _, _) = upstream_request_parts(
+            &relay,
+            untouched,
+            "/v1/responses",
+            None,
+            false,
+            None,
+            ProxySessionHeaders::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(literal["include"], "output.encrypted_content");
+
+        let official = shaped("https://api.openai.com/v1", None, request.clone()).await;
+        assert_eq!(official["include"], request["include"]);
+        let mut official_login = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        official_login.base_url.clear();
+        let official_base = crate::official_login::official_base_url();
+        let (_, chatgpt, _, _) = upstream_request_parts(
+            &official_login,
+            request.clone(),
+            "/v1/responses",
+            None,
+            false,
+            Some(official_base.as_str()),
+            ProxySessionHeaders::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(chatgpt["include"], request["include"]);
+        let subdomain = shaped(
+            "https://ab.chatgpt.com/backend-api/codex",
+            None,
+            request.clone(),
+        )
+        .await;
+        assert_eq!(subdomain["include"], request["include"]);
     }
 }
