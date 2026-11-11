@@ -68,7 +68,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 2032
+      "lines": 1945
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -183,7 +183,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 441
+      "lines": 438
     },
     {
       "name": "96-paste-fix.js",
@@ -208,7 +208,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 44
+      "lines": 43
     },
     {
       "name": "99-tail.js",

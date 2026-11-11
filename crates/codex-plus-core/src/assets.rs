@@ -643,10 +643,6 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
     let dream_skin_target_runtime = dream_skin_target_runtime_after_document_ready(settings);
     let paste_fix = paste_fix_enabled_config(settings);
-    // 读取设置失败时启动器使用默认值，因此只把非默认的关闭状态作为启动快照。
-    let thread_scroll_restore = (settings.enhancements_enabled
-        && !settings.codex_app_thread_scroll_restore)
-        .then_some(false);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let statsig_overrides = statsig_overrides_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
@@ -663,7 +659,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             ""
         };
     format!(
-        "{}window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_STATSIG_OVERRIDES__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
+        "{}window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_STATSIG_OVERRIDES__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
         instance_identity,
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
@@ -676,7 +672,6 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             .expect("dream skin art signature should serialize"),
         serde_json::to_string(dream_skin_theme).expect("dream skin theme should serialize"),
         serde_json::to_string(&paste_fix).expect("paste fix config should serialize"),
-        serde_json::to_string(&thread_scroll_restore).expect("thread scroll setting should serialize"),
         serde_json::to_string(&force_chinese_locale)
             .expect("force Chinese locale config should serialize"),
         serde_json::to_string(&statsig_overrides)
@@ -777,19 +772,6 @@ fn image_content_type(path: &Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn thread_scroll_bootstrap_only_projects_confirmed_disabled_state() {
-        let mut settings = BackendSettings::default();
-        assert!(injection_script_with_settings(0, &settings)
-            .contains("window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = null;"));
-        settings.codex_app_thread_scroll_restore = false;
-        assert!(injection_script_with_settings(0, &settings)
-            .contains("window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;"));
-        settings.enhancements_enabled = false;
-        assert!(injection_script_with_settings(0, &settings)
-            .contains("window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = null;"));
-    }
 
     #[test]
     fn native_fast_renderer_waits_for_dom_and_reinjection_runs_immediately() {

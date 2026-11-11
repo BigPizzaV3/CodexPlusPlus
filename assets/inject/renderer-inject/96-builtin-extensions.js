@@ -264,8 +264,8 @@
   }
 
   /**
-   * 滚动位置恢复：开启时恢复阅读位置，明确关闭时在打开会话后定位底部。
-   * 用户主动滚动会取消待执行的定位；卸下时撤掉保存和定位定时器。
+   * 滚动位置恢复：滚动、导航、路由钩子跟着轻量扫描补（钩子按设置判断，关着时不动），
+   * 完整扫描时同步一次位置；关掉（改设置或卸下）时撤掉排着的保存 / 恢复定时器。
    */
   function codexPlusThreadScrollRestoreExtension(ctx) {
     ctx.onScan(() => {
@@ -278,24 +278,21 @@
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
     let enabled = threadScrollRestoreEnabled();
-    let setting = threadScrollRestoreSetting();
+    let disabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.codexAppThreadScrollRestore === false;
     const onSettings = () => {
       const nextEnabled = threadScrollRestoreEnabled();
-      const nextSetting = threadScrollRestoreSetting();
       if (enabled && !nextEnabled) {
         stopThreadScrollRestore();
         threadScrollRuntime().activeSessionId = currentThreadScrollSessionId();
       }
       if (!enabled && nextEnabled) {
         clearThreadScrollRestoreTimers();
+        if (disabled) threadScrollRuntime().activeSessionId = currentThreadScrollSessionId();
         syncThreadScrollState();
-        scheduleThreadScrollSyncAttempts(true);
-      }
-      if (setting == null && nextSetting === false) {
-        scheduleThreadScrollBottom(threadScrollRuntime().activeSessionId);
+        if (!disabled) scheduleThreadScrollSyncAttempts(true);
       }
       enabled = nextEnabled;
-      setting = nextSetting;
+      disabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.codexAppThreadScrollRestore === false;
     };
     ctx.on("settings/changed", () => runScanStep(onSettings));
     ctx.on("settings/loaded", () => runScanStep(onSettings));

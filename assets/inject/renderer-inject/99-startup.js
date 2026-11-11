@@ -15,7 +15,6 @@
   window.__codexSessionDeleteObserver = new MutationObserver((mutations) => {
     // 先同步藏起已删会话的重建行（首帧前生效，#2791），再按原规则排扫描。
     runScanStep(() => hideDeletedSessionRowsInMutations(mutations));
-    window.__codexThreadScrollHandlers?.syncPendingNavigation?.(mutations);
     scheduleScan(mutations);
   });
   window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {

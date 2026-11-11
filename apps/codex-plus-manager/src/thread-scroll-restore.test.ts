@@ -69,9 +69,8 @@ function fixture(entry?: Entry) {
     "startThreadScrollRestoreLock", "prepareThreadScrollRestoreLock", "threadScrollTargetTop",
     "threadScrollNearBottom", "threadScrollGuardScroller", "shouldBlockThreadScrollAutobottom",
     "bindThreadScrollListener", "saveThreadScrollPositionNow", "scheduleThreadScrollSave",
-    "restoreThreadScrollPosition", "scheduleThreadScrollRestore", "scheduleThreadScrollBottom", "syncThreadScrollState",
-    "scheduleThreadScrollSyncAttempts", "captureThreadScrollNavigation", "syncPendingThreadScrollNavigation",
-    "threadScrollRestoreSetting", "threadScrollBottomEnabled",
+    "restoreThreadScrollPosition", "scheduleThreadScrollRestore", "syncThreadScrollState",
+    "scheduleThreadScrollSyncAttempts", "captureThreadScrollNavigation",
   ];
   if (renderer.includes("  function threadScrollRestoreEnabled(")) names.push("threadScrollRestoreEnabled");
   vm.runInContext([renderer.slice(settingsStart, settingsEnd), ...names.map(extract)].join("\n"), context);
@@ -183,9 +182,9 @@ test("a bottom-button click cancels the visible session even while the previous 
 });
 
 test("bottom-button clicks respect unloaded settings and inactive enhancements", () => {
-  for (const state of ["waiting", "bottom", "enhancements", "builtin"]) {
+  for (const state of ["waiting", "disabled", "enhancements", "builtin"]) {
     const { context, scroller, flushTimers } = fixture(reading);
-    if (state === "bottom") {
+    if (state === "disabled") {
       context.codexPlusBackendSettingsLoaded = true;
       context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
     } else if (state === "enhancements") {
@@ -196,7 +195,7 @@ test("bottom-button clicks respect unloaded settings and inactive enhancements",
     const { click, target } = scrollClickFixture(context, scroller);
     context.syncThreadScrollState();
     click(target({ icon: true }));
-    if (state === "enhancements" || state === "builtin") {
+    if (state === "disabled" || state === "enhancements" || state === "builtin") {
       assert.equal(context.threadScrollRuntime().userScrollIntentUntil, 0, state);
       continue;
     }
@@ -226,7 +225,7 @@ test("selects the visible thread scroller when a hidden conversation remains mou
   assert.equal(context.currentThreadScroller(), null);
 });
 
-test("restores the visible conversation when its sidebar row is absent", () => {
+test("identifies the visible conversation when its sidebar row is absent", () => {
   const { context, scroller, flushTimers, setSessionId } = fixture(reading);
   const visibleId = "01a18420-78e4-79c1-8ef2-9e0ce9fc61aa";
   const marker = (id: string, width: number) => ({
@@ -245,7 +244,7 @@ test("restores the visible conversation when its sidebar row is absent", () => {
   context.syncThreadScrollState();
   flushTimers();
   assert.equal(context.threadScrollRuntime().activeSessionId, visibleId);
-  assert.equal(scroller.scrollTop, 19000);
+  assert.equal(scroller.scrollTop, 2000);
 });
 
 test("restores a saved reading position when the visible composer identifies the conversation", () => {
@@ -294,158 +293,34 @@ test("missing, partial, or disabled backend settings cannot restore, save, or bl
   }
 });
 
-test("a disabled position setting goes to the bottom only when opening another session", () => {
+test("disabled restoration leaves positions unchanged when switching conversations", () => {
   const { context, scroller, flushTimers, setSessionId } = fixture(reading);
   context.codexPlusBackendSettingsLoaded = true;
   context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
   scroller.scrollTop = 2000;
   context.syncThreadScrollState();
   flushTimers();
-  assert.equal(scroller.scrollTop, 19000);
+  assert.equal(scroller.scrollTop, 2000);
 
+  context.captureThreadScrollNavigation("thread-87654321");
+  setSessionId("thread-87654321");
   scroller.scrollTop = 1500;
-  context.syncThreadScrollState();
+  context.syncThreadScrollState(true);
   flushTimers();
-  assert.equal(scroller.scrollTop, 1500, "ordinary rescans do not move a reader");
-
-  setSessionId("thread-87654321");
-  context.syncThreadScrollState();
-  flushTimers();
-  assert.equal(scroller.scrollTop, 19000);
+  assert.equal(scroller.scrollTop, 1500);
 });
 
-test("unloaded settings do not force the bottom", () => {
+test("disabling restoration cancels a pending restore", () => {
   const { context, scroller, flushTimers } = fixture(reading);
-  scroller.scrollTop = 2000;
-  context.syncThreadScrollState();
-  flushTimers();
-  assert.equal(scroller.scrollTop, 2000);
-});
-
-test("a startup snapshot of disabled restoration works without the settings bridge", () => {
-  for (const loaded of [false, true]) {
-    const { context, scroller, flushTimers } = fixture(reading);
-    context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;
-    context.codexPlusBackendSettingsLoaded = loaded;
-    scroller.scrollTop = 2000;
-    context.syncThreadScrollState();
-    flushTimers();
-    assert.equal(scroller.scrollTop, 19000, `partial settings loaded=${loaded}`);
-  }
-});
-
-test("a live setting overrides the disabled startup snapshot", () => {
-  const { context, scroller, flushTimers } = fixture(reading);
-  context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
-  scroller.scrollTop = 19000;
-  context.syncThreadScrollState();
-  flushTimers();
-  assert.equal(scroller.scrollTop, reading.top);
-});
-
-test("a live enable cancels a pending bottom from the startup snapshot", () => {
-  const { context, scroller, flushTimers } = fixture(reading);
-  context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;
-  scroller.scrollTop = 2000;
-  context.syncThreadScrollState();
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
-  flushTimers();
-  assert.equal(scroller.scrollTop, 2000);
-});
-
-test("pending bottom navigation does not move a previous session after a route change", () => {
-  const { context, scroller, flushTimers, setSessionId } = fixture(reading);
-  context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;
-  scroller.scrollTop = 2000;
-  context.syncThreadScrollState();
-  setSessionId("thread-87654321");
-  flushTimers();
-  assert.equal(scroller.scrollTop, 2000);
-});
-
-test("disabled restoration tracks a new target for earlier bottom placement", () => {
-  const { context } = fixture(reading);
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
-  context.syncThreadScrollState();
-  context.captureThreadScrollNavigation("thread-87654321");
-  assert.equal(context.threadScrollRuntime().pendingBottomNavigation?.targetSessionId, "thread-87654321");
-});
-
-test("earlier bottom placement waits for the target composer and relevant content", () => {
-  const { context, scroller, setSessionId } = fixture(reading);
-  const target = "01a18420-78e4-79c1-8ef2-9e0ce9fc61ab";
-  let composer = "01a18420-78e4-79c1-8ef2-9e0ce9fc61aa";
-  context.document.querySelectorAll = () => [{
-    getAttribute: () => composer,
-    closest: () => ({ getBoundingClientRect: () => ({ width: 900 }) }),
-  }];
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
-  context.syncThreadScrollState();
-  context.captureThreadScrollNavigation(target);
-  setSessionId(target);
-  scroller.scrollTop = 2000;
-  context.syncPendingThreadScrollNavigation([{ target: scroller, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 2000, "the old composer must not move");
-  composer = target;
-  context.syncPendingThreadScrollNavigation([{ target: {}, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 2000, "unrelated mutations must not move the conversation");
-  context.syncPendingThreadScrollNavigation([{ target: scroller, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 19000);
-  context.cancelThreadScrollRestoreForUserIntent();
-  scroller.scrollTop = 1500;
-  context.syncPendingThreadScrollNavigation([{ target: scroller, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 1500, "user input cancels early placement");
-});
-
-test("returning to the current row or letting the early placement expire cancels it", () => {
-  const { context, setSessionId } = fixture(reading);
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
-  context.syncThreadScrollState();
-  context.captureThreadScrollNavigation("thread-87654321");
-  context.captureThreadScrollNavigation(sessionId);
-  assert.equal(context.threadScrollRuntime().pendingBottomNavigation, null);
-  context.captureThreadScrollNavigation("thread-87654321");
-  setSessionId("thread-87654321");
-  context.threadScrollRuntime().pendingBottomNavigation.at -= 4000;
-  context.syncPendingThreadScrollNavigation([]);
-  assert.equal(context.threadScrollRuntime().pendingBottomNavigation, null);
-});
-
-test("earlier enabled restoration waits for the visible target and respects user input", () => {
-  const { context, scroller, stored, setSessionId } = fixture(reading);
-  const target = "01a18420-78e4-79c1-8ef2-9e0ce9fc61ab";
-  const targetEntry = { top: 2300, scrollHeight: 6000, clientHeight: 1000, at: 1, atBottom: false };
-  stored.set("codexThreadScroll", JSON.stringify({ version: "1", entries: {
-    [sessionId]: reading, [target]: targetEntry,
-  } }));
-  let composer = "01a18420-78e4-79c1-8ef2-9e0ce9fc61aa";
-  context.document.querySelectorAll = () => [{
-    getAttribute: () => composer,
-    closest: () => ({ getBoundingClientRect: () => ({ width: 900 }) }),
-  }];
   context.codexPlusBackendSettingsLoaded = true;
   context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
   context.syncThreadScrollState();
-  context.captureThreadScrollNavigation(target);
-  setSessionId(target);
-  scroller.scrollTop = 1800;
-  context.syncPendingThreadScrollNavigation([{ target: scroller, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 1800, "the old composer must not move");
-  composer = target;
-  context.syncPendingThreadScrollNavigation([{ target: {}, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 1800, "unrelated mutations must not move the conversation");
-  context.syncPendingThreadScrollNavigation([{ target: scroller, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, targetEntry.top);
-  context.cancelThreadScrollRestoreForUserIntent();
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
+  context.syncThreadScrollState();
   scroller.scrollTop = 1500;
-  context.syncPendingThreadScrollNavigation([{ target: scroller, addedNodes: [] }]);
-  assert.equal(scroller.scrollTop, 1500, "user input cancels early restoration");
+  flushTimers();
+  assert.equal(scroller.scrollTop, 1500);
+  assert.equal(context.shouldBlockThreadScrollAutobottom(scroller, 19000), false);
 });
 
 test("a delayed restore cannot move the previous session's position into a new conversation", () => {
@@ -459,10 +334,11 @@ test("a delayed restore cannot move the previous session's position into a new c
   assert.equal(scroller.scrollTop, 1500);
 });
 
-test("disabled enhancements or an inactive builtin do not force bottom navigation", () => {
+test("disabled enhancements or an inactive builtin do not restore a position", () => {
   for (const inactive of [false, true]) {
     const { context, scroller, flushTimers } = fixture(reading);
-    context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;
+    context.codexPlusBackendSettingsLoaded = true;
+    context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
     if (inactive) {
       context.__codexPlusBuiltinInactive = new Set(["thread-scroll-restore"]);
     } else {
@@ -475,48 +351,17 @@ test("disabled enhancements or an inactive builtin do not force bottom navigatio
   }
 });
 
-test("a user's scroll cancels pending bottom navigation", () => {
-  const { context, scroller, flushTimers, setSessionId } = fixture(reading);
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
-  scroller.scrollTop = 2000;
-  context.syncThreadScrollState();
-  context.eventTargetsActiveThreadScroller = () => true;
-  vm.runInContext(extract("markThreadScrollUserIntent"), context);
-  context.markThreadScrollUserIntent({ target: scroller });
-  flushTimers();
-  assert.equal(scroller.scrollTop, 2000);
-
-  setSessionId("thread-87654321");
-  context.syncThreadScrollState();
-  flushTimers();
-  assert.equal(scroller.scrollTop, 19000, "a later navigation can still go to the bottom");
-});
-
-test("a user's scroll also cancels a pending bottom from the startup snapshot", () => {
-  const { context, scroller, flushTimers } = fixture(reading);
-  context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = false;
-  scroller.scrollTop = 2000;
-  context.syncThreadScrollState();
-  context.eventTargetsActiveThreadScroller = () => true;
-  vm.runInContext(extract("markThreadScrollUserIntent"), context);
-  context.markThreadScrollUserIntent({ target: scroller });
-  flushTimers();
-  assert.equal(scroller.scrollTop, 2000);
-});
-
-test("user input does not activate scroll handling when enhancements or the builtin are inactive", () => {
-  for (const setting of [false, undefined]) {
-    for (const inactive of ["enhancements", "builtin"]) {
-      const { context, scroller } = fixture(reading);
-      context.window.__CODEX_PLUS_THREAD_SCROLL_RESTORE__ = setting;
-      if (inactive === "enhancements") context.codexPlusBackendSettings.enhancementsEnabled = false;
-      else context.__codexPlusBuiltinInactive = new Set(["thread-scroll-restore"]);
-      context.eventTargetsActiveThreadScroller = () => true;
-      vm.runInContext(extract("markThreadScrollUserIntent"), context);
-      context.markThreadScrollUserIntent({ target: scroller });
-      assert.equal(context.threadScrollRuntime().userScrollIntentUntil, 0);
-    }
+test("user input does not activate scroll handling when restoration is disabled", () => {
+  for (const inactive of ["setting", "enhancements", "builtin"]) {
+    const { context, scroller } = fixture(reading);
+    context.codexPlusBackendSettingsLoaded = true;
+    context.codexPlusBackendSettings.codexAppThreadScrollRestore = inactive !== "setting";
+    if (inactive === "enhancements") context.codexPlusBackendSettings.enhancementsEnabled = false;
+    if (inactive === "builtin") context.__codexPlusBuiltinInactive = new Set(["thread-scroll-restore"]);
+    context.eventTargetsActiveThreadScroller = () => true;
+    vm.runInContext(extract("markThreadScrollUserIntent"), context);
+    context.markThreadScrollUserIntent({ target: scroller });
+    assert.equal(context.threadScrollRuntime().userScrollIntentUntil, 0);
   }
 });
 
@@ -640,37 +485,36 @@ test("a late settings load starts restoration once, without repeating it on each
   assert.ok(stops > 0);
   context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
   listeners.get("settings/changed")!();
-  assert.equal(starts, 2);
+  assert.equal(starts, 1, "re-enabling does not restore over the current reading position");
 });
 
-test("enabling restoration after a user scroll binds the listener without moving the reader", () => {
-  const { context, scroller, scrollListeners, flushTimers } = fixture(reading);
-  const listeners = new Map<string, () => void>();
-  Object.assign(context, {
-    runScanStep: (fn: () => void) => fn(),
-    scheduleDeferredScan: () => {},
-  });
-  vm.runInContext([
-    extract("stopThreadScrollRestore"), extract("scheduleThreadScrollSync"),
-    extract("markThreadScrollUserIntent"), extract("codexPlusAlignWith"),
-    extract("codexPlusThreadScrollRestoreExtension"),
-  ].join("\n"), context);
-  context.codexPlusBackendSettingsLoaded = true;
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
-  context.codexPlusThreadScrollRestoreExtension({
-    onScan() {},
-    on: (name: string, handler: () => void) => listeners.set(name, handler),
-    effect: (fn: () => () => void) => fn(),
-  });
-  context.syncThreadScrollState();
-  scroller.scrollTop = 1500;
-  context.eventTargetsActiveThreadScroller = () => true;
-  context.markThreadScrollUserIntent({ target: scroller });
-  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
-  listeners.get("settings/loaded")!();
-  flushTimers();
-  assert.equal(scroller.scrollTop, 1500);
-  assert.equal(scrollListeners.size, 1);
+test("enabling restoration after it was disabled does not move the reader", () => {
+  for (const scanned of [false, true]) {
+    const { context, scroller, scrollListeners, flushTimers } = fixture(reading);
+    const listeners = new Map<string, () => void>();
+    Object.assign(context, {
+      runScanStep: (fn: () => void) => fn(),
+      scheduleDeferredScan: () => {},
+    });
+    vm.runInContext([
+      extract("stopThreadScrollRestore"), extract("scheduleThreadScrollSync"),
+      extract("codexPlusAlignWith"), extract("codexPlusThreadScrollRestoreExtension"),
+    ].join("\n"), context);
+    context.codexPlusBackendSettingsLoaded = true;
+    context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
+    context.codexPlusThreadScrollRestoreExtension({
+      onScan() {},
+      on: (name: string, handler: () => void) => listeners.set(name, handler),
+      effect: (fn: () => () => void) => fn(),
+    });
+    if (scanned) context.syncThreadScrollState();
+    scroller.scrollTop = 1500;
+    context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
+    listeners.get("settings/changed")!();
+    flushTimers();
+    assert.equal(scroller.scrollTop, 1500);
+    assert.equal(scrollListeners.size, 1);
+  }
 });
 
 test("a user scroll before settings load is not overwritten by late restoration", () => {
