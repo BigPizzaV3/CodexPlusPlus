@@ -107,7 +107,7 @@ pub struct SkillsState {
     #[serde(default)]
     pub installed: BTreeMap<String, InstalledSkill>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub shared_agent_links: BTreeMap<String, [u64; 2]>,
+    pub shared_agent_paths: BTreeMap<String, [u64; 2]>,
 }
 
 impl Default for SkillsState {
@@ -115,7 +115,7 @@ impl Default for SkillsState {
         Self {
             repos: default_skill_repos(),
             installed: BTreeMap::new(),
-            shared_agent_links: BTreeMap::new(),
+            shared_agent_paths: BTreeMap::new(),
         }
     }
 }
@@ -871,17 +871,17 @@ impl SkillsManager {
                 return match metadata {
                     Ok(metadata) if metadata_is_link(&metadata) && shared.as_ref().is_some_and(|source|
                         is_managed_link(&link, source) && skill_path_identity(&link).ok().is_some_and(|identity|
-                            initial_state.shared_agent_links.get(&link.to_string_lossy().into_owned()).copied()
+                            initial_state.shared_agent_paths.get(&link.to_string_lossy().into_owned()).copied()
                                 == Some([identity.device, identity.file]))) => {
                         let mut state = initial_state.clone();
                         let staging = dir.join(format!(".codex-plus-link-{}", uuid::Uuid::new_v4()));
                         move_path_no_replace(&link, &staging)?;
-                        let expected = state.shared_agent_links[&link.to_string_lossy().into_owned()];
+                        let expected = state.shared_agent_paths[&link.to_string_lossy().into_owned()];
                         if skill_path_identity(&staging).map(|identity| [identity.device, identity.file])? != expected {
                             move_path_no_replace(&staging, &link)?;
                             anyhow::bail!("Skill 链接在停用期间发生变化，未删除");
                         }
-                        state.shared_agent_links.remove(&link.to_string_lossy().into_owned());
+                        state.shared_agent_paths.remove(&link.to_string_lossy().into_owned());
                         if let Err(error) = self.save_state_unlocked(&state) {
                             return match move_path_no_replace(&staging, &link) {
                                 Ok(()) => Err(error),
@@ -893,7 +893,19 @@ impl SkillsManager {
                     Ok(metadata) if metadata_is_link(&metadata)
                         && is_managed_link(&link, &self.source_dir.join(id)) => remove_link(&link),
                     Ok(_) if is_managed_copy(&link) => {
-                        self.backup_directory(id, &link)?;
+                        let identity = skill_path_identity(&link)?;
+                        let backup = self.backup_directory_checked(id, &link, identity)?;
+                        let key = link.to_string_lossy().into_owned();
+                        if initial_state.shared_agent_paths.get(&key) == Some(&[identity.device, identity.file]) {
+                            let mut state = initial_state.clone();
+                            state.shared_agent_paths.remove(&key);
+                            if let Err(error) = self.save_state_unlocked(&state) {
+                                return match restore_skill_backup(&backup, &link, identity) {
+                                    Ok(()) => Err(error),
+                                    Err(rollback) => Err(error.context(format!("恢复 Skill 副本失败：{rollback:#}"))),
+                                };
+                            }
+                        }
                         Ok(())
                     }
                     Ok(_) => anyhow::bail!("{} 是这个 Agent 自己的 Skill，不由 Codex++ 管理，未删除", link.display()),
@@ -913,14 +925,14 @@ impl SkillsManager {
             }
             std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
             let identity = link_or_copy(&source, &link)?;
-            if shared.is_some() && std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata_is_link(&metadata)) {
+            if shared.is_some() {
                 let mut state = initial_state.clone();
-                state.shared_agent_links.insert(link.to_string_lossy().into_owned(), [identity.device, identity.file]);
+                state.shared_agent_paths.insert(link.to_string_lossy().into_owned(), [identity.device, identity.file]);
                 if let Err(error) = self.save_state_unlocked(&state) {
                     return match recover_published_path(&link, identity) {
-                        Ok(Some(path)) => Err(error.context(format!("新建的 Skill 链接保留在 {}", path.display()))),
+                        Ok(Some(path)) => Err(error.context(format!("新建的 Skill 内容保留在 {}", path.display()))),
                         Ok(None) => Err(error),
-                        Err(rollback) => Err(error.context(format!("回滚 Skill 链接失败：{rollback:#}"))),
+                        Err(rollback) => Err(error.context(format!("回滚 Skill 内容失败：{rollback:#}"))),
                     };
                 }
             }
@@ -1397,7 +1409,7 @@ impl SkillsManager {
                     let manifest = path.join(SKILL_MANIFEST_FILE);
                     if manifest.is_file() {
                         if !agents.contains(agent) { agents.push(agent.clone()); }
-                        let managed_shared_link = state.shared_agent_links
+                        let managed_shared_link = state.shared_agent_paths
                             .get(&path.to_string_lossy().into_owned()).is_some_and(|recorded|
                                 skill_path_identity(&path).ok().is_some_and(|identity|
                                     recorded == &[identity.device, identity.file])
@@ -3612,6 +3624,7 @@ const MANAGED_COPY_MARKER: &str = ".codex-plus-managed";
 #[cfg(test)]
 thread_local! {
     static DIGEST_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+    static FORCE_SKILL_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn skill_directory_digest(path: &Path) -> anyhow::Result<Option<[u8; 32]>> {
@@ -3855,7 +3868,11 @@ fn link_or_copy_at(
     }
     let mut created_staging = false;
     let result = (|| -> anyhow::Result<SkillPathIdentity> {
-        if symlink_dir(source, staging).is_ok() {
+        #[cfg(test)]
+        let force_copy = FORCE_SKILL_COPY.with(|flag| flag.get());
+        #[cfg(not(test))]
+        let force_copy = false;
+        if !force_copy && symlink_dir(source, staging).is_ok() {
             created_staging = true;
         } else {
             std::fs::create_dir(&staging)
@@ -4192,6 +4209,28 @@ mod tests {
         assert!(manager.set_enabled_for("claude", "alpha", false).is_err());
         assert!(link.join("SKILL.md").is_file());
         assert!(shared.join("alpha/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn shared_agent_copy_records_origin_and_reloads_on_reenable() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+        write_skill(&shared.join("alpha"), "first");
+        let copy = temp.path().join("claude-skills").join("alpha");
+        FORCE_SKILL_COPY.with(|flag| flag.set(true));
+        let result = manager.set_enabled_for("claude", "alpha", true);
+        FORCE_SKILL_COPY.with(|flag| flag.set(false));
+        result.unwrap();
+        assert!(is_managed_copy(&copy));
+        let identity = skill_path_identity(&copy).unwrap();
+        assert_eq!(manager.load_state().shared_agent_paths.get(&copy.to_string_lossy().into_owned()),
+            Some(&[identity.device, identity.file]));
+        std::fs::write(shared.join("alpha/SKILL.md"), "updated").unwrap();
+        manager.set_enabled_for("claude", "alpha", false).unwrap();
+        assert!(!manager.load_state().shared_agent_paths.contains_key(&copy.to_string_lossy().into_owned()));
+        manager.set_enabled_for("claude", "alpha", true).unwrap();
+        assert_eq!(std::fs::read_to_string(copy.join("SKILL.md")).unwrap(), "updated");
     }
 
     #[test]
