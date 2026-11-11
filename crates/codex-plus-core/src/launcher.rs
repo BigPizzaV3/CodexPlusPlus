@@ -7069,6 +7069,30 @@ fn activation_process_is_startup_evidence(alive: bool, elapsed: std::time::Durat
     alive && elapsed < std::time::Duration::from_secs(30)
 }
 
+/// 把一次 Windows 打包版退出探测折算成 `PackagedExitGrace::keep_waiting` 的
+/// `process_alive` 语义（issue #3040）：
+/// - 已确认捕获的非中转主进程退出 → `Some(false)`：同端口的新实例不能为旧
+///   launcher 续命；
+/// - 捕获进程存活 → `Some(true)`；
+/// - 浏览器身份已被替换 → `Some(false)`；
+/// - 其余（只有激活中转进程、或从未捕获到主进程）→ `None`，交给
+///   `cdp_available` 判定：中转进程的退出不构成目标退出的证据。
+#[cfg(any(windows, test))]
+fn packaged_exit_probe(
+    tracked_alive: Option<bool>,
+    confirmed_tracked_exit: bool,
+    browser_replaced: bool,
+) -> Option<bool> {
+    if confirmed_tracked_exit {
+        return Some(false);
+    }
+    match tracked_alive {
+        Some(alive) => Some(alive),
+        None if browser_replaced => Some(false),
+        None => None,
+    }
+}
+
 #[cfg(any(windows, test))]
 struct PackagedBrowserBinding {
     initial_id: Option<String>,
@@ -7108,6 +7132,8 @@ async fn wait_for_windows_packaged_exit(
     };
     let mut grace = PackagedExitGrace::default();
     let mut last_discovery_error: Option<String> = None;
+    let mut confirmed_tracked_exit = false;
+    let mut saw_cdp_target = false;
     let started_waiting = std::time::Instant::now();
     loop {
         let mut owned_browser = false;
@@ -7173,12 +7199,48 @@ async fn wait_for_windows_packaged_exit(
                 }
             }
         }
-        let process_alive = if let Some(process) = &tracked {
+        let mut tracked_alive = if let Some(process) = &tracked {
             Some(process.is_alive()?)
+        } else {
+            None
+        };
+        if tracked_alive == Some(false) {
+            let matches_activation = tracked.as_ref().is_some_and(|process| {
+                activation.as_ref().is_some_and(|activation| {
+                    activation.process_id == process.process_id
+                        && activation.birth_id == process.birth_id
+                })
+            });
+            if matches_activation {
+                // AUMID 激活返回的中转进程会正常退出（issue #3040：activation_pid
+                // 5780 退出后真实 Codex 主进程另行启动并完成注入）。它的死亡不是
+                // Codex 退出的证据：释放绑定，让 discovery 重新寻找真实主进程，
+                // 存活判定交给 CDP 探测。
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.packaged_activation_relay_lost",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "activation_pid": activation_pid,
+                        "process_id": tracked.as_ref().map(|process| process.process_id),
+                    }),
+                );
+                tracked = None;
+                tracked_alive = None;
+            } else {
+                // 已捕获的非中转主进程确实退出：同端口的新实例不能为旧
+                // launcher 续命，保持既有语义。
+                confirmed_tracked_exit = true;
+            }
+        }
+        let process_alive = if confirmed_tracked_exit {
+            Some(false)
+        } else if tracked_alive.is_some() {
+            tracked_alive
         } else if browser.replaced {
             Some(false)
         } else {
-            // AUMID PID 只作等待实际 listener 出现期间的退路，不能替换已捕获主进程。
+            // AUMID PID 只作等待实际 listener 出现期间的退路（存活才续命，
+            // 退出不构成证据），不能替换已捕获主进程；身份未知时交给 CDP。
             activation
                 .as_ref()
                 .map(TrackedWindowsProcess::is_alive)
@@ -7186,8 +7248,26 @@ async fn wait_for_windows_packaged_exit(
                 .filter(|alive| {
                     activation_process_is_startup_evidence(*alive, started_waiting.elapsed())
                 })
+                .map(|_| true)
         };
-        if !grace.keep_waiting(process_alive, owned_browser, std::time::Instant::now()) {
+        // 身份未知（process_alive == None）时，调试端口上仍有 Codex 目标即视为
+        // 目标存活：重启窗口内 capture_debug_listener 无法绑定换代后的主进程、
+        // browser_identity 也可能瞬断，但 CDP 恢复就说明目标活着。
+        let cdp_available = if process_alive.is_none() {
+            tokio::task::spawn_blocking(move || crate::cdp::endpoint_available(debug_port))
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if cdp_available {
+            saw_cdp_target = true;
+        }
+        if !grace.keep_waiting(
+            process_alive,
+            owned_browser || cdp_available,
+            std::time::Instant::now(),
+        ) {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "launcher.packaged_target_exited",
                 serde_json::json!({
@@ -7196,6 +7276,9 @@ async fn wait_for_windows_packaged_exit(
                     "process_id": tracked.as_ref().map(|process| process.process_id),
                     "process_alive": process_alive,
                     "owned_browser_available": owned_browser,
+                    "cdp_available": cdp_available,
+                    "saw_cdp_target": saw_cdp_target,
+                    "confirmed_tracked_exit": confirmed_tracked_exit,
                     "browser_identity_bound": browser.initial_id.is_some(),
                     "browser_replaced": browser.replaced,
                     "missed_probes": grace.missed_probes,
@@ -7204,7 +7287,16 @@ async fn wait_for_windows_packaged_exit(
                     "activation_grace_ms": 30000,
                 }),
             );
-            return Ok(());
+            if confirmed_tracked_exit || saw_cdp_target {
+                // 目标身份曾被捕获并确认退出，或 CDP 目标曾出现过再消失：
+                // 视为真实退出。
+                return Ok(());
+            }
+            // 从未确认过目标身份、CDP 也始终没起来：如实报告失败并给出可
+            // 操作提示，而不是静默写成 stopped 让用户以为「没反应」。
+            return Err(anyhow::anyhow!(
+                "无法确认 Codex 主进程身份：激活中转进程已退出，且调试端口 {debug_port} 上始终没有可用的 CDP 目标。请手动启动 Codex，再在 Codex++ 中重新点击启动/重启。"
+            ));
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
@@ -8315,6 +8407,24 @@ mod tests {
         let mut grace = PackagedExitGrace::default();
         assert!(grace.keep_waiting(None, false, now));
         assert!(grace.keep_waiting(None, true, now + std::time::Duration::from_secs(2)));
+    }
+
+    /// issue #3040 回归护栏：AUMID 激活中转进程（activation_pid）退出后，
+    /// 真实 Codex 主进程另行启动——此时身份未知，绝不能因为「中转进程死了」
+    /// 判成 Some(false)，否则 keep_waiting 会忽略 cdp_available，10 秒后误判
+    /// 目标退出并静默停机。身份未知必须折算成 None，交给 CDP 探测。
+    #[test]
+    fn packaged_exit_probe_never_claims_exit_from_untracked_identity() {
+        // 身份未知 + 浏览器身份未替换 → None：交给 cdp_available。
+        assert_eq!(packaged_exit_probe(None, false, false), None);
+        // 浏览器身份已被替换 → 确定不是我们的目标。
+        assert_eq!(packaged_exit_probe(None, false, true), Some(false));
+        // 捕获进程的存活/退出照常透传。
+        assert_eq!(packaged_exit_probe(Some(true), false, false), Some(true));
+        assert_eq!(packaged_exit_probe(Some(false), false, false), Some(false));
+        // 已确认捕获的非中转主进程退出 → 同端口新实例不能为旧 launcher 续命。
+        assert_eq!(packaged_exit_probe(None, true, false), Some(false));
+        assert_eq!(packaged_exit_probe(Some(true), true, false), Some(false));
     }
 
     #[test]
