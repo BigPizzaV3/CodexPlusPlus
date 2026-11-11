@@ -4402,12 +4402,15 @@ fn apply_model_catalog_to_config_with_live_policy(
         validate_managed_model_catalog(&catalog_json)?;
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
         let mut doc = parse_toml_document(&config_text)?;
+        // config.toml 没有 model 时补一个：优先取默认成员的模型（#2958）。
+        // 目录按成员顺序输出，默认成员不一定排第一，直接取 first() 会落到别家的 cpx- 模型上。
         if root_key_string(&config_text, "model").is_none()
             && let Ok(catalog) = serde_json::from_str::<Value>(&catalog_json)
-            && let Some(default_model) = catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .and_then(|models| models.first())
+            && let Some(models) = catalog.get("models").and_then(Value::as_array)
+            && let Some(default_model) = models
+                .iter()
+                .find(|model| model["codex_plus_default"].as_bool() == Some(true))
+                .or_else(|| models.first())
                 .and_then(|model| model.get("slug"))
                 .and_then(Value::as_str)
         {
