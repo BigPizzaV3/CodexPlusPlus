@@ -344,7 +344,17 @@ mod tests {
                                         serde_json::json!(name),
                                     )
                                 };
-                                if lines.contains(&expected) {
+                                // dsh 的条目在 id 和 name 之间还有 input 等字段（#3042 起声明可收图），
+                                // 所以只要求 name 出现在同一条目里：id 行之后、下一个 id 行之前。
+                                let (id_line, name_line) = expected.split_once('\n').unwrap();
+                                let in_same_entry = || {
+                                    let mut rows = lines.lines().skip_while(|row| *row != id_line);
+                                    rows.next().is_some()
+                                        && rows
+                                            .take_while(|row| !row.starts_with("id: "))
+                                            .any(|row| row == name_line)
+                                };
+                                if lines.contains(&expected) || (spec.id == "dsh" && in_same_entry()) {
                                     labels.push((model, name.to_string()));
                                 }
                             }
