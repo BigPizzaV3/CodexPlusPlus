@@ -8,7 +8,8 @@ use codex_plus_core::gateway::apply::{
     set_provider_metadata, set_provider_windows, update_provider,
 };
 use codex_plus_core::gateway::store::{
-    AgentBinding, ClaudeRoleModels, GatewayStore, GroupMember, GroupMode, GroupSticky,
+    AgentBinding, ClaudeRoleModels, DefaultModelSelection, GatewayStore, GroupMember, GroupMode,
+    GroupSticky,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use codex_plus_core::tools::ToolId;
@@ -499,6 +500,97 @@ fn codex_catalog_keeps_single_provider_qualified_default_grouped_once() {
     assert_eq!(matching[0]["slug"], "deepseek/deepseek-v4-pro");
     assert_eq!(matching[0]["codex_plus_group_id"], "deepseek");
     assert_eq!(matching[0]["codex_plus_group"], "DeepSeek");
+}
+
+#[test]
+fn codex_catalog_preserves_selected_and_legacy_default_models() {
+    let _state = crate::common::IsolatedTestState::new();
+    for (model, with_selection) in [
+        ("deepseek/deepseek-v4-pro", true),
+        ("deepseek/deepseek-v4-pro", false),
+        ("deepseek-v4-pro", false),
+    ] {
+        let fixture = fixture(57394);
+        let ctx = &fixture.ctx;
+        std::fs::create_dir_all(&ctx.codex_home).unwrap();
+        ctx.settings
+            .save(&BackendSettings {
+                relay_profiles_enabled: true,
+                ..BackendSettings::default()
+            })
+            .unwrap();
+        set_provider_metadata(
+            &ctx.gateway,
+            "deepseek",
+            &json!({
+                "deepseek-v4-pro": {
+                    "display_name": "Private DeepSeek",
+                    "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+                    "default_reasoning_level": "high"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (_, other) = create_provider(
+            &ctx.gateway,
+            &ProviderInput {
+                name: "Other".into(),
+                model: "other-model".into(),
+                model_list: "other-model".into(),
+                ..deepseek_input()
+            },
+            "",
+            None,
+        )
+        .unwrap();
+        let mut selected = binding();
+        selected.model = model.into();
+        if with_selection {
+            selected.default_model_selection = Some(DefaultModelSelection {
+                provider_id: "deepseek".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                provider_source: "preset:deepseek".into(),
+                provider_removed: false,
+            });
+        }
+        let gateway = enable_binding(ctx, &ToolId::Codex, selected).unwrap();
+        let binding = gateway.binding(&ToolId::Codex).unwrap();
+        let expected = codex_plus_core::gateway::route::codex_binding_models(&gateway, binding);
+        assert_eq!(
+            codex_plus_core::gateway::server::exposed_models(&gateway, &ToolId::Codex),
+            expected
+        );
+
+        let catalog = codex_catalog(ctx);
+        let models = catalog["models"].as_array().unwrap();
+        let slugs: Vec<_> = models
+            .iter()
+            .map(|entry| entry["slug"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(slugs, expected, "{model}, selection={with_selection}");
+        let matching: Vec<_> = models
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry["slug"].as_str(),
+                    Some("deepseek/deepseek-v4-pro" | "deepseek-v4-pro")
+                )
+            })
+            .collect();
+        assert_eq!(matching.len(), 1, "{model}, selection={with_selection}");
+        assert_eq!(matching[0]["slug"], model);
+        assert_eq!(matching[0]["codex_plus_group_id"], "deepseek");
+        assert_eq!(matching[0]["codex_plus_group"], "DeepSeek");
+        assert_eq!(matching[0]["display_name"], "Private DeepSeek");
+        assert_eq!(matching[0]["default_reasoning_level"], "high");
+        assert_eq!(models[0]["slug"], model);
+        let other_model = models
+            .iter()
+            .find(|entry| entry["slug"] == "other-model")
+            .unwrap();
+        assert_eq!(other_model["codex_plus_group_id"], other);
+    }
 }
 
 #[test]

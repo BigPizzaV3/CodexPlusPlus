@@ -1161,6 +1161,7 @@ fn port_exact_request_proof_reaches_live_history_after_rotation_and_reopen() {
         ("auto", "model-a", "model-a"),
         ("group/pool", "model-a", "model-a"),
         ("cpx-route/model-a", "model-a", "model-a"),
+        ("supplier-a/model-a", "model-a", "supplier-a/model-a"),
         ("requested-model", "actual-model", "requested-model"),
     ] {
         let mut fixture = Fixture::new();
