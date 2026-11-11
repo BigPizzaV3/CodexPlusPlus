@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ROUND_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
 static PENDING_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -128,6 +128,7 @@ pub(super) struct Budget {
     memory_limit: usize,
     event_limit: usize,
     activity_limit: usize,
+    allow_second_reader: bool,
 }
 
 impl Budget {
@@ -139,6 +140,7 @@ impl Budget {
             memory_limit: MAX_RETAINED_BYTES,
             event_limit: MAX_EVENTS,
             activity_limit: MAX_ACTIVITY,
+            allow_second_reader: false,
         };
         for state in states {
             budget.replace(Usage::default(), Usage::of(state));
@@ -172,14 +174,20 @@ impl Budget {
     }
 
     pub(super) fn can_skip_activity_line(&self, state: &FileState) -> bool {
-        self.memory_left(state) >= LINE_OVERHEAD && skips_tool_before_parsing(&state.pending)
+        !state.capture_positions
+            && self.memory_left(state) >= LINE_OVERHEAD
+            && skips_tool_before_parsing(&state.pending)
     }
 
     pub(super) fn can_open(&self, state: &FileState) -> bool {
-        self.used.readers == 0
+        (self.used.readers == 0 || self.allow_second_reader && self.used.readers == 1)
             && self.can_read(state)
             && self.source_left > 0
             && self.memory_left(state) > CURSOR_BYTES + LINE_OVERHEAD
+    }
+
+    pub(super) fn allow_second_reader(&mut self) {
+        self.allow_second_reader = true;
     }
 
     pub(super) fn charge_read(&mut self, bytes: usize) {
@@ -209,6 +217,14 @@ impl Budget {
             state.tools.len(),
             state.tools.capacity(),
             std::mem::size_of::<super::ToolRecord>(),
+        ) + vector_growth(
+            state.execution_observations.len(),
+            state.execution_observations.capacity(),
+            std::mem::size_of::<super::execution_index::ExecutionObservation>(),
+        ) + vector_growth(
+            state.event_positions.len(),
+            state.event_positions.capacity(),
+            std::mem::size_of::<u64>(),
         ) + state.calls.capacity()
             * (std::mem::size_of::<(String, super::Call)>() + 32)
             + state.exec_skills.capacity()
@@ -266,7 +282,11 @@ impl Budget {
     }
 
     fn line_reserve(&self, state: &FileState) -> usize {
-        parse_reserve(&state.pending, !self.can_accept_activity(state))
+        parse_reserve(
+            &state.pending,
+            !self.can_accept_activity(state),
+            state.capture_positions,
+        )
     }
 }
 
@@ -340,7 +360,7 @@ fn may_record_event(line: &[u8]) -> bool {
 }
 
 // 正文由 accept 的借用 RawValue 路径丢弃，不为它申请 Value 解析空间。
-fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
+fn parse_reserve(line: &[u8], skip_activity: bool, capture_positions: bool) -> usize {
     #[derive(serde::Deserialize)]
     struct Item<'a> {
         #[serde(rename = "type")]
@@ -390,8 +410,37 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
                         | "custom_tool_call"
                         | "function_call_output"
                         | "custom_tool_call_output"
-                ) {
+                ) && !(capture_positions
+                    && matches!(item.kind, "local_shell_call" | "local_shell_call_output"))
+                {
                     return LINE_OVERHEAD;
+                }
+                if capture_positions {
+                    #[derive(serde::Deserialize)]
+                    struct ExecutionInput<'a> {
+                        #[serde(borrow)]
+                        arguments: Option<&'a serde_json::value::RawValue>,
+                        #[serde(borrow)]
+                        input: Option<&'a serde_json::value::RawValue>,
+                    }
+                    // 只解码有界工具参数与输出前缀；仍需为时间索引和身份字符串预留。
+                    let arguments =
+                        serde_json::from_str::<ExecutionInput<'_>>(envelope.payload.get())
+                            .ok()
+                            .and_then(|input| input.arguments.or(input.input))
+                            .map_or(0, |raw| {
+                                let text = raw.get();
+                                if text.starts_with('"')
+                                    && text.len() <= super::tool_receipts::MAX_JSON_TEXT_BYTES
+                                {
+                                    text.len()
+                                } else {
+                                    0
+                                }
+                            });
+                    return LINE_OVERHEAD
+                        .saturating_add(16 * 1024)
+                        .saturating_add(arguments.saturating_mul(67));
                 }
                 if skip_activity && skips_tool_before_parsing(line) {
                     return LINE_OVERHEAD;
@@ -452,7 +501,7 @@ fn call_heap(call: &super::Call) -> usize {
     call.timestamp.capacity() + call.session.capacity() + value_heap(&call.payload)
 }
 
-fn event_heap(event: &super::UsageEvent) -> usize {
+pub(super) fn event_heap(event: &super::UsageEvent) -> usize {
     [
         &event.session,
         &event.turn,
@@ -464,6 +513,7 @@ fn event_heap(event: &super::UsageEvent) -> usize {
     .iter()
     .map(|text| text.capacity())
     .sum::<usize>()
+        + event.provider_source.as_ref().map_or(0, String::capacity)
         + event.legacy_identity.as_ref().map_or(0, |id| {
             std::mem::size_of::<super::LegacyIdentity>()
                 + id.session.capacity()
@@ -475,13 +525,37 @@ fn tool_heap(tool: &super::ToolRecord) -> usize {
     tool.id.capacity() + call_heap(&tool.call) + value_heap(&tool.output)
 }
 
+fn execution_heap(execution: &super::execution_index::ExecutionObservation) -> usize {
+    use super::execution_index::ObservationKind;
+    execution.session.capacity()
+        + execution.id.capacity()
+        + match &execution.kind {
+            ObservationKind::Call {
+                name,
+                namespace,
+                kind,
+                process_id,
+            } => {
+                name.capacity()
+                    + namespace.capacity()
+                    + kind.capacity()
+                    + process_id.as_ref().map_or(0, String::capacity)
+            }
+            ObservationKind::Output { process_id } => {
+                process_id.as_ref().map_or(0, String::capacity)
+            }
+        }
+}
+
 // 向量的已有记录只在每个文件/每轮入口遍历一次；每行仅计量新增尾部。
 // 其余有界映射与元数据直接重估，正文清空后立即释放其预算。
 pub(super) struct Meter {
     events: usize,
     tools: usize,
+    executions: usize,
     event_heap: usize,
     tool_heap: usize,
+    execution_heap: usize,
 }
 
 impl Meter {
@@ -489,13 +563,22 @@ impl Meter {
         Self {
             events: state.events.len(),
             tools: state.tools.len(),
+            executions: state.execution_observations.len(),
             event_heap: state.events.iter().map(event_heap).sum(),
             tool_heap: state.tools.iter().map(tool_heap).sum(),
+            execution_heap: state
+                .execution_observations
+                .iter()
+                .map(execution_heap)
+                .sum(),
         }
     }
 
     pub(super) fn refresh(&mut self, state: &mut FileState, cursor_bytes: usize) {
-        if state.events.len() < self.events || state.tools.len() < self.tools {
+        if state.events.len() < self.events
+            || state.tools.len() < self.tools
+            || state.execution_observations.len() < self.executions
+        {
             *self = Self::new(state);
         } else {
             self.event_heap += state.events[self.events..]
@@ -506,8 +589,13 @@ impl Meter {
                 .iter()
                 .map(tool_heap)
                 .sum::<usize>();
+            self.execution_heap += state.execution_observations[self.executions..]
+                .iter()
+                .map(execution_heap)
+                .sum::<usize>();
             self.events = state.events.len();
             self.tools = state.tools.len();
+            self.executions = state.execution_observations.len();
         }
         let strings = [
             &state.session,
@@ -526,6 +614,10 @@ impl Meter {
                 .map_or(0, |(session, role)| session.capacity() + role.capacity())
             + state.events.capacity() * std::mem::size_of::<super::UsageEvent>()
             + self.event_heap
+            + state.event_positions.capacity() * std::mem::size_of::<u64>()
+            + state.execution_observations.capacity()
+                * std::mem::size_of::<super::execution_index::ExecutionObservation>()
+            + self.execution_heap
             + state.tools.capacity() * std::mem::size_of::<super::ToolRecord>()
             + self.tool_heap
             + state.calls.capacity() * (std::mem::size_of::<(String, super::Call)>() + 32)
@@ -776,15 +868,15 @@ mod tests {
             "custom_tool_call_output",
         ] {
             let row = json!({"type":"response_item", "payload":{"type":kind,"call_id":"id","data":"x".repeat(1024)}}).to_string();
-            assert_eq!(parse_reserve(row.as_bytes(), true), LINE_OVERHEAD);
-            assert!(parse_reserve(row.as_bytes(), false) > LINE_OVERHEAD);
+            assert_eq!(parse_reserve(row.as_bytes(), true, false), LINE_OVERHEAD);
+            assert!(parse_reserve(row.as_bytes(), false, false) > LINE_OVERHEAD);
         }
         for row in [
             json!({"type":"response_item","timestamp":42,"payload":{"type":"function_call","data":"x".repeat(1024)}}),
             json!({"type":"response_item","ordinal":"bad","payload":{"type":"function_call","data":"x".repeat(1024)}}),
         ] {
             let row = row.to_string();
-            assert_eq!(parse_reserve(row.as_bytes(), true), LINE_OVERHEAD);
+            assert_eq!(parse_reserve(row.as_bytes(), true, false), LINE_OVERHEAD);
             assert!(!skips_tool_before_parsing(row.as_bytes()));
         }
         for row in [
@@ -792,8 +884,50 @@ mod tests {
             json!({"type":"event_msg","payload":{"type":"token_count","info":null,"data":"x".repeat(1024)}}),
         ] {
             let row = row.to_string();
-            assert!(parse_reserve(row.as_bytes(), true) > LINE_OVERHEAD);
+            assert!(parse_reserve(row.as_bytes(), true, false) > LINE_OVERHEAD);
         }
+    }
+
+    #[test]
+    fn execution_capture_reserves_bounded_parsing_even_when_activity_is_full() {
+        let output = |length| {
+            json!({"type":"response_item","payload":{
+                "type":"function_call_output","call_id":"id","output":"x".repeat(length)
+            }})
+            .to_string()
+        };
+        let small = output(1);
+        let large = output(500_000);
+        let output_reserve = parse_reserve(small.as_bytes(), true, true);
+        assert!(output_reserve >= LINE_OVERHEAD + 8192);
+        assert_eq!(parse_reserve(large.as_bytes(), true, true), output_reserve);
+        for kind in ["local_shell_call", "local_shell_call_output"] {
+            let row = json!({"type":"response_item","payload":{
+                "type":kind,"call_id":"id","action":{"type":"exec","command":["echo","hello"]}
+            }})
+            .to_string();
+            assert_eq!(parse_reserve(row.as_bytes(), true, false), LINE_OVERHEAD);
+            assert_eq!(parse_reserve(row.as_bytes(), true, true), output_reserve);
+        }
+        let arguments = "x".repeat(4096);
+        let call = json!({"type":"response_item","payload":{
+            "type":"function_call","call_id":"id","name":"tool","arguments":arguments
+        }})
+        .to_string();
+        assert!(parse_reserve(call.as_bytes(), true, true) >= output_reserve + 4096 * 67);
+
+        let mut state = FileState {
+            capture_positions: true,
+            ..FileState::default()
+        };
+        assert!(state.pending.try_extend(call.as_bytes()));
+        let mut budget = Budget::new(std::iter::empty());
+        budget.activity_limit = 0;
+        budget.memory_limit = output_reserve;
+        assert!(!budget.can_skip_activity_line(&state));
+        assert!(!budget.accept_line(&state));
+        budget.memory_limit = MAX_RETAINED_BYTES;
+        assert!(budget.accept_line(&state));
     }
 
     #[test]

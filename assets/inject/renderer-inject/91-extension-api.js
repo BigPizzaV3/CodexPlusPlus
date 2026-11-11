@@ -41,6 +41,9 @@
     "/diagnostics/log",
     "/thread-usage-history",
     "/usage/history",
+    "/usage/history-committed",
+    "/usage/executions",
+    "/usage/execution-detail",
     // Daily 固定 schema 的消费者封存；写入只影响其独立数据库。
     "/usage/archive",
     "/archived-thread",
@@ -346,13 +349,13 @@
         return codexPlusCurrentSessionId();
       },
       /**
-       * 当前打开的 Codex 会话：{ id, title, hostId, remote }。hostId 是会话所在的主机（本机为 "local"），
-       * remote 表示远程 / SSH 会话（本机会话日志里没有它的用量）。没有会话时 id 为空串。
+       * 当前打开的 Codex 会话：{ id, title, hostId, hostKnown, remote }。hostKnown 表示主机归属已确认；
+       * 未确认时 hostId 为兼容旧调用仍回退为 "local"。没有会话时 id 为空串。
        */
       currentSession() {
         const ref = typeof currentSessionRef === "function" ? currentSessionRef() || {} : {};
         const hostId = String(ref.host_id || "local");
-        return Object.freeze({ id: String(ref.session_id || ""), title: String(ref.title || ""), hostId, remote: hostId !== "local" });
+        return Object.freeze({ id: String(ref.session_id || ""), title: String(ref.title || ""), hostId, hostKnown: !!ref.host_id, remote: hostId !== "local" });
       },
 
       /** 内置拓展的现状：[{ id, name, active, disabled, replacedBy }]。见 96-builtin-extensions.js。 */

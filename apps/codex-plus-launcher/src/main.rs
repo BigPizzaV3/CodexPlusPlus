@@ -1587,6 +1587,33 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("structured usage history task failed: {error}"))
     }
 
+    async fn usage_history_committed(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::query_history_committed(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("committed usage history task failed: {error}"))
+    }
+
+    async fn usage_executions(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::query_executions(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("usage executions task failed: {error}"))
+    }
+
+    async fn usage_execution_detail(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::usage_history::query_execution_detail(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("usage execution detail task failed: {error}"))
+    }
+
     async fn usage_archive(&self, request: Value) -> anyhow::Result<Value> {
         let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
         let settings = codex_plus_core::paths::default_settings_path();

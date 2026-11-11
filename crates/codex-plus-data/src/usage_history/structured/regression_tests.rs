@@ -520,10 +520,12 @@ fn local_missing_required_counts_are_partial_and_recover_without_a_durable_confl
                 .index
                 .update_with_request_log(&fixture.home, &fixture.log);
             assert!(partial.issues > 0, "{missing}, split={split}");
-            assert!(partial.events.iter().all(|event| event.count_incomplete));
+            assert_eq!(partial.events.len(), 2);
+            assert!(!partial.events[0].count_incomplete);
+            assert!(partial.events[1].count_incomplete);
             let response = snapshot_response(&partial);
             assert_eq!(response["complete"], false);
-            assert_eq!(response["days"], json!([]));
+            assert_eq!(response["days"][0]["usage"]["totalTokens"], 110);
             let valid = fixture.usage(2_000, 2);
             if split {
                 fixture.write_segment("rollout-b.jsonl", vec![valid, third]);
@@ -731,7 +733,8 @@ fn local_final_availability_rechecks_late_global_guard() {
     let response = snapshot_response(&fixture.snapshot());
     assert_eq!(response["complete"], false);
     assert_eq!(response["scan"]["countCacheAvailable"], false);
-    assert_eq!(response["days"], json!([]));
+    assert_eq!(response["countStatus"]["complete"], false);
+    assert_eq!(response["days"][0]["usage"]["inputTokens"], 100);
 }
 
 const SESSION: &str = "00000000-0000-4000-8000-000000000010";
@@ -1069,6 +1072,7 @@ fn request() -> RequestEvidence {
             input_tokens: Some(100),
             output_tokens: Some(10),
             cached_tokens: Some(20),
+            cached_tokens_known: None,
         }),
         agent: String::new(),
     }
@@ -2123,7 +2127,8 @@ fn unsupported_cache_version_is_not_modified() {
     fixture.write_segment("rollout-a.jsonl", vec![fixture.usage(1_000, 1)]);
     let response = snapshot_response(&fixture.snapshot());
     assert_eq!(response["scan"]["countCacheAvailable"], false);
-    assert_eq!(response["days"], json!([]));
+    assert_eq!(response["countStatus"]["complete"], false);
+    assert_eq!(response["days"][0]["usage"]["inputTokens"], 100);
     let db = rusqlite::Connection::open(cache.join("usage-provider-cache.sqlite")).unwrap();
     let tables: usize = db
         .query_row(
@@ -2240,7 +2245,9 @@ fn native_cache_capacity_keeps_unpersisted_conflicts_closed_after_restart() {
         snapshot_response(&restarted)["scan"]["countCacheAvailable"],
         false
     );
-    assert_eq!(snapshot_response(&restarted)["days"], json!([]));
+    let response = snapshot_response(&restarted);
+    assert_eq!(response["countStatus"]["complete"], false);
+    assert_eq!(response["days"][0]["usage"]["inputTokens"], 100);
 }
 
 #[test]
@@ -2934,6 +2941,7 @@ fn fallback_merged_receipt_requires_each_original_request_to_match() {
         input_tokens: Some(50),
         output_tokens: Some(5),
         cached_tokens: Some(10),
+        cached_tokens_known: Some(true),
     });
     let mut second = first.clone();
     second.id = "request-2".into();
@@ -3195,7 +3203,9 @@ fn legacy_child_segment(fixture: &Fixture, child: &str, copied_header: bool) {
         rows.push(json!({"type":"session_meta", "ordinal":1,
             "payload":{"id":SESSION, "model_provider":"parent-supplier"}}));
     }
-    rows.push(fixture.context(500, "gpt-test"));
+    let mut context = fixture.context(500, "gpt-test");
+    context["ordinal"] = json!(5);
+    rows.push(context);
     let mut usage = fixture.usage(1_000, 1);
     usage["ordinal"] = json!(6);
     rows.push(usage);

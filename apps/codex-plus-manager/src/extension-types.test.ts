@@ -34,7 +34,7 @@ function memberName(member: { name?: ts.PropertyName }) {
 function interfaceMembers(name: string) {
   const declaration = findNode(declarations, (node): node is ts.InterfaceDeclaration =>
     ts.isInterfaceDeclaration(node) && node.name.text === name);
-  return declaration.members.map(memberName);
+  return [...new Set(declaration.members.map(memberName))];
 }
 
 function runtimeRoutes() {
@@ -109,13 +109,55 @@ describe("拓展公开类型契约", () => {
       const api = window.codexPlus;
       declare const ctx: CodexPlusExtensionContext;
       ${runtimeRoutes().map((route) => `void api.call(${JSON.stringify(route)}); void ctx.call(${JSON.stringify(route)});`).join("\n")}
+      const executionQuery: CodexPlusExecutionsQuery = {
+        startAt: 1, endAt: 2, kind: "skill", includeActivitySummary: true,
+      };
+      const executionResult: Promise<CodexPlusExecutionsResult> = api.call("/usage/executions", executionQuery);
+      const contextExecutions: Promise<CodexPlusExecutionsResult> = ctx.call("/usage/executions", executionQuery);
+      const detailQuery: CodexPlusExecutionDetailQuery = { sessionId: "session", id: "call", revision: 1 };
+      const executionDetail: Promise<CodexPlusExecutionDetailResult> = api.call("/usage/execution-detail", detailQuery);
+      const contextDetail: Promise<CodexPlusExecutionDetailResult> = ctx.call("/usage/execution-detail", detailQuery);
+      const committedHistory = api.call<{ trend: CodexPlusUsageTrend | null; scopedUsage?: { trend: CodexPlusUsageTrend | null } }>(
+        "/usage/history-committed", { snapshot: "committed", startAt: 1, endAt: 2, includeTrend: true },
+      );
+      async function inspectTrend() {
+        const result = await committedHistory;
+        const interval: number | undefined = result.trend?.intervalMs;
+        const input: number | undefined = result.trend?.buckets[0]?.usage.inputTokens;
+        const provider: string | undefined = result.scopedUsage?.trend?.buckets[0]?.breakdowns[0]?.provider;
+        const cachedKnown: boolean | undefined = result.trend?.buckets[0]?.usage.cachedKnown;
+      }
+      async function inspectExecutions() {
+        const result = await executionResult;
+        if (result.status === "partial" || result.status === "ok") {
+          const count: number | null = result.summary.skill;
+          const complete: boolean = result.summary.classificationComplete;
+          const bucket: [number, number, number] | undefined = result.activitySummary?.groups[0]?.timeline[0];
+          const storageError: string | null | undefined = result.scan?.storageError;
+          const migratingSources: boolean | undefined = result.scan?.migratingSources;
+        }
+        if (result.status === "unavailable") {
+          const processing: boolean | undefined = result.scan?.processing;
+          const error: string | undefined = result.scan?.error;
+        }
+        const detail = await executionDetail;
+        if (detail.status === "ok" || detail.status === "partial") {
+          const duration: number | undefined = detail.detail.durationMs;
+          const output: unknown[] = detail.detail.output;
+        }
+      }
+      // @ts-expect-error 活动汇总开关必须是 boolean。
+      const invalidExecutionQuery: CodexPlusExecutionsQuery = { startAt: 1, endAt: 2, includeActivitySummary: 1 };
       const session = api.currentSession();
       const sessionId: string = session.id;
       const title: string = session.title;
       const hostId: string = session.hostId;
+      const hostKnown: boolean = session.hostKnown;
       const remote: boolean = session.remote;
       // @ts-expect-error 当前会话是冻结的快照。
       session.title = "changed";
+      // @ts-expect-error 主机归属状态只读。
+      session.hostKnown = false;
       const removeMenu: CodexPlusDispose = api.registerMenuItem({
         label: "Enabled", toggleValue: () => true,
         onChange(next) { const enabled: boolean = next; },

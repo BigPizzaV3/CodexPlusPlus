@@ -50,6 +50,7 @@ fn legacy_placeholder_keys_restore_without_unrejecting_real_conflicts() {
                     input_tokens: Some(100),
                     output_tokens: Some(10),
                     cached_tokens: Some(20),
+                    cached_tokens_known: None,
                 }),
             };
             let mut saved = VerifiedAttribution {

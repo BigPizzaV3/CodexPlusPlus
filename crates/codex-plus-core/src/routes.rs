@@ -277,6 +277,22 @@ pub trait BridgeDataService: Send + Sync {
             "message": "结构化用量历史服务未接入",
         }))
     }
+    /// 只读已提交的持久用量快照，不回退到旧历史扫描。
+    async fn usage_history_committed(&self, _query: Value) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status":"unavailable",
+            "complete":false,
+            "source":"persistent-local-rollout",
+            "message":"已提交用量快照服务未接入",
+        }))
+    }
+    /// 工具执行时间及最近七天的按需详情。
+    async fn usage_executions(&self, _query: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","complete":false,"message":"工具执行查询未接入"}))
+    }
+    async fn usage_execution_detail(&self, _query: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"unavailable","message":"工具执行详情未接入"}))
+    }
     /// 独立消费者封存，不是原生账单或归属验证，不参与 usage_history。
     async fn usage_archive(&self, _request: Value) -> anyhow::Result<Value> {
         Ok(json!({"status":"unavailable","code":"archive-unavailable"}))
@@ -581,6 +597,45 @@ pub async fn handle_bridge_request(
                     "message": "本机用量历史未开启或设置不可用",
                 }))
             }
+        },
+        "/usage/history-committed" => match ctx.settings.get_settings().await {
+            Ok(settings) if settings.usage_history_enabled => {
+                if payload["snapshot"] == "committed" {
+                    ctx.data.usage_history_committed(payload.clone()).await
+                } else {
+                    Ok(json!({
+                        "status":"unavailable",
+                        "complete":false,
+                        "source":"persistent-local-rollout",
+                        "message":"需要已提交快照参数",
+                    }))
+                }
+            }
+            _ => {
+                ctx.data.clear_usage_history().await;
+                Ok(json!({
+                    "status":"unavailable",
+                    "enabled":false,
+                    "complete":false,
+                    "source":"persistent-local-rollout",
+                    "message":"本机用量历史未开启或设置不可用",
+                }))
+            }
+        },
+        "/usage/executions" | "/usage/execution-detail" => match ctx.settings.get_settings().await {
+            Ok(settings) if settings.usage_history_enabled => {
+                if path == "/usage/executions" {
+                    ctx.data.usage_executions(payload.clone()).await
+                } else {
+                    ctx.data.usage_execution_detail(payload.clone()).await
+                }
+            }
+            _ => Ok(json!({
+                "status":"unavailable",
+                "enabled":false,
+                "complete":false,
+                "message":"本机用量历史未开启或设置不可用",
+            })),
         },
         // 大肥鱼（Agent 桌宠拓展）的数据路由：拓展白名单里开放，但只有启用中的拓展在清单里声明了它才干活。
         // 本机用量统计与余额查询都在 Codex++ 里做，供应商的 Key 不交给页面。

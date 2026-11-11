@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, Metadata};
 use std::path::Path;
 
+mod legacy_summary;
 mod structured;
 
 pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathBuf {
@@ -33,7 +34,57 @@ pub fn query_history(codex_home: &Path, query: &Value) -> Value {
     let Ok(home) = fs::canonicalize(codex_home) else {
         return json!({"status":"unavailable","complete":false,"message":"本机会话目录尚不可用"});
     };
-    structured::query(&home, &options, query)
+    let mut response = structured::query(&home, &options, query);
+    legacy_summary::attach(
+        &mut response,
+        &home,
+        &codex_plus_core::paths::default_settings_path(),
+        &options,
+        query,
+    );
+    response
+}
+
+/// 查询已提交的用量索引，缺库时异步启动有界采集，不回退旧历史读取器。
+pub fn query_history_committed(codex_home: &Path, query: &Value) -> Value {
+    if query["snapshot"] != "committed" {
+        return json!({
+            "status":"unavailable","complete":false,"source":"persistent-local-rollout",
+            "message":"需要已提交快照参数"
+        });
+    }
+    let Some(options) = Query::parse(query, Local::now().date_naive()) else {
+        return json!({
+            "status":"unavailable","complete":false,"source":"persistent-local-rollout",
+            "message":"用量查询参数无效"
+        });
+    };
+    let Ok(home) = fs::canonicalize(codex_home) else {
+        return json!({
+            "status":"unavailable","complete":false,"source":"persistent-local-rollout",
+            "message":"本机会话目录尚不可用"
+        });
+    };
+    let settings = codex_plus_core::paths::default_settings_path();
+    let mut response = structured::query_committed(&home, &settings, &options, query);
+    legacy_summary::attach(&mut response, &home, &settings, &options, query);
+    response
+}
+
+/// 查询已提交索引中的工具执行时间；请求不能指定读取路径。
+pub fn query_executions(codex_home: &Path, query: &Value) -> Value {
+    let Ok(home) = fs::canonicalize(codex_home) else {
+        return json!({"status":"unavailable","complete":false,"message":"本机会话目录尚不可用"});
+    };
+    structured::query_executions(&home, query)
+}
+
+/// 按调用身份读取最近七天内仍可取得的会话详情。
+pub fn query_execution_detail(codex_home: &Path, query: &Value) -> Value {
+    let Ok(home) = fs::canonicalize(codex_home) else {
+        return json!({"status":"unavailable","message":"本机会话目录尚不可用"});
+    };
+    structured::query_execution_detail(&home, query)
 }
 
 /// 关闭功能或更换实例时释放本进程的索引和采集器。

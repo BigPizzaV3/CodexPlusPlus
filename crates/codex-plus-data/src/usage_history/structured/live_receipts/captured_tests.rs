@@ -125,8 +125,11 @@ fn cached_competitors_persisted_rejections_and_changed_signatures_are_not_hidden
 
     let (other, mut other_cache, _) = fixture();
     other_cache.capture_proxy(&[a.clone()]).unwrap();
+    let mut renamed = a.clone();
+    renamed.relay_name = "Changed".into();
+    assert!(positive(&check(other.path(), &[renamed], &saved)));
     let mut changed = a.clone();
-    changed.relay_name = "Changed".into();
+    changed.upstream_model = "other-model".into();
     assert!(!positive(&check(other.path(), &[changed], &saved)));
     let db = Connection::open(provider_cache::database_path(other.path()).unwrap()).unwrap();
     assert_eq!(

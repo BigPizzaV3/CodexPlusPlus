@@ -36,7 +36,7 @@ pub fn start_provider_collector(
     )
 }
 
-fn start_provider_collector_with_log(
+pub(super) fn start_provider_collector_with_log(
     home: PathBuf,
     sqlite_home: PathBuf,
     settings_path: PathBuf,

@@ -28,6 +28,9 @@ pub struct RequestUsage {
     pub output_tokens: u64,
     #[serde(default)]
     pub cached_tokens: u64,
+    /// 缓存数是否由上游显式提供；旧日志和缺失字段不能当作精确零值。
+    #[serde(default)]
+    pub cached_tokens_known: bool,
     #[serde(default)]
     pub reasoning_tokens: u64,
 }
@@ -35,7 +38,8 @@ pub struct RequestUsage {
 impl RequestUsage {
     /// 缓存命中率（cached / input），没有输入 token 时为 None。
     pub fn cache_hit_ratio(&self) -> Option<f64> {
-        (self.input_tokens > 0).then(|| self.cached_tokens as f64 / self.input_tokens as f64)
+        (self.cached_tokens_known && self.input_tokens > 0)
+            .then(|| self.cached_tokens as f64 / self.input_tokens as f64)
     }
 }
 
@@ -605,8 +609,7 @@ fn usage_from_responses_usage(usage: &Value) -> Option<RequestUsage> {
     let cached_tokens = usage
         .pointer("/input_tokens_details/cached_tokens")
         .and_then(Value::as_u64)
-        .or_else(|| usage.get("cache_read_input_tokens").and_then(Value::as_u64))
-        .unwrap_or(0);
+        .or_else(|| usage.get("cache_read_input_tokens").and_then(Value::as_u64));
     let reasoning_tokens = usage
         .pointer("/output_tokens_details/reasoning_tokens")
         .and_then(Value::as_u64)
@@ -614,7 +617,8 @@ fn usage_from_responses_usage(usage: &Value) -> Option<RequestUsage> {
     Some(RequestUsage {
         input_tokens,
         output_tokens,
-        cached_tokens,
+        cached_tokens: cached_tokens.unwrap_or(0),
+        cached_tokens_known: cached_tokens.is_some(),
         reasoning_tokens,
     })
 }
@@ -645,8 +649,7 @@ pub fn usage_from_usage_value(usage: &Value) -> Option<RequestUsage> {
     let cached_tokens = usage
         .pointer("/prompt_tokens_details/cached_tokens")
         .and_then(Value::as_u64)
-        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
-        .unwrap_or(0);
+        .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64));
     let reasoning_tokens = usage
         .pointer("/completion_tokens_details/reasoning_tokens")
         .and_then(Value::as_u64)
@@ -654,7 +657,8 @@ pub fn usage_from_usage_value(usage: &Value) -> Option<RequestUsage> {
     Some(RequestUsage {
         input_tokens,
         output_tokens,
-        cached_tokens,
+        cached_tokens: cached_tokens.unwrap_or(0),
+        cached_tokens_known: cached_tokens.is_some(),
         reasoning_tokens,
     })
 }
@@ -695,6 +699,7 @@ mod tests {
                 input_tokens: 1000,
                 output_tokens: 200,
                 cached_tokens: 900,
+                cached_tokens_known: true,
                 reasoning_tokens: 50,
             }),
             cache_hit_ratio: None,
@@ -747,6 +752,29 @@ mod tests {
         let mut failed = complete;
         failed["error"] = json!({"code":"server_error"});
         assert!(final_response_usage(&failed).is_none());
+    }
+
+    #[test]
+    fn request_usage_distinguishes_missing_and_explicit_zero_cache() {
+        for (usage, known) in [
+            (json!({"input_tokens": 10, "output_tokens": 2}), false),
+            (json!({"input_tokens": 10, "output_tokens": 2,
+                "input_tokens_details": {"cached_tokens": 0}}), true),
+            (json!({"prompt_tokens": 10, "completion_tokens": 2}), false),
+            (json!({"prompt_tokens": 10, "completion_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 0}}), true),
+        ] {
+            let parsed = usage_from_usage_value(&usage).unwrap();
+            assert_eq!(parsed.cached_tokens, 0);
+            assert_eq!(parsed.cached_tokens_known, known);
+            assert_eq!(serde_json::to_value(&parsed).unwrap()["cachedTokensKnown"], known);
+            assert_eq!(parsed.cache_hit_ratio(), known.then_some(0.0));
+        }
+        let legacy: RequestUsage = serde_json::from_value(json!({
+            "inputTokens": 10, "outputTokens": 2, "cachedTokens": 0
+        }))
+        .unwrap();
+        assert!(!legacy.cached_tokens_known);
     }
 
     #[test]

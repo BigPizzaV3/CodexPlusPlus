@@ -1356,8 +1356,7 @@ try {
 
 ### `codexPlus.currentSession()`
 
-当前打开的会话 `{ id, title, hostId, remote }`：`hostId` 是会话所在主机（本机为 `"local"`），`remote` 为真时是远程 / SSH 会话
-（本机会话日志里没有它的用量）。
+当前打开的会话 `{ id, title, hostId, hostKnown, remote }`：`hostKnown` 表示主机归属是否已确认；确认后，`hostId` 是会话所在主机（本机为 `"local"`），`remote` 为真时是远程 / SSH 会话（本机会话日志里没有它的用量）。归属未确认时，`hostId` 为兼容旧调用仍回退为 `"local"`，不能据此判定会话在本机。
 
 ### `codexPlus.registerNavEntry(definition, options?)`
 
@@ -1453,6 +1452,11 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | --- | --- |
 | `/diagnostics/log` | 写一条诊断日志 |
 | `/thread-usage-history` | 读会话用量历史 |
+| `/usage/history` | 读取本机结构化用量快照（只读，需开启本机用量历史） |
+| `/usage/history-committed` | 读取已提交的本机用量索引；请求须带 `snapshot: "committed"`，首次查询异步启动有界索引（只读，需开启本机用量历史） |
+| `/usage/executions` | 读取已索引的工具名称、类别、次数和时间，支持范围、会话、搜索与稳定分页（只读，需开启本机用量历史） |
+| `/usage/execution-detail` | 按会话和调用标识读取最近七天内仍可取得的工具详情（只读，需开启本机用量历史） |
+| `/usage/archive` | 旧版 Daily 的固定格式独立归档接口；读写仅作用于其独立数据库，需开启本机用量历史 |
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
 | `/user-scripts/list` | 读拓展清单 |
@@ -1467,7 +1471,45 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/settings/public` | 设置的公开子集：`codexPlusVersion`、`codexAppVersion`、`enhancementsEnabled`、`relayProfilesEnabled`、`modelCatalogFingerprint`，以及 `activeProfile { id, name, relayMode, protocol, model, contextWindow, autoCompactLimit, aggregate }`。不含地址、Key 与 config / auth 内容（只读） |
 | `/model-catalog/public` | 当前供应商的模型目录：`models`、`modelMetadata`（每模型的 `contextWindow` 等）、`model`、`default_model`、`provider_name`、`model_provider`、`service_tier`。去掉了来源地址与本机路径（只读） |
 
-**写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+**通用写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。`/usage/archive` 的受限归档写入是上表列出的例外。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+
+`/usage/history-committed` 可在毫秒范围 `startAt`（含）、`endAt`（不含）查询中
+传 `includeTrend: true`，同一快照返回 `trend`，指定 `scopeSessionId` 时同时返回
+`scopedUsage.trend`。它们与相应 `days` 使用相同的日期、模型和会话筛选；
+按范围自动选择分钟、小时或多日桶，最多 120 桶，保留零值桶。
+每个桶包含 `startAt`、`endAt`、`recordCount`、`usage`、`models` 和 `breakdowns`；
+可用分类及既有价格规则计算费用，不需要逐桶请求。
+`intervalMs` 是名义桶宽，`precision: "day"` 的桶按本地日历生成，
+包含夏令时变化时应以每个桶的实际边界为准。
+跨越只保留日汇总的历史、但边界不足整日时仍返回精度限制及 `trend: null`，
+不把整日用量放进小时桶。类型为 `CodexPlusUsageTrend`。
+
+`/usage/executions` 的 `startAt`（含）和 `endAt`（不含）使用毫秒时间戳；
+`scopeSessionId` 包含可确认的子会话，`kind` 可选 `skill`、`mcp`、`tool`。
+`search` 对所有符合范围的已索引名称和命名空间筛选；不传 `kind` 即跨类别搜索。
+`limit` 为 1–200，后续页同时传回 `cursor` 和 `revision`；版本变化返回 `stale`。
+按 `tool` 筛选或使用搜索时，普通工具仅返回滚动七天内的记录；Skill 和 MCP
+仍按请求范围查询。`summary.recentTool` 是范围内最近七天的普通工具次数。
+`summary.skill/mcp/tool` 是整个范围的分类次数，`recentSkill/recentMcp/recentTool` 仅保留兼容。
+旧索引分类尚未恢复时仍返回已识别次数，`classificationComplete` 为 `false`，应显示为下界（如 `≥3`），不能冒充完整总数；总调用数仍可读。只有不足整日且跨越压缩范围时分类次数为 `null`。
+最近 60 个本地自然日保留逐次时间；更早的 `dailySummaries` 保留每日次数和可确认的类别次数。
+压缩范围内不足一整日的查询不会将全天次数当成精确范围值。
+
+无搜索时可传 `includeActivitySummary: true`，返回 `activitySummary`：
+最多 100 个按次数倒序的名称组，以及每组最多 64 桶的稀疏时间轴
+`timeline: [[bucketIndex, count, firstAtMs], ...]`。
+桶起点为 `startAt + bucketIndex * bucketWidthMs`；`groupCount` 给出所有组数。
+包含已压缩日汇总或缺失分类时，活动汇总 `complete` 为 `false`。
+声明这两个只读路由权限的拓展可按需通过 `/usage/execution-detail` 读取最近
+七天内仍在原始会话中的调用输入、输出及完整路径，超过滚动七天不再返回正文。
+单行最多 1 MiB、单次详情最多 4 MiB 和 64 段输出，压缩会话最多解压至 32 MiB；
+输出超过预算或不能确认完整时返回 `partial`。旧版索引已清除的定位通过原会话
+有限读取恢复，异步后续输出无法可靠关联时只返回已确认部分。
+详情中的可选 `durationMs` 是已确认结束的调用从请求到最后输出的时间差，
+缺少结束证据时省略。技能和 MCP 的名称、次数和时间轴在逐次记录保留期内不因七天详情期限过期。
+索引的 `scan` 状态包含 `storageError` 和 `migratingSources`；容量不足或迁移来源路径时，
+已提交数据仍可读，但新记录可能延迟。
+首次查询会启动后台索引，索引尚未创建或打开失败时返回 `unavailable` 和 `scan` 状态。
 
 `/cdp/evaluate` 是显式开放的底层注入能力，用来把脚本打进宠物 overlay 这类独立窗口。它**不是**任意 CDP 协议：只能 `Runtime.evaluate`，只能打到 `app://-/index.html` 的 Codex 页面，返回值里也不带 WebSocket URL。调用时必须提供 `kind` 或 `target_id` 其一：
 

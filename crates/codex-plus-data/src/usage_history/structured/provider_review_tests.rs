@@ -48,6 +48,7 @@ fn request(at: i64) -> RequestEvidence {
             input_tokens: Some(100),
             output_tokens: Some(10),
             cached_tokens: Some(20),
+            cached_tokens_known: None,
         }),
         agent: String::new(),
     }
@@ -85,6 +86,7 @@ fn ordinary_model_namespace_is_not_provider_evidence() {
     );
     assert!(!unknown_model(&aggregate));
     assert!(!unknown_model("cpx-member/group/auto"));
+    assert!(!unknown_model("cpx-model"));
     assert!(unknown_provider(usage_provider(
         "cpx-removed/model",
         "custom",
@@ -113,6 +115,132 @@ fn routed_supplier_requires_successful_request_evidence() {
     assert_eq!(attribute(&mut cache, &mut events)["recoveredEvents"], 1);
     assert_eq!(events[0].provider, "supplier-b");
     assert_eq!(events[0].delta, before);
+}
+
+#[test]
+fn supplier_identity_survives_missing_or_renamed_display_name() {
+    let at = Local::now().timestamp_millis();
+    let mut record = request(at);
+    record.relay_name.clear();
+    let mut names = BTreeMap::new();
+    let mut events = vec![event(at)];
+    let mut cache = RequestEvidenceCache::default();
+    cache.records.push(record.clone());
+    let before = events[0].delta;
+    assert_eq!(
+        cache.attribute(&mut events, &mut names, &BTreeMap::new())["recoveredEvents"],
+        1
+    );
+    assert_eq!(events[0].provider, "supplier-a");
+    assert_eq!(events[0].delta, before);
+    assert_eq!(names["supplier-a"], "supplier-a");
+
+    record.relay_name = "Renamed supplier".into();
+    cache.records[0] = record;
+    let mut events = vec![event(at)];
+    assert_eq!(attribute(&mut cache, &mut events)["recoveredEvents"], 1);
+    assert_eq!(events[0].provider, "supplier-a");
+    assert!(!cache.verified[&events[0].id].rejected);
+
+    cache.records[0].relay_name = "x".repeat(300);
+    let mut events = vec![event(at)];
+    assert_eq!(attribute(&mut cache, &mut events)["recoveredEvents"], 1);
+}
+
+#[test]
+fn captured_supplier_rename_does_not_invalidate_request_identity() {
+    let at = Local::now().timestamp_millis();
+    let dir = tempfile::tempdir().unwrap();
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(dir.path(), Local::now().date_naive() - Days::days(1))
+        .unwrap();
+    let mut record = request(at);
+    disk.capture_proxy(&[record.clone()]).unwrap();
+    record.relay_name = "Renamed supplier".into();
+    disk.capture_proxy(&[record.clone()]).unwrap();
+    assert!(
+        disk.rejected_proxy_ids([&record]).unwrap().is_empty(),
+        "changing a display name must not reject the stable request identity"
+    );
+    let mut cache = RequestEvidenceCache::default();
+    cache.records.push(record);
+    let mut events = vec![event(at)];
+    assert_eq!(
+        cache.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk)
+            ["recoveredEvents"],
+        1
+    );
+    assert_eq!(events[0].provider, "supplier-a");
+}
+
+#[test]
+fn uncertain_events_only_compete_with_requests_in_their_window() {
+    let at = Local::now().timestamp_millis();
+    let mut record = request(at);
+    record.timestamp_ms = at - DELAYED_REQUEST_MATCH_WINDOW_MS + 10;
+    record.started_at_ms = record.timestamp_ms - 100;
+    for (offset, time_valid, same_session, expected) in [
+        (-DELAYED_REQUEST_MATCH_WINDOW_MS, true, true, 0),
+        (-DELAYED_REQUEST_MATCH_WINDOW_MS - 1, true, true, 1),
+        (0, false, true, 0),
+        (0, true, false, 1),
+    ] {
+        let mut other = event(at);
+        other.id = [8; 32];
+        other.count_uncertain = true;
+        other.delta = Tokens::new(20, 0, 2);
+        other.timestamp = if time_valid {
+            DateTime::from_timestamp_millis(record.timestamp_ms + offset)
+                .unwrap()
+                .to_rfc3339()
+        } else {
+            "not-a-timestamp".into()
+        };
+        if !same_session {
+            other.session = "other-session".into();
+        }
+        let mut events = vec![event(at), other];
+        let mut cache = RequestEvidenceCache::default();
+        cache.records.push(record.clone());
+        let result = attribute(&mut cache, &mut events);
+        assert_eq!(
+            result["recoveredEvents"], expected,
+            "offset={offset}, time_valid={time_valid}, same_session={same_session}"
+        );
+        assert_eq!(events[0].delta, event(at).delta);
+    }
+}
+
+#[test]
+fn cached_zero_requires_presence_evidence_without_changing_counts() {
+    let at = Local::now().timestamp_millis();
+    for (known, strong, expected) in [
+        (Some(false), false, 0),
+        (None, false, 0),
+        (Some(true), false, 1),
+        (None, true, 1),
+    ] {
+        let mut encoded = serde_json::to_value(request(at)).unwrap();
+        encoded["usage"]["cachedTokens"] = json!(0);
+        if let Some(known) = known {
+            encoded["usage"]["cachedTokensKnown"] = json!(known);
+        }
+        if strong {
+            encoded["finalResponseEvidence"] = json!("final-response-v1");
+        }
+        let record: RequestEvidence = serde_json::from_value(encoded).unwrap();
+        let mut original = event(at);
+        original.delta = Tokens::new(100, 0, 10);
+        let mut events = vec![original.clone()];
+        let mut cache = RequestEvidenceCache::default();
+        cache.records.push(record);
+        assert_eq!(
+            attribute(&mut cache, &mut events)["recoveredEvents"],
+            expected,
+            "known={known:?}, strong={strong}"
+        );
+        assert_eq!(events[0].delta, original.delta);
+    }
 }
 
 #[test]
@@ -181,6 +309,7 @@ fn model_placeholders_are_not_exact_matching_keys() {
         assert!(invalid_request.keys().is_empty());
     }
     assert!(!unknown_model("namespace/model"));
+    assert!(!unknown_model("cpx-member/model-a"));
 
     let mut routed = request(at);
     routed.model = "group/daily".into();
