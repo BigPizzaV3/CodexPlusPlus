@@ -7,6 +7,7 @@ import {
   defaultProviderAgents,
   glanceAgents,
   skippedAgents,
+  poolExcludeToggle,
   isDirectProxy,
   proxyAddressError,
   agentModels,
@@ -613,6 +614,15 @@ test("添加供应商：只给内置和已接入的 Agent 勾选，装了没接�
   assert.deepEqual(glanceAgents(payload.agents).map((agent) => agent.agent), ["codex", "claude", "grok", "opencode"]);
   assert.deepEqual(defaultProviderAgents(payload), ["codex", "claude", "grok", "opencode"]);
   assert.deepEqual(skippedAgents(payload, ["codex"]), ["claude", "grok", "opencode"]);
+});
+
+test("编辑供应商：poolExcludeToggle 改某个 Agent 是否用它（#3030）", () => {
+  const binding = { poolExclude: ["p1", "p2"] };
+  assert.deepEqual(poolExcludeToggle(binding.poolExclude, "p1", false), ["p1", "p2"], "已排除的再关一次不变");
+  assert.deepEqual(poolExcludeToggle(binding.poolExclude, "p1", true), ["p2"], "重新用它就从排除列表去掉");
+  assert.deepEqual(poolExcludeToggle(binding.poolExclude, "p3", false), ["p1", "p2", "p3"], "没用就加进排除列表");
+  assert.deepEqual(poolExcludeToggle(undefined, "p1", false), ["p1"], "没有排除列表时按空处理");
+  assert.deepEqual(poolExcludeToggle(undefined, "p1", true), [], "没有排除列表时重新用它不新增");
 });
 
 test("Agent 自带的模型：单独一组、标出直连对象，按名字或厂商筛", () => {
