@@ -389,6 +389,7 @@ struct WeixinRuntime {
     stop: Arc<AtomicBool>,
     codex_path: codex_plus_core::connect::WeixinCodexPath,
     outbound: codex_plus_core::connect::outbound::OutboundPolicy,
+    finished: tokio::sync::watch::Receiver<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4170,6 +4171,21 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
     };
 
     if qr_status.status == "confirmed" {
+        let _control = weixin_control().lock().await;
+        let still_current = weixin_qr_session()
+            .lock()
+            .map(|current| {
+                current
+                    .as_ref()
+                    .is_some_and(|current| current.qr_code == session.qr_code)
+            })
+            .unwrap_or(false);
+        if !still_current {
+            return failed(
+                "微信登录二维码已更新，请使用当前二维码。",
+                empty_weixin_qr_payload("missing"),
+            );
+        }
         if qr_status.bot_token.trim().is_empty() || qr_status.ilink_bot_id.trim().is_empty() {
             return failed(
                 "微信已确认登录，但网关未返回完整凭据。",
@@ -4184,48 +4200,92 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
             );
         }
         let store = SettingsStore::default();
-        let mut settings = store.load().unwrap_or_default();
-        settings.weixin_connect_token = qr_status.bot_token;
-        settings.weixin_connect_account_id = qr_status.ilink_bot_id.clone();
-        if !qr_status.baseurl.trim().is_empty() {
-            settings.weixin_connect_base_url =
-                qr_status.baseurl.trim().trim_end_matches('/').to_string();
+        let settings = match store.load() {
+            Ok(settings) => settings,
+            Err(error) => {
+                return failed(
+                    &format!("微信登录成功，但读取连接设置失败：{error}"),
+                    empty_weixin_qr_payload("failed"),
+                );
+            }
+        };
+        let base_url = if !qr_status.baseurl.trim().is_empty() {
+            qr_status.baseurl.trim().trim_end_matches('/').to_string()
         } else {
-            settings.weixin_connect_base_url = session.base_url.clone();
-        }
+            session.base_url.clone()
+        };
+        let mut patch = json!({
+            "revision": settings.settings_revision,
+            "weixinConnectEnabled": true,
+            "weixinConnectToken": qr_status.bot_token,
+            "weixinConnectAccountId": qr_status.ilink_bot_id,
+            "weixinConnectBaseUrl": base_url,
+            "weixinConnectRouteTag": session.route_tag,
+        });
         if settings.weixin_connect_allow_from.trim().is_empty()
             && !qr_status.ilink_user_id.trim().is_empty()
         {
-            settings.weixin_connect_allow_from = qr_status.ilink_user_id.clone();
+            patch["weixinConnectAllowFrom"] = json!(qr_status.ilink_user_id);
         }
-        settings.weixin_connect_route_tag = session.route_tag;
-        if let Err(error) = store.save(&settings) {
-            return failed(
-                &format!("微信登录成功，但保存连接凭据失败：{error}"),
-                WeixinQrPayload {
-                    qr_status: "failed".to_string(),
-                    qr_content: session.qr_content,
-                    qr_svg: session.qr_svg,
-                    account_id: qr_status.ilink_bot_id,
-                    linked_user_id: qr_status.ilink_user_id,
-                    has_token: false,
-                },
-            );
-        }
+        let settings = match store.update(patch) {
+            Ok(settings) => settings,
+            Err(error) => {
+                return failed(
+                    &format!("微信登录成功，但保存连接凭据失败：{error}"),
+                    WeixinQrPayload {
+                        qr_status: "failed".to_string(),
+                        qr_content: session.qr_content,
+                        qr_svg: session.qr_svg,
+                        account_id: qr_status.ilink_bot_id,
+                        linked_user_id: qr_status.ilink_user_id,
+                        has_token: false,
+                    },
+                );
+            }
+        };
         if let Ok(mut current) = weixin_qr_session().lock() {
-            *current = None;
+            if current
+                .as_ref()
+                .is_some_and(|current| current.qr_code == session.qr_code)
+            {
+                *current = None;
+            }
         }
-        return ok(
-            "微信扫码登录成功。",
-            WeixinQrPayload {
-                qr_status: "confirmed".to_string(),
-                qr_content: String::new(),
-                qr_svg: String::new(),
-                account_id: qr_status.ilink_bot_id,
-                linked_user_id: qr_status.ilink_user_id,
-                has_token: true,
+        let payload = WeixinQrPayload {
+            qr_status: "confirmed".to_string(),
+            qr_content: String::new(),
+            qr_svg: String::new(),
+            account_id: qr_status.ilink_bot_id,
+            linked_user_id: qr_status.ilink_user_id,
+            has_token: true,
+        };
+        let previous = match weixin_runtime().lock() {
+            Ok(runtime) => runtime.as_ref().map(|runtime| {
+                runtime.stop.store(true, Ordering::SeqCst);
+                runtime.outbound.set(false, "", "");
+                runtime.finished.clone()
+            }),
+            Err(_) => {
+                return failed("微信登录成功，但连接运行锁已损坏。", payload);
             },
-        );
+        };
+        if let Some(mut finished) = previous {
+            while !*finished.borrow_and_update() {
+                if let Err(error) = finished.changed().await {
+                    return failed(
+                        &format!("微信登录成功，但旧连接退出异常：{error}"),
+                        payload,
+                    );
+                }
+            }
+        }
+        return match spawn_weixin_connect(settings) {
+            Ok(_) => ok("微信扫码登录成功，正在启动连接。", payload),
+            Err(error) => failed(
+                &format!("微信登录成功，但启动连接失败：{error}"),
+                payload,
+            ),
+        };
     }
 
     ok(
@@ -4296,7 +4356,8 @@ pub fn weixin_connect_reset_session(peer_id: String, account_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+pub async fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+    let _control = weixin_control().lock().await;
     let store = SettingsStore::default();
     let mut settings = store.load().unwrap_or_default();
     if settings.weixin_connect_token.trim().is_empty() {
@@ -4319,7 +4380,14 @@ pub fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinC
 }
 
 #[tauri::command]
-pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+pub async fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
+    let _control = weixin_control().lock().await;
+    if let Err(error) = SettingsStore::default().update(json!({"weixinConnectEnabled": false})) {
+        return failed(
+            &format!("保存微信连接设置失败：{error}"),
+            current_weixin_status(),
+        );
+    }
     let stopping = weixin_runtime()
         .lock()
         .ok()
@@ -4331,15 +4399,10 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
             })
         })
         .unwrap_or(false);
-    let store = SettingsStore::default();
-    if let Ok(mut settings) = store.load() {
-        settings.weixin_connect_enabled = false;
-        let _ = store.save(&settings);
-    }
     if let Ok(mut status) = weixin_status().lock() {
         if stopping {
             status.state = "stopping".to_string();
-            status.message = "正在停止微信连接，当前长轮询结束后生效。".to_string();
+            status.message = "正在停止微信连接。".to_string();
         } else {
             status.state = "stopped".to_string();
             status.message = "微信连接已停止。".to_string();
@@ -4514,10 +4577,12 @@ fn spawn_weixin_connect(
     }
     let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
     let outbound = SettingsStore::default().weixin_outbound_policy(&config, Arc::clone(&stop))?;
+    let (finished_tx, finished_rx) = tokio::sync::watch::channel(false);
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
         codex_path: codex_path.clone(),
         outbound: outbound.clone(),
+        finished: finished_rx,
     });
     drop(runtime);
     let status = weixin_status();
@@ -4551,6 +4616,7 @@ fn spawn_weixin_connect(
         {
             *runtime = None;
         }
+        finished_tx.send_replace(true);
     });
     Ok(current_weixin_status())
 }
@@ -4563,6 +4629,11 @@ fn weixin_qr_session() -> &'static Mutex<Option<WeixinQrSession>> {
 fn weixin_runtime() -> &'static Mutex<Option<WeixinRuntime>> {
     static RUNTIME: OnceLock<Mutex<Option<WeixinRuntime>>> = OnceLock::new();
     RUNTIME.get_or_init(|| Mutex::new(None))
+}
+
+fn weixin_control() -> &'static tokio::sync::Mutex<()> {
+    static CONTROL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    CONTROL.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn weixin_status() -> codex_plus_core::connect::SharedWeixinConnectStatus {
