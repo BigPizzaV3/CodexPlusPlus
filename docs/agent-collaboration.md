@@ -13,7 +13,7 @@ Codex++ 最左侧的「Agent 协作」入口提供「子 Agent 设置」。日�
    - 「让 Claude Code 审核刚才的改动。」
    - 「把这项调查交给默认子 Agent，完成后汇总给我。」
 
-明确点名 DeepSeek、Claude Code 或另一个 Codex 时，委派到对应 Agent；未点名时才使用默认 Agent。目标不可用时不会擅自换成其他 Agent。
+明确点名 DeepSeek、Claude Code、另一个 Codex 或 Google Antigravity（Antigravity/反重力）时，委派到对应 Agent；未点名时才使用默认 Agent。目标不可用时不会擅自换成其他 Agent。
 
 Codex 获得异步任务 ID 后可以继续独立工作，再通过等待或查询工具取得终态和答案，在原对话中向用户汇报。仅提交成功不能当作执行成功。
 
@@ -25,7 +25,7 @@ Codex 获得异步任务 ID 后可以继续独立工作，再通过等待或查�
 
 ## 子 Agent 配置
 
-- 支持 Codex、DeepSeek Harness、Claude Code；任务实际在对应 CLI 内执行。
+- 支持 Codex、DeepSeek Harness、Claude Code 和 Google Antigravity；任务实际在对应 CLI 内执行。
 - 保存总开关和各 Agent 的启用状态后才能派任务。
 - 默认 Agent 仅影响未明确指定目标的委派。默认目标未启用时会报错，显式点名其他已启用目标仍然可用。
 - Codex、Claude Code 可选填模型；留空沿用原生 CLI 默认模型。DeepSeek 可填写 `provider/model` 模型路由，例如 `deepseek-account/deepseek-flash`；账户登录使用 `deepseek-account`，API 密钥使用 `deepseek-official`。模型名称需在对应供应商中可用，留空沿用 DSH headless 的默认路由。
@@ -45,9 +45,28 @@ Codex 获得异步任务 ID 后可以继续独立工作，再通过等待或查�
 
 DSH headless 默认使用环境凭据。若已在 DeepSeek Harness 中登录或保存密钥，可在子 Agent 设置中开启「复用 DSH 已保存的登录与密钥」，并明确选择与认证方式匹配的模型路由。协作服务通过本次任务专用的 `--patch` 文件启用 DSH 原生保存认证能力及可选的模型路由，不修改 DSH 的持久配置。只有显式选择 `deepseek-account` 路由时才启用账户服务，API 密钥路由不初始化账户登录。生成的无凭据 JSON 保存在协作状态目录的 `agent-collaboration-overlays/<taskId>.json`，用于排查本次参数。
 
-复用认证不会导入 desktop profile 的其他设置。自定义账户服务地址需先在 DSH headless profile 中配置正确；思考强度等参数沿用 headless 配置。更改模型路由用于新任务，继续已有原生会话时仍由 DSH 使用该会话的模型。若仍报告认证失败，请检查 DSH 原生登录是否有效以及所选模型使用的供应商路由。Codex 和 Claude Code 同样需要可用的原生登录与模型设置。
+复用认证不会导入 desktop profile 的其他设置。自定义账户服务地址需先在 DSH headless profile 中配置正确；思考强度等参数沿用 headless 配置。更改模型路由用于新任务，继续已有原生会话时仍由 DSH 使用该会话的模型。若仍报告认证失败，请检查 DSH 原生登录是否有效以及所选模型使用的供应商路由。Codex 和 Claude Code 同样需要可用的原生登录与模型设置。Google Antigravity 使用自己的 `agy` CLI 登录与模型设置；Codex++ 不读取其凭据。
 
 升级后若 Codex 仍连接旧版 MCP 进程，请在新版管理器中点击「一键接入并刷新」，让后续委派使用新版执行器及配置。
+
+## Google Antigravity
+
+Google Antigravity 的任务使用 `agy --input-format stream-json --output-format stream-json`；提示词通过 stdin 的 `{"event":"user","message":{"content":"…"}}` 输入。CLI 返回的根 `conversation_id` 用于续聊，只有 `result.status=SUCCESS` 且有 `result.response` 才会标记任务完成。
+
+Google Antigravity 需要单独安装官方 `agy` CLI 并完成原生登录；桌面 IDE 的快捷方式和 Gemini CLI 都不能代替它。Windows 默认探测 `%LOCALAPPDATA%\agy\bin\agy.exe`，其他环境检查 `~/.local/bin/agy` 与 PATH。模型字段留空沿用原生设置；需要指定时使用 `agy models` 中的名称。
+
+界面的“已找到 CLI”只说明文件存在。执行器在发送任务前对该文件执行有 5 秒超时的 `--help` 检查，确认支持 `--input-format`、`--output-format`、`stream-json` 与 `--conversation`；不兼容时任务失败，不发送提示词，不改派其他 CLI。协议检查不验证登录或额度。
+
+权限沿用 CLI 原生设置，不强制 `--mode auto`、`--mode plan` 或跳过权限。需要交互授权而无法完成时应检查原生 CLI 返回的错误；不会静默扩大权限。`step_update` 只显示公开的 `agent_response` 文本，其他步骤的文本不会作为进度展示。
+
+取消和超时在 Windows 通过任务专属 Job Object 停止本次 CLI 及其加入组的后代，Unix 沿用独立进程组；不按程序名称结束现有 IDE。CLI 本地退出不代表已确认远端模型计算停止，也不会回滚已发生的工作区操作。
+
+本适配器基于 Windows CLI 1.5.3 的真实 JSONL 记录，并提供不调用模型的可控 CLI 测试。真实账户验收可在有可用原生认证的环境手动运行（会消耗额度）：
+
+```powershell
+$env:CODEX_PLUS_ANTIGRAVITY_LIVE_EXE = 'C:\path\to\agy.exe'
+cargo test -p codex-plus-core --lib antigravity_live_adapter_round_trip_and_continuation -- --ignored --nocapture
+```
 
 ## 手动接入及其他客户端
 
@@ -69,6 +88,7 @@ DSH headless 默认使用环境凭据。若已在 DeepSeek Harness 中登录或�
 | `delegate_to_deepseek` | 用户点名 DeepSeek 时委派 |
 | `delegate_to_claude_code` | 用户点名 Claude Code 时委派 |
 | `delegate_to_codex` | 委派给另一个 Codex CLI |
+| `delegate_to_antigravity` | 委派给 Google Antigravity 官方 `agy` CLI |
 | `delegate_task` | 可省略 `agentId`，使用默认子 Agent |
 | `send_task` | 异步派发，返回 `taskId` |
 | `wait_task` | 每次最多等待 30 秒，返回终态或仍在执行的状态 |

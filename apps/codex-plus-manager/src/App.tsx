@@ -18302,7 +18302,7 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
-    agentCollaboration: t("连接 Codex、DeepSeek Harness 与 Claude Code，派发任务并查看结果。"),
+    agentCollaboration: t("连接 Codex、DeepSeek Harness、Claude Code 与 Google Antigravity，派发任务并查看结果。"),
     computerUse: t("复用 Codex 的 Computer Use，通过 MCP 接给 Claude Code、Claude Desktop 与 Codex。"),
     hub: t("任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全"),
     gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),

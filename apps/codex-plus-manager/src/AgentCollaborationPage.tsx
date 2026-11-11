@@ -61,6 +61,7 @@ const defaultConfig = (): CollaborationConfig => ({
     { id: "codex", name: "Codex", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
     { id: "deepseek", name: "DeepSeek Harness", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
     { id: "claude", name: "Claude Code", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
+    { id: "antigravity", name: "Google Antigravity", executable: "", enabled: false, model: "", reuseSavedAuth: false, maxConcurrentTasks: 1 },
   ],
   maxRuntimeMinutes: defaultMaxRuntimeMinutes,
 });
@@ -450,7 +451,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
             </CxRow>
             {/* 关着的子 Agent 只留标题行；打开并展开后再显示它的路径、模型和并发。 */}
             {expanded ? <div className="cx-collab-agent-body">
-              <CxRow detail="留空自动查找已安装的 CLI" title="可执行文件路径">
+              <CxRow detail={agent.id === "antigravity" ? "官方 agy CLI；协议在任务启动前检查，不是桌面快捷方式" : "留空自动查找已安装的 CLI"} title="可执行文件路径">
                 <input className="cx-collab-input" id={`agent-collaboration-path-${agent.id}`} aria-label={tf("{0} 可执行文件路径", [agent.name])} value={agent.executable} disabled={!snapshot || busy === "save_config"} placeholder={availability?.path || "自动查找"} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => editAgent(agent.id, { executable: event.target.value })} onBlur={saveOnBlur} />
               </CxRow>
               <CxRow

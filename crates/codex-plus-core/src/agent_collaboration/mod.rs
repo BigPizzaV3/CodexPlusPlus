@@ -1,5 +1,7 @@
 //! 本机 CLI 协作记录。每次状态转换均在 SQLite 写事务中完成；读取不会启动 agent。
 
+#[cfg(windows)]
+mod antigravity_windows;
 mod dsh;
 pub mod executor;
 pub mod integration;
@@ -108,7 +110,10 @@ pub struct CollaborationConfig {
     /// 单个子 Agent 任务的运行上限（分钟）。旧配置没有此字段时取默认 10 分钟（#2618）。
     /// 取默认值时不写出：v1.10.0 的结构带 `deny_unknown_fields`，回退旧版本时
     /// 多出的字段会让整份协作记录读不出来。
-    #[serde(default = "default_max_runtime_minutes", skip_serializing_if = "is_default_max_runtime_minutes")]
+    #[serde(
+        default = "default_max_runtime_minutes",
+        skip_serializing_if = "is_default_max_runtime_minutes"
+    )]
     pub max_runtime_minutes: u32,
 }
 
@@ -137,6 +142,7 @@ impl Default for CollaborationConfig {
                 ("codex", "Codex"),
                 ("deepseek", "DeepSeek Harness"),
                 ("claude", "Claude Code"),
+                ("antigravity", "Google Antigravity"),
             ]
             .into_iter()
             .map(|(id, name)| AgentConfig {
@@ -394,7 +400,9 @@ impl Store {
                 })
             })
             .collect();
-        Ok(json!({ "enabled": state.config.enabled, "agents": agents, "tasks": tasks, "total": total }))
+        Ok(
+            json!({ "enabled": state.config.enabled, "agents": agents, "tasks": tasks, "total": total }),
+        )
     }
 
     pub fn config(&self) -> anyhow::Result<CollaborationConfig> {
@@ -468,8 +476,11 @@ impl Store {
         {
             bail!("任务内容不能为空，且不能超过 64 KiB 或包含空字符");
         }
-        if !matches!(request.agent_id.as_str(), "codex" | "deepseek" | "claude") {
-            bail!("不支持的 agent；仅支持 codex、deepseek、claude");
+        if !matches!(
+            request.agent_id.as_str(),
+            "codex" | "deepseek" | "claude" | "antigravity"
+        ) {
+            bail!("不支持的 agent；仅支持 codex、deepseek、claude、antigravity");
         }
         let path = Path::new(&request.cwd);
         if !path.is_absolute() || !path.is_dir() {
@@ -831,7 +842,9 @@ fn concurrency_limit(config: &CollaborationConfig, agent_id: &str) -> usize {
         .agents
         .iter()
         .find(|agent| agent.id == agent_id)
-        .map_or(DEFAULT_MAX_CONCURRENT_TASKS, |agent| agent.max_concurrent_tasks)
+        .map_or(DEFAULT_MAX_CONCURRENT_TASKS, |agent| {
+            agent.max_concurrent_tasks
+        })
         .max(1) as usize
 }
 
@@ -872,10 +885,26 @@ fn queue_wait_is_current(task: &TaskRecord, ahead: usize, timestamp: u64) -> boo
 }
 
 fn parse_state(payload: Option<&str>) -> anyhow::Result<State> {
-    match payload {
-        Some(payload) => serde_json::from_str(payload).context("协作记录损坏，未覆盖现有数据"),
-        None => Ok(State::default()),
+    let mut state: State = match payload {
+        Some(payload) => serde_json::from_str(payload).context("协作记录损坏，未覆盖现有数据")?,
+        None => State::default(),
+    };
+    // 旧记录没有新适配器：补入默认关闭项，保留原有目标、模型和任务。
+    if !state
+        .config
+        .agents
+        .iter()
+        .any(|agent| agent.id == "antigravity")
+    {
+        state.config.agents.push(
+            CollaborationConfig::default()
+                .agents
+                .into_iter()
+                .find(|agent| agent.id == "antigravity")
+                .unwrap(),
+        );
     }
+    Ok(state)
 }
 
 fn queue_progress(ahead: usize) -> String {
@@ -900,9 +929,9 @@ fn normalize_config(config: CollaborationConfig) -> anyhow::Result<Collaboration
     normalized.default_agent_id = config.default_agent_id.trim().to_string();
     if !matches!(
         normalized.default_agent_id.as_str(),
-        "codex" | "deepseek" | "claude"
+        "codex" | "deepseek" | "claude" | "antigravity"
     ) {
-        bail!("默认子 Agent 必须是 Codex、DeepSeek Harness 或 Claude Code");
+        bail!("默认子 Agent 必须是 Codex、DeepSeek Harness、Claude Code 或 Google Antigravity");
     }
     if !(1..=MAX_RUNTIME_MINUTES_LIMIT).contains(&config.max_runtime_minutes) {
         bail!("子 Agent 运行上限必须在 1 到 {MAX_RUNTIME_MINUTES_LIMIT} 分钟之间");

@@ -8,9 +8,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+
+#[cfg(windows)]
+use super::antigravity_windows;
 
 use super::{AgentConfig, MAX_OUTPUT_BYTES, MAX_PROMPT_BYTES, QueueTurn, Store, TaskRecord};
 
@@ -51,6 +54,7 @@ enum Provider {
     Codex,
     Claude,
     DeepSeek,
+    Antigravity,
 }
 
 impl Provider {
@@ -59,6 +63,7 @@ impl Provider {
             "codex" => Ok(Self::Codex),
             "claude" => Ok(Self::Claude),
             "deepseek" => Ok(Self::DeepSeek),
+            "antigravity" => Ok(Self::Antigravity),
             _ => bail!("不支持的协作 Agent：{id}"),
         }
     }
@@ -161,6 +166,11 @@ fn auto_detect_executable(provider: Provider, local_appdata: Option<&Path>) -> O
             local_appdata,
         ));
     }
+    if cfg!(windows) && provider == Provider::Antigravity {
+        if let Some(local) = local_appdata {
+            candidates.push(local.join("agy/bin/agy.exe"));
+        }
+    }
     if cfg!(target_os = "macos") {
         match provider {
             Provider::Codex => {
@@ -176,13 +186,14 @@ fn auto_detect_executable(provider: Provider, local_appdata: Option<&Path>) -> O
             Provider::DeepSeek => candidates.push(PathBuf::from(
                 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
             )),
-            Provider::Claude => {}
+            Provider::Claude | Provider::Antigravity => {}
         }
     }
     let command = match provider {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
         Provider::DeepSeek => "dsh",
+        Provider::Antigravity => "agy",
     };
     if let Some(home) = directories::BaseDirs::new() {
         candidates.push(home.home_dir().join(".local/bin").join(command));
@@ -464,6 +475,15 @@ async fn run_task(store: &Store, id: &str) -> anyhow::Result<Outcome> {
         validate_session_id(&task.session_id)?;
     }
 
+    if provider == Provider::Antigravity {
+        check_antigravity_protocol(&executable, &cwd).await?;
+        if store.worker_should_stop(id)? {
+            return Ok(stopped_outcome(
+                &task.session_id,
+                "任务在 CLI 协议检查期间已取消",
+            ));
+        }
+    }
     let overlay = if provider == Provider::DeepSeek {
         super::dsh::prepare_overlay(store, &task, agent)?
     } else {
@@ -493,6 +513,43 @@ async fn run_task(store: &Store, id: &str) -> anyhow::Result<Outcome> {
         .context("无法启动原生 CLI，请检查路径和执行权限")?;
     let runtime_limit = Duration::from_secs(u64::from(config.max_runtime_minutes) * 60);
     supervise(store, &task, provider, child, runtime_limit).await
+}
+
+// 文件存在只表示可定位；发送任务前用有超时的帮助探测确认所需协议。
+async fn check_antigravity_protocol(executable: &Path, cwd: &Path) -> anyhow::Result<()> {
+    let mut command = Command::new(executable);
+    command
+        .arg("--help")
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+        .await
+        .context("Antigravity CLI 协议检查超时，未发送任务")??;
+    let help = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() || !antigravity_help_compatible(&help) {
+        bail!(
+            "找到可执行文件，但不支持 Antigravity stream-json 协议；请填写官方 agy CLI 路径，不是 IDE 启动器。任务未发送"
+        );
+    }
+    Ok(())
+}
+
+fn antigravity_help_compatible(help: &str) -> bool {
+    [
+        "--input-format",
+        "--output-format",
+        "stream-json",
+        "--conversation",
+    ]
+    .iter()
+    .all(|flag| help.contains(flag))
 }
 
 fn configure_cli(
@@ -557,20 +614,48 @@ fn cli_args(provider: Provider, session_id: &str, model: &str) -> Vec<String> {
             args.push("-");
             args
         }
+        Provider::Antigravity => {
+            let mut args = vec![
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            ];
+            if !session_id.is_empty() {
+                args.extend(["--conversation", session_id]);
+            }
+            args
+        }
     };
     let mut args: Vec<String> = values.into_iter().map(str::to_owned).collect();
     if !model.is_empty() && provider != Provider::DeepSeek {
-        let position = if provider == Provider::Codex && !session_id.is_empty() {
-            2
+        if provider == Provider::Antigravity {
+            args.extend(["--model".to_string(), model.to_string()]);
         } else {
-            1
-        };
-        args.splice(
-            position..position,
-            ["--model".to_string(), model.to_string()],
-        );
+            let position = if provider == Provider::Codex && !session_id.is_empty() {
+                2
+            } else {
+                1
+            };
+            args.splice(
+                position..position,
+                ["--model".to_string(), model.to_string()],
+            );
+        }
     }
     args
+}
+
+fn cli_input(provider: Provider, prompt: &str) -> anyhow::Result<Vec<u8>> {
+    if provider != Provider::Antigravity {
+        return Ok(prompt.as_bytes().to_vec());
+    }
+    let mut input = serde_json::to_vec(&json!({
+        "event": "user",
+        "message": {"content": prompt},
+    }))?;
+    input.push(b'\n');
+    Ok(input)
 }
 
 fn validate_session_id(value: &str) -> anyhow::Result<()> {
@@ -594,12 +679,23 @@ async fn supervise(
     runtime_limit: Duration,
 ) -> anyhow::Result<Outcome> {
     let mut process_group = ProcessGroup::new(&child);
+    #[cfg(windows)]
+    if provider == Provider::Antigravity {
+        match antigravity_windows::OwnedJob::attach(&child) {
+            Ok(job) => process_group.antigravity_job = Some(job),
+            Err(error) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(error).context("无法建立 Antigravity 任务专属进程组，未发送提示词");
+            }
+        }
+    }
     let mut stdout = child.stdout.take().context("无法读取 CLI stdout")?;
     let mut stderr = child.stderr.take().context("无法读取 CLI stderr")?;
     let mut stdin = child.stdin.take().context("无法写入 CLI stdin")?;
-    let prompt = task.prompt.clone();
+    let prompt = cli_input(provider, &task.prompt)?;
     let mut writer = tokio::spawn(async move {
-        stdin.write_all(prompt.as_bytes()).await?;
+        stdin.write_all(&prompt).await?;
         stdin.shutdown().await
     });
     let mut writer_done = false;
@@ -792,6 +888,8 @@ struct ProcessGroup {
     #[cfg(unix)]
     id: Option<i32>,
     armed: bool,
+    #[cfg(windows)]
+    antigravity_job: Option<antigravity_windows::OwnedJob>,
 }
 
 impl ProcessGroup {
@@ -805,10 +903,16 @@ impl ProcessGroup {
                 .and_then(|id| i32::try_from(id).ok())
                 .filter(|id| *id > 1),
             armed: true,
+            #[cfg(windows)]
+            antigravity_job: None,
         }
     }
 
     fn kill(&self) {
+        #[cfg(windows)]
+        if let Some(job) = &self.antigravity_job {
+            job.terminate();
+        }
         #[cfg(unix)]
         if self.armed {
             if let Some(id) = self.id {
@@ -857,6 +961,7 @@ struct ProtocolState {
     progress: String,
     succeeded: bool,
     failure: Option<String>,
+    antigravity_initialized: bool,
 }
 
 impl ProtocolState {
@@ -868,6 +973,7 @@ impl ProtocolState {
             progress: String::new(),
             succeeded: false,
             failure: None,
+            antigravity_initialized: false,
         }
     }
 
@@ -904,14 +1010,22 @@ impl ProtocolState {
             return Ok(());
         }
         let event: Value = serde_json::from_str(text)?;
-        let kind = event
-            .get("type")
-            .and_then(Value::as_str)
-            .context("CLI 事件缺少 type")?;
+        let kind = if self.provider == Provider::Antigravity {
+            event
+                .get("event")
+                .and_then(Value::as_str)
+                .context("Antigravity 事件缺少 event")?
+        } else {
+            event
+                .get("type")
+                .and_then(Value::as_str)
+                .context("CLI 事件缺少 type")?
+        };
         match self.provider {
             Provider::Codex => self.codex_event(kind, &event),
             Provider::Claude => self.claude_event(kind, &event),
             Provider::DeepSeek => self.deepseek_event(kind, &event),
+            Provider::Antigravity => self.antigravity_event(kind, &event),
         }
     }
 
@@ -1010,6 +1124,69 @@ impl ProtocolState {
             }
             "final" => self.set_answer(event["text"].as_str().context("DSH 最终事件缺少 text")?)?,
             "error" => self.failure = Some(error_text(event, "DeepSeek Harness 执行失败")),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn antigravity_event(&mut self, kind: &str, event: &Value) -> anyhow::Result<()> {
+        match kind {
+            "init" => {
+                let id = event["conversation_id"]
+                    .as_str()
+                    .context("Antigravity init 缺少 conversation_id")?;
+                self.set_session(Some(id))?;
+                self.antigravity_initialized = true;
+            }
+            "step_update" => {
+                let step = &event["step_update"];
+                let id = step["conversation_id"]
+                    .as_str()
+                    .context("Antigravity step_update 缺少 conversation_id")?;
+                if !self.antigravity_initialized {
+                    bail!("Antigravity 在 init 之前返回了进度");
+                }
+                self.set_session(Some(id))?;
+                // 只展示公开回复；thinking 等其他步骤的文本不能进入进度或最终答案。
+                if step["step_type"] == "agent_response" {
+                    if let Some(delta) = step["text_delta"].as_str() {
+                        self.progress = safe_text(delta, MAX_PROGRESS_CHARS);
+                    }
+                } else {
+                    self.progress = "Antigravity 正在处理任务…".to_owned();
+                }
+            }
+            "result" => {
+                let result = &event["result"];
+                let id = result["conversation_id"]
+                    .as_str()
+                    .context("Antigravity 结果事件缺少 conversation_id")?;
+                if !self.antigravity_initialized {
+                    bail!("Antigravity 在 init 之前返回了结果");
+                }
+                self.set_session(Some(id))?;
+                if result["status"] == "SUCCESS" {
+                    let answer = result["response"]
+                        .as_str()
+                        .filter(|text| !text.trim().is_empty())
+                        .context("Antigravity 成功事件缺少非空 response")?;
+                    self.set_answer(answer)?;
+                    self.succeeded = true;
+                } else {
+                    self.succeeded = false;
+                    self.failure = Some(
+                        result["error"]
+                            .as_str()
+                            .filter(|text| !text.trim().is_empty())
+                            .map(|text| safe_text(text, 1600))
+                            .unwrap_or_else(|| {
+                                "Antigravity 未返回 SUCCESS 结果，请检查原生登录、权限和模型配置"
+                                    .to_owned()
+                            }),
+                    );
+                }
+            }
+            "error" => self.failure = Some(error_text(event, "Antigravity 执行失败")),
             _ => {}
         }
         Ok(())
@@ -1137,6 +1314,333 @@ mod tests {
         );
         assert!(!dsh.succeeded);
         assert_eq!(dsh.failure.as_deref(), Some("denied"));
+    }
+
+    #[test]
+    fn antigravity_uses_jsonl_input_and_conversation_resume() {
+        let input =
+            String::from_utf8(cli_input(Provider::Antigravity, "引号 \" 和换行\n任务").unwrap())
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(input.trim_end()).unwrap(),
+            serde_json::json!({
+                "event": "user",
+                "message": {"content": "引号 \" 和换行\n任务"}
+            })
+        );
+        let args = cli_args(Provider::Antigravity, "conversation-123", "gemini-test");
+        assert_eq!(
+            args,
+            [
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--conversation",
+                "conversation-123",
+                "--model",
+                "gemini-test"
+            ]
+        );
+    }
+
+    #[test]
+    fn antigravity_requires_root_success_and_response() {
+        let mut state = ProtocolState::new(Provider::Antigravity, String::new());
+        parse(
+            &mut state,
+            serde_json::json!({
+                "event": "init",
+                "conversation_id": "conversation-123",
+                "init": {"permission_mode": "request-review"}
+            }),
+        );
+        parse(
+            &mut state,
+            serde_json::json!({
+                "event": "step_update",
+                "step_update": {"conversation_id": "conversation-123", "step_type": "agent_response", "text_delta": "working"}
+            }),
+        );
+        assert_eq!(state.progress, "working");
+        parse(
+            &mut state,
+            serde_json::json!({
+                "event": "result",
+                "result": {
+                    "conversation_id": "conversation-123",
+                    "status": "SUCCESS",
+                    "response": "finished"
+                }
+            }),
+        );
+        assert!(state.succeeded);
+        assert_eq!(state.session_id, "conversation-123");
+        assert_eq!(state.answer, "finished");
+
+        let mut failed = ProtocolState::new(Provider::Antigravity, String::new());
+        parse(
+            &mut failed,
+            json!({"event":"init","conversation_id":"conversation-123"}),
+        );
+        parse(
+            &mut failed,
+            serde_json::json!({
+                "event": "result",
+                "result": {
+                    "conversation_id": "conversation-123",
+                    "status": "ERROR",
+                    "response": "denied"
+                }
+            }),
+        );
+        assert!(!failed.succeeded);
+        assert!(failed.failure.is_some());
+    }
+
+    #[test]
+    fn antigravity_cannot_replace_or_omit_the_root_conversation() {
+        let mut state = ProtocolState::new(Provider::Antigravity, "conversation-123".to_owned());
+        assert!(
+            state
+                .parse_line(
+                    serde_json::to_string(&serde_json::json!({
+                        "event": "result",
+                        "result": {
+                            "conversation_id": "other-conversation",
+                            "status": "SUCCESS",
+                            "response": "wrong"
+                        }
+                    }))
+                    .unwrap()
+                    .as_bytes()
+                )
+                .is_err()
+        );
+        let mut missing = ProtocolState::new(Provider::Antigravity, String::new());
+        assert!(
+            missing
+                .parse_line(
+                    serde_json::to_string(&serde_json::json!({
+                        "event": "result",
+                        "result": {"status": "SUCCESS", "response": "missing id"}
+                    }))
+                    .unwrap()
+                    .as_bytes()
+                )
+                .is_err()
+        );
+    }
+
+    fn antigravity_fixture(mode: &str) -> (tempfile::TempDir, Store, TaskRecord, Command) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().join("fixture.sqlite3"));
+        let mut config = super::super::CollaborationConfig::default();
+        config.enabled = true;
+        let agent = config
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "antigravity")
+            .unwrap();
+        agent.enabled = true;
+        agent.executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        store.save_config(config).unwrap();
+        let task = store
+            .submit(super::super::TaskRequest {
+                agent_id: "antigravity".to_owned(),
+                prompt: "literal $(do-not-run) `no-command` \" '\n中文任务".to_owned(),
+                cwd: directory.path().to_string_lossy().into_owned(),
+                continue_task_id: None,
+            })
+            .unwrap();
+        assert!(store.claim(&task.id).unwrap());
+        let script = directory.path().join("fake-cli.cjs");
+        std::fs::write(
+            &script,
+            include_str!("../../tests/fixtures/antigravity-cli.cjs"),
+        )
+        .unwrap();
+        let mut command = Command::new("node");
+        command.arg(&script);
+        configure_cli(
+            &mut command,
+            Provider::Antigravity,
+            "fixture-root",
+            "fixture/model with spaces",
+            None,
+        );
+        command
+            .current_dir(directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .env("FIXTURE_MODE", mode)
+            .env("FIXTURE_CWD", directory.path())
+            .env("FIXTURE_PROMPT", &task.prompt)
+            .env("FIXTURE_INPUT", directory.path().join("input.jsonl"))
+            .env("FIXTURE_SURVIVOR", directory.path().join("survived.txt"));
+        #[cfg(windows)]
+        command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
+        #[cfg(unix)]
+        command.process_group(0);
+        (directory, store, task, command)
+    }
+
+    #[tokio::test]
+    async fn antigravity_fake_cli_covers_encoded_input_and_terminal_failures() {
+        for mode in [
+            "success",
+            "nonzero",
+            "denied",
+            "wrong-root",
+            "missing-root",
+            "no-result",
+            "missing-response",
+            "empty-response",
+            "invalid-json",
+            "oversized",
+        ] {
+            let (directory, store, task, mut command) = antigravity_fixture(mode);
+            let outcome = supervise(
+                &store,
+                &task,
+                Provider::Antigravity,
+                command.spawn().unwrap(),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                outcome.status,
+                if mode == "success" {
+                    "completed"
+                } else {
+                    "failed"
+                },
+                "{mode}"
+            );
+            let input = std::fs::read_to_string(directory.path().join("input.jsonl")).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&input).unwrap()["message"]["content"],
+                task.prompt
+            );
+            if mode == "success" {
+                assert_eq!(outcome.answer, "完成 ✓");
+                assert_eq!(outcome.session_id, "fixture-root");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn antigravity_cancellation_and_timeout_stop_owned_descendants() {
+        for cancel in [false, true] {
+            let (directory, store, task, mut command) = antigravity_fixture("wait");
+            let cancel_store = store.clone();
+            let id = task.id.clone();
+            let cancel_job = tokio::spawn(async move {
+                if cancel {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    cancel_store.cancel(&id).unwrap();
+                }
+            });
+            let limit = if cancel {
+                Duration::from_secs(4)
+            } else {
+                Duration::from_millis(650)
+            };
+            let outcome = supervise(
+                &store,
+                &task,
+                Provider::Antigravity,
+                command.spawn().unwrap(),
+                limit,
+            )
+            .await
+            .unwrap();
+            cancel_job.await.unwrap();
+            assert_eq!(outcome.status, "interrupted");
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            assert!(
+                !directory.path().join("survived.txt").exists(),
+                "owned child survived cancellation/timeout"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an installed, signed-in agy CLI and consumes native account quota"]
+    async fn antigravity_live_adapter_round_trip_and_continuation() {
+        let executable = std::env::var("CODEX_PLUS_ANTIGRAVITY_LIVE_EXE")
+            .expect("set CODEX_PLUS_ANTIGRAVITY_LIVE_EXE to the official agy executable");
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().join("live.sqlite3"));
+        let mut config = super::super::CollaborationConfig::default();
+        config.enabled = true;
+        config.max_runtime_minutes = 1;
+        let agent = config
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == "antigravity")
+            .unwrap();
+        agent.enabled = true;
+        agent.executable = executable;
+        store.save_config(config).unwrap();
+        let marker = format!("AGY-ADAPTER-{}", uuid::Uuid::new_v4());
+        let request = super::super::TaskRequest {
+            agent_id: "antigravity".to_owned(),
+            prompt: format!(
+                "Do not use tools or access files. Remember this marker and reply with exactly it: {marker}"
+            ),
+            cwd: directory.path().to_string_lossy().into_owned(),
+            continue_task_id: None,
+        };
+        let task = store.submit(request).unwrap();
+        assert!(store.claim(&task.id).unwrap());
+        let result = run_task(&store, &task.id).await.unwrap();
+        assert_eq!(result.status, "completed", "{}", result.error);
+        assert_eq!(result.answer.trim(), marker);
+        store
+            .finish(
+                &task.id,
+                result.status,
+                &result.answer,
+                &result.error,
+                &result.session_id,
+            )
+            .unwrap();
+        let follow_up = store.submit(super::super::TaskRequest {
+            agent_id: "antigravity".to_owned(),
+            prompt: "Recall the exact marker from the previous turn. Reply with only that marker. Do not use tools or access files.".to_owned(),
+            cwd: directory.path().to_string_lossy().into_owned(),
+            continue_task_id: Some(task.id),
+        }).unwrap();
+        assert!(store.claim(&follow_up.id).unwrap());
+        let resumed = run_task(&store, &follow_up.id).await.unwrap();
+        assert_eq!(resumed.status, "completed", "{}", resumed.error);
+        assert_eq!(resumed.answer.trim(), marker);
+        assert_eq!(resumed.session_id, result.session_id);
+    }
+
+    #[test]
+    fn antigravity_help_and_private_progress_are_checked() {
+        assert!(!antigravity_help_compatible("Antigravity IDE --help"));
+        assert!(antigravity_help_compatible(
+            "--input-format stream-json --output-format --conversation"
+        ));
+        let mut state = ProtocolState::new(Provider::Antigravity, String::new());
+        parse(&mut state, json!({"event":"init","conversation_id":"root"}));
+        parse(
+            &mut state,
+            json!({"event":"step_update","step_update":{
+                "conversation_id":"root","step_type":"thinking","text_delta":"PRIVATE-THOUGHT"
+            }}),
+        );
+        assert!(!state.progress.contains("PRIVATE-THOUGHT"));
+        assert!(state.answer.is_empty());
     }
 
     #[test]

@@ -88,7 +88,53 @@ fn legacy_configuration_gets_a_default_without_enabling_workers_or_changing_mode
     let mut invalid = config.clone();
     invalid.agents[1].model = "missing-provider".to_string();
     assert!(store.save_config(invalid).is_err());
-    assert_eq!(store.config().unwrap(), config);
+    let saved = store.config().unwrap();
+    assert_eq!(&saved.agents[..3], &config.agents);
+    assert_eq!(saved.default_agent_id, config.default_agent_id);
+    let antigravity = saved
+        .agents
+        .iter()
+        .find(|agent| agent.id == "antigravity")
+        .unwrap();
+    assert!(!antigravity.enabled);
+    assert!(antigravity.model.is_empty());
+}
+
+#[test]
+fn old_database_exposes_antigravity_disabled_without_losing_existing_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = store(&temp);
+    let mut config = CollaborationConfig::default();
+    config.enabled = true;
+    config.agents.retain(|agent| agent.id != "antigravity");
+    config.agents[1].model = "deepseek-account/custom-model".to_owned();
+    config.agents[1].reuse_saved_auth = true;
+    let payload = json!({"config": config, "tasks": []});
+    let connection = rusqlite::Connection::open(store.path()).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE collaboration_state (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO collaboration_state(id,payload) VALUES (1,?1)",
+            [payload.to_string()],
+        )
+        .unwrap();
+    drop(connection);
+    let migrated = store.config().unwrap();
+    assert_eq!(migrated.agents.len(), 4);
+    assert_eq!(&migrated.agents[..3], &config.agents);
+    assert!(migrated.enabled);
+    assert!(!migrated.agents[3].enabled);
+    assert_eq!(migrated.agents[3].id, "antigravity");
+    assert!(
+        store.snapshot().unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -431,6 +477,7 @@ fn mcp_protocol_keeps_errors_per_request_and_never_exposes_configuration_mutatio
             "delegate_to_deepseek",
             "delegate_to_claude_code",
             "delegate_to_codex",
+            "delegate_to_antigravity",
             "delegate_task",
             "send_task",
             "wait_task",
@@ -462,9 +509,15 @@ fn sub_agent_runtime_limit_defaults_to_ten_minutes_and_is_configurable() {
         "agents": serde_json::to_value(CollaborationConfig::default().agents).unwrap()
     }))
     .unwrap();
-    assert_eq!(legacy.max_runtime_minutes, 10, "旧配置缺省字段时保持原来的 10 分钟");
+    assert_eq!(
+        legacy.max_runtime_minutes, 10,
+        "旧配置缺省字段时保持原来的 10 分钟"
+    );
     assert!(
-        serde_json::to_value(&legacy).unwrap().get("maxRuntimeMinutes").is_none(),
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("maxRuntimeMinutes")
+            .is_none(),
         "默认值不写出，回退到 deny_unknown_fields 的旧版本仍能读取"
     );
 
@@ -484,5 +537,9 @@ fn sub_agent_runtime_limit_defaults_to_ten_minutes_and_is_configurable() {
         bad.max_runtime_minutes = invalid;
         assert!(store.save_config(bad).is_err(), "{invalid} 分钟应被拒绝");
     }
-    assert_eq!(store.config().unwrap().max_runtime_minutes, 45, "拒绝时不改已保存的值");
+    assert_eq!(
+        store.config().unwrap().max_runtime_minutes,
+        45,
+        "拒绝时不改已保存的值"
+    );
 }
