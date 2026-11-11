@@ -50,6 +50,7 @@ import {
   formatMoney,
   formatTokens,
   modelDisplay,
+  providerEnabled,
   groupDisplayName,
   prettyModelName,
   quotaWindowLabel,
@@ -900,12 +901,20 @@ function PanelAgentRow({
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
   const inactive = disabledGroup(payload, draft.model, binding?.defaultModelSelection);
-  const effectiveModel = agent.enabled && inactive ? agent.defaultModel : draft.model;
+  const selection = binding?.defaultModelSelection;
+  const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
+  const selectionProvider = selection && payload?.pool.find((entry) => entry.id === selection.providerId);
+  const unavailable = original.issue === "unavailable"
+    && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
+  const effectiveModel = agent.enabled && (inactive || unavailable) ? agent.defaultModel : draft.model;
+  const effectiveSelection = unavailable ? null : selection;
   const display = inactive && agent.enabled && !effectiveModel
     ? { title: "", sub: "", group: false }
-    : modelDisplay(payload, effectiveModel, draft.poolExclude, binding?.defaultModelSelection);
+    : modelDisplay(payload, effectiveModel, draft.poolExclude, effectiveSelection);
   const inactiveHint = inactive && agent.enabled
     ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    : unavailable && agent.enabled
+      ? tf("原供应商「{0}」不可用，当前使用 {1}", [original.sub, display.title || t("未设置")])
     : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);
@@ -954,7 +963,7 @@ function PanelAgentRow({
           payload={payload}
           pinProvider
           selectedModel={agent.enabled ? effectiveModel || agentModels(payload, draft.poolExclude)[0] || "" : ""}
-          selectedModelSelection={binding?.defaultModelSelection}
+          selectedModelSelection={effectiveSelection}
         />
       </Floating>
       {disconnectTarget ? (

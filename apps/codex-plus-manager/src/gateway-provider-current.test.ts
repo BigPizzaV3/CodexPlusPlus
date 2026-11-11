@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
-import { agentModels, blankBinding, disabledGroup, draftFromBinding, isFavoriteModel, modelDisplay, ownPickerSection, pickerSections, qualifiedProvider, servingProviders, type GatewayPayload, type OwnModels } from "./gateway-model.ts";
+import { agentModels, blankBinding, disabledGroup, draftFromBinding, isFavoriteModel, modelDisplay, ownPickerSection, pickerSections, providerEnabled, qualifiedProvider, servingProviders, type GatewayPayload, type OwnModels } from "./gateway-model.ts";
 import { modelSlugFromRowName } from "./model-metadata.ts";
 
 const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -151,7 +151,7 @@ test("同名停用组不遮住所选供应商模型的冲突提示", () => {
       exports,
       require: () => ({ jsx, jsxs: jsx, Fragment: "Fragment" }),
       useState: (initial: unknown) => [initial, () => {}], useRef: (initial: unknown) => ({ current: initial }),
-      disabledGroup, modelDisplay, agentModels, draftFromBinding,
+      disabledGroup, modelDisplay, agentModels, draftFromBinding, providerEnabled,
       ownCurrent: () => null, visibleOwnModels: () => null,
       t: (value: string) => value, tf: (value: string) => value,
       AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown",
@@ -165,6 +165,54 @@ test("同名停用组不遮住所选供应商模型的冲突提示", () => {
     assert.equal(picker?.props.title, undefined, `${name} 不应声称回退到其他模型`);
     assert.equal(elements(picker).find((element) => element.type === "ModelViewGlyph")?.props.view.issue, "conflict", name);
     assert.equal(elements(tree).find((element) => element.type === "ModelList")?.props.selectedModel, "GROUP/daily", name);
+  }
+});
+
+test("停用的默认供应商显示实际回退模型，恢复后显示原选择", () => {
+  const selection = { providerId: "a", upstreamModel: "example-model", providerSource: "" };
+  const binding = { ...blankBinding(), enabled: true, model: "a/example-model", defaultModelSelection: selection };
+  const data: GatewayPayload = {
+    ...payload,
+    gateway: { ...payload.gateway, bindings: { codex: binding } },
+    pool: [
+      { ...payload.pool[0], enabled: false },
+      { ...payload.pool[1], models: ["fallback-model"] },
+    ],
+  };
+  const agent = { agent: "codex", name: "Codex", enabled: true, defaultModel: "fallback-model" };
+  for (const [path, name] of [["GatewayAgents.tsx", "ModelPicker"], ["TrayPanel.tsx", "PanelAgentRow"]]) {
+    const content = readFileSync(new URL(`./${path}`, import.meta.url), "utf8");
+    const parsed = ts.createSourceFile(path, content, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+    const target = parsed.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    assert.ok(target);
+    const compiled = ts.transpileModule(`export ${target.getText(parsed)}`, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    }).outputText;
+    const exports: Record<string, any> = {};
+    const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+    vm.runInNewContext(compiled, {
+      exports,
+      require: () => ({ jsx, jsxs: jsx, Fragment: "Fragment" }),
+      useState: (initial: unknown) => [initial, () => {}], useRef: (initial: unknown) => ({ current: initial }),
+      disabledGroup, modelDisplay, agentModels, draftFromBinding, providerEnabled,
+      ownCurrent: () => null, visibleOwnModels: () => null,
+      t: (value: string) => value, tf: (value: string, values: string[]) => value.replace("{0}", values[0]).replace("{1}", values[1]),
+      AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown",
+      Check: "Check", AlertTriangle: "AlertTriangle", Floating: "Floating", ModelList: "ModelList",
+      AgentDisconnectDialog: "AgentDisconnectDialog",
+    });
+    const render = (current: GatewayPayload, defaultModel: string) => name === "ModelPicker"
+      ? exports.ModelPicker({ agent: { ...agent, defaultModel }, payload: current, draft: draftFromBinding(binding), connected: true, open: false })
+      : exports.PanelAgentRow({ agent: { ...agent, defaultModel }, payload: current, onRun: () => {} });
+    const fallback = render(data, "fallback-model");
+    const picker = elements(fallback).find((element) => element.props?.className?.includes("gw-picker-button"));
+    assert.match(picker?.props.title, /原供应商「a」不可用，当前使用 Fallback-Model/);
+    assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModel, "fallback-model");
+    assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModelSelection, null);
+    const restored = { ...data, pool: data.pool.map((entry) => entry.id === "a" ? { ...entry, enabled: true } : entry) };
+    const active = render(restored, "a/example-model");
+    assert.equal(elements(active).find((element) => element.props?.className?.includes("gw-picker-button"))?.props.title, undefined);
+    assert.equal(elements(active).find((element) => element.type === "ModelList")?.props.selectedModel, "a/example-model");
   }
 });
 

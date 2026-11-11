@@ -1192,12 +1192,19 @@ function ModelPicker({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const selection = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.defaultModelSelection;
   const inactive = disabledGroup(payload, draft.model, selection);
-  const effectiveModel = connected && inactive ? agent.defaultModel : draft.model;
+  const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
+  const selectionProvider = selection && payload?.pool.find((entry) => entry.id === selection.providerId);
+  const unavailable = original.issue === "unavailable"
+    && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
+  const effectiveModel = connected && (inactive || unavailable) ? agent.defaultModel : draft.model;
+  const effectiveSelection = unavailable ? null : selection;
   const display = inactive && connected && !effectiveModel
     ? { title: "", sub: "", group: false }
-    : modelDisplay(payload, effectiveModel, draft.poolExclude, selection);
+    : modelDisplay(payload, effectiveModel, draft.poolExclude, effectiveSelection);
   const inactiveHint = inactive && connected
     ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    : unavailable && connected
+      ? tf("原供应商「{0}」不可用，当前使用 {1}", [original.sub, display.title || t("未设置")])
     : undefined;
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);
@@ -1242,7 +1249,7 @@ function ModelPicker({
           payload={payload}
           pinProvider
           selectedModel={selectedModel}
-          selectedModelSelection={selection}
+          selectedModelSelection={effectiveSelection}
         />
       </Floating>
     </div>

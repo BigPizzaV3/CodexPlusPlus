@@ -895,6 +895,7 @@ export const EN_PLAIN: Record<string, string> = {
   "重置历史模型选择": "Reset model selection history",
   "重置 {0} 的历史模型选择": "Reset model selection history for {0}",
   "重置后，历史会话可能按当前路由规则选择供应商。有效的当前默认模型供应商身份会保留；已删除供应商的失效选择会清除。是否继续？": "After resetting, existing conversations may select a provider according to the current routing rules. The current default model's provider identity is kept when valid; invalid selections for deleted providers are cleared. Continue?",
+  "原供应商「{0}」不可用，当前使用 {1}": "The original provider \"{0}\" is unavailable; currently using {1}",
   "非 claude-* 模型名时 Claude Code 默认不发 effort，打开后照常发送。": "Claude Code omits effort for non-claude-* model names by default; enable this to always send it.",
   "额度耗尽": "Quota exhausted",
   "让 Claude Code、Grok 经 Codex++ 本地网关使用统一的供应商池，支持多 Key 轮换与路由组": "Let Claude Code and Grok use a shared provider pool through the Codex++ local gateway, with multi-key rotation and route groups",
