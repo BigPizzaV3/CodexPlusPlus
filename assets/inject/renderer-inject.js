@@ -11803,6 +11803,10 @@
         changed = true;
         return next;
       });
+      // 请求包装没装上时（新版 Codex 的 model/list 可能不经 sendRequest），原生查询
+      // 拿到的是 app-server 启动时的旧目录（#3038）：在副本上按当前目录补齐 / 剔除，
+      // 与包装路径的结果一致。patchModelArray 只替换元素、不改原生对象，重复执行不再变化。
+      if (patchModelArray(models, true, "local")) changed = true;
       // 原生悬停和输入框都订阅此缓存；发布新对象，并保留网络请求的更新时间。
       if (changed) client.setQueryData(query.queryKey, { ...response, data: models }, { updatedAt: query.state.dataUpdatedAt });
     }
