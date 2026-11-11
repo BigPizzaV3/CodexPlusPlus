@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,9 @@ pub struct ApplyContext {
 
 /// Codex 直连模式供应商列表里托管的网关供应商 id。
 pub const CODEX_GATEWAY_RELAY_ID: &str = "codex-plus-gateway";
+
+// Agent 配置与 gateway.json 需要作为一组顺序更新；gateway.json 自身的锁不能跨配置写入持有。
+static AGENT_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 /// Codex 当前在用网关托管的供应商：本地代理收到的 Codex 请求只是转给网关的一跳。
 pub fn codex_hops_through_gateway() -> bool {
@@ -560,11 +564,15 @@ fn codex_model_metadata(
             route::codex_model_route(gateway, binding, &relays, &model)
         else {
             // 未知声明使用默认模型的候选能力，但不推断供应商归属。
-            let members = route::codex_model_members(
-                gateway,
-                binding,
-                &binding_default_model(gateway, binding),
-            );
+            let members = if binding.selection_for(&model).is_some() {
+                Vec::new()
+            } else {
+                route::codex_model_members(
+                    gateway,
+                    binding,
+                    &binding_default_model(gateway, binding),
+                )
+            };
             let member_entries: Vec<Value> = members
                 .iter()
                 .filter_map(|(member, _)| {
@@ -1496,8 +1504,8 @@ pub(crate) fn preview_codex_disconnect_apply(
 ///
 /// 实时配置被别的工具改过、与直连模式的记录对不上（直连模式里切换会弹「实时配置冲突」）时，
 /// 不往上一个供应商回填，先把实时文件原样存下来再切；断开时原样写回。
-fn write_codex(
-    ctx: &ApplyContext,
+fn validate_codex_model(
+    settings: &BackendSettings,
     gateway: &GatewaySettings,
     binding: &AgentBinding,
 ) -> anyhow::Result<()> {
@@ -1506,10 +1514,19 @@ fn write_codex(
     {
         bail!("默认模型无法写入 Codex 配置：模型 ID 过长或包含不支持的内容");
     }
-    let mut settings = ctx.settings.load()?;
     if !settings.relay_profiles_enabled {
         bail!("Codex 的供应商配置总开关已关闭，无法接入网关：请在 Codex++ 的「供应商列表」里打开「配置切换」");
     }
+    Ok(())
+}
+
+fn write_codex(
+    ctx: &ApplyContext,
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+) -> anyhow::Result<()> {
+    let mut settings = ctx.settings.load()?;
+    validate_codex_model(&settings, gateway, binding)?;
     // Codex 在 WSL 里运行：网关额外监听 WSL 网卡，地址写成它（#2773）；拿不到时保持回环。
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();
     // Codex 自己没登录、池里有网关登录的 ChatGPT 账号：借给 Codex，让它以官方身份接入。
@@ -1608,10 +1625,22 @@ fn write_codex(
 pub fn enable_binding(
     ctx: &ApplyContext,
     agent: &ToolId,
+    binding: AgentBinding,
+) -> anyhow::Result<GatewaySettings> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    enable_binding_locked(ctx, agent, binding)
+}
+
+fn enable_binding_locked(
+    ctx: &ApplyContext,
+    agent: &ToolId,
     mut binding: AgentBinding,
 ) -> anyhow::Result<GatewaySettings> {
     let gateway = ctx.gateway.load()?;
     ensure_routable(&gateway, &binding)?;
+    if *agent == ToolId::Codex {
+        validate_codex_model(&ctx.settings.load()?, &gateway, &binding)?;
+    }
     let previous = gateway.binding(agent).cloned();
     binding.token = previous
         .as_ref()
@@ -1627,6 +1656,34 @@ pub fn enable_binding(
                 .or_insert_with(|| value.clone());
         }
     }
+    // 选择记录由后端维护，不接受界面传回的历史覆盖。
+    binding.model_selections = previous
+        .as_ref()
+        .map(|previous| previous.model_selections.clone())
+        .unwrap_or_default();
+    if let Some(selection) = &mut binding.default_model_selection {
+        selection.upstream_model = selection.upstream_model_name();
+    }
+    if let Some(previous) = &previous
+        && let Some(selection) = &previous.default_model_selection
+        && selection.model_name().eq_ignore_ascii_case(
+            &crate::model_suffix::parse_model_suffix(previous.model.trim()).0,
+        )
+    {
+        record_model_selection(&mut binding, selection)?;
+    }
+    if let Some(selection) = binding.default_model_selection.clone()
+        && selection.model_name().eq_ignore_ascii_case(
+            &crate::model_suffix::parse_model_suffix(binding.model.trim()).0,
+        )
+    {
+        record_model_selection(&mut binding, &selection)?;
+    }
+    route::check_selected_default(
+        &gateway.clone().with_extension_providers(),
+        &binding,
+        &binding_default_model(&gateway, &binding),
+    )?;
     binding.restore = match previous.filter(|previous| previous.enabled) {
         Some(previous) => previous.restore,
         None => {
@@ -1646,6 +1703,20 @@ pub fn enable_binding(
     binding.enabled = true;
     binding.restore.applied_port = Some(ctx.port);
     binding.restore.restored_endpoint = None;
+    let previous = gateway.binding(agent).cloned();
+    let (_, staged) = ctx.gateway.update(|latest| {
+        if latest.binding(agent) != previous.as_ref() {
+            bail!("Agent 接入设置已变化，请重新保存");
+        }
+        let mut staged = previous.clone().unwrap_or_default();
+        staged.model_selections = binding.model_selections.clone();
+        if !staged.model_selections.is_empty() {
+            latest.bindings.insert(agent.as_str().to_string(), staged.clone());
+            Ok(Some(staged))
+        } else {
+            Ok(previous.clone())
+        }
+    })?;
     if let Some(snapshot) = write_agent_config(ctx, agent, &binding)?
         && binding.restore.claude_previous_provider_id.is_empty()
     {
@@ -1653,10 +1724,58 @@ pub fn enable_binding(
     }
     // 写配置时可能改过 gateway.json（借出账号等），以最新的为准再写绑定（带锁，不盖掉同时刷新的 token）。
     let (gateway, ()) = ctx.gateway.update(|gateway| {
+        if gateway.binding(agent) != staged.as_ref() {
+            bail!("Agent 接入设置已变化，请重新保存");
+        }
         gateway.bindings.insert(agent.as_str().to_string(), binding);
         Ok(())
     })?;
     Ok(gateway)
+}
+
+/// 令牌轮换与配置重写必须串行，避免覆盖正在保存的绑定。
+pub fn rotate_binding_token(ctx: &ApplyContext, agent: &ToolId) -> anyhow::Result<GatewaySettings> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let (gateway, binding) = ctx.gateway.update(|gateway| {
+        let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
+            bail!("还没有配置网关绑定");
+        };
+        binding.token = new_client_token(agent);
+        Ok(binding.clone())
+    })?;
+    if binding.enabled {
+        enable_binding_locked(ctx, agent, binding)
+    } else {
+        Ok(gateway)
+    }
+}
+
+fn record_model_selection(
+    binding: &mut AgentBinding,
+    selection: &crate::gateway::store::DefaultModelSelection,
+) -> anyhow::Result<()> {
+    let mut selection = selection.clone();
+    selection.upstream_model = selection.upstream_model_name();
+    if let Some(existing) = binding
+        .model_selections
+        .iter()
+        .find(|existing| existing.model_name().eq_ignore_ascii_case(&selection.model_name()))
+    {
+        let mut existing = existing.clone();
+        existing.upstream_model = existing.upstream_model_name();
+        if existing != selection {
+            if existing.provider_removed && !selection.provider_removed {
+                bail!(
+                    "模型 {} 对应的原供应商已删除，请删除重建的同名供应商，再重新添加并选择",
+                    selection.model_name()
+                );
+            }
+            bail!("模型 {} 的原供应商身份已失效，请重新选择供应商", selection.model_name());
+        }
+    } else {
+        binding.model_selections.push(selection);
+    }
+    Ok(())
 }
 
 /// 关闭一个 Agent 的网关绑定，把它的配置恢复成直连。绑定本身（目标、模型）保留，方便再次开启。
@@ -1665,6 +1784,7 @@ pub fn disable_binding(
     settings: &BackendSettings,
     agent: &ToolId,
 ) -> anyhow::Result<GatewaySettings> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let gateway = match ctx.gateway.load() {
         Ok(gateway) => gateway,
         // gateway.json 读不出来（例如损坏），但 Agent 还指向网关：照样还原，不碰 gateway.json。
@@ -2109,6 +2229,7 @@ pub fn note_claude_switched(store: &GatewayStore, target_id: &str) -> anyhow::Re
     if target_id == GATEWAY_PROVIDER_ID {
         return Ok(());
     }
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     store.update(|gateway| {
         if let Some(binding) = gateway.bindings.get_mut(ToolId::Claude.as_str())
             && binding.enabled
@@ -2123,6 +2244,7 @@ pub fn note_claude_switched(store: &GatewayStore, target_id: &str) -> anyhow::Re
 
 /// 用户在 Grok 页直接应用了别的供应商：网关绑定随之失效。
 pub fn note_grok_switched(store: &GatewayStore) -> anyhow::Result<()> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     store.update(|gateway| {
         if let Some(binding) = gateway.bindings.get_mut(ToolId::Grok.as_str())
             && binding.enabled
@@ -2142,6 +2264,7 @@ pub fn note_codex_switched(
     target_id: &str,
     previous_id: &str,
 ) -> anyhow::Result<()> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     store.update(|gateway| {
         let Some(binding) = gateway.bindings.get_mut(ToolId::Codex.as_str()) else {
             return Ok(());
@@ -2183,6 +2306,7 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
 /// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
 /// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let gateway = ctx.gateway.load()?;
     let Some(binding) = gateway
         .binding(&ToolId::Codex)
@@ -2204,7 +2328,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     }
     // 在 WSL 里运行时不用官方身份，只核对写进去的网关地址（#2773）。
     if crate::wsl_network::codex_runs_in_wsl(&ctx.codex_home) {
-        return sync_codex_wsl_endpoint(ctx);
+        return sync_codex_wsl_endpoint_locked(ctx);
     }
     let keeps_login =
         settings.active_relay_session_provider() == crate::settings::RelaySessionProvider::Openai;
@@ -2241,6 +2365,11 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
 /// 不一致就重写一次，返回是否重写了。只有 WSL 还没启动、暂时拿不到网卡时保持现状；
 /// mirrored 网络、WSL 网卡上绑定失败时 WSL 监听已不在，写过的网卡地址改回回环。
 pub fn sync_codex_wsl_endpoint(ctx: &ApplyContext) -> anyhow::Result<bool> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    sync_codex_wsl_endpoint_locked(ctx)
+}
+
+fn sync_codex_wsl_endpoint_locked(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let gateway = ctx.gateway.load()?;
     let Some(binding) = gateway.active_binding(&ToolId::Codex).cloned() else {
         return Ok(false);
@@ -2287,6 +2416,7 @@ pub fn sync_codex_wsl_endpoint(ctx: &ApplyContext) -> anyhow::Result<bool> {
 /// 网关端口变了（例如 Windows 端口被占后换了新端口）：重写所有开着的 Agent 配置。
 /// 某个 Agent 失败时继续其它的，只记录成功项的端口，最后返回第一个错误。
 pub fn reapply_if_port_changed(ctx: &ApplyContext) -> anyhow::Result<usize> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let gateway = ctx.gateway.load()?;
     let mut changed = 0;
     let mut first_error = None;
@@ -2338,6 +2468,7 @@ pub fn restore_all_for_exit(
     settings: &BackendSettings,
     force: bool,
 ) -> anyhow::Result<()> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let gateway = ctx.gateway.load()?;
     if !force && !gateway.restore_on_exit {
         return Ok(());
@@ -2389,6 +2520,7 @@ pub fn restore_all_for_exit(
 /// 不碰恢复现场；某个 Agent 写失败时继续写其它的，最后返回第一个错误。
 /// 已被别的工具接管的 Agent 不重写（界面提示漂移，由用户决定要不要重新接入）。
 pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let gateway = ctx.gateway.load()?;
     let mut count = 0;
     let mut first_error = None;
@@ -2418,6 +2550,7 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
 /// 某个 Agent 写失败时继续写其它的，最后返回第一个错误；有失败时「已恢复」标记留着，下次启动再试。
 /// 不接回的：还原之后用户又用别的工具改过的（绑定关掉），以及接着网关时被别的工具接管的（界面提示漂移）。
 pub fn reapply_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let gateway = ctx.gateway.load()?;
     let mut count = 0;
     let mut first_error = None;
@@ -2471,6 +2604,7 @@ fn reapply_binding(
     if taken_over(ctx, agent).is_some() {
         return Ok(false);
     }
+    let binding_before = binding;
     let mut binding = binding.clone();
     binding.restore.applied_port = Some(ctx.port);
     binding.restore.restored_endpoint = None;
@@ -2493,6 +2627,9 @@ fn reapply_binding(
         binding.restore.claude_previous_provider_id = snapshot;
     }
     ctx.gateway.update(|latest| {
+        if latest.binding(agent) != Some(binding_before) {
+            bail!("Agent 接入设置已变化，请重新刷新");
+        }
         latest.bindings.insert(agent.as_str().to_string(), binding);
         Ok(())
     })?;
@@ -3034,6 +3171,7 @@ fn add_provider_with(
     skip_agents: Option<&[String]>,
     extra: impl FnOnce(&mut GatewayProvider) -> anyhow::Result<()>,
 ) -> anyhow::Result<(GatewaySettings, String)> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     store.update(|gateway| {
         // 登录得到的账号名里带邮箱，短名用来源（如 `login:chatgpt` → `chatgpt`）更干净。
         let slug_base = source
@@ -3683,6 +3821,7 @@ pub fn set_provider_metadata(
 /// Key 健康、额度、速度（id 会被之后添加的供应商复用，比如重新登录的 `chatgpt`）。
 /// 直连模式的数据不受影响。
 pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<GatewaySettings> {
+    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
     let (gateway, ()) = store.update(|gateway| {
         let before = gateway.providers.len();
         gateway.providers.retain(|provider| provider.relay.id != id);
@@ -3706,9 +3845,14 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
         for binding in gateway.bindings.values_mut() {
             binding.pool_exclude.retain(|excluded| excluded != id);
             binding.extra_models.retain(|model| outlives(model));
+            for selection in &mut binding.model_selections {
+                if selection.provider_id == id {
+                    selection.provider_removed = true;
+                }
+            }
             let selected_removed = binding.default_model_selection.as_mut().is_some_and(|selection| {
-                let selected = format!("{}/{}", selection.provider_id, selection.upstream_model);
-                if selection.provider_id == id && binding.model.trim().eq_ignore_ascii_case(&selected) {
+                let (model, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
+                if selection.provider_id == id && model.eq_ignore_ascii_case(&selection.model_name()) {
                     selection.provider_removed = true;
                     true
                 } else {

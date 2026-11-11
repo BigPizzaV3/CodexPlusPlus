@@ -483,7 +483,7 @@ export function groupModelId(id: string): string {
 
 export function disabledGroup(payload: GatewayPayload | null, model: string, selection?: DefaultModelSelection | null): GatewayGroupEntry | undefined {
   const key = modelSlugFromRowName(model).toLowerCase();
-  if (selection && key === `${selection.providerId}/${selection.upstreamModel}`.toLowerCase()) return undefined;
+  if (selection && key === `${selection.providerId}/${modelSlugFromRowName(selection.upstreamModel)}`.toLowerCase()) return undefined;
   return payload?.groups.find((group) => group.disabled && groupModelId(group.id).toLowerCase() === key);
 }
 
@@ -713,7 +713,7 @@ export function pickerSections(
       avatar: "",
       items: targets.map((entry) => ({
         model: qualified ? typed : `${entry.id}/${typed}`,
-        defaultModelSelection: { providerId: entry.id, upstreamModel: qualified ? qualified.model : typed, providerSource: entry.source ?? "" },
+        defaultModelSelection: { providerId: entry.id, upstreamModel: modelSlugFromRowName(qualified ? qualified.model : typed), providerSource: entry.source ?? "" },
         label: typed,
         sub: maskAccountName(entry.name),
         avatar: avatar(entry.name),
@@ -764,7 +764,7 @@ export function groupDisplayName(payload: GatewayPayload | null, model: string):
 export function modelDisplay(payload: GatewayPayload | null, model: string, exclude: string[] = [], selection?: DefaultModelSelection | null): ModelView {
   const title = model.trim() || agentModels(payload, exclude)[0] || "";
   const selectedModel = modelSlugFromRowName(title);
-  if (selection && selectedModel.toLowerCase() === `${selection.providerId}/${selection.upstreamModel}`.toLowerCase()) {
+  if (selection && selectedModel.toLowerCase() === `${selection.providerId}/${modelSlugFromRowName(selection.upstreamModel)}`.toLowerCase()) {
     const provider = payload?.pool.find((entry) => entry.id === selection.providerId);
     const unavailable = selection.providerRemoved || !provider || !providerEnabled(provider) || exclude.includes(provider.id)
       || (provider.source ?? "") !== selection.providerSource;

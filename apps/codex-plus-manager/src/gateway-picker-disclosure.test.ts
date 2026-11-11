@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
+import { modelSlugFromRowName } from "./model-metadata.ts";
 
 const ts = createRequire(import.meta.url)("typescript");
 
@@ -67,6 +68,7 @@ function picker(
       .filter((group) => group.items.length),
     ownPickerSection: () => null,
     withOwnSection: (sections: unknown) => sections,
+    modelSlugFromRowName,
     avatarOf: () => "",
     loadFavorites: () => [],
     isFavoriteModel: () => false,

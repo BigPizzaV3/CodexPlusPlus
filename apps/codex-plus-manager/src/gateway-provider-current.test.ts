@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
 import { agentModels, blankBinding, disabledGroup, draftFromBinding, isFavoriteModel, modelDisplay, ownPickerSection, pickerSections, qualifiedProvider, servingProviders, type GatewayPayload, type OwnModels } from "./gateway-model.ts";
+import { modelSlugFromRowName } from "./model-metadata.ts";
 
 const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const ts = createRequire(import.meta.url)("typescript");
@@ -49,7 +50,7 @@ test("自带同名模型不遮住按供应商池路由的当前选择", () => {
     useMemo: (fn: () => unknown) => fn(),
     useEffect: () => {},
     useContext: () => ({}), GatewayNavContext: {},
-    pickerSections, ownPickerSection, withOwnSection, isFavoriteModel, modelDisplay, qualifiedProvider, servingProviders,
+    pickerSections, ownPickerSection, withOwnSection, isFavoriteModel, modelDisplay, qualifiedProvider, servingProviders, modelSlugFromRowName,
     avatarOf: (name: string) => name, loadFavorites: () => [], persistFavorites: () => {},
     t: (value: string) => value, tf: (value: string) => value,
     Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
@@ -64,6 +65,66 @@ test("自带同名模型不遮住按供应商池路由的当前选择", () => {
   const selected = elements(current).find((element) => element.props?.role === "option");
   assert.equal(selected?.props["aria-selected"], true);
   assert.equal(elements(selected).find((element) => element.type === "strong")?.props.title, "example-model");
+});
+
+test("默认模型带窗口后缀时仍勾选对应供应商，而非同名供应商", () => {
+  const compiled = ts.transpileModule(component.getText(file), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const exports: Record<string, any> = {};
+  const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+  const hooks: any[] = [];
+  let cursor = 0;
+  vm.runInNewContext(compiled, {
+    exports,
+    require: () => ({ jsx, jsxs: jsx }),
+    useState: (initial: any) => {
+      const index = cursor++;
+      if (!(index in hooks)) hooks[index] = typeof initial === "function" ? initial() : initial;
+      return [hooks[index], (value: any) => { hooks[index] = typeof value === "function" ? value(hooks[index]) : value; }];
+    },
+    useRef: (initial: unknown) => {
+      const index = cursor++;
+      if (!(index in hooks)) hooks[index] = { current: initial };
+      return hooks[index];
+    },
+    useMemo: (fn: () => unknown) => fn(),
+    useEffect: () => {},
+    useContext: () => ({}), GatewayNavContext: {},
+    pickerSections, ownPickerSection, withOwnSection, isFavoriteModel, modelDisplay, qualifiedProvider, servingProviders, modelSlugFromRowName,
+    avatarOf: (name: string) => name, loadFavorites: () => [], persistFavorites: () => {},
+    t: (value: string) => value, tf: (value: string) => value,
+    Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
+    Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check", GROUP_MODEL_PREFIX: "group/",
+  });
+  const render = (model: string, upstreamModel?: string, providerRemoved = false, data = payload, ownModels?: OwnModels) => {
+    cursor = 0;
+    return exports.ModelList({
+      payload: data, exclude: [], selectedModel: model,
+      selectedModelSelection: upstreamModel ? { providerId: "a", upstreamModel, providerSource: "", providerRemoved } : null,
+      own: ownModels, onPickOwn: ownModels ? () => {} : undefined, onPick: () => {}, pinProvider: true,
+    });
+  };
+  for (const key of ["provider:a", "provider:b"]) {
+    const section = elements(render("a/example-model", "example-model")).find((element) => element.props?.["data-section"] === key);
+    const heading = elements(section).find((element) => element.props?.className === "gw-mp-heading-toggle");
+    assert.ok(heading, key);
+    heading.props.onClick();
+  }
+  const selected = (model: string, upstreamModel?: string, providerRemoved = false, data = payload, ownModels?: OwnModels) =>
+    elements(render(model, upstreamModel, providerRemoved, data, ownModels))
+      .filter((element) => element.type === "section")
+      .flatMap((section) => elements(section).filter((element) => element.props?.role === "option" && element.props["aria-selected"])
+        .map(() => section.props["data-section"]));
+
+  assert.deepEqual(selected("a/example-model[1M]", "example-model"), ["provider:a"]);
+  assert.deepEqual(selected("a/example-model", "example-model[1M]"), ["provider:a"]);
+  assert.deepEqual(selected("a/example-model[1M]", "example-model[1M]", true), []);
+  assert.deepEqual(selected("a/example-model[1M]"), ["provider:a"]);
+  const windowed = { ...payload, pool: payload.pool.map((entry) => ({ ...entry, models: ["example-model[1M]"] })) };
+  assert.deepEqual(selected("a/example-model", undefined, false, windowed), ["provider:a"]);
+  const direct = { ...own, current: "example-model[1M]" };
+  assert.deepEqual(selected("a/example-model", "example-model", false, payload, direct), ["provider:a"]);
 });
 
 test("同名停用组不遮住所选供应商模型的冲突提示", () => {

@@ -310,9 +310,16 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
     for model in std::iter::once(default)
         .chain(codex_pool_models(gateway, binding))
         .chain(binding.declared_models())
+        .chain(binding.model_selections.iter().filter_map(|selection| {
+            let model = selection.model_name();
+            selected_provider(gateway, binding, &model)
+                .is_ok_and(|selected| selected.is_some())
+                .then_some(model)
+        }))
     {
         if !model.is_empty()
             && !is_disabled_group_model(gateway, &model)
+            && !unavailable_registered_model(gateway, binding, &model)
             && !models
                 .iter()
                 .any(|known| known.eq_ignore_ascii_case(&model))
@@ -334,7 +341,9 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
     let pinned_default = qualified_in(&relays, &default_model);
     let mut seen: Vec<String> = Vec::new();
     let mut fresh = |entry: &str| {
-        if seen.iter().any(|known| known.eq_ignore_ascii_case(entry)) {
+        if unavailable_registered_model(gateway, binding, entry)
+            || seen.iter().any(|known| known.eq_ignore_ascii_case(entry))
+        {
             false
         } else {
             seen.push(entry.to_string());
@@ -356,7 +365,15 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
                 continue;
             }
             if serving_count(&relays, &model) > 1 {
-                let pinned = format!("{}/{model}", relay.id);
+                let pinned = if unavailable_registered_model(gateway, binding, &model) {
+                    let Some(pinned) = qualified_catalog_model(gateway, binding, relay, &model)
+                    else {
+                        continue;
+                    };
+                    pinned
+                } else {
+                    format!("{}/{model}", relay.id)
+                };
                 if !unlisted.contains(&pinned.to_ascii_lowercase()) && fresh(&pinned) {
                     block.push(pinned);
                 }
@@ -372,12 +389,22 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
                         if provider.id.eq_ignore_ascii_case(&relay.id)
                             && upstream.eq_ignore_ascii_case(&model) =>
                     {
-                        &default_model
+                        default_model.clone()
                     }
-                    _ => &model,
+                    _ if unavailable_registered_model(gateway, binding, &model) => {
+                        let Some(pinned) = qualified_catalog_model(gateway, binding, relay, &model)
+                        else {
+                            continue;
+                        };
+                        if unlisted.contains(&pinned.to_ascii_lowercase()) {
+                            continue;
+                        }
+                        pinned
+                    }
+                    _ => model,
                 };
-                if fresh(entry) {
-                    block.push(entry.to_string());
+                if fresh(&entry) {
+                    block.push(entry);
                 }
             }
         }
@@ -411,7 +438,7 @@ pub fn model_entry_window(
     binding: &AgentBinding,
     model: &str,
 ) -> Option<u64> {
-    expand_model(gateway, binding, model, 0, &mut Vec::new(), false)
+    model_entry_members(gateway, binding, model)
         .into_iter()
         .filter_map(|(relay, upstream)| {
             gateway
@@ -447,7 +474,7 @@ pub fn model_entry_reasoning_levels(
     binding: &AgentBinding,
     model: &str,
 ) -> Vec<String> {
-    let all: Vec<String> = expand_model(gateway, binding, model, 0, &mut Vec::new(), false)
+    let all: Vec<String> = model_entry_members(gateway, binding, model)
         .into_iter()
         .flat_map(|(relay, upstream)| model_reasoning_levels(&relay, &upstream))
         .collect();
@@ -460,7 +487,12 @@ pub fn model_entry_members(
     binding: &AgentBinding,
     model: &str,
 ) -> Vec<(RelayProfile, String)> {
-    expand_model(gateway, binding, model, 0, &mut Vec::new(), false)
+    match selected_provider(gateway, binding, model) {
+        Ok(Some((relay, upstream))) => vec![(relay.clone(), upstream)],
+        Ok(None) => expand_model(gateway, binding, model, 0, &mut Vec::new(), false),
+        // 这项明确选择已不可用；目录和子智能体不能把它当成别家的模型。
+        Err(_) => Vec::new(),
+    }
 }
 
 /// 列表里有几家供应商提供这个模型（按模型名，不分大小写）。
@@ -489,6 +521,12 @@ pub(crate) fn codex_model_route(
     relays: &[&RelayProfile],
     model: &str,
 ) -> Option<(usize, String, usize)> {
+    if binding.selection_for(model).is_some() {
+        let members = model_entry_members(gateway, binding, model);
+        let (relay, upstream) = members.first()?;
+        let index = relays.iter().position(|candidate| candidate.id == relay.id)?;
+        return Some((index, upstream.clone(), serving_count(relays, upstream)));
+    }
     if model.starts_with(GROUP_MODEL_PREFIX) {
         return None;
     }
@@ -526,10 +564,7 @@ pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) 
     if !slug.trim().is_empty() {
         if is_disabled_group_model(gateway, &slug)
             && !binding.default_model_selection.as_ref().is_some_and(|selection| {
-                slug.eq_ignore_ascii_case(&format!(
-                    "{}/{}",
-                    selection.provider_id, selection.upstream_model
-                ))
+                slug.eq_ignore_ascii_case(&selection.model_name())
             })
         {
             return pool_models(gateway, binding)
@@ -567,18 +602,68 @@ pub fn model_is_routable(gateway: &GatewaySettings, binding: &AgentBinding, mode
 pub fn binding_exposed_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<String> {
     let mut models = Vec::new();
     let default = binding_default_model(gateway, binding);
-    if !default.is_empty() {
+    if !default.is_empty() && !unavailable_registered_model(gateway, binding, &default) {
         models.push(default);
     }
-    for model in pool_models(gateway, binding)
-        .into_iter()
-        .chain(binding.declared_models())
-    {
-        if !is_disabled_group_model(gateway, &model) && !models.contains(&model) {
+    let unlisted = unlisted_members(gateway);
+    for model in pool_models(gateway, binding) {
+        if unavailable_registered_model(gateway, binding, &model) {
+            for relay in binding_pool_relays(gateway, binding) {
+                if serves(relay, &model)
+                    && let Some(pinned) = qualified_catalog_model(gateway, binding, relay, &model)
+                    && !unlisted.contains(&pinned.to_ascii_lowercase())
+                    && !models.contains(&pinned)
+                {
+                    models.push(pinned);
+                }
+            }
+        } else if !is_disabled_group_model(gateway, &model) && !models.contains(&model) {
+            models.push(model);
+        }
+    }
+    for model in binding.declared_models() {
+        if !is_disabled_group_model(gateway, &model)
+            && !unavailable_registered_model(gateway, binding, &model)
+            && !models.contains(&model)
+        {
+            models.push(model);
+        }
+    }
+    for selection in &binding.model_selections {
+        let model = selection.model_name();
+        if !is_disabled_group_model(gateway, &model)
+            && !unavailable_registered_model(gateway, binding, &model)
+            && !models.iter().any(|known| known.eq_ignore_ascii_case(&model))
+        {
             models.push(model);
         }
     }
     models
+}
+
+fn unavailable_registered_model(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> bool {
+    binding.selection_for(model).is_some() && selected_provider(gateway, binding, model).is_err()
+}
+
+fn qualified_catalog_model(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    relay: &RelayProfile,
+    model: &str,
+) -> Option<String> {
+    let qualified = format!("{}/{model}", relay.id);
+    match model_entry_members(gateway, binding, &qualified).as_slice() {
+        [(candidate, upstream)]
+            if candidate.id == relay.id && upstream.eq_ignore_ascii_case(model) =>
+        {
+            Some(qualified)
+        }
+        _ => None,
+    }
 }
 
 /// 非 Claude 模型给 Claude Desktop 用的别名前缀。
@@ -638,6 +723,7 @@ fn claude_alias_target(
         })?;
     binding_exposed_models(gateway, binding)
         .into_iter()
+        .chain(binding.model_selections.iter().map(|selection| selection.model_name()))
         .chain(
             binding.declared_models().into_iter()
                 .filter(|model| is_disabled_group_model(gateway, model)),
@@ -741,6 +827,9 @@ fn effective_model_detailed(
         }
     }
     let (requested_slug, _) = crate::model_suffix::parse_model_suffix(requested);
+    if binding.selection_for(&requested_slug).is_some() {
+        return (requested_slug, false);
+    }
     if is_disabled_group_model(gateway, &requested_slug) {
         return (requested_slug, false);
     }
@@ -798,6 +887,9 @@ pub(super) fn has_explicit_model_identity(
     model: &str,
 ) -> bool {
     let (model, _) = crate::model_suffix::parse_model_suffix(model.trim());
+    if binding.selection_for(&model).is_some() {
+        return true;
+    }
     if group_by_model(gateway, &model).is_some() {
         return true;
     }
@@ -826,7 +918,9 @@ pub(super) fn model_identity_kind(
     binding: &AgentBinding,
     model: &str,
 ) -> &'static str {
-    if group_by_model(gateway, model).is_some() {
+    if binding.selection_for(model).is_some() {
+        "provider"
+    } else if group_by_model(gateway, model).is_some() {
         "group"
     } else if qualified_provider(gateway, binding, model).is_some() {
         "provider"
@@ -859,22 +953,16 @@ fn declared_by_any(relays: &[&RelayProfile], model: &str) -> bool {
     relays.iter().any(|relay| serves(relay, model))
 }
 
-/// 新选择的默认模型与原生模型名重叠时，请求字符串不足以区分两者。
-pub(super) fn check_selected_default(
-    gateway: &GatewaySettings,
+/// 已登记的选择不能因供应商变化或完整原生名称冲突而改派。
+fn selected_provider<'a>(
+    gateway: &'a GatewaySettings,
     binding: &AgentBinding,
     model: &str,
-) -> anyhow::Result<()> {
-    let Some(selection) = &binding.default_model_selection else {
-        return Ok(());
+) -> anyhow::Result<Option<(&'a RelayProfile, String)>> {
+    let Some(selection) = binding.selection_for(model) else {
+        return Ok(None);
     };
-    let selected = format!("{}/{}", selection.provider_id, selection.upstream_model);
-    if !model.eq_ignore_ascii_case(&selected)
-        || !binding_default_model(gateway, binding).eq_ignore_ascii_case(&selected)
-    {
-        return Ok(());
-    }
-    gateway
+    let provider = gateway
         .provider(&selection.provider_id)
         .filter(|provider| {
             !selection.provider_removed
@@ -882,7 +970,7 @@ pub(super) fn check_selected_default(
                 && !binding.pool_exclude.contains(&provider.relay.id)
                 && provider.source == selection.provider_source
         })
-        .context("所选默认模型的供应商不可用或来源已变化，请重新选择默认模型")?;
+        .context("所选模型的供应商不可用或来源已变化，请重新选择模型")?;
     let relays = binding_pool_relays(gateway, binding);
     if model
         .get(..GROUP_MODEL_PREFIX.len())
@@ -890,9 +978,17 @@ pub(super) fn check_selected_default(
         || is_pattern(model)
         || declared_by_any(&relays, model)
     {
-        bail!("默认模型 {model} 与其他模型名称冲突，请重新选择默认模型");
+        bail!("所选模型 {model} 与其他模型名称冲突，请重新选择模型");
     }
-    Ok(())
+    Ok(Some((&provider.relay, selection.upstream_model_name())))
+}
+
+pub(super) fn check_selected_default(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> anyhow::Result<()> {
+    selected_provider(gateway, binding, model).map(|_| ())
 }
 
 /// 删除供应商 `id` 后，模型组成员 `member` 是不是还指向别的东西（不该跟着删）：
@@ -1346,8 +1442,8 @@ fn resolve_plan_with(
     let default_model = binding_default_model(gateway, binding);
     let (model, mapped_to_default) =
         effective_model_detailed(gateway, binding, &default_model, requested_model);
-    check_selected_default(gateway, binding, &model)?;
-    if is_disabled_group_model(gateway, &model) {
+    let selected = selected_provider(gateway, binding, &model)?;
+    if selected.is_none() && is_disabled_group_model(gateway, &model) {
         bail!("模型组 {model} 已停用");
     }
     let conversation = conversation
@@ -1355,10 +1451,13 @@ fn resolve_plan_with(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
 
-    let group = group_for(gateway, &model);
+    let group = selected.is_none().then(|| group_for(gateway, &model)).flatten();
     let group_id = group.as_ref().map(|group| group.id.clone());
     let sticky_ttl = group.as_ref().and_then(|group| sticky_ttl(group.sticky));
-    let mut relays = expand_model(gateway, binding, &model, 0, &mut Vec::new(), advance);
+    let mut relays = match selected {
+        Some((relay, upstream)) => vec![(relay.clone(), upstream)],
+        None => expand_model(gateway, binding, &model, 0, &mut Vec::new(), advance),
+    };
     // 依次：排序本身就是优先级，记下本来该先试的成员（会话固定挪动顺序之前）。
     let preferred = group
         .as_ref()
@@ -1376,15 +1475,17 @@ fn resolve_plan_with(
     }
     if relays.is_empty() && group_id.is_none() {
         // 原样转发的未知模型：交给默认模型所在的供应商。
-        check_selected_default(gateway, binding, &default_model)?;
-        relays = expand_model(
-            gateway,
-            binding,
-            &default_model,
-            0,
-            &mut Vec::new(),
-            advance,
-        )
+        relays = match selected_provider(gateway, binding, &default_model)? {
+            Some((relay, upstream)) => vec![(relay.clone(), upstream)],
+            None => expand_model(
+                gateway,
+                binding,
+                &default_model,
+                0,
+                &mut Vec::new(),
+                advance,
+            ),
+        }
         .into_iter()
         .map(|(relay, _)| (relay, model.clone()))
         .collect();
@@ -2767,6 +2868,262 @@ mod tests {
         assert_eq!(
             routed(&gateway, "ds/private-model"),
             vec![pair("router", "ds/private-model")]
+        );
+    }
+
+    #[test]
+    fn registered_selection_keeps_catalog_members_consistent_with_routing() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("kimi-k3");
+        gateway.providers[0].source = "preset:ds".into();
+        gateway.providers[0].context_window = Some(128_000);
+        gateway.providers[0].relay.model_metadata = serde_json::json!({
+            "deepseek-v4-pro": {
+                "display_name": "Selected model",
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+                "default_reasoning_level": "high"
+            }
+        })
+        .to_string();
+        gateway.providers[2].context_window = Some(32_000);
+        gateway.providers[2].relay.model_metadata = serde_json::json!({
+            "deepseek-v4-pro": {
+                "supported_reasoning_levels": [{"effort": "medium"}],
+                "default_reasoning_level": "medium"
+            }
+        })
+        .to_string();
+        let binding = gateway.bindings.get_mut("claude").unwrap();
+        binding.extra_models.push("ds/deepseek-v4-pro".into());
+        binding.model_selections.push(DefaultModelSelection {
+            provider_id: "ds".into(),
+            upstream_model: "deepseek-v4-pro".into(),
+            provider_source: "preset:ds".into(),
+            provider_removed: false,
+        });
+
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let members = model_entry_members(&gateway, binding, "ds/deepseek-v4-pro");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0.id, "ds");
+        assert_eq!(members[0].1, "deepseek-v4-pro");
+        assert_eq!(
+            model_entry_window(&gateway, binding, "ds/deepseek-v4-pro"),
+            Some(128_000)
+        );
+        assert_eq!(
+            model_entry_reasoning_levels(&gateway, binding, "ds/deepseek-v4-pro"),
+            vec!["low", "high"]
+        );
+        let relays = binding_pool_relays(&gateway, binding);
+        assert_eq!(
+            codex_model_route(&gateway, binding, &relays, "ds/deepseek-v4-pro"),
+            Some((0, "deepseek-v4-pro".into(), 2))
+        );
+        let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, binding);
+        let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+        assert_eq!(metadata["ds/deepseek-v4-pro"]["codex_plus_group_id"], "ds");
+        assert_eq!(
+            metadata["ds/deepseek-v4-pro"]["default_reasoning_level"],
+            "high"
+        );
+
+        for change in ["disabled", "excluded", "source", "removed", "conflict"] {
+            let mut changed = gateway.clone();
+            match change {
+                "disabled" => changed.providers[0].enabled = false,
+                "excluded" => changed
+                    .bindings
+                    .get_mut("claude")
+                    .unwrap()
+                    .pool_exclude
+                    .push("ds".into()),
+                "source" => changed.providers[0].source = "extension:replacement".into(),
+                "removed" => {
+                    changed.bindings.get_mut("claude").unwrap().model_selections[0].provider_removed = true
+                }
+                "conflict" => changed.providers.push(provider("native", "ds/deepseek-v4-pro")),
+                _ => unreachable!(),
+            }
+            let binding = changed.binding(&ToolId::Claude).unwrap();
+            let relays = binding_pool_relays(&changed, binding);
+            assert!(
+                resolve_plan(&changed, &ToolId::Claude, "ds/deepseek-v4-pro", None).is_err(),
+                "{change}"
+            );
+            assert!(
+                model_entry_members(&changed, binding, "ds/deepseek-v4-pro").is_empty(),
+                "{change}"
+            );
+            assert_eq!(
+                model_entry_window(&changed, binding, "ds/deepseek-v4-pro"),
+                None,
+                "{change}"
+            );
+            assert!(
+                model_entry_reasoning_levels(&changed, binding, "ds/deepseek-v4-pro").is_empty(),
+                "{change}"
+            );
+            assert_eq!(
+                codex_model_route(&changed, binding, &relays, "ds/deepseek-v4-pro"),
+                None,
+                "{change}"
+            );
+            let catalog = crate::gateway::apply::codex_gateway_model_catalog(&changed, binding);
+            let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+            assert!(metadata["ds/deepseek-v4-pro"].is_null(), "{change}");
+        }
+
+        let legacy = model_entry_members(&gateway, binding, "old/deepseek-v4-pro");
+        assert_eq!(legacy.len(), 2, "未登记的旧限定名继续按原规则回退");
+    }
+
+    #[test]
+    fn codex_catalog_retains_only_available_historical_selections() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("kimi-k3");
+        gateway.providers[0].source = "preset:ds".into();
+        gateway.providers[2].enabled = false;
+        gateway.bindings.get_mut("claude").unwrap().model_selections.push(
+            DefaultModelSelection {
+                provider_id: "ds".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                provider_source: "preset:ds".into(),
+                provider_removed: false,
+            },
+        );
+        let selected = "ds/deepseek-v4-pro";
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(!codex_pool_models(&gateway, binding).iter().any(|model| model == selected));
+        assert!(codex_binding_models(&gateway, binding).iter().any(|model| model == selected));
+        let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, binding);
+        assert!(catalog.model_list.lines().any(|model| {
+            crate::model_suffix::parse_model_suffix(model).0 == selected
+        }));
+        let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+        assert_eq!(metadata[selected]["codex_plus_group_id"], "ds");
+
+        gateway.providers[0].enabled = false;
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(!codex_binding_models(&gateway, binding).iter().any(|model| model == selected));
+
+        gateway.providers[0].enabled = true;
+        gateway.providers.push(provider("native", selected));
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let relays = binding_pool_relays(&gateway, binding);
+        assert_eq!(codex_model_route(&gateway, binding, &relays, selected), None);
+    }
+
+    #[test]
+    fn catalog_qualifies_native_name_conflicting_with_historical_selection() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("kimi-k3");
+        gateway.providers[0].source = "preset:ds".into();
+        gateway.providers[2].enabled = false;
+        gateway.providers.push(provider("native", "ds/deepseek-v4-pro"));
+        gateway.bindings.get_mut("claude").unwrap().model_selections.push(
+            DefaultModelSelection {
+                provider_id: "ds".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                provider_source: "preset:ds".into(),
+                provider_removed: false,
+            },
+        );
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let models = codex_binding_models(&gateway, binding);
+        assert!(!models.iter().any(|model| model == "ds/deepseek-v4-pro"), "{models:?}");
+        assert!(models.iter().any(|model| model == "native/ds/deepseek-v4-pro"), "{models:?}");
+        assert!(resolve_plan(&gateway, &ToolId::Claude, "ds/deepseek-v4-pro", None).is_err());
+        assert_eq!(
+            routed(&gateway, "native/ds/deepseek-v4-pro"),
+            vec![pair("native", "ds/deepseek-v4-pro")]
+        );
+        let relays = binding_pool_relays(&gateway, binding);
+        let (index, upstream, _) =
+            codex_model_route(&gateway, binding, &relays, "native/ds/deepseek-v4-pro").unwrap();
+        assert_eq!(relays[index].id, "native");
+        assert_eq!(upstream, "ds/deepseek-v4-pro");
+        let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, binding);
+        let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+        assert_eq!(
+            metadata["native/ds/deepseek-v4-pro"]["codex_plus_group_id"],
+            "native"
+        );
+
+        gateway.providers.push(provider("native2", "ds/deepseek-v4-pro"));
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        for model in [
+            "native/ds/deepseek-v4-pro",
+            "native2/ds/deepseek-v4-pro",
+        ] {
+            assert!(codex_binding_models(&gateway, binding).iter().any(|entry| entry == model));
+        }
+        assert!(!codex_binding_models(&gateway, binding)
+            .iter()
+            .any(|entry| entry == "ds/deepseek-v4-pro"));
+
+        gateway.providers.push(provider("native3", "native/ds/deepseek-v4-pro"));
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let relays = binding_pool_relays(&gateway, binding);
+        let (index, upstream, _) =
+            codex_model_route(&gateway, binding, &relays, "native/ds/deepseek-v4-pro").unwrap();
+        assert_eq!(relays[index].id, "native3");
+        assert_eq!(upstream, "native/ds/deepseek-v4-pro");
+    }
+
+    #[test]
+    fn generic_agent_catalog_retains_available_historical_selection() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("kimi-k3");
+        gateway.providers[0].source = "preset:ds".into();
+        gateway.providers[2].enabled = false;
+        gateway.bindings.get_mut("claude").unwrap().model_selections.push(
+            DefaultModelSelection {
+                provider_id: "ds".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                provider_source: "preset:ds".into(),
+                provider_removed: false,
+            },
+        );
+        let grok_binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        gateway.bindings.insert("grok".into(), grok_binding);
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(binding_exposed_models(&gateway, binding)
+            .iter()
+            .any(|model| model == "ds/deepseek-v4-pro"));
+        for agent in [ToolId::Claude, ToolId::Grok] {
+            assert!(crate::gateway::server::exposed_models(&gateway, &agent)
+                .iter()
+                .any(|model| model == "ds/deepseek-v4-pro"));
+        }
+        let grok = crate::gateway::apply::grok_gateway_profile(&gateway, binding, 57394);
+        assert!(grok.model_list.lines().any(|model| {
+            crate::model_suffix::parse_model_suffix(model).0 == "ds/deepseek-v4-pro"
+        }));
+        assert_eq!(
+            routed(&gateway, "ds/deepseek-v4-pro"),
+            vec![pair("ds", "deepseek-v4-pro")]
+        );
+
+        gateway.providers[0].enabled = false;
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(!binding_exposed_models(&gateway, binding)
+            .iter()
+            .any(|model| model == "ds/deepseek-v4-pro"));
+
+        gateway.providers[0].enabled = true;
+        gateway.providers.push(provider("native", "ds/deepseek-v4-pro"));
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let models = binding_exposed_models(&gateway, binding);
+        assert!(!models.iter().any(|model| model == "ds/deepseek-v4-pro"), "{models:?}");
+        assert!(models.iter().any(|model| model == "native/ds/deepseek-v4-pro"), "{models:?}");
+        assert_eq!(
+            routed(&gateway, "native/ds/deepseek-v4-pro"),
+            vec![pair("native", "ds/deepseek-v4-pro")]
         );
     }
 

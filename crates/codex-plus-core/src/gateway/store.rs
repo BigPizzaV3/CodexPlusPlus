@@ -459,6 +459,16 @@ pub struct DefaultModelSelection {
     pub provider_removed: bool,
 }
 
+impl DefaultModelSelection {
+    pub fn upstream_model_name(&self) -> String {
+        crate::model_suffix::parse_model_suffix(self.upstream_model.trim()).0
+    }
+
+    pub fn model_name(&self) -> String {
+        format!("{}/{}", self.provider_id, self.upstream_model_name())
+    }
+}
+
 /// 一个 Agent 的网关绑定。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -472,6 +482,9 @@ pub struct AgentBinding {
     /// 用户明确从供应商下选择的默认模型；旧绑定没有该记录。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model_selection: Option<DefaultModelSelection>,
+    /// 已写给这个 Agent 的明确选择；更换默认模型后旧会话仍可能使用。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_selections: Vec<DefaultModelSelection>,
     /// 额外暴露给 Agent 的模型（每行一个，可带 `[1M]` 窗口后缀）。
     #[serde(default)]
     pub extra_models: Vec<String>,
@@ -518,6 +531,7 @@ impl Default for AgentBinding {
             enabled: false,
             model: String::new(),
             default_model_selection: None,
+            model_selections: Vec::new(),
             extra_models: Vec::new(),
             claude_roles: ClaudeRoleModels::default(),
             unknown_model: UnknownModelPolicy::default(),
@@ -535,6 +549,19 @@ impl Default for AgentBinding {
 }
 
 impl AgentBinding {
+    pub fn selection_for(&self, model: &str) -> Option<&DefaultModelSelection> {
+        self.model_selections
+            .iter()
+            .find(|selection| selection.model_name().eq_ignore_ascii_case(model))
+            .or_else(|| {
+                self.default_model_selection.as_ref().filter(|selection| {
+                    let (current, _) = crate::model_suffix::parse_model_suffix(self.model.trim());
+                    selection.model_name().eq_ignore_ascii_case(model)
+                        && current.eq_ignore_ascii_case(model)
+                })
+            })
+    }
+
     /// 绑定里声明过的模型名（主模型、分档模型、额外模型），去掉窗口后缀、去重保序。
     pub fn declared_models(&self) -> Vec<String> {
         let mut models = Vec::new();
@@ -734,6 +761,14 @@ impl GatewaySettings {
                 self.providers
                     .iter()
                     .any(|provider| provider.relay.id == candidate)
+                    || self.bindings.values().any(|binding| {
+                        binding.model_selections.iter().any(|selection| {
+                            selection.provider_id.eq_ignore_ascii_case(candidate)
+                        }) || binding.default_model_selection.as_ref().is_some_and(|selection| {
+                            selection.provider_removed
+                                && selection.provider_id.eq_ignore_ascii_case(candidate)
+                        })
+                    })
             }
         };
         if !taken(&base) {

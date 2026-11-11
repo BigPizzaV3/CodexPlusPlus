@@ -816,8 +816,17 @@ pub fn save_gateway_binding(
 ) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let saved = apply::enable_binding(&context(), &agent, binding)?;
-        if sync_resident_helper().is_none() {
+        let port = codex_plus_core::protocol_proxy::protocol_proxy_port();
+        if codex_plus_core::resident_helper::resident_helper_port()
+            .is_some_and(|running| running != port)
+        {
+            anyhow::bail!("本地网关监听端口与配置不一致，请重启 Codex++ 后重新保存");
+        }
+        let ctx = ApplyContext::default_paths(port);
+        codex_plus_core::resident_helper::ensure_resident_helper(ctx.port)
+            .context("本地网关没能启动，接入设置未保存")?;
+        let saved = apply::enable_binding(&ctx, &agent, binding)?;
+        if sync_resident_helper() != Some(ctx.port) {
             anyhow::bail!("网关绑定已写入，但本地网关没能启动，请查看诊断日志");
         }
         Ok(saved)
@@ -889,19 +898,7 @@ pub fn use_gateway_own_model(
 pub fn rotate_gateway_token(agent: String) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let store = GatewayStore::default();
-        // 带锁读改写：只换这个 Agent 的 token，不拿旧状态覆盖同时刷新写回的登录 token。
-        let (gateway, binding) = store.update(|gateway| {
-            let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
-                anyhow::bail!("还没有配置网关绑定");
-            };
-            binding.token = new_client_token(&agent);
-            Ok(binding.clone())
-        })?;
-        if binding.enabled {
-            return apply::enable_binding(&context(), &agent, binding);
-        }
-        Ok(gateway)
+        apply::rotate_binding_token(&context(), &agent)
     })();
     respond("已更换网关 token。", "更换网关 token 失败", result)
 }

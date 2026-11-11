@@ -213,6 +213,19 @@ test("自定义限定模型保留供应商和原始上游模型", () => {
   assert.deepEqual(bindingFromDraft({ ...draftFromBinding(undefined), model: qualified[0].model }, undefined, qualified[0]).defaultModelSelection, qualified[0].defaultModelSelection);
 });
 
+test("自定义模型的窗口后缀不属于上游模型身份", () => {
+  const data = payload();
+  data.pool[1].source = "preset:glm";
+  const item = pickerSections(data, "glm/vendor/new[1M]", initials)
+    .find((section) => section.key === "custom")!.items[0];
+  assert.equal(item.model, "glm/vendor/new[1M]");
+  assert.equal(item.defaultModelSelection?.upstreamModel, "vendor/new");
+  data.pool[1].enabled = false;
+  assert.equal(modelDisplay(data, item.model, [], {
+    ...item.defaultModelSelection!, upstreamModel: "vendor/new[1M]",
+  }).issue, "unavailable");
+});
+
 test("供应商 ID 与模型组前缀同名时显示冲突，不把供应商选择当停用组", () => {
   const data = payload();
   data.groups[0].disabled = true;

@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
+import { modelSlugFromRowName } from "./model-metadata";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
 import {
@@ -926,16 +927,18 @@ export function ModelList({
     if (listRef.current) listRef.current.scrollTop = 0;
   };
   const isSelected = (item: PickerItem) => {
-    const current = item.direct ? ownList?.current ?? "" : selectedModel;
+    const current = item.direct ? ownList?.current ?? "" : modelSlugFromRowName(selectedModel);
     if (!item.direct && selectedModelSelection && current.toLowerCase() ===
-        `${selectedModelSelection.providerId}/${selectedModelSelection.upstreamModel}`.toLowerCase()) {
+        `${selectedModelSelection.providerId}/${modelSlugFromRowName(selectedModelSelection.upstreamModel)}`.toLowerCase()) {
       return !selectedModelSelection.providerRemoved
         && item.defaultModelSelection?.providerId === selectedModelSelection.providerId
-        && item.defaultModelSelection.upstreamModel.toLowerCase() === selectedModelSelection.upstreamModel.toLowerCase()
+        && modelSlugFromRowName(item.defaultModelSelection.upstreamModel).toLowerCase() === modelSlugFromRowName(selectedModelSelection.upstreamModel).toLowerCase()
         && item.defaultModelSelection.providerSource === selectedModelSelection.providerSource;
     }
-    return Boolean(current) && (item.model.toLowerCase() === current.toLowerCase() ||
-      Boolean(item.providerModel && qualifiedProvider(payload, current, exclude) && item.providerModel.toLowerCase() === current.toLowerCase()));
+    const model = item.direct ? item.model : modelSlugFromRowName(item.model);
+    const providerModel = item.direct ? item.providerModel : item.providerModel && modelSlugFromRowName(item.providerModel);
+    return Boolean(current) && (model.toLowerCase() === current.toLowerCase() ||
+      Boolean(providerModel && qualifiedProvider(payload, current, exclude) && providerModel.toLowerCase() === current.toLowerCase()));
   };
   const choose = (item: PickerItem) => (item.direct && onPickOwn ? onPickOwn(item) : onPick(item));
 
