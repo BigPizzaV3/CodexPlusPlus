@@ -374,6 +374,49 @@ fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 完整功能模式里内置 Claude Code 的配置目录（`CLAUDE_CONFIG_DIR`，会话记录在它的 `projects/` 下）。
+///
+/// Desktop 左侧的会话列表存在真实 Claude profile 里，Codex++ 与 ClaudeMom 共用同一份；会话记录也必须共用，
+/// 否则在一个程序里建的会话到另一个里打不开（一直显示「此页面加载时间比平时更长」）。
+/// 所以放在两个程序的状态目录之外；拿不到家目录时退回各自状态目录里的旧位置。
+fn full_code_dir(root: &Path) -> PathBuf {
+    shared_full_code_dir().unwrap_or_else(|| root.join("claude-code"))
+}
+
+fn shared_full_code_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".claude-desktop-local").join("claude-code"))
+}
+
+/// 共享目录之前，会话记录在各自状态目录的 `claude-code/` 里：启动前把缺的文件补进共享目录。
+/// 只复制共享目录里还没有的文件，不覆盖、不删除原文件；复制失败只记日志，不挡启动。
+fn merge_legacy_full_code_dir(legacy: &Path, shared: &Path) {
+    if legacy == shared || !legacy.is_dir() {
+        return;
+    }
+    if let Err(error) = copy_missing(legacy, shared) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "claude_local.merge_code_dir_failed",
+            serde_json::json!({ "message": format!("{error:#}") }),
+        );
+    }
+}
+
+fn copy_missing(from: &Path, to: &Path) -> Result<()> {
+    private_dir(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_missing(&entry.path(), &target)?;
+        } else if kind.is_file() && !target.exists() {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn private_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
@@ -2059,11 +2102,11 @@ fn local_launch_args(_root: &Path, port: u16, localization: bool) -> Vec<String>
 /// （100000–1000000，或 `auto`）。它按当前模型解析，所以切模型时会跟着变——正好补上
 /// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 只有一份、进程级的缺口，而且不需要重启。
 /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 环境变量会盖过它，所以我们不设那个变量。
-fn write_model_compact_windows(root: &Path, windows: &BTreeMap<String, u64>) -> Result<()> {
+fn write_model_compact_windows(code_dir: &Path, windows: &BTreeMap<String, u64>) -> Result<()> {
     if windows.is_empty() {
         return Ok(());
     }
-    let path = root.join("claude-code/settings.json");
+    let path = code_dir.join("settings.json");
     let mut settings: Value = fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -2091,7 +2134,7 @@ fn write_model_compact_windows(root: &Path, windows: &BTreeMap<String, u64>) -> 
 /// 按当前网关声明同步一次逐模型窗口；失败不影响启动。
 fn sync_model_compact_windows(root: &Path, config: &ClaudeLocalSettings) {
     if let Some(upstream) = direct_upstream() {
-        let _ = write_model_compact_windows(root, &upstream.model_windows());
+        let _ = write_model_compact_windows(&full_code_dir(root), &upstream.model_windows());
         return;
     }
     let Ok(gateway) = GatewayStore::default()
@@ -2104,7 +2147,7 @@ fn sync_model_compact_windows(root: &Path, config: &ClaudeLocalSettings) {
         return;
     };
     let windows = available_model_windows(&gateway, &binding, config.list_all_models);
-    let _ = write_model_compact_windows(root, &windows);
+    let _ = write_model_compact_windows(&full_code_dir(root), &windows);
 }
 
 /// 把一个已拼好参数/环境变量的 Command 换成另一个可执行文件（MSIX 别名重试用）。
@@ -2218,10 +2261,12 @@ fn launch_original(
             command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", window.to_string());
         }
         apply_real_profile_one_p(&profile_sets(), root)?;
-        private_dir(&root.join("claude-code"))?;
+        let code_dir = full_code_dir(root);
+        private_dir(&code_dir)?;
+        merge_legacy_full_code_dir(&root.join("claude-code"), &code_dir);
         command
             .args(local_launch_args(root, port, localization))
-            .env("CLAUDE_CONFIG_DIR", root.join("claude-code"))
+            .env("CLAUDE_CONFIG_DIR", &code_dir)
             .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
             .env("ANTHROPIC_API_KEY", &upstream.api_key)
             .env("ANTHROPIC_AUTH_TOKEN", &upstream.api_key)
@@ -2240,14 +2285,16 @@ fn launch_original(
         // 完整功能模式与 PoC 一致：直接用真实 Claude profile（无 --user-data-dir），
         // 启动前把真实配置切到 1p 并记录回滚信息。
         apply_real_profile_one_p(&profile_sets(), root)?;
-        private_dir(&root.join("claude-code"))?;
+        let code_dir = full_code_dir(root);
+        private_dir(&code_dir)?;
+        merge_legacy_full_code_dir(&root.join("claude-code"), &code_dir);
         // 与 3p 路径一致：把 Codex++ 配置的每模型窗口/推理档传给内置 Claude Code。
         let helper_port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
         let wiring = wiring(&gateway, &binding, AGENT_ID, helper_port);
         let token = wiring.token.clone();
         command
             .args(local_launch_args(root, port, localization))
-            .env("CLAUDE_CONFIG_DIR", root.join("claude-code"))
+            .env("CLAUDE_CONFIG_DIR", &code_dir)
             .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
             .env("ANTHROPIC_API_KEY", &token)
             .env("ANTHROPIC_AUTH_TOKEN", &token)
@@ -2545,7 +2592,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                 &main.three_p.join("claude-code-sessions"),
                 &[root.join("claude-code-3p"), home_dir().join(".claude")],
                 &main.data.join("claude-code-sessions"),
-                &[root.join("claude-code"), home_dir().join(".claude")],
+                &[full_code_dir(&root), home_dir().join(".claude")],
                 &root.join("backups/session-sync"),
             )?;
             if !report.note.is_empty() {
@@ -2573,7 +2620,7 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
                     &main.three_p.join("claude-code-sessions"),
                     &[root.join("claude-code-3p"), home_dir().join(".claude")],
                     &main.data.join("claude-code-sessions"),
-                    &[root.join("claude-code"), home_dir().join(".claude")],
+                    &[full_code_dir(&root), home_dir().join(".claude")],
                     &root.join("backups/session-sync"),
                 ) {
                     Ok(report) if report.to_full + report.to_three_p + report.updated > 0 => {
@@ -2708,6 +2755,27 @@ mod tests {
         .unwrap()
     }
 
+    /// 共享会话目录：旧位置的会话记录补进共享目录，已有的文件不覆盖，原文件保留。
+    #[test]
+    fn legacy_full_code_dir_merges_missing_files_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("state/claude-local/claude-code");
+        let shared = temp.path().join("shared/claude-code");
+        fs::create_dir_all(legacy.join("projects/p1")).unwrap();
+        fs::write(legacy.join("projects/p1/a.jsonl"), "from-codex").unwrap();
+        fs::write(legacy.join("projects/p1/b.jsonl"), "old-b").unwrap();
+        fs::create_dir_all(shared.join("projects/p1")).unwrap();
+        fs::write(shared.join("projects/p1/b.jsonl"), "newer-b").unwrap();
+
+        merge_legacy_full_code_dir(&legacy, &shared);
+        assert_eq!(fs::read_to_string(shared.join("projects/p1/a.jsonl")).unwrap(), "from-codex");
+        assert_eq!(fs::read_to_string(shared.join("projects/p1/b.jsonl")).unwrap(), "newer-b", "不覆盖");
+        assert!(legacy.join("projects/p1/a.jsonl").exists(), "原文件保留");
+        // 不存在的旧目录、同一目录都直接跳过。
+        merge_legacy_full_code_dir(&temp.path().join("missing"), &shared);
+        merge_legacy_full_code_dir(&shared, &shared);
+    }
+
     #[test]
     fn model_compact_windows_merge_into_settings_and_clamp() {
         let temp = tempfile::tempdir().unwrap();
@@ -2720,7 +2788,7 @@ mod tests {
             ("relay/gpt-6.1-sol".to_string(), 1_100_000),
             ("relay/small".to_string(), 128_000),
         ]);
-        write_model_compact_windows(temp.path(), &windows).unwrap();
+        write_model_compact_windows(&dir, &windows).unwrap();
 
         let settings: Value =
             serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
