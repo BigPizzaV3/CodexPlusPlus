@@ -47,6 +47,7 @@ import {
   disabledGroup,
   validateDraft,
   validateProviderDraft,
+  imageModelLabel,
   type GatewayAgentView,
   type GatewayPayload,
 } from "./gateway-model.ts";
@@ -667,4 +668,11 @@ test("自带模型开关：关掉后只留 Agent 现在用着的那一个，没�
   const onLuna = { ...agent, ownModels: { ...own, current: "GPT-6-LUNA" } };
   assert.deepEqual(visibleOwnModels(onLuna, payload(["codex"]))?.models.map((model) => model.id), ["gpt-6-luna"]);
   assert.equal(visibleOwnModels({ ...agent, ownModels: null }, payload([])), null);
+});
+
+test("ChatGPT 账号的生图模型显示成不带版本号的 GPT Image，其余照原名", () => {
+  // 后端自己选模型，gpt-image-2 只是占位，显示版本号会被当成只能用旧版
+  assert.equal(imageModelLabel("gpt-image-2", true), "GPT Image");
+  assert.equal(imageModelLabel("gpt-image-2", false), "gpt-image-2");
+  assert.equal(imageModelLabel("flux-kontext-pro", false), "flux-kontext-pro");
 });

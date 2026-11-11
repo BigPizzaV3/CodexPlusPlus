@@ -29,6 +29,7 @@ import {
   maskAccountName,
   relativeTime,
   type ImageOption,
+  imageModelLabel,
   isFavoriteModel,
   toggleFavoriteModel,
   type GatewayResult,
@@ -1023,9 +1024,9 @@ function withOwnSection(sections: PickerSection[], own: PickerSection | null): P
   return custom < 0 ? [...sections, own] : [...sections.slice(0, custom), own, ...sections.slice(custom)];
 }
 
-/** 一项生图选项的显示名：「ChatGPT Pro · gpt-image」。 */
+/** 一项生图选项的显示名：「ChatGPT Pro · GPT Image」。 */
 function imageOptionLabel(option: ImageOption): string {
-  return `${maskAccountName(shortProviderName(option.providerName))} · ${option.model}`;
+  return `${maskAccountName(shortProviderName(option.providerName))} · ${imageModelLabel(option.model, option.vendorPicks)}`;
 }
 
 /** Agent 详情里的「生图模型」：这个 Agent 的生图请求经网关发给谁。 */

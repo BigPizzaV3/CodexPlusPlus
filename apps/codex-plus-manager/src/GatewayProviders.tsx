@@ -43,6 +43,7 @@ import {
   type ProviderDraft,
   type ProviderPrice,
   maskAccountName,
+  imageModelLabel,
   isDirectProxy,
   keyLabel,
   type ImportCandidate,
@@ -786,7 +787,7 @@ function PoolRow({
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("生图模型")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {imageModels.map((model) => <code className="gw-chip" key={model}>{model}</code>)}
+                {imageModels.map((model) => <code className="gw-chip" key={model}>{imageModelLabel(model, entry.account === "chatgpt")}</code>)}
               </div>
               <span className="gw-detail-actions gw-detail-hint" title={entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}>
                 {t("在「Agent 接入」里选用")}

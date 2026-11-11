@@ -321,6 +321,15 @@ export type ImageOption = {
   vendorPicks: boolean;
 };
 
+/**
+ * 生图模型的显示名。ChatGPT 订阅账号由后端自己选模型，请求里写哪个名字画出来都一样，
+ * 后端存的 `gpt-image-2` 只是个占位；显示成不带版本号的「GPT Image」，
+ * 免得被当成只能用旧版（Magpie #1865 同款误会）。只改显示，存的值和请求不变。
+ */
+export function imageModelLabel(model: string, vendorPicks: boolean): string {
+  return vendorPicks ? "GPT Image" : model;
+}
+
 export type GatewayResult = { status: string; message: string } & Partial<GatewayPayload>;
 
 /** 编辑表单：多行文本、数字都先当字符串处理，提交时再转。 */
