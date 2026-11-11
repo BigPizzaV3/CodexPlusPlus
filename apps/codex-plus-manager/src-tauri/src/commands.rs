@@ -1709,7 +1709,7 @@ fn stop_codex_multi_instance_blocking(
         .unwrap_or_else(|error| error.into_inner());
     if instance_id.trim() == "main" {
         return failed(
-            "主进程请使用重启 Codex 或退出管理器来结束。",
+            "主 Codex 请使用侧栏的「停止 Codex」。",
             CodexMultiInstancesPayload {
                 instances: Vec::new(),
             },
@@ -1816,7 +1816,7 @@ pub async fn restart_codex_multi_instance(
 fn restart_codex_multi_instance_blocking(instance_id: &str) -> CommandResult<Value> {
     if instance_id.trim() == "main" {
         return failed(
-            "主进程请使用顶部的重启 Codex。",
+            "主 Codex 请使用顶部的「重启 Codex」。",
             json!({ "instanceId": "main" }),
         );
     }
@@ -11132,6 +11132,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn multi_instance_commands_reject_main_with_the_real_controls() {
+        let stop = stop_codex_multi_instance_blocking(" main ");
+        assert_eq!(stop.status, "failed");
+        assert_eq!(stop.message, "主 Codex 请使用侧栏的「停止 Codex」。");
+        assert!(stop.payload.instances.is_empty());
+
+        let restart = restart_codex_multi_instance_blocking("main");
+        assert_eq!(restart.status, "failed");
+        assert_eq!(restart.message, "主 Codex 请使用顶部的「重启 Codex」。");
+    }
 
     #[test]
     fn skill_install_failure_message_preserves_the_error_chain() {
