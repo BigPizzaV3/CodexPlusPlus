@@ -898,7 +898,7 @@ pub fn rotate_gateway_token(agent: String) -> CommandResult<Option<GatewayPayloa
 pub fn reset_gateway_model_selections(agent: String) -> CommandResult<Option<GatewayPayload>> {
     let result = parse_agent(&agent)
         .and_then(|agent| apply::reset_model_selections(&GatewayStore::default(), &agent));
-    respond("已清除历史模型选择。", "清除历史模型选择失败", result)
+    respond("已清除历史模型选择。", "清除历史模型选择失败", refresh_agents(result))
 }
 
 /// 网关全局选项：Key 轮换方式、退出时恢复直连。

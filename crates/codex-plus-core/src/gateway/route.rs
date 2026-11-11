@@ -587,7 +587,6 @@ pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) 
                 selection.provider_removed
                     || !provider.enabled
                     || binding.pool_exclude.contains(&provider.relay.id)
-                    || provider.source != selection.provider_source
             })
         });
         if selection_unavailable

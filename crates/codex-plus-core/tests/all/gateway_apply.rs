@@ -763,10 +763,7 @@ fn unavailable_selected_default_falls_back_but_explicit_request_stays_pinned() {
     gateway.providers[0].source = "extension:replacement".into();
     gateway.bindings.insert("codex".into(), selected.clone());
     assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
-    assert_eq!(
-        resolve_plan(&gateway, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id,
-        "deepseek"
-    );
+    assert!(resolve_plan(&gateway, &ToolId::Codex, "", None).is_err());
     gateway.providers[0].source = "preset:deepseek".into();
     assert_eq!(
         resolve_plan(&gateway, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id,
