@@ -4382,12 +4382,6 @@ pub async fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::W
 #[tauri::command]
 pub async fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
     let _control = weixin_control().lock().await;
-    if let Err(error) = SettingsStore::default().update(json!({"weixinConnectEnabled": false})) {
-        return failed(
-            &format!("保存微信连接设置失败：{error}"),
-            current_weixin_status(),
-        );
-    }
     let stopping = weixin_runtime()
         .lock()
         .ok()
@@ -4407,6 +4401,12 @@ pub async fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::We
             status.state = "stopped".to_string();
             status.message = "微信连接已停止。".to_string();
         }
+    }
+    if let Err(error) = SettingsStore::default().update(json!({"weixinConnectEnabled": false})) {
+        return failed(
+            &format!("已请求停止微信连接，但保存设置失败，下次启动时可能自动连接：{error}"),
+            current_weixin_status(),
+        );
     }
     ok(
         if stopping {
