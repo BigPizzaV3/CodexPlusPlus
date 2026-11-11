@@ -17,7 +17,7 @@ while ((Get-Date) -lt $deadline -and -not $target) {
 }
 if (-not $target) {
   $why = $(if ($proc.HasExited) { "Claude 在调试端口就绪前就退出了（退出码 $($proc.ExitCode)）" } else { '45 秒内没有等到 Claude 调试端口' })
-  throw "Claude inspector 没有启动：$why（$app，端口 127.0.0.1:$port）。常见原因是启动的 Claude 关闭了 Electron 调试开关（EnableNodeCliInspectArguments fuse），或 Claude 已在后台运行把启动请求转交给了旧进程。请在任务管理器里结束所有 Claude 进程，再在 Codex++「Claude 增强」里点「制作增强版 / 更新副本」重新制作副本后启动；仍失败请在 issue 中附上 operation.log。"
+  throw "Claude inspector 没有启动：$why（$app，端口 127.0.0.1:$port）。常见原因是启动的 Claude 关闭了 Electron 调试开关（EnableNodeCliInspectArguments fuse），或 Claude 已在后台运行把启动请求转交给了旧进程。请在任务管理器里结束所有 Claude 进程，再在 Codex++「补丁 Desktop」里点「制作补丁版 / 更新副本」重新制作副本后启动；仍失败请在 issue 中附上 operation.log。"
 }
 
 $ws = [Net.WebSockets.ClientWebSocket]::new()
@@ -61,9 +61,9 @@ try {
   $timeoutResult = $timeoutResponse.result.result.value
   if ($timeoutResponse.result.exceptionDetails -or -not $timeoutResult) { throw '未收到 Cowork Bash 适配结果' }
   Write-Output ('CODEX_PLUS_CLAUDE_BASH_RESULT=' + ($timeoutResult | ConvertTo-Json -Compress))
-  if ($timeoutResult.error) { Write-Warning ('Cowork Bash 时限增强未生效，其他增强继续启动：' + $timeoutResult.error) }
+  if ($timeoutResult.error) { Write-Warning ('Cowork Bash 时限补丁未生效，其他补丁继续启动：' + $timeoutResult.error) }
 } catch {
-  Write-Warning 'Cowork Bash 适配结果不可用，其他增强继续启动。'
+  Write-Warning 'Cowork Bash 适配结果不可用，其他补丁继续启动。'
 }
 try { Invoke-CDP "setImmediate(()=>require('node:inspector').close()); 'closing'" | Out-Null } catch {}
 $ws.Dispose()

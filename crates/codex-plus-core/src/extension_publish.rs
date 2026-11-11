@@ -320,18 +320,82 @@ pub fn build_archive(dir: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 在给定目录里找命令文件：目录按给定顺序优先，同一目录内先试带扩展名的候选
+/// （Windows 上 `gh` 实际是 `gh.exe`），最后试 `name` 本身；`name` 自带扩展名时
+/// 不再追加扩展名。
+fn locate_tool_in(
+    name: &str,
+    dirs: impl IntoIterator<Item = PathBuf>,
+    extensions: &[String],
+) -> Option<PathBuf> {
+    let bare = Path::new(name).extension().is_none() && !extensions.is_empty();
+    for dir in dirs {
+        if bare {
+            for extension in extensions {
+                let candidate = dir.join(format!("{name}{extension}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// 在常见位置找命令：图形界面启动的应用拿不到 shell 的 PATH。
 pub fn locate_tool(name: &str) -> Option<PathBuf> {
-    let mut candidates = std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).map(|dir| dir.join(name)).collect::<Vec<_>>())
-        .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        candidates.push(home.join(".local/bin").join(name));
+    #[cfg(windows)]
+    {
+        // Windows 上可执行文件带扩展名（gh.exe / gh.cmd），按 PATHEXT 尝试；
+        // home 在 USERPROFILE 而不是 HOME（#2995）。
+        let extensions = std::env::var("PATHEXT")
+            .map(|value| {
+                value
+                    .split(';')
+                    .filter(|ext| !ext.trim().is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|_| {
+                [".COM", ".EXE", ".BAT", ".CMD"]
+                    .iter()
+                    .map(|ext| ext.to_string())
+                    .collect()
+            });
+        let mut dirs = std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for key in ["USERPROFILE", "HOME"] {
+            if let Some(home) = std::env::var_os(key) {
+                dirs.push(PathBuf::from(home).join(".local").join("bin"));
+            }
+        }
+        // winget / MSI 的常见安装位置；取不到环境变量就跳过。
+        if let Some(dir) = std::env::var_os("ProgramFiles") {
+            dirs.push(PathBuf::from(dir).join("GitHub CLI"));
+        }
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(dir).join("Programs").join("GitHub CLI"));
+        }
+        return locate_tool_in(name, dirs, &extensions);
     }
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-        candidates.push(Path::new(dir).join(name));
+    #[cfg(not(windows))]
+    {
+        let mut dirs = std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            dirs.push(home.join(".local/bin"));
+        }
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+            dirs.push(PathBuf::from(dir));
+        }
+        locate_tool_in(name, dirs, &[])
     }
-    candidates.into_iter().find(|path| path.is_file())
 }
 
 /// 发布选项。
@@ -709,5 +773,80 @@ impl Publisher {
             bail!("{repo} 不属于当前 gh 账号 {account}");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #2995：Windows 上 `gh` 实际是 `gh.exe`，按 PATHEXT 扩展名候选能找到。
+    #[test]
+    fn locate_tool_finds_extension_candidates_in_dir_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("gh.EXE"), "").unwrap();
+        let extensions = vec![".EXE".to_string(), ".CMD".to_string()];
+        assert_eq!(
+            locate_tool_in("gh", vec![first.clone(), second.clone()], &extensions),
+            Some(second.join("gh.EXE")),
+            "目录顺序优先，命中靠前目录里没有扩展名候选时继续往后找"
+        );
+        std::fs::write(first.join("gh.EXE"), "").unwrap();
+        assert_eq!(
+            locate_tool_in("gh", vec![first.clone(), second], &extensions),
+            Some(first.join("gh.EXE"))
+        );
+    }
+
+    /// 同一目录里扩展名候选排在裸名之前（Windows 创建进程需要带扩展名的路径更稳）。
+    #[test]
+    fn locate_tool_prefers_extension_candidate_over_bare_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+        std::fs::write(dir.join("gh"), "").unwrap();
+        std::fs::write(dir.join("gh.EXE"), "").unwrap();
+        let extensions = vec![".EXE".to_string()];
+        assert_eq!(
+            locate_tool_in("gh", vec![dir.clone()], &extensions),
+            Some(dir.join("gh.EXE"))
+        );
+    }
+
+    /// 扩展名列表为空（非 Windows）时只找裸名，行为与原来一致。
+    #[test]
+    fn locate_tool_without_extensions_only_matches_bare_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+        std::fs::write(dir.join("gh.exe"), "").unwrap();
+        assert_eq!(locate_tool_in("gh", vec![dir.clone()], &[]), None);
+        std::fs::write(dir.join("gh"), "").unwrap();
+        assert_eq!(locate_tool_in("gh", vec![dir.clone()], &[]), Some(dir.join("gh")));
+    }
+
+    /// `name` 自带扩展名时不再追加：找 `gh.exe` 不会变成 `gh.exe.exe`。
+    #[test]
+    fn locate_tool_name_with_extension_is_not_extended() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_path_buf();
+        std::fs::write(dir.join("gh.exe"), "").unwrap();
+        let extensions = vec![".EXE".to_string()];
+        assert_eq!(
+            locate_tool_in("gh.exe", vec![dir.clone()], &extensions),
+            Some(dir.join("gh.exe"))
+        );
+    }
+
+    /// 什么都找不到时返回 None。
+    #[test]
+    fn locate_tool_returns_none_when_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            locate_tool_in("gh", vec![temp.path().to_path_buf()], &[".EXE".to_string()]),
+            None
+        );
     }
 }

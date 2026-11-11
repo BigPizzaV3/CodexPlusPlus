@@ -992,6 +992,7 @@ describe("native thread goal renderer integration", () => {
       const calls: string[] = [];
       Object.assign(f.context, {
         codexPlusBackendSettingsLoaded: true,
+        codexPerModelContextEnabled: () => false,
         codexPlusExtensionWantsRequestMiddleware: () => false,
         codexPlusModelUnlockEnabled: () => true,
         codexPluginMarketplacePatchEnabled: () => false,

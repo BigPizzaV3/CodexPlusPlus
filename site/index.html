@@ -4,12 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codex++ — 让 AI 编程 Agent 更顺手</title>
-<meta name="description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池，按模型名路由、出错自动换下一家。">
+<meta name="description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池；Claude Desktop 完整功能模式不登录账号也能用完整界面，模型走你自己的 API。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Codex++">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:title" content="Codex++ — 让 AI 编程 Agent 更顺手">
-<meta property="og:description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池，按模型名路由、出错自动换下一家。">
+<meta property="og:description" content="Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型工具、agent 钩子、发往模型的请求与回复都能由拓展接管，在 Codex 对话里说一句就能造拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池；Claude Desktop 完整功能模式不登录账号也能用完整界面，模型走你自己的 API。">
 <meta property="og:url" content="https://codexpp.cc/">
 <meta property="og:image" content="https://codexpp.cc/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -18,7 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/site.css?v=20261031-1">
+<link rel="stylesheet" href="css/site.css?v=20261110-1">
 <script>
   // 主题与 js 标记要在首帧前定好，避免闪一下
   (function () {
@@ -38,16 +38,15 @@
       <span class="brand-name">Codex<b>++</b></span>
     </a>
     <nav class="nav-links" aria-label="页面导航">
-      <a href="#create">拓展</a>
-      <a href="#gateway">网关</a>
-      <a href="#features">功能</a>
-      <a href="#modes">两种模式</a>
+      <a href="#codex">Codex</a>
+      <a href="#claude">Claude</a>
+      <a href="#common">网关与通用</a>
       <a href="#start">上手</a>
       <a href="guide.html">使用教程</a>
       <a href="#faq">问答</a>
     </nav>
     <div class="nav-actions">
-      <span class="nav-version mono" data-site-version>v2.2.0</span>
+      <span class="nav-version mono" data-site-version>v2.6.0</span>
       <a class="lang-link" href="en.html" hreflang="en" lang="en">EN</a>
       <button class="icon-btn" type="button" data-theme-toggle aria-label="切换明暗主题">
         <svg class="i-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -68,42 +67,40 @@
 <section class="hero">
   <div class="wrap">
     <div class="hero-copy">
-      <a class="hero-badge" href="#create"><b>新</b>万物皆拓展：在 Codex 对话里说一句，就能造拓展 →</a>
-      <h1>万物皆拓展，<br><em>Codex 由你来改</em></h1>
-      <p class="hero-sub">界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。内置本地网关，让 Codex、Claude Code 等 50 多个 Agent 共用一份供应商池。</p>
+      <a class="hero-badge claude" href="#claude"><b>新</b>Claude Desktop 完整功能模式：像官方订阅一样接入 API，保留全部完整功能 →</a>
+      <h1>Codex 由你来改，<br><em>Claude 完整可用</em></h1>
+      <p class="hero-sub">Codex++ 给 Codex 和 Claude 各加一套「++」：Codex 万物皆拓展；Claude Desktop 像官方订阅一样接入 API，保留全部完整功能。内置本地网关，让 50 多个 Agent 共用一份供应商池。</p>
       <div class="hero-cta">
         <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          下载 <span data-site-version>v2.2.0</span>
+          下载 <span data-site-version>v2.6.0</span>
         </a>
-        <a class="btn btn-ghost btn-lg" href="#create">看看怎么造拓展</a>
+        <a class="btn btn-ghost btn-lg" href="#tour">看看管理器</a>
       </div>
       <p class="hero-meta"><span>Windows · macOS</span><span>开源 · AGPL-3.0</span><span>数据只存本机</span><span>不改官方应用文件</span></p>
     </div>
 
-    <div class="tour">
-      <div class="tour-tabs" role="tablist" aria-label="管理器界面导览">
-        <button class="tour-tab" role="tab" id="tab-ext" aria-controls="panel-ext" aria-selected="true" data-title="万物皆拓展" data-cap="精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。">万物皆拓展</button>
-        <button class="tour-tab" role="tab" id="tab-hub" aria-controls="panel-hub" aria-selected="false" data-title="聚合网关 › 总览" data-cap="谁在用、走哪家、是否健康，一屏看全。">网关总览</button>
-        <button class="tour-tab" role="tab" id="tab-pool" aria-controls="panel-pool" aria-selected="false" data-title="聚合网关 › 供应商池" data-cap="加一次，所有 Agent 都能用；订阅显示剩余额度，中转站显示倍率与余额。">供应商池</button>
-        <button class="tour-tab" role="tab" id="tab-routing" aria-controls="panel-routing" aria-selected="false" data-title="聚合网关 › 路由" data-cap="依次、轮换、按权重、额度优先、速度优先；多家都有的模型自动成组。">路由</button>
-        <button class="tour-tab" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="false" data-title="聚合网关 › 用量" data-cap="费用、token 与缓存命中，按 Agent、供应商、模型拆开看。">用量</button>
-        <button class="tour-tab" role="tab" id="tab-log" aria-controls="panel-log" aria-selected="false" data-title="聚合网关 › 用量 › 请求" data-cap="每条请求的状态、自动重试、首字耗时、token 与费用，失败直接给原因。">请求日志</button>
-        <button class="tour-tab" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="false" data-title="在线体验 · 演示数据" data-cap="真实的管理器前端跑在浏览器里，点点看；数据是演示用的。"><span class="live-dot" aria-hidden="true"></span>在线体验</button>
-      </div>
-      <div class="window">
-        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span id="tourTitle">万物皆拓展</span></div>
-        <div class="tour-stage">
-          <div class="tour-panel active" role="tabpanel" id="panel-ext" aria-labelledby="tab-ext"><img src="assets/ext-featured.webp" alt="拓展页：万物皆拓展的能力标签、对话造拓展入口，以及经审核的官方与精选拓展包" width="2880" height="1800"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-hub" aria-labelledby="tab-hub"><img src="assets/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，右侧是各家供应商的今日调用、Key 冷却与限流状态" loading="lazy" width="2880" height="1800"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-pool" aria-labelledby="tab-pool"><img src="assets/gateway-providers.webp" alt="供应商池：ChatGPT 订阅、DeepSeek、Kimi、智谱 GLM 与两个中转站，显示额度、倍率、余额与限流恢复时间" loading="lazy" width="2880" height="1200"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-routing" aria-labelledby="tab-routing"><img src="assets/gateway-routing.webp" alt="路由页：自建的「主力编程」依次组与「便宜轮换」轮换组，下方是自动组" loading="lazy" width="2880" height="1800"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage"><img src="assets/usage-stats.webp" alt="用量统计：估算费用、token、缓存命中、调用次数与按天柱状图" loading="lazy" width="2880" height="1800"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-log" aria-labelledby="tab-log"><img src="assets/usage-requests.webp" alt="请求日志：进行中的请求、自动重试、429 限流后换下一家，以及 token 与费用" loading="lazy" width="2880" height="1720"></div>
-          <div class="tour-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live"><iframe title="Codex++ 管理器在线体验（演示数据）" data-src="manager-preview/?previewRoute=userScripts&amp;lang=zh&amp;v=20261104"></iframe></div>
+    <div class="products">
+      <a class="product reveal" href="#codex">
+        <div class="product-body">
+          <span class="product-name"><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/chatgpt.svg);mask-image:url(assets/agents/chatgpt.svg)" aria-hidden="true"></span>Codex</span>
+          <h3>万物皆拓展，Codex 由你来改</h3>
+          <p>界面、命令、模型工具、agent 钩子、请求与回复都能由拓展接管；在 Codex 对话里说一句就能造拓展。</p>
+          <div class="product-chips"><span>对话造拓展</span><span>Codex 增强</span><span>多开</span><span>直连 / 网关</span></div>
+          <span class="product-go">看 Codex 部分 →</span>
         </div>
-      </div>
-      <p class="tour-cap" id="tourCap" aria-live="polite">精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。</p>
+        <div class="product-shot"><img src="assets/extension-chat.png" alt="" width="1582" height="1768" loading="lazy"></div>
+      </a>
+      <a class="product claude reveal" href="#claude">
+        <div class="product-body">
+          <span class="product-name"><span class="agent-icon" style="-webkit-mask-image:url(assets/agents/claude.svg);mask-image:url(assets/agents/claude.svg)" aria-hidden="true"></span>Claude<b>新</b></span>
+          <h3>像官方订阅一样接入 API，保留全部完整功能</h3>
+          <p>原版 Claude Desktop 不登录账号，模型走你的 Codex++ 供应商池；项目、Artifacts、听写、Computer Use 都在。</p>
+          <div class="product-chips"><span>完整功能模式</span><span>3p 模式</span><span>补丁版</span><span>Claude Code</span></div>
+          <span class="product-go">看 Claude 部分 →</span>
+        </div>
+        <div class="product-shot"><img src="assets/claude-full-chat.webp" alt="" width="2880" height="1514" loading="lazy"></div>
+      </a>
     </div>
 
     <div class="agents-row">
@@ -123,12 +120,25 @@
   </div>
 </section>
 
+<!-- ========== 篇章：Codex ========== -->
+<section class="chapter chapter-codex" id="codex">
+  <div class="wrap chapter-inner reveal">
+    <span class="chapter-num" aria-hidden="true">01</span>
+    <div class="chapter-copy">
+      <span class="chapter-kicker">Codex</span>
+      <h2>万物皆拓展，<em>Codex 由你来改</em></h2>
+      <p>拓展能接管界面、命令、模型工具、agent 钩子和发往模型的请求与回复；再加上一整套开箱即用的增强、多开，以及直连 / 网关两种连接方式。</p>
+      <nav class="chapter-links" aria-label="Codex"><a href="#create">对话造拓展</a><a href="#extensions">拓展能力</a><a href="#market">拓展生态</a><a href="#codex-features">Codex 增强</a><a href="#inside">在 Codex 里</a><a href="#modes">连接方式</a></nav>
+    </div>
+  </div>
+</section>
+
 <!-- ========== 对话造拓展 ========== -->
 <section class="section" id="create">
   <div class="wrap demo-split">
     <div>
       <div class="sec-head reveal">
-        <span class="eyebrow">Build by chatting</span>
+        <span class="eyebrow">Codex · Build by chatting</span>
         <h2>说一句话，<em>拓展就写好了</em></h2>
         <p>不用自己写代码。接入后，Codex 能看到自己的页面结构、写出拓展、热重载，再截图确认效果。</p>
       </div>
@@ -154,7 +164,7 @@
 <section class="section tint" id="extensions">
   <div class="wrap">
     <div class="sec-head reveal">
-      <span class="eyebrow">Extensions</span>
+      <span class="eyebrow">Codex · Extensions</span>
       <h2>不止改界面，<em>整条链路都能接管</em></h2>
       <p>拓展是一个带 <code>codexpp.json</code> 的文件夹。每次注册都随拓展卸载自动撤销，改完即热重载，坏了也不影响别的拓展。</p>
     </div>
@@ -235,7 +245,7 @@
 <section class="section" id="market">
   <div class="wrap">
     <div class="sec-head reveal">
-      <span class="eyebrow">Ecosystem</span>
+      <span class="eyebrow">Codex · Ecosystem</span>
       <h2>装别人的，<em>也发自己的</em></h2>
       <p>精选、社区、本地拓展和 dsh 插件都在管理器「拓展」页。装之前看得到每个拓展声明的全部能力。</p>
     </div>
@@ -276,12 +286,344 @@
   </div>
 </section>
 
+<!-- ========== Codex 增强 ========== -->
+<section class="section tint" id="codex-features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Codex · Features</span>
+      <h2>Codex 增强，<em>开箱即有</em></h2>
+      <p>每项增强都能单独开关；关掉增强总开关，供应商与启动管理照常可用。</p>
+    </div>
+    <div class="bento">
+      <article class="card w4 reveal">
+        <div class="card-body">
+          <h3>Codex 增强</h3>
+          <ul>
+            <li>插件市场解锁、模型白名单、纯 API Key 原生 Fast</li>
+            <li>会话删除可撤销、Markdown 导出、轮次回退</li>
+            <li>语音输入、输入预测、粘贴修复、下一步建议</li>
+          </ul>
+        </div>
+        <a class="card-shot" href="assets/codex-enhance.webp" data-zoom><img src="assets/codex-enhance.webp" alt="Codex 增强：插件市场解锁、模型白名单、原生 Fast、输入预测、会话删除等开关" loading="lazy"></a>
+      </article>
+      <article class="card reveal">
+        <div class="card-body">
+          <h3>子 Agent 协作</h3>
+          <p>在 Codex 对话里说「让 DeepSeek 实现这个功能」，结果回到当前对话；忙时自动排队。</p>
+        </div>
+        <a class="card-shot bottom" href="assets/agent-collaboration.png" data-zoom><img src="assets/agent-collaboration.png" alt="Codex 对话中请 DeepSeek 计算 1+1，经 Codex Plus Collaboration 返回 2" loading="lazy"></a>
+      </article>
+      <article class="card w3 reveal">
+        <div class="card-body">
+          <h3>Codex 多开</h3>
+          <p>每个供应商身份一个隔离实例，配置、会话和用户数据互不干扰。</p>
+        </div>
+        <a class="card-shot" href="assets/codex-multi-launch.webp" data-zoom><img src="assets/codex-multi-launch.webp" alt="Codex 多开：主 Codex 与两个供应商身份的实例都在运行" loading="lazy"></a>
+      </article>
+      <article class="card w3 reveal">
+        <div class="card-body">
+          <h3>用量状态栏</h3>
+          <p>输入框下方显示输出吞吐、缓存命中与上下文占用。</p>
+        </div>
+        <a class="card-shot contain" href="assets/usage-statusline.png" data-zoom><img src="assets/usage-statusline.png" alt="输入框下方的用量状态栏：输出吞吐、缓存命中与上下文占用" loading="lazy"></a>
+      </article>
+    </div>
+    <div class="minis">
+      <article class="mini reveal">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+        <h4>API Key 原生 Fast</h4>
+        <p>纯 API Key 也能用 Standard / ⚡ Fast 控件。</p>
+      </article>
+      <article class="mini reveal">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
+        <h4>微信连接</h4>
+        <p>扫码连接本机 Codex，出门也能派活。</p>
+      </article>
+      <article class="mini reveal">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.04Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/></svg>
+        <h4>Agent 桌宠</h4>
+        <p>点一下会压扁、带音效，图片和音效都能换。</p>
+      </article>
+      <article class="mini reveal">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2"/></svg>
+        <h4>皮肤与打字特效</h4>
+        <p>社区主题、自定义图片，彩虹粒子打字特效。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 在 Codex 里 ========== -->
+<section class="section" id="inside">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Codex · Inside</span>
+      <h2>打开 Codex，<em>增强就在那里</em></h2>
+      <p>从 Codex++ 启动 Codex 后，这些改动直接出现在官方应用里。</p>
+    </div>
+    <div class="strip">
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/request-status-auto-retry.png" data-zoom><img src="assets/request-status-auto-retry.png" alt="请求状态条：输入框上方显示正在重试第 2 次、模型 gpt-6.1-sol、已用 18 秒、第 3 次尝试，以及上次失败原因 server_is_overloaded" loading="lazy"></a>
+        <figcaption><b>请求避震</b><span>上游过载时自动重试，输入框上方显示第几次、耗时和上次失败原因。</span></figcaption>
+      </figure>
+      <figure class="shot-card reveal">
+        <a class="shot contain" href="assets/model-picker-groups.png" data-zoom><img src="assets/model-picker-groups.png" alt="模型选择器按供应商分组：先列出各家供应商和各自的模型数，当前用的那家带标记，点进去再选模型" loading="lazy"></a>
+        <figcaption><b>模型选择器分组</b><span>先挑供应商，再看它的模型；当前用的那家带标记。</span></figcaption>
+      </figure>
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/extension-market.png" data-zoom><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" loading="lazy"></a>
+        <figcaption><b>Codex 里的拓展页</b><span>不离开 Codex 也能浏览、安装和启停拓展。</span></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 两种模式 ========== -->
+<section class="section tint" id="modes">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Codex · Modes</span>
+      <h2>网关或直连，<em>随时切换</em></h2>
+      <p>两种模式互不影响，Codex 在「连接与供应商」顶部的「连接方式」里一键切换。不打开网关，Codex++ 就和 1.x 时一样用。</p>
+    </div>
+    <div class="compare">
+      <article class="mode featured reveal">
+        <span class="badge">推荐</span>
+        <h3>网关模式</h3>
+        <p>Codex、Claude Code、Grok 共用一份供应商池。</p>
+        <ul>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>按模型名、供应商或模型组路由，出错自动换下一家</li>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>订阅账号登录进池，显示套餐与剩余额度</li>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>接入前存档 Agent 配置，断开只还原网关改过的部分</li>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>按 Agent、供应商、模型统计用量与费用</li>
+        </ul>
+        <p class="fit"><b>适合：</b>同时用多个 Agent、手里有多家供应商或多个 Key。网关只在 Codex++ 运行时可用。</p>
+      </article>
+      <article class="mode reveal">
+        <h3>直连模式</h3>
+        <p>Codex 原来的供应商切换方式，完整保留。</p>
+        <div class="submodes"><span class="chip">官方登录</span><span class="chip">官方登录 + API</span><span class="chip">纯 API</span><span class="chip">故障转移</span><span class="chip">模型聚合</span></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>官方登录 + API：保留官方登录与插件入口，请求走兼容 API</li>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Chat Completions 供应商本地转成 Codex 用的 Responses</li>
+          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Codex 多开、模型测试与 Provider Doctor</li>
+        </ul>
+        <p class="fit"><b>适合：</b>只用 Codex，或希望退出 Codex++ 后配置照常生效。在「Codex → 连接与供应商」里选供应商即可。</p>
+      </article>
+    </div>
+    <div class="window-note reveal">
+      <div>
+        <h3>一行后缀，百万窗口</h3>
+        <p>每个模型可以有自己的上下文窗口。网关在供应商详情里按模型填（可按公开资料一键填）；直连模式在模型列表里写后缀，Codex++ 生成独立的 <code>model_catalog_json</code>，让 Codex 按当前模型使用对应窗口。</p>
+      </div>
+      <pre class="code"><span class="c"># 直连模式的模型列表</span>
+deepseek-v4-pro<span class="h">[1M]</span>
+claude-opus-5.5<span class="h">[200K]</span>
+your-model<span class="h">[128000]</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 篇章：Claude ========== -->
+<section class="chapter chapter-claude" id="claude">
+  <div class="wrap chapter-inner reveal">
+    <span class="chapter-num" aria-hidden="true">02</span>
+    <div class="chapter-copy">
+      <span class="chapter-kicker">Claude</span>
+      <h2>像官方订阅一样接入 API，<br><em>保留全部完整功能</em></h2>
+      <p>原版 Claude Desktop 不登录账号，模型走你自己的 API：聊天、Cowork、Code，以及听写、Computer Use、后台模式都在。Claude Code 也能经网关接任意供应商。</p>
+      <nav class="chapter-links" aria-label="Claude"><a href="#claude-full">完整功能模式</a><a href="#claude-compare">和常见接入比</a><a href="#claude-modes">三种用法</a><a href="#claude-more">Claude Code 与补丁版</a></nav>
+    </div>
+  </div>
+</section>
+
+<!-- ========== Claude 完整功能模式 ========== -->
+<section class="section claude-sec" id="claude-full">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Claude · 完整功能模式</span>
+      <h2>完整功能模式：<em>在本机给 Claude 当服务端</em></h2>
+      <p>常见的接入办法只给 Claude Code 改一个 <code>ANTHROPIC_BASE_URL</code>，或把 Claude Desktop 切到官方的 3p（第三方推理）部署：模型换成了你的，界面和功能却跟着缩水。Codex++ 的「完整功能模式」换了个思路——在本机给原版 Claude Desktop 当服务端：界面是 claude.ai 的完整版，账号、套餐和功能开关由本地服务应答，回复走你的 Codex++ 供应商池。</p>
+    </div>
+
+    <figure class="claude-shot reveal">
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>Claude Desktop · 完整功能模式</span><b class="tag">实测</b></div>
+        <a href="assets/claude-full-chat.webp" data-zoom><img src="assets/claude-full-chat.webp" alt="实测：原版 Claude Desktop 没有登录 Claude 账号，侧栏有项目、定时任务、Artifacts、自定义，左下角显示本地账号 · Ultra；回复由 Codex++ 网关里的 GPT-6.1 Sol 生成" width="2880" height="1514" loading="lazy"></a>
+      </div>
+      <figcaption>实测：原版 Claude Desktop，没有登录 Claude 账号；这条回复来自 Codex++ 网关里的 GPT-6.1 Sol。</figcaption>
+    </figure>
+
+    <div class="claude-points">
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        <h3>完整界面，不用账号</h3>
+        <p>项目、Artifacts、定时任务、自定义都在；显示名和套餐（Free / Pro / Max / Ultra）自己定，只影响界面显示。</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.83L3 3"/><path d="m15 9 6-6"/></svg>
+        <h3>模型来自你的供应商池</h3>
+        <p>模型选择器里直接列出池里的模型，显示友好名和供应商；按模型名路由、多 Key 轮换、出错换下一家。</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+        <h3>听写、电脑控制、后台模式</h3>
+        <p>本地 SenseVoice 听写，结果只进输入框、不自动发送；Computer Use 入口与后台模式可用。</p>
+      </article>
+      <article class="point reveal">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>
+        <h3>每个模型，各自的窗口</h3>
+        <p>网关为每个模型声明的上下文窗口写进 Claude 的设置，切换模型不必重启，不再一律按 200k 算。</p>
+      </article>
+    </div>
+
+    <div class="cmp-wrap reveal" id="claude-compare">
+      <table class="cmp-table">
+        <caption>和常见接入方式比一比</caption>
+        <thead>
+          <tr><th scope="col">能力</th><th scope="col">常见接入：改 Base URL / 3p 部署</th><th scope="col" class="ours">Codex++ 完整功能模式</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">接入范围</th><td data-label="常见接入">多数只管 Claude Code 命令行</td><td class="ours" data-label="完整功能模式">Claude Desktop 的聊天、Cowork、Code 整套界面，外加内置的 Claude Code</td></tr>
+          <tr><th scope="row">界面</th><td data-label="常见接入">3p 部署走的是第三方推理版界面</td><td class="ours" data-label="完整功能模式">claude.ai 完整界面：项目、Artifacts、定时任务、自定义入口都在</td></tr>
+          <tr><th scope="row">账号</th><td data-label="常见接入">想要完整界面就得登录 Anthropic 账号</td><td class="ours" data-label="完整功能模式">不需要登录 Claude 账号；本地账号的显示名与套餐可自定</td></tr>
+          <tr><th scope="row">Computer Use 与后台模式</th><td data-label="常见接入">3p 部署会过滤这类远端功能开关，入口不可用</td><td class="ours" data-label="完整功能模式">入口与后台模式可用（仍需在系统里授予辅助功能和屏幕录制权限）</td></tr>
+          <tr><th scope="row">语音输入</th><td data-label="常见接入">官方听写依赖 Claude 账号</td><td class="ours" data-label="完整功能模式">本地 SenseVoice 识别，结果只进输入框</td></tr>
+          <tr><th scope="row">上下文窗口</th><td data-label="常见接入">没有声明时一律按 200k</td><td class="ours" data-label="完整功能模式">逐模型声明，切换模型不必重启</td></tr>
+          <tr><th scope="row">供应商</th><td data-label="常见接入">一个 Base URL 对一家</td><td class="ours" data-label="完整功能模式">整个 Codex++ 供应商池，协议自动互转</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="cmp-note reveal">「常见接入」泛指只改 Base URL，或使用 Claude Desktop 官方 3p 部署配置的做法，具体工具可能有差异。</p>
+
+    <div class="claude-pair">
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/claude-full-picker.webp" data-zoom><img src="assets/claude-full-picker.webp" alt="Claude 的模型选择器：Claude 自带档位之外，列出供应商池里的 GPT-6.1 Sol、GPT-5.6 Terra 等模型，副标题是供应商名" width="1440" height="920" loading="lazy"></a>
+        <figcaption><b>Claude 的模型选择器里，是你自己的模型</b><span>池里的模型显示友好名，副标题是供应商（图中为演示名）。</span></figcaption>
+      </figure>
+      <figure class="shot-card reveal">
+        <a class="shot" href="assets/claude-local-settings.webp" data-zoom><img src="assets/claude-local-settings.webp" alt="Codex++「Desktop 增强」页：启动模式选完整功能模式，本地证书已信任，语音识别与运行环境已就绪，界面汉化、原生听写、电脑控制、后台模式各自开关" width="2880" height="2000" loading="lazy"></a>
+        <figcaption><b>在 Codex++ 里一页配好</b><span>「Claude → Desktop 增强」：启动模式、证书、用户名与套餐、四项能力开关。</span></figcaption>
+      </figure>
+    </div>
+
+    <div class="claude-modes" id="claude-modes">
+      <article class="mode featured reveal">
+        <span class="badge">推荐 · macOS</span>
+        <h3>完整功能模式</h3>
+        <p>原版 Claude 经本地服务启动，还原 claude.ai 完整界面与听写、Computer Use、后台模式。需要信任一枚本机证书，可随时一键取消。</p>
+        <p class="fit"><b>适合：</b>想用 Claude Desktop 全部功能，又不想登录 Claude 账号。</p>
+      </article>
+      <article class="mode reveal">
+        <h3>3p 模式</h3>
+        <p>原版 Claude 用隔离的配置目录直连 Codex++ 网关，不装证书，最省事。</p>
+        <p class="fit"><b>适合：</b>只聊天、写代码，用不到那几项远端功能。</p>
+      </article>
+      <article class="mode reveal">
+        <h3>补丁版</h3>
+        <p>在 Claude.app 的副本上加中文界面、听写与 Computer Use，官方原件不动；还能解锁 Claude Code 的 Bash 时间限制。</p>
+        <p class="fit"><b>适合：</b>继续用自己的 Claude 账号，只想补几项功能。</p>
+      </article>
+    </div>
+    <ol class="claude-steps">
+      <li class="reveal"><b>选模型</b>在「网关 → Agent 接入」的 Claude Desktop 行选默认模型。</li>
+      <li class="reveal"><b>选模式、信任证书</b>侧栏「Claude → Desktop 增强」，启动模式选「完整功能模式」，准备并信任本机证书。</li>
+      <li class="reveal"><b>启动 Claude</b>先完全退出 Claude，再点「启动 Claude」或侧栏 Claude 行的启动键。</li>
+    </ol>
+    <div class="chips safe reveal"><span class="chip">不改 Claude.app 安装包</span><span class="chip">证书只在本机，可一键取消信任</span><span class="chip">切回 3p 时还原 Claude 的部署配置</span><span class="chip">两种模式之间可同步 Code 会话</span></div>
+  </div>
+</section>
+
+<!-- ========== Claude Code 与补丁版 ========== -->
+<section class="section tint claude-sec" id="claude-more">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Claude · More</span>
+      <h2>Claude Code 与<em>补丁版</em></h2>
+      <p>命令行里的 Claude Code，和继续用自己账号的补丁版，也都照顾到了。</p>
+    </div>
+    <div class="bento">
+      <article class="card w3 reveal">
+        <div class="card-body">
+          <h3>Claude Code 接入网关</h3>
+          <ul>
+            <li>经网关接任意协议的供应商，Anthropic 请求在网关里转成 Chat / Responses</li>
+            <li>opus · sonnet · haiku 三档各自指定用哪个模型</li>
+            <li>接入 Computer Use，终端里也能操作桌面（macOS）</li>
+          </ul>
+        </div>
+        <a class="card-shot" href="assets/gateway-agents.webp" data-zoom><img src="assets/gateway-agents.webp" alt="Agent 接入：Codex 与 Claude Code 已接入网关" loading="lazy"></a>
+      </article>
+      <article class="card w3 reveal">
+        <div class="card-body">
+          <h3>补丁版 Claude Desktop</h3>
+          <ul>
+            <li>中文界面、输入框语音输入、Computer Use</li>
+            <li>改动只在副本上，官方 Claude.app 原样不动</li>
+            <li>可解锁 Claude Code 的 Bash 时间限制</li>
+          </ul>
+        </div>
+        <a class="card-shot" href="assets/claude-enhance.webp" data-zoom><img src="assets/claude-enhance.webp" alt="补丁版 Claude：副本已准备，可开关界面汉化、语音输入与 Computer Use" loading="lazy"></a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 篇章：网关与通用 ========== -->
+<section class="chapter chapter-common" id="common">
+  <div class="wrap chapter-inner reveal">
+    <span class="chapter-num" aria-hidden="true">03</span>
+    <div class="chapter-copy">
+      <span class="chapter-kicker">网关与通用</span>
+      <h2>一份供应商池，<em>所有 Agent 共用</em></h2>
+      <p>本地网关让 Codex、Claude、Grok 等 50 多个 Agent 共用供应商、按模型名路由、出错换下一家；Computer Use、会话、MCP 与 Skills 也在这里跨 Agent 统一管理。</p>
+      <nav class="chapter-links" aria-label="网关与通用"><a href="#tour">管理器一览</a><a href="#gateway">网关</a><a href="#common-features">通用工具</a></nav>
+    </div>
+  </div>
+</section>
+
+<!-- ========== 管理器一览 ========== -->
+<section class="section" id="tour">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Manager</span>
+      <h2>一个管理器，<em>管全部 Agent</em></h2>
+      <p>侧栏切 Agent 与页面，顶部页签切分页。点下面的页签看看，或者直接在线体验（演示数据）。</p>
+    </div>
+    <div class="tour reveal">
+      <div class="tour-tabs" role="tablist" aria-label="管理器界面导览">
+        <button class="tour-tab" role="tab" id="tab-ext" aria-controls="panel-ext" aria-selected="true" data-title="万物皆拓展" data-cap="精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。">万物皆拓展</button>
+        <button class="tour-tab" role="tab" id="tab-hub" aria-controls="panel-hub" aria-selected="false" data-title="聚合网关 › 总览" data-cap="谁在用、走哪家、是否健康，一屏看全。">网关总览</button>
+        <button class="tour-tab" role="tab" id="tab-pool" aria-controls="panel-pool" aria-selected="false" data-title="聚合网关 › 供应商池" data-cap="加一次，所有 Agent 都能用；订阅显示剩余额度，中转站显示倍率与余额。">供应商池</button>
+        <button class="tour-tab" role="tab" id="tab-routing" aria-controls="panel-routing" aria-selected="false" data-title="聚合网关 › 路由" data-cap="依次、轮换、按权重、额度优先、速度优先；多家都有的模型自动成组。">路由</button>
+        <button class="tour-tab" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="false" data-title="聚合网关 › 用量" data-cap="费用、token 与缓存命中，按 Agent、供应商、模型拆开看。">用量</button>
+        <button class="tour-tab" role="tab" id="tab-log" aria-controls="panel-log" aria-selected="false" data-title="聚合网关 › 用量 › 请求" data-cap="每条请求的状态、自动重试、首字耗时、token 与费用，失败直接给原因。">请求日志</button>
+        <button class="tour-tab" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="false" data-title="在线体验 · 演示数据" data-cap="真实的管理器前端跑在浏览器里，点点看；数据是演示用的。"><span class="live-dot" aria-hidden="true"></span>在线体验</button>
+      </div>
+      <div class="window">
+        <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span id="tourTitle">万物皆拓展</span></div>
+        <div class="tour-stage">
+          <div class="tour-panel active" role="tabpanel" id="panel-ext" aria-labelledby="tab-ext"><img src="assets/ext-featured.webp" alt="拓展页：万物皆拓展的能力标签、对话造拓展入口，以及经审核的官方与精选拓展包" width="2880" height="1800"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-hub" aria-labelledby="tab-hub"><img src="assets/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，右侧是各家供应商的今日调用、Key 冷却与限流状态" loading="lazy" width="2880" height="1800"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-pool" aria-labelledby="tab-pool"><img src="assets/gateway-providers.webp" alt="供应商池：ChatGPT 订阅、DeepSeek、Kimi、智谱 GLM 与两个中转站，显示额度、倍率、余额与限流恢复时间" loading="lazy" width="2880" height="1200"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-routing" aria-labelledby="tab-routing"><img src="assets/gateway-routing.webp" alt="路由页：自建的「主力编程」依次组与「便宜轮换」轮换组，下方是自动组" loading="lazy" width="2880" height="1800"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage"><img src="assets/usage-stats.webp" alt="用量统计：估算费用、token、缓存命中、调用次数与按天柱状图" loading="lazy" width="2880" height="1800"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-log" aria-labelledby="tab-log"><img src="assets/usage-requests.webp" alt="请求日志：进行中的请求、自动重试、429 限流后换下一家，以及 token 与费用" loading="lazy" width="2880" height="1720"></div>
+          <div class="tour-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live"><iframe title="Codex++ 管理器在线体验（演示数据）" data-src="manager-preview/?previewRoute=userScripts&amp;lang=zh&amp;v=20261104"></iframe></div>
+        </div>
+      </div>
+      <p class="tour-cap" id="tourCap" aria-live="polite">精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。</p>
+    </div>
+
+  </div>
+</section>
+
 <!-- ========== 网关原理 ========== -->
 <section class="section tint" id="gateway">
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Gateway</span>
-      <h2>50 多个 Agent，<em>共用一份供应商池</em></h2>
+      <h2>按模型名路由，<em>出错自动换下一家</em></h2>
       <p>接入网关后，Agent 的请求都发给本机的 Codex++。它按模型名在供应商池里挑一家，限流就换 Key，出错就换下一家，对 Agent 来说什么都没变。</p>
     </div>
 
@@ -352,15 +694,14 @@
   </div>
 </section>
 
-<!-- ========== 功能 ========== -->
-<section class="section" id="features">
+<!-- ========== 通用工具 ========== -->
+<section class="section" id="common-features">
   <div class="wrap">
     <div class="sec-head reveal">
-      <span class="eyebrow">Features</span>
-      <h2>开箱即有，<em>一整套增强</em></h2>
-      <p>每项增强都能单独开关；关掉增强总开关，供应商与启动管理照常可用。</p>
+      <span class="eyebrow">Shared</span>
+      <h2>跨 Agent 的<em>通用工具</em></h2>
+      <p>不属于某一个 Agent 的功能，在管理器里统一管。</p>
     </div>
-
     <div class="bento">
       <article class="card w4 reveal">
         <div class="card-body">
@@ -372,68 +713,17 @@
       </article>
       <article class="card reveal">
         <div class="card-body">
-          <h3>子 Agent 协作</h3>
-          <p>在 Codex 对话里说「让 DeepSeek 实现这个功能」，结果回到当前对话；忙时自动排队。</p>
-        </div>
-        <a class="card-shot bottom" href="assets/agent-collaboration.png" data-zoom><img src="assets/agent-collaboration.png" alt="Codex 对话中请 DeepSeek 计算 1+1，经 Codex Plus Collaboration 返回 2" loading="lazy"></a>
-      </article>
-
-      <article class="card w3 reveal">
-        <div class="card-body">
-          <h3>Codex 增强</h3>
-          <ul>
-            <li>插件市场解锁、模型白名单、纯 API Key 原生 Fast</li>
-            <li>会话删除可撤销、Markdown 导出、轮次回退</li>
-            <li>语音输入、输入预测、粘贴修复、下一步建议</li>
-          </ul>
-        </div>
-        <a class="card-shot" href="assets/codex-enhance.webp" data-zoom><img src="assets/codex-enhance.webp" alt="Codex 增强：插件市场解锁、模型白名单、原生 Fast、输入预测、会话删除等开关" loading="lazy"></a>
-      </article>
-      <article class="card w3 reveal">
-        <div class="card-body">
-          <h3>Claude Desktop 增强版</h3>
-          <ul>
-            <li>中文界面、输入框语音输入、Computer Use</li>
-            <li>增强在副本上生效，官方 Claude.app 原样不动</li>
-            <li>可解锁 Claude Code 的 Bash 时间限制</li>
-          </ul>
-        </div>
-        <a class="card-shot" href="assets/claude-enhance.webp" data-zoom><img src="assets/claude-enhance.webp" alt="Claude 增强版：受管增强版已准备，可开关界面汉化、语音输入与 Computer Use" loading="lazy"></a>
-      </article>
-
-      <article class="card reveal">
-        <div class="card-body">
           <h3>会话放在一起</h3>
           <p>Codex、Claude Code、Claude Desktop、Grok 的本地会话一个列表，搜索、删除、撤销。</p>
         </div>
         <a class="card-shot" href="assets/sessions.webp" data-zoom><img src="assets/sessions.webp" alt="会话页：Codex、Claude Code、Grok 的本地会话放在一起" loading="lazy"></a>
       </article>
-      <article class="card reveal">
-        <div class="card-body">
-          <h3>Codex 多开</h3>
-          <p>每个供应商身份一个隔离实例，配置、会话和用户数据互不干扰。</p>
-        </div>
-        <a class="card-shot" href="assets/codex-multi-launch.webp" data-zoom><img src="assets/codex-multi-launch.webp" alt="Codex 多开：主 Codex 与两个供应商身份的实例都在运行" loading="lazy"></a>
-      </article>
-      <article class="card reveal">
-        <div class="card-body">
-          <h3>用量状态栏</h3>
-          <p>输入框下方显示输出吞吐、缓存命中与上下文占用。</p>
-        </div>
-        <a class="card-shot contain" href="assets/usage-statusline.png" data-zoom><img src="assets/usage-statusline.png" alt="输入框下方的用量状态栏：输出吞吐、缓存命中与上下文占用" loading="lazy"></a>
-      </article>
     </div>
-
     <div class="minis">
       <article class="mini reveal">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>
         <h4>每个模型，各有空间</h4>
         <p>按模型设置上下文窗口、价格与思考等级。</p>
-      </article>
-      <article class="mini reveal">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
-        <h4>API Key 原生 Fast</h4>
-        <p>纯 API Key 也能用 Standard / ⚡ Fast 控件。</p>
       </article>
       <article class="mini reveal">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
@@ -446,96 +736,10 @@
         <p>MCP、Skills 按 Agent 启用；Codex 插件市场可装可卸。</p>
       </article>
       <article class="mini reveal">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></svg>
-        <h4>微信连接</h4>
-        <p>扫码连接本机 Codex，出门也能派活。</p>
-      </article>
-      <article class="mini reveal">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.04Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/></svg>
-        <h4>Agent 桌宠</h4>
-        <p>点一下会压扁、带音效，图片和音效都能换。</p>
-      </article>
-      <article class="mini reveal">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         <h4>缓存清理</h4>
         <p>扫描并清理 Codex、Claude 与 Codex++ 的缓存。</p>
       </article>
-      <article class="mini reveal">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2"/></svg>
-        <h4>皮肤与打字特效</h4>
-        <p>社区主题、自定义图片，彩虹粒子打字特效。</p>
-      </article>
-    </div>
-  </div>
-</section>
-
-<!-- ========== 在 Codex 里 ========== -->
-<section class="section tint" id="inside">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <span class="eyebrow">Inside Codex</span>
-      <h2>打开 Codex，<em>增强就在那里</em></h2>
-      <p>从 Codex++ 启动 Codex 后，这些改动直接出现在官方应用里。</p>
-    </div>
-    <div class="strip">
-      <figure class="shot-card reveal">
-        <a class="shot" href="assets/request-status-auto-retry.png" data-zoom><img src="assets/request-status-auto-retry.png" alt="请求状态条：输入框上方显示正在重试第 2 次、模型 gpt-6.1-sol、已用 18 秒、第 3 次尝试，以及上次失败原因 server_is_overloaded" loading="lazy"></a>
-        <figcaption><b>请求避震</b><span>上游过载时自动重试，输入框上方显示第几次、耗时和上次失败原因。</span></figcaption>
-      </figure>
-      <figure class="shot-card reveal">
-        <a class="shot contain" href="assets/model-picker-groups.png" data-zoom><img src="assets/model-picker-groups.png" alt="模型选择器按供应商分组：先列出各家供应商和各自的模型数，当前用的那家带标记，点进去再选模型" loading="lazy"></a>
-        <figcaption><b>模型选择器分组</b><span>先挑供应商，再看它的模型；当前用的那家带标记。</span></figcaption>
-      </figure>
-      <figure class="shot-card reveal">
-        <a class="shot" href="assets/extension-market.png" data-zoom><img src="assets/extension-market.png" alt="Codex++ 拓展市场：浏览社区脚本和工作流工具" loading="lazy"></a>
-        <figcaption><b>Codex 里的拓展页</b><span>不离开 Codex 也能浏览、安装和启停拓展。</span></figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<!-- ========== 两种模式 ========== -->
-<section class="section" id="modes">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <span class="eyebrow">Modes</span>
-      <h2>网关或直连，<em>随时切换</em></h2>
-      <p>两种模式互不影响，Codex 在「连接与供应商」顶部的「连接方式」里一键切换。不打开网关，Codex++ 就和 1.x 时一样用。</p>
-    </div>
-    <div class="compare">
-      <article class="mode featured reveal">
-        <span class="badge">推荐</span>
-        <h3>网关模式</h3>
-        <p>Codex、Claude Code、Grok 共用一份供应商池。</p>
-        <ul>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>按模型名、供应商或模型组路由，出错自动换下一家</li>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>订阅账号登录进池，显示套餐与剩余额度</li>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>接入前存档 Agent 配置，断开只还原网关改过的部分</li>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>按 Agent、供应商、模型统计用量与费用</li>
-        </ul>
-        <p class="fit"><b>适合：</b>同时用多个 Agent、手里有多家供应商或多个 Key。网关只在 Codex++ 运行时可用。</p>
-      </article>
-      <article class="mode reveal">
-        <h3>直连模式</h3>
-        <p>Codex 原来的供应商切换方式，完整保留。</p>
-        <div class="submodes"><span class="chip">官方登录</span><span class="chip">官方登录 + API</span><span class="chip">纯 API</span><span class="chip">故障转移</span><span class="chip">模型聚合</span></div>
-        <ul>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>官方登录 + API：保留官方登录与插件入口，请求走兼容 API</li>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Chat Completions 供应商本地转成 Codex 用的 Responses</li>
-          <li><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>Codex 多开、模型测试与 Provider Doctor</li>
-        </ul>
-        <p class="fit"><b>适合：</b>只用 Codex，或希望退出 Codex++ 后配置照常生效。在「Codex → 连接与供应商」里选供应商即可。</p>
-      </article>
-    </div>
-    <div class="window-note reveal">
-      <div>
-        <h3>一行后缀，百万窗口</h3>
-        <p>每个模型可以有自己的上下文窗口。网关在供应商详情里按模型填（可按公开资料一键填）；直连模式在模型列表里写后缀，Codex++ 生成独立的 <code>model_catalog_json</code>，让 Codex 按当前模型使用对应窗口。</p>
-      </div>
-      <pre class="code"><span class="c"># 直连模式的模型列表</span>
-deepseek-v4-pro<span class="h">[1M]</span>
-claude-opus-5.5<span class="h">[200K]</span>
-your-model<span class="h">[128000]</span></pre>
     </div>
   </div>
 </section>
@@ -546,7 +750,7 @@ your-model<span class="h">[128000]</span></pre>
     <div class="sec-head reveal">
       <span class="eyebrow">Get started</span>
       <h2>三步，<em>接上就用</em></h2>
-      <p>Codex 功能配合官方 Codex / ChatGPT 桌面应用使用；Claude、Grok 相关功能需安装对应客户端。</p>
+      <p>Codex 功能配合官方 Codex / ChatGPT 桌面应用使用；Claude、Grok 相关功能需安装对应客户端。想用 Claude 完整功能模式，看 <a href="#claude-full" style="color:var(--brand-ink)">上面的三步</a>。</p>
     </div>
     <ol class="steps">
       <li class="step reveal">
@@ -602,6 +806,7 @@ your-model<span class="h">[128000]</span></pre>
         <h2>先问，<em>先答</em></h2>
       </div>
       <div class="faq-list">
+        <p class="faq-group">Codex</p>
         <details class="faq-item" id="faq-extension-safety">
           <summary>装别人的拓展安全吗？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>精选与官方拓展经 Codex++ 审核，安装锁定到审核过的那次提交。社区拓展未经审核，作者可以在新版本里加入任意代码：安装前会列出它声明的全部能力（后台进程、钩子、网关中间件、模型工具、路由、页面脚本），装完默认不启用，请只安装你信任的作者的拓展。</p></div>
@@ -614,6 +819,28 @@ your-model<span class="h">[128000]</span></pre>
           <summary>启动后，为什么没有 Codex++ 菜单？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>增强脚本只挂载到从 <b>Codex++</b> 启动的官方应用上。自己打开的 Codex，侧栏 Codex 行会提示「未挂载」，它的按钮变成「重启并挂载」，点一下即可。仍然没有时，到「设置 → Codex」（含安装维护）和「设置 → 日志与诊断」检查应用路径、启动状态和诊断日志。macOS 上也可以打开「自动接管官方 App」，自己双击启动官方 App 时由 Codex++ 接管。</p></div>
         </details>
+        <details class="faq-item" id="faq-native-fast">
+          <summary>开启原生 Fast 后，为什么仍然看不到开关？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>先确认已经保存，并通过 Codex++ 重启 Codex。直连模式在「Codex → 连接与供应商」中打开该模型的配置，设置「Fast（priority）支持」，保存模型与供应商后重启；网关模式下模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。此功能只恢复客户端入口，服务限制与计费仍以供应商为准。</p></div>
+        </details>
+        <details class="faq-item">
+          <summary>增强功能可以关闭吗？官方应用更新后还能用吗？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>可以分别关闭，也可以关闭增强总开关。Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式；官方应用更新后，部分功能可能需要跟随适配。修改供应商配置或会话数据前，请保留备份。</p></div>
+        </details>
+        <p class="faq-group">Claude</p>
+        <details class="faq-item" id="faq-claude-full">
+          <summary>Claude 完整功能模式和别的工具接 Claude 有什么不一样？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>多数工具只改 Claude Code 的 Base URL，或者让 Claude Desktop 用官方的 3p 部署，后者界面是第三方推理版，Computer Use 等远端功能开关也会被过滤。完整功能模式由 Codex++ 在本机应答 claude.ai 的账号与功能接口，界面是完整版，回复走你的供应商池，所以听写、Computer Use、后台模式这些入口都能用，而且不需要登录 Claude 账号。</p></div>
+        </details>
+        <details class="faq-item" id="faq-claude-full-setup">
+          <summary>完整功能模式需要什么条件？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>目前仅支持 macOS，需要装好 Claude Desktop 和 Node.js。在「网关 → Agent 接入」给 Claude Desktop 选默认模型，再到「Claude → Desktop 增强」把启动模式切到「完整功能模式」，准备并信任本机证书。启动前先完全退出 Claude，再从 Codex++ 启动；已经打开的 Claude 不会自动接上。</p></div>
+        </details>
+        <details class="faq-item" id="faq-claude-cert">
+          <summary>要信任的本机证书安全吗？能撤销吗？<span class="faq-x" aria-hidden="true"></span></summary>
+          <div class="faq-a"><p>证书和私钥由 Codex++ 在本机生成，放在它自己的状态目录里，只用于本地服务应答发往 claude.ai 的请求；只有从 Codex++ 启动、指向本地服务的 Claude 才会经过它。不用时在同一页点「取消信任证书」即可从钥匙串移除；切回 3p 模式时，Codex++ 会还原它改过的 Claude 部署配置。</p></div>
+        </details>
+        <p class="faq-group">网关与通用</p>
         <details class="faq-item">
           <summary>切换供应商后，请求为什么失败？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>网关模式先在供应商池详情里点「测试」，看状态码、首字耗时和上游错误原文；「用量 → 请求」里失败的请求也会直接显示原因。直连模式在供应商详情中运行模型测试或 Provider Doctor；纯 API 和官方登录 + API 使用不同的认证位置，不要手工复制两种模式的 <span class="mono">auth.json</span>。</p></div>
@@ -622,17 +849,9 @@ your-model<span class="h">[128000]</span></pre>
           <summary>退出 Codex++ 后，Agent 为什么连不上？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>接入网关的 Agent 一直指着本机网关，网关只在 Codex++ 运行时可用，再打开 Codex++ 就恢复。想在退出后用回直连，可在「设置 → 网关」里打开「退出 Codex++ 时恢复直连」（默认关闭）；安装更新前总会先切回直连。</p></div>
         </details>
-        <details class="faq-item" id="faq-native-fast">
-          <summary>开启原生 Fast 后，为什么仍然看不到开关？<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>先确认已经保存，并通过 Codex++ 重启 Codex。直连模式在「Codex → 连接与供应商」中打开该模型的配置，设置「Fast（priority）支持」，保存模型与供应商后重启；网关模式下模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。此功能只恢复客户端入口，服务限制与计费仍以供应商为准。</p></div>
-        </details>
         <details class="faq-item" id="faq-computer-use">
           <summary>Computer Use 接入后，客户端里为什么没有工具？<span class="faq-x" aria-hidden="true"></span></summary>
           <div class="faq-a"><p>接入后需要重启对应客户端才会加载工具；Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。仍然没有时，在「Computer Use」页的「高级」卡里核对客户端实际读取的目录，并确认已给 ChatGPT 授予辅助功能与屏幕录制权限。目前仅支持 macOS。</p></div>
-        </details>
-        <details class="faq-item">
-          <summary>增强功能可以关闭吗？官方应用更新后还能用吗？<span class="faq-x" aria-hidden="true"></span></summary>
-          <div class="faq-a"><p>可以分别关闭，也可以关闭增强总开关。Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式；官方应用更新后，部分功能可能需要跟随适配。修改供应商配置或会话数据前，请保留备份。</p></div>
         </details>
         <details class="faq-item">
           <summary>配置、会话和日志存在哪里？<span class="faq-x" aria-hidden="true"></span></summary>
@@ -681,10 +900,10 @@ your-model<span class="h">[128000]</span></pre>
   <div class="wrap">
     <div class="cta-box reveal">
       <img src="assets/logo.png" alt="">
-      <h2>你的 Codex，<em>由你来改</em></h2>
+      <h2>你的 Codex 与 Claude，<em>由你来改</em></h2>
       <p>免费开源 · AGPL-3.0 · Windows 与 macOS。拓展、配置与会话数据都留在你自己的电脑上。</p>
       <div class="hero-cta">
-        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载 <span data-site-version>v2.2.0</span></a>
+        <a class="btn btn-primary btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus/releases" target="_blank" rel="noopener">下载 <span data-site-version>v2.6.0</span></a>
         <a class="btn btn-ghost btn-lg" href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noopener">在 GitHub 上点个 Star</a>
       </div>
     </div>
@@ -724,6 +943,6 @@ your-model<span class="h">[128000]</span></pre>
   <p></p>
 </dialog>
 
-<script src="js/site.js?v=20261031-1"></script>
+<script src="js/site.js?v=20261110-1"></script>
 </body>
 </html>

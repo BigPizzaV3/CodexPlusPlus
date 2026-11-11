@@ -120,44 +120,65 @@ enum CodexTarget<'a> {
     Aggregate(&'a AggregateRelayProfile),
 }
 
-/// 接入着时是接入前那一个（不在了就是列表里第一个普通供应商，与还原一致），没接入时是当前那一个。
+fn find_codex_target<'a>(settings: &'a BackendSettings, id: &str) -> Option<CodexTarget<'a>> {
+    if id.is_empty() || id == CODEX_GATEWAY_RELAY_ID {
+        return None;
+    }
+    // 聚合供应商在普通列表里也有一份同 id 的影子（模式 aggregate），以聚合的定义为准。
+    if let Some(aggregate) = settings
+        .aggregate_relay_profiles
+        .iter()
+        .find(|profile| profile.id == id)
+    {
+        return Some(CodexTarget::Aggregate(aggregate));
+    }
+    settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == id && profile.relay_mode != RelayMode::Aggregate)
+        .map(CodexTarget::Relay)
+}
+
+/// 接入着时，「Codex 自己的模型」取哪一份配置。
+///
+/// 1. 接入前那份能用（不是聚合）就用它：就是用户原来的供应商，与断开后的还原一致；
+/// 2. 否则优先 Codex 自己的官方登录（`models_cache.json` 那套 sign-in 目录）；
+/// 3. 再退回列表里第一个普通供应商。
+///
+/// 聚合**不在这里展开**：它会把几家供应商的模型混成一大串列成"自带模型"，
+/// 看起来像 Codex 内置的（#系统默认 30 个），实际全是聚合成员。
+fn pick_codex_target<'a>(settings: &'a BackendSettings, previous: &str) -> Option<CodexTarget<'a>> {
+    if let Some(CodexTarget::Relay(profile)) = find_codex_target(settings, previous.trim()) {
+        return Some(CodexTarget::Relay(profile));
+    }
+    if let Some(profile) = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| crate::official_login::is_official_login_profile(profile))
+    {
+        return Some(CodexTarget::Relay(profile));
+    }
+    settings
+        .relay_profiles
+        .iter()
+        .find(|profile| {
+            profile.id != CODEX_GATEWAY_RELAY_ID && profile.relay_mode != RelayMode::Aggregate
+        })
+        .map(CodexTarget::Relay)
+}
+
+/// 接入着时是「自己的那份」（见 [`pick_codex_target`]），没接入时是当前那一个。
 fn codex_target<'a>(
     settings: &'a BackendSettings,
     binding: Option<&AgentBinding>,
 ) -> Option<CodexTarget<'a>> {
-    let find = |id: &str| -> Option<CodexTarget<'a>> {
-        if id.is_empty() || id == CODEX_GATEWAY_RELAY_ID {
-            return None;
-        }
-        // 聚合供应商在普通列表里也有一份同 id 的影子（模式 aggregate），以聚合的定义为准。
-        if let Some(aggregate) = settings
-            .aggregate_relay_profiles
-            .iter()
-            .find(|profile| profile.id == id)
-        {
-            return Some(CodexTarget::Aggregate(aggregate));
-        }
-        settings
-            .relay_profiles
-            .iter()
-            .find(|profile| profile.id == id && profile.relay_mode != RelayMode::Aggregate)
-            .map(CodexTarget::Relay)
-    };
     if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID {
-        return find(settings.active_relay_id.trim());
+        return find_codex_target(settings, settings.active_relay_id.trim());
     }
     let previous = binding
         .map(|binding| binding.restore.codex_previous_relay_id.trim())
         .unwrap_or_default();
-    find(previous).or_else(|| {
-        settings
-            .relay_profiles
-            .iter()
-            .find(|profile| {
-                profile.id != CODEX_GATEWAY_RELAY_ID && profile.relay_mode != RelayMode::Aggregate
-            })
-            .map(CodexTarget::Relay)
-    })
+    pick_codex_target(settings, previous)
 }
 
 fn codex_own_models(ctx: &ApplyContext, binding: Option<&AgentBinding>) -> Option<OwnModels> {
@@ -402,4 +423,76 @@ fn host_of(url: &str) -> Option<String> {
     let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
     let host = host.split(':').next()?.trim();
     (!host.is_empty()).then(|| host.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{AggregateRelayProfile, BackendSettings, RelayMode, RelayProfile};
+
+    fn profile(id: &str, mode: RelayMode) -> RelayProfile {
+        RelayProfile {
+            id: id.into(),
+            name: id.into(),
+            relay_mode: mode,
+            ..RelayProfile::default()
+        }
+    }
+
+    fn settings() -> BackendSettings {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![
+            profile("aggregate-shadow", RelayMode::Aggregate),
+            profile("official", RelayMode::Official),
+            profile("relay", RelayMode::PureApi),
+        ];
+        settings.aggregate_relay_profiles = vec![AggregateRelayProfile {
+            id: "aggregate-shadow".into(),
+            name: "系统默认".into(),
+            session_provider: Default::default(),
+            model_aggregation_enabled: true,
+            strategy: Default::default(),
+            members: Vec::new(),
+            routes: Vec::new(),
+            default_relay_id: String::new(),
+            sync_default_member_login: false,
+            auto_review_relay_id: String::new(),
+        }];
+        settings
+    }
+
+    fn target_id(target: Option<CodexTarget<'_>>) -> String {
+        match target {
+            Some(CodexTarget::Relay(profile)) => profile.id.clone(),
+            Some(CodexTarget::Aggregate(aggregate)) => format!("aggregate:{}", aggregate.id),
+            None => String::new(),
+        }
+    }
+
+    #[test]
+    fn own_models_follow_the_previous_profile_when_it_is_a_real_provider() {
+        let settings = settings();
+        assert_eq!(target_id(pick_codex_target(&settings, "relay")), "relay");
+    }
+
+    #[test]
+    fn own_models_never_expand_an_aggregate_into_its_members() {
+        let settings = settings();
+        // 接入前是聚合：不展开成员，改用它自己的官方登录那套。
+        assert_eq!(
+            target_id(pick_codex_target(&settings, "aggregate-shadow")),
+            "official"
+        );
+    }
+
+    #[test]
+    fn own_models_fall_back_to_the_first_provider_without_a_sign_in() {
+        let mut settings = settings();
+        settings.relay_profiles.remove(1);
+        assert_eq!(target_id(pick_codex_target(&settings, "")), "relay");
+        assert_eq!(
+            target_id(pick_codex_target(&settings, "aggregate-shadow")),
+            "relay"
+        );
+    }
 }

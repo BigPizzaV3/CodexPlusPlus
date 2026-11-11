@@ -88,6 +88,8 @@
   margin: 0 auto;
   padding-top: 6px;
   padding-bottom: 28px;
+  /* 「未接入」展开把内容顶出滚动条时不再挤压布局（#2971）。 */
+  scrollbar-gutter: stable;
 }
 
 .gw-alert {
@@ -1425,6 +1427,16 @@ span.gw-popover-check {
   color: var(--gw-mute);
   font-size: 13.5px;
   white-space: nowrap;
+}
+
+/* Claude 行的启动 / 停止键：和行内其它图标键同尺寸，运行中换成强调色。 */
+.gw-agent-run[data-running="true"] {
+  color: hsl(var(--brand-accent));
+}
+
+.gw-agent-run:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .gw-chevron {

@@ -6,6 +6,8 @@ import vm from "node:vm";
 const shard = (name: string) => readFileSync(new URL(`../../../assets/inject/renderer-inject/${name}`, import.meta.url), "utf8");
 const refs = shard("60-plugin-marketplace.js");
 const deletion = shard("80-session-share.js");
+const actionGroups = shard("90-action-groups.js");
+const extensionHost = shard("92-extension-host.js");
 const refHelpers = refs.slice(refs.indexOf("  function isClientNewThreadId(value)"), refs.indexOf("  if (window.__CODEX_PLUS_TEST_SESSION_REF__)"));
 const singleFunction = (source: string, name: string) => source.match(new RegExp(`^  (?:async )?function ${name}\\([^]*?^  \\}`, "m"))?.[0] ?? "";
 const uuid = "11111111-1111-4111-8111-111111111111";
@@ -119,11 +121,14 @@ function deleteFixture() {
   activate(uuid);
   // 删除后隐藏行用的样式表（#2614）：stub 只需支持按 id 取回与追加到 head。
   const styles = new Map<string, Element & { id?: string }>();
+  const listeners = new Map<string, Function>();
   const head = { appendChild: (node: Element & { id?: string }) => { node.removed = false; node.remove = () => { node.removed = true; styles.delete(node.id ?? ""); }; styles.set(node.id ?? "", node); return node; } };
   const context = vm.createContext({ Element, HTMLElement: Element, URL, window: { location },
     CSS: { escape: (value: string) => value.replace(/["\\]/g, "\\$&") },
     document: {
       activeElement: null, querySelectorAll: () => buttons, head,
+      addEventListener: (name: string, callback: Function) => listeners.set(name, callback),
+      removeEventListener: (name: string, callback: Function) => { if (listeners.get(name) === callback) listeners.delete(name); },
       querySelector: (selector: string) => rows.find((element) => element.isConnected && selector.includes("data-codex-plus-deleted-session-row") && element.getAttribute("data-codex-plus-deleted-session-row") !== null) ?? null,
       getElementById: (id: string) => styles.get(id) ?? null,
       createElement: () => new Element(),
@@ -139,11 +144,207 @@ function deleteFixture() {
     setTimeout: (_fn: Function, delay: number) => { timers.push(delay); return 1; },
     rpc: { sendRequest: (method: string, params: any) => { refreshes.push({ method, params }); return Promise.resolve({}); } },
   });
-  vm.runInContext(`${refHelpers}\n${singleFunction(refs, "locationThreadId")}\n${singleFunction(refs, "currentSessionRef")}\n${deletion.slice(deletion.indexOf("  function rowHref(row)"), deletion.indexOf("  async function exportMarkdown(ref)"))}\n${singleFunction(deletion, "refreshRecentConversationsForHost")}\nfunction signal(e,t){return rpc.sendRequest(e,t)}; loadOptionalCodexAppModule=async()=>({signal});`, context);
+  vm.runInContext(`${refHelpers}\n${singleFunction(refs, "locationThreadId")}\n${singleFunction(refs, "currentSessionRef")}\n${deletion.slice(deletion.indexOf("  function rowHref(row)"), deletion.indexOf("  async function exportMarkdown(ref)"))}\n${singleFunction(deletion, "uncreatedSessionActionFromRow")}\n${singleFunction(deletion, "deleteUncreatedSession")}\n${singleFunction(deletion, "installDeleteButtonEventDelegation")}\n${singleFunction(deletion, "refreshRecentConversationsForHost")}\nfunction signal(e,t){return rpc.sendRequest(e,t)}; loadOptionalCodexAppModule=async()=>({signal});`, context);
   const begin = async (element = rows[0]) => { context.openDeleteConfirmForRow(element, button, context.sessionRefFromRow(element), { preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} }); await flush(); };
   const finish = async (result = { status: "local_deleted", session_id: requests[0]?.session_id, message: "deleted" }) => { request.resolve(result); await flush(); };
-  return { context, settings, rows, native, buttons, requests, confirmations, diagnostics, timers, toasts, refreshes, styles, begin, finish, activate, setLocation, reloads: () => reloads };
+  return { context, settings, rows, native, buttons, button, listeners, requests, confirmations, diagnostics, timers, toasts, refreshes, styles, begin, finish, activate, setLocation, reloads: () => reloads };
 }
+
+function uncreatedFixture(prefix = "local:") {
+  const f = deleteFixture();
+  const clientId = `client-new-thread:${uuid}`;
+  const rawId = `${prefix}${clientId}`;
+  const pending = { clientThreadId: clientId, hostId: "local", status: "failed" };
+  const calls: string[] = [];
+  const binding = {
+    dataAttributes: { "data-app-action-sidebar-thread-id": rawId },
+    onArchive: () => { calls.push(clientId); },
+  };
+  const owner = { pending };
+  const element = row(rawId, "local");
+  element.__reactFiber$fixture.return = {
+    memoizedProps: binding,
+    return: { memoizedProps: owner, return: null },
+  };
+  f.rows[0] = element;
+  return { ...f, element, binding, owner, pending, calls, clientId, rawId };
+}
+
+function attachButtonFixture(id: string) {
+  class ActionElement extends Element {
+    dataset: Record<string, string> = {};
+    children: ActionElement[] = [];
+    className = "";
+    appendChild(child: ActionElement) {
+      child.parentElement = this;
+      this.children.push(child);
+      return child;
+    }
+  }
+  const element = new ActionElement({ "data-app-action-sidebar-thread-id": id });
+  const body = new ActionElement();
+  const mounted: string[] = [];
+  const items = [
+    { id: "delete", scriptKey: "builtin:session-delete", placement: "inline" },
+    { id: "export", scriptKey: "builtin:session-export", placement: "menu" },
+    { id: "custom-inline", scriptKey: "fixture", placement: "inline" },
+  ].map((item) => ({ ...item, onMount: () => mounted.push(item.id), onActivate() {} }));
+  const context = vm.createContext({
+    Element: ActionElement,
+    selectors: { threadTitle: ".title" },
+    document: { body, createElement: () => new ActionElement() },
+    codexPlusBackendSettings: {},
+    codexPlusRegistry: { rowActions: items },
+    codexPlusExtensionItems: (registered: unknown) => registered,
+    actionGroupClass: "actions",
+    actionButtonClass: "action",
+    moreButtonClass: "more",
+    moreMenuClass: "menu",
+    codexActionGroupVersion: "fixture",
+    removeActionGroups: () => { element.children = []; },
+    actionGroupFromRow: () => null,
+    configureSvgActionButton() {},
+    ellipsisIconSvg: () => "",
+    sessionRowActionIconMarkup: () => "",
+    applyNativeSessionActionStyle() {},
+    installMoreButtonEvents() {},
+    installSessionMoreMenuAutoClose() {},
+    installActionButtonEvents() {},
+    syncNativeSessionActionStyle() {},
+    installNativeSessionActionStyleSync() {},
+    syncActionGroupLayout() {},
+    setTimeout() {},
+    runCodexPlusExtensionCallback: (_key: string, _name: string, callback: Function) => ({ ok: true, value: callback() }),
+    markCodexPlusExtensionNode: (node: ActionElement, key: string) => node.setAttribute("data-codex-plus-ext", key),
+    createSessionMoreMenuItem: () => new ActionElement(),
+  });
+  vm.runInContext(`${refHelpers}\n${singleFunction(actionGroups, "sessionRowActionItems")}\n${singleFunction(extensionHost, "appendCodexPlusExtensionRowActions")}\n${singleFunction(actionGroups, "attachButton")}`, context);
+  context.attachButton(element);
+  const inline = element.children.flatMap((group) => group.children)
+    .map((button) => button.getAttribute("data-codex-plus-row-action")).filter(Boolean);
+  const menu = body.children.flatMap((container) => container.children)
+    .map((item) => item.dataset.codexPlusExtensionItem);
+  return { element, inline, menu, mounted };
+}
+
+test("attachButton mounts only native deletion on an uncreated row", () => {
+  for (const prefix of ["", "local:"]) {
+    const f = attachButtonFixture(`${prefix}client-new-thread:${uuid}`);
+    assert.deepEqual(f.inline, ["delete"]);
+    assert.deepEqual(f.menu, []);
+    assert.deepEqual(f.mounted, ["delete"]);
+    assert.equal(f.element.children.length, 1);
+  }
+});
+
+test("attachButton leaves unknown rows without actions and preserves formal row actions", () => {
+  const unknown = attachButtonFixture("");
+  assert.deepEqual(unknown.inline, []);
+  assert.deepEqual(unknown.menu, []);
+  assert.equal(unknown.element.children.length, 0);
+  const formal = attachButtonFixture(uuid);
+  assert.deepEqual(formal.inline, ["delete", "custom-inline"]);
+  assert.deepEqual(formal.menu, ["export"]);
+  assert.deepEqual(formal.mounted, ["delete", "custom-inline"]);
+});
+
+test("uncreated deletion invokes the native pending action without deleting its UUID suffix", async () => {
+  for (const prefix of ["", "local:"]) {
+    const f = uncreatedFixture(prefix);
+    // 草稿没有撤销备份，即使普通本机会话启用快速删除也仍要确认。
+    f.settings.sessionDeleteSkipConfirm = true;
+    await f.begin();
+    assert.deepEqual(f.calls, [f.clientId]);
+    assert.equal(f.confirmations.length, 1);
+    assert.equal(f.requests.length, 0, "临时 id 及其 UUID 后缀都不能发给 /delete");
+    assert.equal(f.refreshes.length, 0);
+    assert.equal(f.styles.size, 0, "草稿不能写入按正式 UUID 匹配的隐藏表");
+    assert.equal(f.element.removed, false, "清理交给原生状态操作，不直接移除 DOM");
+    assert.match(f.toasts.join(" "), /已关闭未创建成功/);
+  }
+});
+
+test("uncreated deletion cancellation leaves the native pending state untouched", async () => {
+  const f = uncreatedFixture();
+  f.context.confirmDelete = () => Promise.resolve(false);
+  await f.begin();
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.element.removed, false);
+  assert.equal(f.toasts.length, 0);
+});
+
+test("uncreated deletion rechecks identity after confirmation", async () => {
+  const changes: Array<(f: ReturnType<typeof uncreatedFixture>) => void> = [
+    (f) => { f.element.setAttribute("href", `/thread/${uuid}`); },
+    (f) => { f.element.setAttribute("data-app-action-sidebar-thread-id", uuid); },
+    (f) => { f.owner.pending = { ...f.pending }; },
+    (f) => { f.element.setAttribute("data-app-action-sidebar-thread-host-id", "ssh:fixture"); },
+    (f) => { f.element.removed = true; },
+  ];
+  for (const change of changes) {
+    const f = uncreatedFixture();
+    const confirmation = deferred<boolean>();
+    f.context.confirmDelete = () => confirmation.promise;
+    await f.begin();
+    assert.equal(f.calls.length, 0);
+    change(f);
+    confirmation.resolve(true);
+    await flush();
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.requests.length, 0, "不能把确认期间生成的正式会话当作原草稿删除");
+    assert.match(f.toasts.join(" "), /会话已变化/);
+  }
+});
+
+test("uncreated deletion refuses callbacks without a matching pending row identity", async () => {
+  const changes: Array<(f: ReturnType<typeof uncreatedFixture>) => void> = [
+    (f) => { f.owner.pending = { ...f.pending, clientThreadId: `client-new-thread:${otherUuid}` }; },
+    (f) => { f.owner.pending = { ...f.pending, hostId: "ssh:fixture" }; },
+    (f) => { f.owner.pending = { ...f.pending, hostId: "" }; },
+    (f) => { f.binding.dataAttributes["data-app-action-sidebar-thread-id"] = `local:client-new-thread:${otherUuid}`; },
+    (f) => { f.binding.onArchive = undefined as any; },
+    (f) => { f.element.__reactFiber$fixture.return = null; },
+  ];
+  for (const change of changes) {
+    const f = uncreatedFixture();
+    change(f);
+    await f.begin();
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.confirmations.length, 0);
+    assert.match(f.toasts.join(" "), /未找到.*原生关闭入口/);
+  }
+});
+
+test("uncreated deletion reports native callback failures explicitly", async () => {
+  const f = uncreatedFixture();
+  f.binding.onArchive = () => { throw new Error("pending dismiss failed"); };
+  await f.begin();
+  assert.match(f.toasts.join(" "), /关闭待创建会话失败：pending dismiss failed/);
+  assert.doesNotMatch(f.toasts.join(" "), /已关闭/);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.element.removed, false);
+});
+
+test("delete button document delegation reaches the uncreated native action", async () => {
+  const f = uncreatedFixture();
+  f.context.buttonClass = "codex-delete-button";
+  const stopped: string[] = [];
+  const event = {
+    target: { closest: (selector: string) => selector === ".codex-delete-button" ? f.button : null },
+    preventDefault() { stopped.push("default"); },
+    stopPropagation() { stopped.push("propagation"); },
+    stopImmediatePropagation() { stopped.push("immediate"); },
+  };
+  f.button.closest = (selector: string) => selector === "[data-app-action-sidebar-thread-id]" ? f.element : null;
+  f.context.installDeleteButtonEventDelegation();
+  f.listeners.get("click")!(event);
+  await flush();
+  assert.deepEqual(f.calls, [f.clientId]);
+  assert.deepEqual(stopped, ["default", "propagation", "immediate"]);
+  assert.equal(f.requests.length, 0);
+});
 
 test("local current deletion uses native navigation and refresh without a page reload", async () => {
   const f = deleteFixture(); await f.begin(); await f.finish();

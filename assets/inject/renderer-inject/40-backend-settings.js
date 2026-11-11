@@ -106,7 +106,7 @@
   }
 
   async function syncBackendSettingsFromHeartbeat() {
-    if (syncBackendSettingsInFlight) return;
+    if (syncBackendSettingsInFlight) return false;
     syncBackendSettingsInFlight = true;
     try {
       // 记下读之前的设置：loadBackendSettingsState 换成新对象，旧引用里还是上一次的值。
@@ -118,7 +118,7 @@
         const next = previous ? codexPlusBackendSettingsSnapshot() : null;
         if (previous?.modelCatalogFingerprint && next?.modelCatalogFingerprint
             && previous.modelCatalogFingerprint !== next.modelCatalogFingerprint) {
-          await loadCodexModelCatalog(true);
+          await loadCodexModelCatalog(typeof refreshCodexModelCatalogForSettings !== "function");
         }
         // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
         emitCodexPlusSettingsLoaded("heartbeat", previous && next && typeof codexPlusChangedBackendSettingKeys === "function"
@@ -129,6 +129,7 @@
         syncCodexPlusBackendToggleButtons();
         renderCodexPlusMenu();
       }
+      return loaded;
     } finally {
       syncBackendSettingsInFlight = false;
     }
@@ -204,7 +205,7 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
-  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  /** 上次心跳成功读取的设置版本。 */
   let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
@@ -299,8 +300,11 @@
           || !codexPlusBackendSettingsLoaded
           || revision !== codexPlusBackendSettingsRevision;
         if (settingsStale) {
-          codexPlusBackendSettingsRevision = revision;
-          void syncBackendSettingsFromHeartbeat();
+          void syncBackendSettingsFromHeartbeat().then((loaded) => {
+            if (loaded && codexPlusBackendGeneration === window.__codexPlusBackendGeneration) {
+              codexPlusBackendSettingsRevision = revision;
+            }
+          }).catch(() => {});
         }
       } else {
         codexPlusBackendFailureCount += 1;
@@ -1058,7 +1062,9 @@
   function syncCodexPlusRailNativeSelection() {
     const root = document.documentElement;
     if (!root) return;
-    if (!document.querySelector(`.${codexPlusPageClass}`)) {
+    const open = Boolean(document.querySelector(`.${codexPlusPageClass}`));
+    syncCodexPlusPagePopupStyle(open);
+    if (!open) {
       root.removeAttribute("data-codex-plus-page-open");
       root.style.removeProperty("--codex-plus-rail-dim");
       return;

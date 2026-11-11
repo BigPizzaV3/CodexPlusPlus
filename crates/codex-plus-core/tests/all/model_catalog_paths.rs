@@ -233,6 +233,83 @@ fn migration_only_changes_the_existing_managed_catalog_pointer_and_is_idempotent
 }
 
 #[test]
+fn startup_migration_removes_legacy_ceilings_without_reapplying_the_profile() {
+    for wsl in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        std::fs::create_dir(home.join("model-catalogs")).unwrap();
+        let legacy = home.join("model-catalogs/legacy.json");
+        let original_catalog = serde_json::json!({
+            "models": [
+                {
+                    "slug": "manually-selected-model",
+                    "context_window": 131072,
+                    "max_context_window": 131072,
+                    "auto_compact_token_limit": 90000,
+                    "supports_parallel_tool_calls": false,
+                    "vendor_extension": { "preserved": true }
+                },
+                { "slug": "already-uncapped", "context_window": 262144, "max_context_window": null }
+            ],
+            "vendor_catalog_field": "preserved"
+        });
+        let original_bytes = serde_json::to_vec_pretty(&original_catalog).unwrap();
+        std::fs::write(&legacy, &original_bytes).unwrap();
+        let config = write_pointer(home, &legacy);
+        let config = format!("{config}\n[desktop]\nrunCodexInWindowsSubsystemForLinux = {wsl}\n");
+        std::fs::write(home.join("config.toml"), &config).unwrap();
+        let auth = br#"{"OPENAI_API_KEY":"test-unchanged"}"#;
+        std::fs::write(home.join("auth.json"), auth).unwrap();
+        let settings = BackendSettings::default();
+
+        assert!(migrate_managed_model_catalog_pointer_in_home(home, &settings).unwrap());
+
+        let migrated_pointer = pointer(home);
+        assert_eq!(migrated_pointer.is_relative(), wsl);
+        let migrated = if migrated_pointer.is_absolute() {
+            migrated_pointer.clone()
+        } else {
+            home.join(&migrated_pointer)
+        };
+        assert_ne!(migrated, legacy);
+        let actual: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&migrated).unwrap()).unwrap();
+        let mut expected = original_catalog;
+        expected["models"][0]["max_context_window"] = serde_json::Value::Null;
+        assert_eq!(actual, expected);
+        assert_eq!(std::fs::read(&legacy).unwrap(), original_bytes);
+        assert_eq!(std::fs::read(home.join("auth.json")).unwrap(), auth);
+        let mut expected_config = config.parse::<toml_edit::DocumentMut>().unwrap();
+        expected_config["model_catalog_json"] =
+            toml_edit::value(migrated_pointer.to_string_lossy().as_ref());
+        let migrated_config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+        assert_eq!(migrated_config, expected_config.to_string());
+        assert!(!migrate_managed_model_catalog_pointer_in_home(home, &settings).unwrap());
+        assert_eq!(std::fs::read_dir(home.join("model-catalogs")).unwrap().count(), 2);
+        assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap(), migrated_config);
+        std::fs::write(home.join("config.toml"), &config).unwrap();
+        assert!(migrate_managed_model_catalog_pointer_in_home(home, &settings).unwrap());
+        assert_eq!(pointer(home), migrated_pointer);
+        assert_eq!(std::fs::read_dir(home.join("model-catalogs")).unwrap().count(), 2);
+    }
+}
+
+#[test]
+fn startup_migration_reports_invalid_catalogs_without_changing_the_pointer() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("model-catalogs")).unwrap();
+    let original = write_pointer(temp.path(), Path::new("model-catalogs/legacy.json"));
+    for invalid in ["{bad", r#"{"models":{}}"#] {
+        std::fs::write(temp.path().join("model-catalogs/legacy.json"), invalid).unwrap();
+        assert!(migrate_managed_model_catalog_pointer_in_home(
+            temp.path(), &BackendSettings::default()
+        ).is_err());
+        assert_eq!(std::fs::read_to_string(temp.path().join("config.toml")).unwrap(), original);
+        assert_eq!(std::fs::read_dir(temp.path().join("model-catalogs")).unwrap().count(), 1);
+    }
+}
+
+#[test]
 fn migration_preserves_disabled_external_missing_absolute_and_escaping_pointers() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
@@ -244,7 +321,7 @@ fn migration_preserves_disabled_external_missing_absolute_and_escaping_pointers(
         "external/model-catalogs/custom.json",
         "model-catalogs/nested/custom.json",
     ] {
-        std::fs::write(home.join(relative), "{}").unwrap();
+        std::fs::write(home.join(relative), r#"{"models":[]}"#).unwrap();
     }
     let settings = BackendSettings::default();
     let disabled = BackendSettings {

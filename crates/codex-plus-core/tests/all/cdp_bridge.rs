@@ -2829,7 +2829,8 @@ fn injection_script_heartbeat_syncs_backend_settings() {
     // 心跳在健康时顺带刷新后端设置，让 manager 侧的改动能传播到已运行窗口（issue #2221）。
     assert!(script.contains("function syncBackendSettingsFromHeartbeat"));
     assert!(script.contains("syncBackendSettingsInFlight"));
-    assert!(script.contains("void syncBackendSettingsFromHeartbeat();"));
+    assert!(script.contains("void syncBackendSettingsFromHeartbeat().then((loaded) =>"));
+    assert!(script.contains("if (loaded && codexPlusBackendGeneration === window.__codexPlusBackendGeneration)"));
     // 跟着设置走的功能由内置拓展订阅 settings/loaded（对话宽度开关变了就重算宽度）。
     // 心跳还带上变了的设置字段名，并比较供应商发 relayProfile/switched、modelCatalog/changed。
     assert!(script.contains("emitCodexPlusSettingsLoaded(\"heartbeat\", "));
@@ -3041,9 +3042,10 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains(
         "? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : \"\")"
     ));
-    // 删除是内置拓展注册的行内会话行操作：点击时按当下的行重新解析会话（临时 id 不删）。
+    // 正式会话按当下的行解析；临时 id 走原生 pending 清理，不发送到持久会话删除接口。
     assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
-    assert!(script.contains("会话仍在同步，请稍后重试"));
+    assert!(script.contains("return deleteUncreatedSession(row, button);"));
+    assert!(script.contains("function uncreatedSessionActionFromRow(row)"));
     assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
 
     let cases = run_session_ref_contract_harness();
@@ -3373,7 +3375,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"33\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"37\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3386,7 +3388,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("modelWhitelistUnlock"));
     assert!(!script.contains("|| settingsResp.relayProfiles[0]"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
-    assert!(script.contains("codexPlusModelListRequestIds.size === 0"));
+    assert!(script.contains("codexPlusModelListRequests.has(requestId)"));
     assert!(!script.contains("function patchReactModelState"));
     assert!(!script.contains("function patchObjectGraphForModels"));
     assert!(!script.contains("window.dispatchEvent = function patchedCodexPlusDispatchEvent"));
@@ -3429,6 +3431,7 @@ const modelReasoningEfforts = () => [];
 const applyCodexPlusModelMetadata = () => false;
 const codexPlusModelNames = () => ["supplier-default", "extra-model"];
 let relayMode = "official";
+const window = {{}};
 const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode }});
 const codexPlusModelUnlockEnabled = () => true;
 const codexPlusBackendSettingsLoaded = true;
@@ -3725,15 +3728,10 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
         json!([
             "thread/start:model-old",
             "turn/start:model-old",
-            "thread/resume:model-new",
             "turn/start:model-new",
             "turn/start:"
         ])
     );
-    assert_eq!(cases["modelSwitchResumeProvider"], "sub2api");
-    assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
-    assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
-    assert_eq!(cases["delayedResumeWaited"], true);
     assert_eq!(cases["hungSettingsForwarded"], json!(["instance", "prototype"]));
     assert_eq!(cases["lateSettingsIgnored"], json!(["stale_vendor", "stale_vendor"]));
     assert_eq!(cases["turnCompletedBeforeCatalogRead"], true);
@@ -4429,50 +4427,6 @@ await modelSwitchClient.sendRequest("turn/start", {{
   input: [],
 }});
 const modelSwitchCallOrder = modelSwitchCalls.map((call) => `${{call.method}}:${{call.params?.model || ""}}`);
-const modelSwitchResumeProvider = modelSwitchCalls.find((call) => call.method === "thread/resume")?.params?.modelProvider || "";
-
-const failedModelSwitchCalls = [];
-const failedModelSwitchClient = {{
-  async sendRequest(method, params) {{
-    failedModelSwitchCalls.push({{ method, params }});
-    if (method === "thread/resume") throw new Error("synthetic resume failure");
-    return {{ ok: true }};
-  }},
-}};
-api.patchAppServerClient(failedModelSwitchClient);
-await failedModelSwitchClient.sendRequest("thread/start", {{
-  threadId: "thread-model-context-failure",
-  model: "model-old",
-}});
-await failedModelSwitchClient.sendRequest("turn/start", {{
-  threadId: "thread-model-context-failure",
-  model: "model-new",
-  input: [],
-}});
-await failedModelSwitchClient.sendRequest("turn/start", {{
-  threadId: "thread-model-context-failure",
-  model: "model-new",
-  input: [],
-}});
-const failedModelSwitchResumeAttempts = failedModelSwitchCalls.filter((call) => call.method === "thread/resume").length;
-const failedModelSwitchTurnAttempts = failedModelSwitchCalls.filter((call) => call.method === "turn/start").length;
-
-let finishDelayedResume;
-const delayedResumeCalls = [];
-const delayedResumeClient = {{
-  async sendRequest(method) {{
-    delayedResumeCalls.push(method);
-    return method === "thread/resume" ? new Promise((resolve) => {{ finishDelayedResume = resolve; }}) : {{ ok: true }};
-  }},
-}};
-api.patchAppServerClient(delayedResumeClient);
-await delayedResumeClient.sendRequest("thread/start", {{ threadId: "delayed-resume", model: "model-old" }});
-const delayedResumeTurn = delayedResumeClient.sendRequest("turn/start", {{ threadId: "delayed-resume", model: "model-new" }});
-await new Promise(setImmediate);
-const delayedResumeWaited = delayedResumeCalls.at(-1) === "thread/resume" && !delayedResumeCalls.includes("turn/start");
-finishDelayedResume({{ ok: true }});
-await delayedResumeTurn;
-
 async function expectNativeRequestCompletes(promise) {{
   let timeoutId;
   try {{
@@ -4734,10 +4688,6 @@ process.stdout.write(JSON.stringify({{
   pureApiRecoveryUnscheduled,
   pureOfficialProviderUnchanged,
   modelSwitchCallOrder,
-  modelSwitchResumeProvider,
-  failedModelSwitchResumeAttempts,
-  failedModelSwitchTurnAttempts,
-  delayedResumeWaited,
   hungSettingsForwarded,
   lateSettingsIgnored,
   turnCompletedBeforeCatalogRead,

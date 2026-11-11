@@ -71,10 +71,58 @@ pub fn set_global_dictation_hotkey(enabled: bool, hotkey: String) -> CommandResu
 }
 
 #[tauri::command]
+pub async fn claude_local_status() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(codex_plus_core::claude_local_backend::status).await {
+        Ok(Ok(status)) => ok(
+            "Claude 原版本地模式状态已读取。",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 状态读取失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_local_configure(
+    config: codex_plus_core::settings::ClaudeLocalSettings,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        let status = codex_plus_core::claude_local_backend::configure(config)?;
+        sync_resident_helper();
+        Ok::<_, anyhow::Error>(status)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ok(
+            "Claude 本地模式设置已保存。",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_local_action(action: String) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_local_backend::perform(&action)
+    })
+    .await
+    {
+        Ok(Ok(payload)) => ok(
+            &payload.message,
+            serde_json::to_value(payload.status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 本地模式操作失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn claude_localization_status() -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(codex_plus_core::claude_localization::status).await {
         Ok(Ok(status)) => ok(
-            "Claude 增强状态已读取。",
+            "补丁 Desktop 状态已读取。",
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
@@ -119,7 +167,7 @@ pub async fn claude_localization_action(
             serde_json::to_value(payload.status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
-        Err(error) => failed(&format!("Claude 增强操作失败：{error}"), json!({})),
+        Err(error) => failed(&format!("补丁 Desktop 操作失败：{error}"), json!({})),
     }
 }
 
@@ -157,9 +205,9 @@ pub async fn claude_localization_set_extensions(enabled: bool) -> CommandResult<
     {
         Ok(Ok(status)) => ok(
             if enabled {
-                "Claude 拓展已开启，重启增强版后应用。"
+                "Claude 拓展已开启，重启补丁版后应用。"
             } else {
-                "Claude 拓展已关闭，重启增强版后应用。"
+                "Claude 拓展已关闭，重启补丁版后应用。"
             },
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
@@ -216,7 +264,7 @@ pub async fn claude_localization_set_bash_timeout(
         codex_plus_core::claude_localization::set_bash_timeout(timeout)
     }).await {
         Ok(Ok(status)) => ok(
-            "Bash 时间限制设置已保存；重启增强版后生效。",
+            "Bash 时间限制设置已保存；重启补丁版后生效。",
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
@@ -3455,9 +3503,13 @@ pub fn sync_resident_helper() -> Option<u16> {
         .is_some_and(codex_plus_core::claude_localization::voice_input_needs_helper);
     // 第四个信号：有 Agent 开着网关模式，它的请求随时会打到 helper 的 `/gw/*`。
     let gateway_needs_helper = codex_plus_core::gateway::needs_helper();
+    let claude_local_needs_helper = settings
+        .as_ref()
+        .is_some_and(|settings| settings.claude_desktop_local.enabled);
     if !settings_need_proxy
         && !claude_voice_needs_helper
         && !gateway_needs_helper
+        && !claude_local_needs_helper
         && !codex_plus_core::relay_config::live_config_uses_managed_protocol_proxy_in_home(&home)
     {
         return None;
@@ -4513,6 +4565,16 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
                     );
                 }
             };
+            if let Err(error) =
+                codex_plus_core::relay_config::migrate_managed_model_catalog_pointer_in_home(
+                    &home, &settings,
+                )
+            {
+                log_manager_event(
+                    "manager.model_catalog_migration_failed",
+                    json!({ "message": format!("{error:#}") }),
+                );
+            }
             ok(
                 "设置已加载。",
                 SettingsPayload {
@@ -6970,7 +7032,7 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
     match result {
         Ok(_) => settings_payload(
             if claude && enabled {
-                "Claude Desktop 拓展已开启，重新启动增强版 Claude 后加载。"
+                "Claude Desktop 拓展已开启，重新启动补丁版 Claude 后加载。"
             } else if claude {
                 "Claude Desktop 拓展已关闭。"
             } else if enabled {
@@ -7150,7 +7212,7 @@ pub fn set_user_script_enabled(key: String, enabled: bool, host: Option<String>)
     match result {
         Ok(_) => settings_payload(
             if claude && enabled {
-                "Claude Desktop 拓展已启用，重新启动增强版 Claude 后加载。"
+                "Claude Desktop 拓展已启用，重新启动补丁版 Claude 后加载。"
             } else if claude {
                 "Claude Desktop 拓展已停用。"
             } else if enabled {

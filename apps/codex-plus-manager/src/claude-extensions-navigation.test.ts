@@ -92,6 +92,7 @@ function harness() {
       tools: [{ id: activeTool, name: activeTool, switchable: true, relayCount: 0 }],
       activeTool, focus, soloAgent: singleAgent(focus), route: "overview", theme: "light", version: "test",
       codexRun: { running: true, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
+      claudeRun: { running: false, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
       onNavigate: (route: string) => navigations.push(route),
     }) as Element,
   };
@@ -312,7 +313,7 @@ test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排�
   assert.equal(nodes.some((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展"), false);
   assert.equal(nodes.some((node) => node.props.role === "tab"), false);
   assert.equal(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")), false);
-  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 增强版"));
+  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 补丁版"));
   assert.ok(open);
   open.props.onClick();
   assert.deepEqual(h.calls, [["openClaude"]]);
@@ -495,7 +496,7 @@ test("Codex 保存动作默认省略 host 参数并保留热重载", async () =>
   }
 });
 
-test("Claude 总开关传递 host 并只同步相关设置字段及增强版缓存", async () => {
+test("Claude 总开关传递 host 并只同步相关设置字段及补丁版缓存", async () => {
   for (const enabled of [true, false]) {
     const result = extensionActionResult(enabled);
     const h = extensionActionHarness(result);
@@ -595,6 +596,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: true,
     claudeAppComputerUse: true,
     claudeAppBashTimeout: 900000,
+    claudeDesktopLocal: { enabled: true, model: "claude-test", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
     // #2937：记下使用模式也由后端单独写入，表单要跟上，否则下一次整份保存会写回旧值。
     managerAgentFocus: "enhance",
   };
@@ -608,6 +610,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: false,
     claudeAppComputerUse: false,
     claudeAppBashTimeout: 60000,
+    claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: false, computerUse: false, backgroundMode: false },
     managerAgentFocus: "",
     theme: "unsaved-theme",
     providerDraft: { model: "unsaved-model" },

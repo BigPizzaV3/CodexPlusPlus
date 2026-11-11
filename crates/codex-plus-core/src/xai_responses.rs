@@ -341,27 +341,54 @@ fn tidy_input(body: &mut Value) {
 }
 
 /// 明文的 agent_message 改成 user 消息，开头写明谁发给谁。
-/// 加密的、空的或含其他类型内容的保持原样。
+/// multi_agent v2 的真实形态是 input_text 头部（以 `Payload:` 结尾）加
+/// encrypted_content 明文载荷片段，复用 protocol_proxy 的已确认形状判定；
+/// 顶层加密的、空的、载荷 opaque 的或含其他类型内容的保持原样。
 fn agent_message_as_user(item: &Value) -> Option<Value> {
     if item.get("type").and_then(Value::as_str) != Some("agent_message")
         || item.get("encrypted_content").is_some()
     {
         return None;
     }
-    let parts = item.get("content").and_then(Value::as_array)?;
+    let content = item.get("content")?;
+    let parts = content.as_array()?;
     if parts.is_empty() {
         return None;
     }
-    let plain = parts.iter().all(|part| {
-        part.get("encrypted_content").is_none()
-            && match part.get("type").and_then(Value::as_str) {
-                Some("input_text") => part.get("text").is_some_and(Value::is_string),
-                Some("input_image") => part.get("image_url").is_some_and(Value::is_string),
-                _ => false,
+    let confirmed_plaintext =
+        crate::protocol_proxy::agent_message_has_confirmed_plaintext_shape(content);
+    let mut body_parts = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part.get("type").and_then(Value::as_str) {
+            Some("input_text")
+                if part.get("encrypted_content").is_none()
+                    && part.get("text").is_some_and(Value::is_string) =>
+            {
+                body_parts.push(part.clone());
             }
-    });
-    if !plain {
-        return None;
+            Some("input_image")
+                if part.get("encrypted_content").is_none()
+                    && part.get("image_url").is_some_and(Value::is_string) =>
+            {
+                body_parts.push(part.clone());
+            }
+            Some("encrypted_content") if confirmed_plaintext => {
+                let value = part
+                    .get("encrypted_content")
+                    .or_else(|| part.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if value.is_empty()
+                    || crate::protocol_proxy::encrypted_content_value_is_opaque(value)
+                {
+                    // opaque 载荷没法安全当文本透传，整条 agent_message 保持原样，
+                    // 不静默丢内容。
+                    return None;
+                }
+                body_parts.push(json!({ "type": "input_text", "text": value }));
+            }
+            _ => return None,
+        }
     }
     let from = item
         .get("author")
@@ -377,11 +404,11 @@ fn agent_message_as_user(item: &Value) -> Option<Value> {
         (true, false) => format!("To {to}"),
         (true, true) => String::new(),
     };
-    let mut content = Vec::with_capacity(parts.len() + 1);
+    let mut content = Vec::with_capacity(body_parts.len() + 1);
     if !header.is_empty() {
         content.push(json!({ "type": "input_text", "text": format!("{header}\n\n") }));
     }
-    content.extend(parts.iter().cloned());
+    content.extend(body_parts);
     Some(json!({ "type": "message", "role": "user", "content": content }))
 }
 
@@ -708,6 +735,65 @@ mod tests {
             ]})
         );
         assert_eq!(input[2]["type"], "agent_message", "加密的保持原样");
+    }
+
+    #[test]
+    fn confirmed_plaintext_agent_message_becomes_user_for_xai() {
+        // multi_agent v2 的真实形态：Payload: 头部 + 明文 encrypted_content 载荷。
+        let request = json!({
+            "input": [
+                {"type": "agent_message", "id": "amsg_real_shape",
+                 "author": "/root/orchestrator", "recipient": "/root/worker",
+                 "content": [
+                     {"type": "input_text",
+                      "text": "Message Type: NEW_TASK Task name: /root/worker Payload:"},
+                     {"type": "encrypted_content",
+                      "encrypted_content": "收到任务：请核对改动并把结论整理成三段发回。"}
+                 ]}
+            ]
+        });
+        let (shaped, _) = shape_request(request).unwrap();
+        let item = &shaped["input"][0];
+        assert_eq!(item["type"], "message");
+        assert_eq!(item["role"], "user");
+        assert_eq!(
+            item["content"],
+            json!([
+                {"type": "input_text",
+                 "text": "From /root/orchestrator to /root/worker\n\n"},
+                {"type": "input_text",
+                 "text": "Message Type: NEW_TASK Task name: /root/worker Payload:"},
+                {"type": "input_text",
+                 "text": "收到任务：请核对改动并把结论整理成三段发回。"}
+            ])
+        );
+    }
+
+    #[test]
+    fn opaque_agent_message_payload_stays_untouched_for_xai() {
+        let request = json!({
+            "input": [
+                {"type": "agent_message",
+                 "content": [
+                     {"type": "input_text", "text": "Task Payload:"},
+                     {"type": "encrypted_content",
+                      "encrypted_content": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX"}
+                 ]},
+                {"type": "agent_message",
+                 "content": [
+                     {"type": "encrypted_content", "encrypted_content": "plain text"}
+                 ]}
+            ]
+        });
+        let (shaped, _) = shape_request(request).unwrap();
+        assert_eq!(
+            shaped["input"][0]["type"], "agent_message",
+            "opaque 载荷保持原样"
+        );
+        assert_eq!(
+            shaped["input"][1]["type"], "agent_message",
+            "缺 Payload: 头部的不算已确认明文形态，保持原样"
+        );
     }
 
     #[test]

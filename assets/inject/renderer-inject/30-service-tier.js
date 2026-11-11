@@ -202,8 +202,11 @@
       const status = read?.thread?.status?.type;
       if (!["idle", "notLoaded", "active"].includes(status)) {
         fallbackReason = "thread_state_unavailable";
-      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
-        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      } else if (status !== "notLoaded") {
+        if (read.thread.modelProvider !== target) {
+          throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+        }
+        return params;
       }
     }
     const config = { ...(params.config || {}) };
@@ -351,10 +354,16 @@
         && codexRemoteSessionActiveProfile()?.relayMode === "aggregate") {
       await loadBackendSettingsState(codexAppServerPreparationTimeoutMs);
     }
-    const nextParams = applyCodexManagedSessionConnection("thread/start",
+    let nextParams = applyCodexManagedSessionConnection("thread/start",
       params, client.hostId);
+    if (typeof prepareCodexThreadContextStart === "function") {
+      nextParams = await prepareCodexThreadContextStart("thread/start", nextParams, client.hostId);
+    }
     const result = await prewarm(nextParams, options);
     noteCodexManagedSessionStart("thread/start", nextParams, result, client.hostId);
+    if (typeof noteCodexThreadRuntimeContext === "function") {
+      noteCodexThreadRuntimeContext("thread/start", nextParams, result, client.hostId);
+    }
     return result;
   }
 
@@ -435,22 +444,15 @@
     }
   }
 
-  async function reloadCodexManagedSessionConnection(threadId, read, turnParams, sendRequest, options, signature) {
-    const recoveryOptions = codexManagedSessionRecoveryOptions(options);
-    // 已加载 resume 不改配置，可用于读取运行时设置；不拉取整段聊天历史。
-    const current = read.thread.status.type === "idle"
-      ? await sendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions) : null;
-    if (current?.thread?.status && current.thread.status.type !== "idle") {
-      throw new Error("请先停止当前回复，再恢复连接");
-    }
-    assertCodexManagedSessionConnection(signature);
+  function codexThreadReloadParams(threadId, current, turnParams) {
     const params = { threadId, excludeTurns: true, config: {} };
     for (const key of ["cwd", "approvalPolicy", "approvalsReviewer", "runtimeWorkspaceRoots", "serviceTier"]) {
       if (current?.[key] !== undefined) params[key] = current[key];
     }
-    const model = turnParams?.model || current?.model;
+    const model = turnParams?.collaborationMode?.settings?.model || turnParams?.model || current?.model;
     if (model) params.model = model;
-    const effort = turnParams?.effort ?? current?.reasoningEffort;
+    const effort = turnParams?.collaborationMode?.settings?.reasoning_effort
+      ?? turnParams?.effort ?? current?.reasoningEffort;
     if (effort) params.config.model_reasoning_effort = effort;
     if (Object.prototype.hasOwnProperty.call(turnParams || {}, "serviceTier")) {
       params.serviceTier = turnParams.serviceTier;
@@ -472,7 +474,20 @@
         };
       }
     }
-    const protectedParams = applyCodexManagedSessionConnection("thread/resume", params, "local");
+    return params;
+  }
+
+  async function reloadCodexManagedSessionConnection(threadId, read, turnParams, sendRequest, options, signature) {
+    const recoveryOptions = codexManagedSessionRecoveryOptions(options);
+    // 已加载 resume 不改配置，可用于读取运行时设置；不拉取整段聊天历史。
+    const current = read.thread.status.type === "idle"
+      ? await sendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions) : null;
+    if (current?.thread?.status && current.thread.status.type !== "idle") {
+      throw new Error("请先停止当前回复，再恢复连接");
+    }
+    assertCodexManagedSessionConnection(signature);
+    const protectedParams = applyCodexManagedSessionConnection("thread/resume",
+      codexThreadReloadParams(threadId, current, turnParams), "local");
     // 已加载 resume 忽略连接覆盖，必须先卸载空闲会话再恢复。
     await sendRequest("thread/unsubscribe", { threadId }, recoveryOptions);
     assertCodexManagedSessionConnection(signature);
@@ -1006,8 +1021,12 @@
       if (seq !== codexPlusBackendSettingsSeq) {
         return false;
       }
+      const previousSettings = codexPlusBackendSettings;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof refreshCodexModelCatalogForSettings === "function") {
+        refreshCodexModelCatalogForSettings(previousSettings, codexPlusBackendSettings);
+      }
       globalThis.window?.__codexPlusNativeFastUnlock?.runtime?.update?.({
         enhancementsEnabled: codexPlusBackendSettings.enhancementsEnabled !== false,
         codexAppNativeFastUnlock: codexPlusBackendSettings.codexAppNativeFastUnlock === true,

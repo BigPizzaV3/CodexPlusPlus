@@ -102,6 +102,24 @@ function snapshotRuntime(read?: (payload: any) => Promise<any>) {
 }
 
 describe("pure API persisted model snapshot", () => {
+  it("keeps loaded matching-provider settings instead of restoring an older disk snapshot", async () => {
+    for (const status of ["idle", "active"]) {
+      for (const metadataFails of [false, true]) {
+        const api = snapshotRuntime(async ({ thread_id }) => {
+          if (metadataFails) throw new Error("snapshot unavailable");
+          return { status: "ok", threadId: thread_id, model: "older-model", reasoningEffort: "high" };
+        });
+        const params = { threadId: "a", config: { model_context_window: 500000 } };
+        const result = await api.prepare("thread/resume", params, "local", false,
+          async () => ({ thread: { id: "a", status: { type: status }, modelProvider: "custom" },
+            model: "user-chosen-model", reasoningEffort: "low" }));
+        assert.equal(result, params);
+        assert.equal(Object.hasOwn(result, "model"), false);
+        assert.equal(Object.hasOwn(result.config, "model_reasoning_effort"), false);
+      }
+    }
+  });
+
   it("restores each saved model and effort with the current provider without changing caller objects", async () => {
     const api = snapshotRuntime(async ({ thread_id }) => ({ status: "ok", threadId: thread_id,
       model: `saved-${thread_id}`, reasoningEffort: thread_id === "a" ? "ultra" : "low" }));
@@ -466,6 +484,8 @@ describe("pure API persisted model snapshot", () => {
         appServerModelRequestMethod: (method: string, params: any) => method === "send-cli-request-for-host" ? params.method : method,
         loadBackendSettingsState: async () => scenario !== "refresh-failed", loadCodexModelCatalog: async () => ({}),
         prepareCodexManagedSessionConnection: async (_method: string, params: any) => params,
+        prepareCodexThreadContextStart: async (_method: string, params: any) => params,
+        noteCodexThreadRuntimeContext() {},
         codexManagedSessionConnection: () => null, refreshCodexThreadModelBeforeTurn: async () => null,
         sendCodexManagedSessionTurn: async () => null, noteCodexManagedSessionStart() {},
         codexThreadModelRequestState: () => ({}), codexPlusModelUnlockEnabled: () => false,
@@ -503,6 +523,96 @@ describe("pure API persisted model snapshot", () => {
         assert.equal(diagnostics.filter(event => event === "pure_api_resume_model_fallback").length, 1);
       }
     }
+  });
+
+});
+
+describe("settings-driven catalog refresh ownership", () => {
+  const settingsSource = source.slice(source.indexOf("  async function loadBackendSettingsState("));
+  function settingsRuntime() {
+    const previous = { enhancementsEnabled: true, providerSyncEnabled: false, modelCatalogFingerprint: "before" };
+    const next = { enhancementsEnabled: true, providerSyncEnabled: true, modelCatalogFingerprint: "after" };
+    const context = vm.createContext({
+      window: { __CODEX_PLUS_TEST_SERVICE_TIER__: true },
+      codexPlusBackendSettings: previous, codexPlusBackendSettingsLoaded: false, codexPlusBackendSettingsSeq: 1,
+      postJson: async () => next,
+    });
+    vm.runInContext(settingsSource, context);
+    return { context, previous, next };
+  }
+
+  it("publishes current settings before the guarded catalog refresh with the previous snapshot", async () => {
+    const { context, previous, next } = settingsRuntime();
+    const calls: any[] = [];
+    context.refreshCodexModelCatalogForSettings = (before: any, after: any) => {
+      assert.equal(before, previous);
+      assert.equal(after, context.codexPlusBackendSettings);
+      assert.equal(context.codexPlusBackendSettingsLoaded, true);
+      calls.push(after);
+    };
+    assert.equal(await context.loadBackendSettingsState(), true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual({ ...calls[0] }, next);
+    assert.equal(previous.modelCatalogFingerprint, "before");
+  });
+
+  it("loads settings when the catalog shard is absent and does not publish stale or invalid settings", async () => {
+    const absent = settingsRuntime();
+    assert.equal(await absent.context.loadBackendSettingsState(), true);
+    for (const scenario of ["stale", "invalid"]) {
+      const { context, previous, next } = settingsRuntime();
+      context.refreshCodexModelCatalogForSettings = () => { assert.fail("must not refresh"); };
+      context.postJson = async () => {
+        if (scenario === "stale") context.codexPlusBackendSettingsSeq++;
+        return scenario === "invalid" ? {} : next;
+      };
+      assert.equal(await context.loadBackendSettingsState(), false);
+      assert.equal(context.codexPlusBackendSettings, previous);
+      assert.equal(context.codexPlusBackendSettingsLoaded, false);
+    }
+  });
+
+  it("reloads the actual catalog and only invalidates local model queries without selecting a thread model", async () => {
+    const { context, previous, next } = settingsRuntime();
+    const catalog = readFileSync(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
+    const refresh = catalog.slice(catalog.indexOf("  function codexModelSettingsSource("),
+      catalog.indexOf("  function codexPlusModelMetadata("));
+    const selected = { threadId: "a", model: "saved-outside-catalog", reasoningEffort: "ultra",
+      onSelectModel: () => assert.fail("catalog refresh must not select a model") };
+    const runtime = { catalog: { status: "ok", models: ["old-model"] }, source: "", settingsKey: "",
+      loadedAt: 1, retryAt: 0, failure: null };
+    const queries = [
+      ["models", "local"], ["models", "remote"], ["thread", "local", "a"], ["thread", "local", "b"],
+    ];
+    const invalidated: any[] = [];
+    const calls: string[] = [];
+    Object.assign(context, {
+      codexModelCatalogRuntime: runtime, codexModelCatalog: runtime.catalog, codexModelCatalogLoadedAt: 1,
+      codexModelCatalogPromise: null, codexModelCatalogRevision: 0, selected,
+      readCodexAppServerPreparation: async (route: string) => {
+        calls.push(route);
+        assert.equal(route, "/codex-model-catalog");
+        return { status: "ok", model: "new-default", default_model: "new-default", models: ["new-default"] };
+      },
+      findCodexQueryClient: () => ({
+        getQueryCache: () => ({ getAll: () => queries.map(queryKey => ({ queryKey, state: { data: selected } })) }),
+        invalidateQueries: async (options: any) => { invalidated.push(options.queryKey); },
+      }),
+      codexPlusModelPickerCatalogChanged() {}, renderCodexPlusMenu() {}, scheduleCodexModelWhitelistRefresh() {},
+      syncCodexPlusGroupModelQueries() {},
+      sendCodexPlusDiagnostic() {},
+    });
+    context.window.__codexPlusModelCatalogRuntime = runtime;
+    vm.runInContext(refresh, context);
+    const original = { ...selected };
+    assert.equal(await context.loadBackendSettingsState(), true);
+    await context.loadCodexModelCatalog();
+    assert.deepEqual(calls, ["/codex-model-catalog"]);
+    assert.deepEqual(invalidated, [["models", "local"]]);
+    assert.equal(context.codexModelCatalog.default_model, "new-default");
+    assert.deepEqual(selected, original);
+    assert.equal(previous.modelCatalogFingerprint, "before");
+    assert.equal(context.codexPlusBackendSettings.modelCatalogFingerprint, next.modelCatalogFingerprint);
   });
 });
 

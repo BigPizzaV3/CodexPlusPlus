@@ -61,6 +61,23 @@
   // Cache structural :has() predicates as element markers. Chromium otherwise
   // re-evaluates these stylesheet conditions during every native hover update.
   const CSS_PREDICATES = [{"selector":":has([role=\"main\"])","attribute":"data-dream-has-0","branches":[{"selector":"[role=\"main\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-0]), :is(* [role=\"main\"]):not(*))"},{"selector":":has(main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]))","attribute":"data-dream-has-1","branches":[{"selector":"main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"])","relation":"descendant"}],"replacement":":is(:where([data-dream-has-1]), :is(* main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"])):not(*))"},{"selector":":has(main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not([data-app-shell-active-page=\"false\"], [data-app-shell-active-page=\"false\"] *) [role=\"main\"])","attribute":"data-dream-has-2","branches":[{"selector":"main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not([data-app-shell-active-page=\"false\"], [data-app-shell-active-page=\"false\"] *) [role=\"main\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-2]), :is(* main:is(.main-surface, [data-app-shell-main-surface], [class*=\"_MainContentSurface_\"]):not([data-app-shell-active-page=\"false\"], [data-app-shell-active-page=\"false\"] *) [role=\"main\"]):not(*))"},{"selector":":has([data-testid=\"home-icon\"])","attribute":"data-dream-has-3","branches":[{"selector":"[data-testid=\"home-icon\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-3]), :is(* [data-testid=\"home-icon\"]):not(*))"},{"selector":":has(> .home-banners)","attribute":"data-dream-has-4","branches":[{"selector":".home-banners","relation":"child"}],"replacement":":is(:where([data-dream-has-4]), :is(* > .home-banners):not(*))"},{"selector":":has([data-ds-part=\"main\"])","attribute":"data-dream-has-5","branches":[{"selector":"[data-ds-part=\"main\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-5]), :is(* [data-ds-part=\"main\"]):not(*))"},{"selector":":has([data-ds-part=\"main\"], [data-ds-part=\"home\"])","attribute":"data-dream-has-6","branches":[{"selector":"[data-ds-part=\"main\"]","relation":"descendant"},{"selector":"[data-ds-part=\"home\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-6]), :is(* [data-ds-part=\"main\"], * [data-ds-part=\"home\"]):not(*))"},{"selector":":has(:is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"]))","attribute":"data-dream-has-7","branches":[{"selector":":is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"])","relation":"descendant"}],"replacement":":is(:where([data-dream-has-7]), :is(* :is([class*=\"_homeUtilityBar_\"], [class*=\"_ComposerHomeUtilityBar_\"])):not(*))"},{"selector":":has(input[type=\"text\"])","attribute":"data-dream-has-8","branches":[{"selector":"input[type=\"text\"]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-8]), :is(* input[type=\"text\"]):not(*))"},{"selector":":has(> input[type=\"text\"])","attribute":"data-dream-has-9","branches":[{"selector":"input[type=\"text\"]","relation":"child"}],"replacement":":is(:where([data-dream-has-9]), :is(* > input[type=\"text\"]):not(*))"},{"selector":":has([data-codex-composer-root])","attribute":"data-dream-has-10","branches":[{"selector":"[data-codex-composer-root]","relation":"descendant"}],"replacement":":is(:where([data-dream-has-10]), :is(* [data-codex-composer-root]):not(*))"},{"selector":":has(*)","attribute":"data-dream-has-11","branches":[{"selector":"*","relation":"descendant"}],"replacement":":is(:where([data-dream-has-11]), :is(* *):not(*))"},{"selector":":has(> .horizontal-scroll-fade-mask .group\\/project-selector)","attribute":"data-dream-has-12","branches":[{"selector":".horizontal-scroll-fade-mask .group\\/project-selector","relation":"child"}],"replacement":":is(:where([data-dream-has-12]), :is(* > .horizontal-scroll-fade-mask .group\\/project-selector):not(*))"},{"selector":":has(> [data-mention-list-scroll-area])","attribute":"data-dream-has-13","branches":[{"selector":"[data-mention-list-scroll-area]","relation":"child"}],"replacement":":is(:where([data-dream-has-13]), :is(* > [data-mention-list-scroll-area]):not(*))"},{"selector":":has(~ [role=\"dialog\"] [data-testid=\"image-preview-dismiss-area\"] table)","attribute":"data-dream-has-14","branches":[{"selector":"[role=\"dialog\"] [data-testid=\"image-preview-dismiss-area\"] table","relation":"sibling"}],"replacement":":is(:where([data-dream-has-14]), :is(* ~ [role=\"dialog\"] [data-testid=\"image-preview-dismiss-area\"] table):not(*))"},{"selector":":has([data-testid=\"image-preview-dismiss-area\"] table)","attribute":"data-dream-has-15","branches":[{"selector":"[data-testid=\"image-preview-dismiss-area\"] table","relation":"descendant"}],"replacement":":is(:where([data-dream-has-15]), :is(* [data-testid=\"image-preview-dismiss-area\"] table):not(*))"},{"selector":":has(table)","attribute":"data-dream-has-16","branches":[{"selector":"table","relation":"descendant"}],"replacement":":is(:where([data-dream-has-16]), :is(* table):not(*))"}]
+    .concat([
+      // 补齐首页输入框和社区全图模式遗漏的条件；保留原 :has() 的权重。
+      {
+        selector: ':has([data-composer-home-utility-bar-position="above"])',
+        attribute: "data-dream-has-home-utility-above",
+        owner: '[data-codex-composer-root][data-composer-placement="home"]',
+        branches: [{ selector: '[data-composer-home-utility-bar-position="above"]', relation: "descendant" }],
+        replacement: ':is(:where([data-dream-has-home-utility-above]), [data-composer-home-utility-bar-position="above"]:not(*))',
+      },
+      {
+        selector: ':has(:is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]))',
+        attribute: "data-dream-has-timeline-composer",
+        owner: '[data-app-action-timeline-scroll] > [class~="pointer-events-none"][class~="absolute"]',
+        branches: [{ selector: ':is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"])', relation: "descendant" }],
+        replacement: ':is(:where([data-dream-has-timeline-composer]), :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]):not(*))',
+      },
+    ])
     .filter((item) => cssText.includes(item.selector));
   for (const { selector, replacement } of CSS_PREDICATES) {
     cssText = cssText.replaceAll(selector, replacement);
@@ -871,7 +888,7 @@
     if (!CSS_PREDICATES.length) return;
     const startedAt = now();
     metrics.predicatePasses += 1;
-    CSS_PREDICATES.forEach(({ selector, attribute, branches }, index) => {
+    CSS_PREDICATES.forEach(({ selector, attribute, branches, owner }, index) => {
       // Find the rare landmarks first. Running an unanchored :has() query over
       // every element repeats subtree searches, even when the landmark is absent.
       const candidates = new Set();
@@ -891,7 +908,8 @@
       // Native editor contents never own these structural skin surfaces.
       // Their mutation observer normalizes unexpected attribute writes.
       const desired = new Set([...candidates].filter((node) =>
-        !node.closest?.('[contenteditable="true"], .ProseMirror') && node.matches(selector)));
+        !node.closest?.('[contenteditable="true"], .ProseMirror') &&
+        (!owner || node.matches(owner)) && node.matches(selector)));
       const previous = predicateNodes[index];
       for (const node of previous) {
         if (!desired.has(node)) {
@@ -1046,7 +1064,7 @@
     // SPA route changes are observable as DOM mutations even when Chromium's
     // Navigation API emits no event. Keep verification scope and public parts
     // derived from the same post-mutation tree.
-    const predicateClass = /main-surface|_MainContentSurface_|home-banners|_homeUtilityBar_|_ComposerHomeUtilityBar_|horizontal-scroll-fade-mask|group\/project-selector/;
+    const predicateClass = /main-surface|_MainContentSurface_|home-banners|_homeUtilityBar_|_ComposerHomeUtilityBar_|horizontal-scroll-fade-mask|group\/project-selector|composer-surface-chrome|_ComposerLayoutRoot_|^pointer-events-none$|^absolute$/;
     partObserver = new MutationObserver((records) => {
       const changed = records.some((record) => {
         if (record.type !== "attributes") return true;
@@ -1123,6 +1141,8 @@
         "class", "role", "data-testid", "data-app-shell-main-surface",
         "data-app-shell-active-page", "data-codex-composer-root", "type",
         "data-mention-list-scroll-area",
+        "data-composer-placement", "data-composer-home-utility-bar-position",
+        "data-app-action-timeline-scroll",
       ],
     });
   };

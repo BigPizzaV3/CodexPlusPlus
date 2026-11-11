@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
-use tokio::sync::watch;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde_json::{Value, json};
@@ -38,19 +38,24 @@ fn is_local_sensevoice(settings: &DictationSettings) -> bool {
 }
 
 pub const MAX_AUDIO_BODY_BYTES: usize = 25 * 1024 * 1024;
+const PCM_WAV_HEADER_BYTES: usize = 44;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const TOKEN_HEADER: &str = "X-Codex-Plus-Dictation-Token";
 static HELPER_TOKEN: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+static LOCAL_RECOGNIZER_SLOTS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(1)));
 static LOCAL_DOWNLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static LOCAL_DOWNLOAD_STATE: LazyLock<Mutex<Value>> =
     LazyLock::new(|| Mutex::new(json!({ "phase": "idle" })));
 
 const SENSEVOICE_MODEL_URL: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/model.int8.onnx";
 const SENSEVOICE_MODEL_BYTES: u64 = 239_233_841;
-const SENSEVOICE_MODEL_SHA256: &str = "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51";
+const SENSEVOICE_MODEL_SHA256: &str =
+    "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51";
 const SENSEVOICE_TOKENS_URL: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07/tokens.txt";
 const SENSEVOICE_TOKENS_BYTES: u64 = 315_894;
-const SENSEVOICE_TOKENS_SHA256: &str = "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc";
+const SENSEVOICE_TOKENS_SHA256: &str =
+    "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc";
 
 fn local_model_dir() -> PathBuf {
     crate::codex_home::default_codex_home_dir()
@@ -61,8 +66,24 @@ fn local_model_dir() -> PathBuf {
 fn local_model_ready() -> bool {
     let root = local_model_dir();
     SENSEVOICE_ASSETS.iter().all(|asset| {
-        std::fs::metadata(root.join(asset.name)).is_ok_and(|meta| meta.is_file() && meta.len() == asset.bytes)
+        std::fs::metadata(root.join(asset.name))
+            .is_ok_and(|meta| meta.is_file() && meta.len() == asset.bytes)
     })
+}
+
+pub(crate) fn ensure_local_sensevoice_available(
+    settings: &DictationSettings,
+) -> Result<(), DictationError> {
+    if !settings.enabled {
+        return Err(DictationError::new(403, "语音输入未启用"));
+    }
+    if !is_local_sensevoice(settings) {
+        return Err(DictationError::new(403, "此语音连接仅支持本地 SenseVoice"));
+    }
+    if !local_model_ready() {
+        return Err(DictationError::new(503, "本地 SenseVoice 模型未就绪"));
+    }
+    Ok(())
 }
 
 /// 只通过特权 bridge 发给当前应用；公开 HTTP 状态接口不能返回这个 capability。
@@ -334,14 +355,30 @@ struct LocalAsset {
 }
 
 const SENSEVOICE_ASSETS: [LocalAsset; 2] = [
-    LocalAsset { name: "model.int8.onnx", url: SENSEVOICE_MODEL_URL, bytes: SENSEVOICE_MODEL_BYTES, sha256: SENSEVOICE_MODEL_SHA256 },
-    LocalAsset { name: "tokens.txt", url: SENSEVOICE_TOKENS_URL, bytes: SENSEVOICE_TOKENS_BYTES, sha256: SENSEVOICE_TOKENS_SHA256 },
+    LocalAsset {
+        name: "model.int8.onnx",
+        url: SENSEVOICE_MODEL_URL,
+        bytes: SENSEVOICE_MODEL_BYTES,
+        sha256: SENSEVOICE_MODEL_SHA256,
+    },
+    LocalAsset {
+        name: "tokens.txt",
+        url: SENSEVOICE_TOKENS_URL,
+        bytes: SENSEVOICE_TOKENS_BYTES,
+        sha256: SENSEVOICE_TOKENS_SHA256,
+    },
 ];
 
 fn local_asset_verified(path: &std::path::Path, asset: &LocalAsset) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else { return false };
-    if !meta.is_file() || meta.len() != asset.bytes { return false; }
-    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() != asset.bytes {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 1024 * 1024];
     loop {
@@ -356,19 +393,25 @@ fn local_asset_verified(path: &std::path::Path, asset: &LocalAsset) -> bool {
 
 /// 配置页只读取缓存与任务状态，不触发下载。
 pub fn local_model_status() -> Value {
-    let mut state = LOCAL_DOWNLOAD_STATE.lock().unwrap_or_else(|error| error.into_inner()).clone();
+    let mut state = LOCAL_DOWNLOAD_STATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
     state["modelReady"] = json!(local_model_ready());
     state["totalBytes"] = json!(SENSEVOICE_MODEL_BYTES + SENSEVOICE_TOKENS_BYTES);
     state
 }
 
 fn publish_local_download(state: Value) {
-    *LOCAL_DOWNLOAD_STATE.lock().unwrap_or_else(|error| error.into_inner()) = state;
+    *LOCAL_DOWNLOAD_STATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = state;
 }
 
 /// 仅管理器的手动下载按钮调用；转写入口绝不调用此函数。
 pub async fn prepare_local_model() -> Result<Value, DictationError> {
-    let _guard = LOCAL_DOWNLOAD_LOCK.try_lock()
+    let _guard = LOCAL_DOWNLOAD_LOCK
+        .try_lock()
         .map_err(|_| DictationError::new(409, "本地语音模型正在下载，请等待"))?;
     publish_local_download(json!({ "phase": "downloading", "completedBytes": 0 }));
     let result = async {
@@ -383,10 +426,13 @@ pub async fn prepare_local_model() -> Result<Value, DictationError> {
             completed += asset.bytes;
         }
         Ok::<(), DictationError>(())
-    }.await;
+    }
+    .await;
     match result {
         Ok(()) => {
-            publish_local_download(json!({ "phase": "ready", "completedBytes": SENSEVOICE_MODEL_BYTES + SENSEVOICE_TOKENS_BYTES }));
+            publish_local_download(
+                json!({ "phase": "ready", "completedBytes": SENSEVOICE_MODEL_BYTES + SENSEVOICE_TOKENS_BYTES }),
+            );
             Ok(local_model_status())
         }
         Err(error) => {
@@ -398,34 +444,68 @@ pub async fn prepare_local_model() -> Result<Value, DictationError> {
 
 /// 检查本地缓存的固定大小与 SHA-256；缺失或损坏时只报错，不创建目录、不联网。
 fn verified_local_assets(root: &std::path::Path) -> Result<Vec<PathBuf>, DictationError> {
-    SENSEVOICE_ASSETS.iter().map(|asset| {
-        let path = root.join(asset.name);
-        if local_asset_verified(&path, asset) { Ok(path) }
-        else { Err(DictationError::new(400, "SenseVoice 模型缺失或校验失败，请在语音输入配置页手动下载")) }
-    }).collect()
+    SENSEVOICE_ASSETS
+        .iter()
+        .map(|asset| {
+            let path = root.join(asset.name);
+            if local_asset_verified(&path, asset) {
+                Ok(path)
+            } else {
+                Err(DictationError::new(
+                    400,
+                    "SenseVoice 模型缺失或校验失败，请在语音输入配置页手动下载",
+                ))
+            }
+        })
+        .collect()
 }
 
-async fn download_local_asset(client: &reqwest::Client, asset: &LocalAsset, completed: u64, root: &std::path::Path) -> Result<PathBuf, DictationError> {
-    publish_local_download(json!({ "phase": "downloading", "resource": asset.name, "completedBytes": completed }));
-    tokio::fs::create_dir_all(root).await.map_err(|_| DictationError::new(500, "无法创建本地语音模型目录"))?;
+async fn download_local_asset(
+    client: &reqwest::Client,
+    asset: &LocalAsset,
+    completed: u64,
+    root: &std::path::Path,
+) -> Result<PathBuf, DictationError> {
+    publish_local_download(
+        json!({ "phase": "downloading", "resource": asset.name, "completedBytes": completed }),
+    );
+    tokio::fs::create_dir_all(root)
+        .await
+        .map_err(|_| DictationError::new(500, "无法创建本地语音模型目录"))?;
     let destination = root.join(asset.name);
     let verified = tokio::task::spawn_blocking({
         let destination = destination.clone();
         let asset = *asset;
         move || local_asset_verified(&destination, &asset)
-    }).await.unwrap_or(false);
-    if verified { return Ok(destination); }
+    })
+    .await
+    .unwrap_or(false);
+    if verified {
+        return Ok(destination);
+    }
     let partial = root.join(format!("{}.{}.part", asset.name, uuid::Uuid::new_v4()));
-    let mirror_url = asset.url.replacen("https://huggingface.co", "https://hf-mirror.com", 1);
+    let mirror_url = asset
+        .url
+        .replacen("https://huggingface.co", "https://hf-mirror.com", 1);
     let mut last_error = None;
     for url in [asset.url.to_string(), mirror_url] {
         let response = match client.get(&url).send().await {
-            Ok(response) if response.status().is_success() && response.content_length().is_none_or(|length| length == asset.bytes) => response,
+            Ok(response)
+                if response.status().is_success()
+                    && response
+                        .content_length()
+                        .is_none_or(|length| length == asset.bytes) =>
+            {
+                response
+            }
             Ok(response) => {
                 last_error = Some(format!("HTTP {}", response.status().as_u16()));
                 continue;
             }
-            Err(_) => { last_error = Some("无法连接模型下载源".to_string()); continue; }
+            Err(_) => {
+                last_error = Some("无法连接模型下载源".to_string());
+                continue;
+            }
         };
         let mut file = match tokio::fs::File::create(&partial).await {
             Ok(file) => file,
@@ -438,17 +518,31 @@ async fn download_local_asset(client: &reqwest::Client, asset: &LocalAsset, comp
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
-                Err(_) => { failed = Some("模型下载中断，请重试".to_string()); break; }
+                Err(_) => {
+                    failed = Some("模型下载中断，请重试".to_string());
+                    break;
+                }
             };
             bytes = bytes.saturating_add(chunk.len() as u64);
-            if bytes > asset.bytes { failed = Some("模型文件大小超过预期".to_string()); break; }
-            if tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await.is_err() {
-                failed = Some("写入模型文件失败".to_string()); break;
+            if bytes > asset.bytes {
+                failed = Some("模型文件大小超过预期".to_string());
+                break;
+            }
+            if tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .is_err()
+            {
+                failed = Some("写入模型文件失败".to_string());
+                break;
             }
             digest.update(&chunk);
-            publish_local_download(json!({ "phase": "downloading", "resource": asset.name, "completedBytes": completed + bytes }));
+            publish_local_download(
+                json!({ "phase": "downloading", "resource": asset.name, "completedBytes": completed + bytes }),
+            );
         }
-        if failed.is_none() && (bytes != asset.bytes || format!("{:x}", digest.finalize()) != asset.sha256) {
+        if failed.is_none()
+            && (bytes != asset.bytes || format!("{:x}", digest.finalize()) != asset.sha256)
+        {
             failed = Some("模型文件完整性校验失败".to_string());
         }
         // tokio 的 write_all 只把数据交给后台线程，不 flush 就 drop/rename，文件可能还没写完：
@@ -458,13 +552,21 @@ async fn download_local_asset(client: &reqwest::Client, asset: &LocalAsset, comp
         }
         drop(file);
         if failed.is_none() {
-            if tokio::fs::rename(&partial, &destination).await.is_ok() { return Ok(destination); }
+            if tokio::fs::rename(&partial, &destination).await.is_ok() {
+                return Ok(destination);
+            }
             failed = Some("无法发布模型缓存文件".to_string());
         }
         let _ = tokio::fs::remove_file(&partial).await;
         last_error = failed;
     }
-    Err(DictationError::new(502, format!("本地 SenseVoice 模型下载失败{}", last_error.map(|e| format!("：{e}")).unwrap_or_default())))
+    Err(DictationError::new(
+        502,
+        format!(
+            "本地 SenseVoice 模型下载失败{}",
+            last_error.map(|e| format!("：{e}")).unwrap_or_default()
+        ),
+    ))
 }
 
 fn validate_local_wav(audio: &[u8]) -> Result<(), DictationError> {
@@ -476,7 +578,10 @@ fn validate_local_wav(audio: &[u8]) -> Result<(), DictationError> {
         || u32::from_le_bytes([audio[24], audio[25], audio[26], audio[27]]) != 16_000
         || u16::from_le_bytes([audio[34], audio[35]]) != 16
     {
-        return Err(DictationError::new(400, "本地 SenseVoice 需要 16 kHz 单声道 PCM WAV"));
+        return Err(DictationError::new(
+            400,
+            "本地 SenseVoice 需要 16 kHz 单声道 PCM WAV",
+        ));
     }
     Ok(())
 }
@@ -521,7 +626,12 @@ static LOCAL_RECOGNIZER_TX: LazyLock<Option<std::sync::mpsc::Sender<LocalRecogni
 
 fn local_recognizer_loop(receiver: std::sync::mpsc::Receiver<LocalRecognizerRequest>) {
     let mut cached: Option<CachedLocalRecognizer> = None;
-    while let Ok(LocalRecognizerRequest::Transcribe { samples, language, reply }) = receiver.recv() {
+    while let Ok(LocalRecognizerRequest::Transcribe {
+        samples,
+        language,
+        reply,
+    }) = receiver.recv()
+    {
         let result = recognize_local(&mut cached, &samples, &language);
         // 调用方已经走远时忽略发送失败：这条线程只负责把结果交回去。
         let _ = reply.send(result);
@@ -552,6 +662,17 @@ fn local_wav_samples(audio: &[u8]) -> Vec<f32> {
         .chunks_exact(2)
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0)
         .collect()
+}
+
+fn spawn_local_recognizer_waiter<T: Send + 'static>(
+    answer: std::sync::mpsc::Receiver<T>,
+    guards: Vec<Arc<OwnedSemaphorePermit>>,
+) -> tokio::task::JoinHandle<Result<T, std::sync::mpsc::RecvError>> {
+    tokio::task::spawn_blocking(move || {
+        let result = answer.recv();
+        drop(guards);
+        result
+    })
 }
 
 /// 在识别线程里跑一次本地识别；模型没变时复用缓存，既不重新加载也不重算 SHA256。
@@ -610,13 +731,29 @@ fn recognize_local(
         .to_string())
 }
 
-async fn transcribe_local_recording(settings: &DictationSettings, recording: Recording<'_>) -> Result<Value, DictationError> {
+async fn transcribe_local_recording(
+    settings: &DictationSettings,
+    recording: Recording<'_>,
+) -> Result<Value, DictationError> {
+    transcribe_local_recording_with_guard(settings, recording, None).await
+}
+
+async fn transcribe_local_recording_with_guard(
+    settings: &DictationSettings,
+    recording: Recording<'_>,
+    stream_guard: Option<Arc<OwnedSemaphorePermit>>,
+) -> Result<Value, DictationError> {
     validate_local_wav(recording.audio)?;
     let language = match settings.language.trim() {
         "" => "auto",
         value @ ("auto" | "zh" | "en" | "yue" | "ja" | "ko") => value,
         _ => return Err(DictationError::new(400, "SenseVoice 不支持该语音语言")),
-    }.to_string();
+    }
+    .to_string();
+    let recognizer_guard = LOCAL_RECOGNIZER_SLOTS
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| DictationError::new(429, "本地语音识别正在处理中，请稍后重试"))?;
     let sender = LOCAL_RECOGNIZER_TX
         .as_ref()
         .ok_or_else(|| DictationError::new(500, "本地语音推理线程不可用"))?;
@@ -628,12 +765,85 @@ async fn transcribe_local_recording(settings: &DictationSettings, recording: Rec
             reply,
         })
         .map_err(|_| DictationError::new(500, "本地语音推理线程已停止"))?;
-    // 推理线程一次只做一件事，这里等它把结果交回来。
-    let text = tokio::task::spawn_blocking(move || answer.recv())
+    // 分段解码共享会话许可；断开 socket 也必须等不可取消的推理真正完成才释放容量。
+    let mut guards = vec![Arc::new(recognizer_guard)];
+    if let Some(stream_guard) = stream_guard {
+        guards.push(stream_guard);
+    }
+    let text = spawn_local_recognizer_waiter(answer, guards)
         .await
         .map_err(|_| DictationError::new(500, "本地 SenseVoice 推理失败"))?
         .map_err(|_| DictationError::new(500, "本地语音推理线程已停止"))??;
     Ok(json!({ "text": text }))
+}
+
+fn pcm16_mono_16khz_wav(pcm: &[u8]) -> Vec<u8> {
+    let mut wav = Vec::with_capacity(PCM_WAV_HEADER_BYTES + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + pcm.len() as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    wav.extend_from_slice(pcm);
+    wav
+}
+
+fn validate_local_pcm16(pcm: &[u8]) -> Result<(), DictationError> {
+    if pcm.is_empty() || pcm.len() % 2 != 0 {
+        return Err(DictationError::new(400, "PCM 音频为空或长度无效"));
+    }
+    if pcm.len() > MAX_AUDIO_BODY_BYTES - PCM_WAV_HEADER_BYTES {
+        return Err(DictationError::new(413, "PCM 音频超过 25 MiB 限制"));
+    }
+    Ok(())
+}
+
+/// 专供本地语音 WebSocket 使用；非 SenseVoice 配置会在进入转写器前被拒绝，
+/// 不会沿用通用 `transcribe` 的 API provider 路径。
+pub(crate) async fn transcribe_local_pcm16(
+    settings: &DictationSettings,
+    pcm: &[u8],
+    language: Option<&str>,
+) -> Result<String, DictationError> {
+    transcribe_local_pcm16_with_guard(settings, pcm, language, None).await
+}
+
+pub(crate) async fn transcribe_local_pcm16_with_guard(
+    settings: &DictationSettings,
+    pcm: &[u8],
+    language: Option<&str>,
+    stream_guard: Option<Arc<OwnedSemaphorePermit>>,
+) -> Result<String, DictationError> {
+    ensure_local_sensevoice_available(settings)?;
+    validate_local_pcm16(pcm)?;
+
+    let mut local_settings = settings.clone();
+    if let Some(language) = language {
+        if !matches!(language, "auto" | "zh" | "en" | "yue" | "ja" | "ko") {
+            return Err(DictationError::new(400, "SenseVoice 不支持该语音语言"));
+        }
+        local_settings.language = language.to_string();
+    }
+    let wav = pcm16_mono_16khz_wav(pcm);
+    let result = transcribe_local_recording_with_guard(
+        &local_settings,
+        Recording {
+            audio: &wav,
+            filename: "dictation.wav".to_string(),
+            mime_type: "audio/wav".to_string(),
+            language: String::new(),
+        },
+        stream_guard,
+    )
+    .await?;
+    Ok(result["text"].as_str().unwrap_or_default().to_string())
 }
 
 pub async fn transcribe(
@@ -1053,10 +1263,94 @@ mod tests {
     }
 
     #[test]
+    fn local_stream_pcm_is_wrapped_as_sensevoice_wav() {
+        let pcm = [0, 0, 0, 64];
+        assert!(validate_local_pcm16(&pcm).is_ok());
+        let wav = pcm16_mono_16khz_wav(&pcm);
+        assert_eq!(wav.len(), PCM_WAV_HEADER_BYTES + pcm.len());
+        assert_eq!(&wav[24..28], &16_000u32.to_le_bytes());
+        assert!(validate_local_wav(&wav).is_ok());
+        assert_eq!(local_wav_samples(&wav), vec![0.0, 0.5]);
+    }
+
+    #[tokio::test]
+    async fn aborted_local_waiter_keeps_stream_and_recognizer_slots_until_decode_finishes() {
+        let stream_slots = Arc::new(Semaphore::new(1));
+        let recognizer_slots = Arc::new(Semaphore::new(1));
+        let stream_guard = Arc::new(stream_slots.clone().try_acquire_owned().unwrap());
+        let recognizer_guard = Arc::new(recognizer_slots.clone().try_acquire_owned().unwrap());
+        let (reply, answer) = std::sync::mpsc::channel::<()>();
+        let waiter =
+            spawn_local_recognizer_waiter(answer, vec![stream_guard.clone(), recognizer_guard]);
+        drop(waiter);
+        drop(stream_guard);
+
+        assert!(stream_slots.clone().try_acquire_owned().is_err());
+        assert!(recognizer_slots.clone().try_acquire_owned().is_err());
+        reply.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let (Ok(stream), Ok(recognizer)) = (
+                    stream_slots.clone().try_acquire_owned(),
+                    recognizer_slots.clone().try_acquire_owned(),
+                ) {
+                    drop((stream, recognizer));
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn segmented_local_waiters_keep_the_session_slot_between_decodes() {
+        let slots = Arc::new(Semaphore::new(1));
+        let session = Arc::new(slots.clone().try_acquire_owned().unwrap());
+        for _ in 0..2 {
+            let (reply, answer) = std::sync::mpsc::channel();
+            let waiter = spawn_local_recognizer_waiter(answer, vec![session.clone()]);
+            reply.send(()).unwrap();
+            waiter.await.unwrap().unwrap();
+            assert!(slots.clone().try_acquire_owned().is_err());
+        }
+        drop(session);
+        assert!(slots.try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_stream_never_falls_back_to_api_provider() {
+        let settings = DictationSettings {
+            enabled: true,
+            base_url: "https://example.invalid/v1".to_string(),
+            api_key: "not-a-real-key".to_string(),
+            ..Default::default()
+        };
+        let error = transcribe_local_pcm16(&settings, &[0, 0], None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, 403);
+        assert!(error.message.contains("本地 SenseVoice"));
+    }
+
+    #[tokio::test]
+    async fn local_stream_rejects_misaligned_pcm_before_recognition() {
+        assert_eq!(validate_local_pcm16(&[]).unwrap_err().status, 400);
+        assert_eq!(validate_local_pcm16(&[0]).unwrap_err().status, 400);
+        let oversized = vec![0; MAX_AUDIO_BODY_BYTES - PCM_WAV_HEADER_BYTES + 2];
+        assert_eq!(validate_local_pcm16(&oversized).unwrap_err().status, 413);
+    }
+
+    #[test]
     fn local_asset_signature_changes_when_the_model_changes() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("model.int8.onnx");
-        assert_eq!(local_asset_signature(&path), None, "文件不存在时不能给出指纹");
+        assert_eq!(
+            local_asset_signature(&path),
+            None,
+            "文件不存在时不能给出指纹"
+        );
         std::fs::write(&path, b"first").unwrap();
         let first = local_asset_signature(&path).unwrap();
         assert_eq!(first.0, 5);
@@ -1086,9 +1380,12 @@ mod tests {
     #[tokio::test]
     async fn dictation_manual_download_verifies_asset_and_reuses_cache() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).and(path("/model"))
+        Mock::given(method("GET"))
+            .and(path("/model"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"abc".to_vec()))
-            .expect(1).mount(&server).await;
+            .expect(1)
+            .mount(&server)
+            .await;
         let asset = LocalAsset {
             name: "model.onnx",
             url: Box::leak(format!("{}/model", server.uri()).into_boxed_str()),
@@ -1097,18 +1394,27 @@ mod tests {
         };
         let temp = tempfile::tempdir().unwrap();
         let client = reqwest::Client::new();
-        let downloaded = download_local_asset(&client, &asset, 0, temp.path()).await.unwrap();
+        let downloaded = download_local_asset(&client, &asset, 0, temp.path())
+            .await
+            .unwrap();
         assert!(local_asset_verified(&downloaded, &asset));
-        assert_eq!(download_local_asset(&client, &asset, 0, temp.path()).await.unwrap(), downloaded);
+        assert_eq!(
+            download_local_asset(&client, &asset, 0, temp.path())
+                .await
+                .unwrap(),
+            downloaded
+        );
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[tokio::test]
     async fn dictation_manual_download_rejects_corruption_before_publishing() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).and(path("/model"))
+        Mock::given(method("GET"))
+            .and(path("/model"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"bad".to_vec()))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
         let asset = LocalAsset {
             name: "model.onnx",
             url: Box::leak(format!("{}/model", server.uri()).into_boxed_str()),
@@ -1116,7 +1422,9 @@ mod tests {
             sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         };
         let temp = tempfile::tempdir().unwrap();
-        let error = download_local_asset(&reqwest::Client::new(), &asset, 0, temp.path()).await.unwrap_err();
+        let error = download_local_asset(&reqwest::Client::new(), &asset, 0, temp.path())
+            .await
+            .unwrap_err();
         assert!(error.message.contains("完整性校验失败"));
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
     }
@@ -1129,7 +1437,9 @@ mod tests {
             base_url: "local://sensevoice".to_string(),
             ..Default::default()
         };
-        let error = transcribe_bridge(&settings, &bridge_payload(b"invalid-wave", "audio/wav")).await.unwrap_err();
+        let error = transcribe_bridge(&settings, &bridge_payload(b"invalid-wave", "audio/wav"))
+            .await
+            .unwrap_err();
         assert_eq!(error.status, 400);
         assert!(error.message.contains("WAV"));
 
@@ -1141,7 +1451,9 @@ mod tests {
             base_url: "local://sensevoice".to_string(),
             ..Default::default()
         };
-        let error = transcribe_bridge(&legacy, &bridge_payload(b"invalid-wave", "audio/wav")).await.unwrap_err();
+        let error = transcribe_bridge(&legacy, &bridge_payload(b"invalid-wave", "audio/wav"))
+            .await
+            .unwrap_err();
         assert_eq!(error.status, 400);
         assert!(error.message.contains("WAV"));
     }

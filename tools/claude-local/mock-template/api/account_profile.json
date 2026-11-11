@@ -1,0 +1,15 @@
+{
+  "work_function": "Other",
+  "conversation_preferences": null,
+  "cowork_global_instructions": null,
+  "cowork_instructions_union": true,
+  "conversation_preferences_cloud_max_chars": 32768,
+  "conversation_preferences_over_cloud_max_chars": false,
+  "locale": "zh-Hans",
+  "onboarding_topics": [],
+  "science_fields": [],
+  "avatar": null,
+  "pixel_avatar": null,
+  "avatar_image_url": null,
+  "display_avatar": null
+}

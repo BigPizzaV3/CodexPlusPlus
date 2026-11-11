@@ -358,7 +358,7 @@ def check(source, copy):
             with copy_plist.open("rb") as f:
                 copy_info = plistlib.load(f)
             if source_info.get("CFBundleVersion") != copy_info.get("CFBundleVersion"):
-                raise RuntimeError("官方应用已更新，请重新制作增强版")
+                raise RuntimeError("官方应用已更新，请重新制作补丁版")
         verify = subprocess.run(
             ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copy)],
             capture_output=True,
@@ -392,7 +392,7 @@ def check(source, copy):
     if packed:
         verify_ion_asar(packed)
         if flags[4] != ord("0"):
-            raise RuntimeError("副本改写了 ion-dist.asar，但 asar 完整性校验仍打开，请重新制作增强版")
+            raise RuntimeError("副本改写了 ion-dist.asar，但 asar 完整性校验仍打开，请重新制作补丁版")
     else:
         ion = ion_for(copy)
         if not (ion / "i18n/zh-Hans.json").is_file() or not (ion / "i18n/dynamic/zh-Hans.json").is_file():
@@ -507,11 +507,11 @@ def build(source, copy):
         print("未勾选 Computer Use：副本 asar 保持与官方一致", flush=True)
     report(65, "安装中文词表")
     print("安装中文词表并重签副本…", flush=True)
-    report(80, "重签增强版")
+    report(80, "重签补丁版")
     ensure_signing_identity()
     if os.name != "nt":
         run([sys.executable, str(HERE / "sign-copy.py"), str(source), str(copy)])
-    report(95, "校验增强版")
+    report(95, "校验补丁版")
     check(source, copy)
     report(100, "完成")
 

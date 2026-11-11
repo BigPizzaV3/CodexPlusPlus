@@ -370,7 +370,7 @@ fn claude_caps(levels: &[String]) -> Option<String> {
 
 /// `CLAUDE_CODE_MODEL_CAPABILITIES` 的值：Desktop 交给 Claude Code 的每个有档位的别名。
 /// Claude Code 把模型名去掉 `[1m]` 后整串比较，别名本来就是小写。没有一个带档位时为 None。
-fn desktop_capabilities(wiring: &Wiring) -> Option<String> {
+pub(crate) fn desktop_capabilities(wiring: &Wiring) -> Option<String> {
     let segments: Vec<String> = wiring
         .models
         .iter()
@@ -417,6 +417,34 @@ pub const CLAUDE_DESKTOP: AgentSpec = AgentSpec {
     config_path: desktop_path,
     write: desktop_write,
     hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走网关，无需 Anthropic 登录）；非 Claude 模型在它的选择器里以真实名字显示（底层 id 是 claude-gw- / mythos-gw- 开头的别名），有思考档位的模型带思考等级菜单，选中的档位按模型实有档位套用",
+};
+
+fn desktop_local_path(env: &AgentEnv) -> PathBuf {
+    // 仅用于展示；本地服务通过进程环境接入网关，不写 Claude 的部署配置。
+    env.var(crate::paths::STATE_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env.home_path(".codex-session-delete"))
+        .join("claude-local")
+        .join("conversations.json")
+}
+
+fn desktop_local_write(
+    _env: &AgentEnv,
+    _wiring: &Wiring,
+    _set: &mut FileSet,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
+pub static CLAUDE_DESKTOP_LOCAL: AgentSpec = AgentSpec {
+    id: "claude-desktop-local",
+    name: "Claude Desktop 本地模式",
+    binary: "",
+    wire: AgentWire::Anthropic,
+    detect: |env| env.os == Os::Mac && desktop_detect(env),
+    config_path: desktop_local_path,
+    write: desktop_local_write,
+    hint: "从 Codex++ 启动原版 Claude Desktop 后生效；本地兼容服务通过进程环境连接网关，不修改官方应用或部署模式",
 };
 
 // ---------------------------------------------------------------- Zed
@@ -1712,6 +1740,35 @@ mod tests {
 
     fn json_of(text: &str) -> Value {
         parse_jsonc(text).unwrap()
+    }
+
+    #[test]
+    fn claude_desktop_local_metadata_follows_state_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let env = AgentEnv::at(temp.path());
+        assert_eq!(
+            desktop_local_path(&env),
+            temp.path()
+                .join(".codex-session-delete/claude-local/conversations.json")
+        );
+        let state = temp.path().join("local instance state");
+        let env = env.with_var(crate::paths::STATE_DIR_ENV, state.to_str().unwrap());
+        assert_eq!(
+            desktop_local_path(&env),
+            state.join("claude-local/conversations.json")
+        );
+    }
+
+    #[test]
+    fn claude_desktop_local_detection_requires_supported_platform() {
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            let temp = tempfile::tempdir().unwrap();
+            let env = AgentEnv::at(temp.path()).with_os(os);
+            let config_dir = desktop_sets(&env).remove(0).mode;
+            std::fs::create_dir_all(config_dir).unwrap();
+            assert!((CLAUDE_DESKTOP.detect)(&env));
+            assert_eq!((CLAUDE_DESKTOP_LOCAL.detect)(&env), os == Os::Mac);
+        }
     }
 
     #[test]

@@ -241,6 +241,24 @@ pub fn run() {
     // 失败只记诊断日志，不影响启动。
     #[cfg(target_os = "macos")]
     std::thread::spawn(codex_plus_core::update::macos::cleanup_stale_update_transactions);
+    // Codex++ 重启后在原端口恢复 Claude 仍挂接着的本地代理（后台做，不阻塞启动）。
+    std::thread::spawn(|| {
+        match codex_plus_core::claude_local_backend::resume_attached_proxy() {
+            Ok(Some(port)) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "claude_local.resumed",
+                    serde_json::json!({"port": port}),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "claude_local.resume_failed",
+                    serde_json::json!({"message": format!("{error:#}")}),
+                );
+            }
+        }
+    });
     if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load() {
         // 请求体上限是运行期策略：管理器启动即按设置应用，之后启动的 helper 直接继承，
         // 不必等完整启动流程。环境变量仍由 launcher 侧统一优先。
@@ -346,6 +364,9 @@ pub fn run() {
             commands::download_dictation_local_model,
             commands::load_global_dictation_hotkey,
             commands::set_global_dictation_hotkey,
+            commands::claude_local_status,
+            commands::claude_local_configure,
+            commands::claude_local_action,
             commands::claude_localization_status,
             commands::claude_localization_bash_timeout_status,
             commands::claude_localization_action,
@@ -661,6 +682,7 @@ pub fn run() {
                         // 常驻本地代理只在 Codex++ 退出时停止；Codex 会话结束
                         // 不会关它（见 core::resident_helper）。
                         gateway_commands::restore_for_exit();
+                        codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
                         SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                         app.exit(0);

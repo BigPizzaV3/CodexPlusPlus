@@ -302,10 +302,11 @@ fn own_model_switch_is_per_agent_and_saved_in_the_gateway_store() {
     assert!(raw.get("hideOwnModels").is_none(), "都列时不落盘");
 }
 
-/// 接入前 Codex 用的是聚合供应商：自带模型是它发布给 Codex 的模型目录，直连对象是聚合的名字。
+/// 接入前 Codex 用的是聚合供应商：接入着时「自带模型」不展开聚合成员，
+/// 落到列表里第一个普通供应商；没接入、当前就是聚合时才列它发布给 Codex 的模型目录。
 /// 普通列表里那份同 id 的影子（模式 aggregate）不能当成一个没有模型的供应商。
 #[test]
-fn codex_restoring_to_an_aggregate_lists_the_aggregate_catalog() {
+fn codex_own_models_skip_a_previous_aggregate() {
     use codex_plus_core::gateway::store::GatewayRestoreState;
     use codex_plus_core::settings::{AggregateRelayMember, AggregateRelayProfile};
     let fixture = fixture(57417);
@@ -361,7 +362,18 @@ fn codex_restoring_to_an_aggregate_lists_the_aggregate_catalog() {
         ..binding()
     };
 
-    let own = own_models(ctx, &ToolId::Codex, Some(&binding)).expect("聚合目录里有模型");
+    // 接入着：聚合不展开，自带模型取列表里第一个普通供应商的模型。
+    let own = own_models(ctx, &ToolId::Codex, Some(&binding)).expect("有供应商可列");
+    assert_eq!(own.vendor, "中转 relay-a");
+    let ids: Vec<&str> = own.models.iter().map(|model| model.id.as_str()).collect();
+    assert_eq!(ids, ["model-a"], "{ids:?}");
+    assert_eq!(own.current, "");
+
+    // 没接入、当前用的就是聚合：列它发布给 Codex 的模型目录。
+    let mut direct = ctx.settings.load().unwrap();
+    direct.active_relay_id = "agg".into();
+    ctx.settings.save(&direct).unwrap();
+    let own = own_models(ctx, &ToolId::Codex, None).expect("聚合目录里有模型");
     assert_eq!(own.vendor, "聚合供应商 1");
     let ids: Vec<&str> = own.models.iter().map(|model| model.id.as_str()).collect();
     assert!(ids.contains(&"model-a"), "默认成员用裸名：{ids:?}");
@@ -369,5 +381,4 @@ fn codex_restoring_to_an_aggregate_lists_the_aggregate_catalog() {
         ids.iter().any(|id| *id != "model-b" && id.ends_with("/model-b")),
         "其它成员带成员前缀：{ids:?}"
     );
-    assert_eq!(own.current, "");
 }

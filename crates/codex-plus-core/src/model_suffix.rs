@@ -473,7 +473,7 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
     Some(ui)
 }
 
-fn model_speed_tier_is(tier: &Value, expected: &str) -> bool {
+pub(crate) fn model_speed_tier_is(tier: &Value, expected: &str) -> bool {
     tier.as_str().or_else(|| tier.get("id").and_then(Value::as_str))
         .is_some_and(|id| id.trim().eq_ignore_ascii_case(expected))
 }
@@ -703,19 +703,11 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
                     .unwrap_or_else(|| model_template_entry(&entry.slug))
             };
             let metadata_window = model.get("context_window").and_then(Value::as_u64);
-            let metadata_max_window = model.get("max_context_window").and_then(Value::as_u64);
             let context_window = entry
                 .suffix_window
                 .or(fallback_window)
                 .or(metadata_window)
                 .unwrap_or(272_000);
-            // 用户显式配置窗口（后缀 / 每模型窗口 / profile 全局）时两字段同值；
-            // 未显式配置时保留官方模板的 max_context_window 上限——gpt-5.6 / gpt-6
-            // 官方为 272000/872000，压平成同值会把 codex 侧 872K 能力上限写低（#2191）。
-            let max_context_window = entry
-                .suffix_window
-                .or(fallback_window)
-                .unwrap_or_else(|| metadata_max_window.unwrap_or(context_window));
             model["slug"] = json!(entry.slug);
             // 借用模板不能证明自定义模型支持并行工具调用；精确元数据才有此权威。
             if !has_model_metadata || !model.get("supports_parallel_tool_calls").is_some_and(Value::is_boolean) {
@@ -726,7 +718,8 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
                 model["description"] = json!(entry.display_name);
             }
             model["context_window"] = json!(context_window);
-            model["max_context_window"] = json!(max_context_window);
+            // 受管目录的窗口可在会话冷恢复时覆盖；固定 max 会把后续调大的值截回启动时窗口。
+            model["max_context_window"] = Value::Null;
             // 通用自定义模型显示完整窗口；DeepSeek Responses 保留官方目录的 95%。
             if !deepseek_metadata {
                 model["effective_context_window_percent"] = json!(100);

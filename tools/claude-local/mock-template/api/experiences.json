@@ -1,0 +1,672 @@
+{
+  "experiences": [
+    {
+      "id": "b6f033ad-fe99-4165-8dc8-4109cfaa9c4d",
+      "key": "fund-unlock-nudge",
+      "content": {
+        "body": "Get faster replies and automated reviews for your team by buying usage credits.",
+        "title": "Do more in Claude Code",
+        "imageFit": "cover",
+        "imageUrl": "/images/experiences/fund-unlock-nudge.svg",
+        "cardWidth": 232,
+        "buttonHref": "/onboarding/fund-unlock",
+        "buttonText": "Add usage credits",
+        "imageHeight": 136,
+        "template_key": "home-nudge-v1"
+      },
+      "placement_key": "home-nudge",
+      "template_key": "home-nudge-v1",
+      "enabled": true,
+      "variant_key": "team",
+      "exp_id": "",
+      "tier": "2",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "bfd66767-ad71-4003-8170-15fcc2b8a8ca",
+      "key": "coachmark-cic-sidepanel-welcome",
+      "content": {
+        "anchorId": "cic-sidepanel-recent-tasks",
+        "bodyText": "Cowork is now in your browser.",
+        "ariaLabel": "coachmark-cic-sidepanel-welcome",
+        "legacyNuxId": "cic-sidepanel-cowork-welcome",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/cic/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "ffc8fbda-2124-41de-b8d7-94da07c1c0a9",
+      "key": "wiggle-egress",
+      "content": {
+        "title": "Create files and artifacts",
+        "layout": "horizontal",
+        "bodyText": "Claude can do more than answer questions. Ask it to build interactive web apps, write documents, generate spreadsheets and presentations, or create visuals in a dedicated window alongside your chat.\n\nIt’s all included on your free plan.\n\nClaude uses limited network access to install packages for file creation. Manage in <a href=\"/settings/capabilities\">Settings</a> or <a href=\"https://support.anthropic.com/en/articles/12111783-create-and-edit-files-with-claude\" target=\"_blank\">learn more</a>",
+        "badgeText": "New",
+        "ctaActions": [
+          {
+            "text": "Try it out",
+            "actions": [
+              {
+                "id": "enable_wiggle",
+                "type": "remote"
+              },
+              {
+                "type": "prompt",
+                "value": "Hey Claude, can you make me a PowerPoint about the Golden Gate Bridge?"
+              }
+            ],
+            "isPrimary": true
+          }
+        ],
+        "pictogramName": "ObjectDocumentMultiple",
+        "template_key": "spotlight-v2"
+      },
+      "placement_key": "spotlight",
+      "template_key": "spotlight-v2",
+      "enabled": true,
+      "variant_key": "free",
+      "exp_id": "",
+      "tier": "1",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "ec1e2d12-8a5b-448e-b53a-57939f3d79c1",
+      "key": "coachmark-epitaxy-preview-browser",
+      "content": {
+        "side": "bottom",
+        "align": "center",
+        "title": "Claude now has a browser",
+        "anchorId": "epitaxy-preview-browser",
+        "bodyText": "Claude can browse, click, and screenshot to get things done for you, on any site or your own app.",
+        "ariaLabel": "In app browser",
+        "badgeText": "New",
+        "legacyNuxId": "epitaxy_preview_in_app_browser_nux",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/code/*",
+            "/epitaxy/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "d63b4116-1d55-412f-bfac-8d83c9c7b533",
+      "key": "coachmark-cowork-browser",
+      "content": {
+        "side": "bottom",
+        "align": "center",
+        "title": "Cowork now has a built-in browser",
+        "anchorId": "cowork-browser",
+        "bodyText": "Claude can open websites, read pages, and fill forms right here, next to your task.",
+        "ariaLabel": "In app browser",
+        "badgeText": "New",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/cowork/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": true,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "0abef35d-2bbc-488b-ae9e-0aff7b866497",
+      "key": "coachmark-editable-doc",
+      "content": {
+        "side": "left",
+        "align": "start",
+        "title": "Live doc editing",
+        "anchorId": "editable-doc",
+        "bodyText": "Make changes yourself or leave a comment for Claude, right in the doc.",
+        "ariaLabel": "Live doc editing",
+        "badgeText": "New",
+        "legacyNuxId": "file-viewer-editable-doc-2026-07",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "d82a90e4-5b87-4446-8030-7855498304dd",
+      "key": "coachmark-rc-onboarding",
+      "content": {
+        "side": "bottom",
+        "align": "start",
+        "title": "Keep working from anywhere",
+        "variant": "accent",
+        "anchorId": "rc-onboarding",
+        "bodyText": "Check progress or reply to any session from the terminal, mobile app or claude.ai. To keep this session local only turn off remote control.",
+        "ariaLabel": "Keep working from anywhere",
+        "legacyNuxId": "ccd-rc-onboarding-coachmark",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "bcb8af0d-2772-4c7f-b112-8071050b954c",
+      "key": "pending-requests-global-banner",
+      "content": {
+        "allowed_paths": [
+          "/new",
+          "/chat/*"
+        ],
+        "template_key": null
+      },
+      "placement_key": "global-banner",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "2",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "d714ee9d-ce80-4cb2-86f5-844300e55da8",
+      "key": "coachmark-html-review-comment",
+      "content": {
+        "side": "bottom",
+        "align": "end",
+        "title": "Comment on the preview",
+        "anchorId": "html-review-comment",
+        "bodyText": "Leave comments anywhere on the preview for Claude to revise.",
+        "ariaLabel": "Comment on the preview",
+        "badgeText": "New",
+        "legacyNuxId": "html-review-comment-toggle-2026-06",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "6e2a2204-e548-4f1d-b4c2-5239c4f61a07",
+      "key": "join-org-global-banner",
+      "content": {
+        "allowed_paths": [
+          "/new",
+          "/chat/*"
+        ],
+        "template_key": null
+      },
+      "placement_key": "global-banner",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "2",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "62ea006f-b226-44e6-a219-650c768d784c",
+      "key": "coachmark-chorus-watch-record",
+      "content": {
+        "anchorId": "chorus-composer-attach",
+        "bodyText": "Watch-record coachmark; copy is rendered by the client.",
+        "ariaLabel": "coachmark-chorus-watch-record",
+        "legacyNuxId": "chorus-copper-heron-coachmark",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "e2fe683c-9443-4ac0-b66d-d70510ef8ace",
+      "key": "gilded-compass-desktop",
+      "content": null,
+      "placement_key": "sidebar-popover",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": null,
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "e47b0a30-8351-4d17-9aba-6fc62e3d8967",
+      "key": "scheduled-task-pause-nudge",
+      "content": null,
+      "placement_key": "home-nudge",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "2",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/new",
+            "/task/new"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "4c888aae-eb94-4098-b9ef-d55f1f8d04d9",
+      "key": "haystack-starred-feature",
+      "content": null,
+      "placement_key": "sidebar-popover",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "cd39e555-441c-496b-8520-6593964b9937",
+      "key": "research-invitation",
+      "content": null,
+      "placement_key": "corner-card",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/new",
+            "/chat/*",
+            "/cowork/*",
+            "/code/*",
+            "/epitaxy/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "94bc99c9-bf91-443d-8436-c9b619899331",
+      "key": "sidebar-bulk-select-tip",
+      "content": {
+        "side": "right",
+        "align": "start",
+        "variant": "neutral",
+        "anchorId": "sidebar-bulk-select-tip",
+        "bodyText": "Tip: Shift-click to select several, then right-click to change them together",
+        "ariaLabel": "Selecting several rows",
+        "template_key": "coachmark-v1"
+      },
+      "placement_key": "coachmark",
+      "template_key": "coachmark-v1",
+      "enabled": true,
+      "variant_key": "default",
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "2e4b4312-d1f1-4bbc-a5be-521b8f9848b0",
+      "key": "m365-finish-setup-resume",
+      "content": null,
+      "placement_key": "corner-card",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/new"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "f1bc996a-2428-4445-bc24-b29736c0aa4d",
+      "key": "steady-goblet-code-card",
+      "content": null,
+      "placement_key": "in-chat-banner",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/epitaxy/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    },
+    {
+      "id": "dcd6da4c-2294-4ece-ad8d-8e4ca764ce97",
+      "key": "code-cloud-session-card",
+      "content": null,
+      "placement_key": "in-chat-banner",
+      "template_key": null,
+      "enabled": true,
+      "variant_key": null,
+      "exp_id": "",
+      "tier": "3",
+      "group_id": null,
+      "config": {
+        "platform": {
+          "allowed_paths": [
+            "/epitaxy/*"
+          ],
+          "show_on_mobile_web": null
+        },
+        "bypass_global_rules": false,
+        "bypass_all_rules": false,
+        "allow_enterprise": false
+      }
+    }
+  ],
+  "rules": {
+    "global": {
+      "rate_limit": {
+        "remaining": 1,
+        "reset_at": "2026-11-08T11:15:17.110037Z",
+        "remaining_wait_seconds": 0,
+        "wait_after_show_seconds": 0
+      },
+      "cooldown": null
+    },
+    "placements": {
+      "coachmark": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "in-chat-banner": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "spotlight": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-10T11:15:17.110060Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "home-nudge": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-09T11:15:17.110062Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "global-banner": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "sidebar-popover": {
+        "rate_limit": null,
+        "cooldown": {
+          "seconds": 86400
+        }
+      },
+      "corner-card": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "sidebar-row": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "clint-interview": {
+        "rate_limit": {
+          "remaining": 2,
+          "reset_at": "2026-11-14T11:15:17.110064Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "home-composer-card": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "home-banner": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-07T12:15:17.110066Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "cowork": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "chat-tooltip": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-10T11:15:17.110068Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "artifacts-page-banner": {
+        "rate_limit": null,
+        "cooldown": null
+      },
+      "file-preview-top": {
+        "rate_limit": null,
+        "cooldown": null
+      }
+    },
+    "tiers": {
+      "1": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-14T11:15:17.110052Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "2": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-10T11:15:17.110055Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      },
+      "3": {
+        "rate_limit": {
+          "remaining": 1,
+          "reset_at": "2026-11-08T11:15:17.110057Z",
+          "remaining_wait_seconds": 0,
+          "wait_after_show_seconds": 0
+        },
+        "cooldown": null
+      }
+    }
+  }
+}
