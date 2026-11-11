@@ -1218,8 +1218,14 @@ fn config_hash(config: &ClaudeLocalSettings) -> String {
         return format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(config, "direct", &upstream, assets_digest()))
-                    .unwrap_or_default()
+                serde_json::to_vec(&(
+                    config,
+                    "direct",
+                    &upstream,
+                    assets_digest(),
+                    desktop_fingerprint()
+                ))
+                .unwrap_or_default()
             )
         );
     }
@@ -1242,12 +1248,35 @@ fn config_hash_with_gateway_state(
     config: &ClaudeLocalSettings,
     gateway_state: Option<(Vec<String>, BTreeMap<String, u64>, Option<String>)>,
 ) -> String {
+    hash_with_desktop(config, gateway_state, desktop_fingerprint())
+}
+
+fn hash_with_desktop(
+    config: &ClaudeLocalSettings,
+    gateway_state: Option<(Vec<String>, BTreeMap<String, u64>, Option<String>)>,
+    desktop: Option<(u64, u128)>,
+) -> String {
     format!(
         "{:x}",
         Sha256::digest(
-            serde_json::to_vec(&(config, gateway_state, assets_digest())).unwrap_or_default()
+            serde_json::to_vec(&(config, gateway_state, assets_digest(), desktop))
+                .unwrap_or_default()
         )
     )
+}
+
+/// 安装包里 `app.asar` 的大小与修改时间。受管路径的官方页面和资源都从它读，
+/// Desktop 更新后它会变：算进配置指纹，本地服务就会重启换上新页面，状态里也会提示重启。
+/// 只读文件元数据，不起进程（状态每 3 秒刷新一次）。
+fn desktop_fingerprint() -> Option<(u64, u128)> {
+    let meta = fs::metadata(desktop_resources(&source_app()).join("app.asar")).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), modified))
 }
 
 fn available_models(gateway: &GatewaySettings) -> Vec<String> {
@@ -2581,6 +2610,16 @@ pub fn perform(action: &str) -> Result<ClaudeLocalResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Desktop 更新（app.asar 变了）算配置变化：本地服务要重启才能换上新的官方页面。
+    #[test]
+    fn desktop_update_changes_the_config_hash() {
+        let config = ClaudeLocalSettings::default();
+        let before = hash_with_desktop(&config, None, Some((100, 1)));
+        assert_eq!(before, hash_with_desktop(&config, None, Some((100, 1))));
+        assert_ne!(before, hash_with_desktop(&config, None, Some((100, 2))), "修改时间变了");
+        assert_ne!(before, hash_with_desktop(&config, None, Some((101, 1))), "大小变了");
+    }
 
     /// 直连上游：Base URL 与 ANTHROPIC_BASE_URL 同语义（去掉结尾斜杠），默认模型排第一且去重，
     /// 小模型缺省用默认模型；没有窗口就不声明。（不碰全局开关，免得影响并行用例。）
