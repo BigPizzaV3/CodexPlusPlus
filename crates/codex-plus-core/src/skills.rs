@@ -106,6 +106,8 @@ pub struct SkillsState {
     pub repos: Vec<SkillRepo>,
     #[serde(default)]
     pub installed: BTreeMap<String, InstalledSkill>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shared_agent_links: BTreeMap<String, [u64; 2]>,
 }
 
 impl Default for SkillsState {
@@ -113,6 +115,7 @@ impl Default for SkillsState {
         Self {
             repos: default_skill_repos(),
             installed: BTreeMap::new(),
+            shared_agent_links: BTreeMap::new(),
         }
     }
 }
@@ -576,7 +579,7 @@ struct NativeSkillRule {
     index: usize,
     name: Option<String>,
     path: Option<PathBuf>,
-    enabled: bool,
+    enabled: Option<bool>,
 }
 
 struct NativeSkillConfig {
@@ -595,10 +598,12 @@ impl NativeSkillConfig {
         if !manifest.is_file() {
             return Ok(fallback_name.to_string());
         }
-        let last_path = self.rules.iter().rposition(|rule| rule.path.as_deref()
+        let last_path = self.rules.iter().rposition(|rule| rule.name.is_none() && rule.path.as_deref()
             .is_some_and(|path| native_skill_paths_match(path, manifest)));
         if self.rules.iter().enumerate().any(|(index, rule)|
-            rule.name.is_some() && last_path.is_none_or(|last| index > last))
+            rule.name.is_some() && rule.path.as_deref()
+                .is_none_or(|path| native_skill_paths_match(path, manifest))
+                && last_path.is_none_or(|last| index > last))
         {
             read_native_skill_name(manifest)
         } else {
@@ -608,13 +613,16 @@ impl NativeSkillConfig {
 
     fn matching_rule(&self, manifest: &Path, name: &str) -> Option<(usize, &NativeSkillRule)> {
         self.rules.iter().enumerate().rev().find(|(_, rule)| {
-            rule.name.as_deref() == Some(name) || rule.path.as_deref()
-                .is_some_and(|path| native_skill_paths_match(path, manifest))
+            rule.name.as_deref().is_none_or(|expected| expected == name)
+                && rule.path.as_deref().is_none_or(|path| native_skill_paths_match(path, manifest))
         })
     }
 
-    fn enabled(&self, manifest: &Path, name: &str) -> bool {
-        self.matching_rule(manifest, name).map_or(true, |(_, rule)| rule.enabled)
+    fn enabled(&self, manifest: &Path, name: &str) -> anyhow::Result<bool> {
+        match self.matching_rule(manifest, name) {
+            Some((_, rule)) => rule.enabled.context("Codex Skill 配置无法识别，启用状态未知"),
+            None => Ok(true),
+        }
     }
 }
 
@@ -658,7 +666,15 @@ impl SkillsManager {
     }
 
     pub fn shared_skills_dir(&self) -> Option<&Path> {
-        self.shared_skills_dir.as_deref()
+        let shared = self.shared_skills_dir.as_deref()?;
+        let linked = self.linked_dir();
+        if shared == linked || shared.canonicalize().ok().zip(linked.canonicalize().ok())
+            .is_some_and(|(shared, linked)| shared == linked)
+        {
+            None
+        } else {
+            Some(shared)
+        }
     }
 
     fn read_native_skill_config(&self) -> anyhow::Result<NativeSkillConfig> {
@@ -678,19 +694,20 @@ impl SkillsManager {
             if let Some(config) = skills.get("config") {
                 let config = config.as_array().context("Codex skills.config 不是数组")?;
                 for (index, entry) in config.iter().enumerate() {
-                    let entry = entry.as_table().context("Codex skills.config 条目不是表")?;
-                    let name = entry.get("name").map(|value| value.as_str()
-                        .map(|name| name.trim().to_string()).context("Codex Skill 名称必须是字符串")).transpose()?;
-                    let path = entry.get("path").map(|value| value.as_str()
-                        .map(PathBuf::from).context("Codex Skill 路径必须是字符串")).transpose()?;
-                    if name.is_some() == path.is_some() || path.as_ref().is_some_and(|path| !path.is_absolute()) {
-                        anyhow::bail!("Codex skills.config 条目必须且只能指定名称或绝对路径");
-                    }
-                    if name.as_deref() == Some("") {
+                    let Some(entry) = entry.as_table() else { continue };
+                    let invalid = entry.get("name").is_some_and(|value| value.as_str().is_none())
+                        || entry.get("path").is_some_and(|value| value.as_str().is_none());
+                    let name = entry.get("name").and_then(toml::Value::as_str)
+                        .map(str::trim).filter(|name| !name.is_empty()).map(str::to_string);
+                    let path = entry.get("path").and_then(toml::Value::as_str)
+                        .filter(|path| !path.is_empty()).map(PathBuf::from)
+                        .map(|path| if path.is_absolute() { path } else { self.codex_home.join(path) });
+                    if name.is_none() && path.is_none() {
                         continue;
                     }
-                    let enabled = entry.get("enabled").and_then(toml::Value::as_bool)
-                        .context("Codex skills.config 条目缺少有效的 enabled")?;
+                    let enabled = if invalid { None } else {
+                        entry.get("enabled").and_then(toml::Value::as_bool)
+                    };
                     rules.push(NativeSkillRule { index, name, path, enabled });
                 }
             }
@@ -698,23 +715,30 @@ impl SkillsManager {
         Ok(NativeSkillConfig { original, rules })
     }
 
-    fn set_native_skill_paths(&self, manifests: &[(PathBuf, String)], enabled: bool) -> anyhow::Result<()> {
+    fn set_native_skill_paths(
+        &self,
+        manifests: &[(PathBuf, String)],
+        enabled: bool,
+    ) -> anyhow::Result<Option<(Option<Vec<u8>>, Vec<u8>)>> {
         let config = self.read_native_skill_config()?;
         let mut changes = Vec::new();
         for (path, name) in manifests {
             let name = config.name_for_matching(path, name)?;
-            if config.enabled(path, &name) != enabled {
+            if config.enabled(path, &name)? != enabled {
                 changes.push((path, name));
             }
         }
         if changes.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let text = std::str::from_utf8(config.original.as_deref().unwrap_or_default())?;
         let mut document = text.parse::<toml_edit::DocumentMut>()
             .map_err(|_| anyhow::anyhow!("Codex 配置格式错误，请先修复 config.toml"))?;
-        let skills = document.as_table_mut().entry("skills")
-            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        let skills = document.as_table_mut().entry("skills").or_insert_with(|| {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            toml_edit::Item::Table(table)
+        });
         let inline = skills.is_inline_table();
         let skills = skills.as_table_like_mut().context("Codex skills 配置不是表")?;
         let item = skills.entry("config").or_insert_with(|| {
@@ -762,8 +786,10 @@ impl SkillsManager {
         if current != config.original {
             anyhow::bail!("Codex 配置已被其他窗口更新，请重试；未覆盖新配置");
         }
-        crate::settings::atomic_write(&self.codex_home.join("config.toml"), document.to_string().as_bytes())
-            .context("无法保存 Codex 技能配置")
+        let updated = document.to_string().into_bytes();
+        crate::settings::atomic_write(&self.codex_home.join("config.toml"), &updated)
+            .context("无法保存 Codex 技能配置")?;
+        Ok(Some((config.original, updated)))
     }
 
     /// 路径不完整时返回全局范围；任意受管路径相交都不能互相隔离。
@@ -774,8 +800,9 @@ impl SkillsManager {
             self.state_path.clone(),
             self.linked_dir(),
         ];
-        let mut scope: Vec<_> = paths.iter().chain(self.agent_dirs.iter().map(|(_, dir)| dir))
-            .chain(self.shared_skills_dir.iter())
+        let mut scope: Vec<_> = paths.iter().map(PathBuf::as_path)
+            .chain(self.agent_dirs.iter().map(|(_, dir)| dir.as_path()))
+            .chain(self.shared_skills_dir())
             .map(|path| coordination_path(path))
             .collect::<Option<_>>()?;
         // 状态文件通过原子替换写入；父目录身份和文件名足以识别共享路径。
@@ -795,23 +822,43 @@ impl SkillsManager {
             .with_context(|| format!("不支持的 Agent：{agent}"))
     }
 
-    /// 把 Skill 启用到 / 停用于某个 Agent。Codex 沿用 [`Self::set_enabled`]；其它 Agent 同样是软链到受控源目录。
+    /// 把 Skill 启用到 / 停用于某个 Agent。共享 Skill 优先链接到共享原件。
     ///
     /// 启用时若还没有受控源（Codex 或其它 Agent 自建的 Skill），先从它所在的目录导入一份。
     /// 停用只删本工具建的软链；Agent 自己目录里的真实 Skill 不删，报错说明。
     pub fn set_enabled_for(&self, agent: &str, id: &str, enabled: bool) -> anyhow::Result<()> {
         validate_skill_id(id)?;
         let mut coordination = skills_coordination();
-        self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
+        let initial_state = self.load_state_checked_unlocked()?;
+        self.ensure_skill_name_not_aliased(id, &initial_state)?;
         let result = (|| {
             if enabled && agent != "codex" && self.agent_dir(agent)?.join(id).join(SKILL_MANIFEST_FILE).is_file() {
                 return Ok(());
             }
-            let shared = self.shared_skills_dir.as_ref()
-                .is_some_and(|dir| dir.join(id).join(SKILL_MANIFEST_FILE).is_file());
+            let shared = self.shared_skills_dir().map(|dir| dir.join(id))
+                .filter(|dir| dir.join(SKILL_MANIFEST_FILE).is_file());
             if enabled {
-                if agent != "codex" || (!shared && !self.linked_dir().join(id).join(SKILL_MANIFEST_FILE).is_file()) {
+                if shared.is_none() && (agent != "codex" || !self.linked_dir().join(id).join(SKILL_MANIFEST_FILE).is_file()) {
                     self.ensure_managed_source_unlocked(id, &mut coordination)?;
+                } else if agent != "codex" {
+                    if let Some(shared) = &shared {
+                        let shared_target = shared.canonicalize()?;
+                        let shared_digest = skill_directory_digest(&shared_target)?;
+                        let managed_source = self.source_dir.join(id).canonicalize().ok();
+                        let roots = std::iter::once(self.linked_dir())
+                            .chain(self.agent_dirs.iter().map(|(_, root)| root.clone()));
+                        for root in roots {
+                            let candidate = root.join(id);
+                            if !candidate.join(SKILL_MANIFEST_FILE).is_file() || is_managed_copy(&candidate) {
+                                continue;
+                            }
+                            let target = candidate.canonicalize()?;
+                            if target != shared_target && Some(&target) != managed_source.as_ref() {
+                                anyhow::ensure!(skill_directory_digest(&target)? == shared_digest,
+                                    "同名 Skill 安装内容不同，请先选择要启用的版本");
+                            }
+                        }
+                    }
                 }
             }
             if agent == "codex" {
@@ -822,6 +869,27 @@ impl SkillsManager {
             let metadata = std::fs::symlink_metadata(&link);
             if !enabled {
                 return match metadata {
+                    Ok(metadata) if metadata_is_link(&metadata) && shared.as_ref().is_some_and(|source|
+                        is_managed_link(&link, source) && skill_path_identity(&link).ok().is_some_and(|identity|
+                            initial_state.shared_agent_links.get(&link.to_string_lossy().into_owned()).copied()
+                                == Some([identity.device, identity.file]))) => {
+                        let mut state = initial_state.clone();
+                        let staging = dir.join(format!(".codex-plus-link-{}", uuid::Uuid::new_v4()));
+                        move_path_no_replace(&link, &staging)?;
+                        let expected = state.shared_agent_links[&link.to_string_lossy().into_owned()];
+                        if skill_path_identity(&staging).map(|identity| [identity.device, identity.file])? != expected {
+                            move_path_no_replace(&staging, &link)?;
+                            anyhow::bail!("Skill 链接在停用期间发生变化，未删除");
+                        }
+                        state.shared_agent_links.remove(&link.to_string_lossy().into_owned());
+                        if let Err(error) = self.save_state_unlocked(&state) {
+                            return match move_path_no_replace(&staging, &link) {
+                                Ok(()) => Err(error),
+                                Err(rollback) => Err(error.context(format!("恢复 Skill 链接失败：{rollback:#}"))),
+                            };
+                        }
+                        remove_link(&staging)
+                    }
                     Ok(metadata) if metadata_is_link(&metadata)
                         && is_managed_link(&link, &self.source_dir.join(id)) => remove_link(&link),
                     Ok(_) if is_managed_copy(&link) => {
@@ -839,12 +907,24 @@ impl SkillsManager {
             if metadata.is_ok() {
                 anyhow::bail!("启用位置已存在其他内容，未覆盖：{}", link.display());
             }
-            let source = self.source_dir.join(id);
+            let source = shared.clone().unwrap_or_else(|| self.source_dir.join(id));
             if !source.is_dir() {
                 anyhow::bail!("skill 源目录不存在：{}", source.display());
             }
             std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
-            link_or_copy(&source, &link).map(|_| ())
+            let identity = link_or_copy(&source, &link)?;
+            if shared.is_some() && std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata_is_link(&metadata)) {
+                let mut state = initial_state.clone();
+                state.shared_agent_links.insert(link.to_string_lossy().into_owned(), [identity.device, identity.file]);
+                if let Err(error) = self.save_state_unlocked(&state) {
+                    return match recover_published_path(&link, identity) {
+                        Ok(Some(path)) => Err(error.context(format!("新建的 Skill 链接保留在 {}", path.display()))),
+                        Ok(None) => Err(error),
+                        Err(rollback) => Err(error.context(format!("回滚 Skill 链接失败：{rollback:#}"))),
+                    };
+                }
+            }
+            Ok(())
         })();
         coordination.changed_nested_skill(self.coordination_scope(), id);
         result
@@ -861,7 +941,7 @@ impl SkillsManager {
         let source = self.source_dir.join(id);
         let codex = self.linked_dir().join(id);
         let mut roots = Vec::new();
-        roots.extend(self.shared_skills_dir.iter().cloned());
+        roots.extend(self.shared_skills_dir().map(Path::to_path_buf));
         roots.push(self.linked_dir());
         roots.extend(self.agent_dirs.iter().map(|(_, dir)| dir.clone()));
         let mut originals = BTreeSet::new();
@@ -954,7 +1034,7 @@ impl SkillsManager {
         }
         let mut roots = vec![self.source_dir.clone(), self.linked_dir()];
         roots.extend(self.agent_dirs.iter().map(|(_, dir)| dir.clone()));
-        roots.extend(self.shared_skills_dir.iter().cloned());
+        roots.extend(self.shared_skills_dir().map(Path::to_path_buf));
         for root in roots {
             let entries = match std::fs::read_dir(&root) {
                 Ok(entries) => entries,
@@ -1147,6 +1227,7 @@ impl SkillsManager {
             self.load_state_checked_unlocked()?
         };
         let linked = self.linked_dir();
+        let shared_root = self.shared_skills_dir();
         let mut entries: BTreeMap<(String, String), SkillEntry> = BTreeMap::new();
 
         for skill in remote {
@@ -1220,7 +1301,7 @@ impl SkillsManager {
             }
         }
 
-        if let Some(root) = &self.shared_skills_dir {
+        if let Some(root) = shared_root {
             for (id, (name, description)) in scan_shared_skill_dirs(root)? {
                 if !entries.values().any(|item| item.id == id && item.installed) {
                     entries.insert((String::new(), id.clone()), SkillEntry {
@@ -1282,7 +1363,7 @@ impl SkillsManager {
             };
             let mut roots = vec![(if entry.bundled { "system" } else { "codex" }, codex)];
             if !entry.bundled {
-                if let Some(shared) = &self.shared_skills_dir {
+                if let Some(shared) = shared_root {
                     roots.push(("shared", shared.join(&entry.id)));
                 }
             }
@@ -1290,8 +1371,9 @@ impl SkillsManager {
                 let manifest = path.join(SKILL_MANIFEST_FILE);
                 if !manifest.is_file() { continue; }
                 let (name, _) = read_skill_manifest(&manifest, &entry.id);
-                let (enabled, status_error) = match native_config.name_for_matching(&manifest, &name) {
-                    Ok(name) => (native_config.enabled(&manifest, &name), None),
+                let (enabled, status_error) = match native_config.name_for_matching(&manifest, &name)
+                    .and_then(|name| native_config.enabled(&manifest, &name)) {
+                    Ok(enabled) => (enabled, None),
                     Err(error) => (false, Some(format!("{error:#}"))),
                 };
                 let managed = root_kind == "codex" && (is_managed_copy(&path)
@@ -1315,7 +1397,13 @@ impl SkillsManager {
                     let manifest = path.join(SKILL_MANIFEST_FILE);
                     if manifest.is_file() {
                         if !agents.contains(agent) { agents.push(agent.clone()); }
-                        let managed = is_managed_copy(&path)
+                        let managed_shared_link = state.shared_agent_links
+                            .get(&path.to_string_lossy().into_owned()).is_some_and(|recorded|
+                                skill_path_identity(&path).ok().is_some_and(|identity|
+                                    recorded == &[identity.device, identity.file])
+                                    && shared_root.is_some_and(|shared|
+                                        is_managed_link(&path, &shared.join(&entry.id))));
+                        let managed = is_managed_copy(&path) || managed_shared_link
                             || path.canonicalize().ok().zip(self.source_dir.join(&entry.id).canonicalize().ok())
                                 .is_some_and(|(actual, source)| actual == source);
                         entry.locations.push(SkillLocation {
@@ -1328,7 +1416,7 @@ impl SkillsManager {
                     }
                 }
                 if let (Some(shared), Some(codex)) = (
-                    self.shared_skills_dir.as_ref().map(|root| root.join(&entry.id))
+                    shared_root.map(|root| root.join(&entry.id))
                         .filter(|path| path.join(SKILL_MANIFEST_FILE).is_file()),
                     linked.join(&entry.id).join(SKILL_MANIFEST_FILE).is_file().then(|| linked.join(&entry.id)),
                 ) {
@@ -1435,8 +1523,8 @@ impl SkillsManager {
             if let Ok(external) = external_dir.canonicalize() {
                 let mut roots = vec![(self.linked_dir(), "Codex 的 skills 目录"),
                     (self.source_dir.clone(), "Codex++ 的 Skills 受控目录")];
-                if let Some(shared) = &self.shared_skills_dir {
-                    roots.push((shared.clone(), "共享 Skill 目录"));
+                if let Some(shared) = self.shared_skills_dir() {
+                    roots.push((shared.to_path_buf(), "共享 Skill 目录"));
                 }
                 for (root, label) in roots {
                     if root.canonicalize().is_ok_and(|root| external.starts_with(root)) {
@@ -1553,12 +1641,13 @@ impl SkillsManager {
         coordination: &mut SkillsCoordination,
     ) -> anyhow::Result<SkillsState> {
         let id = installed.id.clone();
-        anyhow::ensure!(require_empty || !self.shared_skills_dir.as_ref()
+        anyhow::ensure!(require_empty || !self.shared_skills_dir()
             .is_some_and(|root| root.join(&id).join(SKILL_MANIFEST_FILE).is_file()),
             "共享 Skill 的原目录不由此安装流程更新");
         let destination = self.source_dir.join(&id);
         let mut state = self.load_state_checked_unlocked()?;
         self.ensure_skill_name_not_aliased(&id, &state)?;
+        let new_install = !state.installed.contains_key(&id);
         let identity_changed = replace_identity || state.installed.get(&id) != Some(&installed);
         state.installed.insert(id.clone(), installed);
         let link = self.linked_dir().join(&id);
@@ -1581,6 +1670,7 @@ impl SkillsManager {
         let mut displaced = Vec::new();
         let mut published = None;
         let mut created_links = Vec::new();
+        let mut native_change = None;
         let result = (|| -> anyhow::Result<()> {
             // 两处原内容都先保留，成功后仍作为可恢复备份，不覆盖同名用户目录。
             if !require_empty {
@@ -1612,6 +1702,11 @@ impl SkillsManager {
                     created_links.push((link.clone(), identity));
                 }
                 result?;
+                if new_install {
+                    let manifest = link.join(SKILL_MANIFEST_FILE);
+                    let (name, _) = read_skill_manifest(&manifest, &id);
+                    native_change = self.set_native_skill_paths(&[(manifest, name)], true)?;
+                }
             }
             for (copy, _) in &agent_copies {
                 let mut published_copy = None;
@@ -1627,6 +1722,20 @@ impl SkillsManager {
         if let Err(error) = result {
             let mut rollback_errors = Vec::new();
             let mut recoveries = Vec::new();
+            if let Some((original, updated)) = native_change {
+                let config_path = self.codex_home.join("config.toml");
+                let restore = match std::fs::read(&config_path) {
+                    Ok(current) if current == updated => match original {
+                        Some(original) => crate::settings::atomic_write(&config_path, &original),
+                        None => std::fs::remove_file(&config_path).map_err(Into::into),
+                    },
+                    Ok(_) => Err(anyhow::anyhow!("Codex 配置已被其他窗口更新，未覆盖新配置")),
+                    Err(error) => Err(error.into()),
+                };
+                if let Err(error) = restore {
+                    rollback_errors.push(format!("恢复 Codex 配置失败：{error:#}"));
+                }
+            }
             for (created, identity) in created_links.iter().rev()
                 .map(|(path, identity)| (path, identity))
                 .chain(published.iter().map(|identity| (&destination, identity)))
@@ -1706,7 +1815,7 @@ impl SkillsManager {
         install_only: bool,
     ) -> anyhow::Result<SkillDownloadGuard> {
         validate_skill_id(id)?;
-        anyhow::ensure!(!self.shared_skills_dir.as_ref()
+        anyhow::ensure!(!self.shared_skills_dir()
             .is_some_and(|root| root.join(id).join(SKILL_MANIFEST_FILE).is_file()),
             "共享 Skill 的原目录不由此安装流程更新");
         let coordination = skills_coordination();
@@ -1957,7 +2066,7 @@ impl SkillsManager {
     ) -> anyhow::Result<()> {
         let source = self.source_dir.join(id);
         let link = self.linked_dir().join(id);
-        let shared = self.shared_skills_dir.as_ref().map(|root| root.join(id))
+        let shared = self.shared_skills_dir().map(|root| root.join(id))
             .filter(|path| path.join(SKILL_MANIFEST_FILE).is_file());
         if let Some(shared) = shared {
             let mut paths = vec![shared.clone()];
@@ -1974,7 +2083,7 @@ impl SkillsManager {
                 let (name, _) = read_skill_manifest(&manifest, id);
                 (manifest, name)
             }).collect::<Vec<_>>();
-            return self.set_native_skill_paths(&manifests, enabled);
+            return self.set_native_skill_paths(&manifests, enabled).map(|_| ());
         }
         let existing_manifest = link.join(SKILL_MANIFEST_FILE);
         if existing_manifest.is_file() {
@@ -1983,7 +2092,7 @@ impl SkillsManager {
                 (metadata.file_type().is_dir() && !metadata_is_link(&metadata))
                     || (metadata_is_link(&metadata) && !is_managed_link(&link, &source)))
             {
-                return self.set_native_skill_paths(&[(existing_manifest, name)], enabled);
+                return self.set_native_skill_paths(&[(existing_manifest, name)], enabled).map(|_| ());
             }
         }
         if !enabled {
@@ -2028,7 +2137,7 @@ impl SkillsManager {
         }
         if link.join(SKILL_MANIFEST_FILE).is_file() {
             let (name, _) = read_skill_manifest(&existing_manifest, id);
-            return self.set_native_skill_paths(&[(existing_manifest, name)], true);
+            return self.set_native_skill_paths(&[(existing_manifest, name)], true).map(|_| ());
         }
         if std::fs::symlink_metadata(&link).is_ok() {
             anyhow::bail!("启用位置已存在其他内容，未覆盖：{}", link.display());
@@ -2054,7 +2163,7 @@ impl SkillsManager {
     /// 卸载：删软链，源目录整体移进备份目录。不做自动轮转删除。
     pub fn uninstall(&self, id: &str) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
-        anyhow::ensure!(!self.shared_skills_dir.as_ref()
+        anyhow::ensure!(!self.shared_skills_dir()
             .is_some_and(|root| root.join(id).join(SKILL_MANIFEST_FILE).is_file()),
             "共享 Skill 不由 Codex++ 卸载，可通过 Codex 开关停用");
         let mut coordination = skills_coordination();
@@ -4035,7 +4144,54 @@ mod tests {
             assert!(!manager.linked_dir().join("alpha").exists());
             assert!(!manager.source_dir.join("alpha").exists());
         }
+        let config = std::fs::read_to_string(manager.codex_home.join("config.toml")).unwrap();
+        assert!(!config.lines().any(|line| line.trim() == "[skills]"));
         assert!(temp.path().join("claude-skills/alpha/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn shared_agent_enable_uses_current_source_and_preserves_unowned_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+        write_skill(&shared.join("alpha"), "shared one");
+        write_skill(&manager.source_dir.join("alpha"), "old managed snapshot");
+
+        manager.set_enabled_for("claude", "alpha", true).unwrap();
+        let claude = temp.path().join("claude-skills/alpha");
+        assert_eq!(std::fs::read_to_string(claude.join("SKILL.md")).unwrap(), "shared one");
+        std::fs::write(shared.join("alpha/SKILL.md"), "shared two").unwrap();
+        if std::fs::symlink_metadata(&claude).is_ok_and(|metadata| metadata_is_link(&metadata)) {
+            assert_eq!(std::fs::read_to_string(claude.join("SKILL.md")).unwrap(), "shared two");
+        }
+        manager.set_enabled_for("claude", "alpha", false).unwrap();
+        manager.set_enabled_for("claude", "alpha", true).unwrap();
+        manager.set_enabled_for("grok", "alpha", true).unwrap();
+        assert_eq!(std::fs::read_to_string(claude.join("SKILL.md")).unwrap(), "shared two");
+        assert_eq!(std::fs::read_to_string(temp.path().join("grok-skills/alpha/SKILL.md")).unwrap(), "shared two");
+        assert_eq!(std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap(), "old managed snapshot");
+        assert_eq!(std::fs::read_to_string(shared.join("alpha/SKILL.md")).unwrap(), "shared two");
+    }
+
+    #[test]
+    fn shared_agent_unowned_link_is_not_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+        write_skill(&shared.join("alpha"), "shared");
+        let link = temp.path().join("claude-skills").join("alpha");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(shared.join("alpha"), &link).unwrap();
+        #[cfg(windows)]
+        {
+            let result = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+                .arg(&link).arg(shared.join("alpha")).output().unwrap();
+            assert!(result.status.success(), "mklink failed: {}", String::from_utf8_lossy(&result.stderr));
+        }
+        assert!(manager.set_enabled_for("claude", "alpha", false).is_err());
+        assert!(link.join("SKILL.md").is_file());
+        assert!(shared.join("alpha/SKILL.md").is_file());
     }
 
     #[test]
@@ -4075,6 +4231,111 @@ mod tests {
         assert!(entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
         manager.set_enabled_for("codex", "alpha", false).unwrap();
         assert!(!entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
+    }
+
+    #[test]
+    fn native_relative_and_combined_rules_do_not_hide_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        write_skill(&manager.linked_dir().join("alpha"), "---\nname: alpha\n---\n");
+        write_skill(&manager.linked_dir().join("beta"), "---\nname: beta\n---\n");
+        let config = manager.codex_home.join("config.toml");
+        std::fs::write(&config, concat!(
+            "[[skills.config]]\npath = 'skills/alpha/SKILL.md'\nenabled = false\n",
+            "[[skills.config]]\nname = 'alpha'\npath = 'skills/beta/SKILL.md'\nenabled = true\n",
+        )).unwrap();
+        let entries = manager.try_local_inventory().unwrap();
+        assert!(!entry(&entries, "alpha").enabled);
+        assert!(entry(&entries, "beta").enabled);
+
+        std::fs::write(&config, concat!(
+            "[[skills.config]]\nname = 'alpha'\npath = 'skills/alpha/SKILL.md'\nenabled = false\n",
+            "[[skills.config]]\npath = 'skills/beta/SKILL.md'\nenabled = 'invalid'\n",
+        )).unwrap();
+        let entries = manager.try_local_inventory().unwrap();
+        assert!(!entry(&entries, "alpha").enabled);
+        assert!(entry(&entries, "alpha").locations[0].status_error.is_none());
+        assert!(entry(&entries, "beta").locations[0].status_error.is_some());
+    }
+
+    #[test]
+    fn shared_root_aliasing_codex_root_remains_managed() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = manager(&temp);
+        let linked = base.linked_dir();
+        std::fs::create_dir_all(&linked).unwrap();
+        let shared = temp.path().join("shared");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&linked, &shared).unwrap();
+        #[cfg(windows)]
+        {
+            let result = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+                .arg(&shared).arg(&linked).output().unwrap();
+            assert!(result.status.success(), "mklink failed: {}", String::from_utf8_lossy(&result.stderr));
+        }
+        let manager = base.with_shared_skills_dir(&shared);
+        assert!(manager.shared_skills_dir().is_none());
+        let skill = sample_skill("alpha", "alpha", "first");
+        let first = repo_zip(&[("kit-main/alpha/SKILL.md", "---\nname: alpha\n---\nfirst")]);
+        manager.install_from_zip(&skill, &first).unwrap();
+        let updated = repo_zip(&[("kit-main/alpha/SKILL.md", "---\nname: alpha\n---\nupdated")]);
+        manager.install_from_zip(&skill, &updated).unwrap();
+        assert!(std::fs::read_to_string(linked.join("alpha/SKILL.md")).unwrap().ends_with("updated"));
+        manager.uninstall("alpha").unwrap();
+        assert!(!manager.source_dir.join("alpha").exists());
+        assert!(!linked.join("alpha").exists());
+    }
+
+    #[test]
+    fn reinstall_reenables_previously_disabled_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let zip = repo_zip(&[("kit-main/alpha/SKILL.md", "---\nname: alpha\n---\n")]);
+        let skill = sample_skill("alpha", "alpha", "hash");
+        manager.install_from_zip(&skill, &zip).unwrap();
+        let linked = manager.linked_dir().join("alpha");
+        manager.backup_directory("alpha", &linked).unwrap();
+        copy_dir_all(&manager.source_dir.join("alpha"), &linked).unwrap();
+        std::fs::write(linked.join(MANAGED_COPY_MARKER), "").unwrap();
+        manager.set_enabled("alpha", false).unwrap();
+        assert!(!entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
+        manager.uninstall("alpha").unwrap();
+        manager.install_from_zip(&skill, &zip).unwrap();
+        assert!(entry(&manager.try_local_inventory().unwrap(), "alpha").enabled);
+    }
+
+    #[test]
+    fn failed_install_restores_native_disabled_rule() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            temp.path().join("blocked/state.json"),
+            temp.path().join("codex-home"),
+        );
+        std::fs::create_dir_all(&manager.source_dir).unwrap();
+        std::fs::create_dir_all(&manager.codex_home).unwrap();
+        let original = "[[skills.config]]\npath = 'skills/alpha/SKILL.md'\nenabled = false\n";
+        let config = manager.codex_home.join("config.toml");
+        std::fs::write(&config, original).unwrap();
+        let staging = manager.source_dir.join(".staging");
+        write_skill(&staging, "---\nname: alpha\n---\n");
+        let blocked = temp.path().join("blocked");
+        SOURCE_PUBLICATION_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(move |_| {
+            std::fs::write(&blocked, "block state save")?;
+            Ok(())
+        })));
+        let installed = InstalledSkill {
+            id: "alpha".into(), name: "alpha".into(), description: String::new(),
+            repo_key: String::new(), repo_path: String::new(), content_hash: String::new(),
+            installed_at: String::new(),
+        };
+        let mut coordination = skills_coordination();
+        assert!(manager.commit_staged_skill_unlocked(
+            &staging, installed, true, false, None, true, &mut coordination,
+        ).is_err());
+        assert_eq!(std::fs::read_to_string(config).unwrap(), original);
+        assert!(!manager.linked_dir().join("alpha").exists());
     }
 
     #[test]
