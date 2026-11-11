@@ -519,6 +519,7 @@ dependencies = [
  "block2",
  "directories",
  "ecb",
+ "flate2",
  "fs2",
  "futures-util",
  "http",
