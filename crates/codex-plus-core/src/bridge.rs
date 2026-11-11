@@ -21,6 +21,13 @@ mod native_fast;
 pub const BRIDGE_BINDING_NAME: &str = "codexSessionDeleteV2";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+#[derive(Debug, thiserror::Error)]
+#[error("timed out waiting for CDP command {method} id {message_id} response after {seconds}s")]
+pub(crate) struct CdpCommandTimeout {
+    method: String,
+    message_id: u64,
+    seconds: u64,
+}
 // 25MiB 音频的 base64 与 JSON 封装约 33.4MiB；限制单 frame 和完整 message 的内存上限。
 const CDP_MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 /// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
@@ -1418,12 +1425,11 @@ where
             self.wait_for_id(message_id, method.to_string()).await
         })
         .await
-        .with_context(|| {
-            format!(
-                "timed out waiting for CDP command {method} id {message_id} response after {}s",
-                timeout.as_secs()
-            )
-        })?
+        .map_err(|error| anyhow::Error::new(error).context(CdpCommandTimeout {
+            method: method.to_string(),
+            message_id,
+            seconds: timeout.as_secs(),
+        }))?
     }
 
     async fn send_command_without_wait(

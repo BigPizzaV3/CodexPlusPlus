@@ -466,7 +466,12 @@ pub async fn handle_bridge_request(
             }
         }
         "/user-scripts/load" => ctx.runtime.load_user_scripts().await,
-        "/user-scripts/reload" => ctx.runtime.reload_user_scripts().await,
+        "/user-scripts/reload" => match ctx.runtime.reload_user_scripts().await {
+            Err(error) if error.is::<crate::user_scripts::ReloadOutcomeUnknown>() => {
+                Ok(json!({ "status": "unknown", "message": error.to_string() }))
+            }
+            result => result,
+        },
         "/cdp/targets" => ctx.runtime.cdp_targets().await,
         "/cdp/evaluate" => ctx.runtime.cdp_evaluate(payload.clone()).await,
         // 系统鼠标位置：拓展写「桌宠跟随鼠标」这类功能用（页面里拿不到窗口外的鼠标）。只读。

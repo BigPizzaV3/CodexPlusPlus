@@ -3,6 +3,153 @@ use serde_json::json;
 use std::{fs, process::Command};
 
 #[test]
+fn unconfirmed_reload_marks_runtime_status_unknown() {
+    let mut inventory = json!({
+        "scripts": [
+            { "status": "not_loaded", "enabled": true },
+            { "status": "disabled", "enabled": false },
+            { "status": "failed", "error": "invalid manifest" }
+        ]
+    });
+    codex_plus_core::user_scripts::mark_inventory_runtime_unknown(&mut inventory);
+    assert!(inventory["scripts"].as_array().unwrap().iter().all(|script| script["status"] == "unknown"));
+    assert_eq!(inventory["scripts"][1]["enabled"], false);
+    assert_eq!(inventory["scripts"][2]["error"], "invalid manifest");
+}
+
+#[tokio::test]
+async fn explicit_reload_waits_for_a_slow_cdp_response() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    let temp = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("config.json"),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        let command: serde_json::Value = serde_json::from_str(
+            socket.next().await.unwrap().unwrap().to_text().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(command["method"], "Runtime.evaluate");
+        assert_eq!(command["params"]["awaitPromise"], false);
+        tokio::time::sleep(Duration::from_millis(5_500)).await;
+        socket.send(Message::Text(json!({
+            "id": command["id"],
+            "result": { "result": { "type": "string", "value": r#"{"mode":"scripts","scripts":{}}"# } }
+        }).to_string().into())).await.unwrap();
+    });
+
+    let result = codex_plus_core::user_scripts::reload_scripts_at(
+        &format!("ws://{address}"),
+        &manager,
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn initial_load_keeps_the_original_timeout() {
+    use codex_plus_core::user_scripts::{ReloadOutcomeUnknown, load_scripts_at};
+    use futures_util::StreamExt;
+    use tokio::net::TcpListener;
+
+    let temp = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("config.json"),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let command: serde_json::Value = serde_json::from_str(
+            socket.next().await.unwrap().unwrap().to_text().unwrap(),
+        ).unwrap();
+        assert_eq!(command["params"]["awaitPromise"], false);
+        let _ = socket.next().await;
+    });
+
+    let error = load_scripts_at(&format!("ws://{address}"), &manager).await.unwrap_err();
+    assert!(error.is::<tokio::time::error::Elapsed>(), "{error:#}");
+    assert!(!error.is::<ReloadOutcomeUnknown>(), "{error:#}");
+    assert!(error.to_string().contains("after 5s"), "{error:#}");
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn reload_distinguishes_command_timeout_from_connection_and_script_errors() {
+    use codex_plus_core::user_scripts::{ReloadOutcomeUnknown, reload_scripts_at};
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    let temp = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("config.json"),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let command_server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        let command: serde_json::Value = serde_json::from_str(
+            socket.next().await.unwrap().unwrap().to_text().unwrap(),
+        ).unwrap();
+        assert_eq!(command["method"], "Runtime.evaluate");
+        let _ = socket.next().await;
+    });
+    let error = reload_scripts_at(&format!("ws://{address}"), &manager).await.unwrap_err();
+    assert!(error.is::<ReloadOutcomeUnknown>(), "{error:#}");
+    assert!(error.is::<tokio::time::error::Elapsed>(), "{error:#}");
+    command_server.await.unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let connect_server = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(6)).await;
+    });
+    let error = reload_scripts_at(&format!("ws://{address}"), &manager).await.unwrap_err();
+    assert!(error.is::<tokio::time::error::Elapsed>(), "{error:#}");
+    assert!(!error.is::<ReloadOutcomeUnknown>(), "{error:#}");
+    connect_server.await.unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let exception_server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        let command: serde_json::Value = serde_json::from_str(
+            socket.next().await.unwrap().unwrap().to_text().unwrap(),
+        ).unwrap();
+        socket.send(Message::Text(json!({
+            "id": command["id"],
+            "result": { "exceptionDetails": { "exception": { "description": "test exception" } } }
+        }).to_string().into())).await.unwrap();
+    });
+    let error = reload_scripts_at(&format!("ws://{address}"), &manager).await.unwrap_err();
+    assert!(!error.is::<ReloadOutcomeUnknown>(), "{error:#}");
+    assert!(error.to_string().contains("test exception"), "{error:#}");
+    exception_server.await.unwrap();
+}
+
+#[test]
 fn global_switch_preserves_individual_script_choices_after_reload() {
     let temp = tempfile::tempdir().unwrap();
     let user = temp.path().join("user");

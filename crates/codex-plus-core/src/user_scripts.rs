@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Context;
 use serde::Serialize;
@@ -18,6 +19,19 @@ pub const EXTENSION_API_VERSION: u64 = 1;
 
 /// 拓展包的清单文件名。目录里有它，目录才被当成拓展包。
 pub const EXTENSION_MANIFEST_FILE: &str = "codexpp.json";
+
+#[derive(Debug, thiserror::Error)]
+#[error("用户脚本热重载请求超时，执行结果尚未确认，请检查实际效果后再操作。")]
+pub struct ReloadOutcomeUnknown;
+
+/// 超时后本地清单只能说明配置，不能确认页面里的运行状态。
+pub fn mark_inventory_runtime_unknown(inventory: &mut Value) {
+    if let Some(scripts) = inventory["scripts"].as_array_mut() {
+        for script in scripts {
+            script["status"] = json!("unknown");
+        }
+    }
+}
 
 /// 一次性连接当前 Codex 页面；不增加轮询，也不接管 launcher 的桥接连接。
 pub async fn reload_live_scripts(
@@ -53,9 +67,10 @@ pub async fn reload_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
 ) -> anyhow::Result<Value> {
+    let bundle = manager.build_reload_bundle()?;
     // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
     crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &manager.build_reload_bundle()?).await
+    apply_scripts_at(websocket, manager, &bundle, Some(Duration::from_secs(15))).await
 }
 
 pub async fn load_scripts_at(
@@ -64,15 +79,28 @@ pub async fn load_scripts_at(
 ) -> anyhow::Result<Value> {
     // 页面重新加载：上一个页面的后台不再有人用。
     crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?).await
+    apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?, None).await
 }
 
 async fn apply_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
     bundle: &str,
+    reload_timeout: Option<Duration>,
 ) -> anyhow::Result<Value> {
-    let response = crate::bridge::evaluate_script(websocket, bundle).await?;
+    let response = if let Some(timeout) = reload_timeout {
+        crate::bridge::evaluate_script_with_await_promise_timeout(websocket, bundle, false, timeout)
+            .await
+            .map_err(|error| {
+                if error.is::<crate::bridge::CdpCommandTimeout>() {
+                    error.context(ReloadOutcomeUnknown)
+                } else {
+                    error
+                }
+            })?
+    } else {
+        crate::bridge::evaluate_script(websocket, bundle).await?
+    };
     if let Some(exception) = response.pointer("/result/exceptionDetails") {
         anyhow::bail!(
             "脚本重载失败：{}",

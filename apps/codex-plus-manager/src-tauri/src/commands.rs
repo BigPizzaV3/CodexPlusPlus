@@ -7037,6 +7037,15 @@ pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
                 )
             }
         }
+        Err(error) if error.is::<codex_plus_core::user_scripts::ReloadOutcomeUnknown>() => {
+            let mut payload = fallback_settings_payload();
+            codex_plus_core::user_scripts::mark_inventory_runtime_unknown(&mut payload.user_scripts);
+            CommandResult {
+                status: "warning".to_string(),
+                message: error.to_string(),
+                payload,
+            }
+        }
         Err(error) => failed(
             &format!("用户脚本热重载失败：{error}"),
             fallback_settings_payload(),

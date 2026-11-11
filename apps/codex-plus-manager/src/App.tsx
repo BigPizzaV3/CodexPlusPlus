@@ -2131,11 +2131,14 @@ export function App() {
     return result;
   };
 
-  const refreshScriptMarket = async (silent = false) => {
+  const refreshScriptMarket = async (silent = false, preserveRuntime = false) => {
     const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
     if (result) {
       setScriptMarket(result);
-      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
+      setSettings((current) => (current ? {
+        ...current,
+        user_scripts: preserveRuntime ? current.user_scripts : result.user_scripts,
+      } : current));
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("拓展"), result, { silentSuccess: true });
     }
   };
@@ -2156,6 +2159,7 @@ export function App() {
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
+    return result?.status;
   };
 
   const installMarketScript = async (id: string) => {
@@ -2217,9 +2221,13 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      if (isSuccessStatus(result.status) && host === "codex") await reloadUserScripts();
-      else showResultNotice(t("本地拓展"), result);
-      await refreshUserScriptInventory();
+      if (isSuccessStatus(result.status) && host === "codex") {
+        const reloadStatus = await reloadUserScripts();
+        if (reloadStatus !== "warning") await refreshUserScriptInventory();
+      } else {
+        showResultNotice(t("本地拓展"), result);
+        await refreshUserScriptInventory();
+      }
     }
   };
 
@@ -4833,7 +4841,7 @@ export function App() {
       refreshAds,
       refreshScriptMarket,
       refreshUserScriptInventory,
-      reloadUserScripts,
+      reloadUserScripts: async () => { await reloadUserScripts(); },
       installMarketScript,
       setUserScriptsEnabled,
       setUserScriptsSkipNextStart,
@@ -5888,7 +5896,7 @@ type Actions = {
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
-  refreshScriptMarket: () => Promise<void>;
+  refreshScriptMarket: (silent?: boolean, preserveRuntime?: boolean) => Promise<void>;
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
   reloadUserScripts: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
@@ -10783,7 +10791,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
           emptyText={market?.status === "failed" ? market.message : t("正在读取拓展市场…")}
           hasScripts={marketScripts.length > 0}
           installedScripts={sortedMarketScripts.filter((script) => script.installed).map(marketRow)}
-          onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(); }}
+          onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(false, true); }}
           onOpenUrl={(url) => void actions.openExternalUrl(url)}
           packages={marketPackages}
           search={search}
@@ -17934,6 +17942,8 @@ function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "c
       return { label: t("加载中"), hint: t("正在 Codex 里加载") };
     case "failed":
       return { label: t("加载失败"), hint: t("拓展在 Codex 里运行出错") };
+    case "unknown":
+      return { label: t("状态待确认"), hint: t("请检查实际效果") };
     case "notLoaded":
       return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载拓展") };
   }

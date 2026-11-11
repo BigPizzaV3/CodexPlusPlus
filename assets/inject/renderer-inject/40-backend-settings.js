@@ -344,7 +344,7 @@
   }
 
   function userScriptStatusLabel(status) {
-    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
+    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中", unknown: "状态待确认" }[status] || status || "未知";
   }
 
   // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft / Settings 的 ISC 图标路径。
@@ -661,8 +661,9 @@
    */
   async function reloadUserScriptsAfterChange() {
     const result = await postJson("/user-scripts/reload", {});
-    if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
-    await loadUserScripts();
+    if (result?.status === "unknown") showToast(result.message, { type: "warn" });
+    else if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
+    await loadUserScripts("/user-scripts/list", {}, result?.status === "unknown");
   }
 
   /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
@@ -743,12 +744,13 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusPageNav(codexPlusExtensionsTab);
   }
 
-  async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
+  async function loadUserScripts(path = "/user-scripts/list", payload = {}, runtimeUnknown = false) {
     const requestPayload = path === "/user-scripts/list"
       ? { ...payload, runtime_status: window.__codexPlusUserScripts?.scripts || {} }
       : payload;
     const result = await postJson(path, requestPayload);
     if (result?.scripts) {
+      if (runtimeUnknown) result.scripts.forEach((script) => { script.status = "unknown"; });
       codexPlusUserScripts = result;
       codexPlusUserScriptsLoaded = true;
       renderUserScripts();
