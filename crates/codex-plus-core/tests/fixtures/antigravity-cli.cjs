@@ -18,6 +18,13 @@ process.stdin.on('end', () => {
   const send = value => process.stdout.write(JSON.stringify(value) + '\r\n');
   send({ event: 'init', conversation_id: 'fixture-root' });
   const mode = process.env.FIXTURE_MODE;
+  if (mode === 'child-progress') {
+    for (const step_type of ['agent_response', 'thinking']) {
+      send({ event: 'step_update', step_update: {
+        conversation_id: 'child-conversation', step_type, text_delta: 'child progress'
+      } });
+    }
+  }
   if (mode === 'no-result') return;
   if (mode === 'invalid-json') { process.stdout.write('not-json\n'); return; }
   if (mode === 'oversized') { process.stdout.write('x'.repeat(1024 * 1024 + 1)); return; }

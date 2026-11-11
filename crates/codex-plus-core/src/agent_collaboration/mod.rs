@@ -110,10 +110,7 @@ pub struct CollaborationConfig {
     /// 单个子 Agent 任务的运行上限（分钟）。旧配置没有此字段时取默认 10 分钟（#2618）。
     /// 取默认值时不写出：v1.10.0 的结构带 `deny_unknown_fields`，回退旧版本时
     /// 多出的字段会让整份协作记录读不出来。
-    #[serde(
-        default = "default_max_runtime_minutes",
-        skip_serializing_if = "is_default_max_runtime_minutes"
-    )]
+    #[serde(default = "default_max_runtime_minutes", skip_serializing_if = "is_default_max_runtime_minutes")]
     pub max_runtime_minutes: u32,
 }
 
@@ -400,9 +397,7 @@ impl Store {
                 })
             })
             .collect();
-        Ok(
-            json!({ "enabled": state.config.enabled, "agents": agents, "tasks": tasks, "total": total }),
-        )
+        Ok(json!({ "enabled": state.config.enabled, "agents": agents, "tasks": tasks, "total": total }))
     }
 
     pub fn config(&self) -> anyhow::Result<CollaborationConfig> {
@@ -842,9 +837,7 @@ fn concurrency_limit(config: &CollaborationConfig, agent_id: &str) -> usize {
         .agents
         .iter()
         .find(|agent| agent.id == agent_id)
-        .map_or(DEFAULT_MAX_CONCURRENT_TASKS, |agent| {
-            agent.max_concurrent_tasks
-        })
+        .map_or(DEFAULT_MAX_CONCURRENT_TASKS, |agent| agent.max_concurrent_tasks)
         .max(1) as usize
 }
 

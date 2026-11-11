@@ -1146,7 +1146,10 @@ impl ProtocolState {
                 if !self.antigravity_initialized {
                     bail!("Antigravity 在 init 之前返回了进度");
                 }
-                self.set_session(Some(id))?;
+                // 子会话进度不是根任务的完成依据，不能覆盖根会话状态。
+                if id != self.session_id {
+                    return Ok(());
+                }
                 // 只展示公开回复；thinking 等其他步骤的文本不能进入进度或最终答案。
                 if step["step_type"] == "agent_response" {
                     if let Some(delta) = step["text_delta"].as_str() {
@@ -1399,6 +1402,44 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_ignores_child_progress_but_rejects_child_results() {
+        let mut state = ProtocolState::new(Provider::Antigravity, String::new());
+        parse(&mut state, json!({"event":"init","conversation_id":"root"}));
+        parse(
+            &mut state,
+            json!({"event":"step_update","step_update":{
+                "conversation_id":"root","step_type":"agent_response","text_delta":"root progress"
+            }}),
+        );
+        for step_type in ["agent_response", "thinking"] {
+            parse(
+                &mut state,
+                json!({"event":"step_update","step_update":{
+                    "conversation_id":"child","step_type":step_type,"text_delta":"child progress"
+                }}),
+            );
+        }
+        assert_eq!(state.session_id, "root");
+        assert_eq!(state.progress, "root progress");
+        assert!(!state.succeeded);
+        assert!(state.answer.is_empty());
+        assert!(state.failure.is_none());
+        assert!(
+            state
+                .parse_line(
+                    json!({"event":"result","result":{
+                        "conversation_id":"child","status":"SUCCESS","response":"child answer"
+                    }})
+                    .to_string()
+                    .as_bytes()
+                )
+                .is_err()
+        );
+        assert!(!state.succeeded);
+        assert!(state.answer.is_empty());
+    }
+
+    #[test]
     fn antigravity_cannot_replace_or_omit_the_root_conversation() {
         let mut state = ProtocolState::new(Provider::Antigravity, "conversation-123".to_owned());
         assert!(
@@ -1494,6 +1535,7 @@ mod tests {
     async fn antigravity_fake_cli_covers_encoded_input_and_terminal_failures() {
         for mode in [
             "success",
+            "child-progress",
             "nonzero",
             "denied",
             "wrong-root",
@@ -1516,7 +1558,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 outcome.status,
-                if mode == "success" {
+                if matches!(mode, "success" | "child-progress") {
                     "completed"
                 } else {
                     "failed"
@@ -1528,7 +1570,7 @@ mod tests {
                 serde_json::from_str::<Value>(&input).unwrap()["message"]["content"],
                 task.prompt
             );
-            if mode == "success" {
+            if matches!(mode, "success" | "child-progress") {
                 assert_eq!(outcome.answer, "完成 ✓");
                 assert_eq!(outcome.session_id, "fixture-root");
             }
