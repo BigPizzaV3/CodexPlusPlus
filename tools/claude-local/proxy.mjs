@@ -96,7 +96,21 @@ const CACHE_DIR = process.env.CLAUDE_LOCAL_CACHE_DIR || path.join(here, ".cache"
 // 或由后端 install_assets 写入代理旁的内嵌模板（mock/.codex-plus-template 标记）。
 // 代理目录里来历不明的 mock 一律忽略（托管测试用 privateFixture 守住这条）。
 const TRUSTED_TEMPLATE = fs.existsSync(path.join(here, "mock", ".codex-plus-template"));
-const POC_DIR = runtime.recordedDir || (TRUSTED_TEMPLATE ? here : null);
+// 内嵌模板只和录制外壳配套：模板数据、录制外壳、录制汉化是同一个线上版本。新装的 state 里没有录制外壳时
+// 不能拿模板去配安装包里的官方外壳（版本不同，界面会卡住、汉化缺失），整体走受管数据路径：
+// 安装包同版本的官方外壳与资源 + 合成启动数据 + 配置的汉化目录。也不去线上抓外壳（受限地区会 302）。
+function hasRecordedShell(dir) {
+  for (const key of ["claude.ai/epitaxy", "claude.ai/login", "claude.ai/new", "claude.ai/"]) {
+    const file = path.join(dir, crypto.createHash("sha1").update(key).digest("hex"));
+    try {
+      const meta = JSON.parse(fs.readFileSync(`${file}.json`, "utf8"));
+      if (meta.status === 200 && fs.statSync(file).size >= 4096) return true;
+    } catch { /* 没有或损坏：继续看下一个 */ }
+  }
+  return false;
+}
+const TEMPLATE_USABLE = TRUSTED_TEMPLATE && hasRecordedShell(path.join(here, ".cache"));
+const POC_DIR = runtime.recordedDir || (TEMPLATE_USABLE ? here : null);
 const POC_MOCK = path.join(POC_DIR ?? here, "mock");
 const POC_I18N = path.join(POC_DIR ?? here, "i18n");
 // 托管模式在存在 PoC 数据（dev 录制目录或安装的内嵌 mock 模板）时走 PoC 数据路径；

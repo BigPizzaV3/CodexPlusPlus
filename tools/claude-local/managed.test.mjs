@@ -301,27 +301,43 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
   assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
 });
 
-test("installed template without a recorded shell serves the bundled official shell instead of fetching claude.ai", async () => {
-  // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template），走录制模板路径；
-  // 新装的 state 里没有录制外壳时不能去线上抓（受限地区会 302 到 app-unavailable-in-region）。
+test("installed template only pairs with a recorded shell; without one the whole managed official path is used", async () => {
+  // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template）。模板数据只和同一线上版本的录制外壳配套：
+  // 新装的 state 里没有录制外壳时，外壳、资源、启动数据、汉化都要来自受管路径，不能混用（会卡住、缺汉化），
+  // 也不能去线上抓（受限地区 302）。
   const runtimeDir = path.join(root, "template-runtime");
   fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
   fs.writeFileSync(path.join(runtimeDir, "mock", ".codex-plus-template"), "");
-  const cacheDir = path.join(root, "template-cache");
-  fs.mkdirSync(cacheDir, { recursive: true });
-  const instance = await start({ CLAUDE_LOCAL_CACHE_DIR: cacheDir }, runtimeDir);
+  const fresh = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache") }, runtimeDir);
   try {
     for (const pathname of ["/new", "/settings/general"]) {
-      const shell = await request(instance, pathname, { host: "claude.ai" });
+      const shell = await request(fresh, pathname, { host: "claude.ai" });
       assert.equal(shell.status, 200, pathname);
       assert.match(shell.bytes.toString("utf8"), /data-build-id="fixture-build"/, pathname);
     }
-    // 官方外壳引用的资源只在安装包里：同样从安装包回，不走线上。
-    const asset = await request(instance, "/assets/v1/main.js", { host: "claude.ai" });
-    assert.equal(asset.status, 200);
+    const asset = await request(fresh, "/assets/v1/main.js", { host: "claude.ai" });
     assert.equal(asset.bytes.toString("utf8"), "export const localOfficialAsset = true;");
+    const catalog = await request(fresh, "/i18n/zh-Hans.json?v=1.1", { host: "claude.ai" });
+    assert.deepEqual(catalog.json, { message: "translated" }, "汉化走配置的目录");
+    const bootstrap = await request(fresh, "/api/bootstrap", { host: "claude.ai" });
+    assert.equal(bootstrap.json.privateFixture, undefined, "不拿模板数据配官方外壳");
+    assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
   } finally {
-    await stop(instance);
+    await stop(fresh);
+  }
+
+  // 录制外壳在场时才走录制模板路径。
+  const shellKey = crypto.createHash("sha1").update("claude.ai/epitaxy").digest("hex");
+  fs.mkdirSync(path.join(runtimeDir, ".cache"), { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, ".cache", shellKey), `<html data-build-id="recorded">${"x".repeat(5000)}</html>`);
+  fs.writeFileSync(path.join(runtimeDir, ".cache", `${shellKey}.json`), JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, url: "claude.ai/epitaxy" }));
+  const recorded = await start({ CLAUDE_LOCAL_CACHE_DIR: path.join(runtimeDir, ".cache") }, runtimeDir);
+  try {
+    const shell = await request(recorded, "/settings/general", { host: "claude.ai" });
+    assert.equal(shell.status, 200);
+    assert.match(shell.bytes.toString("utf8"), /data-build-id="recorded"/);
+  } finally {
+    await stop(recorded);
   }
 });
 

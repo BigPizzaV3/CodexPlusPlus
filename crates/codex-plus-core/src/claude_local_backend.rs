@@ -707,15 +707,6 @@ fn recorded_data_dir() -> Option<PathBuf> {
     valid(&dir).then_some(dir)
 }
 
-// 首次运行且没有可回放的页面缓存时提示：依赖在线抓取，离线会降级。
-fn replay_cache_populated(root: &Path) -> bool {
-    let cache = root.join(".cache");
-    cache.is_dir()
-        && fs::read_dir(cache)
-            .map(|mut entries| entries.any(|entry| entry.is_ok()))
-            .unwrap_or(false)
-}
-
 fn install_assets(root: &Path) -> Result<()> {
     private_dir(root)?;
     for (name, contents) in ASSETS {
@@ -1735,8 +1726,6 @@ pub fn status() -> Result<ClaudeLocalStatus> {
         Some("首次使用需要准备并信任本地证书".into())
     } else if config.enabled && config.voice_input && !dictation_ready {
         Some("本地听写尚未就绪，请在语音设置中启用 SenseVoice 并准备模型".into())
-    } else if config.enabled && recorded_data_dir().is_none() && !replay_cache_populated(&root) {
-        Some("首次运行需要从 claude.ai 在线抓取页面资源；离线环境下完整功能模式可能无法加载".into())
     } else {
         fs::read_to_string(root.join("compatibility-warning.txt"))
             .ok()
