@@ -25,6 +25,7 @@ on:
           - all
           - windows
           - macos
+          - linux
       publish:
         description: "Release 还是草稿时，附件与更新元数据齐备后公开发布"
         default: false
@@ -97,7 +98,7 @@ jobs:
 
   windows-installer:
     needs: prepare
-    if: github.event_name == 'push' || inputs.platform != 'macos'
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: windows-latest
     steps:
       - name: Checkout release tag
@@ -207,7 +208,7 @@ jobs:
   # 现在各占一台 runner 并行编，产物交给 macos-dmg 合并、签名、公证。
   macos-build:
     needs: prepare
-    if: github.event_name == 'push' || inputs.platform != 'windows'
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
     name: macOS build (${{ matrix.target }})
     runs-on: macos-15
     strategy:
@@ -263,7 +264,7 @@ jobs:
 
   macos-dmg:
     needs: [prepare, macos-build]
-    if: github.event_name == 'push' || inputs.platform != 'windows'
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos'
     # 单个通用包（universal）同时支持 Intel 与 Apple Silicon，
     # 用户不必再自己判断架构，Release 也只多一个而不是两个产物。
     name: macOS DMG (universal)
@@ -415,6 +416,107 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$RELEASE_TAG" dist/macos/*.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
+  # Linux .deb（#2820）。不参与发布门槛：失败只少这一个附件，Windows / macOS 照常发布。
+  linux-deb:
+    needs: prepare
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux'
+    name: Linux DEB (Ubuntu 24.04, amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+          save-if: false
+
+      # 与 pr-build.yml 相同：默认 Azure 镜像不通时限时失败并换官方源重试。
+      - name: Install Linux build dependencies
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          pkgs="build-essential curl git pkg-config libssl-dev libsqlite3-dev \
+            libdbus-1-dev libglib2.0-dev libgtk-3-dev \
+            libayatana-appindicator3-dev libjavascriptcoregtk-4.1-dev \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15"
+          try_install() {
+            timeout 480 bash -c "$apt update -qq && $apt install -y --no-install-recommends $pkgs"
+          }
+          # 新版 runner 的源写成 mirror+file:/etc/apt/apt-mirrors.txt（里面是 azure 镜像），旧版直接写 azure 地址，两种都换。
+          use_official_mirror() {
+            echo "::warning::默认 Ubuntu 镜像不可用，改用 archive.ubuntu.com"
+            for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+              if [ -f "$f" ]; then
+                sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu#g' \
+                  -e 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
+              fi
+            done
+          }
+          # 域名都解析不了时 apt 要白等好几分钟才放弃（2026-11-11 实测），先探一下，不通直接换。
+          if ! getent hosts azure.archive.ubuntu.com >/dev/null; then
+            use_official_mirror
+          fi
+          if ! try_install; then
+            use_official_mirror
+            try_install
+          fi
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Build application
+        run: cargo build --release -p codex-plus-manager
+
+      - name: Build DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp
+          bash "$GITHUB_WORKSPACE/scripts/installer/linux/build-deb.sh" --package-only
+
+      - name: Verify package and install
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb_file="$(find dist/linux -maxdepth 1 -name "*.deb" -print -quit)"
+          test -n "$deb_file"
+          version="${RELEASE_TAG#[vV]}"
+          test "$(dpkg-deb -f "$deb_file" Package)" = "codex-plus-plus"
+          test "$(dpkg-deb -f "$deb_file" Version)" = "$version"
+          dpkg-deb -c "$deb_file" | grep -F "./usr/bin/codex-plus-plus"
+          sudo apt-get install -y "./$deb_file"
+          test -x /usr/bin/codex-plus-plus
+          dpkg -V codex-plus-plus
+          ldd /usr/bin/codex-plus-plus | tee /tmp/codex-plus-plus-ldd.log
+          ! grep -q "not found" /tmp/codex-plus-plus-ldd.log
+          # 统一成 CodexPlusPlus-<版本>-linux-amd64.deb：SHA256SUMS 按 CodexPlusPlus-* 收录，应用内更新按 .deb + amd64 识别。
+          mkdir -p dist/release
+          cp "$deb_file" "dist/release/CodexPlusPlus-${version}-linux-amd64.deb"
+
+      - name: Upload Linux DEB
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" dist/release/*.deb --clobber --repo "$GITHUB_REPOSITORY"
+
   latest-json:
     name: Upload checksums, latest.json and publish
     # 单平台补跑时另一个 job 会跳过；成功或跳过才允许更新元数据。
@@ -426,6 +528,8 @@ jobs:
       - windows-installer
       - macos-build
       - macos-dmg
+      # Linux 只等它跑完、不卡发布：它失败时 Windows / macOS 照常发布，事后用 platform=linux 补跑。
+      - linux-deb
     steps:
       - name: Upload SHA256SUMS.txt
         env:
