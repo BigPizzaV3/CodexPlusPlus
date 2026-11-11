@@ -1,0 +1,98 @@
+name: Release dependency cache
+
+# 给 release-assets.yml 预热 release profile 的第三方依赖缓存。
+# PR build 推送 main 时只跑测试 / check，不再编 release，发版那边就没有现成的 release 依赖可读；
+# 依赖只在 Cargo.lock 变化时才变，所以只在这时（以及每周一次防止 7 天未访问被逐出、手动触发）编一遍。
+# rust-cache 只缓存第三方依赖（会剔除本仓库 crate），shared-key 必须与 release-assets.yml 一致。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/release-cache.yml"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows release deps
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # 统一应用会把前端 dist 嵌进二进制，和发版一样先构建前端再编。
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Build release
+        run: cargo build --release
+
+  macos:
+    name: macOS release deps (${{ matrix.target }})
+    runs-on: macos-15
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    env:
+      # 与 release-assets.yml 保持一致：rust-cache 的环境哈希和 C 依赖的编译参数都要对得上。
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}

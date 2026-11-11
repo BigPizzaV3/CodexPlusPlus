@@ -479,6 +479,8 @@ type BackendSettings = WhaleBalanceSettings & {
   /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
   managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
+  /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
+  keepProjectsWithoutAccount?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
   /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
@@ -1575,6 +1577,7 @@ const defaultSettings: BackendSettings = {
   providerSyncEnabled: false,
   sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
+  keepProjectsWithoutAccount: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
   updateSkippedVersion: "",
@@ -10879,6 +10882,17 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                 <ToggleVisual />
               </label>
             </SettingRow>
+            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t("非官方登录时保留本地项目")}
+                  checked={Boolean(form.keepProjectsWithoutAccount)}
+                  onChange={(event) => onFormChange({ ...form, keepProjectsWithoutAccount: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
             <SettingRow title={t("同步目标")}>
               <AppSelect
                 disabled={providerSyncProgress.active || !providerTargets.length}
@@ -16348,9 +16362,11 @@ type ClaudeLocalConfig = {
   computerUse: boolean;
   backgroundMode: boolean;
   displayName?: string;
+  email?: string;
   plan?: string;
   sessionSync?: boolean;
   listAllModels?: boolean;
+  hideUnroutedModels?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -16898,6 +16914,24 @@ function ClaudeLocalizationScreen(
               <ToggleVisual />
             </label>
           </CxRow>
+          <CxRow
+            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留供应商池里的模型；改完需要重新启动本地服务。")}
+            title={t("隐藏无供应商的模型")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("隐藏无供应商的模型")}
+                checked={local?.config.hideUnroutedModels ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, hideUnroutedModels: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{local?.config.hideUnroutedModels ?? true ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
+          </CxRow>
           <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("用户名")}>
             <Input
               aria-label={t("用户名")}
@@ -16911,6 +16945,22 @@ function ClaudeLocalizationScreen(
                 if (event.key === "Enter") event.currentTarget.blur();
               }}
               placeholder={t("Local User")}
+            />
+          </CxRow>
+          <CxRow detail={t("只改 Claude 里显示的账号邮箱，从这里启动后生效。")} title={t("邮箱")}>
+            <Input
+              aria-label={t("邮箱")}
+              defaultValue={local?.config.email ?? ""}
+              disabled={localDisabled || !local?.supported}
+              key={local?.config.email ?? ""}
+              onBlur={(event) => {
+                if (local && event.currentTarget.value !== (local.config.email ?? "")) void configureLocal({ ...local.config, email: event.currentTarget.value });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              placeholder="local@claude.local"
+              type="email"
             />
           </CxRow>
           <CxRow title={t("套餐")}>

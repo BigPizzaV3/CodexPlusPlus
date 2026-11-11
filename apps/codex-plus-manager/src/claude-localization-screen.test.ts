@@ -622,6 +622,14 @@ test("用户名与套餐：默认 Ultra，改名与换套餐各发一次 claude_
   await tick();
   assert.equal(screen.calls[1].command, "claude_local_configure");
   assert.equal((screen.calls[1].args[0] as { config: { displayName: string } }).config.displayName, "张三");
+  screen.calls[1].resolve({ ...localReady, config: { ...localReady.config, plan: "free", displayName: "张三" } });
+  await tick();
+  const email = findElements(screen.render(), "Input").find((item) => item.props["aria-label"] === "邮箱")!;
+  assert.equal(email.props.placeholder, "local@claude.local");
+  email.props.onBlur({ currentTarget: { value: "me@example.com" } });
+  await tick();
+  assert.equal(screen.calls[2].command, "claude_local_configure");
+  assert.equal((screen.calls[2].args[0] as { config: { email: string } }).config.email, "me@example.com");
 });
 
 test("会话同步：开关默认关闭，切换走 configure，立即同步走 action", async () => {

@@ -12,6 +12,11 @@ const BACKUP_ROOT: &str = "backups_state/app-state-sync";
 const SNAPSHOT_FILE: &str = "latest-safe-state.json";
 const SNAPSHOT_VERSION: u64 = 1;
 const ACCOUNT_RENDERER_STATE_KEY: &str = "electron-account-renderer-state-v1";
+/// 非官方登录时被挪走的账号隔离容器（见 [`reconcile_account_scope`]）。
+const DETACHED_ACCOUNT_STATE_FILE: &str = "backups_state/account-scope/detached-renderer-state.json";
+const DETACHED_ACCOUNT_STATE_VERSION: u64 = 1;
+/// 合并旧账号项目时不带过来的键：排队中的追问搬到别的身份下可能被重放。
+const ACCOUNT_SCOPE_MERGE_SKIP_KEYS: &[&str] = &["queued-follow-ups"];
 
 const WORKSPACE_PATH_ARRAY_KEYS: &[&str] = &["electron-saved-workspace-roots", "project-order"];
 
@@ -286,6 +291,341 @@ pub fn prune_stale_model_references_after_switch_nonfatal(
             );
         }
     }
+}
+
+/// [`reconcile_account_scope`] 做了什么。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccountScopeOutcome {
+    /// 没有需要处理的情况。
+    Unchanged,
+    /// 容器已挪到旁路文件；`source_owner` 是项目被并入顶层的那个身份（顶层原本就属于它时也记它）。
+    Detached {
+        source_owner: Option<String>,
+        root_project_count: usize,
+        backup_path: PathBuf,
+    },
+    /// 容器已放回状态文件；顶层项目归属 `owner`。
+    Reattached {
+        owner: Option<String>,
+        backup_path: PathBuf,
+    },
+}
+
+/// 新版 Codex（26.1103+）按 ChatGPT 账号隔离本地项目：登录过一次就会在
+/// `.codex-global-state.json` 里建 `electron-account-renderer-state-v1` 容器。
+/// Codex 每次启动都会在构造函数里调用 `selectRendererOwner(null)`：
+/// owner 是账号时把顶层项目存进 `inactive` 再清空顶层，owner 已是 null 时直接清空顶层。
+/// 没有 ChatGPT 身份的 API Key / 网关 / 聚合模式一直停在匿名身份，于是项目列表永远是空的，
+/// 在匿名身份下新建的项目下次启动也会消失（#2947 / #3018 / #3011，原生 Codex 同样复现）。
+///
+/// 容器不存在时构造函数什么都不做，所以：
+/// - `keep_projects` 为真（开关打开且当前不是官方登录）：把容器原样挪到旁路文件，
+///   并把最近活跃的那个账号的项目合并到顶层（只加不删）；
+/// - `keep_projects` 为假：有旁路文件就把容器放回去，顶层项目归还给当初合并来源的账号。
+///
+/// 只能在 Codex 未运行时调用，否则 Codex 会用内存里的状态覆盖回去。写之前整份备份。
+pub fn reconcile_account_scope(
+    home: &Path,
+    keep_projects: bool,
+) -> anyhow::Result<AccountScopeOutcome> {
+    let Some(mut state) = load_global_state(home)? else {
+        return Ok(AccountScopeOutcome::Unchanged);
+    };
+    let detached = load_detached_account_state(home)?;
+    if keep_projects {
+        if !state.contains_key(ACCOUNT_RENDERER_STATE_KEY) {
+            return Ok(AccountScopeOutcome::Unchanged);
+        }
+        let Some(accounts) = account_renderer_state(&state).cloned() else {
+            anyhow::bail!("unrecognized account renderer state; refusing to detach");
+        };
+        let original = Value::Object(state.clone());
+        // 已经挪过一次、Codex 又建了新容器（例如在 Codex 里直接登录过）：旧旁路里的身份也要留住。
+        let mut container = accounts;
+        if let Some(previous) = detached.as_ref() {
+            merge_missing_inactive_scopes(&mut container, &previous.container);
+        }
+        let source_owner = match container["owner"].as_str() {
+            // 顶层就是这个账号的数据，原样保留即可。
+            Some(owner) => Some(owner.to_string()),
+            None => {
+                let source = latest_project_scope(&container);
+                if let Some(owner) = source.as_deref() {
+                    let scope = container["inactive"][owner].clone();
+                    merge_scope_into_root(&mut state, &scope);
+                }
+                source
+            }
+        };
+        state.remove(ACCOUNT_RENDERER_STATE_KEY);
+        let backup_path = create_backup(home, &original)?;
+        write_detached_account_state(
+            home,
+            &DetachedAccountState {
+                container: Value::Object(container),
+                source_owner: source_owner.clone(),
+            },
+        )?;
+        write_global_state(home, &Value::Object(state.clone()))?;
+        return Ok(AccountScopeOutcome::Detached {
+            source_owner,
+            root_project_count: project_count(&state),
+            backup_path,
+        });
+    }
+
+    let Some(detached) = detached else {
+        return Ok(AccountScopeOutcome::Unchanged);
+    };
+    let original = Value::Object(state.clone());
+    let owner = if let Some(current) = account_renderer_state(&state).cloned() {
+        // Codex 自己重建了容器（登录过 ChatGPT），顶层已归属当前账号；只补回旁路里有、文件里没有的身份。
+        let mut current = current;
+        merge_missing_inactive_scopes(&mut current, &detached.container);
+        let owner = current["owner"].as_str().map(str::to_owned);
+        state.insert(ACCOUNT_RENDERER_STATE_KEY.to_string(), Value::Object(current));
+        owner
+    } else if state.contains_key(ACCOUNT_RENDERER_STATE_KEY) {
+        anyhow::bail!("unrecognized account renderer state; refusing to reattach");
+    } else {
+        let mut container = detached
+            .container
+            .as_object()
+            .cloned()
+            .context("detached account state has no container")?;
+        let owner = detached.source_owner.clone();
+        // 顶层（含非官方模式期间新建的项目）归还给合并来源的账号；它在 inactive 里的旧副本已并进顶层。
+        if let Some(owner) = owner.as_deref()
+            && let Some(inactive) = container.get_mut("inactive").and_then(Value::as_object_mut)
+        {
+            inactive.remove(owner);
+        }
+        container.insert("owner".to_string(), json!(owner));
+        state.insert(ACCOUNT_RENDERER_STATE_KEY.to_string(), Value::Object(container));
+        if account_renderer_state(&state).is_none() {
+            anyhow::bail!("detached account state is malformed; refusing to reattach");
+        }
+        owner
+    };
+    let backup_path = create_backup(home, &original)?;
+    write_global_state(home, &Value::Object(state))?;
+    let _ = fs::remove_file(detached_account_state_path(home));
+    Ok(AccountScopeOutcome::Reattached { owner, backup_path })
+}
+
+/// 启动 Codex 前调用的非致命包装。`codex_running` 为真时不动文件（Codex 会用内存状态覆盖回去）。
+pub fn reconcile_account_scope_nonfatal(
+    home: &Path,
+    settings: &crate::settings::BackendSettings,
+    codex_running: bool,
+    source: &str,
+) {
+    // 供应商管理关着时不知道 Codex 用的是哪种登录，不介入。
+    if !settings.relay_profiles_enabled {
+        return;
+    }
+    let keep_projects = settings.keep_projects_without_account
+        && !crate::official_login::is_official_login_profile(&settings.active_relay_profile());
+    if codex_running {
+        if keep_projects || detached_account_state_path(home).exists() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.account_scope_deferred",
+                json!({ "source": source, "reason": "codex_running" }),
+            );
+        }
+        return;
+    }
+    match reconcile_account_scope(home, keep_projects) {
+        Ok(AccountScopeOutcome::Unchanged) => {}
+        Ok(AccountScopeOutcome::Detached {
+            source_owner,
+            root_project_count,
+            backup_path,
+        }) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.account_scope_detached",
+                json!({
+                    "source": source,
+                    "hasSourceOwner": source_owner.is_some(),
+                    "rootProjectCount": root_project_count,
+                    "backupPath": backup_path.to_string_lossy(),
+                }),
+            );
+        }
+        Ok(AccountScopeOutcome::Reattached { owner, backup_path }) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.account_scope_reattached",
+                json!({
+                    "source": source,
+                    "hasOwner": owner.is_some(),
+                    "backupPath": backup_path.to_string_lossy(),
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.account_scope_failed",
+                json!({ "source": source, "error": error.to_string() }),
+            );
+        }
+    }
+}
+
+struct DetachedAccountState {
+    container: Value,
+    source_owner: Option<String>,
+}
+
+fn detached_account_state_path(home: &Path) -> PathBuf {
+    home.join(DETACHED_ACCOUNT_STATE_FILE)
+}
+
+fn load_detached_account_state(home: &Path) -> anyhow::Result<Option<DetachedAccountState>> {
+    let path = detached_account_state_path(home);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let container = value
+        .get("container")
+        .filter(|container| {
+            let mut probe = Map::new();
+            probe.insert(ACCOUNT_RENDERER_STATE_KEY.to_string(), (*container).clone());
+            account_renderer_state(&probe).is_some()
+        })
+        .cloned()
+        .with_context(|| format!("{} has no valid container", path.display()))?;
+    Ok(Some(DetachedAccountState {
+        container,
+        source_owner: value
+            .get("sourceOwner")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }))
+}
+
+fn write_detached_account_state(home: &Path, detached: &DetachedAccountState) -> anyhow::Result<()> {
+    let path = detached_account_state_path(home);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let body = json!({
+        "version": DETACHED_ACCOUNT_STATE_VERSION,
+        "managedBy": "Codex++ keepProjectsWithoutAccount",
+        "detachedAtMs": now_ms() as u64,
+        "sourceOwner": detached.source_owner,
+        "container": detached.container,
+    });
+    crate::settings::atomic_write(&path, serde_json::to_string_pretty(&body)?.as_bytes())
+}
+
+/// 旁路里有、当前容器里没有的 inactive 身份补进来；当前 owner 不补（它的数据在顶层）。
+fn merge_missing_inactive_scopes(target: &mut Map<String, Value>, saved: &Value) {
+    let owner = target.get("owner").and_then(Value::as_str).map(str::to_owned);
+    let Some(saved) = saved.get("inactive").and_then(Value::as_object) else {
+        return;
+    };
+    let Some(inactive) = target.get_mut("inactive").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (id, scope) in saved {
+        if owner.as_deref() != Some(id.as_str()) && !inactive.contains_key(id) {
+            inactive.insert(id.clone(), scope.clone());
+        }
+    }
+}
+
+/// 有项目的身份里，项目最近更新过的那个（同为 0 时取项目多的）。
+fn latest_project_scope(container: &Map<String, Value>) -> Option<String> {
+    container["inactive"]
+        .as_object()?
+        .iter()
+        .filter_map(|(owner, scope)| {
+            let projects = scope["globals"].get("local-projects")?.as_object()?;
+            if projects.is_empty() {
+                return None;
+            }
+            let latest = projects
+                .values()
+                .filter_map(|project| project.get("updatedAt").and_then(Value::as_u64))
+                .max()
+                .unwrap_or(0);
+            Some((latest, projects.len(), owner.clone()))
+        })
+        .max()
+        .map(|(_, _, owner)| owner)
+}
+
+/// 把身份的 globals / atoms 并进顶层：顶层已有的条目优先，只加不删。
+fn merge_scope_into_root(state: &mut Map<String, Value>, scope: &Value) {
+    if let Some(globals) = scope.get("globals").and_then(Value::as_object) {
+        for (key, saved) in globals {
+            if ACCOUNT_SCOPE_MERGE_SKIP_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            let merged = match state.get(key) {
+                None | Some(Value::Null) => saved.clone(),
+                Some(current) => merge_root_first(current, saved),
+            };
+            state.insert(key.clone(), merged);
+        }
+    }
+    if let Some(atoms) = scope.get("atoms").and_then(Value::as_object)
+        && !atoms.is_empty()
+    {
+        let root = state
+            .entry("electron-persisted-atom-state".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(root) = root.as_object_mut() {
+            for (key, value) in atoms {
+                root.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+}
+
+fn merge_root_first(current: &Value, saved: &Value) -> Value {
+    match (current, saved) {
+        (Value::Object(current), Value::Object(saved)) => {
+            let mut merged = saved.clone();
+            for (key, value) in current {
+                merged.insert(key.clone(), value.clone());
+            }
+            Value::Object(merged)
+        }
+        // 列表（项目顺序、无项目会话）：来源账号的在前，顶层多出来的接在后面。
+        (Value::Array(current), Value::Array(saved)) => {
+            let mut merged = saved.clone();
+            for value in current {
+                if !merged.contains(value) {
+                    merged.push(value.clone());
+                }
+            }
+            Value::Array(merged)
+        }
+        _ => current.clone(),
+    }
+}
+
+fn project_count(state: &Map<String, Value>) -> usize {
+    state
+        .get("local-projects")
+        .and_then(Value::as_object)
+        .map_or(0, Map::len)
+}
+
+fn write_global_state(home: &Path, state: &Value) -> anyhow::Result<()> {
+    let text = serde_json::to_string_pretty(state)?;
+    let path = state_path(home);
+    crate::settings::atomic_write(&path, text.as_bytes())?;
+    if let Some(parent) = path.parent() {
+        let _ =
+            crate::settings::atomic_write(&parent.join(GLOBAL_STATE_BACKUP_FILE), text.as_bytes());
+    }
+    Ok(())
 }
 
 fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {

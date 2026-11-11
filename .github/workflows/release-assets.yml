@@ -113,6 +113,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # 只读复用 release-cache.yml 在 main 上预热的 release 依赖缓存（tag 运行能读默认分支的缓存）。
+      # shared-key 必须与 release-cache.yml 一致：rust-cache 默认把 job id 拼进键，两边 job 名不同就永远命中不了。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
+          save-if: false
+
       - name: Install NSIS
         shell: pwsh
         run: |
@@ -195,8 +203,66 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$RELEASE_TAG" dist/windows/*.exe dist/windows/*.zip --clobber --repo "$GITHUB_REPOSITORY"
 
-  macos-dmg:
+  # 通用包的两个架构以前在同一台机器上先后编译（占发版总时长的大头），
+  # 现在各占一台 runner 并行编，产物交给 macos-dmg 合并、签名、公证。
+  macos-build:
     needs: prepare
+    if: github.event_name == 'push' || inputs.platform != 'windows'
+    name: macOS build (${{ matrix.target }})
+    runs-on: macos-15
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    env:
+      # 与 Info.plist 的 LSMinimumSystemVersion 一致，不随 runner 的 SDK 抬高 C 依赖的最低系统版本。
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # 只读复用 release-cache.yml 按架构预热的 release 依赖缓存，shared-key 必须与它一致。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-release-${{ matrix.target }}
+          save-if: false
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      # 统一应用会把前端 dist 嵌进二进制，所以每个架构都要先构建前端。
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      - name: Build ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bin-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/codex-plus-plus
+            target/${{ matrix.target }}/release/codex-plus-legacy-shim
+          if-no-files-found: error
+          retention-days: 1
+
+  macos-dmg:
+    needs: [prepare, macos-build]
     if: github.event_name == 'push' || inputs.platform != 'windows'
     # 单个通用包（universal）同时支持 Intel 与 Apple Silicon，
     # 用户不必再自己判断架构，Release 也只多一个而不是两个产物。
@@ -266,29 +332,28 @@ jobs:
 
           rm -f "$KEY_PATH"
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Download x86_64 binaries
+        uses: actions/download-artifact@v4
         with:
-          node-version: "22"
+          name: macos-bin-x86_64-apple-darwin
+          path: target/x86_64-apple-darwin/release
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download arm64 binaries
+        uses: actions/download-artifact@v4
         with:
-          # 通用包需要两个架构的 std，构建脚本会各编一遍再 lipo 合并。
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
+          name: macos-bin-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release
 
-      - name: Install frontend dependencies
-        working-directory: apps/codex-plus-manager
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: apps/codex-plus-manager
-        run: npm run vite:build
+      - name: Restore executable bits
+        # artifact 打包会丢掉可执行位，build-universal.sh 会检查 -x。
+        run: chmod +x target/*-apple-darwin/release/codex-plus-plus target/*-apple-darwin/release/codex-plus-legacy-shim
 
       - name: Build universal macOS DMG
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           MACOS_NOTARY_PROFILE: codexplusplus-notary
+          # 两个架构已由 macos-build 并行编好，这里只 lipo 合并、签名、公证、打 DMG。
+          UNIVERSAL_SKIP_BUILD: "1"
         run: |
           # 发版流水线必须真的签名，凭据缺失就直接失败，不要静默退回 ad-hoc
           # 然后发一个用户打不开的包出去。
@@ -298,7 +363,7 @@ jobs:
           fi
           VERSION="${RELEASE_TAG#v}"
           VERSION="${VERSION#V}"
-          # 构建脚本自己编两个架构、lipo 合并、再调 package-dmg.sh 打包。
+          # 构建脚本 lipo 合并两个架构，再调 package-dmg.sh 签名、公证、打包。
           bash scripts/installer/macos/build-universal.sh "$VERSION"
 
       - name: Verify macOS bundle structure
@@ -353,11 +418,13 @@ jobs:
   latest-json:
     name: Upload checksums, latest.json and publish
     # 单平台补跑时另一个 job 会跳过；成功或跳过才允许更新元数据。
-    if: always() && needs.prepare.result == 'success' && (needs.windows-installer.result == 'success' || needs.windows-installer.result == 'skipped') && (needs.macos-dmg.result == 'success' || needs.macos-dmg.result == 'skipped')
+    # macos-build 也要单独判：它失败时 macos-dmg 只会显示 skipped，光看 macos-dmg 会被当成「没跑这个平台」放行。
+    if: always() && needs.prepare.result == 'success' && (needs.windows-installer.result == 'success' || needs.windows-installer.result == 'skipped') && (needs.macos-build.result == 'success' || needs.macos-build.result == 'skipped') && (needs.macos-dmg.result == 'success' || needs.macos-dmg.result == 'skipped')
     runs-on: ubuntu-latest
     needs:
       - prepare
       - windows-installer
+      - macos-build
       - macos-dmg
     steps:
       - name: Upload SHA256SUMS.txt
