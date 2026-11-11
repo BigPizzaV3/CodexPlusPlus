@@ -425,7 +425,7 @@ function extensionActionResult(enabled: boolean, status = "ok"): ActionResult {
   };
 }
 
-function extensionActionHarness(result: ActionResult | null) {
+function extensionActionHarness(result: ActionResult | null, reloadStatus?: string) {
   const requests: Array<{ command: string; payload: Record<string, unknown> }> = [];
   const events: string[] = [];
   const draft = {
@@ -464,7 +464,7 @@ function extensionActionHarness(result: ActionResult | null) {
       state.form = update(state.form);
     },
     claudeLocalizationMemo: memo,
-    reloadUserScripts: async () => { events.push("reload"); },
+    reloadUserScripts: async () => { events.push("reload"); return reloadStatus; },
     refreshUserScriptInventory: async () => { events.push("refresh"); },
     showResultNotice: () => { events.push("notice"); },
   });
@@ -493,6 +493,15 @@ test("Codex 保存动作默认省略 host 参数并保留热重载", async () =>
     assert.ok(row.events.includes("refresh"));
     assert.equal(row.state.form, row.draft);
     assert.equal(row.memo.status, row.originalMemo);
+  }
+});
+
+test("Codex 单项开关在热重载待确认时不立即覆盖运行状态", async () => {
+  for (const reloadStatus of ["ok", "failed", "warning"]) {
+    const h = extensionActionHarness(extensionActionResult(false), reloadStatus);
+    await h.context.setUserScriptEnabled("user:both", false, "codex");
+    assert.ok(h.events.includes("reload"));
+    assert.equal(h.events.includes("refresh"), reloadStatus !== "warning");
   }
 });
 

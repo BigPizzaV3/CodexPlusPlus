@@ -2159,6 +2159,7 @@ export function App() {
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
+    return result?.status;
   };
 
   const installMarketScript = async (id: string) => {
@@ -2221,7 +2222,8 @@ export function App() {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       if (isSuccessStatus(result.status) && host === "codex") {
-        await reloadUserScripts();
+        const reloadStatus = await reloadUserScripts();
+        if (reloadStatus !== "warning") await refreshUserScriptInventory();
       } else {
         showResultNotice(t("本地拓展"), result);
         await refreshUserScriptInventory();
@@ -4839,7 +4841,7 @@ export function App() {
       refreshAds,
       refreshScriptMarket,
       refreshUserScriptInventory,
-      reloadUserScripts,
+      reloadUserScripts: async () => { await reloadUserScripts(); },
       installMarketScript,
       setUserScriptsEnabled,
       setUserScriptsSkipNextStart,
