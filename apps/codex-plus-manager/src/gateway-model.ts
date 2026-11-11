@@ -384,6 +384,13 @@ export function skippedAgents(payload: GatewayPayload | null, picked: GatewayAge
   return glanceAgents(payload?.agents).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
 }
 
+/** 编辑供应商时改某个 Agent 是否用它（#3030）：`on` 是重新用它，从排除列表里去掉；关掉则追加。已存在时不动，返回原数组。 */
+export function poolExcludeToggle(previous: string[] | undefined, providerId: string, on: boolean): string[] {
+  const exclude = previous ?? [];
+  if (on) return exclude.filter((id) => id !== providerId);
+  return exclude.includes(providerId) ? exclude : [...exclude, providerId];
+}
+
 /** 窗口支持纯数字和 `200k` / `1M` 写法。无效时返回 NaN。 */
 export function parseContextWindow(value: string): number | null {
   const text = value.trim().toLowerCase();

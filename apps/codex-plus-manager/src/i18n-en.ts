@@ -1925,6 +1925,7 @@ export const EN_PLAIN: Record<string, string> = {
   "留空的模型用「其它模型」那一行；都不填就不估算费用。": "Blank models use the Other models row; leave all blank to skip cost estimates.",
   "其它模型": "Other models",
   "添加后给这些 Agent 用": "Use with these agents",
+  "给这些 Agent 用": "Use with these agents",
   "都不选也能添加，之后在 Agent 的「挑选」里再打开": "You can add it for none and turn it on later under the agent's Pick list",
   "关掉后，新添加的供应商默认不给这个 Agent 用；添加时仍可手动勾选。": "When off, newly added providers are not used by this agent by default; you can still tick it when adding.",
   "添加供应商时自动加入": "Auto-join new providers",
