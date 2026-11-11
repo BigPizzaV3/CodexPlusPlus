@@ -157,9 +157,9 @@ fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Resul
         TargetClassification::Child => {
             anyhow::bail!("已接管的 Codex 监听进程是 Chromium 子进程而非主实例，未结束任何进程")
         }
-        TargetClassification::Irrelevant => {
-            anyhow::bail!("已接管的 Codex 监听进程不属于当前入口或用户会话，未结束任何进程")
-        }
+        TargetClassification::Irrelevant(reason) => anyhow::bail!(
+            "已接管的 Codex 监听进程与当前停止上下文不一致（{reason}），未结束任何进程"
+        )
     }
 }
 
@@ -293,7 +293,7 @@ fn capture_and_stop<P: HeldMainProcess>(
             continue;
         };
         match classify_target(&facts, context)? {
-            TargetClassification::Irrelevant | TargetClassification::Child => continue,
+            TargetClassification::Irrelevant(_) | TargetClassification::Child => continue,
             TargetClassification::Mismatch(reason) => {
                 if process.alive()? {
                     reject_skipped_owned_session(&facts, context)?;
@@ -517,7 +517,7 @@ fn target_matches(facts: &ProcessFacts, context: &StopContext) -> Result<bool> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TargetClassification {
-    Irrelevant,
+    Irrelevant(&'static str),
     Child,
     Mismatch(&'static str),
     Main,
@@ -526,8 +526,19 @@ enum TargetClassification {
 fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<TargetClassification> {
     anyhow::ensure!(facts.birth != 0, "缺少 Codex 进程创建身份");
     let image = normalized_path(&facts.image)?;
-    if !image_matches(&context.executable, &image) || facts.owner != context.owner {
-        return Ok(TargetClassification::Irrelevant);
+    if !image_matches(&context.executable, &image) {
+        return Ok(TargetClassification::Irrelevant("Codex 入口（可执行文件映像）"));
+    }
+    if facts.owner.user_sid != context.owner.user_sid {
+        return Ok(TargetClassification::Irrelevant("用户账户（SID）"));
+    }
+    if facts.owner.session_id != context.owner.session_id {
+        return Ok(TargetClassification::Irrelevant("Windows 会话"));
+    }
+    if facts.owner != context.owner {
+        return Ok(TargetClassification::Irrelevant(
+            "登录会话（authentication id）",
+        ));
     }
     let environment = &facts.environment;
     let app_data = environment
@@ -1073,11 +1084,24 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("子进程"), "{message}");
 
-        let mut unrelated = facts(&[]);
-        unrelated.owner.user_sid.push(9);
-        let error = ensure_listener_matches(&unrelated, &context(None)).unwrap_err();
+        let mut other_user = facts(&[]);
+        other_user.owner.user_sid.push(9);
+        let error = ensure_listener_matches(&other_user, &context(None)).unwrap_err();
         let message = format!("{error:#}");
-        assert!(message.contains("入口或用户会话"), "{message}");
+        // #3010：入口/会话不一致也要指出具体是哪一项，用户才能把信息报给我们。
+        assert!(message.contains("用户账户"), "{message}");
+
+        let mut other_session = facts(&[]);
+        other_session.owner.session_id += 1;
+        let error = ensure_listener_matches(&other_session, &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("Windows 会话"), "{message}");
+
+        let mut other_logon = facts(&[]);
+        other_logon.owner.authentication_id = (7, 8);
+        let error = ensure_listener_matches(&other_logon, &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("登录会话"), "{message}");
 
         ensure_listener_matches(&facts(&[]), &context(None)).unwrap();
     }
