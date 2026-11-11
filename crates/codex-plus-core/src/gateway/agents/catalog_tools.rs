@@ -277,7 +277,10 @@ fn dsh_block(wiring: &Wiring, user_config: Option<&str>) -> String {
         .models
         .iter()
         .map(|model| {
-            let mut entry = json!({ "id": model.id, "name": model.display_name });
+            // pi-ai 的模型条目缺 `input` 时只当文本模型，dsh 就不让发图（#3042）。
+            // 网关的 Chat 入站会把 image_url 转成 input_image，图片按各供应商的图片处理设置走，
+            // 与 Codex 侧一样声明可收图。
+            let mut entry = json!({ "id": model.id, "name": model.display_name, "input": ["text", "image"] });
             if let Some(window) = model.context_window {
                 entry["contextWindow"] = json!(window);
                 entry["maxTokens"] = json!(output_limit(window));
@@ -2094,6 +2097,8 @@ mod tests {
         );
         assert!(layer.contains("        baseURL: \"http://127.0.0.1:57321/gw/dsh/v1\"\n"));
         assert!(layer.contains("        apiKeyEnv: \"CODEXPLUS_GATEWAY_KEY\"\n"));
+        // #3042：网关模型声明可收图，否则 dsh 不让发图。
+        assert!(layer.contains("input:\n              - \"text\"\n              - \"image\"\n"), "{layer}");
         assert!(layer.contains("      mine:\n        api: openai-completions\n"));
         assert!(layer.contains("- id: agent-default-model\n  name: \"@deepseek-ai/dsh-agent-default-model\"\n  config:\n    provider: \"codexplus\"\n    model: \"ds/deepseek-chat\"\n"));
         assert_eq!(files[".dsh/.env"], "CODEXPLUS_GATEWAY_KEY=cpx-gw-test\n");
