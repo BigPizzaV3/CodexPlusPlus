@@ -33,6 +33,7 @@
 3. 用 `codexpp_extension_write` 写入：首次创建给一个简短的英文 `id`（字母数字 `-` `_`），中文 `name` 与 `description`；
    后续默认使用本对话的关联继续修改。代码放在 `files` 里（默认入口 `renderer.js`）。`codexpp.json` 由工具生成，不要自己写。
 4. 看返回结果里的 `status` / `error`：
+   - `reload.reloaded = null`：重载请求超时、执行结果尚未确认。先检查实际效果，不要自动重复重载。
    - `loaded` 且没有 `error`：改了界面的话用 `codexpp_extension_screenshot` 截图确认真的生效（选择器没命中
      时拓展不会报错，只是没效果），再告诉用户去哪里看（例如「左侧图标栏新出现的 X 入口」）。
    - `failed` 或有 `error`：读错误、改代码、在同一个关联拓展上再写一次，不要因报错另建一个。

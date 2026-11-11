@@ -1447,14 +1447,17 @@ return {
   it("hot-reloads user scripts after toggling or uninstalling so the page actually drops them", async () => {
     const renderer = await readFile(rendererPath, "utf8");
     const harness = new Function("bridge", `
-const calls = [], toasts = [];
+const calls = [], toasts = [], toastOptions = [];
 let codexPlusExtensionsSelected = { kind: "installed", key: "user:pomodoro" };
+let codexPlusUserScripts = { scripts: [] }, codexPlusUserScriptsLoaded = false;
+const window = { __codexPlusUserScripts: { scripts: {} } };
 const postJson = async (path, payload) => { calls.push(path); return bridge(path, payload); };
-const loadUserScripts = async (path = "/user-scripts/list", payload = {}) => { await postJson(path, payload); };
-const showToast = (message) => toasts.push(message);
+const showToast = (message, options) => { toasts.push(message); toastOptions.push(options); };
 const refreshCodexPlusExtensionsView = () => calls.push("refresh");
+const renderUserScripts = () => {}, syncCodexPlusBuiltinExtensionToggles = () => {}, codexPlusActiveEntry = () => null;
 ${segment(renderer, "  async function uninstallUserScript(", "  /** 左面板的导航项。")}
-return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () => codexPlusExtensionsSelected };`);
+${segment(renderer, "  async function loadUserScripts(", "  /**\n   * 拉市场清单。")}
+return { calls, toasts, toastOptions, setUserScriptEnabled, uninstallUserScript, selected: () => codexPlusExtensionsSelected, scripts: () => codexPlusUserScripts.scripts };`);
     const ok = harness(async (path: string) => (path === "/user-scripts/delete" ? {} : { scripts: [] }));
     await ok.setUserScriptEnabled("user:pomodoro", false);
     assert.deepEqual(ok.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
@@ -1471,6 +1474,15 @@ return { calls, toasts, setUserScriptEnabled, uninstallUserScript, selected: () 
     assert.deepEqual(failed.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
     assert.equal(failed.toasts.length, 1);
     assert.match(failed.toasts[0], /Codex 页面尚未连接/);
+
+    const unknown = harness(async (path: string) => (path === "/user-scripts/reload"
+      ? { status: "unknown", message: "热重载超时，执行结果尚未确认" }
+      : { scripts: [{ enabled: false, status: "disabled" }, { enabled: true, status: "loaded" }] }));
+    await unknown.setUserScriptEnabled("user:pomodoro", false);
+    assert.deepEqual(unknown.calls, ["/user-scripts/set-script-enabled", "/user-scripts/reload", "/user-scripts/list"]);
+    assert.deepEqual(unknown.toasts, ["热重载超时，执行结果尚未确认"]);
+    assert.equal(unknown.toastOptions[0].type, "warn");
+    assert.deepEqual(unknown.scripts().map((script: { status: string }) => script.status), ["unknown", "unknown"]);
   });
 
   it("keeps the 拓展 page nav when extension hosts refresh it without a tab", async () => {

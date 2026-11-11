@@ -855,7 +855,10 @@ async fn reload_and_report(creator: &ExtensionCreator, key: &str) -> anyhow::Res
         tokio::time::sleep(SETTLE_DELAY).await;
         live = live_status(&creator.debug_ports).await.map(|(_, status)| status);
     }
-    let inventory = creator.manager.inventory_with_runtime_status(live.as_ref())?;
+    let mut inventory = creator.manager.inventory_with_runtime_status(live.as_ref())?;
+    if reload["reloaded"].is_null() {
+        user_scripts::mark_inventory_runtime_unknown(&mut inventory);
+    }
     let items = summarize_items(&inventory, None);
     let target = (!key.is_empty())
         .then(|| summarize_items(&inventory, Some(key)).into_iter().next())
@@ -906,6 +909,9 @@ async fn reload(creator: &ExtensionCreator) -> Value {
         match user_scripts::reload_live_scripts(*port, &creator.manager).await {
             Ok(inventory) => {
                 return json!({ "reloaded": true, "mode": inventory["reload_mode"] });
+            }
+            Err(error) if error.is::<user_scripts::ReloadOutcomeUnknown>() => {
+                return json!({ "reloaded": null, "reason": error.to_string() });
             }
             Err(error) => last_error = format!("热重载失败：{error:#}"),
         }
@@ -1148,6 +1154,68 @@ fn extension_routes() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reload_timeout_does_not_try_another_port() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+        async fn send_targets(listener: &TcpListener, address: std::net::SocketAddr) {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 512];
+            while !request.ends_with(b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).await.unwrap();
+                assert!(read > 0 && request.len() + read <= 2048);
+                request.extend_from_slice(&chunk[..read]);
+            }
+            assert!(String::from_utf8_lossy(&request).starts_with("GET /json "));
+            let body = json!([{
+                "id": "main", "type": "page", "url": "app://-/index.html",
+                "webSocketDebuggerUrl": format!("ws://{address}/devtools/page/main")
+            }]).to_string();
+            stream.write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ).as_bytes()).await.unwrap();
+        }
+
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = first.local_addr().unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let creator = ExtensionCreator {
+            manager: UserScriptManager::new(
+                temp.path().join("builtin"), temp.path().join("user"), temp.path().join("config.json"),
+            ),
+            debug_ports: vec![address.port(), second.local_addr().unwrap().port()],
+        };
+        let server = tokio::spawn(async move {
+            send_targets(&first, address).await;
+            let (stream, _) = first.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let probe: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            socket.send(Message::Text(json!({
+                "id": probe["id"], "result": { "result": { "type": "string", "value": "{}" } }
+            }).to_string().into())).await.unwrap();
+            drop(socket);
+
+            send_targets(&first, address).await;
+            let (stream, _) = first.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let command: Value = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(command["method"], "Runtime.evaluate");
+            let _ = socket.next().await;
+        });
+
+        let result = reload(&creator).await;
+        assert!(result["reloaded"].is_null(), "{result}");
+        assert!(result["reason"].as_str().unwrap().contains("尚未确认"));
+        assert!(tokio::time::timeout(Duration::from_millis(200), second.accept()).await.is_err());
+        server.await.unwrap();
+    }
 
     #[test]
     fn route_whitelist_is_read_from_extension_api() {

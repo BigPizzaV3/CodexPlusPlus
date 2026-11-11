@@ -110,6 +110,22 @@ async fn bridge_routes_cover_all_current_paths() {
 }
 
 #[tokio::test]
+async fn reload_route_reports_unconfirmed_result() {
+    let _state = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(temp.path().join("codex-plus.log")));
+    let runtime = Arc::new(FakeRuntime::default());
+    *runtime.reload_unknown.lock().unwrap() = true;
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::default()), runtime, Arc::new(FakeData),
+    );
+    let result = handle_bridge_request(ctx, "/user-scripts/reload", json!({})).await;
+    codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+    assert_eq!(result["status"], "unknown");
+    assert!(result["message"].as_str().unwrap().contains("尚未确认"));
+}
+
+#[tokio::test]
 async fn cdp_evaluate_rejects_empty_expression_without_touching_cdp() {
     let error = evaluate_extension_cdp(1, &json!({"kind": "avatar-overlay"}))
         .await
@@ -1862,6 +1878,7 @@ struct FakeRuntime {
     manager_payload: Mutex<Value>,
     goal_payloads: Mutex<Vec<Value>>,
     goal_reply: Mutex<Option<Result<Value, String>>>,
+    reload_unknown: Mutex<bool>,
 }
 
 impl Default for FakeRuntime {
@@ -1872,6 +1889,7 @@ impl Default for FakeRuntime {
             manager_payload: Mutex::new(json!({})),
             goal_payloads: Mutex::new(Vec::new()),
             goal_reply: Mutex::new(None),
+            reload_unknown: Mutex::new(false),
         }
     }
 }
@@ -1908,6 +1926,9 @@ impl BridgeRuntimeService for FakeRuntime {
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
+        if *self.reload_unknown.lock().unwrap() {
+            return Err(codex_plus_core::user_scripts::ReloadOutcomeUnknown.into());
+        }
         Ok(self.inventory(true))
     }
 

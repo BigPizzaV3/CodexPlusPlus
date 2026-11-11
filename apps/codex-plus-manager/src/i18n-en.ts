@@ -3452,6 +3452,7 @@ export const EN_PLAIN: Record<string, string> = {
   "配置无法验证": "Config cannot be verified",
   "配置缺失": "Config missing",
   "状态待确认": "Status unverified",
+  "请检查实际效果": "Check the actual result",
   "端口与网关配置不符": "Port does not match the gateway",
   "主机与网关配置不符": "Host does not match the gateway",
   "路径与网关配置不符": "Path does not match the gateway",

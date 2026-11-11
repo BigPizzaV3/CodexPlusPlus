@@ -82,6 +82,9 @@ test("local script state merges the user switch with the runtime load status", (
   assert.equal(localScriptState({ enabled: true, status: "loaded" }, true), "loaded");
   assert.equal(localScriptState({ enabled: true, status: "loading" }, true), "loading");
   assert.equal(localScriptState({ enabled: true, status: "failed" }, true), "failed");
+  assert.equal(localScriptState({ enabled: true, status: "unknown" }, true), "unknown");
+  assert.equal(localScriptState({ enabled: false, status: "unknown" }, true), "unknown");
+  assert.equal(localScriptState({ enabled: true, status: "unknown" }, false), "unknown");
   assert.equal(localScriptState({ enabled: true, status: "not_loaded" }, true), "notLoaded");
   assert.equal(localScriptState({ enabled: true, status: "" }, true), "notLoaded");
 });

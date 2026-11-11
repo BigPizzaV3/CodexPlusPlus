@@ -24,6 +24,59 @@ fn write_package(temp: &tempfile::TempDir, id: &str, manifest: serde_json::Value
     }
 }
 
+#[tokio::test]
+async fn failed_reload_bundle_keeps_running_backend() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        eprintln!("跳过：本机没有 Node");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    let key = "user:reload-probe";
+    write_package(
+        &temp,
+        "reload-probe",
+        json!({"backend": {"script": "backend/main.mjs"}}),
+        &[("backend/main.mjs", "export default () => { let count = 0; return { add() { return ++count; } }; };")],
+    );
+
+    with_extension_backend_cleanup(&[&manager], async {
+        assert_eq!(call(&manager, key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 1);
+        let user = temp.path().join("user");
+        let saved = temp.path().join("saved-user");
+        fs::rename(&user, &saved).unwrap();
+        fs::write(&user, "not a directory").unwrap();
+
+        let error = codex_plus_core::user_scripts::reload_scripts_at("ws://127.0.0.1:1", &manager)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("user"), "{error:#}");
+        assert_eq!(events(&manager, key, 0, Duration::ZERO).await["running"], true);
+
+        fs::remove_file(&user).unwrap();
+        fs::rename(&saved, &user).unwrap();
+        assert_eq!(call(&manager, key, "add", json!(null), Duration::from_secs(10), None).await.unwrap(), 2);
+
+        use futures_util::{SinkExt, StreamExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let command: serde_json::Value = serde_json::from_str(
+                socket.next().await.unwrap().unwrap().to_text().unwrap(),
+            ).unwrap();
+            socket.send(tokio_tungstenite::tungstenite::Message::Text(json!({
+                "id": command["id"],
+                "result": { "result": { "type": "string", "value": r#"{"mode":"scripts","scripts":{}}"# } }
+            }).to_string().into())).await.unwrap();
+        });
+        codex_plus_core::user_scripts::reload_scripts_at(&format!("ws://{address}"), &manager).await.unwrap();
+        assert_eq!(events(&manager, key, 0, Duration::ZERO).await["running"], false);
+        server.await.unwrap();
+    }).await;
+}
+
 #[test]
 fn backend_declarations_are_validated() {
     let temp = tempfile::tempdir().unwrap();
