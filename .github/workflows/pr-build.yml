@@ -20,10 +20,11 @@ on:
 permissions:
   contents: read
 
-# 同一个 PR 推了新提交就取消旧的那轮；main 上每次推送都完整跑完，方便事后定位是哪次提交红的。
+# 同一个 PR / main 推了新提交就取消旧的那轮，只跑最新的：main 上多个会话轮流推送时，
+# 旧的一轮会一直压着新的排队（实测排过 11 分钟）。手动触发是专门要安装包的，单独成组、不被推送取消。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-artifacts:
@@ -43,15 +44,16 @@ jobs:
 
       # 只缓存第三方依赖的编译产物（rust-cache 会剔除本仓库 crate）。只在 main 上写缓存：
       # PR 读 main 的缓存，各 PR 不再各占一份，免得 10 GB 配额被挤爆、main 的缓存被逐出。
+      # 这份只有测试用的 dev 产物；发版用的 release 依赖缓存由 release-cache.yml 单独维护。
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: windows
+          shared-key: windows
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install NSIS
-        # 安装包只在推 main / 手动触发时打，PR 不需要 NSIS。
-        if: github.event_name != 'pull_request'
+        # 安装包只在手动触发时打，PR 和推送 main 都不需要 NSIS。
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $makensis = $null
@@ -118,13 +120,14 @@ jobs:
           }
 
       - name: Build release application
-        # PR 上只跑测试：release 是第二套完整编译，Windows 上要多 10 多分钟。
-        # main 每次推送仍出安装包，release profile 才有的问题最晚在合入后一轮暴露；发版走 release-assets.yml。
-        if: github.event_name != 'pull_request'
+        # PR 和推送 main 只跑测试：release 是第二套完整编译，Windows 上要多 10 分钟左右。
+        # 要安装包时手动触发本 workflow；release profile 才有的问题由 release-cache.yml（Cargo.lock 变化时）
+        # 和发版的 release-assets.yml 兜住。
+        if: github.event_name == 'workflow_dispatch'
         run: cargo build --release
 
       - name: Stage Windows app files
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/windows/app | Out-Null
@@ -132,7 +135,7 @@ jobs:
           if ((Get-ChildItem dist/windows/app -Filter *.exe).Count -ne 1) { throw "Windows 安装包必须只有一个应用程序。" }
 
       - name: Build Windows installer
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v", "V")
@@ -162,7 +165,7 @@ jobs:
           }
 
       - name: Upload Windows binaries
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: codex-plus-plus-windows-binaries
@@ -170,7 +173,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Windows installer
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: codex-plus-plus-windows-installer
@@ -178,8 +181,8 @@ jobs:
           if-no-files-found: error
 
   macos-dmg:
-    # PR 构建也出通用包，跟发版产物保持一致，避免只在发版时才暴露问题。
-    # 没有签名密钥，所以这里走 ad-hoc（脚本的默认行为）。
+    # PR / 推送 main 只做 cargo check：Windows、Linux 编不到 macOS 专属代码（录屏、objc 等），
+    # 这里是唯一的编译检查。双架构通用包（ad-hoc 签名）只在手动触发时打，发版走 release-assets.yml。
     name: macOS DMG (universal)
     # macos-14 镜像 2026-11-02 退役，期间还有计划性停机（任务分配 runner 前就被取消）。
     runs-on: macos-15
@@ -205,7 +208,8 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: macos-universal
+          # 推送时只有 check 产物；发版用的 release 依赖缓存由 release-cache.yml 单独维护。
+          shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies
@@ -229,7 +233,12 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
+      - name: Check macOS build
+        if: github.event_name != 'workflow_dispatch'
+        run: cargo check --workspace --all-targets
+
       - name: Build universal macOS DMG
+        if: github.event_name == 'workflow_dispatch'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION#V}"
@@ -241,6 +250,7 @@ jobs:
           bash scripts/installer/macos/build-universal.sh "$VERSION"
 
       - name: Verify macOS bundle structure
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           test -L "dist/macos/stage/Applications"
@@ -267,6 +277,7 @@ jobs:
           done
 
       - name: Upload macOS DMG
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: codex-plus-plus-macos-universal-dmg
@@ -335,9 +346,12 @@ jobs:
         timeout-minutes: 60
         run: cargo test --workspace
 
+      # 以下打 DEB 的步骤只在手动触发时跑；PR 和推送 main 只跑测试。
       - name: Build Linux application
+        if: github.event_name == 'workflow_dispatch'
         run: cargo build --release -p codex-plus-manager
       - name: Check default version outside repository
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -345,12 +359,14 @@ jobs:
           "$GITHUB_WORKSPACE/scripts/installer/linux/build-deb.sh" --help
           test -f "$GITHUB_WORKSPACE/apps/codex-plus-manager/package.json"
       - name: Build DEB from outside repository
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
           cd /tmp
           bash "$GITHUB_WORKSPACE/scripts/installer/linux/build-deb.sh" --package-only
       - name: Verify package and install
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -366,6 +382,7 @@ jobs:
           ldd /usr/bin/codex-plus-plus | tee /tmp/codex-plus-plus-ldd.log
           ! grep -q "not found" /tmp/codex-plus-plus-ldd.log
       - name: Upload DEB
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: codex-plus-plus-linux-amd64-deb

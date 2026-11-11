@@ -33,6 +33,8 @@ toml_edit.workspace = true
 uuid.workspace = true
 zip.workspace = true
 zstd.workspace = true
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+time = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

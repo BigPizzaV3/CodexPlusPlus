@@ -11,21 +11,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UNIVERSAL_DIR="$ROOT/target/universal/release"
 BINARIES=(codex-plus-plus codex-plus-legacy-shim)
 
-# 前端产物要由调用方先构建好（vite:build），统一应用会把 dist 嵌进二进制。
-for target in x86_64-apple-darwin aarch64-apple-darwin; do
-  if ! rustup target list --installed | grep -qx "$target"; then
-    echo "error: 缺少 Rust target $target，请先运行：" >&2
-    echo "       rustup target add $target" >&2
-    exit 1
-  fi
-done
-
 cd "$ROOT"
 
-for target in x86_64-apple-darwin aarch64-apple-darwin; do
-  echo "==> 构建 $target" >&2
-  cargo build --release --target "$target"
-done
+# UNIVERSAL_SKIP_BUILD=1：两个架构的二进制已由上游并行 job 编好、放进
+# target/<target>/release/（发版流水线这么用），这里只合并和打包。
+if [ "${UNIVERSAL_SKIP_BUILD:-}" != "1" ]; then
+  # 前端产物要由调用方先构建好（vite:build），统一应用会把 dist 嵌进二进制。
+  for target in x86_64-apple-darwin aarch64-apple-darwin; do
+    if ! rustup target list --installed | grep -qx "$target"; then
+      echo "error: 缺少 Rust target $target，请先运行：" >&2
+      echo "       rustup target add $target" >&2
+      exit 1
+    fi
+  done
+
+  for target in x86_64-apple-darwin aarch64-apple-darwin; do
+    echo "==> 构建 $target" >&2
+    cargo build --release --target "$target"
+  done
+fi
 
 rm -rf "$UNIVERSAL_DIR"
 mkdir -p "$UNIVERSAL_DIR"
