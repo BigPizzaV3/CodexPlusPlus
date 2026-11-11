@@ -251,6 +251,36 @@ test("an unused managed source reports its status without a name conflict", () =
   assert.equal(opened, true);
 });
 
+test("different agent variants describe the managed source without hiding real conflicts", () => {
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const locations = [
+    { manifestPath: "C:/codex/alpha/SKILL.md", rootKind: "codex", managed: true, enabled: true },
+    { manifestPath: "C:/claude/alpha/SKILL.md", rootKind: "claude", managed: false, enabled: true },
+  ];
+  for (const conflict of [null, "受控副本已修改"]) {
+    const elements = collect(context.SkillDetailDrawer({
+      skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+        managedSourceDir: "C:/managed/alpha", managedSourceStatus: "different", locations,
+        displayInstances: locations.map((location) => ({ locations: [location] })), conflict },
+      backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+      onMatch: () => {}, onRestore: () => {}, onDeleteBackup: () => {}, onUpdate: () => {}, onReaPreview: () => {}, onManageSource: () => {},
+    }));
+    const source = elements.find((item) => item.type === "dd" && item.children.includes("C:/managed/alpha"))!;
+    const text = conflict ? "未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理"
+      : "受控源与部分 Agent 的独立安装内容不同";
+    const note = collect(source).find((item) => item.type === "small" && item.children.includes(text));
+    assert.ok(note);
+    assert.equal(note.props.className, conflict ? "mg-warning" : undefined);
+  }
+});
+
 test("update preview separates managed copies, following paths and skipped locations", async () => {
   const slots: any[] = [];
   const effects: Array<() => void> = [];

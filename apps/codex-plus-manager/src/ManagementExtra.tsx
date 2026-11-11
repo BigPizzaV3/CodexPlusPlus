@@ -300,7 +300,9 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
           {skill.managedSourceStatus === "referenced" && <small>{t("正在被安装位置引用")}</small>}
           {skill.managedSourceStatus === "matching" && <small>{t("未被目录链接引用，内容与安装位置一致")}</small>}
           {skill.managedSourceStatus === "stored" && <small>{t("保留的工作源，可用于重新启用")}</small>}
-          {skill.managedSourceStatus === "different" && <small className="mg-warning">{t("未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理")}</small>}
+          {skill.managedSourceStatus === "different" && (skill.displayInstances && !skill.conflict
+            ? <small>{t("受控源与部分 Agent 的独立安装内容不同")}</small>
+            : <small className="mg-warning">{t("未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理")}</small>)}
           {skill.managedSourceStatus === "unknown" && <small className="mg-warning">{t("无法比较受控源")}：{skill.managedSourceError}</small>}
           {managedAssociationPath && !matchAtRepoPath && (skill.conflict || skill.displayInstances || matchTargets.size > 1) && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(managedAssociationPath)}>{t("关联受控源")}</Button></div>}</dd>
       </>}

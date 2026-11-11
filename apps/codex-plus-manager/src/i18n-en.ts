@@ -3003,6 +3003,7 @@ export const EN_PLAIN: Record<string, string> = {
   "正在被安装位置引用": "Referenced by an installation",
   "未被目录链接引用，内容与安装位置一致": "Not linked by an installation; content matches",
   "保留的工作源，可用于重新启用": "Retained working source for re-enabling",
+  "受控源与部分 Agent 的独立安装内容不同": "The managed source differs from some agents' independent installations",
   "未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理": "Not linked by an installation; content differs and must be resolved before enabling another agent",
   "无法比较受控源": "Cannot compare the managed source",
   "管理受控源": "Manage the source",
