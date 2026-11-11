@@ -462,6 +462,10 @@ test("会话：合并排序、按 Agent 与关键词过滤；路径与相对时�
   assert.deepEqual(filterSessions(sessions, "all", "app").map((session) => session.id), ["g1", "c1"]);
   assert.equal(shortPath("/Users/me/code/app"), "~/code/app");
   assert.equal(shortPath("/Users/me/a/b/c/d/e"), "…/d/e");
+  // #3030：Windows 的 `\\?\` 长路径前缀不显示，反斜杠路径也能缩短。
+  assert.equal(shortPath("\\\\?\\D:\\work\\app"), "D:\\work\\app");
+  assert.equal(shortPath("\\\\?\\C:\\Users\\me\\a\\b\\c\\d"), "…\\c\\d");
+  assert.equal(shortPath("\\\\?\\UNC\\server\\share\\app"), "\\\\server\\share\\app");
   const now = 1_000_000_000;
   assert.deepEqual(relativeTime(now - 5_000, now), { text: "刚刚", args: [] });
   assert.deepEqual(relativeTime(now - 5 * 60_000, now), { text: "{0} 分钟前", args: [5] });
