@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod source_match;
+
+pub use source_match::{SkillRepositoryMatchApplied, SkillRepositoryMatchApply, SkillRepositoryMatchPreview, SkillRepositoryMatchSelection, SkillSourceEvidence};
+
 mod archive;
 
 /// 在锁外检查过的 Agent 副本；提交只核验路径身份与代次，不再重读内容。
@@ -81,7 +85,7 @@ impl SkillRepo {
 }
 
 /// 已安装 skill 的记录。`content_hash` 是安装当时的远端子树哈希，用来比对更新。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledSkill {
     pub id: String,
@@ -97,6 +101,14 @@ pub struct InstalledSkill {
     pub content_hash: String,
     #[serde(default)]
     pub installed_at: String,
+    #[serde(default)]
+    pub verified_cc_switch: bool,
+    #[serde(default)]
+    pub install_channel: String,
+    #[serde(default)]
+    pub original_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub update_owner: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,8 +118,26 @@ pub struct SkillsState {
     pub repos: Vec<SkillRepo>,
     #[serde(default)]
     pub installed: BTreeMap<String, InstalledSkill>,
+    #[serde(default)]
+    instance_targets: BTreeMap<String, SkillInstanceTarget>,
+    #[serde(default)]
+    instance_records: BTreeMap<String, BTreeMap<PathBuf, SkillInstanceRecord>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shared_agent_paths: BTreeMap<String, [u64; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SkillInstanceRecord {
+    installed: InstalledSkill,
+    target: SkillInstanceTarget,
+    #[serde(default)]
+    managed_copies: Vec<SkillInstanceTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SkillInstanceTarget {
+    path: PathBuf,
+    identity: SkillPathIdentity,
 }
 
 impl Default for SkillsState {
@@ -115,8 +145,19 @@ impl Default for SkillsState {
         Self {
             repos: default_skill_repos(),
             installed: BTreeMap::new(),
+            instance_targets: BTreeMap::new(),
+            instance_records: BTreeMap::new(),
             shared_agent_paths: BTreeMap::new(),
         }
+    }
+}
+
+impl SkillsState {
+    fn instance_record(&self, id: &str, path: &Path) -> Option<&SkillInstanceRecord> {
+        self.instance_records.get(id)?.values().find(|record| {
+            record.target.path.canonicalize().ok().as_deref() == Some(path)
+                && skill_path_identity(&record.target.path).ok() == Some(record.target.identity)
+        })
     }
 }
 
@@ -127,6 +168,13 @@ fn migrate_installed_repo_key(state: &mut SkillsState, old_key: &str, new_key: &
     for record in state.installed.values_mut() {
         if record.repo_key == old_key {
             record.repo_key = new_key.to_string();
+        }
+    }
+    for records in state.instance_records.values_mut() {
+        for record in records.values_mut() {
+            if record.installed.repo_key == old_key {
+                record.installed.repo_key = new_key.to_string();
+            }
         }
     }
 }
@@ -180,14 +228,19 @@ pub struct RemoteSkill {
 }
 
 /// 给前端的合并视图：远端清单 + 本地安装状态 + 启用状态。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillEntry {
     pub id: String,
+    pub instance_key: String,
+    pub conflict_kind: Option<String>,
+    pub safe_disable_agents: Vec<String>,
+    pub safe_toggle_agents: Vec<String>,
     pub name: String,
     pub description: String,
     pub repo_key: String,
     pub repo_path: String,
+    pub display_group_repo_key: Option<String>,
     pub installed: bool,
     pub enabled: bool,
     /// codex 自带的 `.system` skill，只读展示，不能安装/卸载。
@@ -199,11 +252,18 @@ pub struct SkillEntry {
     pub agents: Vec<String>,
     /// Codex++ 的受控源目录里有它（安装或导入过）；只在某个 Agent 自己目录里的 Skill 为 false。
     pub managed: bool,
+    pub managed_source_dir: Option<PathBuf>,
+    pub managed_source_status: Option<String>,
+    pub managed_source_error: Option<String>,
     pub locations: Vec<SkillLocation>,
     pub conflict: Option<String>,
+    pub source_verified: bool,
+    pub install_channel: String,
+    pub original_dir: Option<PathBuf>,
+    pub update_owner: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillLocation {
     pub manifest_path: String,
@@ -211,6 +271,15 @@ pub struct SkillLocation {
     pub managed: bool,
     pub enabled: bool,
     pub status_error: Option<String>,
+    pub original_path: Option<PathBuf>,
+    pub association_path: Option<PathBuf>,
+    pub selectable: bool,
+    pub repo_key: String,
+    pub repo_path: String,
+    pub content_hash: String,
+    pub remote_hash: String,
+    pub update_available: bool,
+    pub update_owner: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -996,6 +1065,7 @@ impl SkillsManager {
                 "同名 Skill 安装内容不同，请先选择要启用的版本");
         }
         let (staging, mut installed) = self.stage_directory_import(id, candidate, LOCAL_IMPORT_REPO_KEY)?;
+        installed.update_owner.clear();
         let result = (|| -> anyhow::Result<()> {
             anyhow::ensure!(skill_path_identity(candidate)? == identity
                 && skill_directory_digest(candidate)? == Some(digest)
@@ -1012,6 +1082,26 @@ impl SkillsManager {
 
     pub fn source_dir(&self) -> &Path {
         &self.source_dir
+    }
+
+    fn unclaimed_managed_source(&self, id: &str, state: &SkillsState) -> Option<PathBuf> {
+        let source = self.source_dir.join(id);
+        if !state.installed.get(id).is_some_and(|installed| installed.original_dir.is_none())
+            || state.instance_targets.contains_key(id)
+            || !source.join(SKILL_MANIFEST_FILE).is_file()
+            || !std::fs::symlink_metadata(&source).is_ok_and(|metadata| metadata.file_type().is_dir())
+        {
+            return None;
+        }
+        let canonical = source.canonicalize().ok()?;
+        let belongs_to_source = |target: &SkillInstanceTarget| target.path == source
+            || target.path.canonicalize().ok().as_ref() == Some(&canonical);
+        if state.instance_records.get(id).is_some_and(|records| records.values().any(|record|
+            belongs_to_source(&record.target) || record.managed_copies.iter().any(&belongs_to_source)))
+        {
+            return None;
+        }
+        Some(source)
     }
 
     /// codex 扫描的 skill 目录。启用一个 skill 就是往这里放一个指向源目录的软链。
@@ -1253,6 +1343,13 @@ impl SkillsManager {
         let mut entries: BTreeMap<(String, String), SkillEntry> = BTreeMap::new();
 
         for skill in remote {
+            if state.instance_records.values().flat_map(|records| records.values()).any(|record| {
+                record.installed.repo_key == skill.repo_key && record.installed.repo_path == skill.repo_path
+                    && state.installed.get(&record.installed.id).is_some_and(|primary|
+                        primary.repo_key != skill.repo_key || primary.repo_path != skill.repo_path)
+            }) {
+                continue;
+            }
             let installed = state.installed.values().find(|item|
                 item.repo_key == skill.repo_key && item.repo_path == skill.repo_path);
             let id = installed.map(|item| item.id.clone()).unwrap_or_else(|| skill.id.clone());
@@ -1260,10 +1357,16 @@ impl SkillsManager {
                 (skill.repo_key.clone(), id.clone()),
                 SkillEntry {
                     id: id.clone(),
+                    instance_key: id.clone(),
+                    conflict: None,
+                    conflict_kind: None,
+                    safe_disable_agents: Vec::new(),
+                    safe_toggle_agents: Vec::new(),
                     name: skill.name.clone(),
                     description: skill.description.clone(),
                     repo_key: skill.repo_key.clone(),
                     repo_path: skill.repo_path.clone(),
+                    display_group_repo_key: None,
                     installed: installed.is_some(),
                     enabled: installed.is_some() && is_linked(&linked.join(&id)),
                     bundled: false,
@@ -1280,8 +1383,14 @@ impl SkillsManager {
                         .unwrap_or(false),
                     agents: Vec::new(),
                     managed: false,
+                    managed_source_dir: None,
+                    managed_source_status: None,
+                    managed_source_error: None,
                     locations: Vec::new(),
-                    conflict: None,
+                    source_verified: installed.is_some_and(|item| item.verified_cc_switch),
+                    install_channel: installed.map(|item| item.install_channel.clone()).unwrap_or_default(),
+                    original_dir: installed.and_then(|item| item.original_dir.clone()),
+                    update_owner: installed.map(|item| item.update_owner.clone()).unwrap_or_default(),
                 },
             );
         }
@@ -1290,6 +1399,11 @@ impl SkillsManager {
         for (id, installed) in &state.installed {
             entries.entry((installed.repo_key.clone(), id.clone())).or_insert_with(|| SkillEntry {
                 id: id.clone(),
+                instance_key: id.clone(),
+                conflict: None,
+                conflict_kind: None,
+                safe_disable_agents: Vec::new(),
+                safe_toggle_agents: Vec::new(),
                 name: if installed.name.is_empty() {
                     id.clone()
                 } else {
@@ -1298,6 +1412,7 @@ impl SkillsManager {
                 description: installed.description.clone(),
                 repo_key: installed.repo_key.clone(),
                 repo_path: installed.repo_path.clone(),
+                display_group_repo_key: None,
                 installed: true,
                 enabled: is_linked(&linked.join(id)),
                 bundled: false,
@@ -1306,8 +1421,14 @@ impl SkillsManager {
                 update_available: false,
                 agents: Vec::new(),
                 managed: false,
+                managed_source_dir: None,
+                managed_source_status: None,
+                managed_source_error: None,
                 locations: Vec::new(),
-                conflict: None,
+                source_verified: installed.verified_cc_switch,
+                install_channel: installed.install_channel.clone(),
+                original_dir: installed.original_dir.clone(),
+                update_owner: installed.update_owner.clone(),
             });
         }
 
@@ -1327,9 +1448,17 @@ impl SkillsManager {
             for (id, (name, description)) in scan_shared_skill_dirs(root)? {
                 if !entries.values().any(|item| item.id == id && item.installed) {
                     entries.insert((String::new(), id.clone()), SkillEntry {
-                        id, name, description,
+                        id: id.clone(),
+                        instance_key: id.clone(),
+                        conflict: None,
+                        conflict_kind: None,
+                        safe_disable_agents: Vec::new(),
+                        safe_toggle_agents: Vec::new(),
+                        name,
+                        description,
                         repo_key: String::new(),
                         repo_path: String::new(),
+                        display_group_repo_key: None,
                         installed: true,
                         enabled: false,
                         bundled: false,
@@ -1338,8 +1467,14 @@ impl SkillsManager {
                         update_available: false,
                         agents: Vec::new(),
                         managed: false,
+                        managed_source_dir: None,
+                        managed_source_status: None,
+                        managed_source_error: None,
                         locations: Vec::new(),
-                        conflict: None,
+                        source_verified: false,
+                        install_channel: "local".into(),
+                        original_dir: Some(root.join(&id)),
+                        update_owner: String::new(),
                     });
                 }
             }
@@ -1352,10 +1487,16 @@ impl SkillsManager {
                     let (name, description) = skill.1;
                     entries.insert((String::new(), skill.0.clone()), SkillEntry {
                         id: skill.0.clone(),
+                        instance_key: skill.0.clone(),
+                        conflict: None,
+                        conflict_kind: None,
+                        safe_disable_agents: Vec::new(),
+                        safe_toggle_agents: Vec::new(),
                         name,
                         description,
                         repo_key: String::new(),
                         repo_path: String::new(),
+                        display_group_repo_key: None,
                         installed: true,
                         enabled: false,
                         bundled: false,
@@ -1364,8 +1505,14 @@ impl SkillsManager {
                         update_available: false,
                         agents: vec![agent.clone()],
                         managed: false,
+                        managed_source_dir: None,
+                        managed_source_status: None,
+                        managed_source_error: None,
                         locations: Vec::new(),
-                        conflict: None,
+                        source_verified: false,
+                        install_channel: "local".into(),
+                        original_dir: Some(dir.join(&skill.0)),
+                        update_owner: String::new(),
                     });
                 }
             }
@@ -1377,13 +1524,17 @@ impl SkillsManager {
                 continue;
             }
             entry.managed = self.source_dir.join(&entry.id).is_dir();
+            let source = self.source_dir.join(&entry.id);
+            entry.managed_source_dir = source.join(SKILL_MANIFEST_FILE).is_file().then_some(source);
+            entry.managed_source_status = entry.managed_source_dir.as_ref().map(|_| "stored".into());
+            let managed_association_path = self.unclaimed_managed_source(&entry.id, &state);
             let mut agents = Vec::new();
-            let codex = if entry.bundled {
+            let codex_path = if entry.bundled {
                 linked.join(BUNDLED_SKILLS_DIR).join(&entry.id)
             } else {
                 linked.join(&entry.id)
             };
-            let mut roots = vec![(if entry.bundled { "system" } else { "codex" }, codex)];
+            let mut roots = vec![(if entry.bundled { "system" } else { "codex" }, codex_path)];
             if !entry.bundled {
                 if let Some(shared) = shared_root {
                     roots.push(("shared", shared.join(&entry.id)));
@@ -1398,15 +1549,32 @@ impl SkillsManager {
                     Ok(enabled) => (enabled, None),
                     Err(error) => (false, Some(format!("{error:#}"))),
                 };
+                let resolved = path.canonicalize().ok();
                 let managed = root_kind == "codex" && (is_managed_copy(&path)
-                    || path.canonicalize().ok().zip(self.source_dir.join(&entry.id).canonicalize().ok())
+                    || resolved.clone().zip(self.source_dir.join(&entry.id).canonicalize().ok())
                         .is_some_and(|(actual, source)| actual == source));
+                let original_path = resolved.filter(|target| root_kind != "system"
+                    && (state.instance_targets.get(&entry.id).is_some_and(|recorded|
+                        recorded.path.canonicalize().ok().as_ref() == Some(target)
+                            && skill_path_identity(&recorded.path).ok() == Some(recorded.identity))
+                        || !managed && !is_managed_copy(target))
+                    && !self.source_dir.canonicalize().ok().is_some_and(|source| target.starts_with(source))
+                    && std::fs::symlink_metadata(target).is_ok_and(|metadata| metadata.file_type().is_dir()));
                 entry.locations.push(SkillLocation {
                     manifest_path: manifest.to_string_lossy().into_owned(),
                     root_kind: root_kind.to_string(),
                     managed,
                     enabled,
                     status_error,
+                    selectable: original_path.is_some(),
+                    association_path: managed.then(|| managed_association_path.clone()).flatten(),
+                    original_path,
+                    repo_key: String::new(),
+                    repo_path: String::new(),
+                    content_hash: String::new(),
+                    remote_hash: String::new(),
+                    update_available: false,
+                    update_owner: String::new(),
                 });
             }
             entry.enabled = entry.locations.iter().any(|location| location.enabled);
@@ -1419,45 +1587,388 @@ impl SkillsManager {
                     let manifest = path.join(SKILL_MANIFEST_FILE);
                     if manifest.is_file() {
                         if !agents.contains(agent) { agents.push(agent.clone()); }
-                        let managed_shared_link = state.shared_agent_paths
+                        let resolved = path.canonicalize().ok();
+                        let shared_target = shared_root.and_then(|shared| shared.join(&entry.id).canonicalize().ok());
+                        let managed_shared = state.shared_agent_paths
                             .get(&path.to_string_lossy().into_owned()).is_some_and(|recorded|
                                 skill_path_identity(&path).ok().is_some_and(|identity|
                                     recorded == &[identity.device, identity.file])
-                                    && shared_root.is_some_and(|shared|
-                                        is_managed_link(&path, &shared.join(&entry.id))));
-                        let managed = is_managed_copy(&path) || managed_shared_link
-                            || path.canonicalize().ok().zip(self.source_dir.join(&entry.id).canonicalize().ok())
-                                .is_some_and(|(actual, source)| actual == source);
+                                    && shared_target.is_some()
+                                    && (is_managed_copy(&path) || resolved == shared_target));
+                        let managed = is_managed_copy(&path) || managed_shared || resolved.clone()
+                            .zip(self.source_dir.join(&entry.id).canonicalize().ok())
+                            .is_some_and(|(actual, source)| actual == source);
+                        let original_path = resolved.clone().filter(|target| !managed && !is_managed_copy(target)
+                            && !self.source_dir.canonicalize().ok().is_some_and(|source| target.starts_with(source))
+                            && std::fs::symlink_metadata(target).is_ok_and(|metadata| metadata.file_type().is_dir()));
                         entry.locations.push(SkillLocation {
                             manifest_path: manifest.to_string_lossy().into_owned(),
                             root_kind: agent.clone(),
                             managed,
                             enabled: true,
                             status_error: None,
+                            selectable: original_path.is_some(),
+                            association_path: if managed_shared { shared_target }
+                                else { managed.then(|| managed_association_path.clone()).flatten() },
+                            original_path,
+                            repo_key: String::new(),
+                            repo_path: String::new(),
+                            content_hash: String::new(),
+                            remote_hash: String::new(),
+                            update_available: false,
+                            update_owner: String::new(),
                         });
                     }
                 }
-                if let (Some(shared), Some(codex)) = (
-                    shared_root.map(|root| root.join(&entry.id))
-                        .filter(|path| path.join(SKILL_MANIFEST_FILE).is_file()),
-                    linked.join(&entry.id).join(SKILL_MANIFEST_FILE).is_file().then(|| linked.join(&entry.id)),
-                ) {
-                    let comparison = (|| -> anyhow::Result<bool> {
-                        let shared = shared.canonicalize()?;
-                        let codex = codex.canonicalize()?;
-                        Ok(shared == codex
-                            || skill_directory_digest(&shared)? == skill_directory_digest(&codex)?)
-                    })();
-                    match comparison {
-                        Ok(true) => {}
-                        Ok(false) => entry.conflict = Some("共享目录与 Codex 目录的同名 Skill 内容不同".into()),
-                        Err(error) => entry.conflict = Some(format!("无法比较同名 Skill 内容：{error:#}")),
+            }
+            let original_paths = entry.locations.iter().filter_map(|location| location.original_path.clone())
+                .collect::<BTreeSet<_>>();
+            for location in &mut entry.locations {
+                if location.managed && location.association_path.is_none() {
+                    let path = Path::new(&location.manifest_path).parent().unwrap().canonicalize().ok();
+                    location.association_path = state.instance_records.get(&entry.id).into_iter()
+                        .flat_map(|records| records.values()).find_map(|record| {
+                            let original = record.target.path.canonicalize().ok()?;
+                            (original_paths.contains(&original)
+                                && skill_path_identity(&record.target.path).ok() == Some(record.target.identity)
+                                && record.managed_copies.iter().any(|copy|
+                                    copy.path.canonicalize().ok() == path
+                                        && skill_path_identity(&copy.path).ok() == Some(copy.identity)))
+                                .then_some(original)
+                        });
+                }
+                let Some(path) = location.original_path.as_deref().or(location.association_path.as_deref()) else { continue };
+                let installed = state.instance_record(&entry.id, path).map(|record| &record.installed)
+                    .or_else(|| state.installed.get(&entry.id).filter(|installed| {
+                        installed.original_dir.as_ref().and_then(|original| original.canonicalize().ok()).as_deref() == Some(path)
+                            && state.instance_targets.get(&entry.id).is_none_or(|target|
+                                target.path.canonicalize().ok().as_deref() == Some(path)
+                                    && skill_path_identity(&target.path).ok() == Some(target.identity))
+                    }));
+                if let Some(installed) = installed {
+                    location.repo_key = installed.repo_key.clone();
+                    location.repo_path = installed.repo_path.clone();
+                    location.content_hash = installed.content_hash.clone();
+                    location.update_owner = installed.update_owner.clone();
+                    if let Some(candidate) = remote.iter().find(|skill| skill.repo_key == location.repo_key
+                        && skill.repo_path == location.repo_path)
+                    {
+                        location.remote_hash = candidate.content_hash.clone();
+                        location.update_available = !location.content_hash.is_empty()
+                            && !location.remote_hash.is_empty()
+                            && location.content_hash != location.remote_hash;
                     }
                 }
             }
             entry.agents = agents;
         }
-        Ok(entries)
+        let mut visible = Vec::new();
+        for mut entry in entries {
+            if let Some(target) = state.instance_targets.get(&entry.id)
+                .filter(|_| entry.installed && !entry.bundled)
+            {
+                let canonical = target.path.canonicalize().ok();
+                let discovered = entry.locations.iter().any(|location| {
+                    canonical.as_ref().is_some_and(|path| location.original_path.as_ref() == Some(path))
+                });
+                if !discovered || skill_path_identity(&target.path).ok() != Some(target.identity) {
+                    entry.repo_key.clear();
+                    entry.repo_path.clear();
+                    entry.content_hash.clear();
+                    entry.remote_hash.clear();
+                    entry.update_available = false;
+                    entry.source_verified = false;
+                    entry.install_channel = "local".into();
+                    entry.original_dir = None;
+                    entry.update_owner.clear();
+                }
+            }
+            if entry.bundled || entry.locations.is_empty() {
+                visible.push(entry);
+                continue;
+            }
+            if entry.locations.len() == 1 && entry.managed_source_dir.is_none()
+                && !state.installed.contains_key(&entry.id)
+                && !state.instance_records.contains_key(&entry.id)
+            {
+                if let Some(path) = &entry.locations[0].original_path {
+                    entry.instance_key = format!("{}:{}", entry.id, path.display());
+                    entry.original_dir = Some(path.clone());
+                }
+                visible.push(entry);
+                continue;
+            }
+            let mut groups = BTreeMap::<PathBuf, Vec<SkillLocation>>::new();
+            let mut hashes = BTreeSet::new();
+            let mut path_hashes = BTreeMap::new();
+            let mut originals = BTreeSet::new();
+            let mut comparison_error = None;
+            for location in &entry.locations {
+                let path = Path::new(&location.manifest_path).parent().context("Skill 路径没有父目录")?;
+                let resolved = path.canonicalize()?;
+                match skill_directory_digest(&resolved) {
+                    Ok(Some(digest)) => {
+                        hashes.insert(digest);
+                        path_hashes.insert(resolved.clone(), digest);
+                    }
+                    Ok(None) => comparison_error = Some(format!("Skill 目录已不存在：{}", resolved.display())),
+                    Err(error) => comparison_error = Some(format!("{error:#}")),
+                }
+                if !location.managed || location.selectable {
+                    originals.insert(resolved.clone());
+                }
+                groups.entry(resolved).or_default().push(location.clone());
+            }
+            if comparison_error.is_none() {
+                let copies = groups.iter().filter_map(|(path, locations)| {
+                    let original = locations.iter().find_map(|location| location.association_path.as_ref())?;
+                    (original != path && groups.contains_key(original)
+                        && path_hashes.get(path) == path_hashes.get(original))
+                        .then_some((path.clone(), original.clone()))
+                }).collect::<Vec<_>>();
+                for (copy, original) in copies {
+                    let locations = groups.remove(&copy).unwrap();
+                    groups.get_mut(&original).unwrap().extend(locations);
+                }
+            }
+            let source = self.source_dir.join(&entry.id);
+            let mut source_hash = None;
+            if source.join(SKILL_MANIFEST_FILE).is_file() {
+                match skill_directory_digest(&source) {
+                    Ok(Some(digest)) => {
+                        source_hash = Some(digest);
+                        entry.managed_source_status = Some(if source.canonicalize()
+                            .is_ok_and(|path| path_hashes.contains_key(&path))
+                        {
+                            "referenced"
+                        } else if comparison_error.is_some() {
+                            "unknown"
+                        } else if hashes.len() == 1 && hashes.contains(&digest) {
+                            "matching"
+                        } else {
+                            "different"
+                        }.into());
+                        if comparison_error.is_some() {
+                            entry.managed_source_error = comparison_error.clone();
+                        }
+                    }
+                    Ok(None) => {
+                        entry.managed_source_status = Some("unknown".into());
+                        entry.managed_source_error = Some(format!("Skill 受控源已不存在：{}", source.display()));
+                    }
+                    Err(error) => {
+                        entry.managed_source_status = Some("unknown".into());
+                        entry.managed_source_error = Some(format!("{error:#}"));
+                    }
+                }
+            }
+            let sources: BTreeSet<_> = entry.locations.iter()
+                .filter(|location| !location.repo_key.is_empty() && !location.repo_path.is_empty())
+                .map(|location| (location.repo_key.clone(), location.repo_path.clone()))
+                .collect();
+            let mut group_sources = BTreeMap::<[u8; 32], BTreeSet<(String, String)>>::new();
+            if comparison_error.is_none() {
+                for location in &entry.locations {
+                    if parse_repo_key(&location.repo_key).is_none() || location.repo_path.is_empty() {
+                        continue;
+                    }
+                    if let Some(digest) = location.original_path.as_ref().and_then(|path| path_hashes.get(path)) {
+                        group_sources.entry(*digest).or_default()
+                            .insert((location.repo_key.clone(), location.repo_path.clone()));
+                    }
+                }
+                if let Some((digest, installed)) = source_hash.zip(state.installed.get(&entry.id))
+                    .filter(|(_, installed)| parse_repo_key(&installed.repo_key).is_some()
+                        && !installed.repo_path.is_empty()
+                        && self.unclaimed_managed_source(&entry.id, &state).is_some())
+                {
+                    group_sources.entry(digest).or_default()
+                        .insert((installed.repo_key.clone(), installed.repo_path.clone()));
+                }
+            }
+            let associated_originals = originals.len() > 1 && sources.len() == 1
+                && entry.locations.iter().filter(|location| !location.managed || location.selectable)
+                    .all(|location| parse_repo_key(&location.repo_key).is_some()
+                        && !location.repo_path.is_empty());
+            let mut distinct_owners = BTreeSet::new();
+            let separate_agents = originals.len() > 1 && groups.len() > 1 && groups.values().all(|locations| {
+                locations.iter().map(|location| match location.root_kind.as_str() {
+                    "shared" => "codex",
+                    agent => agent,
+                }).collect::<BTreeSet<_>>().into_iter().all(|agent| distinct_owners.insert(agent))
+            });
+            if comparison_error.is_none() && hashes.len() <= 1 && sources.len() <= 1
+                && !associated_originals && !separate_agents
+            {
+                if let Some(path) = originals.iter().next().or_else(|| groups.keys().next()) {
+                    entry.instance_key = format!("{}:{}", entry.id, path.display());
+                }
+                if originals.len() > 1 {
+                    entry.conflict = Some("存在多个独立安装，当前内容相同；来源和更新需分别确认".into());
+                    entry.conflict_kind = Some("equal-independent".into());
+                    entry.repo_key.clear();
+                    entry.repo_path.clear();
+                    entry.content_hash.clear();
+                    entry.remote_hash.clear();
+                    entry.update_available = false;
+                    entry.source_verified = false;
+                    entry.install_channel = "local".into();
+                    entry.original_dir = None;
+                    entry.update_owner.clear();
+                    entry.display_group_repo_key = hashes.iter().next().and_then(|digest|
+                        group_sources.get(digest).filter(|sources| sources.len() == 1))
+                        .and_then(|sources| sources.iter().next().map(|(repo, _)| repo.clone()));
+                }
+                visible.push(entry);
+                continue;
+            }
+            let known_original = state.installed.get(&entry.id)
+                .and_then(|item| item.original_dir.as_ref())
+                .and_then(|path| path.canonicalize().ok());
+            let independent = if comparison_error.is_some() {
+                true
+            } else {
+                let mut independent_hashes = BTreeSet::new();
+                for original in &originals {
+                    independent_hashes.insert(*path_hashes.get(original).context("Skill 目录已不存在")?);
+                }
+                if !originals.is_empty() && !originals.iter().all(|path| Some(path) == known_original.as_ref())
+                {
+                    independent_hashes.extend(path_hashes.iter()
+                        .filter(|(path, _)| !originals.contains(*path))
+                        .map(|(_, digest)| *digest));
+                }
+                originals.len() > 1 || independent_hashes.len() > 1
+            };
+            let mut instances = Vec::new();
+            let mut managed_copy_changed = false;
+            for (path, locations) in groups {
+                let mut instance = entry.clone();
+                instance.instance_key = format!("{}:{}", instance.id, path.display());
+                instance.conflict = Some(comparison_error.as_ref().map_or_else(
+                    || "存在同名但内容或来源不同的 Skill，请分别处理".into(),
+                    |error| format!("无法安全比较 Skill 内容：{error}"),
+                ));
+                instance.conflict_kind = Some(if independent { "independent" } else { "managed-modified" }.into());
+                let (name, description) = read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), &instance.id);
+                instance.name = name;
+                instance.description = description;
+                instance.locations = locations;
+                instance.agents = instance.locations.iter().filter_map(|location| match location.root_kind.as_str() {
+                    "codex" | "shared" if location.enabled => Some("codex".to_string()),
+                    "codex" | "shared" => None,
+                    agent => Some(agent.to_string()),
+                }).collect::<BTreeSet<_>>().into_iter().collect();
+                instance.enabled = instance.agents.iter().any(|agent| agent == "codex");
+                let managed_instance = instance.locations.iter().all(|location| location.managed)
+                    || source.canonicalize().ok().as_ref() == Some(&path);
+                if managed_instance && (source_hash != path_hashes.get(&path).copied()
+                    || instance.locations.iter().filter_map(|location| location.association_path.as_ref())
+                        .any(|original| path_hashes.get(original)
+                            .is_some_and(|digest| Some(digest) != path_hashes.get(&path))))
+                {
+                    managed_copy_changed = true;
+                }
+                instance.managed = managed_instance || instance.locations.iter().any(|location| location.managed);
+                if !independent {
+                    instance.safe_disable_agents = instance.locations.iter()
+                        .filter(|location| location.managed && location.enabled
+                            && (location.root_kind != "codex" || self.shared_skills_dir()
+                                .is_none_or(|root| !root.join(&instance.id).join(SKILL_MANIFEST_FILE).is_file())))
+                        .filter_map(|location| match location.root_kind.as_str() {
+                            "shared" | "system" => None,
+                            agent => Some(agent.to_string()),
+                        })
+                        .collect();
+                    if self.shared_skills_dir()
+                        .is_none_or(|root| !root.join(&instance.id).join(SKILL_MANIFEST_FILE).is_file())
+                        && instance.locations.iter().any(|location| {
+                            location.root_kind == "codex" && location.managed
+                                && location.status_error.is_none()
+                                && std::fs::symlink_metadata(self.linked_dir().join(&instance.id))
+                                    .is_ok_and(|metadata| metadata.file_type().is_dir()
+                                        && !metadata_is_link(&metadata))
+                        })
+                        && self.ensure_skill_name_not_aliased(&instance.id, &state).is_ok()
+                    {
+                        instance.safe_toggle_agents.push("codex".into());
+                    }
+                }
+                let record = state.instance_record(&entry.id, &path).or_else(|| instance.locations.iter()
+                    .filter_map(|location| location.association_path.as_deref())
+                    .find_map(|original| state.instance_record(&entry.id, original)));
+                // 旧安装记录没有原目录和实例索引；仅受控源及其副本可继承该记录。
+                let legacy_managed = record.is_none()
+                    && state.installed.get(&entry.id).is_some_and(|installed| installed.original_dir.is_none())
+                    && !state.instance_targets.contains_key(&entry.id)
+                    && source.join(SKILL_MANIFEST_FILE).is_file()
+                    && managed_instance;
+                let associated = record.is_some() || state.instance_targets.get(&entry.id).is_some_and(|target| {
+                    target.path.canonicalize().ok().as_ref() == Some(&path)
+                        && skill_path_identity(&target.path).ok() == Some(target.identity)
+                }) || legacy_managed;
+                if let Some(record) = record {
+                    instance.repo_key = record.installed.repo_key.clone();
+                    instance.repo_path = record.installed.repo_path.clone();
+                    instance.content_hash = record.installed.content_hash.clone();
+                    instance.install_channel = record.installed.install_channel.clone();
+                    instance.update_owner = record.installed.update_owner.clone();
+                    instance.source_verified = record.installed.verified_cc_switch;
+                    instance.remote_hash = remote.iter().find(|skill| skill.repo_key == instance.repo_key
+                        && skill.repo_path == instance.repo_path)
+                        .map(|skill| skill.content_hash.clone()).unwrap_or_default();
+                    instance.update_available = !instance.content_hash.is_empty() && !instance.remote_hash.is_empty()
+                        && instance.content_hash != instance.remote_hash;
+                }
+                if !associated {
+                    instance.repo_key.clear();
+                    instance.repo_path.clear();
+                    instance.content_hash.clear();
+                    instance.remote_hash.clear();
+                    instance.update_available = false;
+                    instance.source_verified = false;
+                    instance.install_channel = "local".into();
+                    instance.update_owner.clear();
+                    instance.display_group_repo_key = path_hashes.get(&path).and_then(|digest|
+                        group_sources.get(digest).filter(|sources| sources.len() == 1))
+                        .and_then(|sources| sources.iter().next().map(|(repo, _)| repo.clone()));
+                } else if legacy_managed && instance.update_owner.is_empty() && instance.install_channel.is_empty() {
+                    instance.update_owner = "manager".into();
+                }
+                instance.original_dir = (!managed_instance).then_some(path);
+                instances.push(instance);
+            }
+            let mut owners = BTreeSet::new();
+            let repositories = instances.iter()
+                .filter(|instance| parse_repo_key(&instance.repo_key).is_some())
+                .map(|instance| instance.repo_key.as_str())
+                .collect::<BTreeSet<_>>();
+            if independent && comparison_error.is_none() && !managed_copy_changed
+                && instances.len() > 1
+                && repositories.len() <= 1
+                && instances.iter().all(|instance| {
+                    instance.locations.iter().map(|location| match location.root_kind.as_str() {
+                            "shared" => "codex",
+                            agent => agent,
+                        }).collect::<BTreeSet<_>>().into_iter().all(|agent| owners.insert(agent))
+                })
+            {
+                for instance in &mut instances {
+                    instance.conflict = None;
+                    instance.conflict_kind = None;
+                    if instance.locations.iter().any(|location| {
+                        location.root_kind == "codex" && location.status_error.is_none()
+                            && std::fs::symlink_metadata(self.linked_dir().join(&instance.id))
+                                .is_ok_and(|metadata| metadata.file_type().is_dir()
+                                    && !metadata_is_link(&metadata))
+                    }) && self.ensure_skill_name_not_aliased(&instance.id, &state).is_ok() {
+                        instance.safe_toggle_agents.push("codex".into());
+                    }
+                }
+            }
+            visible.extend(instances);
+        }
+        Ok(visible)
     }
 
     /// 本地目录 inventory 不混入仅出现在远端/缓存清单中的未安装条目，也不写 TOML。
@@ -1497,6 +2008,7 @@ impl SkillsManager {
             let (name, description) = read_skill_manifest(&manifest, id);
             skills.push(SkillEntry {
                 id: id.to_string(),
+                instance_key: id.to_string(),
                 name,
                 description,
                 repo_key: String::new(),
@@ -1511,6 +2023,7 @@ impl SkillsManager {
                 managed: false,
                 locations: Vec::new(),
                 conflict: None,
+                ..Default::default()
             });
         }
         skills
@@ -1608,6 +2121,10 @@ impl SkillsManager {
             id: id.to_string(), name, description, repo_key: repo_key.to_string(),
             repo_path: String::new(), content_hash: String::new(),
             installed_at: current_unix_timestamp_string(),
+            verified_cc_switch: repo_key == "cc-switch",
+            install_channel: if repo_key == "cc-switch" { "cc-switch" } else { "local" }.into(),
+            original_dir: Some(external_dir.to_path_buf()),
+            update_owner: "manager".into(),
         }))
     }
 
@@ -1810,6 +2327,7 @@ impl SkillsManager {
             let (name, description) = read_skill_manifest(&manifest, id);
             skills.push(SkillEntry {
                 id: id.to_string(),
+                instance_key: id.to_string(),
                 name,
                 description,
                 repo_key: String::new(),
@@ -1824,6 +2342,7 @@ impl SkillsManager {
                 managed: false,
                 locations: Vec::new(),
                 conflict: None,
+                ..Default::default()
             });
         }
         skills
@@ -1860,6 +2379,24 @@ impl SkillsManager {
                 anyhow::bail!("同名 Skill 目录已存在，不能作为新安装覆盖");
             }
             _ => {}
+        }
+        if let Some(record) = installed.as_ref().filter(|_| !install_only) {
+            let source = self.source_dir.join(id).canonicalize().ok();
+            let original = record.original_dir.as_ref().and_then(|path| path.canonicalize().ok());
+            let mut roots = vec![self.linked_dir()];
+            roots.extend(self.shared_skills_dir().map(Path::to_path_buf));
+            roots.extend(self.agent_dirs.iter().map(|(_, root)| root.clone()));
+            if record.update_owner == "in_place"
+                || original.as_ref().is_some_and(|target| {
+                    Some(target) != source.as_ref()
+                        && roots.iter().any(|root| {
+                            root.join(id).canonicalize().is_ok_and(|path| &path == target)
+                        })
+                })
+                || (record.update_owner.is_empty() && !record.install_channel.is_empty())
+            {
+                anyhow::bail!("此 Skill 的来源已关联，但未授权使用此流程更新");
+            }
         }
         let scope = self.coordination_scope();
         let mut guard = SkillDownloadGuard {
@@ -2019,6 +2556,9 @@ impl SkillsManager {
                 repo_path: skill.repo_path.clone(),
                 content_hash: skill.content_hash.clone(),
                 installed_at: current_unix_timestamp_string(),
+                install_channel: "github".into(),
+                update_owner: "manager".into(),
+                ..Default::default()
             }, enabled, true, Some(&agent_snapshot), guard.install_only, &mut coordination)?;
             // 安装记录保留 legacy ID，返回给目录缓存的必须是可用于新安装的稳定 ID。
             let mut catalog_skill = skill;
@@ -2065,6 +2605,9 @@ impl SkillsManager {
                 repo_path: skill.repo_path.clone(),
                 content_hash: skill.content_hash.clone(),
                 installed_at: current_unix_timestamp_string(),
+                install_channel: "github".into(),
+                update_owner: "manager".into(),
+                ..Default::default()
             }, enable_after_install, true, Some(&agent_snapshot), false, &mut coordination)
         })();
         result.map_err(|error| retain_staging_context(error, &staging))
@@ -2149,6 +2692,7 @@ impl SkillsManager {
                     repo_path: String::new(),
                     content_hash: String::new(),
                     installed_at: current_unix_timestamp_string(),
+                    ..Default::default()
                 });
                 self.commit_staged_skill_unlocked(
                     &staging, installed, false, contents_changed, None, false, coordination,
@@ -2368,6 +2912,7 @@ impl SkillsManager {
                 repo_path: String::new(),
                 content_hash: String::new(),
                 installed_at: current_unix_timestamp_string(),
+                ..Default::default()
             },
             true,
             true,
@@ -3708,7 +4253,7 @@ fn skill_directory_digest(path: &Path) -> anyhow::Result<Option<[u8; 32]>> {
     Ok(Some(hasher.finalize().into()))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct SkillPathIdentity {
     device: u64,
     file: u64,
@@ -4157,16 +4702,17 @@ mod tests {
 
         let entries = manager.try_local_inventory().unwrap();
         let found = entries.iter().filter(|item| item.id == "alpha").collect::<Vec<_>>();
-        assert_eq!(found.len(), 1);
-        assert!(found[0].enabled);
-        assert!(found[0].conflict.is_none());
-        assert_eq!(found[0].locations.len(), 2);
-        assert!(found[0].agents.contains(&"codex".to_string()));
-        assert!(found[0].agents.contains(&"claude".to_string()));
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|item| item.conflict.is_none()));
+        assert!(found.iter().any(|item| item.agents.contains(&"codex".to_string())));
+        assert!(found.iter().any(|item| item.agents.contains(&"claude".to_string())));
 
         for enabled in [true, false, false, true] {
             manager.set_enabled_for("codex", "alpha", enabled).unwrap();
-            assert_eq!(entry(&manager.try_local_inventory().unwrap(), "alpha").enabled, enabled);
+            let current = manager.try_local_inventory().unwrap();
+            let codex = current.iter().find(|item| item.id == "alpha"
+                && item.locations.iter().any(|location| location.root_kind == "shared")).unwrap();
+            assert_eq!(codex.enabled, enabled);
             assert!(shared.join("alpha/SKILL.md").is_file());
             assert!(!manager.linked_dir().join("alpha").exists());
             assert!(!manager.source_dir.join("alpha").exists());
@@ -4244,6 +4790,25 @@ mod tests {
     }
 
     #[test]
+    fn shared_agent_copy_associates_with_the_shared_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+        write_skill(&shared.join("alpha"), "---\nname: alpha\n---\n");
+        FORCE_SKILL_COPY.with(|flag| flag.set(true));
+        let result = manager.set_enabled_for("claude", "alpha", true);
+        FORCE_SKILL_COPY.with(|flag| flag.set(false));
+        result.unwrap();
+        let entries = manager.try_local_inventory().unwrap();
+        let found = entries.iter().filter(|entry| entry.id == "alpha").collect::<Vec<_>>();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].conflict.is_none());
+        let copy = found[0].locations.iter().find(|location| location.root_kind == "claude").unwrap();
+        assert!(copy.managed);
+        assert_eq!(copy.association_path.as_deref(), Some(shared.join("alpha").canonicalize().unwrap().as_path()));
+    }
+
+    #[test]
     fn shared_and_codex_conflict_compares_complete_contents_and_preserves_both() {
         let temp = tempfile::tempdir().unwrap();
         let shared = temp.path().join("shared");
@@ -4262,6 +4827,21 @@ mod tests {
         assert!(!manager.codex_home.join("config.toml").exists());
         assert_eq!(std::fs::read_to_string(original.join("script.js")).unwrap(), "one");
         assert_eq!(std::fs::read_to_string(codex.join("script.js")).unwrap(), "two");
+    }
+
+    #[test]
+    fn identical_installations_for_different_agents_are_not_conflicts() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("shared");
+        let manager = multi_agent_manager(&temp).with_shared_skills_dir(&shared);
+        write_skill(&shared.join("alpha"), "---\nname: alpha\n---\nsame");
+        write_skill(&temp.path().join("claude-skills/alpha"), "---\nname: alpha\n---\nsame");
+        let entries = manager.try_local_inventory().unwrap();
+        let found = entries.iter().filter(|item| item.id == "alpha").collect::<Vec<_>>();
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|item| item.conflict.is_none()));
+        assert!(found.iter().any(|item| item.agents.contains(&"codex".to_string())));
+        assert!(found.iter().any(|item| item.agents.contains(&"claude".to_string())));
     }
 
     #[test]
@@ -4407,7 +4987,8 @@ mod tests {
         let installed = InstalledSkill {
             id: "alpha".into(), name: "alpha".into(), description: String::new(),
             repo_key: String::new(), repo_path: String::new(), content_hash: String::new(),
-            installed_at: String::new(),
+            installed_at: String::new(), verified_cc_switch: false, install_channel: String::new(),
+            original_dir: None, update_owner: String::new(),
         };
         let mut coordination = skills_coordination();
         assert!(manager.commit_staged_skill_unlocked(
@@ -5884,6 +6465,7 @@ mod tests {
             repo_path: "alpha".into(),
             content_hash: "hash".into(),
             installed_at: "1".into(),
+            ..Default::default()
         };
 
         let mut coordination = skills_coordination();
@@ -5911,6 +6493,7 @@ mod tests {
             repo_path: "alpha".into(),
             content_hash: "hash".into(),
             installed_at: "1".into(),
+            ..Default::default()
         };
 
         let mut coordination = skills_coordination();
@@ -7765,6 +8348,7 @@ mod tests {
                 repo_path: "notes~old".into(),
                 content_hash: "old".into(),
                 installed_at: String::new(),
+                ..Default::default()
             },
         );
         manager.save_state_unlocked(&state).unwrap();
