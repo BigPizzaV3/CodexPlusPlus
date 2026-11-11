@@ -721,6 +721,142 @@ pub fn parse_app_server_client_capture_location(value: &Value) -> Option<(String
     Some((url_regex, line_number as u32, column_number as u32))
 }
 
+/// 与渲染层 `codexAppServerClientCaptureMarker` / `Anchor` 相同（00-prelude.js）。
+const APP_SERVER_CLIENT_CAPTURE_MARKER: &str = "AppServerRequestClient is missing a message dispatcher";
+const APP_SERVER_CLIENT_CAPTURE_ANCHOR: &str = "async sendRequest(";
+/// 记录的资产脚本上限；新版 Codex 一页通常加载一两百个，按需 chunk 再多也够用。
+const PARSED_ASSET_SCRIPT_LIMIT: usize = 16_384;
+/// 渲染层迟迟报不出坐标时，改由调试器按内容找（#3052）：先给渲染层一点时间，之后定期重试，
+/// 因为类所在的按需 chunk 可能还没加载。
+const APP_SERVER_CLIENT_DEBUGGER_LOCATE_AFTER: Duration = Duration::from_secs(8);
+const APP_SERVER_CLIENT_DEBUGGER_LOCATE_INTERVAL: Duration = Duration::from_secs(15);
+const APP_SERVER_CLIENT_DEBUGGER_SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
+const APP_SERVER_CLIENT_DEBUGGER_SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn is_codex_asset_script_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    path.contains("/assets/") && path.ends_with(".js")
+}
+
+/// 按 JS 正则字面量转义，与渲染层 `hit.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")` 一致。
+fn escape_js_regex(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        if ".*+?^${}()|[]\\".contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// 在脚本源码里找 `AppServerRequestClient.sendRequest` 方法体的 `{`，返回 V8 断点坐标
+/// （行号从 0 起，列按 UTF-16 计）。规则与渲染层 `locateCodexAppServerClientBreakpoint` 相同。
+pub fn locate_app_server_client_send_request(source: &str) -> Option<(u32, u32)> {
+    let marker = source.find(APP_SERVER_CLIENT_CAPTURE_MARKER)?;
+    let anchor = source[..marker].rfind(APP_SERVER_CLIENT_CAPTURE_ANCHOR)?;
+    // 渲染层按 UTF-16 距离判 220，这里按字节；锚点和标记之间是 ASCII 代码，两者一致。
+    if marker - anchor > 220 {
+        return None;
+    }
+    let brace = anchor + source[anchor..].find('{')?;
+    let before = &source[..brace];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+    let column: usize = before[line_start..].chars().map(char::len_utf16).sum();
+    Some((u32::try_from(line).ok()?, u32::try_from(column).ok()?))
+}
+
+/// 渲染层只能看到入口脚本：新版 Codex 走 `app://` 协议，资源计时里没有记录，
+/// 类所在的按需 chunk 永远进不了候选（#3052）。调试器的 `scriptParsed` 能列出所有已加载脚本，
+/// 逐个按标记文本搜，命中后算出与渲染层相同格式的坐标。没找到时关掉调试器，下次重新 enable 会重放全部脚本。
+async fn locate_app_server_client_via_debugger<S>(
+    session: &mut CdpSession<S>,
+    generation: &BridgeGeneration,
+) -> anyhow::Result<Option<(String, u32, u32)>>
+where
+    S: SinkExt<Message>
+        + StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin
+        + Send,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    session.parsed_asset_scripts.clear();
+    if !enable_app_server_client_capture_debugger(
+        session,
+        generation,
+        APP_SERVER_CLIENT_CAPTURE_ENABLE_TIMEOUT,
+        APP_SERVER_CLIENT_CAPTURE_ENABLE_RETRY_DELAY,
+    )
+    .await?
+    {
+        return Ok(None);
+    }
+    let scripts = std::mem::take(&mut session.parsed_asset_scripts);
+    let mut found = None;
+    // 类在按需加载的大 chunk 里，通常排在入口脚本之后，倒着搜更快命中。
+    for (script_id, url) in scripts.iter().rev() {
+        if !bridge_generation_is_current(generation) {
+            break;
+        }
+        let Ok(reply) = session
+            .send_command_with_timeout(
+                next_message_id(),
+                "Debugger.searchInContent",
+                json!({ "scriptId": script_id, "query": APP_SERVER_CLIENT_CAPTURE_MARKER }),
+                APP_SERVER_CLIENT_DEBUGGER_SEARCH_TIMEOUT,
+            )
+            .await
+        else {
+            continue;
+        };
+        if reply
+            .pointer("/result/result")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+        {
+            continue;
+        }
+        let Ok(source) = session
+            .send_command_with_timeout(
+                next_message_id(),
+                "Debugger.getScriptSource",
+                json!({ "scriptId": script_id }),
+                APP_SERVER_CLIENT_DEBUGGER_SOURCE_TIMEOUT,
+            )
+            .await
+        else {
+            continue;
+        };
+        let Some(text) = source.pointer("/result/scriptSource").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some((line, column)) = locate_app_server_client_send_request(text) {
+            found = Some((url.clone(), line, column));
+            break;
+        }
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "bridge.app_server_client_debugger_locate",
+        json!({
+            "scripts": scripts.len(),
+            "found": found.is_some(),
+            "asset": found.as_ref().map(|(url, _, _)| url.rsplit('/').next().unwrap_or("").to_string()),
+        }),
+    );
+    if found.is_none() {
+        let _ = session
+            .send_command_with_timeout(
+                next_message_id(),
+                "Debugger.disable",
+                json!({}),
+                APP_SERVER_CLIENT_CAPTURE_CLEANUP_TIMEOUT,
+            )
+            .await;
+    }
+    Ok(found.map(|(url, line, column)| (escape_js_regex(&url), line, column)))
+}
+
 const APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT: Duration = Duration::from_secs(90);
 const APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL: Duration = Duration::from_secs(2);
 const APP_SERVER_CLIENT_CAPTURE_WATCH_CAP: Duration = Duration::from_secs(8 * 60 * 60);
@@ -845,37 +981,68 @@ async fn run_app_server_client_capture(
     }
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket);
-    let probe_script = if crate::native_predictions::native_modules_requested(&settings) {
+    let native_modules = crate::native_predictions::native_modules_requested(&settings);
+    let probe_script = if native_modules {
         "window.__codexPlusNativeFastAssetPatchReady===true&&['armed','patched'].includes(window.__codexPlusNativeFastPatchState)&&window.__codexPlusNativeFastCompiled!=='v1'?null:JSON.stringify(window.__codexPlusAppServerClientCapture||null)"
     } else {
         app_server_client_capture_probe_script()
     };
+    // 调试器兜底也要守同一道门：原生 Fast 资产补丁就绪但还没编译好时，类所在脚本即将被替换，先别下断点。
+    let debugger_locate_gate = native_modules.then_some(
+        "!(window.__codexPlusNativeFastAssetPatchReady===true&&['armed','patched'].includes(window.__codexPlusNativeFastPatchState)&&window.__codexPlusNativeFastCompiled!=='v1')",
+    );
+    let started = tokio::time::Instant::now();
+    let mut last_debugger_locate: Option<tokio::time::Instant> = None;
     let location_wait = async {
         loop {
             if !bridge_generation_is_current(&generation) {
                 return None;
             }
             tokio::time::sleep(APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL).await;
-            let Ok(response) = session
+            if let Ok(response) = session
                 .send_command(
                     next_message_id(),
                     "Runtime.evaluate",
                     runtime_evaluate_params(probe_script),
                 )
                 .await
-            else {
-                continue;
-            };
-            let Some(text) = response
-                .pointer("/result/result/value")
-                .and_then(Value::as_str)
-            else {
-                continue;
-            };
-            if let Some(location) =
-                parse_app_server_client_capture_location(&Value::String(text.to_string()))
             {
-                return Some(location);
+                if let Some(location) = response
+                    .pointer("/result/result/value")
+                    .and_then(Value::as_str)
+                    .and_then(|text| {
+                        parse_app_server_client_capture_location(&Value::String(text.to_string()))
+                    })
+                {
+                    return Some(location);
+                }
+            }
+            // 渲染层还给不出坐标：可能是新版产物让它看不到类所在的 chunk（#3052），由调试器按内容找。
+            let now = tokio::time::Instant::now();
+            let due = now.duration_since(started) >= APP_SERVER_CLIENT_DEBUGGER_LOCATE_AFTER
+                && last_debugger_locate
+                    .is_none_or(|at| now.duration_since(at) >= APP_SERVER_CLIENT_DEBUGGER_LOCATE_INTERVAL);
+            let gate_open = due && match debugger_locate_gate {
+                None => true,
+                Some(gate) => session
+                    .send_command(next_message_id(), "Runtime.evaluate", runtime_evaluate_params(gate))
+                    .await
+                    .ok()
+                    .and_then(|response| response.pointer("/result/result/value").and_then(Value::as_bool))
+                    == Some(true),
+            };
+            if gate_open {
+                last_debugger_locate = Some(now);
+                match locate_app_server_client_via_debugger(&mut session, &generation).await {
+                    Ok(Some(location)) => return Some(location),
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "bridge.app_server_client_debugger_locate_failed",
+                            json!({ "message": format!("{error:#}") }),
+                        );
+                    }
+                }
             }
         }
     };
@@ -1322,6 +1489,8 @@ struct CdpSession<S> {
     paused_event_bytes: usize,
     pause_epoch: u64,
     current_pause_hit: Option<[u8; 32]>,
+    /// 开着 Debugger 时收到的 Codex 资产脚本 `(scriptId, url)`，供按内容定位客户端类用（#3052）。
+    parsed_asset_scripts: Vec<(String, String)>,
     handler: Option<BridgeHandler>,
     generation: Option<BridgeGeneration>,
 }
@@ -1344,6 +1513,7 @@ where
             paused_event_bytes: 0,
             pause_epoch: 0,
             current_pause_hit: None,
+            parsed_asset_scripts: Vec::new(),
             handler: None,
             generation: None,
         }
@@ -1509,6 +1679,19 @@ where
                 self.current_pause_hit = paused_hit_fingerprint(&value);
             }
             Some("Debugger.resumed") => self.clear_pause_if_epoch(self.pause_epoch),
+            Some("Debugger.scriptParsed") => {
+                // 只记 Codex 自己的资产脚本，且有上限：新版有上万个按需 chunk，不能无限攒。
+                if let (Some(id), Some(url)) = (
+                    value.pointer("/params/scriptId").and_then(Value::as_str),
+                    value.pointer("/params/url").and_then(Value::as_str),
+                ) {
+                    if is_codex_asset_script_url(url)
+                        && self.parsed_asset_scripts.len() < PARSED_ASSET_SCRIPT_LIMIT
+                    {
+                        self.parsed_asset_scripts.push((id.to_string(), url.to_string()));
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -2439,6 +2622,113 @@ assert.equal(run(new AppServerClient(), null), false);
         );
         session.close().await;
         server.await.unwrap();
+    }
+
+    #[test]
+    fn debugger_locate_matches_renderer_coordinates() {
+        // 与 locateCodexAppServerClientBreakpoint 同规则：行从 0 起、列按 UTF-16，指向方法体的 `{`。
+        let source = "first line\n\
+            const 中文=\"😀\";class A{async sendRequest(e,t,n){if(null==this.dispatchMessage)throw Error(\"AppServerRequestClient is missing a message dispatcher\")}}";
+        let (line, column) = locate_app_server_client_send_request(source).unwrap();
+        assert_eq!(line, 1);
+        let second_line = source.split('\n').nth(1).unwrap();
+        // 方法体的 `{` 紧跟在参数表 `)` 后面；前面的中文和 emoji 让字节列与 UTF-16 列不同。
+        let brace = second_line.find("){if(null").unwrap() + 1;
+        let expected: usize = second_line[..brace].chars().map(char::len_utf16).sum();
+        assert_eq!(column as usize, expected);
+        // 锚点离标记太远（不是同一个方法）或缺失时不能乱定位。
+        let far = format!("async sendRequest(){{{}}}AppServerRequestClient is missing a message dispatcher", "x".repeat(300));
+        assert_eq!(locate_app_server_client_send_request(&far), None);
+        assert_eq!(locate_app_server_client_send_request("no marker here"), None);
+    }
+
+    #[test]
+    fn debugger_locate_helpers_escape_urls_and_filter_assets() {
+        assert_eq!(
+            escape_js_regex("app://-/assets/async/739301.37a39f26d6.js"),
+            "app://-/assets/async/739301\\.37a39f26d6\\.js"
+        );
+        assert_eq!(escape_js_regex("a+b(c)[d]{e}|f^g$h?i*j\\k"), "a\\+b\\(c\\)\\[d\\]\\{e\\}\\|f\\^g\\$h\\?i\\*j\\\\k");
+        assert!(is_codex_asset_script_url("app://-/assets/async/739301.37a39f26d6.js"));
+        assert!(is_codex_asset_script_url("app://-/assets/app-shared-AbC.js?v=1"));
+        assert!(!is_codex_asset_script_url("blob:app://-/1234"));
+        assert!(!is_codex_asset_script_url("app://-/index.html"));
+        assert!(!is_codex_asset_script_url(""));
+    }
+
+
+    /// #3052：Codex 26.1106 的类在按需 chunk 里，渲染层看不到；调试器按 scriptParsed 列出的脚本逐个搜。
+    #[tokio::test]
+    async fn debugger_locate_finds_client_in_lazily_loaded_chunk() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = next_bridge_generation(&format!("capture-locate-{address}"));
+        assert!(publish_bridge_generation(&generation));
+        let chunk_source = "x\nclass C{async sendRequest(e){if(null==this.dispatchMessage)throw Error(\"AppServerRequestClient is missing a message dispatcher\")}}";
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut searched = Vec::new();
+            loop {
+                let Some(Ok(message)) = socket.next().await else { break };
+                let Ok(text) = message.to_text() else { break };
+                let command: Value = serde_json::from_str(text).unwrap();
+                let id = command["id"].clone();
+                let reply = match command["method"].as_str().unwrap() {
+                    "Debugger.enable" => {
+                        // 真实 Chrome 在 enable 回包之前重放已加载脚本；非资产脚本要被过滤掉。
+                        for (script_id, url) in [
+                            ("1", "app://-/index.html"),
+                            ("2", "app://-/assets/782259.7a3e865ee5.js"),
+                            ("3", "app://-/assets/async/739301.37a39f26d6.js"),
+                            ("4", "blob:app://-/abcd"),
+                        ] {
+                            socket.send(Message::Text(json!({
+                                "method": "Debugger.scriptParsed",
+                                "params": { "scriptId": script_id, "url": url }
+                            }).to_string().into())).await.unwrap();
+                        }
+                        json!({ "id": id, "result": { "debuggerId": "mock" } })
+                    }
+                    "Debugger.searchInContent" => {
+                        let script_id = command["params"]["scriptId"].as_str().unwrap().to_string();
+                        assert_eq!(command["params"]["query"], APP_SERVER_CLIENT_CAPTURE_MARKER);
+                        searched.push(script_id.clone());
+                        let matches = if script_id == "3" {
+                            json!([{ "lineNumber": 1, "lineContent": "" }])
+                        } else {
+                            json!([])
+                        };
+                        json!({ "id": id, "result": { "result": matches } })
+                    }
+                    "Debugger.getScriptSource" => {
+                        assert_eq!(command["params"]["scriptId"], "3");
+                        json!({ "id": id, "result": { "scriptSource": chunk_source } })
+                    }
+                    other => panic!("unexpected command {other}"),
+                };
+                socket.send(Message::Text(reply.to_string().into())).await.unwrap();
+                if command["method"] == "Debugger.getScriptSource" {
+                    break;
+                }
+            }
+            // 只搜资产脚本，倒序：按需 chunk 先于入口脚本。
+            assert_eq!(searched, vec!["3".to_string()]);
+        });
+        let socket = connect_cdp_websocket(&format!("ws://{address}/devtools/page/capture-locate"))
+            .await
+            .unwrap();
+        let mut session = CdpSession::new(socket);
+        let location = locate_app_server_client_via_debugger(&mut session, &generation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.0, "app://-/assets/async/739301\\.37a39f26d6\\.js");
+        assert_eq!((location.1, location.2), locate_app_server_client_send_request(chunk_source).unwrap());
+        server.await.unwrap();
+        release_bridge_generation(&generation);
     }
 
     #[tokio::test]
