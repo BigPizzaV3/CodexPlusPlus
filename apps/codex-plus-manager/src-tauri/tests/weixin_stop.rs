@@ -62,6 +62,8 @@ fn stops_connection_when_settings_cannot_be_saved() {
         .expect("保存失败后，微信连接仍未停止");
         assert!(stopped.message.contains("保存"));
         assert!(stopped.message.contains("下次启动"));
+        let serialized = serde_json::to_value(&stopped).unwrap();
+        assert_eq!(serialized["message"], stopped.message);
         assert!(store.load().unwrap().weixin_connect_enabled);
     });
 }

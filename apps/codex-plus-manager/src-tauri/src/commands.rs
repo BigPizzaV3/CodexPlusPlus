@@ -4403,10 +4403,10 @@ pub async fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::We
         }
     }
     if let Err(error) = SettingsStore::default().update(json!({"weixinConnectEnabled": false})) {
-        return failed(
-            &format!("已请求停止微信连接，但保存设置失败，下次启动时可能自动连接：{error}"),
-            current_weixin_status(),
-        );
+        let message = format!("已请求停止微信连接，但保存设置失败，下次启动时可能自动连接：{error}");
+        let mut status = current_weixin_status();
+        status.message = message.clone();
+        return failed(&message, status);
     }
     ok(
         if stopping {
