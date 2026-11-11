@@ -69,7 +69,7 @@ test("skill details request versions only for the selected impeccable instance",
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", ManagementDrawer: "ManagementDrawer", ImpeccableVersions: "ImpeccableVersions",
-    t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "",
+    t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
   };
   vm.createContext(context);
   vm.runInContext(detailCode, context);
@@ -78,7 +78,7 @@ test("skill details request versions only for the selected impeccable instance",
     backups: [], busy: false,
   }) as Element;
   const impeccable = render("impeccable");
-  const versions = impeccable.children.find((node: Element) => node?.type === "ImpeccableVersions");
+  const versions = (impeccable.children[0] as Element).children.find((node: Element) => node?.type === "ImpeccableVersions");
   assert.equal(versions?.props.instanceKey, "impeccable:shared");
-  assert.equal(render("other").children.some((node: Element) => node?.type === "ImpeccableVersions"), false);
+  assert.equal((render("other").children[0] as Element).children.some((node: Element) => node?.type === "ImpeccableVersions"), false);
 });
