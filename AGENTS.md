@@ -104,7 +104,8 @@
 
 - 先在 `CHANGELOG.md` 顶部写好 `## X.Y.Z - YYYY-MM-DD` 一节（这一节原样成为 Release 说明），
   再跑 `node scripts/release.mjs X.Y.Z`（可先加 `--dry-run` 预览）：改 6 处版本号 → 提交 `release: vX.Y.Z` → 打 tag → 原子推送。
-- 推 `v*` tag 触发 `release-assets.yml`：校验版本号 → 建草稿 Release → 构建 Windows / macOS → 上传 `SHA256SUMS.txt`、`latest.json` → 附件齐了自动发布，只有最新版本才标 Latest。
+- 推 `v*` tag 触发 `release-assets.yml`：校验版本号 → 建草稿 Release → 构建 Windows / macOS / Linux(.deb) → 上传 `SHA256SUMS.txt`、`latest.json` → Windows、macOS 齐了自动发布，只有最新版本才标 Latest。
+  Linux 不卡发布：它失败只少 .deb 这一个附件，事后补跑。
 - 不要再手动 `gh release create` / 在网页上点发布；网页发布不会触发构建。补跑某个平台用
-  `gh workflow run "Release assets" -f tag=vX.Y.Z -f platform=macos -f publish=true`。
+  `gh workflow run "Release assets" -f tag=vX.Y.Z -f platform=macos -f publish=true`（`platform` 可选 all / windows / macos / linux）。
 - 版本号文件清单在 `scripts/release-meta.mjs` 的 `VERSION_FILES`，新增带版本号的文件要登记进去。
