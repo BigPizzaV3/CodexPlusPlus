@@ -192,3 +192,33 @@ pub async fn claude_mom_fetch_models(base_url: String, api_key: String) -> Comma
         Err(error) => failed(&format!("{error:#}"), ModelsPayload::default()),
     }
 }
+
+/// 原生听写一键开关：Claude 的「原生听写」、听写总开关、本地 SenseVoice 一起改。
+/// ClaudeMom 只用本地 SenseVoice（模型和 Codex++ 共用 `~/.codex/speech-to-text`），没有远程转写的配置界面。
+/// 返回最新的 Claude 状态（`dictationReady` 等）。
+#[tauri::command]
+pub async fn claude_mom_set_voice(enabled: bool) -> CommandResult<serde_json::Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let store = codex_plus_core::settings::SettingsStore::default();
+        let mut settings = store.load()?;
+        settings.dictation.enabled = enabled;
+        if enabled {
+            settings.dictation.provider = codex_plus_core::settings::DictationProvider::SenseVoice;
+            settings.enhancements_enabled = true;
+        }
+        let mut config = settings.claude_desktop_local.clone();
+        config.voice_input = enabled;
+        store.save(&settings)?;
+        // 走 configure 校验并保存 Claude 设置，顺带读回状态。
+        codex_plus_core::claude_local_backend::configure(config)
+    })
+    .await
+    .unwrap_or_else(|error| Err(anyhow::anyhow!("{error}")));
+    match result {
+        Ok(status) => ok(
+            if enabled { "原生听写已打开，重新启动 Claude 后在输入框里能看到麦克风。" } else { "原生听写已关闭。" },
+            serde_json::to_value(status).unwrap_or_default(),
+        ),
+        Err(error) => failed(&format!("{error:#}"), serde_json::json!({})),
+    }
+}

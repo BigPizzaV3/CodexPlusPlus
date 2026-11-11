@@ -250,3 +250,6 @@ svg { width: 14px; height: 14px; flex: none; }
 
 .cm-crash { padding: 32px; }
 .cm-crash pre { white-space: pre-wrap; font: 12px/1.5 var(--cm-mono); color: var(--cm-danger); }
+.cm-voice-model { align-items: center; }
+.cm-voice-model .cm-field-hint { flex: 1; }
+.cm-warn-text { color: var(--cm-warn); margin: 0; }

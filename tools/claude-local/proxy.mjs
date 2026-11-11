@@ -1304,6 +1304,16 @@ function serveDocShell(req, res, url) {
     });
     return res.end(cached);
   }
+  // 没有录制外壳时用安装包里同版本的官方外壳，不去线上抓：受限地区 claude.ai 会 302 到
+  // app-unavailable-in-region，走代理也常被 Cloudflare 403，页面就只剩一行「302 Found」。
+  if (officialShell && host === "claude.ai") {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": Buffer.byteLength(officialShell),
+      "cache-control": "no-cache",
+    });
+    return res.end(officialShell);
+  }
   const base = UPSTREAM_MAP[host] || `https://${host}`;
   const target = new URL("/epitaxy", base);
   const client = target.protocol === "http:" ? http : https;
@@ -1514,8 +1524,10 @@ function handle(req, res, hostHeader) {
     return res.end(req.method === "HEAD" ? undefined : body);
   }
 
+  // 官方静态资源：受管数据路径下是唯一来源；录制模板路径下作兜底（外壳用的是官方外壳时，
+  // 它引用的资源只在安装包里，线上同样会被地区限制）。哈希文件名不会和录制资源串版本。
   const officialResourcePath = (() => {
-    if (!dataManaged || !["GET", "HEAD"].includes(req.method)) return null;
+    if (!officialAssets || !["GET", "HEAD"].includes(req.method)) return null;
     const mapI18nPath = (pathname) => {
       const match = pathname.match(/^\/i18n\/(?:(s|dynamic)\/)?([a-zA-Z-]+)\.json$/);
       if (!match) return pathname;
@@ -1549,7 +1561,8 @@ function handle(req, res, hostHeader) {
   if (officialResourcePath) {
     const resource = officialAssets.read(officialResourcePath);
     if (!resource) {
-      if (hostName !== "assets-proxy.anthropic.com") {
+      // 录制模板路径：安装包里没有就继续走缓存 / 线上，不能直接 404 掉录制资源。
+      if (dataManaged && hostName !== "assets-proxy.anthropic.com") {
         res.writeHead(404, { "cache-control": "no-store" });
         return res.end();
       }

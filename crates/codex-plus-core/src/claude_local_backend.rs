@@ -1875,6 +1875,12 @@ fn start_backend(
     let upstream = match direct_upstream() {
         Some(upstream) => {
             ensure!(upstream.ready(), "还没有选好上游：先添加 Base URL 和 Key，并选一个默认模型");
+            // 直连不需要网关，但本地听写的转写走常驻 helper（它写 dictation-helper.json 凭据），
+            // 开着原生听写时照样把它起起来。
+            if config.voice_input {
+                let helper_port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
+                crate::resident_helper::ensure_resident_helper(helper_port)?;
+            }
             LocalUpstream::direct(&upstream)
         }
         None => {

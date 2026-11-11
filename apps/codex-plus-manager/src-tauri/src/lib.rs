@@ -395,6 +395,7 @@ pub fn run() {
             claude_mom_commands::claude_mom_set_active,
             claude_mom_commands::claude_mom_import,
             claude_mom_commands::claude_mom_fetch_models,
+            claude_mom_commands::claude_mom_set_voice,
             commands::claude_local_configure,
             commands::claude_local_action,
             commands::claude_localization_status,

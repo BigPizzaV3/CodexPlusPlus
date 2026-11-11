@@ -101,10 +101,10 @@ async function request(instance, pathname, { host, body, type = "application/jso
   }
 }
 
-async function start(extra = {}) {
+async function start(extra = {}, runtimeDir = path.join(root, "runtime")) {
   const ready = path.join(root, "ready.json");
   const instanceId = `managed-test-${Date.now()}`;
-  const child = spawn(process.execPath, [path.join(root, "runtime", "proxy.mjs"), "--port", "0", "--mode", "mock", "--log", "0", "--ca", path.join(here, "ca")], {
+  const child = spawn(process.execPath, [path.join(runtimeDir, "proxy.mjs"), "--port", "0", "--mode", "mock", "--log", "0", "--ca", path.join(here, "ca")], {
     env: {
       ...process.env,
       CLAUDE_LOCAL_MANAGED: "1",
@@ -299,6 +299,30 @@ test("fresh managed profile serves the installed official shell and bounded ASAR
 
   const bootstrap = await request(service, "/api/bootstrap", { host: "claude.ai" });
   assert.equal(bootstrap.json.gated_imports_build_id, "fixture-build");
+});
+
+test("installed template without a recorded shell serves the bundled official shell instead of fetching claude.ai", async () => {
+  // 后端 install_assets 会写入内嵌模板（mock/.codex-plus-template），走录制模板路径；
+  // 新装的 state 里没有录制外壳时不能去线上抓（受限地区会 302 到 app-unavailable-in-region）。
+  const runtimeDir = path.join(root, "template-runtime");
+  fs.cpSync(path.join(root, "runtime"), runtimeDir, { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, "mock", ".codex-plus-template"), "");
+  const cacheDir = path.join(root, "template-cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const instance = await start({ CLAUDE_LOCAL_CACHE_DIR: cacheDir }, runtimeDir);
+  try {
+    for (const pathname of ["/new", "/settings/general"]) {
+      const shell = await request(instance, pathname, { host: "claude.ai" });
+      assert.equal(shell.status, 200, pathname);
+      assert.match(shell.bytes.toString("utf8"), /data-build-id="fixture-build"/, pathname);
+    }
+    // 官方外壳引用的资源只在安装包里：同样从安装包回，不走线上。
+    const asset = await request(instance, "/assets/v1/main.js", { host: "claude.ai" });
+    assert.equal(asset.status, 200);
+    assert.equal(asset.bytes.toString("utf8"), "export const localOfficialAsset = true;");
+  } finally {
+    await stop(instance);
+  }
 });
 
 test("clean managed runtime uses synthetic bootstrap and configured catalogs without private recordings", async () => {

@@ -112,6 +112,14 @@ export function ClaudeMomApp() {
       else say(result.message, "error");
     });
 
+  // 原生听写：Claude 开关、听写总开关、本地 SenseVoice 一起改（见 claude_mom_set_voice）。
+  const setVoice = (enabled: boolean) =>
+    run("voice", async () => {
+      const result = await invoke<CommandResult<ClaudeStatus>>("claude_mom_set_voice", { enabled });
+      if (isOk(result)) setStatus(result);
+      say(result.message, isOk(result) ? "ok" : "error");
+    });
+
   const bookCall = (label: string, command: string, args: Record<string, unknown>, keep?: string | null) =>
     run(label, async () => {
       const result = await invoke<CommandResult<UpstreamBook>>(command, args);
@@ -290,7 +298,7 @@ export function ClaudeMomApp() {
               </div>
             )
           ) : (
-            <ClaudeSettings busy={busy} onAction={(action) => void claudeAction(action)} onConfigure={(patch) => void configure(patch)} status={status} />
+            <ClaudeSettings busy={busy} onAction={(action) => void claudeAction(action)} onConfigure={(patch) => void configure(patch)} onVoice={(enabled) => void setVoice(enabled)} status={status} />
           )}
         </section>
 
@@ -459,11 +467,54 @@ function Toggle({ label, detail, checked, disabled, onChange }: { label: string;
   );
 }
 
-function ClaudeSettings({ status, busy, onConfigure, onAction }: {
+type ModelState = { modelReady: boolean; phase?: string; completedBytes?: number; totalBytes?: number; message?: string };
+
+/** 本地 SenseVoice 模型：状态、下载（约 230MB，和 Codex++ 共用 ~/.codex/speech-to-text）。 */
+function VoiceModel({ onReady }: { onReady: () => void }) {
+  const [state, setState] = useState<ModelState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = useCallback(async () => {
+    try { setState(await invoke<ModelState>("dictation_local_model_status")); } catch (cause) { setError(errorText(cause)); }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+  const downloading = state?.phase === "downloading";
+  useEffect(() => {
+    if (!downloading) return;
+    const timer = setInterval(() => void refresh(), 1000);
+    return () => clearInterval(timer);
+  }, [downloading, refresh]);
+  const download = async () => {
+    setError(null);
+    setState((current) => ({ ...(current ?? { modelReady: false }), phase: "downloading", completedBytes: 0 }));
+    try {
+      const result = await invoke<CommandResult<ModelState>>("download_dictation_local_model");
+      if (!isOk(result)) setError(result.message);
+      else onReady();
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+    await refresh();
+  };
+  if (!state) return null;
+  const percent = state.totalBytes ? Math.min(100, Math.round(((state.completedBytes ?? 0) / state.totalBytes) * 100)) : 0;
+  return (
+    <div className="cm-row-actions cm-voice-model">
+      <span className="cm-field-hint">
+        {state.modelReady ? "本地语音模型（SenseVoice）已就绪。" : downloading ? `正在下载本地语音模型… ${percent}%` : "需要先下载本地语音模型（SenseVoice，约 230MB）。"}
+        {error ? ` ${error}` : ""}
+      </span>
+      {!state.modelReady && !downloading ? <button className="cm-btn cm-btn-small" onClick={() => void download()} type="button"><Download />下载模型</button> : null}
+      {downloading ? <Loader2 className="cm-spin" /> : null}
+    </div>
+  );
+}
+
+function ClaudeSettings({ status, busy, onConfigure, onAction, onVoice }: {
   status: ClaudeStatus | null;
   busy: string | null;
   onConfigure: (patch: Partial<ClaudeConfig>) => void;
   onAction: (action: ClaudeAction) => void;
+  onVoice: (enabled: boolean) => void;
 }) {
   if (!status) return <div className="cm-placeholder"><Loader2 className="cm-spin" /></div>;
   const config = status.config;
@@ -486,10 +537,21 @@ function ClaudeSettings({ status, busy, onConfigure, onAction }: {
       <div className="cm-group">
         <h3>功能</h3>
         <Toggle checked={config.localization} disabled={disabled} label="界面汉化" onChange={(next) => onConfigure({ localization: next })} />
-        <Toggle checked={config.voiceInput} detail={status.dictationReady ? undefined : "本地听写模型还没准备好"} disabled={disabled} label="原生听写" onChange={(next) => onConfigure({ voiceInput: next })} />
         <Toggle checked={config.computerUse} disabled={disabled} label="电脑控制" onChange={(next) => onConfigure({ computerUse: next })} />
         <Toggle checked={config.backgroundMode} disabled={disabled} label="后台模式" onChange={(next) => onConfigure({ backgroundMode: next })} />
         <Toggle checked={config.hideUnroutedModels ?? true} detail="Claude 自带的 Opus / Sonnet 等条目会被换成默认模型" disabled={disabled} label="只显示上游的模型" onChange={(next) => onConfigure({ hideUnroutedModels: next })} />
+      </div>
+      <div className="cm-group">
+        <h3>语音</h3>
+        <Toggle
+          checked={config.voiceInput}
+          detail="Claude 输入框里的麦克风，用本机 SenseVoice 转写，不上传音频。改完重新启动 Claude 生效。"
+          disabled={disabled}
+          label="原生听写"
+          onChange={onVoice}
+        />
+        <VoiceModel onReady={() => onAction("prepare")} />
+        {config.voiceInput && !status.dictationReady ? <p className="cm-field-hint cm-warn-text">听写还没就绪：先下载模型，再重新启动 Claude。</p> : null}
       </div>
       <div className="cm-group">
         <h3>账号显示</h3>
