@@ -12,7 +12,7 @@
 
 ### 其他
 
-- **Release 附带 Linux 安装包**：发版流程开始构建 `CodexPlusPlus-<版本>-linux-amd64.deb`，应用内检查更新也能识别（#2820）。GitHub 的 Linux 构建机暂时连不上 Ubuntu 软件源，本版的 .deb 如果暂缺，会在恢复后补传。
+- **Release 附带 Linux 安装包**：发版流程开始构建 `CodexPlusPlus-<版本>-linux-amd64.deb`，应用内检查更新也能识别（#2820）。
 
 ## 2.6.4 - 2026-11-11
 
