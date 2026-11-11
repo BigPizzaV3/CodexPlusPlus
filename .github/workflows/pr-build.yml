@@ -304,14 +304,29 @@ jobs:
         with:
           key: linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # runner 默认的 azure.archive.ubuntu.com 偶尔整段连不上（2026-11-11 所有 Linux 作业在这里卡了一个多小时）：
+      # 单次尝试限时，失败后换官方源再装一次，整步到点失败，不再一直占着 runner。
       - name: Install Linux build dependencies
+        timeout-minutes: 20
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential curl git pkg-config libssl-dev libsqlite3-dev \
+          set -euo pipefail
+          pkgs="build-essential curl git pkg-config libssl-dev libsqlite3-dev \
             libdbus-1-dev libglib2.0-dev libgtk-3-dev \
             libayatana-appindicator3-dev libjavascriptcoregtk-4.1-dev \
-            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15"
+          try_install() {
+            timeout 480 bash -c "$apt update -qq && $apt install -y --no-install-recommends $pkgs"
+          }
+          if ! try_install; then
+            echo "::warning::默认 Ubuntu 镜像不可用，改用 archive.ubuntu.com 重试"
+            for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+              if [ -f "$f" ]; then
+                sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
+              fi
+            done
+            try_install
+          fi
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
         run: npm ci
