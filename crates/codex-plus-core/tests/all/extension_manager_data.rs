@@ -200,6 +200,8 @@ fn skills_view_excludes_paths_descriptions_and_uninstalled_entries() {
         update_available: false,
         agents: vec!["codex".into()],
         managed: true,
+        locations: Vec::new(),
+        conflict: None,
     };
     let mut remote = entry.clone();
     remote.installed = false;
@@ -218,6 +220,41 @@ fn skills_view_excludes_paths_descriptions_and_uninstalled_entries() {
         ],
     );
     assert!(!view.to_string().contains("SECRET"));
+}
+
+#[test]
+fn public_skills_follow_shared_native_enable_rules() {
+    let temp = tempfile::tempdir().unwrap();
+    let shared = temp.path().join("shared");
+    let manager = SkillsManager::new(
+        temp.path().join("library"), temp.path().join("backups"),
+        temp.path().join("state.json"), temp.path().join("codex"),
+    ).with_shared_skills_dir(&shared);
+    fs::create_dir_all(shared.join("example")).unwrap();
+    fs::write(shared.join("example/SKILL.md"), "---\nname: example\n---\n").unwrap();
+    assert_eq!(public::installed_skills(&manager.try_local_inventory().unwrap())["skills"][0]["enabled"], true);
+    manager.set_enabled_for("codex", "example", false).unwrap();
+    assert_eq!(public::installed_skills(&manager.try_local_inventory().unwrap())["skills"][0]["enabled"], false);
+    manager.set_enabled_for("codex", "example", true).unwrap();
+    assert_eq!(public::installed_skills(&manager.try_local_inventory().unwrap())["skills"][0]["enabled"], true);
+}
+
+#[test]
+fn public_skills_distinguish_unknown_from_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let shared = temp.path().join("shared");
+    let codex = temp.path().join("codex");
+    let manager = SkillsManager::new(
+        temp.path().join("library"), temp.path().join("backups"),
+        temp.path().join("state.json"), &codex,
+    ).with_shared_skills_dir(&shared);
+    fs::create_dir_all(shared.join("example")).unwrap();
+    fs::create_dir_all(&codex).unwrap();
+    fs::write(shared.join("example/SKILL.md"), "---\nname: &alias example\n---\n").unwrap();
+    fs::write(codex.join("config.toml"), "[[skills.config]]\nname = \"example\"\nenabled = false\n").unwrap();
+    let view = public::installed_skills(&manager.try_local_inventory().unwrap());
+    assert!(view["skills"][0]["enabled"].is_null());
+    assert!(view["skills"][0]["statusError"].as_str().unwrap().contains("状态未知"));
 }
 
 #[test]

@@ -18,21 +18,31 @@ import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
 import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
-import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
+import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
 import { TopbarActions } from "./TopbarActions";
 
 type Result = { status: string; message: string };
 type Notify = (title: string, message: string, status?: "ok" | "failed") => Promise<void>;
+type SkillLocation = { manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null };
 type Skill = { id: string; name: string; description: string; repoKey: string; repoPath?: string; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean;
   /** 已经启用到哪些 Agent（codex / claude / grok）。 */
   agents?: string[];
   /** Codex++ 的受控源里有它；只在某个 Agent 自己目录里的 Skill 为 false。 */
-  managed?: boolean };
+  managed?: boolean; locations?: SkillLocation[]; conflict?: string | null };
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
-type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string> };
+type SkillPayload = Result & { skills: Skill[]; inventoryOk: boolean; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string> };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
 const skillBatchRegistry = new SkillBatchRegistry();
+const skillPageCache: {
+  value: SkillPayload | null;
+  localStartedAt: number;
+  catalogStartedAt: number;
+  localPending: Promise<SkillPayload> | null;
+  catalogPending: Promise<SkillPayload> | null;
+  mounted: number;
+} = { value: null, localStartedAt: 0, catalogStartedAt: 0, localPending: null, catalogPending: null, mounted: 0 };
+skillBatchRegistry.subscribeSettled(() => { skillPageCache.localStartedAt = 0; });
 const ok = (r: Result) => r.status === "ok";
 function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={primary ? "cx-primary" : "cx-secondary"} onClick={onClick} disabled={disabled}>{children}</button>; }
 function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) { return <div className="mg-search"><Search size={14} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>; }
@@ -50,7 +60,7 @@ function parseRepoInput(value: string, current: Repo): Repo | null {
 }
 /** 后端 `LOCAL_IMPORT_REPO_KEY`：从本地目录导入的 Skill（#511）。 */
 const LOCAL_IMPORT_REPO_KEY = "local";
-function sourceLabel(skill: Skill) { if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch") return "cc-switch"; if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey ? skill.repoKey.split("@", 1)[0] : t("用户"); }
+function sourceLabel(skill: Skill) { if (skill.bundled) return t("内置"); if (skill.repoKey === "cc-switch" || !skill.repoKey) return t("本地"); if (skill.repoKey === LOCAL_IMPORT_REPO_KEY) return t("本地导入"); return skill.repoKey.split("@", 1)[0]; }
 function repoUrl(skill: Skill) {
   if (!skill.repoKey || skill.repoKey === "cc-switch" || skill.repoKey === LOCAL_IMPORT_REPO_KEY) return "";
   const parts = skill.repoKey.split("@")[0].split("/");
@@ -187,7 +197,16 @@ function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, updates, on
 }
 function SkillDetailDrawer({ skill, count, onClose, onOpenUrl, onOpenRepo }: { skill: Skill; count?: number; onClose: () => void; onOpenUrl: (url: string) => void; onOpenRepo: () => void }) {
   const url = repoUrl(skill);
-  return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}><dl className="mg-detail"><dt>{t("来源")}</dt><dd>{url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : sourceLabel(skill)}</dd><dt>{t("Skill ID")}</dt><dd>{skill.id}</dd><dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}</dd><dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>{url && <><dt>GitHub</dt><dd><button className="mg-link-button" type="button" onClick={() => onOpenUrl(url)}><ExternalLink size={13}/>{url}</button></dd></>}</dl></ManagementDrawer>;
+  const labels: Record<string, string> = { shared: t("共享"), codex: "Codex", claude: "Claude Code", grok: "Grok", system: "Codex" };
+  return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}>
+    {skill.conflict && <p className="mg-notice mg-warning" role="alert">{skill.conflict}</p>}
+    <dl className="mg-detail"><dt>{t("来源")}</dt><dd>{url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : sourceLabel(skill)}</dd><dt>{t("Skill ID")}</dt><dd>{skill.id}</dd><dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}</dd><dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>{url && <><dt>GitHub</dt><dd><button className="mg-link-button" type="button" onClick={() => onOpenUrl(url)}><ExternalLink size={13}/>{url}</button></dd></>}
+      {skill.locations?.flatMap((location) => [
+        <dt key={`${location.manifestPath}:label`}>{labels[location.rootKind] || location.rootKind}</dt>,
+        <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}{location.statusError && <><br/><span role="alert">{location.statusError}</span></>}</dd>,
+      ])}
+    </dl>
+  </ManagementDrawer>;
 }
 function SortableSkillGroup({ group, disabled, children }: { group: SkillGroup<Skill>; disabled: boolean; children: (handle: ReactNode) => ReactNode }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: group.key, disabled });
@@ -221,8 +240,9 @@ function GroupAgentSelect({ group, agent, busy, operations, count, onChange }: {
   </button>;
 }
 export function SkillsPage({ notify }: { notify: Notify }) {
-  const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>({ version: 0, value: null });
+  const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>(() => ({ version: 0, value: skillPageCache.value }));
   const data = dataState.value;
+  useEffect(() => { skillPageCache.value = data; }, [data]);
   const [tab, setTab] = useState<"discover" | "installed">("installed");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -231,11 +251,15 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const updateFailures = useSyncExternalStore(skillBatchRegistry.subscribeFailures, skillBatchRegistry.getFailures, skillBatchRegistry.getFailures);
   const batchOwner = useRef(Symbol("skills-page"));
   const mounted = useRef(false);
+  const loadingRequests = useRef(0);
+  const catalogRequests = useRef(0);
   const dataRequest = useRef(0);
+  const localReload = useRef<{ pending: Promise<void> | null; dirty: boolean }>({ pending: null, dirty: false });
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshingCatalog, setRefreshingCatalog] = useState(() => !!skillPageCache.catalogPending);
   // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
   const focus = useAgentFocus();
   const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
@@ -255,44 +279,120 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const reloadLocal = async () => {
-    const request = ++dataRequest.current;
-    try {
-      const result = await invoke<SkillPayload>("list_installed_skills");
-      if (!mounted.current || request !== dataRequest.current) return;
-      startTransition(() => setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version
-        ? { version: request, value: result } : current));
-    } catch (error) {
-      if (mounted.current) await notify("Skills", String(error), "failed");
+  const requestPayload = (command: string) => {
+    const local = command === "list_installed_skills";
+    const pendingKey = local ? "localPending" : "catalogPending";
+    const startedKey = local ? "localStartedAt" : "catalogStartedAt";
+    let pending = skillPageCache[pendingKey];
+    if (!pending) {
+      const startedAt = Date.now();
+      skillPageCache[startedKey] = startedAt;
+      pending = invoke<SkillPayload>(command);
+      skillPageCache[pendingKey] = pending;
+      const completed = () => {
+        if (skillPageCache[pendingKey] !== pending) return;
+        skillPageCache[pendingKey] = null;
+        if (skillPageCache[startedKey] === startedAt) {
+          skillPageCache[startedKey] = skillPageCache.mounted ? Date.now() : 0;
+        }
+      };
+      void pending.then(completed, completed);
     }
+    return pending;
   };
-  const applyCurrentPayload = (request: number, payload: SkillPayload) => {
+  const reloadLocal = () => {
+    const state = localReload.current;
+    if (state.pending) { state.dirty = true; return state.pending; }
+    state.pending = (async () => {
+      try {
+        do {
+          state.dirty = false;
+          const pending = skillPageCache.localPending;
+          if (pending) {
+            try { await pending; }
+            catch (error) { if (mounted.current) await notify("Skills", String(error), "failed"); }
+            if (!mounted.current) return;
+          }
+          state.dirty = false;
+          const request = ++dataRequest.current;
+          try {
+            const result = await requestPayload("list_installed_skills");
+            if (!mounted.current) return;
+            if (request === dataRequest.current) startTransition(() => applyCurrentPayload(request, result));
+            if (!ok(result)) await notify("Skills", result.message, "failed");
+          } catch (error) {
+            if (mounted.current) await notify("Skills", String(error), "failed");
+          }
+        } while (state.dirty && mounted.current);
+      } finally {
+        state.pending = null;
+      }
+    })();
+    return state.pending;
+  };
+  const applyCurrentPayload = (request: number, payload: SkillPayload, reloadIfStale = true) => {
     if (!mounted.current) return;
-    if (request !== dataRequest.current) { void reloadLocal(); return; }
-    setDataState((current) => mounted.current && request === dataRequest.current && request >= current.version
-      ? { version: request, value: payload } : current);
+    if (request !== dataRequest.current) { if (reloadIfStale) void reloadLocal(); return; }
+    setDataState((current) => {
+      if (!mounted.current || request !== dataRequest.current || request < current.version) return current;
+      const previous = current.value;
+      const value = previous && !payload.inventoryOk
+        ? { ...payload, skills: previous.skills, repos: previous.repos,
+            repositorySkills: previous.repositorySkills, repoCounts: previous.repoCounts }
+        : payload;
+      return { version: request, value };
+    });
   };
-  const load = async (command = "refresh_skill_catalog") => {
+  const load = async (command = "refresh_skill_catalog", automatic = false) => {
+    const local = command === "list_installed_skills";
+    const pendingKey = local ? "localPending" : "catalogPending";
+    const startedKey = local ? "localStartedAt" : "catalogStartedAt";
+    if (automatic && local && skillPageCache.value && skillBatchRegistry.getSnapshot().length) return;
+    if (automatic && !skillPageCache[pendingKey] && skillPageCache.value
+      && Date.now() - skillPageCache[startedKey] < (local ? 30_000 : 300_000)) return;
+    loadingRequests.current++;
     setLoading(true);
+    if (!local) {
+      catalogRequests.current++;
+      setRefreshingCatalog(true);
+    }
     const request = ++dataRequest.current;
     try {
-      const r = await invoke<SkillPayload>(command);
-      startTransition(() => applyCurrentPayload(request, r));
-      if (!ok(r)) await notify("Skills", r.message, "failed");
+      const r = await requestPayload(command);
+      if (local && !skillPageCache.localStartedAt) {
+        if (mounted.current) void reloadLocal();
+      } else {
+        startTransition(() => applyCurrentPayload(request, r, !local));
+      }
+      if (mounted.current && !ok(r)) await notify("Skills", r.message, "failed");
     } catch (e) {
-      await notify("Skills", String(e), "failed");
+      if (mounted.current) await notify("Skills", String(e), "failed");
     } finally {
-      setLoading(false);
+      loadingRequests.current--;
+      if (mounted.current && !loadingRequests.current) setLoading(false);
+      if (!local) {
+        catalogRequests.current--;
+        if (mounted.current && !catalogRequests.current) setRefreshingCatalog(false);
+      }
     }
   };
   useEffect(() => {
     let active = true;
     mounted.current = true;
+    skillPageCache.mounted++;
+    const catalogPending = skillPageCache.catalogPending;
+    if (catalogPending) void load("refresh_skill_catalog", true);
+    else setRefreshingCatalog(false);
     void (async () => {
-      await load("list_installed_skills");
-      if (active) await load();
+      await load("list_installed_skills", true);
+      const pending = skillPageCache.localPending;
+      if (active && pending) {
+        try { await pending; }
+        catch (error) { if (mounted.current) await notify("Skills", String(error), "failed"); }
+      }
+      if (active && !catalogPending) await load("refresh_skill_catalog", true);
     })();
-    return () => { active = false; mounted.current = false; dataRequest.current++; };
+    return () => { active = false; mounted.current = false; skillPageCache.mounted--; dataRequest.current++; };
   }, []);
   useEffect(() => skillBatchRegistry.subscribeSettled((owner) => {
     if (mounted.current && owner !== batchOwner.current) void reloadLocal();
@@ -365,6 +465,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     skillBatchRegistry.add(operation);
     let completed = 0;
     let failed = 0;
+    let acceptedInventory = false;
     const errors: string[] = [];
     const recordFailure = (skill: Skill, reason: string) => {
       failed++;
@@ -373,17 +474,28 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       errors.push(detail.length > 240 ? `${detail.slice(0, 239).replace(/[\uD800-\uDBFF]$/, "")}…` : detail);
     };
     try {
-      for (const skill of targets) {
+      for (const [index, skill] of targets.entries()) {
+        const last = index === targets.length - 1;
         try {
           const { request, result } = await skillBatchRegistry.run(async () => {
             const request = ++dataRequest.current;
-            const result = await invoke<SkillPayload>("set_skill_enabled_for", { agent, id: skill.id, enabled });
+            const result = await invoke<Result & Partial<SkillPayload>>("set_skill_enabled_for", {
+              agent, id: skill.id, enabled, ...(!last && { includeInventory: false }),
+            });
             return { request, result };
           });
-          if (mounted.current && request === dataRequest.current) {
+          if (last && mounted.current && request === dataRequest.current && result.skills && result.inventoryOk) {
+            applyCurrentPayload(request, result as SkillPayload);
+            acceptedInventory = true;
+          } else if (mounted.current && request === dataRequest.current && ok(result)) {
             setDataState((current) => {
-              if (!mounted.current || request < current.version || !current.value || !result.skills) return current;
-              return { version: request, value: { ...current.value, skills: mergeSkillAgentResult(current.value.skills, result.skills, skill.id, agent) } };
+              if (!mounted.current || request < current.version || !current.value) return current;
+              const skills = result.skills || current.value.skills.filter((item) => item.id === skill.id).map((item) => {
+                const agents = skillAgents(item).filter((value) => value !== agent);
+                if (enabled) agents.push(agent);
+                return { ...item, agents, enabled: agent === "codex" ? enabled : item.enabled };
+              });
+              return { version: request, value: { ...current.value, skills: mergeSkillAgentResult(current.value.skills, skills, skill.id, agent) } };
             });
           } else if (mounted.current) void reloadLocal();
           if (ok(result)) completed++;
@@ -397,7 +509,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       }
     } finally {
       skillBatchRegistry.remove(operation);
-      if (mounted.current) void reloadLocal();
+      skillBatchRegistry.notifySettled(batchOwner.current);
+      if (mounted.current && !acceptedInventory) void reloadLocal();
+      if (mounted.current && acceptedInventory) skillPageCache.localStartedAt = Date.now();
     }
     const message = tf("已批量{0} {1} 个 Skill", [enabled ? t("启用") : t("停用"), completed]);
     await notify("Skills", failed ? `${message}；${tf("{0} 个 Skill 失败", [failed])}：${errors.join("；")}` : message, failed ? "failed" : "ok");
@@ -514,7 +628,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const renderSkillRow = (s: Skill) => {
     const update = s.bundled ? undefined : updates.find((item) => item.id === s.id);
     // 只卸载 Codex++ 管理的或 Codex 目录里的；Claude / Grok 自己目录里的 Skill 不动。
-    const canUninstall = s.installed && !s.bundled && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
+    const canUninstall = s.installed && !s.bundled && !s.locations?.some((location) => location.rootKind === "shared") && !s.conflict && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
+    const codexError = skillCodexStatusError(s);
     const assignment = skillGroupAssignment(s, customGroupNames, customGroupAssignments, assignmentsByIdentity);
     const on = s.installed && agentColumns.some((agent) => skillAgents(s).includes(agent));
     return <CxRow className="cx-skill-row" key={skillIdentityKey(s)}
@@ -522,17 +637,20 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       title={s.name || s.id}
       badges={<>
         <small className="cx-skill-source" title={s.repoKey || sourceLabel(s)}>{sourceLabel(s)}</small>
+        {s.conflict ? <CxBadge tone="warn">{t("同名冲突")}</CxBadge> : null}
+        {codexError ? <CxBadge tone="warn">{t("Codex 状态未知")}</CxBadge> : null}
         {s.updateAvailable ? <CxBadge tone="warn">{t("可更新")}</CxBadge> : null}
       </>}
       detail={<span title={s.description}>{s.description || t("暂无描述")}</span>}
       onClick={() => setDetail(s)}>
-      {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable ? <Button onClick={() => { queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
+      {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable && !s.conflict && !s.locations?.some((location) => location.rootKind === "shared") ? <Button onClick={() => { queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
       <div className="cx-agent-toggles" role="group" aria-label={t("启用到 Agent")}>
         {agentColumns.map((agent) => <AgentToggle agent={agent} key={agent} name={s.name || s.id}
           enabled={s.installed && skillAgents(s).includes(agent)}
-          disabled={busy || !s.installed || s.bundled || skillBatchHasPending(batchOperations, [s], agent)}
+          disabled={busy || !s.installed || s.bundled || (agent === "codex" && !!(s.conflict || codexError)) || skillBatchHasPending(batchOperations, [s], agent)}
           title={data?.agentSkillsDirs?.[agent]}
-          hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
+          hint={!s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : agent === "codex" ? codexError || s.conflict || undefined : undefined}
+          statusUnknown={agent === "codex" && !!codexError}
           onToggle={() => void run("set_skill_enabled_for", { agent, id: s.id, enabled: !skillAgents(s).includes(agent) })} />)}
       </div>
       <Menu>
@@ -552,7 +670,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const sortLabel = `${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`;
   return <div className="mg-page cx-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
-      <Button onClick={() => void load()} disabled={busy || loading}><RefreshCw size={14}/>{t("刷新目录")}</Button>
+      <Button onClick={() => void load()} disabled={busy || loading || refreshingCatalog}><RefreshCw size={14}/>{t(refreshingCatalog ? "刷新目录中" : "刷新目录")}</Button>
       <Menu>
         <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
         <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>
@@ -591,7 +709,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
           <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
         const collapsed = !expandedGroups.has(group.key) && !query.trim();
         const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
-        const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
+        const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && !skill.conflict && !skill.locations?.some((location) => location.rootKind === "shared") && skill.updateAvailable);
         const pendingUpdates = allGroupItems.filter((skill) => skill.installed && !skill.bundled && updates.some((item) => item.command === "update_skill" && item.id === skill.id && item.repoKey === skill.repoKey)).length;
         const hasUpdates = pendingUpdates > 0 || allGroupItems.some((skill) => skill.installed && !skill.bundled && skill.updateAvailable);
         const updateLabel = `${group.label} · ${tf("更新组内可更新 Skill（{0}）", [updateTargets.length])}${pendingUpdates ? ` · ${tf("进行中或排队 {0} 项", [pendingUpdates])}` : ""}`;

@@ -80,7 +80,7 @@ fn failed_restore_preserves_the_original_backup() {
 }
 
 #[test]
-fn disabling_rejects_staging_inside_the_original_skill() {
+fn disabling_does_not_stage_inside_the_original_skill() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let local = home.join("skills/alpha");
@@ -88,10 +88,11 @@ fn disabling_rejects_staging_inside_the_original_skill() {
     std::fs::write(local.join("SKILL.md"), "original").unwrap();
     let source = local.join("managed");
     let manager = SkillsManager::new(&source, temp.path().join("backups"), temp.path().join("skills.json"), &home);
-    assert!(manager.set_enabled("alpha", false).is_err());
+    manager.set_enabled("alpha", false).unwrap();
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "original");
     assert!(manager.list_backups().is_empty());
-    assert_eq!(std::fs::read_dir(source).unwrap().count(), 0);
+    assert!(!source.exists());
+    assert!(!manager.local_inventory().iter().find(|skill| skill.id == "alpha").unwrap().enabled);
 }
 
 #[test]
@@ -109,13 +110,10 @@ fn disabling_a_copied_installation_must_preserve_user_edits() {
     std::fs::write(local.join("SKILL.md"), "user edits").unwrap();
     std::fs::write(&state, r#"{"repos":[],"installed":{"alpha":{"id":"alpha","repoKey":"acme/kit@main","repoPath":"alpha","contentHash":"old"}}}"#).unwrap();
     manager.set_enabled("alpha", false).unwrap();
-    let mut preserved = std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap() == "user edits";
-    for backup in manager.list_backups() {
-        preserved |= std::fs::read_to_string(backups.join(backup.id).join("SKILL.md")).unwrap() == "user edits";
-    }
-    assert!(preserved, "disable succeeded but removed the only copy of user edits; source is unchanged and backups are empty");
-    assert!(!local.exists());
-    assert_eq!(std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap(), "user edits");
+    assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user edits");
+    assert_eq!(std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap(), "original source");
+    assert!(manager.list_backups().is_empty());
+    assert!(!manager.local_inventory().iter().find(|skill| skill.id == "alpha").unwrap().enabled);
     let installed = &manager.load_state().installed["alpha"];
     assert_eq!(installed.repo_key, "acme/kit@main");
     assert_eq!(installed.repo_path, "alpha");
@@ -162,20 +160,23 @@ fn failed_local_disable_must_not_hide_the_skill() {
     let backups = temp.path().join("backups");
     let home = temp.path().join("home");
     let state = temp.path().join("skills.json");
+    let config = home.join("config.toml");
     let manager = SkillsManager::new(&source, &backups, &state, &home);
     let local = home.join("skills/alpha");
     std::fs::create_dir_all(&local).unwrap();
     std::fs::write(local.join("SKILL.md"), "user original").unwrap();
     std::fs::write(&state, r#"{"repos":[],"installed":{}}"#).unwrap();
     assert!(manager.local_inventory().iter().any(|skill| skill.id == "alpha"));
-    let mut permissions = std::fs::metadata(&state).unwrap().permissions();
+    std::fs::write(&config, "model = 'example'\n").unwrap();
+    let mut permissions = std::fs::metadata(&config).unwrap().permissions();
     permissions.set_readonly(true);
-    std::fs::set_permissions(&state, permissions).unwrap();
+    std::fs::set_permissions(&config, permissions).unwrap();
     let result = manager.set_enabled("alpha", false);
-    let mut permissions = std::fs::metadata(&state).unwrap().permissions();
+    let mut permissions = std::fs::metadata(&config).unwrap().permissions();
     permissions.set_readonly(false);
-    std::fs::set_permissions(&state, permissions).unwrap();
-    assert!(result.is_err(), "readonly state must reject persistence");
+    std::fs::set_permissions(&config, permissions).unwrap();
+    assert!(result.is_err(), "readonly config must reject persistence");
+    assert_eq!(std::fs::read_to_string(config).unwrap(), "model = 'example'\n");
     assert!(manager.local_inventory().iter().any(|skill| skill.id == "alpha"), "failed disable moved the only local directory to source without registering it; inventory and backups no longer expose the skill");
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user original");
     assert!(!source.join("alpha").exists());
@@ -190,6 +191,7 @@ fn failed_copy_disable_restores_both_directories_and_metadata() {
     let backups = temp.path().join("backups");
     let home = temp.path().join("home");
     let state = temp.path().join("skills.json");
+    let config = home.join("config.toml");
     let manager = SkillsManager::new(&source, &backups, &state, &home);
     let local = home.join("skills/alpha");
     std::fs::create_dir_all(&local).unwrap();
@@ -198,14 +200,16 @@ fn failed_copy_disable_restores_both_directories_and_metadata() {
     std::fs::write(source.join("alpha/SKILL.md"), "old source").unwrap();
     std::fs::write(&state, r#"{"repos":[],"installed":{"alpha":{"id":"alpha","repoKey":"acme/kit@main","repoPath":"alpha"}}}"#).unwrap();
     let before = manager.load_state();
-    let mut permissions = std::fs::metadata(&state).unwrap().permissions();
+    std::fs::write(&config, "model = 'example'\n").unwrap();
+    let mut permissions = std::fs::metadata(&config).unwrap().permissions();
     permissions.set_readonly(true);
-    std::fs::set_permissions(&state, permissions).unwrap();
+    std::fs::set_permissions(&config, permissions).unwrap();
     let result = manager.set_enabled("alpha", false);
-    let mut permissions = std::fs::metadata(&state).unwrap().permissions();
+    let mut permissions = std::fs::metadata(&config).unwrap().permissions();
     permissions.set_readonly(false);
-    std::fs::set_permissions(&state, permissions).unwrap();
+    std::fs::set_permissions(&config, permissions).unwrap();
     assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(config).unwrap(), "model = 'example'\n");
     assert_eq!(manager.load_state(), before);
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user edits");
     assert_eq!(std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap(), "old source");

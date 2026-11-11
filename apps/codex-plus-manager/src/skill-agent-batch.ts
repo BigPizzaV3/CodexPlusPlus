@@ -1,4 +1,5 @@
-export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[] };
+export type SkillAgentState = { installed: boolean; bundled: boolean; enabled: boolean; agents?: string[]; conflict?: string | null;
+  locations?: Array<{ statusError?: string | null }> };
 export type SkillBatchOperation = { groupKey: string; agent: string; enabled: boolean; skillIds: string[] };
 export type PendingSkillBatchOperation = SkillBatchOperation & { settledSkillIds: string[]; owner: symbol };
 
@@ -111,12 +112,19 @@ export function skillAgents(skill: SkillAgentState): string[] {
   return skill.agents ?? (skill.enabled ? ["codex"] : []);
 }
 
+export function skillCodexStatusError(skill: SkillAgentState): string | undefined {
+  return skill.locations?.find((location) => location.statusError)?.statusError || undefined;
+}
+
 export function skillBatchTargets<T extends SkillAgentState>(skills: T[], agent: string, enabled: boolean): T[] {
-  return skills.filter((skill) => skill.installed && !skill.bundled && skillAgents(skill).includes(agent) !== enabled);
+  return skills.filter((skill) => skill.installed && !skill.bundled
+    && (agent !== "codex" || (!skill.conflict && !skillCodexStatusError(skill)))
+    && skillAgents(skill).includes(agent) !== enabled);
 }
 
 export function skillBatchState(skills: SkillAgentState[], agent: string) {
-  const eligible = skills.filter((skill) => skill.installed && !skill.bundled);
+  const eligible = skills.filter((skill) => skill.installed && !skill.bundled
+    && (agent !== "codex" || (!skill.conflict && !skillCodexStatusError(skill))));
   const selected = eligible.filter((skill) => skillAgents(skill).includes(agent)).length;
   return { total: eligible.length, checked: eligible.length > 0 && selected === eligible.length, mixed: selected > 0 && selected < eligible.length };
 }
