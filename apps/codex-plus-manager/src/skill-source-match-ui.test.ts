@@ -105,8 +105,13 @@ test("batch discovery exposes local evidence and submits only preview-bound choi
   assert.equal(closed, true);
 });
 
-test("single-skill matching binds the ID and optional installation path to preview and confirmation", async () => {
-  for (const localPath of ["C:/agents/impeccable", undefined]) {
+test("single-skill matching binds each installation to the selected repository path", async () => {
+  for (const { localPath, currentRepoKey, currentRepoPath, single } of [
+    { localPath: "C:/agents/impeccable", currentRepoKey: undefined, currentRepoPath: undefined, single: false },
+    { localPath: undefined, currentRepoKey: undefined, currentRepoPath: undefined, single: false },
+    { localPath: "C:/claude/impeccable", currentRepoKey: "owner/repo@main", currentRepoPath: ".codex/skills/impeccable", single: false },
+    { localPath: "C:/grok/impeccable", currentRepoKey: undefined, currentRepoPath: undefined, single: true },
+  ]) {
   const slots: any[] = [];
   const effects: Array<() => void> = [];
   const calls: Array<{ command: string; args: any }> = [];
@@ -137,10 +142,11 @@ test("single-skill matching binds the ID and optional installation path to previ
       return { status: "ok", message: "", previewId: "instance-preview", warnings: [],
         manualCandidates: [{ localId: "impeccable", localName: "impeccable", repoKey: "owner/aaa@main",
           repoPath: "skills/unrelated", remoteName: "unrelated", exact: false, localPaths: ["C:/agents/other"] }],
-        matches: [{ localId: "impeccable", localName: "impeccable", repoKey: "owner/repo@main",
-          repoPath: "skills/impeccable", remoteName: "impeccable", exact: true, localPaths: ["C:/agents/other"] },
-          { localId: "impeccable", localName: "impeccable", repoKey: "owner/zzz@main",
-            repoPath: "skills/impeccable", remoteName: "impeccable", exact: false, localPaths: ["C:/agents/other"] }] };
+        matches: [
+          ...single ? [] : [{ localId: "impeccable", localName: "impeccable", repoKey: "owner/repo@main",
+            repoPath: ".agents/skills/impeccable", remoteName: "impeccable", exact: true, localPaths: ["C:/agents/other"] }],
+          { localId: "impeccable", localName: "impeccable", repoKey: "owner/repo@main",
+            repoPath: ".codex/skills/impeccable", remoteName: "impeccable", exact: false, localPaths: ["C:/agents/other"] }] };
     },
     AppSelect: "AppSelect", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
     discardSkillSourceScan, getSkillSourceScan, keyOfRepo,
@@ -155,7 +161,7 @@ test("single-skill matching binds the ID and optional installation path to previ
     if (node.props?.footer) collect(node.props.footer);
   };
   const props = {
-    id: "impeccable", localPath,
+    id: "impeccable", localPath, agentLabel: "Agent", currentRepoKey, currentRepoPath,
     repos: [{ owner: "owner", name: "repo", branch: "main", subdir: "", enabled: true }],
     localSkillIds: [], onClose: () => {}, onAddRepo: async () => null,
     onApply: async (items: any[]) => { selections.push(...items); return { status: "ok", message: "" }; },
@@ -177,22 +183,35 @@ test("single-skill matching binds the ID and optional installation path to previ
   const select = elements.find((node) => node.type === "AppSelect");
   assert.ok(select);
   assert.deepEqual(Array.from(select.props.options, (option: any) => option.label), [
-    "owner/repo@main / skills/impeccable",
-    "owner/zzz@main / skills/impeccable",
+    ...single ? [] : ["owner/repo@main / .agents/skills/impeccable"],
+    "owner/repo@main / .codex/skills/impeccable",
     "owner/aaa@main / skills/unrelated",
   ]);
+  const wanted = JSON.stringify(["owner/repo@main", ".codex/skills/impeccable"]);
+  assert.equal(select.props.value, single || currentRepoKey ? wanted : "");
   if (localPath) {
+    assert.ok(elements.some((node) => node.type === "dd" && node.children.includes(`Agent · ${localPath}`)));
     assert.ok(elements.some((node) => node.type === "small" && node.children.includes(localPath)));
     assert.ok(!elements.some((node) => node.type === "small" && node.children.includes("C:/agents/other")));
   } else {
     assert.ok(elements.some((node) => node.type === "small" && node.children.includes("C:/agents/other")));
   }
-  const confirm = elements.find((node) => node.type === "button" && node.children.includes("关联所选 1 项"));
+  let confirm = elements.find((node) => node.type === "button" && node.children.includes("关联所选 1 项"));
   assert.ok(confirm);
+  if (!single && !currentRepoKey) {
+    assert.equal(confirm.props.disabled, true);
+    select.props.onChange(wanted);
+    render();
+    confirm = elements.find((node) => node.type === "button" && node.children.includes("关联所选 1 项"));
+    assert.ok(confirm);
+  }
+  assert.equal(confirm.props.disabled, false);
   await confirm.props.onClick(); await tick();
   assert.equal(selections[0].localPath, props.localPath);
   assert.equal(selections[0].previewId, "instance-preview");
   assert.equal(selections[0].localId, props.id);
+  assert.equal(selections[0].repoKey, "owner/repo@main");
+  assert.equal(selections[0].repoPath, ".codex/skills/impeccable");
   }
 });
 

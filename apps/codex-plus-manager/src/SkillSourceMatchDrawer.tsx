@@ -23,10 +23,13 @@ const evidenceLabel = (kind: string) => {
   return labels[kind] || kind;
 };
 
-export function SkillSourceMatchDrawer({ repos, id, localPath, localSkillIds, onClose, onAddRepo, onApply }: {
+export function SkillSourceMatchDrawer({ repos, id, localPath, agentLabel, currentRepoKey, currentRepoPath, localSkillIds, onClose, onAddRepo, onApply }: {
   repos: SkillRepository[];
   id?: string;
   localPath?: string;
+  agentLabel?: string;
+  currentRepoKey?: string;
+  currentRepoPath?: string;
   localSkillIds: string[];
   onClose: () => void;
   onAddRepo: (repo: SkillRepository) => Promise<SkillRepository | null>;
@@ -120,7 +123,7 @@ export function SkillSourceMatchDrawer({ repos, id, localPath, localSkillIds, on
       {scanning ? <button type="button" className="cx-primary" disabled={busy || status === "idle"} onClick={() => scan.pause()}><Pause size={14}/>{t("暂停扫描")}</button>
         : <button type="button" className="cx-primary" disabled={busy || !complete} onClick={() => void apply()}>{action === "apply" ? t("正在关联来源…") : tf("关联所选 {0} 项", [choices.length])}</button>}
     </>}>
-    {localPath && <dl className="mg-detail"><dt>{t("所选安装位置")}</dt><dd>{localPath}</dd></dl>}
+    {localPath && <dl className="mg-detail"><dt>{t("所选安装位置")}</dt><dd>{agentLabel ? `${agentLabel} · ${localPath}` : localPath}</dd></dl>}
     <div className="mg-repo-quick mg-source-add">
       <input aria-label={t("GitHub 仓库地址")} placeholder="https://github.com/owner/repo" value={input} disabled={busy}
         onChange={(event) => { setInput(event.currentTarget.value); setFeedback(""); }}/>
@@ -156,8 +159,9 @@ export function SkillSourceMatchDrawer({ repos, id, localPath, localSkillIds, on
               const next = { ...old };
               if (!checked) delete next[localId];
               else {
-                const exact = options.filter((item) => item.exact && !item.conflict);
-                next[localId] = exact.length === 1 ? keyOfCandidate(exact[0]) : "";
+                const current = options.find((item) => !item.conflict && item.repoKey === currentRepoKey && item.repoPath === currentRepoPath);
+                const matches = options.filter((item) => !item.manual && !item.conflict);
+                next[localId] = current ? keyOfCandidate(current) : matches.length === 1 ? keyOfCandidate(matches[0]) : "";
               }
               return next;
             });
@@ -172,6 +176,7 @@ export function SkillSourceMatchDrawer({ repos, id, localPath, localSkillIds, on
         </div>
       </div>;
     })}</div>}
-    {choices.length > 0 && !complete && <p className="mg-warning" role="alert">{t("请为每项选择不同的仓库路径。")}</p>}
+    {choices.length > 0 && !complete && <p className="mg-warning" role="alert">{t(choices.some((item) => !item || item.conflict)
+      ? "请选择有效的仓库路径。" : "同一个仓库路径不能关联不同 Skill。")}</p>}
   </ManagementDrawer>;
 }

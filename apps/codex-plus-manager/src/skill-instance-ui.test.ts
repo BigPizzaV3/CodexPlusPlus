@@ -148,9 +148,66 @@ test("multiple association targets stay tied to their locations", () => {
   }));
   const repoPath = elements.findIndex((item) => item.type === "dt" && item.children.includes("仓库路径"));
   assert.equal(collect(elements[repoPath + 1]).some((item) => item.type === "button"), false);
-  elements.find((item) => item.type === "Button" && item.children.includes("关联此安装位置"))!.props.onClick();
-  elements.find((item) => item.type === "Button" && item.children.includes("关联受控源"))!.props.onClick();
+  elements.filter((item) => item.type === "Button" && item.children.includes("关联此安装位置"))
+    .forEach((item) => item.props.onClick());
   assert.deepEqual(matched, ["C:/agents/alpha", "C:/managed/alpha"]);
+});
+
+test("Agent locations that share a source expose one association target", () => {
+  const matched: string[] = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      locations: ["shared", "claude"].map((rootKind) => ({
+        manifestPath: `C:/${rootKind}/alpha/SKILL.md`, originalPath: "C:/shared/alpha",
+        selectable: true, rootKind, managed: false, enabled: true,
+      })) },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: (path: string) => matched.push(path), onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+  }));
+  assert.equal(elements.filter((item) => item.type === "small" && item.children.includes("此来源由多个安装位置共用")).length, 2);
+  elements.find((item) => item.type === "button" && item.props["aria-label"] === "关联 GitHub 仓库")!.props.onClick();
+  assert.deepEqual(matched, ["C:/shared/alpha"]);
+});
+
+test("a managed Agent copy points to the shared original alongside an independent installation", () => {
+  const matched: string[] = [];
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", CloudDownload: "CloudDownload",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const shared = { repoKey: "owner/repo@main", repoPath: ".agents/skills/alpha", locations: [
+    { manifestPath: "C:/shared/alpha/SKILL.md", originalPath: "C:/shared/alpha", selectable: true,
+      rootKind: "shared", managed: false, enabled: true },
+    { manifestPath: "C:/codex/alpha/SKILL.md", associationPath: "C:/shared/alpha",
+      rootKind: "codex", managed: true, enabled: true },
+  ] };
+  const independent = { repoKey: "owner/repo@main", repoPath: ".claude/skills/alpha", locations: [
+    { manifestPath: "C:/claude/alpha/SKILL.md", originalPath: "C:/claude/alpha", selectable: true,
+      rootKind: "claude", managed: false, enabled: true },
+  ] };
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      locations: [...shared.locations, ...independent.locations], displayInstances: [shared, independent] },
+    backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
+    onMatch: (path: string) => matched.push(path), onRestore: () => {}, onUpdate: () => {}, onReaPreview: () => {},
+  }));
+  assert.equal(elements.filter((item) => item.type === "small" && item.children.includes("此来源由多个安装位置共用")).length, 2);
+  assert.equal(elements.some((item) => item.type === "dt" && item.children.includes("受控源目录")), false);
+  elements.filter((item) => item.type === "Button" && item.children.includes("重新关联此安装位置"))
+    .forEach((item) => item.props.onClick());
+  assert.deepEqual(matched, ["C:/shared/alpha", "C:/shared/alpha", "C:/claude/alpha"]);
 });
 
 test("the detail view displays the reason for an unknown location status", () => {

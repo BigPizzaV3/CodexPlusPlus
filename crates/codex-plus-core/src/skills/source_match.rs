@@ -908,6 +908,126 @@ mod tests {
     }
 
     #[test]
+    fn agent_installations_associate_their_selected_repository_paths_independently() {
+        for multiple_paths in [false, true] {
+            let (temp, manager, repo) = fixture();
+            let source = manager.source_dir.join("alpha");
+            let codex = manager.linked_dir().join("alpha");
+            let claude = temp.path().join("claude/alpha");
+            write_skill(&manager.source_dir, "alpha", "managed");
+            copy_dir_all(&source, &codex).unwrap();
+            std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
+            write_skill(&temp.path().join("claude"), "alpha", "independent");
+            let mut state = manager.load_state();
+            state.installed.insert("alpha".into(), InstalledSkill {
+                id: "alpha".into(), name: "alpha".into(), description: String::new(),
+                repo_key: LOCAL_IMPORT_REPO_KEY.into(), repo_path: String::new(), content_hash: String::new(),
+                installed_at: String::new(), verified_cc_switch: false, install_channel: "local".into(),
+                original_dir: None, update_owner: String::new(),
+            });
+            manager.save_state_unlocked(&state).unwrap();
+            let first = ".agents/skills/alpha";
+            let second = if multiple_paths { ".codex/skills/alpha" } else { first };
+            let mut remote = vec![candidate(&repo, first, local_repository_hash(&source).unwrap())];
+            if multiple_paths {
+                remote.push(candidate(&repo, second, local_repository_hash(&claude).unwrap()));
+            }
+            for (path, repo_path) in [(&source, first), (&claude, second)] {
+                let preview = manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", path).unwrap();
+                assert_eq!(preview.matches.len(), remote.len());
+                let found = preview.matches.iter().find(|item| item.repo_path == repo_path).unwrap();
+                let result = manager.apply_repository_matches(&[selection(&preview, found, false)], &remote).unwrap();
+                assert!(result.errors.is_empty(), "{:?}", result.errors);
+            }
+            let state = manager.load_state();
+            assert_eq!(state.installed["alpha"].repo_path, first);
+            assert_eq!(state.instance_record("alpha", &claude.canonicalize().unwrap()).unwrap().installed.repo_path, second);
+            assert!(state.instance_record("alpha", &claude.canonicalize().unwrap()).unwrap().installed.update_owner.is_empty());
+            let entries = manager.try_local_inventory().unwrap();
+            let instances = entries.iter().filter(|item| item.id == "alpha").collect::<Vec<_>>();
+            assert_eq!(instances.len(), 2);
+            assert!(instances.iter().all(|item| item.conflict.is_none()));
+            assert_eq!(std::fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                std::fs::read_to_string(codex.join("SKILL.md")).unwrap());
+            assert!(std::fs::read_to_string(claude.join("SKILL.md")).unwrap().contains("independent"));
+            if multiple_paths {
+                let preview = manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", &claude).unwrap();
+                let found = preview.matches.iter().find(|item| item.repo_path == first).unwrap();
+                let result = manager.apply_repository_matches(&[selection(&preview, found, false)], &remote).unwrap();
+                assert!(result.errors.is_empty(), "{:?}", result.errors);
+                let state = manager.load_state();
+                assert_eq!(state.installed["alpha"].repo_path, first);
+                assert_eq!(state.instance_record("alpha", &claude.canonicalize().unwrap()).unwrap().installed.repo_path, first);
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_agent_copy_uses_its_originals_association_without_hiding_changes() {
+        for scenario in ["matching", "modified", "replaced"] {
+            let (temp, manager, repo) = fixture();
+            let original = temp.path().join("shared/alpha");
+            let source = manager.source_dir.join("alpha");
+            let copy = manager.linked_dir().join("alpha");
+            let independent = temp.path().join("claude/alpha");
+            write_skill(&temp.path().join("shared"), "alpha", "shared");
+            copy_dir_all(&original, &source).unwrap();
+            copy_dir_all(&original, &copy).unwrap();
+            std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+            write_skill(&temp.path().join("claude"), "alpha", "independent");
+            let record = |path: &Path, repo_path: &str| {
+                let installed = InstalledSkill {
+                    id: "alpha".into(), name: "alpha".into(), description: String::new(),
+                    repo_key: repo.key(), repo_path: repo_path.into(), content_hash: String::new(),
+                    installed_at: String::new(), verified_cc_switch: false, install_channel: "local".into(),
+                    original_dir: Some(path.to_path_buf()), update_owner: String::new(),
+                };
+                SkillInstanceRecord {
+                    installed, target: SkillInstanceTarget { path: path.to_path_buf(), identity: skill_path_identity(path).unwrap() },
+                    managed_copies: Vec::new(),
+                }
+            };
+            let mut shared = record(&original, ".agents/skills/alpha");
+            shared.managed_copies = [&source, &copy].into_iter().map(|path| SkillInstanceTarget {
+                path: path.clone(), identity: skill_path_identity(path).unwrap(),
+            }).collect();
+            let other = record(&independent, ".claude/skills/alpha");
+            let mut state = manager.load_state();
+            state.installed.insert("alpha".into(), shared.installed.clone());
+            state.instance_targets.insert("alpha".into(), shared.target.clone());
+            state.instance_records.insert("alpha".into(), BTreeMap::from([
+                (original.clone(), shared), (independent.clone(), other),
+            ]));
+            manager.save_state_unlocked(&state).unwrap();
+            if scenario == "modified" {
+                std::fs::write(copy.join("details.txt"), "changed").unwrap();
+            } else if scenario == "replaced" {
+                std::fs::rename(&copy, manager.linked_dir().join(".old-alpha")).unwrap();
+                copy_dir_all(&original, &copy).unwrap();
+                std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+            }
+
+            let entries = manager.try_local_inventory().unwrap();
+            let instances = entries.iter().filter(|item| item.id == "alpha").collect::<Vec<_>>();
+            let codex = instances.iter().flat_map(|item| &item.locations)
+                .find(|location| location.root_kind == "codex").unwrap();
+            if scenario == "matching" {
+                assert_eq!(instances.len(), 2);
+                assert!(instances.iter().all(|item| item.conflict.is_none()));
+                assert_eq!(codex.association_path.as_ref(), Some(&original.canonicalize().unwrap()));
+                assert_eq!(codex.repo_path, ".agents/skills/alpha");
+                assert!(instances.iter().any(|item| item.locations.iter().any(|location| location.root_kind == "shared")
+                    && item.locations.iter().any(|location| location.root_kind == "codex")));
+            } else {
+                assert!(instances.iter().any(|item| item.conflict.is_some()));
+                if scenario == "replaced" {
+                    assert!(codex.association_path.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn managed_source_association_rejects_claimed_sources_and_changed_files() {
         let (temp, manager, repo) = fixture();
         let source = manager.source_dir.join("alpha");

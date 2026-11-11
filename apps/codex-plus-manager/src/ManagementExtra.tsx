@@ -31,6 +31,7 @@ type Result = { status: string; message: string };
 type Notify = (title: string, message: string, status?: "ok" | "failed") => Promise<void>;
 type SkillLocation = { manifestPath: string; rootKind: string; managed: boolean; enabled: boolean; statusError?: string | null; originalPath?: string | null; selectable?: boolean;
   associationPath?: string | null; repoKey?: string; repoPath?: string; contentHash?: string; remoteHash?: string; updateAvailable?: boolean; updateOwner?: string };
+type SkillMatchContext = { agentLabel?: string; currentRepoKey?: string; currentRepoPath?: string };
 type Skill = { id: string; name: string; description: string; repoKey: string; repoPath?: string; displayGroupRepoKey?: string | null; installed: boolean; enabled: boolean; bundled: boolean; updateAvailable: boolean;
   /** 已经启用到哪些 Agent（codex / claude / grok）。 */
   agents?: string[];
@@ -246,7 +247,7 @@ function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete }: {
 }
 function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onReaPreview, onManageSource }: {
   skill: Skill; count?: number; backups: SkillBackup[]; busy: boolean; onClose: () => void; onOpenUrl: (url: string) => void;
-  onOpenRepo: () => void; onMatch: (localPath?: string) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void; onManageSource: () => void;
+  onOpenRepo: () => void; onMatch: (localPath?: string, context?: SkillMatchContext) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onReaPreview: () => void; onManageSource: () => void;
 }) {
   const url = repoUrl(skill);
   const channel = skillChannelLabel(skill);
@@ -254,11 +255,10 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
   const selectableOriginal = skill.conflictKind === "independent" && !!skill.originalDir
     && skill.locations?.some((location) => !location.managed);
   const associatedOriginal = skill.conflictKind === "equal-independent" && !!skill.originalDir && !!url;
-  const managedAssociationPath = skill.locations?.find((location) => location.associationPath)?.associationPath;
-  const managedSourcePath = skill.managedSourceDir || managedAssociationPath;
+  const managedSourcePath = skill.managedSourceDir;
   const matchTargets = new Set(skill.locations?.flatMap((location) =>
-    location.selectable && location.originalPath ? [location.originalPath] : []) || []);
-  if (managedAssociationPath) matchTargets.add(managedAssociationPath);
+    location.selectable && location.originalPath ? [location.originalPath]
+      : location.associationPath ? [location.associationPath] : []) || []);
   const matchAtRepoPath = skill.installed && !skill.bundled && !skill.conflict && !skill.displayInstances
     && (matchTargets.size === 1 || (matchTargets.size === 0 && !!skill.managedSourceDir));
   const matchLabel = t(url ? "修改 GitHub 仓库关联" : "关联 GitHub 仓库");
@@ -275,24 +275,30 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
       <dt>{t("更新方式")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : owner}</dd>
       <dt>{t("Skill ID")}</dt><dd>{skill.id}</dd>
       <dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}{matchAtRepoPath && <button type="button" className="mg-icon-button" title={matchLabel} aria-label={matchLabel}
-        disabled={busy} onClick={() => onMatch(matchTargets.values().next().value)}><Edit3 size={14}/></button>}</dd>
+        disabled={busy} onClick={() => onMatch(matchTargets.values().next().value, { currentRepoKey: skill.repoKey, currentRepoPath: skill.repoPath })}><Edit3 size={14}/></button>}</dd>
       <dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>
       {url && <><dt>GitHub</dt><dd><button className="mg-link-button" type="button" onClick={() => onOpenUrl(url)}><ExternalLink size={13}/>{url}</button></dd></>}
       {skill.originalDir && <><dt>{t(associatedOriginal ? "关联来源的安装目录" : "原安装目录")}</dt><dd>{skill.originalDir}</dd></>}
       {skill.locations?.flatMap((location) => {
         const instance = skill.displayInstances?.find((item) => item.locations?.some((itemLocation) => itemLocation.manifestPath === location.manifestPath));
-        const locationRepo = location.repoKey || instance?.repoKey || "";
-        const locationRepoPath = location.repoPath || instance?.repoPath || "";
-        const locationOwner = location.updateOwner || instance?.updateOwner;
+        const locationRepo = location.repoKey || instance?.repoKey || (!skill.displayInstances ? skill.repoKey : "");
+        const locationRepoPath = location.repoPath || instance?.repoPath || (!skill.displayInstances ? skill.repoPath : "") || "";
+        const locationOwner = location.updateOwner || instance?.updateOwner || (!skill.displayInstances ? skill.updateOwner : "");
         const hasRepo = !!repoFromKey(locationRepo);
+        const associationPath = location.selectable && location.originalPath ? location.originalPath : location.associationPath;
+        const sharedAssociation = associationPath && (skill.locations || []).filter((item) =>
+          (item.selectable && item.originalPath ? item.originalPath : item.associationPath) === associationPath).length > 1;
         return [<dt key={`${location.manifestPath}:label`}>{rootLabel[location.rootKind] || location.rootKind}</dt>, <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}
           {(skill.conflict || skill.displayInstances) && <SkillFileTimes id={skill.id} rootKind={location.rootKind}/>}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
           {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
-          {(instance || (location.selectable && location.originalPath)) && <><br/>{t(hasRepo ? "上游来源" : "来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")}
+          {(instance || associationPath) && <><br/>{t(hasRepo ? "上游来源" : "来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")}
             {hasRepo && <><br/>{t("更新方式")}：{locationOwner === "in_place" ? t("Codex++ 原位维护") : locationOwner === "manager" ? t("Codex++ 管理") : t("未接管")}</>}
-            {location.selectable && location.originalPath && !matchAtRepoPath && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(location.originalPath || undefined)}>{t(hasRepo ? "重新关联此安装位置" : "关联此安装位置")}</Button>
-              {(skill.displayInstances || skill.conflictKind === "equal-independent") && hasRepo && locationOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
+            {sharedAssociation && <><br/><small>{t("此来源由多个安装位置共用")}</small></>}
+            {associationPath && !matchAtRepoPath && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(associationPath, {
+              agentLabel: rootLabel[location.rootKind] || location.rootKind, currentRepoKey: locationRepo, currentRepoPath: locationRepoPath,
+            })}>{t(hasRepo ? "重新关联此安装位置" : "关联此安装位置")}</Button>
+              {location.selectable && location.originalPath && (skill.displayInstances || skill.conflictKind === "equal-independent") && hasRepo && locationOwner !== "manager" && skill.id !== "reverse-engineer-anything" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
       })}
       {managedSourcePath && <>
         <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}<SkillFileTimes id={skill.id} rootKind="source"/>
@@ -303,8 +309,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
           {skill.managedSourceStatus === "different" && (skill.displayInstances && !skill.conflict
             ? <small>{t("受控源与部分 Agent 的独立安装内容不同")}</small>
             : <small className="mg-warning">{t("未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理")}</small>)}
-          {skill.managedSourceStatus === "unknown" && <small className="mg-warning">{t("无法比较受控源")}：{skill.managedSourceError}</small>}
-          {managedAssociationPath && !matchAtRepoPath && (skill.conflict || skill.displayInstances || matchTargets.size > 1) && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(managedAssociationPath)}>{t("关联受控源")}</Button></div>}</dd>
+          {skill.managedSourceStatus === "unknown" && <small className="mg-warning">{t("无法比较受控源")}：{skill.managedSourceError}</small>}</dd>
       </>}
     </dl>
     {skill.id === "impeccable" && (skill.displayInstances ? skill.displayInstances.map((instance) => <section key={skillIdentityKey(instance)}>
@@ -370,7 +375,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const localReload = useRef<{ pending: Promise<void> | null; dirty: boolean }>({ pending: null, dirty: false });
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
-  const [matchTarget, setMatchTarget] = useState<{ id?: string; localPath?: string } | null>(null);
+  const [matchTarget, setMatchTarget] = useState<({ id?: string; localPath?: string } & SkillMatchContext) | null>(null);
   const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
   const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
@@ -908,7 +913,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </div>
       <Menu>
         <MenuItem onClick={() => setDetail(s)}>{t("查看详情")}</MenuItem>
-        {s.installed && !s.bundled ? <MenuItem disabled={Boolean(s.displayInstances) || (conflict && !selectableOriginal)} onClick={() => setMatchTarget({ id: s.id, localPath: selectableOriginal ? s.originalDir || undefined : undefined })}>{t("重新关联来源")}</MenuItem> : null}
+        {s.installed && !s.bundled ? <MenuItem disabled={Boolean(s.displayInstances) || (conflict && !selectableOriginal)} onClick={() => setMatchTarget({
+          id: s.id, localPath: selectableOriginal ? s.originalDir || undefined : undefined, currentRepoKey: s.repoKey, currentRepoPath: s.repoPath,
+        })}>{t("重新关联来源")}</MenuItem> : null}
         {repoUrl(s) ? <MenuItem onClick={() => openRepo(s.repoKey)}>{t("管理仓库")}</MenuItem> : null}
         {!s.bundled && (!s.conflict || s.instanceKey) && customGroupNames.length ? <>
           <div className="mg-menu-label">{t("分组")}</div>
@@ -1006,12 +1013,13 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       count={data?.repoCounts?.[currentDetail.repoKey]} backups={(data?.backups || []).filter((backup) => backup.skillId === currentDetail.id)} busy={busy}
       onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(currentDetail.repoKey)}
       onManageSource={() => { setDetail(null); setDuplicatesOpen(true); }}
-      onMatch={(localPath) => { setDetail(null); setMatchTarget({ id: currentDetail.id, localPath: localPath || (currentDetail.conflictKind === "independent" ? currentDetail.originalDir || undefined : undefined) }); }}
+      onMatch={(localPath, context) => { setDetail(null); setMatchTarget({ id: currentDetail.id, localPath: localPath || (currentDetail.conflictKind === "independent" ? currentDetail.originalDir || undefined : undefined), ...context }); }}
       onRestore={(backup) => void restoreBackup(backup)}
       onDeleteBackup={(backup) => void deleteBackup(backup)}
       onUpdate={(repoKey, localPath) => { setUpdateTarget({ id: currentDetail.id, repoKey, localPath }); setDetail(null); }}
       onReaPreview={() => { setDetail(null); setReaPreviewOpen(true); }}/>}
     {matchTarget && <SkillSourceMatchDrawer repos={data?.repos || []} id={matchTarget.id} localPath={matchTarget.localPath}
+      agentLabel={matchTarget.agentLabel} currentRepoKey={matchTarget.currentRepoKey} currentRepoPath={matchTarget.currentRepoPath}
       localSkillIds={knownSkills.filter((skill) => skill.installed && !skill.bundled
         && (!skill.repoPath || !skill.repoKey.includes("/"))).map((skill) => skill.id)}
       onClose={() => setMatchTarget(null)} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}

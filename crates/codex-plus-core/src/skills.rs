@@ -1894,8 +1894,23 @@ impl SkillsManager {
                     }
                 }
             }
+            let original_paths = entry.locations.iter().filter_map(|location| location.original_path.clone())
+                .collect::<BTreeSet<_>>();
             for location in &mut entry.locations {
-                let Some(path) = location.original_path.as_deref() else { continue };
+                if location.managed && location.association_path.is_none() {
+                    let path = Path::new(&location.manifest_path).parent().unwrap().canonicalize().ok();
+                    location.association_path = state.instance_records.get(&entry.id).into_iter()
+                        .flat_map(|records| records.values()).find_map(|record| {
+                            let original = record.target.path.canonicalize().ok()?;
+                            (original_paths.contains(&original)
+                                && skill_path_identity(&record.target.path).ok() == Some(record.target.identity)
+                                && record.managed_copies.iter().any(|copy|
+                                    copy.path.canonicalize().ok() == path
+                                        && skill_path_identity(&copy.path).ok() == Some(copy.identity)))
+                                .then_some(original)
+                        });
+                }
+                let Some(path) = location.original_path.as_deref().or(location.association_path.as_deref()) else { continue };
                 let installed = state.instance_record(&entry.id, path).map(|record| &record.installed)
                     .or_else(|| state.installed.get(&entry.id).filter(|installed| {
                         installed.original_dir.as_ref().and_then(|original| original.canonicalize().ok()).as_deref() == Some(path)
@@ -1966,6 +1981,18 @@ impl SkillsManager {
                 }
                 groups.entry(resolved).or_default().push(location.clone());
             }
+            if comparison_error.is_none() {
+                let copies = groups.iter().filter_map(|(path, locations)| {
+                    let original = locations.iter().find_map(|location| location.association_path.as_ref())?;
+                    (original != path && groups.contains_key(original)
+                        && path_hashes.get(path) == path_hashes.get(original))
+                        .then_some((path.clone(), original.clone()))
+                }).collect::<Vec<_>>();
+                for (copy, original) in copies {
+                    let locations = groups.remove(&copy).unwrap();
+                    groups.get_mut(&original).unwrap().extend(locations);
+                }
+            }
             let source = self.source_dir.join(&entry.id);
             let mut source_hash = None;
             if source.join(SKILL_MANIFEST_FILE).is_file() {
@@ -1973,7 +2000,7 @@ impl SkillsManager {
                     Ok(Some(digest)) => {
                         source_hash = Some(digest);
                         entry.managed_source_status = Some(if source.canonicalize()
-                            .is_ok_and(|path| groups.contains_key(&path))
+                            .is_ok_and(|path| path_hashes.contains_key(&path))
                         {
                             "referenced"
                         } else if comparison_error.is_some() {
@@ -2090,7 +2117,11 @@ impl SkillsManager {
                 instance.enabled = instance.agents.iter().any(|agent| agent == "codex");
                 let managed_instance = instance.locations.iter().all(|location| location.managed)
                     || source.canonicalize().ok().as_ref() == Some(&path);
-                if managed_instance && source_hash != path_hashes.get(&path).copied() {
+                if managed_instance && (source_hash != path_hashes.get(&path).copied()
+                    || instance.locations.iter().filter_map(|location| location.association_path.as_ref())
+                        .any(|original| path_hashes.get(original)
+                            .is_some_and(|digest| Some(digest) != path_hashes.get(&path))))
+                {
                     managed_copy_changed = true;
                 }
                 instance.managed = managed_instance || instance.locations.iter().any(|location| location.managed);
@@ -2118,7 +2149,9 @@ impl SkillsManager {
                         instance.safe_toggle_agents.push("codex".into());
                     }
                 }
-                let record = state.instance_record(&entry.id, &path);
+                let record = state.instance_record(&entry.id, &path).or_else(|| instance.locations.iter()
+                    .filter_map(|location| location.association_path.as_deref())
+                    .find_map(|original| state.instance_record(&entry.id, original)));
                 // 旧安装记录没有原目录和实例索引；仅受控源及其副本可继承该记录。
                 let legacy_managed = record.is_none()
                     && state.installed.get(&entry.id).is_some_and(|installed| installed.original_dir.is_none())

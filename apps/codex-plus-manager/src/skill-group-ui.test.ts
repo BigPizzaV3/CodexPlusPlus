@@ -109,6 +109,7 @@ test("grouped details keep source matching, updates and impeccable versions tied
     updateOwner: "in_place", installChannel: "github",
     locations: [{ manifestPath: "C:/claude/impeccable/SKILL.md", originalPath: "C:/claude/impeccable", selectable: true, rootKind: "claude", managed: false, enabled: true }] };
   const selected: string[] = [];
+  const matchContexts: unknown[] = [];
   const updates: string[][] = [];
   const context: Record<string, any> = {
     jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
@@ -120,7 +121,8 @@ test("grouped details keep source matching, updates and impeccable versions tied
   const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
   const root = render({ skill: { ...first, conflict: "内容不同", locations: [...first.locations, ...second.locations], displayInstances: [first, second] },
     backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
-    onMatch: (path: string) => selected.push(path), onRestore: () => {}, onUpdate: (repo: string, path: string) => updates.push([repo, path]), onReaPreview: () => {} });
+    onMatch: (path: string, matchContext: unknown) => { selected.push(path); matchContexts.push(matchContext); },
+    onRestore: () => {}, onUpdate: (repo: string, path: string) => updates.push([repo, path]), onReaPreview: () => {} });
   const elements: Element[] = [];
   const collect = (node: any) => {
     if (!node || typeof node !== "object") return;
@@ -136,6 +138,10 @@ test("grouped details keep source matching, updates and impeccable versions tied
   matchButtons[0].props.onClick();
   matchButtons[1].props.onClick();
   assert.deepEqual(selected, ["C:/shared/impeccable", "C:/claude/impeccable"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(matchContexts)), [
+    { agentLabel: "共享", currentRepoKey: "", currentRepoPath: "" },
+    { agentLabel: "Claude Code", currentRepoKey: "owner/repo@main", currentRepoPath: "skills/impeccable" },
+  ]);
   elements.find((node) => node.type === "Button" && node.children.includes("预览此位置更新"))!.props.onClick();
   assert.deepEqual(updates, [["owner/repo@main", "C:/claude/impeccable"]]);
   assert.deepEqual(elements.filter((node) => node.type === "ImpeccableVersions").map((node) => node.props.instanceKey), ["first", "second"]);
@@ -151,7 +157,7 @@ test("conflicting managed installs can associate their explicit source directory
   vm.createContext(context);
   const render = vm.runInContext(`${detailCode}\nSkillDetailDrawer`, context);
   const selected: string[] = [];
-  const root = render({ skill: { ...skill("alpha", ""), conflict: "内容不同", conflictKind: "managed-modified",
+  const root = render({ skill: { ...skill("alpha", ""), conflict: "内容不同", conflictKind: "managed-modified", managedSourceDir: "C:/managed/alpha",
     locations: [{ manifestPath: "C:/codex/alpha/SKILL.md", associationPath: "C:/managed/alpha",
       rootKind: "codex", managed: true, enabled: true }] },
   backups: [], busy: false, onClose: () => {}, onOpenUrl: () => {}, onOpenRepo: () => {},
@@ -165,7 +171,9 @@ test("conflicting managed installs can associate their explicit source directory
   };
   collect(root);
   assert.deepEqual(elements.filter((node) => node.type === "SkillFileTimes").map((node) => node.props.rootKind), ["codex", "source"]);
-  const button = elements.find((node) => node.type === "Button" && node.children.includes("关联受控源"));
+  const location = elements.find((node) => node.type === "dd" && node.children.includes("C:/codex/alpha/SKILL.md"));
+  assert.ok(location);
+  const button = elements.find((node) => node.type === "Button" && node.children.includes("关联此安装位置"));
   assert.ok(button);
   button.props.onClick();
   assert.deepEqual(selected, ["C:/managed/alpha"]);
