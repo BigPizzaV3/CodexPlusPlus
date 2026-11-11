@@ -336,13 +336,16 @@ fn github_release_workflow_builds_one_universal_macos_dmg() {
         .join(".github/workflows/release-assets.yml");
     let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
 
-    // 通用包：单个 job 在两个 target 上各编一遍，由 build-universal.sh
-    // 用 lipo 合并。两个架构的 std 都要装。
-    assert!(workflow.contains("macos-14"));
-    assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
+    // 两个 target 分别编译并上传，再由通用包 job 合并。
+    assert!(workflow.contains("target: [x86_64-apple-darwin, aarch64-apple-darwin]"));
+    assert!(workflow.contains("name: macos-bin-${{ matrix.target }}"));
+    assert!(workflow.contains("needs: [prepare, macos-build]"));
+    assert!(workflow.contains("name: macos-bin-x86_64-apple-darwin"));
+    assert!(workflow.contains("name: macos-bin-aarch64-apple-darwin"));
+    assert!(workflow.contains("UNIVERSAL_SKIP_BUILD: \"1\""));
     assert!(workflow.contains("build-universal.sh \"$VERSION\""));
 
-    // 分架构的 matrix 形态不应再出现，否则会回到「用户自己挑架构」的老问题。
+    // 发布产物仍是单个通用包，不应恢复分架构安装包。
     assert!(!workflow.contains("matrix.arch"));
     assert!(!workflow.contains("macos-15-intel"));
 }
