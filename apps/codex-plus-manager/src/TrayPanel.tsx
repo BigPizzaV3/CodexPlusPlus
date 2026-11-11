@@ -41,7 +41,6 @@ import { ModelList, Floating, ownCurrent } from "./GatewayAgents";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import {
   glanceAgents,
-  agentModels,
   agentName,
   bindingFromDraft,
   disabledGroup,
@@ -50,6 +49,7 @@ import {
   formatMoney,
   formatTokens,
   modelDisplay,
+  providerEnabled,
   groupDisplayName,
   prettyModelName,
   quotaWindowLabel,
@@ -899,13 +899,30 @@ function PanelAgentRow({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
-  const inactive = disabledGroup(payload, draft.model);
-  const effectiveModel = agent.enabled && inactive ? agent.defaultModel : draft.model;
-  const display = inactive && agent.enabled && !effectiveModel
+  const inactive = disabledGroup(payload, draft.model, binding?.defaultModelSelection);
+  const selection = binding?.defaultModelSelection;
+  const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
+  const selectionProvider = selection && payload?.pool.find((entry) => entry.id === selection.providerId);
+  const unavailable = agent.defaultSelectionStatus
+    ? agent.defaultSelectionStatus === "fallback"
+    : original.issue === "unavailable"
+      && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
+  const effectiveModel = agent.enabled ? agent.defaultModel : draft.model;
+  const effectiveSelection = unavailable ? null : selection;
+  const baseDisplay = agent.enabled && !effectiveModel
     ? { title: "", sub: "", group: false }
-    : modelDisplay(payload, effectiveModel, draft.poolExclude);
+    : agent.enabled && agent.defaultModelDiffers && agent.defaultSelectionStatus !== "invalid" && !effectiveModel.startsWith("group/")
+      ? { title: effectiveModel, sub: "", group: false }
+    : modelDisplay(payload, effectiveModel, draft.poolExclude, effectiveSelection);
+  const display = agent.enabled && agent.defaultSelectionStatus === "invalid"
+    ? { ...baseDisplay, issue: "invalid" as const }
+    : agent.enabled && agent.defaultSelectionStatus === "available"
+      ? { ...baseDisplay, issue: undefined }
+      : baseDisplay;
   const inactiveHint = inactive && agent.enabled
-    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
+    : unavailable && agent.enabled
+      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);
@@ -942,7 +959,7 @@ function PanelAgentRow({
           head={head}
           onPick={(item) => {
             setOpen(false);
-            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.model }, binding) });
+            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.providerModel ?? item.model }, binding, item) });
           }}
           onPickOwn={(item) => {
             setOpen(false);
@@ -952,7 +969,9 @@ function PanelAgentRow({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
-          selectedModel={agent.enabled ? effectiveModel || agentModels(payload, draft.poolExclude)[0] || "" : ""}
+          pinProvider
+          selectedModel={agent.enabled && (!agent.defaultModelDiffers || effectiveModel.startsWith("group/")) ? effectiveModel : ""}
+          selectedModelSelection={effectiveSelection}
         />
       </Floating>
       {disconnectTarget ? (

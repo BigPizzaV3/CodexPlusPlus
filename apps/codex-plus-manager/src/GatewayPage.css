@@ -2378,6 +2378,11 @@ span.gw-avatar[data-size] {
   background: var(--gw-soft);
 }
 
+.gw-portal .gw-mp-item[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .gw-portal .gw-mp-item[data-selected="true"]::before {
   position: absolute;
   top: 6px;

@@ -6087,7 +6087,7 @@ const MODEL_NAME_FORBIDDEN_KEYWORDS: [&str; 6] = [
     "model_catalog_json",
 ];
 
-fn sanitize_relay_model_name(raw: &str) -> Option<String> {
+pub(crate) fn sanitize_relay_model_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
         || trimmed.len() > MAX_MODEL_NAME_LEN

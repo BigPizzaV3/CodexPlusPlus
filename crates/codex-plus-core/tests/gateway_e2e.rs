@@ -5,8 +5,8 @@
 use std::sync::{Arc, Mutex};
 
 use codex_plus_core::gateway::store::{
-    AgentBinding, ClaudeRoleModels, GatewayGroup, GatewayProvider, GatewaySettings, GatewayStore,
-    GroupMember, GroupMode,
+    AgentBinding, ClaudeRoleModels, DefaultModelSelection, GatewayGroup, GatewayProvider,
+    GatewaySettings, GatewayStore, GroupMember, GroupMode,
 };
 use codex_plus_core::settings::{RelayApiKey, RelayProfile, RelayProtocol};
 use serde_json::{Value, json};
@@ -832,6 +832,42 @@ async fn gateway_end_to_end() {
         vec!["group/group", "deepseek-v4-pro", "glm-5.3", "declared-only"]
     );
     assert_eq!(ids.iter().filter(|id| **id == "deepseek-v4-pro").count(), 1);
+
+    let mut selected = binding("bad/deepseek-v4-pro", "cpx-gw-codex-e2e");
+    selected.default_model_selection = Some(DefaultModelSelection {
+        provider_id: "bad".into(),
+        upstream_model: "deepseek-v4-pro".into(),
+        provider_source: String::new(),
+        provider_removed: false,
+    });
+    let expected = codex_plus_core::gateway::route::codex_binding_models(&gateway, &selected);
+    gateway.bindings.insert("codex".into(), selected);
+    save(&gateway);
+    let selected_models = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/gw/codex/v1/models"))
+        .header("x-api-key", "cpx-gw-codex-e2e")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let selected_ids = selected_models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(selected_ids, expected);
+    assert_eq!(selected_ids[0], "bad/deepseek-v4-pro");
+    assert_eq!(
+        selected_ids
+            .iter()
+            .filter(|id| **id == "bad/deepseek-v4-pro")
+            .count(),
+        1
+    );
+    assert!(!selected_ids.contains(&"deepseek-v4-pro"));
     gateway.bindings.remove("codex");
     save(&gateway);
 

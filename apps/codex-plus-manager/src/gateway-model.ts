@@ -17,9 +17,12 @@ export type GroupSticky = "cache" | "session" | "off";
 
 export type ClaudeRoleModels = { opus: string; sonnet: string; haiku: string; subagent: string };
 
+export type DefaultModelSelection = { providerId: string; upstreamModel: string; providerSource: string; providerRemoved?: boolean };
+
 export type AgentBinding = {
   enabled: boolean;
   model: string;
+  defaultModelSelection?: DefaultModelSelection | null;
   extraModels: string[];
   claudeRoles: ClaudeRoleModels;
   unknownModel: UnknownModelPolicy;
@@ -214,6 +217,8 @@ export type GatewayAgentView = {
   requiresDisconnectPreview?: boolean;
   baseUrl: string;
   defaultModel: string;
+  defaultSelectionStatus?: "available" | "fallback" | "invalid" | null;
+  defaultModelDiffers?: boolean;
   models: string[];
   /** 开着网关、但配置已被别的工具改掉：认得出的工具名与现在连的地址。 */
   drift?: { by?: string | null; endpoint: string } | null;
@@ -460,12 +465,16 @@ export function splitModels(text: string): string[] {
 }
 
 /** 表单 → 提交给后端的绑定。token 与恢复现场由后端维护，这里沿用旧值。 */
-export function bindingFromDraft(draft: BindingDraft, previous: AgentBinding | undefined): AgentBinding {
+export function bindingFromDraft(draft: BindingDraft, previous: AgentBinding | undefined, item?: PickerItem): AgentBinding {
   const base = previous ?? blankBinding();
   const window = parseContextWindow(draft.contextWindow);
+  const model = draft.model.trim();
   return {
     ...base,
-    model: draft.model.trim(),
+    model,
+    defaultModelSelection: item
+      ? item.defaultModelSelection ?? null
+      : model.toLowerCase() === base.model.trim().toLowerCase() ? base.defaultModelSelection ?? null : null,
     extraModels: splitModels(draft.extraModels),
     claudeRoles: {
       opus: draft.opus.trim(),
@@ -490,8 +499,9 @@ export function groupModelId(id: string): string {
   return `${GROUP_MODEL_PREFIX}${id}`;
 }
 
-export function disabledGroup(payload: GatewayPayload | null, model: string): GatewayGroupEntry | undefined {
+export function disabledGroup(payload: GatewayPayload | null, model: string, selection?: DefaultModelSelection | null): GatewayGroupEntry | undefined {
   const key = modelSlugFromRowName(model).toLowerCase();
+  if (selection && key === `${selection.providerId}/${modelSlugFromRowName(selection.upstreamModel)}`.toLowerCase()) return undefined;
   return payload?.groups.find((group) => group.disabled && groupModelId(group.id).toLowerCase() === key);
 }
 
@@ -534,6 +544,7 @@ export function agentModels(payload: GatewayPayload | null, exclude: string[] = 
 /** `<供应商 id>/<模型>` 里的供应商（必须是 Agent 能用的）。 */
 export function qualifiedProvider(payload: GatewayPayload | null, model: string, exclude: string[] = []): { entry: GatewayPoolEntry; model: string } | null {
   if (model.startsWith(GROUP_MODEL_PREFIX)) return null;
+  if (servingProviders(payload, model, exclude).length) return null;
   const index = model.indexOf("/");
   if (index <= 0 || !model.slice(index + 1).trim()) return null;
   const prefix = model.slice(0, index).toLowerCase();
@@ -549,12 +560,16 @@ export function modelRoutable(payload: GatewayPayload | null, model: string, exc
 }
 
 /** 表单校验：返回错误文案（中文原文，界面再翻译），没问题返回 null。 */
-export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string): string | null {
+export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string, retainedSelection?: DefaultModelSelection | null): string | null {
   if (payload) {
     if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
     const model = draft.model.trim();
     const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
-    if (model && !retainedDisabledModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+    const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
+    const retainedUnavailableModel = draft.model === retainedModel && retainedSelection
+      && modelSlugFromRowName(model).toLowerCase() === `${retainedSelection.providerId}/${modelSlugFromRowName(retainedSelection.upstreamModel)}`.toLowerCase()
+      && (retainedSelection.providerRemoved || !retainedProvider || !providerEnabled(retainedProvider) || draft.poolExclude.includes(retainedProvider.id));
+    if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
   }
   const window = parseContextWindow(draft.contextWindow);
   if (window !== null && (!Number.isFinite(window) || window < 1_000)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
@@ -633,6 +648,9 @@ export function rememberAgentNames(agents: Array<{ agent: string; name: string }
 export type PickerItem = {
   /** 选中后写进绑定的模型名。 */
   model: string;
+  /** 从供应商名下选默认模型时用于保留供应商身份。 */
+  providerModel?: string;
+  defaultModelSelection?: DefaultModelSelection;
   label: string;
   sub: string;
   avatar: string;
@@ -680,7 +698,12 @@ export function pickerSections(
         if (multi && !groupDisabled && !shared.some((known) => known.toLowerCase() === model.toLowerCase())) shared.push(model);
         const value = multi || groupDisabled ? `${entry.id}/${model}` : model;
         if (unlisted.has(value.toLowerCase())) return [];
-        return [{ model: value, label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name) }];
+        return [{
+          model: value,
+          providerModel: `${entry.id}/${model}`,
+          defaultModelSelection: { providerId: entry.id, upstreamModel: model, providerSource: entry.source ?? "" },
+          label: prettyModelName(model), sub: maskAccountName(entry.name), avatar: avatar(entry.name),
+        }];
       });
     if (items.length) sections.push({ key: `provider:${entry.id}`, title: maskAccountName(entry.name), avatar: avatar(entry.name), items });
   }
@@ -712,6 +735,7 @@ export function pickerSections(
       avatar: "",
       items: targets.map((entry) => ({
         model: qualified ? typed : `${entry.id}/${typed}`,
+        defaultModelSelection: { providerId: entry.id, upstreamModel: modelSlugFromRowName(qualified ? qualified.model : typed), providerSource: entry.source ?? "" },
         label: typed,
         sub: maskAccountName(entry.name),
         avatar: avatar(entry.name),
@@ -744,7 +768,7 @@ export function ownPickerSection(own: OwnModels | null | undefined, rawQuery: st
 }
 
 /** `auto`：多家都有的模型的裸名，按池顺序在这几家之间自动切换（`sub` 是这几家，按尝试顺序）。 */
-export type ModelView = { title: string; sub: string; group: boolean; auto?: boolean };
+export type ModelView = { title: string; sub: string; group: boolean; auto?: boolean; issue?: "conflict" | "unavailable" | "invalid" };
 
 /** 提供这个模型的供应商（Agent 能用的、按池顺序）。 */
 export function servingProviders(payload: GatewayPayload | null, model: string, exclude: string[] = []): GatewayPoolEntry[] {
@@ -759,8 +783,23 @@ export function groupDisplayName(payload: GatewayPayload | null, model: string):
 }
 
 /** 一个模型名在按钮上的显示：模型名 + 提供它的供应商；模型组显示组名。空串用池里第一个模型。 */
-export function modelDisplay(payload: GatewayPayload | null, model: string, exclude: string[] = []): ModelView {
+export function modelDisplay(payload: GatewayPayload | null, model: string, exclude: string[] = [], selection?: DefaultModelSelection | null): ModelView {
   const title = model.trim() || agentModels(payload, exclude)[0] || "";
+  const selectedModel = modelSlugFromRowName(title);
+  if (selection && selectedModel.toLowerCase() === `${selection.providerId}/${modelSlugFromRowName(selection.upstreamModel)}`.toLowerCase()) {
+    const provider = payload?.pool.find((entry) => entry.id === selection.providerId);
+    const unavailable = selection.providerRemoved || !provider || !providerEnabled(provider) || exclude.includes(provider.id)
+      || (provider.source ?? "") !== selection.providerSource;
+    const conflict = selectedModel.toLowerCase().startsWith(GROUP_MODEL_PREFIX) || selectedModel.includes("*") || servingProviders(payload, selectedModel, exclude).length > 0;
+    if (unavailable || conflict) {
+      return {
+        title: prettyModelName(selection.upstreamModel),
+        sub: provider ? maskAccountName(provider.name) : selection.providerId,
+        group: false,
+        issue: unavailable ? "unavailable" : "conflict",
+      };
+    }
+  }
   if (title.startsWith(GROUP_MODEL_PREFIX)) {
     const name = groupDisplayName(payload, title);
     return { title: name ?? title, sub: name === undefined ? title : `${GROUP_MODEL_PREFIX}${name}`, group: true };
