@@ -1860,6 +1860,57 @@ fn multi_instance_mutation_lock() -> &'static Mutex<()> {
     &LOCK
 }
 
+/// Compare install paths without requiring `canonicalize` to succeed.
+///
+/// A removed Store directory makes `canonicalize` fail. The saved identity often
+/// still has the `\\?\` prefix from an earlier successful canonicalize, and the
+/// fallback path does not. That prefix, slash style, and (on Windows) ASCII case
+/// are not a different executable (#3021).
+fn multi_instance_paths_match(left: &Path, right: &Path) -> bool {
+    let (left, right) = match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => (left, right),
+        _ => (left.to_path_buf(), right.to_path_buf()),
+    };
+    normalized_identity_path(&left) == normalized_identity_path(&right)
+}
+
+fn normalized_identity_path(path: &Path) -> String {
+    let mut text = path.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        text = format!(r"\\{rest}");
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        text = rest.to_string();
+    }
+    #[cfg(windows)]
+    {
+        text.replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        text.trim_end_matches(['/', '\\']).to_string()
+    }
+}
+
+fn multi_instance_executable_matches(app_path: &Path, recorded: &Path) -> bool {
+    let built = codex_plus_core::app_paths::build_codex_executable(app_path);
+    if multi_instance_paths_match(&built, recorded) {
+        return true;
+    }
+    // The Store manifest selects `<package>/app/<exe>`. Once that directory is
+    // gone, `build_codex_executable` falls back to `<package>/<exe>`. Accept the
+    // historical `app` layout only when that fallback cannot be resolved, so a
+    // live file is never treated as a different binary in the same package.
+    if built.canonicalize().is_ok() {
+        return false;
+    }
+    let Some(file_name) = built.file_name().filter(|name| !name.is_empty()) else {
+        return false;
+    };
+    multi_instance_paths_match(&app_path.join("app").join(file_name), recorded)
+}
+
 fn multi_manifest_identity_matches(
     instance: &CodexMultiInstance,
     identity: &codex_plus_core::multi_worker::CodexInstanceIdentity,
@@ -1869,19 +1920,12 @@ fn multi_manifest_identity_matches(
         && identity.generation == instance.generation
         && identity.debug_port == instance.debug_port
         && identity.helper_port == instance.helper_port
-        && instance
-            .user_data_dir
-            .as_ref()
-            .and_then(|path| Path::new(path).canonicalize().ok())
-            .as_ref()
-            == Some(&identity.user_data_dir)
-        && instance
-            .app_path
-            .as_ref()
-            .map(|path| codex_plus_core::app_paths::build_codex_executable(Path::new(path)))
-            .map(|path| path.canonicalize().unwrap_or(path))
-            .as_ref()
-            == Some(&identity.executable)
+        && instance.user_data_dir.as_deref().is_some_and(|path| {
+            multi_instance_paths_match(Path::new(path), &identity.user_data_dir)
+        })
+        && instance.app_path.as_deref().is_some_and(|path| {
+            multi_instance_executable_matches(Path::new(path), &identity.executable)
+        })
 }
 
 fn load_multi_instance_manifest(root: &Path) -> anyhow::Result<CodexMultiInstance> {
@@ -1972,8 +2016,8 @@ fn load_multi_instance_manifest_with_probes(
     // 重启前已停止、清单仍留着旧身份的记录同样适用（#2940）：否则列表一直「未知」，
     // 重新启动也因身份对不上无法确认旧实例已释放。
     let orphaned = !multi_instance_orphaned_identities(&instance).is_empty()
-        && orphan_absent(&instance).unwrap_or(false)
-        && orphan_absent(&instance).unwrap_or(false);
+        && multi_instance_orphan_probe_succeeded(&instance, &orphan_absent)
+        && multi_instance_orphan_probe_succeeded(&instance, &orphan_absent);
     if orphaned {
         instance.identity = None;
         instance.pid = None;
@@ -2028,6 +2072,28 @@ fn load_multi_instance_manifest_with_probes(
         }
     }
     Ok(instance)
+}
+
+/// `Err` from the stale-record probe used to become `false` with no log, so a
+/// record stuck after a Store upgrade looked identical to "process still live".
+fn multi_instance_orphan_probe_succeeded(
+    instance: &CodexMultiInstance,
+    absent: &impl Fn(&CodexMultiInstance) -> anyhow::Result<bool>,
+) -> bool {
+    match absent(instance) {
+        Ok(absent) => absent,
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.multi_instance_stale_record_probe_failed",
+                json!({
+                    "instance_id": instance.instance_id,
+                    "generation": instance.generation,
+                    "message": format!("{error:#}"),
+                }),
+            );
+            false
+        }
+    }
 }
 
 /// 清单或同代回执里记录了进程身份，但它已对不上当前清单时，返回需要核验退出的身份。
@@ -2685,8 +2751,16 @@ fn finish_multi_instance_cleanup(
         Ok(())
     });
     let result = multi_instance_cleanup_result(instance, &verified);
-    write_multi_instance_result(root, instance, &result)?;
-    verified
+    match (
+        verified,
+        write_multi_instance_result(root, instance, &result),
+    ) {
+        // A receipt-write failure must not hide the cleanup error that made the
+        // receipt necessary (#3021). Callers surface `{error:#}` to the user.
+        (Err(cleanup), Err(write)) => Err(anyhow::anyhow!("{cleanup:#}（回执未写入：{write:#}）")),
+        (_verified, Err(write)) => Err(write),
+        (verified, Ok(())) => verified,
+    }
 }
 
 fn multi_instance_cleanup_result(
@@ -14838,6 +14912,204 @@ model_reasoning_effort = "high"
         .unwrap();
         assert_eq!(saved.generation, original.generation + 1);
         assert_ne!(saved.status, "stopped");
+    }
+
+    fn verbatim_windows_path(path: &Path) -> PathBuf {
+        PathBuf::from(format!(r"\\?\{}", path.display()))
+    }
+
+    /// #3021: Store upgrade deletes the package directory. The manifest still
+    /// names that package, and the saved executable is `\\?\...\app\ChatGPT.exe`.
+    fn vanished_store_package_instance(root: &Path) -> CodexMultiInstance {
+        let mut instance = ready_multi_instance_fixture(root);
+        let package = root.join("OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0");
+        assert!(!package.exists());
+        instance.app_path = Some(package.to_string_lossy().into_owned());
+        instance.status = "starting".into();
+        instance.running = false;
+        instance.identity.as_mut().unwrap().executable =
+            verbatim_windows_path(&package.join("app").join("ChatGPT.exe"));
+        let identity = instance.identity.clone().unwrap();
+        let receipt = instance.launch_result.as_mut().unwrap();
+        receipt.status = "stopped".into();
+        receipt.message = "Codex 多开实例已停止，清理完成。".into();
+        receipt.identity = Some(identity);
+        receipt.pid = Some(instance.identity.as_ref().unwrap().process_id);
+        receipt.debug_port = Some(instance.debug_port);
+        receipt.helper_port = Some(instance.helper_port);
+        save_multi_instance_manifest(root, &instance).unwrap();
+        write_multi_launch_result(
+            &root.join(MULTI_LAUNCH_RESULT_FILE),
+            instance.launch_result.as_ref().unwrap(),
+        )
+        .unwrap();
+        instance
+    }
+
+    #[test]
+    fn vanished_store_package_identity_matches_verbatim_app_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance = vanished_store_package_instance(temp.path());
+        let identity = instance.identity.clone().unwrap();
+        let package = PathBuf::from(instance.app_path.clone().unwrap());
+        let built = codex_plus_core::app_paths::build_codex_executable(&package);
+        assert_eq!(built, package.join("ChatGPT.exe"));
+        assert_ne!(
+            normalized_identity_path(&built),
+            normalized_identity_path(&identity.executable)
+        );
+        assert!(multi_manifest_identity_matches(&instance, &identity));
+        assert!(multi_instance_orphaned_identities(&instance).is_empty());
+        assert_eq!(multi_instance_snapshot_status(&instance, false), "unknown");
+
+        let mut prefix_only = instance.clone();
+        prefix_only.identity.as_mut().unwrap().executable = verbatim_windows_path(&built);
+        assert!(multi_manifest_identity_matches(
+            &prefix_only,
+            prefix_only.identity.as_ref().unwrap()
+        ));
+
+        #[cfg(windows)]
+        {
+            let mut cased = prefix_only.clone();
+            let upper = built.to_string_lossy().to_ascii_uppercase();
+            cased.identity.as_mut().unwrap().executable = PathBuf::from(format!(r"\\?\{upper}"));
+            assert!(multi_manifest_identity_matches(
+                &cased,
+                cased.identity.as_ref().unwrap()
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            let mut cased = prefix_only;
+            let lower = built
+                .to_string_lossy()
+                .replace("ChatGPT.exe", "chatgpt.exe");
+            cased.identity.as_mut().unwrap().executable = verbatim_windows_path(Path::new(&lower));
+            assert!(!multi_manifest_identity_matches(
+                &cased,
+                cased.identity.as_ref().unwrap()
+            ));
+        }
+
+        let mut prefixed_data = instance.clone();
+        let canonical = Path::new(prefixed_data.user_data_dir.as_ref().unwrap())
+            .canonicalize()
+            .unwrap();
+        prefixed_data.user_data_dir = Some(canonical.display().to_string());
+        prefixed_data.identity.as_mut().unwrap().user_data_dir = verbatim_windows_path(&canonical);
+        assert!(multi_manifest_identity_matches(
+            &prefixed_data,
+            prefixed_data.identity.as_ref().unwrap()
+        ));
+
+        let mut outside = instance.clone();
+        outside.identity.as_mut().unwrap().executable =
+            verbatim_windows_path(&temp.path().join("other").join("ChatGPT.exe"));
+        assert!(!multi_manifest_identity_matches(
+            &outside,
+            outside.identity.as_ref().unwrap()
+        ));
+
+        let live = temp
+            .path()
+            .join("OpenAI.Codex_26.1103.7773.0_x64__2p2nqsd0c76g0");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("ChatGPT.exe"), "live").unwrap();
+        let mut live_instance = instance;
+        live_instance.app_path = Some(live.to_string_lossy().into_owned());
+        live_instance.identity.as_mut().unwrap().executable =
+            verbatim_windows_path(&live.join("app").join("ChatGPT.exe"));
+        assert!(!multi_manifest_identity_matches(
+            &live_instance,
+            live_instance.identity.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn vanished_store_package_reconciles_when_the_process_is_gone() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = vanished_store_package_instance(temp.path());
+        let current = load_multi_instance_manifest_with_absence(temp.path(), |_| Ok(true)).unwrap();
+        assert_eq!(current.status, "stopped");
+        assert!(!current.running);
+        assert_eq!(current.pid, None);
+        assert_eq!(current.worker_birth_id, None);
+        assert_eq!(
+            current.identity.as_ref().unwrap().executable,
+            original.identity.unwrap().executable
+        );
+        assert_eq!(multi_instance_snapshot_status(&current, false), "stopped");
+        assert!(multi_instance_relaunch_is_safe_with(&current, |_| Ok(true)));
+        finish_multi_instance_cleanup(temp.path(), &current, Ok(()), |_| Ok(true)).unwrap();
+        assert_eq!(
+            load_multi_launch_result(temp.path()).unwrap().status,
+            "stopped"
+        );
+    }
+
+    #[test]
+    fn multi_instance_cleanup_keeps_underlying_error_when_receipt_write_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance = ready_multi_instance_fixture(temp.path());
+        let mut replaced = instance.clone();
+        replaced.generation += 1;
+        save_multi_instance_manifest(temp.path(), &replaced).unwrap();
+        let receipt_before = std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap();
+        let error = finish_multi_instance_cleanup(
+            temp.path(),
+            &instance,
+            Err(anyhow::anyhow!("worker 未正常结束")),
+            |_| Ok(true),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("worker 未正常结束"), "{message}");
+        assert!(message.contains("回执未写入"), "{message}");
+        assert_eq!(
+            std::fs::read(temp.path().join(MULTI_LAUNCH_RESULT_FILE)).unwrap(),
+            receipt_before
+        );
+    }
+
+    #[test]
+    fn orphan_probe_errors_are_logged_and_do_not_clear_the_record() {
+        struct RestoreDiagnosticLog(Option<PathBuf>);
+        impl Drop for RestoreDiagnosticLog {
+            fn drop(&mut self) {
+                codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(self.0.take());
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        let log_path = temp.path().join("diag.log");
+        let _restore = RestoreDiagnosticLog(
+            codex_plus_core::diagnostic_log::swap_diagnostic_log_path_for_tests(Some(
+                log_path.clone(),
+            )),
+        );
+        let original = orphaned_multi_instance_fixture(&root);
+        assert!(!multi_instance_orphaned_identities(&original).is_empty());
+        let manifest = std::fs::read(multi_instance_manifest_path(&root)).unwrap();
+        let current = load_multi_instance_manifest_with_probes(
+            &root,
+            |_| panic!("mismatched identity must not use the regular probe"),
+            |_| anyhow::bail!("query denied"),
+        )
+        .unwrap();
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            log.contains("manager.multi_instance_stale_record_probe_failed"),
+            "{log}"
+        );
+        assert!(log.contains("query denied"), "{log}");
+        assert_eq!(current.identity, original.identity);
+        assert_ne!(current.status, "stopped");
+        assert_eq!(
+            std::fs::read(multi_instance_manifest_path(&root)).unwrap(),
+            manifest
+        );
     }
 
     #[test]
