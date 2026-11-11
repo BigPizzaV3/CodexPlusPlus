@@ -104,6 +104,7 @@ fn routed_supplier_requires_successful_request_evidence() {
 
     let before = routed.delta;
     let mut successful = request(at);
+    successful.model.clone_from(&routed.model);
     successful.relay_id = "supplier-b".into();
     successful.relay_name = "Supplier B".into();
     let mut cache = RequestEvidenceCache::default();

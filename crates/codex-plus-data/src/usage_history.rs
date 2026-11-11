@@ -268,12 +268,12 @@ impl Query {
         if from.zip(to).is_some_and(|(f, t)| f > t) {
             return None;
         }
-        let text = |name: &str| -> Option<Option<String>> {
+        let text = |name: &str, limit: usize| -> Option<Option<String>> {
             if value[name].is_null() {
                 return Some(None);
             }
             let text = value[name].as_str()?;
-            (text.len() <= 200).then(|| Some(text.to_owned()).filter(|s| !s.is_empty()))
+            (text.len() <= limit).then(|| Some(text.to_owned()).filter(|s| !s.is_empty()))
         };
         let session_id = if value["sessionId"].is_null() {
             None
@@ -291,9 +291,9 @@ impl Query {
         Some(Self {
             from,
             to,
-            model: text("model")?,
+            model: text("model", 256)?,
             session_id,
-            turn_id: text("turnId")?,
+            turn_id: text("turnId", 200)?,
             search,
             include_session_cursors,
             include_activity: value["includeActivity"] == true,

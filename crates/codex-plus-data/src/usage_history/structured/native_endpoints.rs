@@ -174,6 +174,8 @@ pub(super) struct Attribution {
     // 0: 无计数冲突；1: 仅继承副本冲突；2: 原记录冲突。
     #[serde(default, skip_serializing_if = "no_count_conflict")]
     count_conflict: u8,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    original_model: String,
 }
 
 fn no_count_conflict(level: &u8) -> bool {
@@ -195,7 +197,23 @@ fn merge_persisted(current: &Attribution, incoming: &Attribution, observed: bool
             return current.clone();
         }
     }
-    if current.version == 2 && incoming.version == 2 {
+    if matches!(current.version, 2 | 4)
+        && matches!(incoming.version, 2 | 4)
+        && current.version != incoming.version
+    {
+        let mut retained = current.clone();
+        if incoming.rejected
+            || current.key != incoming.key
+            || current.at != incoming.at
+            || current.turn != incoming.turn
+            || current.provider != incoming.provider
+            || current.binding_since != incoming.binding_since
+        {
+            retained.rejected = true;
+        }
+        return retained;
+    }
+    if matches!(current.version, 2 | 4) && current.version == incoming.version {
         if current.rejected && !incoming.rejected {
             return current.clone();
         }
@@ -227,9 +245,18 @@ impl Attribution {
                 && self.key.cached == 0
                 && self.turn.is_empty()
                 && self.provider.is_empty()
-                && self.binding_since == 0;
+                && self.binding_since == 0
+                && self.original_model.is_empty();
         }
-        self.version == 2
+        matches!(self.version, 2 | 4)
+            && if self.version == 2 {
+                self.original_model.is_empty()
+            } else {
+                !self.original_model.is_empty()
+                    && self.original_model.len() <= 256
+                    && request_base_model(&self.original_model)
+                        .eq_ignore_ascii_case(&self.key.model)
+            }
             && self.count_conflict == 0
             && self.binding_since > 0
             && self.at >= self.binding_since
@@ -266,6 +293,8 @@ pub(super) struct Request {
     pub(super) session: String,
     turn: String,
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    original_model: Option<String>,
     pub(super) at: i64,
     provider: Option<String>,
     pub(super) binding_since: i64,
@@ -283,6 +312,11 @@ impl Request {
             && [&self.session, &self.turn, &self.model]
                 .iter()
                 .all(|s| !s.is_empty() && s.len() <= 256)
+            && self.original_model.as_ref().is_none_or(|model| {
+                !model.is_empty()
+                    && model.len() <= 256
+                    && request_base_model(model).eq_ignore_ascii_case(&self.model)
+            })
             && self.provider.as_ref().is_none_or(|p| {
                 !unknown_provider(p) && p.len() <= 256 && self.at >= self.binding_since
             })
@@ -417,6 +451,7 @@ pub(super) fn request(
         session: session.to_owned(),
         turn,
         model: request_base_model(&model).to_ascii_lowercase(),
+        original_model: Some(model),
         at,
         provider: endpoints
             .get(&url)
@@ -654,6 +689,7 @@ impl Cache {
                     binding_since: 0,
                     rejected: true,
                     count_conflict: conflict,
+                    original_model: String::new(),
                 },
             );
         }
@@ -728,7 +764,11 @@ impl Cache {
             }
             let saved = self.verified.get(&event.id);
             let retained = saved.is_some_and(|s| {
-                !s.rejected && &s.key == key && s.at == *at && s.turn == event.turn
+                !s.rejected
+                    && &s.key == key
+                    && s.at == *at
+                    && s.turn == event.turn
+                    && (s.version != 4 || s.original_model.eq_ignore_ascii_case(&event.model))
             }) && now.saturating_sub(*at) > WINDOW_MS;
             if !retained {
                 live_targets.insert(key.session.clone());
@@ -917,6 +957,11 @@ impl Cache {
             row.session = session;
             unique
                 .entry((row.source.clone(), row.row_id, row.at, row.identity))
+                .and_modify(|previous: &mut Request| {
+                    if previous.original_model.is_none() {
+                        previous.original_model.clone_from(&row.original_model);
+                    }
+                })
                 .or_insert(row);
         }
         let records: Vec<_> = unique.into_values().collect();
@@ -1012,7 +1057,28 @@ impl Cache {
             let candidates = requests.get(&group).unwrap_or(&empty);
             let start = candidates.partition_point(|row| row.at <= floor);
             let end = candidates.partition_point(|row| row.at <= *at);
-            let rows = &candidates[start..end];
+            let observed = &candidates[start..end];
+            let original_model = event.model.as_str();
+            let legacy = self
+                .verified
+                .get(&event.id)
+                .is_some_and(|saved| saved.version == 2);
+            let uncertain = !legacy && observed.iter().any(|row| row.original_model.is_none());
+            let rows: Vec<_> = if legacy {
+                observed.to_vec()
+            } else if uncertain {
+                Vec::new()
+            } else {
+                observed
+                    .iter()
+                    .copied()
+                    .filter(|row| {
+                        row.original_model
+                            .as_deref()
+                            .is_some_and(|model| model.eq_ignore_ascii_case(original_model))
+                    })
+                    .collect()
+            };
             let candidate = rows
                 .first()
                 .and_then(|first| first.provider.as_ref())
@@ -1031,6 +1097,9 @@ impl Cache {
                 if saved.key != *key
                     || saved.at != *at
                     || saved.turn != event.turn
+                    || saved.version == 4
+                        && !saved.original_model.eq_ignore_ascii_case(original_model)
+                    || saved.version == 4 && uncertain
                     || !rows.is_empty() && candidate != Some(&saved.provider)
                 {
                     saved.rejected = true;
@@ -1060,10 +1129,11 @@ impl Cache {
                         at: *at,
                         turn: event.turn.clone(),
                         provider: provider.clone(),
-                        version: 2,
+                        version: 4,
                         binding_since: since,
                         rejected: false,
                         count_conflict: 0,
+                        original_model: original_model.to_owned(),
                     });
             }
             if let Some(saved) = self.verified.get(&event.id).filter(|s| !s.rejected) {
@@ -1079,6 +1149,272 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_model_is_required_for_new_proofs_and_legacy_proofs_are_retained() {
+        let at = Local::now().timestamp_millis();
+        let event = UsageEvent {
+            id: [71; 32],
+            session: "session".into(),
+            turn: "turn".into(),
+            model: "cpx-a/model".into(),
+            timestamp: DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+            date: Local::now().date_naive(),
+            total: Tokens::new(100, 20, 10),
+            delta: Tokens::new(100, 20, 10),
+            has_file_baseline: false,
+            last: None,
+            count_uncertain: false,
+            count_incomplete: false,
+            provider: String::new(),
+            provider_source: None,
+            role: "main".into(),
+            inherited: false,
+            legacy_identity: None,
+            context_conflicts: ContextConflicts::default(),
+        };
+        let aliases = RequestSessionAliases::new(&BTreeMap::new());
+        let key = event_key(&event, &aliases).unwrap();
+        let row = |model: &str, provider: &str| Request {
+            session: event.session.clone(),
+            turn: event.turn.clone(),
+            model: request_base_model(model).to_owned(),
+            original_model: Some(model.to_owned()),
+            at: at - 10,
+            provider: Some(provider.to_owned()),
+            binding_since: at - 100,
+            identity: [0; 32],
+            source: String::new(),
+            row_id: 0,
+        };
+        let exact = row("cpx-a/model", "supplier-a");
+        let other = row("cpx-b/model", "supplier-b");
+        let coverage = BTreeMap::from([(event.session.clone(), (i64::MIN, true))]);
+        let mut cache = Cache::default();
+        let mut fresh = vec![event.clone()];
+        cache.apply(
+            &mut fresh,
+            &[Some(key.clone())],
+            &[exact.clone(), other],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert_eq!(fresh[0].provider, "supplier-a");
+        assert_eq!(fresh[0].model, "cpx-a/model");
+        assert_eq!(cache.verified[&event.id].version, 4);
+        assert_eq!(cache.verified[&event.id].original_model, event.model);
+
+        let root = tempfile::tempdir().unwrap();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let mut storage = provider_cache::ProviderCache::default();
+        storage.open(root.path(), cutoff).unwrap();
+        storage.save_native(&cache.verified).unwrap();
+        drop(storage);
+        let mut storage = provider_cache::ProviderCache::default();
+        storage.open(root.path(), cutoff).unwrap();
+        cache.verified = storage.load_native(cutoff).unwrap();
+        let mut restored = vec![event.clone()];
+        cache.apply(
+            &mut restored,
+            &[Some(key.clone())],
+            &[],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert_eq!(restored[0].provider, "supplier-a");
+
+        let mut conflict = vec![event.clone()];
+        cache.apply(
+            &mut conflict,
+            &[Some(key.clone())],
+            &[row("cpx-a/model", "supplier-b")],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert!(unknown_provider(&conflict[0].provider));
+        assert!(cache.verified[&event.id].rejected);
+
+        let mut old_request = exact.clone();
+        old_request.original_model = None;
+        let mut uncertain_cache = Cache::default();
+        let mut first = vec![event.clone()];
+        uncertain_cache.apply(
+            &mut first,
+            &[Some(key.clone())],
+            &[exact, old_request.clone()],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert!(unknown_provider(&first[0].provider));
+        assert!(!uncertain_cache.verified.contains_key(&event.id));
+
+        let mut uncertain_cache = Cache::default();
+        uncertain_cache
+            .verified
+            .insert(event.id, cache.verified[&event.id].clone());
+        uncertain_cache
+            .verified
+            .get_mut(&event.id)
+            .unwrap()
+            .rejected = false;
+        let mut disputed = vec![event.clone()];
+        uncertain_cache.apply(
+            &mut disputed,
+            &[Some(key.clone())],
+            &[old_request.clone()],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert!(unknown_provider(&disputed[0].provider));
+        assert!(uncertain_cache.verified[&event.id].rejected);
+
+        let mut cache = Cache::default();
+        let mut unverified = vec![event.clone()];
+        cache.apply(
+            &mut unverified,
+            &[Some(key.clone())],
+            &[old_request],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert!(unknown_provider(&unverified[0].provider));
+        assert!(!cache.verified.contains_key(&event.id));
+
+        cache.verified.insert(
+            event.id,
+            Attribution {
+                key: key.0.clone(),
+                at,
+                turn: event.turn.clone(),
+                provider: "supplier-old".into(),
+                version: 2,
+                binding_since: at - 100,
+                rejected: false,
+                count_conflict: 0,
+                original_model: String::new(),
+            },
+        );
+        let old = cache.verified[&event.id].clone();
+        let mut historical = vec![event.clone()];
+        cache.apply(
+            &mut historical,
+            &[Some(key)],
+            &[],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+        );
+        assert_eq!(historical[0].provider, "supplier-old");
+        assert!(cache.verified[&event.id] == old);
+
+        for model in ["cpx-a/Model", "CPX-a/Model"] {
+            let mut case_event = event.clone();
+            case_event.model = model.to_owned();
+            let body = format!(
+                "{{thread.id=session turn.id=turn model={model}}}: Request completed method=POST url=https://one.example/v1/responses status=200 headers={{}}"
+            );
+            let row = request(
+                &body,
+                "session",
+                (at.div_euclid(1000), at.rem_euclid(1000) * 1_000_000),
+                &BTreeMap::from([(
+                    "https://one.example/v1/responses".into(),
+                    Some("supplier-a".into()),
+                )]),
+                at - 100,
+                "source",
+                1,
+            )
+            .unwrap();
+            assert_eq!(row.original_model.as_deref(), Some(model));
+            assert!(row.valid());
+            let mut case_cache = Cache::default();
+            let mut events = vec![case_event.clone()];
+            case_cache.apply(
+                &mut events,
+                &[event_key(&case_event, &aliases)],
+                &[row],
+                at - 100,
+                &coverage,
+                true,
+                &HashSet::new(),
+            );
+            assert_eq!(events[0].provider, "supplier-a");
+            assert_eq!(case_cache.verified[&event.id].original_model, model);
+            assert!(case_cache.verified[&event.id].valid());
+        }
+    }
+
+    #[test]
+    fn concurrent_old_and_new_native_proofs_preserve_rejection_and_conflicts() {
+        let at = Local::now().timestamp_millis();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let id = [72; 32];
+        for (first_version, second_version, rejected, conflicting) in [
+            (2, 4, false, false),
+            (4, 2, false, false),
+            (2, 4, true, false),
+            (4, 2, true, false),
+            (2, 4, false, true),
+            (4, 2, false, true),
+        ] {
+            let proof = |version| Attribution {
+                key: RequestMatchKey {
+                    session: "session".into(),
+                    model: "model".into(),
+                    input: 100,
+                    output: 10,
+                    cached: 20,
+                },
+                at,
+                turn: "turn".into(),
+                provider: "supplier-a".into(),
+                version,
+                binding_since: at - 1,
+                rejected: false,
+                count_conflict: 0,
+                original_model: if version == 4 {
+                    "cpx-a/model".into()
+                } else {
+                    String::new()
+                },
+            };
+            let root = tempfile::tempdir().unwrap();
+            let mut storage = provider_cache::ProviderCache::default();
+            storage.open(root.path(), cutoff).unwrap();
+            drop(storage);
+            let mut first = Cache::default();
+            let mut second = Cache::default();
+            first.verified.insert(id, proof(first_version));
+            let mut incoming = proof(second_version);
+            incoming.rejected = rejected;
+            if conflicting {
+                incoming.provider = "supplier-b".into();
+            }
+            second.verified.insert(id, incoming);
+            first.save_bounded(root.path(), cutoff, &[]).unwrap();
+            second.save_bounded(root.path(), cutoff, &[]).unwrap();
+
+            let mut storage = provider_cache::ProviderCache::default();
+            storage.open(root.path(), cutoff).unwrap();
+            let saved = storage.load_native(cutoff).unwrap();
+            assert_eq!(saved[&id].version, first_version);
+            assert_eq!(saved[&id].rejected, rejected || conflicting);
+        }
+    }
 
     #[test]
     fn unknown_cache_blocks_native_matching_without_revoking_saved_evidence() {
@@ -1126,6 +1462,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                original_model: String::new(),
             },
         );
         let mut events = vec![event.clone(), unknown];
@@ -1185,6 +1522,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                original_model: String::new(),
             },
         );
         let mut conflicted = event.clone();
@@ -1282,6 +1620,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                original_model: String::new(),
             },
         );
         let mut partial = vec![event.clone()];
@@ -1401,6 +1740,7 @@ mod tests {
             binding_since: at - 1,
             rejected: false,
             count_conflict: 0,
+            original_model: String::new(),
         };
         assert!(
             serde_json::to_value(&proof)
@@ -1471,6 +1811,7 @@ mod tests {
                     binding_since: at - 1,
                     rejected: false,
                     count_conflict: 0,
+                    original_model: String::new(),
                 },
             );
             let mut candidate = event.clone();

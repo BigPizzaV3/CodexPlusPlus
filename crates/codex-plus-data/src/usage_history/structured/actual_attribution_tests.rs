@@ -59,7 +59,7 @@ mod actual_attribution {
                 if unknown_model(&original.model) {
                     ""
                 } else {
-                    request_base_model(&original.model)
+                    &original.model
                 }
             );
         }

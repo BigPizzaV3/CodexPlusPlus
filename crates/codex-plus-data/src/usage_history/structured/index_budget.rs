@@ -214,6 +214,8 @@ impl Budget {
             + state.exec_skills.capacity()
                 * (std::mem::size_of::<(String, super::ExecSkill)>() + 32)
             + state.exec_polls.capacity() * (std::mem::size_of::<(String, String)>() + 32)
+            + state.model_observations.capacity()
+                * (std::mem::size_of::<(String, super::SessionModelObservation)>() + 32)
             + [
                 &state.session,
                 &state.turn,
@@ -567,6 +569,18 @@ impl Meter {
                             .prefix
                             .as_ref()
                             .map_or(0, |(parent, _)| parent.capacity())
+                })
+                .sum::<usize>()
+            + state.model_observations.capacity()
+                * (std::mem::size_of::<(String, super::SessionModelObservation)>() + 32)
+            + state
+                .model_observations
+                .iter()
+                .map(|(session, observation)| {
+                    session.capacity()
+                        + observation.model.capacity()
+                        + observation.provider.capacity()
+                        + observation.role.capacity()
                 })
                 .sum::<usize>()
             + state
