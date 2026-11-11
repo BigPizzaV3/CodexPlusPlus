@@ -145,8 +145,8 @@ pub fn claude_gateway_provider(
     let window = route::model_entry_window(gateway, binding, &default_model)
         .or(binding.context_window)
         .or_else(|| {
-            let (_, window) = crate::model_suffix::parse_model_suffix(binding.model.trim());
-            window
+            let (model, window) = crate::model_suffix::parse_model_suffix(binding.model.trim());
+            window.filter(|_| model.eq_ignore_ascii_case(&default_model))
         });
     if let Some(window) = window {
         env.insert(
@@ -1772,11 +1772,15 @@ pub fn reset_model_selections(
 ) -> anyhow::Result<GatewaySettings> {
     let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (gateway, ()) = store.update(|gateway| {
+        let runtime = gateway.clone().with_extension_providers();
         let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
             bail!("还没有配置网关绑定");
         };
         binding.model_selections.clear();
-        if binding.default_model_selection.as_ref().is_some_and(|selection| selection.provider_removed) {
+        if binding.default_model_selection.as_ref().is_some_and(|selection| {
+            selection.provider_removed
+                || route::check_selected_default(&runtime, binding, &selection.model_name()).is_err()
+        }) {
             binding.default_model_selection = None;
             binding.model.clear();
         }
@@ -1801,11 +1805,11 @@ fn record_model_selection(
         if existing != selection {
             if existing.provider_removed && !selection.provider_removed {
                 bail!(
-                    "模型 {} 对应的原供应商已删除，请删除重建的同名供应商，再重新添加并选择",
+                    "模型 {} 对应的原供应商已删除，请先重置历史模型选择，再重新选择",
                     selection.model_name()
                 );
             }
-            bail!("模型 {} 的原供应商身份已失效，请重新选择供应商", selection.model_name());
+            bail!("模型 {} 的原供应商身份已失效，请先重置历史模型选择，再重新选择", selection.model_name());
         }
     } else {
         binding.model_selections.push(selection);

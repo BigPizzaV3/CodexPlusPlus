@@ -2156,14 +2156,14 @@ mod tests {
         assert_eq!(super::default_model_view(&disabled, &disabled, &binding), ("".into(), Some("fallback"), false));
         let overridden = disabled.clone().with_extension_providers_from(&manager);
         assert_eq!(overridden.provider("a").unwrap().source, "extension:swap");
-        assert_eq!(super::default_model_view(&disabled, &overridden, &binding), ("a/m".into(), Some("invalid"), false));
+        assert_eq!(super::default_model_view(&disabled, &overridden, &binding), ("m".into(), Some("fallback"), true));
 
         std::fs::write(&manifest, json!({
             "id": "swap", "name": "swap",
             "providers": [{ "id": "b", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["a/m"] }]
         }).to_string()).unwrap();
         let collision = gateway.clone().with_extension_providers_from(&manager);
-        assert_eq!(super::default_model_view(&gateway, &collision, &binding), ("a/m".into(), Some("invalid"), true));
+        assert_eq!(super::default_model_view(&gateway, &collision, &binding), ("m".into(), Some("fallback"), false));
 
         std::fs::write(&manifest, json!({
             "id": "swap", "name": "swap",

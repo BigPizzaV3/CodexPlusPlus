@@ -922,7 +922,7 @@ function PanelAgentRow({
   const inactiveHint = inactive && agent.enabled
     ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
     : unavailable && agent.enabled
-      ? tf("原供应商「{0}」不可用，网关默认回退为 {1}", [original.sub, display.title || t("未设置")])
+      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);

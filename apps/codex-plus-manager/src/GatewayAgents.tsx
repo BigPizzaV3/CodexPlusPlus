@@ -455,7 +455,7 @@ function AgentRow({
 function ResetModelSelections({ agent, busy, run }: { agent: GatewayAgentView; busy: boolean; run: Run }) {
   const reset = async () => {
     const accepted = await appConfirm(
-      t("重置后，历史会话可能按当前路由规则选择供应商。有效的当前默认模型供应商身份会保留；已删除供应商的失效选择会清除。是否继续？"),
+      t("重置后，历史会话可能按当前路由规则选择供应商。有效的当前默认模型供应商身份会保留；失效的当前默认选择会清除。是否继续？"),
       { title: tf("重置 {0} 的历史模型选择", [agent.name]), confirmText: t("重置"), danger: true },
     );
     if (!accepted) return;
@@ -1215,7 +1215,7 @@ function ModelPicker({
   const inactiveHint = inactive && connected
     ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
     : unavailable && connected
-      ? tf("原供应商「{0}」不可用，网关默认回退为 {1}", [original.sub, display.title || t("未设置")])
+      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);

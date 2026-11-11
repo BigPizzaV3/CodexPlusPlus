@@ -206,12 +206,12 @@ test("停用的默认供应商显示实际回退模型，恢复后显示原选�
       : exports.PanelAgentRow({ agent: { ...agent, defaultModel, defaultSelectionStatus, defaultModelDiffers }, payload: current, onRun: () => {} });
     const fallback = render(data, "fallback-model");
     const picker = elements(fallback).find((element) => element.props?.className?.includes("gw-picker-button"));
-    assert.match(picker?.props.title, /原供应商「a」不可用，网关默认回退为 Fallback-Model/);
+    assert.match(picker?.props.title, /原默认模型「Example-Model」不可用，网关默认回退为 Fallback-Model/);
     assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModel, "fallback-model");
     assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModelSelection, null);
     const noFallback = render(data, "");
     const emptyPicker = elements(noFallback).find((element) => element.props?.className?.includes("gw-picker-button"));
-    assert.match(emptyPicker?.props.title, /原供应商「a」不可用，网关默认回退为 未设置/);
+    assert.match(emptyPicker?.props.title, /原默认模型「Example-Model」不可用，网关默认回退为 未设置/);
     assert.equal(elements(emptyPicker).find((element) => element.type === "ModelViewGlyph")?.props.view.title, "");
     assert.equal(elements(noFallback).find((element) => element.type === "ModelList")?.props.selectedModel, "");
     const invalid = render(data, "a/example-model", "invalid");
@@ -229,6 +229,16 @@ test("停用的默认供应商显示实际回退模型，恢复后显示原选�
     assert.equal(extensionView.title, "extension/model");
     assert.equal(extensionView.sub, "", "不能根据本地池猜测拓展模型的供应商");
     assert.equal(elements(extensionFallback).find((element) => element.type === "ModelList")?.props.selectedModel, "");
+    const enabledCollision = {
+      ...data,
+      pool: data.pool.map((entry) => entry.id === "a" ? { ...entry, enabled: true } : { ...entry, models: ["a/example-model"] }),
+    };
+    const collision = render(enabledCollision, "example-model", "fallback");
+    const collisionPicker = elements(collision).find((element) => element.props?.className?.includes("gw-picker-button"));
+    assert.match(collisionPicker?.props.title, /原默认模型「Example-Model」不可用/);
+    assert.equal(elements(collision).find((element) => element.type === "ModelList")?.props.selectedModelSelection, null);
+    const overridden = render(enabledCollision, "example-model", "fallback", true);
+    assert.equal(elements(overridden).find((element) => element.type === "ModelList")?.props.selectedModel, "");
     const restored = { ...data, pool: data.pool.map((entry) => entry.id === "a" ? { ...entry, enabled: true } : entry) };
     const active = render(restored, "a/example-model");
     assert.equal(elements(active).find((element) => element.props?.className?.includes("gw-picker-button"))?.props.title, undefined);
@@ -419,7 +429,7 @@ test("已接入和已断开的 Agent 都能确认重置历史模型选择", asyn
   button.props.onClick();
   assert.match(confirmations[0].message, /历史会话可能按当前路由规则/);
   assert.match(confirmations[0].message, /有效的当前默认模型供应商身份会保留/);
-  assert.match(confirmations[0].message, /已删除供应商的失效选择会清除/);
+  assert.match(confirmations[0].message, /失效的当前默认选择会清除/);
   assert.equal(confirmations[0].options.title, "重置 Codex 的历史模型选择");
   assert.equal(calls.length, 0);
   respond(false);

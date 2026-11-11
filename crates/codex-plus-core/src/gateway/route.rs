@@ -582,13 +582,7 @@ pub(crate) fn codex_model_members(
 pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) -> String {
     let (slug, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
     if !slug.trim().is_empty() {
-        let selection_unavailable = binding.selection_for(&slug).is_some_and(|selection| {
-            gateway.provider(&selection.provider_id).is_none_or(|provider| {
-                selection.provider_removed
-                    || !provider.enabled
-                    || binding.pool_exclude.contains(&provider.relay.id)
-            })
-        });
+        let selection_unavailable = unavailable_registered_model(gateway, binding, &slug);
         if selection_unavailable
             || is_disabled_group_model(gateway, &slug)
             && !binding.default_model_selection.as_ref().is_some_and(|selection| {
@@ -768,9 +762,15 @@ fn claude_alias_target(
                 .filter(|head| head.eq_ignore_ascii_case(prefix))
                 .map(|_| &requested[prefix.len()..])
         })?;
+    let (current, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
     binding_exposed_models(gateway, binding)
         .into_iter()
         .chain(binding.model_selections.iter().map(|selection| selection.model_name()))
+        .chain(
+            binding.default_model_selection.as_ref()
+                .filter(|selection| selection.model_name().eq_ignore_ascii_case(&current))
+                .map(|_| current),
+        )
         .chain(
             binding.declared_models().into_iter()
                 .filter(|model| is_disabled_group_model(gateway, model)),
@@ -1955,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_provider_default_rejects_case_insensitive_group_collision() {
+    fn selected_provider_default_falls_back_on_case_insensitive_group_collision() {
         use crate::gateway::store::DefaultModelSelection;
 
         let mut gateway = gateway("GROUP/fast");
@@ -1973,15 +1973,43 @@ mod tests {
         for disabled in [false, true] {
             gateway.groups[0].disabled = disabled;
             let binding = gateway.binding(&ToolId::Claude).unwrap();
-            assert_eq!(binding_default_model(&gateway, binding), "GROUP/fast");
-            for model in ["", "GROUP/fast"] {
-                let error = resolve_plan(&gateway, &ToolId::Claude, model, None).unwrap_err();
-                assert!(error.to_string().contains("冲突"), "{disabled}: {model}: {error:#}");
+            assert_eq!(binding_default_model(&gateway, binding), "deepseek-v4-pro");
+            for model in ["", "unknown"] {
+                assert_eq!(routed(&gateway, model)[0], pair("ds", "deepseek-v4-pro"));
             }
+            let error = resolve_plan(&gateway, &ToolId::Claude, "GROUP/fast", None).unwrap_err();
+            assert!(error.to_string().contains("冲突"), "{disabled}: {error:#}");
             assert_eq!(
                 routed(&gateway, "ds/deepseek-v4-pro"),
                 vec![pair("ds", "deepseek-v4-pro")]
             );
+        }
+    }
+
+    #[test]
+    fn unavailable_default_alias_keeps_the_original_model_identity() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        for recorded in [false, true] {
+            let mut gateway = gateway("DS/deepseek-v4-pro[1M]");
+            let selection = DefaultModelSelection {
+                provider_id: "ds".into(),
+                upstream_model: "deepseek-v4-pro".into(),
+                provider_source: String::new(),
+                provider_removed: false,
+            };
+            let binding = gateway.bindings.get_mut("claude").unwrap();
+            binding.default_model_selection = Some(selection.clone());
+            if recorded {
+                binding.model_selections.push(selection);
+            }
+            gateway.providers.push(provider("native", "DS/deepseek-v4-pro"));
+            assert!(!routed(&gateway, "").is_empty());
+            for effort in [false, true] {
+                let alias = claude_desktop_alias("DS/deepseek-v4-pro", effort);
+                let error = resolve_plan(&gateway, &ToolId::Claude, &alias, None).unwrap_err();
+                assert!(error.to_string().contains("冲突"), "{recorded}: {alias}: {error:#}");
+            }
         }
     }
 
