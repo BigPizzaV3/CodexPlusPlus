@@ -5088,6 +5088,23 @@ pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
     .any(|base_url| kimi_official_base_url(base_url))
 }
 
+/// Kimi 官方（Moonshot 开放平台 / Kimi For Coding）的 Responses 接口只认
+/// `reasoning.encrypted_content`，Codex 客户端私有的 `output.encrypted_content`
+/// 会让整单 400（issue #3026）。官方 ChatGPT 路径不受影响。
+pub(crate) fn upstream_is_kimi_official_responses(profile: &RelayProfile) -> bool {
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| kimi_official_base_url(base_url))
+}
+
 fn kimi_official_base_url(base_url: &str) -> bool {
     let host = base_url
         .trim()
