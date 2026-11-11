@@ -318,13 +318,22 @@ jobs:
           try_install() {
             timeout 480 bash -c "$apt update -qq && $apt install -y --no-install-recommends $pkgs"
           }
-          if ! try_install; then
-            echo "::warning::默认 Ubuntu 镜像不可用，改用 archive.ubuntu.com 重试"
+          # 新版 runner 的源写成 mirror+file:/etc/apt/apt-mirrors.txt（里面是 azure 镜像），旧版直接写 azure 地址，两种都换。
+          use_official_mirror() {
+            echo "::warning::默认 Ubuntu 镜像不可用，改用 archive.ubuntu.com"
             for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
               if [ -f "$f" ]; then
-                sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
+                sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu#g' \
+                  -e 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
               fi
             done
+          }
+          # 域名都解析不了时 apt 要白等好几分钟才放弃（2026-11-11 实测），先探一下，不通直接换。
+          if ! getent hosts azure.archive.ubuntu.com >/dev/null; then
+            use_official_mirror
+          fi
+          if ! try_install; then
+            use_official_mirror
             try_install
           fi
       - name: Install frontend dependencies
