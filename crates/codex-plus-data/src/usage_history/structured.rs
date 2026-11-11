@@ -314,8 +314,7 @@ impl RequestEvidence {
         let mut models: Vec<_> = [&self.model, &self.upstream_model]
             .into_iter()
             .filter(|model| !unknown_model(model))
-            .map(|model| request_base_model(model))
-            .filter(|model| !unknown_model(model))
+            .map(String::as_str)
             .collect();
         models.dedup();
         models.push("");
@@ -332,7 +331,7 @@ impl RequestEvidence {
     }
 
     fn actual_model(&self) -> Option<&str> {
-        let model = request_base_model(&self.upstream_model);
+        let model = self.upstream_model.as_str();
         (!unknown_model(model) && !unknown_provider(&self.relay_id) && !self.relay_name.is_empty())
             .then_some(model)
     }
@@ -344,6 +343,12 @@ pub(super) struct VerifiedAttribution {
     at: i64,
     request: RequestEvidence,
     rejected: bool,
+    #[serde(default, skip_serializing_if = "is_legacy_request_proof")]
+    version: u8,
+}
+
+fn is_legacy_request_proof(version: &u8) -> bool {
+    *version == 0
 }
 
 #[derive(Default)]
@@ -397,13 +402,20 @@ impl RequestEvidenceCache {
                         at: at.timestamp_millis(),
                         request: RequestEvidence::default(),
                         rejected: true,
+                        version: 1,
                     },
                 );
             }
         }
     }
 
-    fn supplement_missing_session_models(&self, sessions: &mut BTreeMap<String, Value>, now: i64) {
+    fn supplement_missing_session_models(
+        &self,
+        sessions: &mut BTreeMap<String, Value>,
+        unavailable: &HashSet<String>,
+        aliases: &RequestSessionAliases,
+        now: i64,
+    ) {
         let mut models: BTreeMap<&str, Option<&str>> = BTreeMap::new();
         let mut valid = BTreeMap::new();
         let mut ids = HashSet::new();
@@ -415,6 +427,9 @@ impl RequestEvidenceCache {
         }
         for record in &self.records {
             if super::normalize_session_id(&record.thread_id).is_none()
+                || aliases
+                    .resolve(&record.thread_id)
+                    .is_none_or(|session| unavailable.contains(&session))
                 || sessions
                     .get(&record.thread_id)
                     .and_then(|info| info["model"].as_str())
@@ -422,7 +437,7 @@ impl RequestEvidenceCache {
             {
                 continue;
             }
-            let model = request_base_model(&record.model);
+            let model = record.model.as_str();
             let entry = models.entry(&record.thread_id).or_insert(Some(model));
             if unknown_model(model) || *entry != Some(model) {
                 *entry = None;
@@ -444,6 +459,10 @@ impl RequestEvidenceCache {
             let Some(model) = models.get(session).copied().flatten() else {
                 continue;
             };
+            let model = request_base_model(model);
+            if unknown_model(model) {
+                continue;
+            }
             // 仅补缺失模型，保留已落盘的角色/供应商；不产生用量或供应商推断。
             let info = sessions
                 .entry(session.to_owned())
@@ -797,8 +816,14 @@ impl RequestEvidenceCache {
                         session: aliases.resolve(&event.session)?,
                         model: if unknown_model(&event.model) {
                             String::new()
-                        } else {
+                        } else if self
+                            .verified
+                            .get(&event.id)
+                            .is_some_and(|saved| saved.version == 0)
+                        {
                             request_base_model(&event.model).to_owned()
+                        } else {
+                            event.model.clone()
                         },
                         input: event.delta.input_tokens,
                         output: event.delta.output_tokens,
@@ -911,11 +936,11 @@ impl RequestEvidenceCache {
             });
             if let Some(saved) = self.verified.get_mut(&event.id) {
                 let mut saved_key = saved.key.clone();
-                saved_key.model = if unknown_model(&saved_key.model) {
-                    String::new()
-                } else {
-                    request_base_model(&saved_key.model).to_owned()
-                };
+                if unknown_model(&saved_key.model) {
+                    saved_key.model.clear();
+                } else if saved.version == 0 {
+                    saved_key.model = request_base_model(&saved_key.model).to_owned();
+                }
                 let saved_session = aliases.resolve(&saved_key.session);
                 if let Some(session) = &saved_session {
                     saved_key.session.clone_from(session);
@@ -933,15 +958,45 @@ impl RequestEvidenceCache {
                 continue;
             };
             let request = &requests[i];
-            let Some(actual_model) = request.actual_model() else {
+            let legacy = self
+                .verified
+                .get(&event.id)
+                .is_some_and(|saved| saved.version == 0);
+            if !legacy
+                && !unknown_model(&event.model)
+                && (codex_plus_core::aggregate_catalog::is_aggregate_model(&request.model)
+                    || codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model))
+                && event.model != request.model
+            {
+                if let Some(saved) = self.verified.get_mut(&event.id) {
+                    saved.rejected = true;
+                }
+                continue;
+            }
+            let Some(actual_model) = request
+                .actual_model()
+                .map(|model| {
+                    if legacy {
+                        request_base_model(model)
+                    } else {
+                        model
+                    }
+                })
+                .filter(|model| !unknown_model(model))
+            else {
                 continue;
             };
             let routed_model = unknown_model(&event.model)
-                || codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model);
+                || (codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model)
+                    && (legacy || request.model == event.model && event.model != actual_model));
             if !routed_model
-                && !request_keys[i]
-                    .iter()
-                    .any(|key| key.model == request_base_model(&event.model))
+                && !request_keys[i].iter().any(|key| {
+                    if legacy {
+                        request_base_model(&key.model) == request_base_model(&event.model)
+                    } else {
+                        key.model == event.model
+                    }
+                })
             {
                 continue;
             }
@@ -980,6 +1035,7 @@ impl RequestEvidenceCache {
                         at: *at,
                         request: request.clone(),
                         rejected: false,
+                        version: 1,
                     },
                 );
             }
@@ -1190,12 +1246,17 @@ impl UsageEvent {
                 &mut self.context_conflicts.provider,
             );
         }
-        merge_context_value(
-            &mut self.model,
-            &other.model,
-            unknown_model,
-            &mut self.context_conflicts.model,
-        );
+        if self.context_conflicts.model || other.context_conflicts.model {
+            self.model.clear();
+            self.context_conflicts.model = true;
+        } else {
+            merge_context_value(
+                &mut self.model,
+                &other.model,
+                unknown_model,
+                &mut self.context_conflicts.model,
+            );
+        }
         merge_context_value(
             &mut self.role,
             &other.role,
@@ -1261,10 +1322,21 @@ struct ExecSkill {
     evidence: String,
 }
 
+struct SessionModelObservation {
+    at: i64,
+    model: String,
+    provider: String,
+    role: String,
+    unavailable: bool,
+    had_unavailable: bool,
+    unordered: bool,
+}
+
 #[derive(Default)]
 struct InheritedUsageContext {
     session: String,
     model: String,
+    model_unavailable: bool,
     turn: String,
     provider: String,
     role: String,
@@ -1285,6 +1357,7 @@ struct FileState {
     activity_truncated: bool,
     session: String,
     model: String,
+    model_unavailable: bool,
     turn: String,
     previous: Option<Tokens>,
     invalid_counts: bool,
@@ -1301,6 +1374,7 @@ struct FileState {
     role: String,
     history_boundary: super::UsageHistoryBoundary,
     inherited_contexts: Vec<InheritedUsageContext>,
+    model_observations: HashMap<String, SessionModelObservation>,
     legacy_header: Option<(String, String)>,
     scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
 }
@@ -2340,8 +2414,75 @@ impl Index {
             &snapshot.aliases,
             &self.provider_cache,
         );
+        let aliases = RequestSessionAliases::new(&snapshot.aliases);
+        let mut observations =
+            HashMap::<String, (&SessionModelObservation, bool, bool, bool)>::new();
+        let mut unavailable_session_models = HashSet::new();
+        for state in self
+            .files
+            .values()
+            .filter(|state| !state.identity_conflict && !state.session.is_empty())
+        {
+            for (session, observation) in &state.model_observations {
+                let Some(session) = aliases.resolve(session) else {
+                    if observation.had_unavailable {
+                        unavailable_session_models.insert(session.clone());
+                    }
+                    continue;
+                };
+                let entry =
+                    observations
+                        .entry(session)
+                        .or_insert((observation, false, false, false));
+                entry.1 |= observation.had_unavailable;
+                entry.3 |= observation.unordered;
+                if observation.at > entry.0.at {
+                    entry.0 = observation;
+                    entry.2 = false;
+                } else if observation.at == entry.0.at
+                    && (observation.model != entry.0.model
+                        || observation.provider != entry.0.provider
+                        || observation.role != entry.0.role
+                        || observation.unavailable != entry.0.unavailable)
+                {
+                    entry.2 = true;
+                }
+            }
+        }
+        for (session, (latest, had_unavailable, tied, unordered)) in observations {
+            if !had_unavailable {
+                continue;
+            }
+            if latest.unavailable || unknown_model(&latest.model) || tied || unordered {
+                if let Some(info) = snapshot.session_info.get_mut(&session) {
+                    info["model"] = json!("");
+                    if tied || unordered {
+                        info["provider"] = json!("");
+                        info["role"] = json!("unknown");
+                    } else {
+                        info["provider"] = json!(usage_provider(
+                            &latest.model,
+                            &latest.provider,
+                            &self.provider_names
+                        ));
+                        info["role"] = json!(latest.role);
+                    }
+                }
+                unavailable_session_models.insert(session);
+            } else if let Some(info) = snapshot.session_info.get_mut(&session) {
+                info["model"] = json!(latest.model);
+                info["provider"] = json!(usage_provider(
+                    &latest.model,
+                    &latest.provider,
+                    &self.provider_names
+                ));
+                info["role"] = json!(latest.role);
+            }
+        }
         self.request_evidence.supplement_missing_session_models(
             &mut snapshot.session_info,
+            &unavailable_session_models,
+            &aliases,
             Local::now().timestamp_millis(),
         );
         self.request_evidence
@@ -2952,31 +3093,84 @@ impl FileState {
         let timestamp = time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let date = time.with_timezone(&Local).date_naive();
         if envelope.kind == "turn_context" || event_type.starts_with("thread_settings") {
-            let (provider, model, turn) = if inherited {
-                let context = self.inherited_context(ordinal.unwrap());
-                (&mut context.provider, &mut context.model, &mut context.turn)
-            } else {
-                (&mut self.provider, &mut self.model, &mut self.turn)
-            };
-            if let Some(value) = payload["model_provider"]
-                .as_str()
-                .or_else(|| payload["modelProvider"].as_str())
-                .or_else(|| payload["thread_settings"]["model_provider"].as_str())
-                .or_else(|| payload["thread_settings"]["modelProvider"].as_str())
-                .filter(|provider| !provider.is_empty() && provider.len() <= 200)
-            {
-                *provider = value.to_owned();
-            }
-            if let Some(value) = payload["model"]
-                .as_str()
-                .or_else(|| payload["thread_settings"]["model"].as_str())
-            {
-                if value.len() <= 200 {
-                    *model = value.to_owned();
+            let observation = {
+                let (session, role, provider, model, model_unavailable, turn, ambiguous) =
+                    if inherited {
+                        let context = self.inherited_context(ordinal.unwrap());
+                        (
+                            &context.session,
+                            &context.role,
+                            &mut context.provider,
+                            &mut context.model,
+                            &mut context.model_unavailable,
+                            &mut context.turn,
+                            context.ambiguous,
+                        )
+                    } else {
+                        (
+                            &self.session,
+                            &self.role,
+                            &mut self.provider,
+                            &mut self.model,
+                            &mut self.model_unavailable,
+                            &mut self.turn,
+                            false,
+                        )
+                    };
+                let updated_provider = payload["model_provider"]
+                    .as_str()
+                    .or_else(|| payload["modelProvider"].as_str())
+                    .or_else(|| payload["thread_settings"]["model_provider"].as_str())
+                    .or_else(|| payload["thread_settings"]["modelProvider"].as_str())
+                    .filter(|provider| !provider.is_empty() && provider.len() <= 200);
+                if let Some(value) = updated_provider {
+                    *provider = value.to_owned();
                 }
-            }
-            if let Some(value) = payload["turn_id"].as_str() {
-                *turn = value.to_owned();
+                let updated_model = payload["model"]
+                    .as_str()
+                    .or_else(|| payload["thread_settings"]["model"].as_str());
+                if let Some(value) = updated_model {
+                    if value.len() <= 256 {
+                        *model = value.to_owned();
+                        *model_unavailable = false;
+                    } else {
+                        model.clear();
+                        *model_unavailable = true;
+                    }
+                }
+                if let Some(value) = payload["turn_id"].as_str() {
+                    *turn = value.to_owned();
+                }
+                ((updated_model.is_some() || updated_provider.is_some()) && !ambiguous).then(|| {
+                    (
+                        session.clone(),
+                        model.clone(),
+                        provider.clone(),
+                        role.clone(),
+                        *model_unavailable,
+                    )
+                })
+            };
+            if let Some((session, model, provider, role, model_unavailable)) = observation {
+                let at = time.timestamp_millis();
+                let observation = self.model_observations.entry(session).or_insert_with(|| {
+                    SessionModelObservation {
+                        at,
+                        model: String::new(),
+                        provider: String::new(),
+                        role: String::new(),
+                        unavailable: false,
+                        had_unavailable: false,
+                        unordered: false,
+                    }
+                });
+                observation.unordered |= at < observation.at;
+                observation.at = at;
+                observation.model = model;
+                observation.provider = provider;
+                observation.role = role;
+                observation.unavailable = model_unavailable;
+                observation.had_unavailable |= model_unavailable;
             }
         }
         if matches!(event_type, "task_started" | "turn_started") {
@@ -3022,7 +3216,7 @@ impl FileState {
             self.issues += 1;
             return;
         }
-        let (owner, model, turn, provider, role) = if inherited {
+        let (owner, model, model_unavailable, turn, provider, role) = if inherited {
             let context = self.inherited_context(ordinal.unwrap());
             if context.ambiguous {
                 self.issues += 1;
@@ -3031,6 +3225,7 @@ impl FileState {
             (
                 context.session.clone(),
                 context.model.clone(),
+                context.model_unavailable,
                 context.turn.clone(),
                 context.provider.clone(),
                 context.role.clone(),
@@ -3039,6 +3234,7 @@ impl FileState {
             (
                 self.session.clone(),
                 self.model.clone(),
+                self.model_unavailable,
                 self.turn.clone(),
                 self.provider.clone(),
                 self.role.clone(),
@@ -3081,7 +3277,10 @@ impl FileState {
             role,
             inherited,
             legacy_identity,
-            context_conflicts: ContextConflicts::default(),
+            context_conflicts: ContextConflicts {
+                model: model_unavailable,
+                ..ContextConflicts::default()
+            },
         });
     }
 

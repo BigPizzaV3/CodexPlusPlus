@@ -63,6 +63,7 @@ fn legacy_placeholder_keys_restore_without_unrejecting_real_conflicts() {
                 at,
                 request: request.clone(),
                 rejected: conflict == "rejected",
+                version: 0,
             };
             match conflict {
                 "model" => saved.key.model = "different-known-model".into(),

@@ -3190,7 +3190,12 @@ server.listen(0,'127.0.0.1',()=>{
             .map(|(key, _)| key.to_string_lossy().into_owned())
             .collect();
         for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-            assert!(removed.iter().any(|key| key == name), "{name} 未被删除：{removed:?}");
+            assert!(
+                removed.iter().any(|key| {
+                    key == name || (cfg!(windows) && key.eq_ignore_ascii_case(name))
+                }),
+                "{name} 未被删除：{removed:?}"
+            );
         }
     }
 
