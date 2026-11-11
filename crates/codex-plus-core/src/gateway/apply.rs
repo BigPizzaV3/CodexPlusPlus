@@ -255,9 +255,15 @@ fn write_agent_config(
 ) -> anyhow::Result<Option<String>> {
     // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
     let gateway = ctx.gateway.load()?.with_extension_providers();
-    route::check_selected_default(&gateway, binding, &binding_default_model(&gateway, binding))?;
+    let default_model = binding_default_model(&gateway, binding);
+    let (selected_model, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
+    route::check_selected_default(
+        &gateway,
+        binding,
+        if default_model.is_empty() { &selected_model } else { &default_model },
+    )?;
     if route::is_disabled_group_model(&gateway, &binding.model)
-        && binding_default_model(&gateway, binding).is_empty()
+        && default_model.is_empty()
     {
         bail!("默认模型组已停用，且没有其他可用模型");
     }
@@ -1627,7 +1633,7 @@ pub fn enable_binding(
     agent: &ToolId,
     binding: AgentBinding,
 ) -> anyhow::Result<GatewaySettings> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     enable_binding_locked(ctx, agent, binding)
 }
 
@@ -1679,11 +1685,20 @@ fn enable_binding_locked(
     {
         record_model_selection(&mut binding, &selection)?;
     }
-    route::check_selected_default(
-        &gateway.clone().with_extension_providers(),
-        &binding,
-        &binding_default_model(&gateway, &binding),
-    )?;
+    let (selected_model, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
+    let unchanged = previous.as_ref().is_some_and(|previous| {
+        let (previous_model, _) =
+            crate::model_suffix::parse_model_suffix(previous.model.trim());
+        previous_model.eq_ignore_ascii_case(&selected_model)
+            && previous.default_model_selection == binding.default_model_selection
+    });
+    let gateway_with_extensions = gateway.clone().with_extension_providers();
+    let model_to_check = if unchanged {
+        binding_default_model(&gateway_with_extensions, &binding)
+    } else {
+        selected_model
+    };
+    route::check_selected_default(&gateway_with_extensions, &binding, &model_to_check)?;
     binding.restore = match previous.filter(|previous| previous.enabled) {
         Some(previous) => previous.restore,
         None => {
@@ -1735,7 +1750,7 @@ fn enable_binding_locked(
 
 /// 令牌轮换与配置重写必须串行，避免覆盖正在保存的绑定。
 pub fn rotate_binding_token(ctx: &ApplyContext, agent: &ToolId) -> anyhow::Result<GatewaySettings> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (gateway, binding) = ctx.gateway.update(|gateway| {
         let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
             bail!("还没有配置网关绑定");
@@ -1748,6 +1763,26 @@ pub fn rotate_binding_token(ctx: &ApplyContext, agent: &ToolId) -> anyhow::Resul
     } else {
         Ok(gateway)
     }
+}
+
+/// 清除历史选择，保留当前有效的默认选择。
+pub fn reset_model_selections(
+    store: &GatewayStore,
+    agent: &ToolId,
+) -> anyhow::Result<GatewaySettings> {
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let (gateway, ()) = store.update(|gateway| {
+        let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
+            bail!("还没有配置网关绑定");
+        };
+        binding.model_selections.clear();
+        if binding.default_model_selection.as_ref().is_some_and(|selection| selection.provider_removed) {
+            binding.default_model_selection = None;
+            binding.model.clear();
+        }
+        Ok(())
+    })?;
+    Ok(gateway)
 }
 
 fn record_model_selection(
@@ -1784,7 +1819,7 @@ pub fn disable_binding(
     settings: &BackendSettings,
     agent: &ToolId,
 ) -> anyhow::Result<GatewaySettings> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = match ctx.gateway.load() {
         Ok(gateway) => gateway,
         // gateway.json 读不出来（例如损坏），但 Agent 还指向网关：照样还原，不碰 gateway.json。
@@ -2229,7 +2264,7 @@ pub fn note_claude_switched(store: &GatewayStore, target_id: &str) -> anyhow::Re
     if target_id == GATEWAY_PROVIDER_ID {
         return Ok(());
     }
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     store.update(|gateway| {
         if let Some(binding) = gateway.bindings.get_mut(ToolId::Claude.as_str())
             && binding.enabled
@@ -2244,7 +2279,7 @@ pub fn note_claude_switched(store: &GatewayStore, target_id: &str) -> anyhow::Re
 
 /// 用户在 Grok 页直接应用了别的供应商：网关绑定随之失效。
 pub fn note_grok_switched(store: &GatewayStore) -> anyhow::Result<()> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     store.update(|gateway| {
         if let Some(binding) = gateway.bindings.get_mut(ToolId::Grok.as_str())
             && binding.enabled
@@ -2264,7 +2299,7 @@ pub fn note_codex_switched(
     target_id: &str,
     previous_id: &str,
 ) -> anyhow::Result<()> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     store.update(|gateway| {
         let Some(binding) = gateway.bindings.get_mut(ToolId::Codex.as_str()) else {
             return Ok(());
@@ -2306,7 +2341,7 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
 /// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
 /// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
     let Some(binding) = gateway
         .binding(&ToolId::Codex)
@@ -2365,7 +2400,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
 /// 不一致就重写一次，返回是否重写了。只有 WSL 还没启动、暂时拿不到网卡时保持现状；
 /// mirrored 网络、WSL 网卡上绑定失败时 WSL 监听已不在，写过的网卡地址改回回环。
 pub fn sync_codex_wsl_endpoint(ctx: &ApplyContext) -> anyhow::Result<bool> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     sync_codex_wsl_endpoint_locked(ctx)
 }
 
@@ -2416,7 +2451,7 @@ fn sync_codex_wsl_endpoint_locked(ctx: &ApplyContext) -> anyhow::Result<bool> {
 /// 网关端口变了（例如 Windows 端口被占后换了新端口）：重写所有开着的 Agent 配置。
 /// 某个 Agent 失败时继续其它的，只记录成功项的端口，最后返回第一个错误。
 pub fn reapply_if_port_changed(ctx: &ApplyContext) -> anyhow::Result<usize> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
     let mut changed = 0;
     let mut first_error = None;
@@ -2468,7 +2503,7 @@ pub fn restore_all_for_exit(
     settings: &BackendSettings,
     force: bool,
 ) -> anyhow::Result<()> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
     if !force && !gateway.restore_on_exit {
         return Ok(());
@@ -2520,7 +2555,7 @@ pub fn restore_all_for_exit(
 /// 不碰恢复现场；某个 Agent 写失败时继续写其它的，最后返回第一个错误。
 /// 已被别的工具接管的 Agent 不重写（界面提示漂移，由用户决定要不要重新接入）。
 pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
     let mut count = 0;
     let mut first_error = None;
@@ -2550,7 +2585,7 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
 /// 某个 Agent 写失败时继续写其它的，最后返回第一个错误；有失败时「已恢复」标记留着，下次启动再试。
 /// 不接回的：还原之后用户又用别的工具改过的（绑定关掉），以及接着网关时被别的工具接管的（界面提示漂移）。
 pub fn reapply_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
     let mut count = 0;
     let mut first_error = None;
@@ -3171,7 +3206,7 @@ fn add_provider_with(
     skip_agents: Option<&[String]>,
     extra: impl FnOnce(&mut GatewayProvider) -> anyhow::Result<()>,
 ) -> anyhow::Result<(GatewaySettings, String)> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     store.update(|gateway| {
         // 登录得到的账号名里带邮箱，短名用来源（如 `login:chatgpt` → `chatgpt`）更干净。
         let slug_base = source
@@ -3821,7 +3856,7 @@ pub fn set_provider_metadata(
 /// Key 健康、额度、速度（id 会被之后添加的供应商复用，比如重新登录的 `chatgpt`）。
 /// 直连模式的数据不受影响。
 pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<GatewaySettings> {
-    let _guard = AGENT_CONFIG_LOCK.lock().expect("Agent 配置锁已损坏");
+    let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (gateway, ()) = store.update(|gateway| {
         let before = gateway.providers.len();
         gateway.providers.retain(|provider| provider.relay.id != id);
@@ -3845,21 +3880,15 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
         for binding in gateway.bindings.values_mut() {
             binding.pool_exclude.retain(|excluded| excluded != id);
             binding.extra_models.retain(|model| outlives(model));
-            for selection in &mut binding.model_selections {
-                if selection.provider_id == id {
-                    selection.provider_removed = true;
-                }
-            }
-            let selected_removed = binding.default_model_selection.as_mut().is_some_and(|selection| {
+            binding.model_selections.retain(|selection| !selection.provider_id.eq_ignore_ascii_case(id));
+            let selected_removed = binding.default_model_selection.as_ref().is_some_and(|selection| {
                 let (model, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
-                if selection.provider_id == id && model.eq_ignore_ascii_case(&selection.model_name()) {
-                    selection.provider_removed = true;
-                    true
-                } else {
-                    false
-                }
+                selection.provider_id.eq_ignore_ascii_case(id) && model.eq_ignore_ascii_case(&selection.model_name())
             });
-            if !selected_removed && !outlives(&binding.model) {
+            if binding.default_model_selection.as_ref().is_some_and(|selection| selection.provider_id.eq_ignore_ascii_case(id)) {
+                binding.default_model_selection = None;
+            }
+            if selected_removed || !outlives(&binding.model) {
                 binding.model.clear();
             }
             let roles = &mut binding.claude_roles;

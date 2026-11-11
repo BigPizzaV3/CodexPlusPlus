@@ -816,17 +816,8 @@ pub fn save_gateway_binding(
 ) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let port = codex_plus_core::protocol_proxy::protocol_proxy_port();
-        if codex_plus_core::resident_helper::resident_helper_port()
-            .is_some_and(|running| running != port)
-        {
-            anyhow::bail!("本地网关监听端口与配置不一致，请重启 Codex++ 后重新保存");
-        }
-        let ctx = ApplyContext::default_paths(port);
-        codex_plus_core::resident_helper::ensure_resident_helper(ctx.port)
-            .context("本地网关没能启动，接入设置未保存")?;
-        let saved = apply::enable_binding(&ctx, &agent, binding)?;
-        if sync_resident_helper() != Some(ctx.port) {
+        let saved = apply::enable_binding(&context(), &agent, binding)?;
+        if sync_resident_helper().is_none() {
             anyhow::bail!("网关绑定已写入，但本地网关没能启动，请查看诊断日志");
         }
         Ok(saved)
@@ -901,6 +892,13 @@ pub fn rotate_gateway_token(agent: String) -> CommandResult<Option<GatewayPayloa
         apply::rotate_binding_token(&context(), &agent)
     })();
     respond("已更换网关 token。", "更换网关 token 失败", result)
+}
+
+#[tauri::command]
+pub fn reset_gateway_model_selections(agent: String) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent)
+        .and_then(|agent| apply::reset_model_selections(&GatewayStore::default(), &agent));
+    respond("已清除历史模型选择。", "清除历史模型选择失败", result)
 }
 
 /// 网关全局选项：Key 轮换方式、退出时恢复直连。

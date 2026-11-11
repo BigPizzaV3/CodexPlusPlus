@@ -201,6 +201,7 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
     tf: (value: string) => value,
     CxStatusIcon: "CxStatusIcon", AgentIcon: "AgentIcon", CxBadge: "CxBadge",
     ModelPicker: "ModelPicker", Switch: "Switch", ChevronRight: "ChevronRight",
+    ResetModelSelections: "ResetModelSelections",
     AgentDetail: "AgentDetail", AgentDisconnectDialog: "AgentDisconnectDialog",
   });
   const render = () => {
@@ -220,4 +221,75 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
   finish(false);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(picker().props.draft.model, "provider/saved");
+});
+
+test("已接入和已断开的 Agent 都能确认重置历史模型选择", async () => {
+  const names = ["AgentRow", "ResetModelSelections"];
+  const components = names.map((name) =>
+    file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === name),
+  );
+  assert.ok(components.every(Boolean));
+  const compiled = ts.transpileModule(components.map((component: any) => `export ${component.getText(file)}`).join("\n"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const exports: Record<string, any> = {};
+  const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+  const calls: any[][] = [];
+  const confirmations: Array<{ message: string; options: Record<string, unknown> }> = [];
+  let respond!: (accepted: boolean) => void;
+  vm.runInNewContext(compiled, {
+    exports,
+    require: () => ({ jsx, jsxs: jsx, Fragment: "Fragment" }),
+    useState: (initial: any) => [typeof initial === "function" ? initial() : initial, () => {}],
+    useEffect: () => {},
+    draftFromBinding: () => ({ model: "provider/saved", poolExclude: [] }),
+    agentDiagnosticPresentation: () => ({ tone: "pending", badge: "", reconnect: false }),
+    agentStatusText: () => "",
+    agentModels: () => [],
+    canReconnectAgent: () => true,
+    t: (value: string) => value,
+    tf: (value: string, values: string[]) => value.replace("{0}", values[0]),
+    appConfirm: (message: string, options: Record<string, unknown>) => {
+      confirmations.push({ message, options });
+      return new Promise<boolean>((resolve) => { respond = resolve; });
+    },
+    CxStatusIcon: "CxStatusIcon", AgentIcon: "AgentIcon", CxBadge: "CxBadge",
+    ModelPicker: "ModelPicker", Switch: "Switch", ChevronRight: "ChevronRight",
+    AgentDetail: "AgentDetail", AgentDisconnectDialog: "AgentDisconnectDialog", RotateCcw: "RotateCcw",
+  });
+  const render = (enabled: boolean, hasBinding = true, busy: string | null = null) => exports.AgentRow({
+    agent: { agent: "codex", name: "Codex", enabled },
+    payload: { gateway: { bindings: hasBinding ? { codex: { model: "provider/saved" } } : {} } },
+    busy, expanded: false, onToggleExpand: () => {}, onManage: () => {},
+    run: async (...args: any[]) => { calls.push(args); return true; },
+    notify: async () => {},
+  });
+  for (const enabled of [true, false]) {
+    const entry = elements(render(enabled)).find((element) => element.type === exports.ResetModelSelections);
+    assert.ok(entry, `enabled=${enabled}`);
+  }
+  assert.equal(elements(render(false, false)).some((element) => element.type === exports.ResetModelSelections), false);
+  const busyEntry = elements(render(false, true, "another-action")).find((element) => element.type === exports.ResetModelSelections);
+  assert.equal(exports.ResetModelSelections(busyEntry.props).props.disabled, true);
+
+  const entry = elements(render(false)).find((element) => element.type === exports.ResetModelSelections);
+  const button = exports.ResetModelSelections(entry.props);
+  button.props.onClick();
+  assert.match(confirmations[0].message, /历史会话可能按当前路由规则/);
+  assert.match(confirmations[0].message, /有效的当前默认模型供应商身份会保留/);
+  assert.match(confirmations[0].message, /已删除供应商的失效选择会清除/);
+  assert.equal(confirmations[0].options.title, "重置 Codex 的历史模型选择");
+  assert.equal(calls.length, 0);
+  respond(false);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 0);
+
+  button.props.onClick();
+  assert.equal(calls.length, 0);
+  respond(true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1], "reset_gateway_model_selections");
+  assert.equal(calls[0][2].agent, "codex");
+  assert.equal(Object.keys(calls[0][2]).length, 1);
 });

@@ -761,14 +761,6 @@ impl GatewaySettings {
                 self.providers
                     .iter()
                     .any(|provider| provider.relay.id == candidate)
-                    || self.bindings.values().any(|binding| {
-                        binding.model_selections.iter().any(|selection| {
-                            selection.provider_id.eq_ignore_ascii_case(candidate)
-                        }) || binding.default_model_selection.as_ref().is_some_and(|selection| {
-                            selection.provider_removed
-                                && selection.provider_id.eq_ignore_ascii_case(candidate)
-                        })
-                    })
             }
         };
         if !taken(&base) {

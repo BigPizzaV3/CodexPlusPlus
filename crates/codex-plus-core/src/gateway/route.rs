@@ -562,14 +562,23 @@ pub(crate) fn codex_model_members(
 pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) -> String {
     let (slug, _) = crate::model_suffix::parse_model_suffix(binding.model.trim());
     if !slug.trim().is_empty() {
-        if is_disabled_group_model(gateway, &slug)
+        let selection_unavailable = binding.selection_for(&slug).is_some_and(|selection| {
+            gateway.provider(&selection.provider_id).is_none_or(|provider| {
+                selection.provider_removed
+                    || !provider.enabled
+                    || binding.pool_exclude.contains(&provider.relay.id)
+                    || provider.source != selection.provider_source
+            })
+        });
+        if selection_unavailable
+            || is_disabled_group_model(gateway, &slug)
             && !binding.default_model_selection.as_ref().is_some_and(|selection| {
                 slug.eq_ignore_ascii_case(&selection.model_name())
             })
         {
             return pool_models(gateway, binding)
                 .into_iter()
-                .find(|model| !expand_model(gateway, binding, model, 0, &mut Vec::new(), false).is_empty())
+                .find(|model| !model_entry_members(gateway, binding, model).is_empty())
                 .unwrap_or_default();
         }
         return slug.trim().to_string();

@@ -2,8 +2,9 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, RotateCcw, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
+import { appConfirm } from "./app-dialog";
 import { modelSlugFromRowName } from "./model-metadata";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
@@ -415,6 +416,7 @@ function AgentRow({
                   : <Play aria-hidden="true" className="h-4 w-4" />}
             </button>
           ) : null}
+          {binding ? <ResetModelSelections agent={agent} busy={busy !== null} run={run} /> : null}
           <Switch disabled={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
           <button
             aria-expanded={expanded}
@@ -445,6 +447,22 @@ function AgentRow({
         />
       ) : null}
     </div>
+  );
+}
+
+function ResetModelSelections({ agent, busy, run }: { agent: GatewayAgentView; busy: boolean; run: Run }) {
+  const reset = async () => {
+    const accepted = await appConfirm(
+      t("重置后，历史会话可能按当前路由规则选择供应商。有效的当前默认模型供应商身份会保留；已删除供应商的失效选择会清除。是否继续？"),
+      { title: tf("重置 {0} 的历史模型选择", [agent.name]), confirmText: t("重置"), danger: true },
+    );
+    if (!accepted) return;
+    await run(`reset-model-selections:${agent.agent}`, "reset_gateway_model_selections", { agent: agent.agent }, t("重置历史模型选择"));
+  };
+  return (
+    <button aria-label={t("重置历史模型选择")} className="gw-icon-button" disabled={busy} onClick={() => void reset()} title={t("重置历史模型选择")} type="button">
+      <RotateCcw aria-hidden="true" className="h-4 w-4" />
+    </button>
   );
 }
 

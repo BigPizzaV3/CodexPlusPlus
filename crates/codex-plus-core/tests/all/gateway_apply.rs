@@ -4,8 +4,8 @@ use codex_plus_core::gateway::apply::{
     ApplyContext, GroupInput, ProviderInput, codex_gateway_profile_on, codex_importable,
     copy_claude_provider, copy_codex_provider, create_provider, delete_group, delete_provider,
     disable_binding, enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
-    reapply_if_port_changed, refresh_enabled, reorder_providers, save_group, set_provider_enabled,
-    set_provider_metadata, set_provider_windows, update_provider,
+    reapply_if_port_changed, refresh_enabled, reorder_providers, reset_model_selections, save_group,
+    set_provider_enabled, set_provider_metadata, set_provider_windows, update_provider,
 };
 use codex_plus_core::gateway::store::{
     AgentBinding, ClaudeRoleModels, DefaultModelSelection, GatewayStore, GroupMember, GroupMode,
@@ -708,7 +708,7 @@ fn selected_provider_default_rejects_an_existing_collision_before_writing() {
 }
 
 #[test]
-fn selected_provider_default_rejects_unavailable_provider_and_unknown_fallback() {
+fn unavailable_selected_default_falls_back_but_explicit_request_stays_pinned() {
     use codex_plus_core::gateway::route::resolve_plan;
     use codex_plus_core::gateway::store::UnknownModelPolicy;
 
@@ -729,21 +729,101 @@ fn selected_provider_default_rejects_unavailable_provider_and_unknown_fallback()
     gateway.providers[0].enabled = false;
     gateway.bindings.insert("codex".into(), selected.clone());
     assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
-    assert!(resolve_plan(&gateway, &ToolId::Codex, "unknown", None).is_err());
+    for model in ["", "unknown"] {
+        let plan = resolve_plan(&gateway, &ToolId::Codex, model, None).unwrap();
+        assert_eq!(plan.candidates[0].relay.id, "mirror");
+        assert_eq!(plan.candidates[0].upstream_model, "deepseek-v4-pro");
+    }
+    let mut conflicting_fallback = gateway.clone();
+    codex_plus_core::relay_config::set_relay_profile_model(
+        &mut conflicting_fallback.providers[1].relay,
+        &selected.model,
+    ).unwrap();
+    conflicting_fallback.providers[1].relay.model_list = format!("{}\nsafe-model", selected.model);
+    let plan = resolve_plan(&conflicting_fallback, &ToolId::Codex, "", None).unwrap();
+    assert_eq!(plan.candidates[0].relay.id, "mirror");
+    assert_eq!(plan.candidates[0].upstream_model, "safe-model");
 
     selected.unknown_model = UnknownModelPolicy::Passthrough;
     gateway.bindings.insert("codex".into(), selected.clone());
-    assert!(resolve_plan(&gateway, &ToolId::Codex, "unknown", None).is_err());
+    let plan = resolve_plan(&gateway, &ToolId::Codex, "unknown", None).unwrap();
+    assert_eq!(plan.candidates[0].relay.id, "mirror");
+    assert_eq!(plan.candidates[0].upstream_model, "unknown");
 
     gateway.providers[0].enabled = true;
     selected.pool_exclude.push("deepseek".into());
     gateway.bindings.insert("codex".into(), selected.clone());
     assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
+    assert_eq!(
+        resolve_plan(&gateway, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id,
+        "mirror"
+    );
 
     selected.pool_exclude.clear();
     gateway.providers[0].source = "extension:replacement".into();
     gateway.bindings.insert("codex".into(), selected.clone());
     assert!(resolve_plan(&gateway, &ToolId::Codex, &selected.model, None).is_err());
+    assert_eq!(
+        resolve_plan(&gateway, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id,
+        "deepseek"
+    );
+    gateway.providers[0].source = "preset:deepseek".into();
+    assert_eq!(
+        resolve_plan(&gateway, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id,
+        "deepseek"
+    );
+}
+
+#[test]
+fn disabled_selected_default_refreshes_and_recovers_when_enabled() {
+    use codex_plus_core::gateway::route::resolve_plan;
+
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57394);
+    let ctx = &fixture.ctx;
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput { name: "Mirror".into(), ..deepseek_input() },
+        "preset:mirror",
+        None,
+    ).unwrap();
+    let mut selected = binding();
+    selected.model = "deepseek/deepseek-v4-pro[1M]".into();
+    selected.default_model_selection = Some(DefaultModelSelection {
+        provider_id: "deepseek".into(),
+        upstream_model: "deepseek-v4-pro".into(),
+        provider_source: "preset:deepseek".into(),
+        provider_removed: false,
+    });
+    enable_binding(ctx, &ToolId::Claude, selected).unwrap();
+
+    set_provider_enabled(&ctx.gateway, "deepseek", false).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"], "deepseek-v4-pro");
+    let saved = ctx.gateway.load().unwrap().binding(&ToolId::Claude).unwrap().clone();
+    assert_eq!(saved.model, "deepseek/deepseek-v4-pro[1M]");
+    assert!(resolve_plan(&ctx.gateway.load().unwrap(), &ToolId::Claude, &saved.model, None).is_err());
+    assert_eq!(codex_plus_core::gateway::apply::reapply_enabled(ctx).unwrap(), 1);
+
+    let mut invalid = saved.clone();
+    invalid.model = "missing/other-model".into();
+    invalid.default_model_selection = Some(DefaultModelSelection {
+        provider_id: "missing".into(),
+        upstream_model: "other-model".into(),
+        provider_source: "preset:missing".into(),
+        provider_removed: false,
+    });
+    assert!(enable_binding(ctx, &ToolId::Claude, invalid).is_err());
+    enable_binding(ctx, &ToolId::Claude, saved).unwrap();
+
+    set_provider_enabled(&ctx.gateway, "deepseek", true).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+    assert_eq!(
+        read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"],
+        "deepseek/deepseek-v4-pro"
+    );
+    let plan = resolve_plan(&ctx.gateway.load().unwrap(), &ToolId::Claude, "", None).unwrap();
+    assert_eq!(plan.candidates[0].relay.id, "deepseek");
 }
 
 #[test]
@@ -964,7 +1044,7 @@ fn concurrent_model_saves_keep_client_config_and_binding_in_sync() {
 }
 
 #[test]
-fn selected_provider_default_does_not_silently_move_after_delete_and_recreate() {
+fn deleting_provider_clears_its_selections_and_allows_id_reuse() {
     use codex_plus_core::gateway::route::resolve_plan;
 
     let fixture = fixture(57394);
@@ -976,41 +1056,53 @@ fn selected_provider_default_does_not_silently_move_after_delete_and_recreate() 
         "preset:mirror",
         None,
     ).unwrap();
-    let mut selected = serde_json::to_value(binding()).unwrap();
-    selected["model"] = json!("deepseek/deepseek-v4-pro[1M]");
-    selected["defaultModelSelection"] = json!({
-        "providerId": "deepseek",
-        "upstreamModel": "deepseek-v4-pro",
-        "providerSource": "preset:deepseek"
+    let mut selected = binding();
+    selected.model = "mirror/deepseek-v4-pro".into();
+    selected.default_model_selection = Some(DefaultModelSelection {
+        provider_id: "mirror".into(),
+        upstream_model: "deepseek-v4-pro".into(),
+        provider_source: "preset:mirror".into(),
+        provider_removed: false,
     });
-    enable_binding(ctx, &ToolId::Codex, serde_json::from_value(selected.clone()).unwrap()).unwrap();
+    enable_binding(ctx, &ToolId::Codex, selected.clone()).unwrap();
+    selected.model = "deepseek/deepseek-v4-pro[1M]".into();
+    selected.default_model_selection = Some(DefaultModelSelection {
+        provider_id: "deepseek".into(),
+        upstream_model: "deepseek-v4-pro".into(),
+        provider_source: "preset:deepseek".into(),
+        provider_removed: false,
+    });
+    enable_binding(ctx, &ToolId::Codex, selected).unwrap();
     let after_delete = delete_provider(&ctx.gateway, "deepseek").unwrap();
-    assert!(
-        resolve_plan(&after_delete, &ToolId::Codex, "", None).is_err(),
-        "删除明确选择的供应商后不能静默使用另一家"
-    );
+    let binding = after_delete.binding(&ToolId::Codex).unwrap();
+    assert!(binding.model.is_empty());
+    assert!(binding.default_model_selection.is_none());
+    assert_eq!(binding.model_selections.len(), 1);
+    assert_eq!(binding.model_selections[0].provider_id, "mirror");
+    assert_eq!(resolve_plan(&after_delete, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id, "mirror");
+    refresh_enabled(ctx).unwrap();
+
     let (recreated, id) = create_provider(&ctx.gateway, &deepseek_input(), "preset:deepseek", None).unwrap();
-    assert_eq!(id, "deepseek-2");
-    assert!(
-        resolve_plan(&recreated, &ToolId::Codex, "", None).is_err(),
-        "同 ID、同来源的重建不能自动继承旧选择"
+    assert_eq!(id, "deepseek");
+    assert_eq!(
+        resolve_plan(&recreated, &ToolId::Codex, "deepseek/deepseek-v4-pro", None)
+            .unwrap().candidates[0].relay.id,
+        "deepseek",
+        "相同 ID 重建后，旧字符串无法区分新旧供应商"
     );
-    selected["model"] = json!("deepseek-2/deepseek-v4-pro");
-    selected["defaultModelSelection"]["providerId"] = json!("deepseek-2");
-    let reselected = enable_binding(ctx, &ToolId::Codex, serde_json::from_value(selected).unwrap())
-        .unwrap();
-    let plan = resolve_plan(&reselected, &ToolId::Codex, "", None).unwrap();
-    assert_eq!(plan.candidates[0].relay.id, "deepseek-2");
-    assert!(resolve_plan(&reselected, &ToolId::Codex, "deepseek/deepseek-v4-pro", None).is_err());
 }
 
 #[test]
-fn legacy_recreated_provider_requires_a_new_id_before_reselection() {
-    use codex_plus_core::gateway::route::resolve_plan;
-
+fn resetting_model_selections_preserves_current_default_and_allows_new_history() {
     let fixture = fixture(57394);
     let ctx = &fixture.ctx;
     std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput { name: "Mirror".into(), ..deepseek_input() },
+        "preset:mirror",
+        None,
+    ).unwrap();
     let mut selected = binding();
     selected.model = "deepseek/deepseek-v4-pro".into();
     selected.default_model_selection = Some(DefaultModelSelection {
@@ -1019,49 +1111,35 @@ fn legacy_recreated_provider_requires_a_new_id_before_reselection() {
         provider_source: "preset:deepseek".into(),
         provider_removed: false,
     });
-    let gateway = enable_binding(ctx, &ToolId::Codex, selected).unwrap();
-    let original = gateway.provider("deepseek").unwrap().clone();
+    enable_binding(ctx, &ToolId::Codex, selected.clone()).unwrap();
+    let previous = selected.clone();
+    selected.model = "mirror/deepseek-v4-pro".into();
+    selected.default_model_selection = Some(DefaultModelSelection {
+        provider_id: "mirror".into(),
+        upstream_model: "deepseek-v4-pro".into(),
+        provider_source: "preset:mirror".into(),
+        provider_removed: false,
+    });
+    enable_binding(ctx, &ToolId::Codex, selected).unwrap();
+    let reset = reset_model_selections(&ctx.gateway, &ToolId::Codex).unwrap();
+    let binding = reset.binding(&ToolId::Codex).unwrap();
+    assert!(binding.model_selections.is_empty());
+    assert!(binding.selection_for("mirror/deepseek-v4-pro").is_some());
+    assert!(binding.selection_for("deepseek/deepseek-v4-pro").is_none());
+    let saved = enable_binding(ctx, &ToolId::Codex, previous).unwrap();
+    let binding = saved.binding(&ToolId::Codex).unwrap();
+    assert!(binding.selection_for("deepseek/deepseek-v4-pro").is_some());
+    assert!(binding.selection_for("mirror/deepseek-v4-pro").is_some());
 
-    // 旧版删除后允许以原 ID 重建，也没有 model_selections。
     ctx.gateway.update(|gateway| {
-        gateway.bindings.get_mut("codex").unwrap().model_selections.clear();
+        gateway.bindings.get_mut("codex").unwrap().default_model_selection.as_mut().unwrap().provider_removed = true;
         Ok(())
     }).unwrap();
-    delete_provider(&ctx.gateway, "deepseek").unwrap();
-    ctx.gateway.update(|gateway| {
-        gateway.providers.push(original);
-        Ok(())
-    }).unwrap();
-    let before = ctx.gateway.load().unwrap();
-    let previous = before.binding(&ToolId::Codex).unwrap().clone();
-    assert!(previous.default_model_selection.as_ref().unwrap().provider_removed);
-    assert!(resolve_plan(&before, &ToolId::Codex, &previous.model, None).is_err());
-    let config_before = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
-
-    let mut reselected = previous.clone();
-    reselected.default_model_selection.as_mut().unwrap().provider_removed = false;
-    let error = enable_binding(ctx, &ToolId::Codex, reselected).unwrap_err();
-    assert!(
-        error.to_string().contains("请删除重建的同名供应商，再重新添加并选择"),
-        "{error:#}"
-    );
-    assert_eq!(ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap(), &previous);
-    assert_eq!(std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap(), config_before);
-
-    delete_provider(&ctx.gateway, "deepseek").unwrap();
-    let (_, id) = create_provider(&ctx.gateway, &deepseek_input(), "preset:deepseek", None).unwrap();
-    assert_eq!(id, "deepseek-2");
-    let mut selected = previous;
-    selected.model = format!("{id}/deepseek-v4-pro");
-    let selection = selected.default_model_selection.as_mut().unwrap();
-    selection.provider_id = id.clone();
-    selection.provider_removed = false;
-    let gateway = enable_binding(ctx, &ToolId::Codex, selected).unwrap();
-    assert_eq!(
-        resolve_plan(&gateway, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id,
-        id
-    );
-    assert!(resolve_plan(&gateway, &ToolId::Codex, "deepseek/deepseek-v4-pro", None).is_err());
+    let reset = reset_model_selections(&ctx.gateway, &ToolId::Codex).unwrap();
+    let binding = reset.binding(&ToolId::Codex).unwrap();
+    assert!(binding.model.is_empty());
+    assert!(binding.default_model_selection.is_none());
+    assert!(binding.model_selections.is_empty());
 }
 
 #[test]
