@@ -263,13 +263,15 @@ function AgentRow({
     }
   };
   const save = async (next: BindingDraft, updateDraft = true, item?: PickerItem) => {
-    if (updateDraft) setDraft(next);
-    const error = validateDraft(next, payload, connected ? binding?.model : undefined);
+    const error = validateDraft(next, payload, connected ? binding?.model : undefined, connected && !item ? binding?.defaultModelSelection : null);
     if (error) {
       void notify(t("还不能接入"), t(error), "warning");
       return false;
     }
-    return run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
+    if (updateDraft) setDraft(next);
+    const saved = await run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
+    if (!saved && updateDraft) setDraft(draft);
+    return saved;
   };
   const disconnect = () => setDisconnectTarget("disconnect");
   // 在选择器里选模型：已接入时直接改默认模型，未接入时选完即接入。
@@ -1194,22 +1196,33 @@ function ModelPicker({
   const inactive = disabledGroup(payload, draft.model, selection);
   const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
   const selectionProvider = selection && payload?.pool.find((entry) => entry.id === selection.providerId);
-  const unavailable = original.issue === "unavailable"
-    && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
-  const effectiveModel = connected && (inactive || unavailable) ? agent.defaultModel : draft.model;
+  const unavailable = agent.defaultSelectionStatus
+    ? agent.defaultSelectionStatus === "fallback"
+    : original.issue === "unavailable"
+      && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
+  const effectiveModel = connected ? agent.defaultModel : draft.model;
   const effectiveSelection = unavailable ? null : selection;
-  const display = inactive && connected && !effectiveModel
+  const baseDisplay = connected && !effectiveModel
     ? { title: "", sub: "", group: false }
+    : connected && agent.defaultModelDiffers && agent.defaultSelectionStatus !== "invalid" && !effectiveModel.startsWith("group/")
+      ? { title: effectiveModel, sub: "", group: false }
     : modelDisplay(payload, effectiveModel, draft.poolExclude, effectiveSelection);
+  const display = connected && agent.defaultSelectionStatus === "invalid"
+    ? { ...baseDisplay, issue: "invalid" as const }
+    : connected && agent.defaultSelectionStatus === "available"
+      ? { ...baseDisplay, issue: undefined }
+      : baseDisplay;
   const inactiveHint = inactive && connected
-    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
     : unavailable && connected
-      ? tf("原供应商「{0}」不可用，当前使用 {1}", [original.sub, display.title || t("未设置")])
+      ? tf("原供应商「{0}」不可用，网关默认回退为 {1}", [original.sub, display.title || t("未设置")])
     : undefined;
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);
   const showDefault = !connected && !draft.model && !own;
-  const selectedModel = connected || draft.model ? effectiveModel.trim() || agentModels(payload, draft.poolExclude)[0] || "" : "";
+  const selectedModel = connected && agent.defaultModelDiffers && !effectiveModel.startsWith("group/")
+    ? ""
+    : connected || draft.model ? effectiveModel.trim() || (connected ? "" : agentModels(payload, draft.poolExclude)[0] || "") : "";
   const head = (
     <>
       {/* 用默认 = 断开网关并还原接入前的配置，只放这一个入口。 */}

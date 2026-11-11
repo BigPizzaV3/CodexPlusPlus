@@ -217,6 +217,8 @@ export type GatewayAgentView = {
   requiresDisconnectPreview?: boolean;
   baseUrl: string;
   defaultModel: string;
+  defaultSelectionStatus?: "available" | "fallback" | "invalid" | null;
+  defaultModelDiffers?: boolean;
   models: string[];
   /** 开着网关、但配置已被别的工具改掉：认得出的工具名与现在连的地址。 */
   drift?: { by?: string | null; endpoint: string } | null;
@@ -549,12 +551,16 @@ export function modelRoutable(payload: GatewayPayload | null, model: string, exc
 }
 
 /** 表单校验：返回错误文案（中文原文，界面再翻译），没问题返回 null。 */
-export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string): string | null {
+export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string, retainedSelection?: DefaultModelSelection | null): string | null {
   if (payload) {
     if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
     const model = draft.model.trim();
     const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
-    if (model && !retainedDisabledModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+    const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
+    const retainedUnavailableModel = draft.model === retainedModel && retainedSelection
+      && modelSlugFromRowName(model).toLowerCase() === `${retainedSelection.providerId}/${modelSlugFromRowName(retainedSelection.upstreamModel)}`.toLowerCase()
+      && (retainedSelection.providerRemoved || !retainedProvider || !providerEnabled(retainedProvider) || draft.poolExclude.includes(retainedProvider.id));
+    if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
   }
   const window = parseContextWindow(draft.contextWindow);
   if (window !== null && (!Number.isFinite(window) || window < 1_000)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
@@ -753,7 +759,7 @@ export function ownPickerSection(own: OwnModels | null | undefined, rawQuery: st
 }
 
 /** `auto`：多家都有的模型的裸名，按池顺序在这几家之间自动切换（`sub` 是这几家，按尝试顺序）。 */
-export type ModelView = { title: string; sub: string; group: boolean; auto?: boolean; issue?: "conflict" | "unavailable" };
+export type ModelView = { title: string; sub: string; group: boolean; auto?: boolean; issue?: "conflict" | "unavailable" | "invalid" };
 
 /** 提供这个模型的供应商（Agent 能用的、按池顺序）。 */
 export function servingProviders(payload: GatewayPayload | null, model: string, exclude: string[] = []): GatewayPoolEntry[] {

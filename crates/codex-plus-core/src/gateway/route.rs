@@ -595,18 +595,37 @@ pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) 
                 slug.eq_ignore_ascii_case(&selection.model_name())
             })
         {
-            return pool_models(gateway, binding)
-                .into_iter()
+            let models = pool_models(gateway, binding);
+            if let Some(model) = models
+                .iter()
                 .find(|model| !model_entry_members(gateway, binding, model).is_empty())
-                .unwrap_or_default();
+            {
+                return model.clone();
+            }
+            let unlisted = unlisted_members(gateway);
+            for model in models {
+                for relay in binding_pool_relays(gateway, binding) {
+                    if serves(relay, &model)
+                        && let Some(qualified) = qualified_catalog_model(gateway, binding, relay, &model)
+                        && !unlisted.contains(&qualified.to_ascii_lowercase())
+                    {
+                        return qualified;
+                    }
+                }
+            }
+            return String::new();
         }
         return slug.trim().to_string();
     }
     let mut qualified_fallback = None;
     for relay in binding_pool_relays(gateway, binding) {
         for model in relay_models(relay) {
-            if is_disabled_group_model(gateway, &model) {
-                qualified_fallback.get_or_insert_with(|| format!("{}/{model}", relay.id));
+            if is_disabled_group_model(gateway, &model)
+                || unavailable_registered_model(gateway, binding, &model)
+            {
+                if let Some(qualified) = qualified_catalog_model(gateway, binding, relay, &model) {
+                    qualified_fallback.get_or_insert(qualified);
+                }
             } else {
                 return model;
             }
@@ -1982,6 +2001,51 @@ mod tests {
         let binding = gateway.bindings.get("claude").unwrap();
         assert_eq!(binding_default_model(&gateway, binding), "ds/group/fast");
         assert_eq!(routed(&gateway, ""), vec![pair("ds", "group/fast")]);
+    }
+
+    #[test]
+    fn unavailable_selected_default_uses_qualified_conflicting_native_model() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("ds/model");
+        gateway.providers = vec![
+            GatewayProvider { enabled: false, ..provider("ds", "model") },
+            provider("other", "ds/model"),
+        ];
+        let binding = gateway.bindings.get_mut("claude").unwrap();
+        binding.default_model_selection = Some(DefaultModelSelection {
+            provider_id: "ds".into(),
+            upstream_model: "model".into(),
+            provider_source: String::new(),
+            provider_removed: false,
+        });
+        let binding = binding.clone();
+        assert_eq!(binding_default_model(&gateway, &binding), "other/ds/model");
+        assert_eq!(routed(&gateway, ""), vec![pair("other", "ds/model")]);
+        assert!(resolve_plan(&gateway, &ToolId::Claude, "ds/model", None).is_err());
+    }
+
+    #[test]
+    fn empty_default_skips_a_conflicting_historical_selection() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("");
+        gateway.providers = vec![
+            provider("other", "ds/model"),
+            GatewayProvider { enabled: false, ..provider("ds", "model") },
+        ];
+        gateway.bindings.get_mut("claude").unwrap().model_selections.push(
+            DefaultModelSelection {
+                provider_id: "ds".into(),
+                upstream_model: "model".into(),
+                provider_source: String::new(),
+                provider_removed: false,
+            },
+        );
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert_eq!(binding_default_model(&gateway, binding), "other/ds/model");
+        assert_eq!(routed(&gateway, ""), vec![pair("other", "ds/model")]);
+        assert!(resolve_plan(&gateway, &ToolId::Claude, "ds/model", None).is_err());
     }
 
     #[test]

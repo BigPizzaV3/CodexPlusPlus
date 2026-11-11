@@ -100,6 +100,10 @@ pub struct GatewayAgentView {
     pub requires_disconnect_preview: bool,
     pub base_url: String,
     pub default_model: String,
+    /// 当前默认选择在实际路由快照中的状态。
+    pub default_selection_status: Option<&'static str>,
+    /// 网关默认模型的成员与可编辑供应商池不一致时，界面只显示模型 ID。
+    pub default_model_differs: bool,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
@@ -278,8 +282,43 @@ fn account_kind(relay: &RelayProfile) -> String {
         .unwrap_or_default()
 }
 
+fn default_model_view(
+    gateway: &GatewaySettings,
+    runtime: &GatewaySettings,
+    binding: &AgentBinding,
+) -> (String, Option<&'static str>, bool) {
+    use codex_plus_core::gateway::route::model_entry_members;
+
+    let model = apply::resolved_default_model(runtime, binding);
+    let (selected, _) = codex_plus_core::model_suffix::parse_model_suffix(binding.model.trim());
+    let status = binding.selection_for(&selected).map(|_| {
+        if !model.eq_ignore_ascii_case(&selected) {
+            "fallback"
+        } else if model_entry_members(runtime, binding, &selected).is_empty() {
+            "invalid"
+        } else {
+            "available"
+        }
+    });
+    let differs = if !model.is_empty() {
+        let actual = model_entry_members(runtime, binding, &model);
+        let local = model_entry_members(gateway, binding, &model);
+        actual.len() != local.len() || actual.iter().zip(&local).any(|((actual, actual_model), (local, local_model))| {
+            actual.id != local.id
+                || actual.name != local.name
+                || actual_model != local_model
+                || runtime.provider(&actual.id).map(|provider| &provider.source)
+                    != gateway.provider(&local.id).map(|provider| &provider.source)
+        })
+    } else {
+        false
+    };
+    (model, status, differs)
+}
+
 fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> GatewayPayload {
     let port = port();
+    let runtime_gateway = gateway.clone().with_extension_providers();
     let pool = gateway
         .providers
         .iter()
@@ -334,6 +373,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         .map(|agent| {
             let binding = gateway.binding(agent);
             let enabled = binding.is_some_and(|binding| binding.enabled);
+            let (default_model, default_selection_status, default_model_differs) = binding
+                .map(|binding| default_model_view(&gateway, &runtime_gateway, binding))
+                .unwrap_or_default();
             GatewayAgentView {
                 agent: agent.as_str().to_string(),
                 name: codex_plus_core::tools::tool_display_name(agent).to_string(),
@@ -351,9 +393,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                         _ => false,
                     },
                 base_url: apply::gateway_base_url(port, agent),
-                default_model: binding
-                    .map(|binding| apply::resolved_default_model(&gateway, binding))
-                    .unwrap_or_default(),
+                default_model,
+                default_selection_status,
+                default_model_differs,
                 models: codex_plus_core::gateway::server::exposed_models(&gateway, agent),
                 drift: binding
                     .filter(|binding| binding.enabled)
@@ -2072,6 +2114,88 @@ fn parse_version(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_version;
+
+    #[test]
+    fn default_model_view_uses_the_extension_routing_snapshot() {
+        use codex_plus_core::gateway::store::{AgentBinding, GatewaySettings};
+        use codex_plus_core::user_scripts::UserScriptManager;
+        use serde_json::json;
+
+        let gateway: GatewaySettings = serde_json::from_value(json!({
+            "providers": [{
+                "source": "preset:a",
+                "relay": { "id": "a", "name": "A", "model": "m", "modelList": "m" }
+            }]
+        })).unwrap();
+        let binding: AgentBinding = serde_json::from_value(json!({
+            "model": "a/m[1M]",
+            "defaultModelSelection": { "providerId": "a", "upstreamModel": "m", "providerSource": "preset:a" }
+        })).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("user/swap");
+        std::fs::create_dir_all(&package).unwrap();
+        let manifest = package.join("codexpp.json");
+        let manager = UserScriptManager::new(
+            temp.path().join("builtin"),
+            temp.path().join("user"),
+            temp.path().join("user_scripts.json"),
+        );
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m"], "override": false }]
+        }).to_string()).unwrap();
+        let unchanged = gateway.clone().with_extension_providers_from(&manager);
+        assert_eq!(super::default_model_view(&gateway, &unchanged, &binding), ("a/m".into(), Some("available"), false));
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m"], "override": true }]
+        }).to_string()).unwrap();
+        let mut disabled = gateway.clone();
+        disabled.providers[0].enabled = false;
+        assert_eq!(super::default_model_view(&disabled, &disabled, &binding), ("".into(), Some("fallback"), false));
+        let overridden = disabled.clone().with_extension_providers_from(&manager);
+        assert_eq!(overridden.provider("a").unwrap().source, "extension:swap");
+        assert_eq!(super::default_model_view(&disabled, &overridden, &binding), ("a/m".into(), Some("invalid"), false));
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "b", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["a/m"] }]
+        }).to_string()).unwrap();
+        let collision = gateway.clone().with_extension_providers_from(&manager);
+        assert_eq!(super::default_model_view(&gateway, &collision, &binding), ("a/m".into(), Some("invalid"), true));
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "b", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["fallback"] }]
+        }).to_string()).unwrap();
+        let added = disabled.clone().with_extension_providers_from(&manager);
+        assert_eq!(super::default_model_view(&disabled, &added, &binding), ("fallback".into(), Some("fallback"), true));
+
+        let empty: AgentBinding = serde_json::from_value(json!({ "model": "" })).unwrap();
+        assert_eq!(super::default_model_view(&disabled, &added, &empty), ("fallback".into(), None, true));
+        assert_eq!(super::default_model_view(&disabled, &disabled, &empty), ("".into(), None, false));
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m2"], "override": true }]
+        }).to_string()).unwrap();
+        let different_model = gateway.clone().with_extension_providers_from(&manager);
+        assert_eq!(super::default_model_view(&gateway, &different_model, &empty), ("m2".into(), None, true));
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m"], "override": true }]
+        }).to_string()).unwrap();
+        let mut with_group = gateway.clone();
+        with_group.groups = serde_json::from_value(json!([{
+            "id": "disabled", "name": "Disabled", "disabled": true, "members": []
+        }])).unwrap();
+        let inactive: AgentBinding = serde_json::from_value(json!({ "model": "group/disabled" })).unwrap();
+        let overridden = with_group.clone().with_extension_providers_from(&manager);
+        assert_eq!(super::default_model_view(&with_group, &overridden, &inactive), ("m".into(), None, true));
+        assert_eq!(super::default_model_view(&with_group, &with_group, &inactive), ("m".into(), None, false));
+    }
 
     #[test]
     fn agent_config_paths_follow_the_write_directories() {

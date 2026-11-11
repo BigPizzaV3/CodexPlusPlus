@@ -135,6 +135,19 @@ test("保留已停用的绑定组时，让后端按新的供应商池验证回�
   assert.equal(validateDraft({ ...draft, contextWindow: "12" }, data, "group/daily"), "上下文窗口格式不对，例如 200000、200k 或 1M");
 });
 
+test("保留不可用的默认供应商时允许修改详情，新选择仍需验证", () => {
+  const data = payload();
+  const selection = { providerId: "deepseek", upstreamModel: "deepseek-v4-pro", providerSource: "" };
+  const draft = { ...draftFromBinding(undefined), model: "deepseek/deepseek-v4-pro" };
+  data.pool[0].enabled = false;
+  assert.equal(validateDraft(draft, data, draft.model, selection), null);
+  assert.equal(validateDraft(draft, data), "供应商池里没有这个模型");
+  assert.equal(validateDraft({ ...draft, model: "missing/model" }, data, draft.model, selection), "供应商池里没有这个模型");
+  assert.equal(validateDraft({ ...draft, poolExclude: ["glm", "bare"] }, data, draft.model, selection), "供应商池是空的，先到「供应商」里添加");
+  data.pool[0].enabled = true;
+  assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek"] }, data, draft.model, selection), null);
+});
+
 test("模型选择器：每个供应商一组，路由组作为 group/ 模型在后；未知输入给出 <供应商>/<模型>", () => {
   const all = pickerSections(payload(), "", initials);
   assert.deepEqual(all.map((section) => section.key), ["provider:deepseek", "provider:glm", "group"]);

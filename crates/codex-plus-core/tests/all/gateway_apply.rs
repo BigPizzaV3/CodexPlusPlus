@@ -813,6 +813,28 @@ fn disabled_selected_default_refreshes_and_recovers_when_enabled() {
     assert!(enable_binding(ctx, &ToolId::Claude, invalid).is_err());
     enable_binding(ctx, &ToolId::Claude, saved).unwrap();
 
+    ctx.gateway.update(|gateway| {
+        let mirror = gateway.providers.iter_mut().find(|provider| provider.relay.id == "mirror").unwrap();
+        codex_plus_core::relay_config::set_relay_profile_model(&mut mirror.relay, "deepseek/deepseek-v4-pro")?;
+        mirror.relay.model_list = "deepseek/deepseek-v4-pro".into();
+        Ok(())
+    }).unwrap();
+    assert_eq!(refresh_enabled(ctx).unwrap(), 1);
+    assert_eq!(read_settings_json(ctx)["env"]["ANTHROPIC_MODEL"], "mirror/deepseek/deepseek-v4-pro");
+    let gateway = ctx.gateway.load().unwrap();
+    for model in ["", "unknown"] {
+        let plan = resolve_plan(&gateway, &ToolId::Claude, model, None).unwrap();
+        assert_eq!(plan.candidates[0].relay.id, "mirror");
+        assert_eq!(plan.candidates[0].upstream_model, "deepseek/deepseek-v4-pro");
+    }
+    assert!(resolve_plan(&gateway, &ToolId::Claude, "deepseek/deepseek-v4-pro", None).is_err());
+    ctx.gateway.update(|gateway| {
+        let mirror = gateway.providers.iter_mut().find(|provider| provider.relay.id == "mirror").unwrap();
+        codex_plus_core::relay_config::set_relay_profile_model(&mut mirror.relay, "deepseek-v4-pro")?;
+        mirror.relay.model_list = "deepseek-v4-pro\ndeepseek-v4-flash".into();
+        Ok(())
+    }).unwrap();
+
     set_provider_enabled(&ctx.gateway, "deepseek", true).unwrap();
     assert_eq!(refresh_enabled(ctx).unwrap(), 1);
     assert_eq!(
@@ -1078,6 +1100,27 @@ fn deleting_provider_clears_its_selections_and_allows_id_reuse() {
     assert_eq!(binding.model_selections[0].provider_id, "mirror");
     assert_eq!(resolve_plan(&after_delete, &ToolId::Codex, "", None).unwrap().candidates[0].relay.id, "mirror");
     refresh_enabled(ctx).unwrap();
+
+    ctx.gateway.update(|gateway| {
+        let mirror = gateway.providers.iter_mut().find(|provider| provider.relay.id == "mirror").unwrap();
+        codex_plus_core::relay_config::set_relay_profile_model(&mut mirror.relay, "mirror/deepseek-v4-pro")?;
+        mirror.relay.model_list = "mirror/deepseek-v4-pro".into();
+        Ok(())
+    }).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    for model in ["", "unknown"] {
+        let plan = resolve_plan(&gateway, &ToolId::Codex, model, None).unwrap();
+        assert_eq!(plan.candidates[0].relay.id, "mirror");
+        assert_eq!(plan.candidates[0].upstream_model, "mirror/deepseek-v4-pro");
+    }
+    assert!(resolve_plan(&gateway, &ToolId::Codex, "mirror/deepseek-v4-pro", None).is_err());
+    ctx.gateway.update(|gateway| {
+        let mirror = gateway.providers.iter_mut().find(|provider| provider.relay.id == "mirror").unwrap();
+        codex_plus_core::relay_config::set_relay_profile_model(&mut mirror.relay, "deepseek-v4-pro")?;
+        mirror.relay.model_list = "deepseek-v4-pro\ndeepseek-v4-flash".into();
+        Ok(())
+    }).unwrap();
 
     let (recreated, id) = create_provider(&ctx.gateway, &deepseek_input(), "preset:deepseek", None).unwrap();
     assert_eq!(id, "deepseek");

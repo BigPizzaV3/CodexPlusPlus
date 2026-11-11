@@ -136,7 +136,7 @@ test("同名停用组不遮住所选供应商模型的冲突提示", () => {
     pool: [{ ...payload.pool[0], id: "GROUP", name: "Group provider" }],
     groups: [{ id: "daily", name: "Daily", mode: "inOrder", members: [], disabled: true }],
   };
-  const agent = { agent: "codex", name: "Codex", enabled: true, defaultModel: "example-model" };
+  const agent = { agent: "codex", name: "Codex", enabled: true, defaultModel: "GROUP/daily" };
   for (const [path, name] of [["GatewayAgents.tsx", "ModelPicker"], ["TrayPanel.tsx", "PanelAgentRow"]]) {
     const content = readFileSync(new URL(`./${path}`, import.meta.url), "utf8");
     const parsed = ts.createSourceFile(path, content, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
@@ -201,14 +201,34 @@ test("停用的默认供应商显示实际回退模型，恢复后显示原选�
       Check: "Check", AlertTriangle: "AlertTriangle", Floating: "Floating", ModelList: "ModelList",
       AgentDisconnectDialog: "AgentDisconnectDialog",
     });
-    const render = (current: GatewayPayload, defaultModel: string) => name === "ModelPicker"
-      ? exports.ModelPicker({ agent: { ...agent, defaultModel }, payload: current, draft: draftFromBinding(binding), connected: true, open: false })
-      : exports.PanelAgentRow({ agent: { ...agent, defaultModel }, payload: current, onRun: () => {} });
+    const render = (current: GatewayPayload, defaultModel: string, defaultSelectionStatus?: string, defaultModelDiffers = false) => name === "ModelPicker"
+      ? exports.ModelPicker({ agent: { ...agent, defaultModel, defaultSelectionStatus, defaultModelDiffers }, payload: current, draft: draftFromBinding(binding), connected: true, open: false })
+      : exports.PanelAgentRow({ agent: { ...agent, defaultModel, defaultSelectionStatus, defaultModelDiffers }, payload: current, onRun: () => {} });
     const fallback = render(data, "fallback-model");
     const picker = elements(fallback).find((element) => element.props?.className?.includes("gw-picker-button"));
-    assert.match(picker?.props.title, /原供应商「a」不可用，当前使用 Fallback-Model/);
+    assert.match(picker?.props.title, /原供应商「a」不可用，网关默认回退为 Fallback-Model/);
     assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModel, "fallback-model");
     assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModelSelection, null);
+    const noFallback = render(data, "");
+    const emptyPicker = elements(noFallback).find((element) => element.props?.className?.includes("gw-picker-button"));
+    assert.match(emptyPicker?.props.title, /原供应商「a」不可用，网关默认回退为 未设置/);
+    assert.equal(elements(emptyPicker).find((element) => element.type === "ModelViewGlyph")?.props.view.title, "");
+    assert.equal(elements(noFallback).find((element) => element.type === "ModelList")?.props.selectedModel, "");
+    const invalid = render(data, "a/example-model", "invalid");
+    const invalidPicker = elements(invalid).find((element) => element.props?.className?.includes("gw-picker-button"));
+    assert.equal(invalidPicker?.props.title, undefined, `${name} 不应把实际来源冲突显示为回退`);
+    assert.equal(elements(invalidPicker).find((element) => element.type === "ModelViewGlyph")?.props.view.issue, "invalid");
+    assert.equal(elements(invalid).find((element) => element.type === "ModelList")?.props.selectedModel, "a/example-model");
+    const available = render(data, "a/example-model", "available");
+    const availablePicker = elements(available).find((element) => element.props?.className?.includes("gw-picker-button"));
+    assert.equal(availablePicker?.props.title, undefined);
+    assert.equal(elements(availablePicker).find((element) => element.type === "ModelViewGlyph")?.props.view.issue, undefined);
+    const extensionFallback = render(data, "extension/model", "fallback", true);
+    const extensionPicker = elements(extensionFallback).find((element) => element.props?.className?.includes("gw-picker-button"));
+    const extensionView = elements(extensionPicker).find((element) => element.type === "ModelViewGlyph")?.props.view;
+    assert.equal(extensionView.title, "extension/model");
+    assert.equal(extensionView.sub, "", "不能根据本地池猜测拓展模型的供应商");
+    assert.equal(elements(extensionFallback).find((element) => element.type === "ModelList")?.props.selectedModel, "");
     const restored = { ...data, pool: data.pool.map((entry) => entry.id === "a" ? { ...entry, enabled: true } : entry) };
     const active = render(restored, "a/example-model");
     assert.equal(elements(active).find((element) => element.props?.className?.includes("gw-picker-button"))?.props.title, undefined);
@@ -216,7 +236,70 @@ test("停用的默认供应商显示实际回退模型，恢复后显示原选�
   }
 });
 
-test("选择默认模型保存失败时保持已保存的显示", async () => {
+test("接入后的空绑定和停用组使用网关默认模型，拓展成员不误标为本地供应商", () => {
+  for (const [path, name] of [["GatewayAgents.tsx", "ModelPicker"], ["TrayPanel.tsx", "PanelAgentRow"]]) {
+    const content = readFileSync(new URL(`./${path}`, import.meta.url), "utf8");
+    const parsed = ts.createSourceFile(path, content, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
+    const target = parsed.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+    assert.ok(target);
+    const compiled = ts.transpileModule(`export ${target.getText(parsed)}`, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    }).outputText;
+    const exports: Record<string, any> = {};
+    const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
+    vm.runInNewContext(compiled, {
+      exports,
+      require: () => ({ jsx, jsxs: jsx, Fragment: "Fragment" }),
+      useState: (initial: unknown) => [initial, () => {}], useRef: (initial: unknown) => ({ current: initial }),
+      disabledGroup, modelDisplay, agentModels, draftFromBinding, providerEnabled,
+      ownCurrent: () => "Direct model", visibleOwnModels: () => null,
+      t: (value: string) => value, tf: (value: string, values: string[]) => value.replace("{0}", values[0]).replace("{1}", values[1]),
+      AgentIcon: "AgentIcon", ModelViewGlyph: "ModelViewGlyph", AutoTag: "AutoTag", ChevronDown: "ChevronDown",
+      Check: "Check", AlertTriangle: "AlertTriangle", Floating: "Floating", ModelList: "ModelList",
+      AgentDisconnectDialog: "AgentDisconnectDialog",
+    });
+    const render = (model: string, defaultModel: string, differs: boolean, enabled = true) => {
+      const binding = { ...blankBinding(), enabled, model };
+      const data: GatewayPayload = {
+        ...payload,
+        gateway: { ...payload.gateway, bindings: { codex: binding } },
+        pool: [{ ...payload.pool[0], models: ["m1"] }],
+        groups: [{ id: "disabled", name: "Disabled", mode: "inOrder", members: [], disabled: true }],
+      };
+      const agent = { agent: "codex", name: "Codex", enabled, defaultModel, defaultModelDiffers: differs };
+      return name === "ModelPicker"
+        ? exports.ModelPicker({ agent, payload: data, draft: draftFromBinding(binding), connected: enabled, open: false })
+        : exports.PanelAgentRow({ agent, payload: data, onRun: () => {} });
+    };
+    const inspect = (tree: any) => {
+      const picker = elements(tree).find((element) => element.props?.className?.includes("gw-picker-button"));
+      return {
+        picker,
+        view: elements(picker).find((element) => element.type === "ModelViewGlyph")?.props.view,
+        selected: elements(tree).find((element) => element.type === "ModelList")?.props.selectedModel,
+      };
+    };
+    const overridden = inspect(render("", "m2", true));
+    assert.equal(overridden.view.title, "m2", name);
+    assert.equal(overridden.view.sub, "", name);
+    assert.equal(overridden.selected, "", name);
+    const extensionOnly = inspect(render("", "extension/model", true));
+    assert.equal(extensionOnly.view.title, "extension/model", name);
+    assert.equal(extensionOnly.selected, "", name);
+    const empty = inspect(render("", "", false));
+    assert.equal(empty.view.title, "", name);
+    assert.equal(empty.selected, "", name);
+    const group = inspect(render("group/disabled", "m1", true));
+    assert.equal(group.view.title, "m1", name);
+    assert.equal(group.view.sub, "", name);
+    assert.equal(group.selected, "", name);
+    assert.match(group.picker.props.title, /网关默认回退为 m1/, name);
+    const direct = inspect(render("", "m2", true, false));
+    assert.ok(elements(direct.picker).some((element) => element.props?.children === "Direct model"), name);
+  }
+});
+
+test("选择模型或修改详情保存失败时保持已保存的显示", async () => {
   const agentRow = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "AgentRow");
   assert.ok(agentRow);
   const compiled = ts.transpileModule(`export ${agentRow.getText(file)}`, {
@@ -227,6 +310,7 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
   let finish!: (saved: boolean) => void;
   const saved = new Promise<boolean>((resolve) => { finish = resolve; });
   const calls: any[] = [];
+  let validationError: string | null = null;
   const exports: Record<string, any> = {};
   const jsx = (type: unknown, props: Record<string, any>) => ({ type, props });
   vm.runInNewContext(compiled, {
@@ -240,7 +324,7 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
     useEffect: () => {},
     draftFromBinding: (binding: any) => ({ model: binding.model, poolExclude: [] }),
     bindingFromDraft: (draft: unknown) => draft,
-    validateDraft: () => null,
+    validateDraft: () => validationError,
     agentDiagnosticPresentation: () => ({ tone: "pending", badge: "", reconnect: false }),
     agentStatusText: () => "",
     agentModels: () => [],
@@ -257,7 +341,7 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
     return exports.AgentRow({
       agent: { agent: "codex", name: "Codex", enabled: true },
       payload: { gateway: { bindings: { codex: { model: "provider/saved" } } } },
-      busy: null, expanded: false, onToggleExpand: () => {}, onManage: () => {},
+      busy: null, expanded: true, onToggleExpand: () => {}, onManage: () => {},
       run: (...args: any[]) => { calls.push(args); return saved; },
       notify: async () => {},
     });
@@ -269,6 +353,16 @@ test("选择默认模型保存失败时保持已保存的显示", async () => {
   finish(false);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(picker().props.draft.model, "provider/saved");
+  const detail = () => elements(render()).find((element) => element.type === "AgentDetail");
+  validationError = "不能保存";
+  detail().props.onSave({ model: "provider/saved", poolExclude: ["provider"] });
+  assert.deepEqual(picker().props.draft.poolExclude, []);
+  assert.equal(calls.length, 1);
+  validationError = null;
+  detail().props.onSave({ model: "provider/saved", poolExclude: ["provider"] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(picker().props.draft.poolExclude, []);
+  assert.equal(calls.length, 2);
 });
 
 test("已接入和已断开的 Agent 都能确认重置历史模型选择", async () => {
