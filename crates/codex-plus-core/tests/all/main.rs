@@ -21,6 +21,7 @@ mod agent_collaboration_queue;
 mod agent_collaboration_refresh;
 mod agent_pet_settings;
 mod aggregate_default_login_sync;
+mod aggregate_default_model;
 mod anthropic_upstream;
 mod api_quota_gate;
 mod auto_takeover_live;

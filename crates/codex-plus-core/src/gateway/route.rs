@@ -251,11 +251,31 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
         }
     }
     for group in &gateway.groups {
-        if !group.disabled && !group.members.is_empty() {
+        if group_listed_for_binding(gateway, binding, group) {
             models.push(group.model_id());
         }
     }
     models
+}
+
+/// 模型组要不要列进某个 Agent 的模型列表：打开、有成员的组照常列出；只有「本来能用、
+/// 但成员的供应商全被这个 Agent 的『挑选』排除」时才不列（#2969），否则选了也只会报错。
+/// 本来就展开不了的组（成员模型没人提供等）保持原样列出，由默认模型等环节各自处理。
+/// `advance = false`：只看能不能展开，不推进轮换进度。
+fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
+    if group.disabled || group.members.is_empty() {
+        return false;
+    }
+    if binding.pool_exclude.is_empty()
+        || !expand_group(gateway, binding, group, 0, &mut Vec::new(), false).is_empty()
+    {
+        return true;
+    }
+    let unrestricted = AgentBinding {
+        pool_exclude: Vec::new(),
+        ..binding.clone()
+    };
+    expand_group(gateway, &unrestricted, group, 0, &mut Vec::new(), false).is_empty()
 }
 
 /// Codex 的模型列表：每家供应商的模型都列在它自己名下，Codex 选择器里按供应商分组时每组都完整。
@@ -423,7 +443,7 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
         gateway
             .groups
             .iter()
-            .filter(|group| !group.disabled && !group.members.is_empty())
+            .filter(|group| group_listed_for_binding(gateway, binding, group))
             .map(GatewayGroup::model_id)
             .collect(),
     );
@@ -1823,6 +1843,24 @@ mod tests {
             ["kimi-k3".to_string(), "deepseek-v4-pro".to_string()]
         );
         assert_eq!(binding_default_model(&gateway, &binding), "kimi-k3");
+    }
+
+    /// #2969：组成员的供应商全被这个 Agent「挑选」排除时，组不再列进它的模型列表；
+    /// 还剩可用成员的组照常列出。
+    #[test]
+    fn groups_without_usable_members_for_binding_are_not_listed() {
+        let mut gateway = gateway("");
+        let binding = gateway.bindings.get_mut("claude").unwrap();
+        binding.pool_exclude = vec!["ds".to_string(), "kimi".to_string()];
+        let binding = binding.clone();
+        for models in [pool_models(&gateway, &binding), codex_pool_models(&gateway, &binding)] {
+            assert!(!models.contains(&"group/fast".to_string()), "{models:?}");
+            assert!(!models.contains(&"group/loop".to_string()), "{models:?}");
+            assert!(models.contains(&"group/coder".to_string()), "{models:?}");
+        }
+        // 其他 Agent 不受影响。
+        let other = AgentBinding { enabled: true, ..AgentBinding::default() };
+        assert!(pool_models(&gateway, &other).contains(&"group/fast".to_string()));
     }
 
     #[test]

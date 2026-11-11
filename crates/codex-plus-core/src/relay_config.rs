@@ -2034,6 +2034,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
         || profile.enables_pure_api_image_generation()
+        || profile.strips_responses_image_detail()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -4402,12 +4403,15 @@ fn apply_model_catalog_to_config_with_live_policy(
         validate_managed_model_catalog(&catalog_json)?;
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
         let mut doc = parse_toml_document(&config_text)?;
+        // config.toml 没有 model 时补一个：优先取默认成员的模型（#2958）。
+        // 目录按成员顺序输出，默认成员不一定排第一，直接取 first() 会落到别家的 cpx- 模型上。
         if root_key_string(&config_text, "model").is_none()
             && let Ok(catalog) = serde_json::from_str::<Value>(&catalog_json)
-            && let Some(default_model) = catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .and_then(|models| models.first())
+            && let Some(models) = catalog.get("models").and_then(Value::as_array)
+            && let Some(default_model) = models
+                .iter()
+                .find(|model| model["codex_plus_default"].as_bool() == Some(true))
+                .or_else(|| models.first())
                 .and_then(|model| model.get("slug"))
                 .and_then(Value::as_str)
         {
@@ -5075,6 +5079,23 @@ pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
     if profile.disable_tool_search {
         return true;
     }
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| kimi_official_base_url(base_url))
+}
+
+/// Kimi 官方（Moonshot 开放平台 / Kimi For Coding）的 Responses 接口只认
+/// `reasoning.encrypted_content`，Codex 客户端私有的 `output.encrypted_content`
+/// 会让整单 400（issue #3026）。官方 ChatGPT 路径不受影响。
+pub(crate) fn upstream_is_kimi_official_responses(profile: &RelayProfile) -> bool {
     if profile.protocol != RelayProtocol::Responses {
         return false;
     }
@@ -6146,6 +6167,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
         || profile.enables_pure_api_image_generation()
+        || profile.strips_responses_image_detail()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -6528,6 +6550,7 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.rewrites_auto_review_model()
         || profile.strips_image_generation_tool()
         || profile.enables_pure_api_image_generation()
+        || profile.strips_responses_image_detail()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {

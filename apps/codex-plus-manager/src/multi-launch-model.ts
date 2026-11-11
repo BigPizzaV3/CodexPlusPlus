@@ -45,12 +45,25 @@ export function multiLaunchInstanceVisible(instance: MultiLaunchInstance): boole
   return multiLaunchInstanceRunning(instance) || multiLaunchInstanceStatus(instance) !== "stopped";
 }
 
+/**
+ * The main Codex is not a multi-instance RPC target.
+ *
+ * Its row always uses instanceId "main", which the backend rejects (#3025).
+ * Stop it from the sidebar "停止 Codex" control, and restart it from the
+ * top "重启 Codex" control.
+ */
+export function multiLaunchInstanceIsMain(instance: MultiLaunchInstance): boolean {
+  return instance.isMain === true || instance.instanceId.trim() === "main";
+}
+
 export function multiLaunchInstanceCanStop(instance: MultiLaunchInstance): boolean {
+  if (multiLaunchInstanceIsMain(instance)) return false;
   const status = multiLaunchInstanceStatus(instance);
   return status !== "starting" && (multiLaunchInstanceRunning(instance) || status === "unknown" || status === "failed");
 }
 
 export function multiLaunchInstanceCanRestart(instance: MultiLaunchInstance): boolean {
+  if (multiLaunchInstanceIsMain(instance)) return false;
   return multiLaunchInstanceStatus(instance) !== "starting";
 }
 

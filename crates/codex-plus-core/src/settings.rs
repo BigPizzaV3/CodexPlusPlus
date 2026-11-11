@@ -1957,6 +1957,7 @@ impl BackendSettings {
             || self.active_relay_profile().rewrites_auto_review_model()
             || self.active_relay_profile().strips_image_generation_tool()
             || self.active_relay_profile().enables_pure_api_image_generation()
+            || self.active_relay_profile().strips_responses_image_detail()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -6147,6 +6148,32 @@ experimental_bearer_token = "sk-existing""#
             };
             assert!(!profile.enables_pure_api_image_generation());
         }
+    }
+
+    /// 「移除 Responses 图片 detail 字段」只在代理里执行，打开后必须改走本地代理，
+    /// 否则直连 Responses 上游时开关形同虚设（界面文案也写明会改走代理）。
+    #[test]
+    fn strip_responses_image_detail_routes_through_protocol_proxy() {
+        let enabled = RelayProfile {
+            id: "on".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            base_url: "https://responses.example.test/v1".to_string(),
+            strip_responses_image_detail: true,
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![enabled.clone()],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        let off = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile { strip_responses_image_detail: false, ..enabled }],
+            ..BackendSettings::default()
+        };
+        assert!(!off.active_relay_transport_uses_protocol_proxy());
     }
 
     #[test]

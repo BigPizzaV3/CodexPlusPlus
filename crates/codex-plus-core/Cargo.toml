@@ -12,6 +12,8 @@ async-trait = "0.1"
 base64.workspace = true
 directories.workspace = true
 ecb = { version = "0.1", features = ["alloc"] }
+# Gzip for Connect frames. Rust backend only, so this does not link a system zlib.
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 futures-util = "0.3"
 http.workspace = true
 httpdate.workspace = true

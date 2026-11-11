@@ -417,7 +417,7 @@ function AgentRow({
             </button>
           ) : null}
           {binding ? <ResetModelSelections agent={agent} busy={busy !== null} run={run} /> : null}
-          <Switch disabled={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
+          <Switch pending={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
           <button
             aria-expanded={expanded}
             aria-label={isClaude ? t("档位") : t("详情")}
@@ -674,11 +674,11 @@ function AgentDetail({
         </SetLine>
         {isClaude ? (
           <SetLine hint={t("非 claude-* 模型名时也照常发送 effort")} title={t("强制启用推理强度")} tooltip={t("非 claude-* 模型名时 Claude Code 默认不发 effort，打开后照常发送。")}>
-            <Switch disabled={busy !== null} label={t("强制启用推理强度")} on={draft.claudeEnableEffort} onToggle={() => onSave({ ...draft, claudeEnableEffort: !draft.claudeEnableEffort })} />
+            <Switch pending={busy !== null} label={t("强制启用推理强度")} on={draft.claudeEnableEffort} onToggle={() => onSave({ ...draft, claudeEnableEffort: !draft.claudeEnableEffort })} />
           </SetLine>
         ) : null}
         <SetLine hint={t("新加的供应商默认给这个 Agent 用")} title={t("添加供应商时自动加入")} tooltip={t("关掉后，新添加的供应商默认不给这个 Agent 用；添加时仍可手动勾选。")}>
-          <Switch disabled={busy !== null} label={t("添加供应商时自动加入")} on={draft.autoJoinProviders} onToggle={() => onSave({ ...draft, autoJoinProviders: !draft.autoJoinProviders })} />
+          <Switch pending={busy !== null} label={t("添加供应商时自动加入")} on={draft.autoJoinProviders} onToggle={() => onSave({ ...draft, autoJoinProviders: !draft.autoJoinProviders })} />
         </SetLine>
       </details>
       <div className="gw-detail-row gw-detail-foot">
@@ -1125,7 +1125,7 @@ function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: 
           tooltip={t("上游只返回图片链接时，网关把图下载下来转成图片数据再交给 Agent（Codex 只认图片数据）。关掉后原样转发链接。")}
         >
           <Switch
-            disabled={busy !== null}
+            pending={busy !== null}
             label={t("图片链接转成图片数据")}
             on={inlineUrls}
             onToggle={() => void run(`image-inline:${agent}`, "save_gateway_image_inline", { agent, enabled: !inlineUrls }, t("保存生图选项"), true)}
@@ -1148,7 +1148,7 @@ function OwnModelsRow({ agent, payload, busy, run }: { agent: GatewayAgentView; 
       tooltip={tf("{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列网关的模型；{0} 现在用着的那个照样显示。", [agent.name, own.vendor])}
     >
       <Switch
-        disabled={busy !== null}
+        pending={busy !== null}
         label={tf("在模型下拉里显示 {0} 自带的模型", [agent.name])}
         on={shown}
         onToggle={() => void run(`own-shown:${agent.agent}`, "save_gateway_own_models_shown", { agent: agent.agent, shown: !shown }, t("保存自带模型的显示设置"), true)}

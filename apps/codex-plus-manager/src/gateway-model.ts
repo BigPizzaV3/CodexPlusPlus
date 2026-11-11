@@ -1538,11 +1538,13 @@ export function filterSessions(sessions: AgentSessionView[], agent: SessionAgent
 
 /** `/Users/me/code/app` → `~/code/app`；太长时只留最后两级。 */
 export function shortPath(path: string, home = ""): string {
-  let text = path.trim();
+  // Windows 上 Codex 记录的 cwd 带 `\\?\` 长路径前缀（#3030），显示时去掉。
+  let text = path.trim().replace(/^\\\\\?\\UNC\\/, "\\\\").replace(/^\\\\\?\\(?=[A-Za-z]:)/, "");
   if (home && text.startsWith(home)) text = `~${text.slice(home.length)}`;
   else text = text.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
-  const parts = text.split("/").filter(Boolean);
-  return parts.length > 4 ? `…/${parts.slice(-2).join("/")}` : text;
+  const separator = !text.includes("/") && text.includes("\\") ? "\\" : "/";
+  const parts = text.split(/[\\/]/).filter(Boolean);
+  return parts.length > 4 ? `…${separator}${parts.slice(-2).join(separator)}` : text;
 }
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期。返回中文模板与参数，界面再翻译。 */

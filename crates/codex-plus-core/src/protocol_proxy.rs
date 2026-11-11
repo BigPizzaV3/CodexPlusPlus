@@ -3921,6 +3921,13 @@ async fn open_responses_proxy_request_once(
         } else {
             relay
         };
+        // Kimi 官方 Responses 只认 `reasoning.encrypted_content`：Codex 私有的
+        // `output.encrypted_content` 会让整包 400（issue #3026），发出前去掉。
+        if wire_api == UpstreamWireApi::Responses
+            && crate::relay_config::upstream_is_kimi_official_responses(&relay)
+        {
+            tidy_kimi_include(&mut upstream_body);
+        }
         if local_exec_adapted
             && wire_api == UpstreamWireApi::Responses
             && !xai_upstream
@@ -5170,6 +5177,31 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
                 .iter()
                 .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
         })
+}
+
+/// Kimi 官方 Responses 的 `include` 只认 `reasoning.encrypted_content`（#3026）：
+/// 去掉 Codex 私有的 `output.encrypted_content`，其余项保留；过滤后为空就整个去掉。
+fn tidy_kimi_include(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let kept = object
+        .get("include")
+        .and_then(Value::as_array)
+        .map(|include| {
+            include
+                .iter()
+                .filter(|entry| entry.as_str() != Some("output.encrypted_content"))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+    if let Some(kept) = kept {
+        if kept.is_empty() {
+            object.remove("include");
+        } else {
+            object.insert("include".to_string(), Value::Array(kept));
+        }
+    }
 }
 
 /// 只处理 Responses `input[].content[]` 与 `function_call_output.output[]`
@@ -12015,6 +12047,109 @@ mod relay_custom_header_tests {
         assert_eq!(
             request.headers().get("authorization").unwrap(),
             "Bearer explicit"
+        );
+    }
+}
+
+#[cfg(test)]
+mod kimi_include_tests {
+    use super::*;
+
+    fn kimi_relay(base_url: &str) -> crate::settings::RelayProfile {
+        crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            base_url: base_url.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn kimi_official_responses_upstreams_are_recognized() {
+        for base_url in [
+            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.kimi.com/coding/v1",
+        ] {
+            assert!(
+                crate::relay_config::upstream_is_kimi_official_responses(&kimi_relay(base_url)),
+                "{base_url}"
+            );
+        }
+        for base_url in [
+            "https://api.openai.com/v1",
+            "https://api.x.ai/v1",
+            "https://moonshot.ai.example.com/v1",
+            "",
+        ] {
+            assert!(
+                !crate::relay_config::upstream_is_kimi_official_responses(&kimi_relay(base_url)),
+                "{base_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_responses_protocol_is_not_kimi_official() {
+        let relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::ChatCompletions,
+            base_url: "https://api.moonshot.ai/v1".to_string(),
+            ..Default::default()
+        };
+        assert!(!crate::relay_config::upstream_is_kimi_official_responses(&relay));
+    }
+
+    #[test]
+    fn include_drops_only_output_encrypted_content() {
+        let mut body = json!({
+            "model": "k3.1-pro",
+            "include": [
+                "reasoning.encrypted_content",
+                "output.encrypted_content",
+                "message.output_text.logprobs"
+            ]
+        });
+        tidy_kimi_include(&mut body);
+        assert_eq!(
+            body["include"],
+            json!(["reasoning.encrypted_content", "message.output_text.logprobs"])
+        );
+    }
+
+    #[test]
+    fn include_removed_entirely_when_only_private_entries_left() {
+        let mut body = json!({
+            "include": ["output.encrypted_content"],
+            "input": []
+        });
+        tidy_kimi_include(&mut body);
+        assert!(body.get("include").is_none());
+        // 其他字段不受影响。
+        assert_eq!(body["input"], json!([]));
+    }
+
+    #[test]
+    fn include_without_private_entries_is_untouched() {
+        let mut body = json!({"include": ["reasoning.encrypted_content"]});
+        tidy_kimi_include(&mut body);
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn official_chatgpt_include_is_never_rewritten() {
+        // 官方 ChatGPT 上游不命中 Kimi 判定，include 原样转发。
+        let relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            base_url: "https://chatgpt.com/backend-api/codex".to_string(),
+            ..Default::default()
+        };
+        assert!(!crate::relay_config::upstream_is_kimi_official_responses(&relay));
+        let mut body = json!({"include": ["reasoning.encrypted_content", "output.encrypted_content"]});
+        if crate::relay_config::upstream_is_kimi_official_responses(&relay) {
+            tidy_kimi_include(&mut body);
+        }
+        assert_eq!(
+            body["include"],
+            json!(["reasoning.encrypted_content", "output.encrypted_content"])
         );
     }
 }

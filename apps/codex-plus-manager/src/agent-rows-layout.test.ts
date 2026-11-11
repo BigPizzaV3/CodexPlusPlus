@@ -47,7 +47,7 @@ test("Codex 行有启动 / 停止键：只有主窗口传了 codexRun 才显示�
   assert.match(source, /disabled=\{codexRun\.busy \|\| \(!codexRun\.running && Boolean\(codexRun\.unavailableReason\)\)\}/);
   assert.match(source, /title=\{codexRun\.busy \? t\("处理中…"\) : codexRun\.running \? t\("停止 Codex"\) : codexRun\.unavailableReason \?\? t\("启动 Codex"\)\}/);
   assert.match(source, /\(codexRun\.running \? codexRun\.onStop : codexRun\.onStart\)\(\);/);
-  assert.match(source, /<Switch disabled=\{busy !== null\} label=\{tf\("\{0\} 接入 Codex\+\+"/);
+  assert.match(source, /<Switch pending=\{busy !== null\} label=\{tf\("\{0\} 接入 Codex\+\+"/);
   // 和 Claude 行同一个位置：模型选择器和接入开关之间。
   const controls = source.slice(source.indexOf('<div className="cx-row-controls">'), source.indexOf("<Switch", source.indexOf('<div className="cx-row-controls">')));
   assert.match(controls, /<ModelPicker/);

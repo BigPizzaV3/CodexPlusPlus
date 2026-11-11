@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   multiLaunchInstanceCanRestart,
   multiLaunchInstanceCanStop,
   multiLaunchInstanceFailure,
+  multiLaunchInstanceIsMain,
   multiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
@@ -29,6 +31,24 @@ describe("Codex 多开运行实例模型", () => {
     }
     assert.equal(multiLaunchInstanceCanStop(instance({ status: "stopped" })), false);
     assert.equal(multiLaunchInstanceCanRestart(instance({ status: "stopped" })), true);
+  });
+
+  // #3025: the main row used to send "main" to the multi-instance RPCs, which always reject it.
+  it("主 Codex 不能从多开页停止或重启", () => {
+    const runningMain = instance({ instanceId: "main", isMain: true, status: "running", running: true });
+    assert.equal(multiLaunchInstanceIsMain(runningMain), true);
+    assert.equal(multiLaunchInstanceCanStop(runningMain), false);
+    assert.equal(multiLaunchInstanceCanRestart(runningMain), false);
+
+    assert.equal(multiLaunchInstanceIsMain(instance({ instanceId: " main " })), true);
+    assert.equal(multiLaunchInstanceCanStop(instance({ instanceId: " main ", status: "running", running: true })), false);
+    assert.equal(multiLaunchInstanceCanRestart(instance({ instanceId: "main", status: "stopped", running: false })), false);
+    assert.equal(multiLaunchInstanceCanStop(instance({ isMain: true, status: "failed", running: false })), false);
+    assert.equal(multiLaunchInstanceCanRestart(instance({ isMain: true, status: "unknown" })), false);
+
+    assert.equal(multiLaunchInstanceIsMain(instance({ instanceId: "mainland" })), false);
+    assert.equal(multiLaunchInstanceCanStop(instance({ instanceId: "mainland", status: "running" })), true);
+    assert.equal(multiLaunchInstanceCanRestart(instance({ instanceId: "mainland", status: "stopped" })), true);
   });
   it("主 Codex 优先使用主实例标签", () => {
     assert.equal(multiLaunchInstanceLabel(instance({ isMain: true, profileName: "旧名称" })), "主 Codex");
@@ -111,5 +131,37 @@ describe("Codex 多开运行实例模型", () => {
     assert.deepEqual(runningInstancesForProfile(instances, "ccs-a").map((item) => item.instanceId), ["a-1"]);
     assert.deepEqual(runningInstancesForProfile(instances, "missing"), []);
     assert.deepEqual(runningInstancesForProfile(instances, "  "), []);
+  });
+});
+
+describe("多开页主 Codex 的停止和重启接到真实入口", () => {
+  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+
+  it("主行置灰并说明侧栏停止、顶部重启，处理函数不会把 main 交给多开 RPC", () => {
+    const screenStart = app.indexOf("function CodexMultiLaunchScreen(");
+    const screen = app.slice(screenStart, app.indexOf("\nfunction ", screenStart + 1));
+    assert.match(screen, /multiLaunchInstanceIsMain\(instance\)/);
+    assert.match(screen, /主 Codex 请使用顶部的「重启 Codex」。/);
+    assert.match(screen, /主 Codex 请使用侧栏的「停止 Codex」。/);
+    assert.match(screen, /pointerEvents: "none"/);
+
+    const restartStart = app.indexOf("const restartMultiLaunchInstance = async");
+    const stopStart = app.indexOf("const stopMultiLaunchInstance = async");
+    const launchStart = app.indexOf("const launch = async");
+    const restartFn = app.slice(restartStart, stopStart);
+    const stopFn = app.slice(stopStart, launchStart);
+    assert.ok(restartFn.includes("multiLaunchInstanceIsMain(instance)"));
+    assert.ok(restartFn.indexOf("multiLaunchInstanceIsMain(instance)") < restartFn.indexOf("restart_codex_multi_instance"));
+    assert.ok(stopFn.includes("multiLaunchInstanceIsMain(instance)"));
+    assert.ok(stopFn.indexOf("multiLaunchInstanceIsMain(instance)") < stopFn.indexOf("appConfirm"));
+    assert.ok(stopFn.indexOf("multiLaunchInstanceIsMain(instance)") < stopFn.indexOf("stop_codex_multi_instance"));
+  });
+
+  it("多开 RPC 拒绝 main 时指向同样的入口", () => {
+    assert.match(commands, /主 Codex 请使用侧栏的「停止 Codex」。/);
+    assert.match(commands, /主 Codex 请使用顶部的「重启 Codex」。/);
+    assert.doesNotMatch(commands, /主进程请使用重启 Codex 或退出管理器来结束/);
+    assert.doesNotMatch(commands, /主进程请使用顶部的重启 Codex/);
   });
 });

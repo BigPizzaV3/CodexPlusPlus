@@ -341,6 +341,7 @@ import {
   multiLaunchInstanceCanRestart,
   multiLaunchInstanceCanStop,
   multiLaunchInstanceFailure,
+  multiLaunchInstanceIsMain,
   multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
@@ -3135,6 +3136,11 @@ export function App() {
   };
 
   const restartMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
+    // #3025: the main process is not a multi-instance. The backend rejects instanceId "main".
+    if (multiLaunchInstanceIsMain(instance)) {
+      showNotice(t("重启 Codex 实例"), "主 Codex 请使用顶部的「重启 Codex」。", "failed");
+      return;
+    }
     if (multiLaunchActionPending) return;
     setMultiLaunchActionPending(instance.instanceId);
     try {
@@ -3149,6 +3155,10 @@ export function App() {
   };
 
   const stopMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
+    if (multiLaunchInstanceIsMain(instance)) {
+      showNotice(t("结束 Codex 实例"), "主 Codex 请使用侧栏的「停止 Codex」。", "failed");
+      return;
+    }
     if (multiLaunchActionPending) return;
     const name = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
     if (!(await appConfirm(tf("确定结束“{0}”吗？", [name]), { title: t("结束实例"), confirmText: t("结束"), danger: true }))) return;
@@ -8429,7 +8439,9 @@ function CodexMultiLaunchScreen({
           {instances.length ? instances.map((instance) => {
             const status = multiLaunchInstanceStatus(instance);
             const running = multiLaunchInstanceRunning(instance);
+            const mainInstance = multiLaunchInstanceIsMain(instance);
             const canStop = multiLaunchInstanceCanStop(instance);
+            const canRestart = multiLaunchInstanceCanRestart(instance);
             const pending = actions.multiLaunchActionPending === instance.instanceId;
             const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
             // 启动失败的原因必须让用户看得见：Windows 上多开曾经完全不吭声。
@@ -8442,6 +8454,16 @@ function CodexMultiLaunchScreen({
               failure ? `${instance.launchResult?.status === "cleanup_failed" ? t("失败") : t("启动失败")}：${failure}` : "",
             ].filter(Boolean).join(" · ");
             const tone = statusClass(status);
+            // Disabled buttons do not receive hover, so the hint sits on the wrapper
+            // and the button itself ignores pointer events.
+            const restartTitle = mainInstance
+              ? t("主 Codex 请使用顶部的「重启 Codex」。")
+              : t("重启此 Codex 实例；修改供应商或 Key 后重启才会生效");
+            const stopTitle = mainInstance
+              ? t("主 Codex 请使用侧栏的「停止 Codex」。")
+              : canStop
+                ? t("结束此 Codex 实例")
+                : t("实例当前未运行");
             return (
               <div className="multi-launch-instance" data-instance-id={instance.instanceId} key={instance.instanceId}>
                 <CxRow
@@ -8450,28 +8472,34 @@ function CodexMultiLaunchScreen({
                   icon={<CxStatusIcon tone={running ? "ok" : failure ? "danger" : "off"}>{instance.isMain ? <AgentIcon agent="codex" className="multi-launch-main-icon" /> : <span className="multi-launch-initial">{providerInitial(label)}</span>}</CxStatusIcon>}
                   title={label}
                 >
-                  <button
-                    className="cx-secondary"
-                    disabled={!multiLaunchInstanceCanRestart(instance) || pending}
-                    onClick={() => void actions.restartMultiLaunchInstance(instance)}
-                    title={t("重启此 Codex 实例；修改供应商或 Key 后重启才会生效")}
-                    type="button"
-                  >
-                    <RotateCcw />
-                    {pending ? t("处理中") : t("重启")}
-                  </button>
+                  <span title={mainInstance ? restartTitle : undefined}>
+                    <button
+                      className="cx-secondary"
+                      disabled={!canRestart || pending}
+                      onClick={() => void actions.restartMultiLaunchInstance(instance)}
+                      style={mainInstance ? { pointerEvents: "none" } : undefined}
+                      title={restartTitle}
+                      type="button"
+                    >
+                      <RotateCcw />
+                      {pending ? t("处理中") : t("重启")}
+                    </button>
+                  </span>
                   {/* 停止带文字，和「重启」并排；只有图标时看不出是什么。 */}
-                  <button
-                    aria-label={t("结束此 Codex 实例")}
-                    className="cx-secondary"
-                    disabled={!canStop || pending}
-                    onClick={() => void actions.stopMultiLaunchInstance(instance)}
-                    title={canStop ? t("结束此 Codex 实例") : t("实例当前未运行")}
-                    type="button"
-                  >
-                    <PowerOff />
-                    {t("停止")}
-                  </button>
+                  <span title={mainInstance ? stopTitle : undefined}>
+                    <button
+                      aria-label={stopTitle}
+                      className="cx-secondary"
+                      disabled={!canStop || pending}
+                      onClick={() => void actions.stopMultiLaunchInstance(instance)}
+                      style={mainInstance ? { pointerEvents: "none" } : undefined}
+                      title={stopTitle}
+                      type="button"
+                    >
+                      <PowerOff />
+                      {t("停止")}
+                    </button>
+                  </span>
                 </CxRow>
               </div>
             );

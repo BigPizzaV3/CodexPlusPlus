@@ -1,5 +1,5 @@
 /** 本地网关页各标签共用的小组件与类型。 */
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { KeyRound, Shuffle, Waypoints } from "lucide-react";
 import { t, tf } from "./i18n";
@@ -151,9 +151,33 @@ export function Avatar({ name, baseUrl = "", size = "md", plain = false }: { nam
   );
 }
 
-export function Switch({ on, disabled, label, onToggle }: { on: boolean; disabled?: boolean; label: string; onToggle: () => void }) {
+/**
+ * `disabled`：长期不可用（灰色）。
+ * `pending`：页面上有保存在进行（#2973）。此时只拦点击、不变灰，避免整页开关一起闪；
+ * 被点的那个先乐观显示新状态，保存结束后以最新数据为准（失败即回滚）。
+ */
+export function Switch({ on, disabled, pending, label, onToggle }: { on: boolean; disabled?: boolean; pending?: boolean; label: string; onToggle: () => void }) {
+  const [optimistic, setOptimistic] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!pending) setOptimistic(null);
+  }, [pending, on]);
+  const shown = optimistic ?? on;
   return (
-    <button aria-checked={on} aria-label={label} className={`gw-switch ${on ? "is-on" : ""}`} disabled={disabled} onClick={onToggle} role="switch" type="button">
+    <button
+      aria-checked={shown}
+      aria-disabled={pending || undefined}
+      aria-label={label}
+      className={`gw-switch ${shown ? "is-on" : ""}`}
+      data-pending={pending ? "true" : undefined}
+      disabled={disabled}
+      onClick={() => {
+        if (pending) return;
+        setOptimistic(!on);
+        onToggle();
+      }}
+      role="switch"
+      type="button"
+    >
       <span />
     </button>
   );
