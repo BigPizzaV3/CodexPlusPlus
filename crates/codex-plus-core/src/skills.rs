@@ -595,9 +595,6 @@ fn native_skill_paths_match(left: &Path, right: &Path) -> bool {
 
 impl NativeSkillConfig {
     fn name_for_matching(&self, manifest: &Path, fallback_name: &str) -> anyhow::Result<String> {
-        if !manifest.is_file() {
-            return Ok(fallback_name.to_string());
-        }
         let last_path = self.rules.iter().rposition(|rule| rule.name.is_none() && rule.path.as_deref()
             .is_some_and(|path| native_skill_paths_match(path, manifest)));
         if self.rules.iter().enumerate().any(|(index, rule)|
@@ -726,7 +723,7 @@ impl SkillsManager {
         for (path, name) in manifests {
             let name = match config.name_for_matching(path, name) {
                 Ok(name) => name,
-                Err(_) if skip_unknown => continue,
+                Err(error) if skip_unknown && error.downcast_ref::<NativeSkillNameUnknown>().is_some() => continue,
                 Err(error) => return Err(error),
             };
             if skip_unknown && config.matching_rule(path, &name)
@@ -2860,9 +2857,18 @@ fn parse_single_line_yaml_scalar(value: &str) -> Option<String> {
     Some(value.to_string())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct NativeSkillNameUnknown(anyhow::Error);
+
 fn read_native_skill_name(manifest: &Path) -> anyhow::Result<String> {
-    let text = read_bounded_skill_manifest(std::fs::File::open(manifest)?)
-        .context("无法读取完整 Skill frontmatter，Codex 启用状态未知")?;
+    let text = read_bounded_skill_manifest(std::fs::File::open(manifest)?)?
+        .context("无法读取完整 Skill frontmatter，Codex 启用状态未知")
+        .map_err(NativeSkillNameUnknown)?;
+    parse_native_skill_name(&text).map_err(|error| NativeSkillNameUnknown(error).into())
+}
+
+fn parse_native_skill_name(text: &str) -> anyhow::Result<String> {
     let mut lines = text.lines();
     anyhow::ensure!(lines.next().is_some_and(|line| line.trim() == "---"),
         "Skill 缺少有效 frontmatter，Codex 启用状态未知");
@@ -2905,20 +2911,19 @@ fn read_skill_manifest(manifest: &Path, fallback_id: &str) -> (String, String) {
         if !file.metadata().ok()?.is_file() {
             return None;
         }
-        read_bounded_skill_manifest(file)
+        read_bounded_skill_manifest(file).ok()?
     })();
     text.map(|text| parse_skill_frontmatter(&text, fallback_id))
         .unwrap_or_else(|| (fallback_id.to_string(), String::new()))
 }
 
-fn read_bounded_skill_manifest(reader: impl Read) -> Option<String> {
+fn read_bounded_skill_manifest(reader: impl Read) -> std::io::Result<Option<String>> {
     let mut bytes = Vec::new();
     reader
         .take((SKILL_FRONTMATTER_LIMIT_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
+        .read_to_end(&mut bytes)?;
     if bytes.len() <= SKILL_FRONTMATTER_LIMIT_BYTES {
-        return String::from_utf8(bytes).ok();
+        return Ok(String::from_utf8(bytes).ok());
     }
 
     let mut reader = BufReader::new(bytes.as_slice());
@@ -2926,17 +2931,22 @@ fn read_bounded_skill_manifest(reader: impl Read) -> Option<String> {
     let mut first = true;
     loop {
         let start = text.len();
-        if reader.read_line(&mut text).ok()? == 0 || text.len() > SKILL_FRONTMATTER_LIMIT_BYTES {
-            return None;
+        let count = match reader.read_line(&mut text) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if count == 0 || text.len() > SKILL_FRONTMATTER_LIMIT_BYTES {
+            return Ok(None);
         }
         let delimiter = text[start..].trim() == "---";
         if first {
             if !delimiter {
-                return None;
+                return Ok(None);
             }
             first = false;
         } else if delimiter {
-            return Some(text);
+            return Ok(Some(text));
         }
     }
 }
@@ -4381,6 +4391,28 @@ mod tests {
             }
             assert!(manager.set_enabled("alpha", true).is_err());
         }
+    }
+
+    #[test]
+    fn install_rule_reset_reports_manifest_read_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        std::fs::create_dir_all(&manager.codex_home).unwrap();
+        std::fs::write(manager.codex_home.join("config.toml"),
+            "[[skills.config]]\nname = 'alpha'\nenabled = false\n").unwrap();
+        let error = manager.set_native_skill_paths(
+            &[(temp.path().join("missing/SKILL.md"), "alpha".into())], true, true,
+        ).unwrap_err();
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+
+        struct FailingReader;
+        impl Read for FailingReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            }
+        }
+        assert_eq!(read_bounded_skill_manifest(FailingReader).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]
@@ -7433,6 +7465,7 @@ mod tests {
             bytes: &bytes,
             count: &mut count,
         })
+        .unwrap()
         .unwrap();
 
         assert_eq!(count, SKILL_FRONTMATTER_LIMIT_BYTES + 1);
