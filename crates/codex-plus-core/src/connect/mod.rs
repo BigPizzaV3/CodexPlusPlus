@@ -204,6 +204,18 @@ pub async fn run_weixin_connect_with_outbound(
     codex_path: WeixinCodexPath,
     outbound: outbound::OutboundPolicy,
 ) -> anyhow::Result<()> {
+    let store = ConnectSessionStore::default_for_account(&config.account_id);
+    run_weixin_connect_with_store(config, stop, status, codex_path, outbound, store).await
+}
+
+async fn run_weixin_connect_with_store(
+    config: WeixinConnectConfig,
+    stop: Arc<AtomicBool>,
+    status: SharedWeixinConnectStatus,
+    codex_path: WeixinCodexPath,
+    outbound: outbound::OutboundPolicy,
+    store: ConnectSessionStore,
+) -> anyhow::Result<()> {
     let mut config = config.normalized();
     if config.token.is_empty() {
         bail!("请先扫码登录微信");
@@ -212,13 +224,12 @@ pub async fn run_weixin_connect_with_outbound(
 
     update_status(&status, &config, |current| {
         current.state = "starting".to_string();
-        current.message = "正在连接微信和 Codex app-server...".to_string();
+        current.message = "正在连接微信网关...".to_string();
         current.account_id = config.account_id.clone();
         current.has_token = true;
     });
 
     let client = WeixinClient::new(&config.base_url, &config.token, &config.route_tag)?;
-    let store = ConnectSessionStore::default_for_account(&config.account_id);
     let mut state = store.load()?;
     let mut app_config = AppServerConfig {
         executable: config.codex_path.clone(),
@@ -229,25 +240,49 @@ pub async fn run_weixin_connect_with_outbound(
     };
     let mut app_server: Option<CodexAppServer> = None;
     let mut long_poll_timeout_ms = 35_000;
-
-    update_status(&status, &config, |current| {
-        current.state = "running".to_string();
-        current.message = outbound.status_message("微信连接正在运行。");
-    });
+    let mut poll_retrying = true;
+    let mut unanswered_polls = 0;
 
     while !stop.load(Ordering::SeqCst) {
         update_status(&status, &config, |_| {});
-        let updates = match client
-            .get_updates(&state.get_updates_buf, long_poll_timeout_ms)
-            .await
-        {
-            Ok(updates) => updates,
+        let result = tokio::select! {
+            result = client.get_updates(&state.get_updates_buf, long_poll_timeout_ms) => result,
+            _ = wait_for_stop(&stop) => break,
+        };
+        let updates = match result {
+            Ok(Some(updates)) => {
+                unanswered_polls = 0;
+                if poll_retrying {
+                    update_status(&status, &config, |current| {
+                        current.state = "running".to_string();
+                        current.message = outbound.status_message("微信连接正在运行。");
+                    });
+                    poll_retrying = false;
+                }
+                updates
+            }
+            Ok(None) => {
+                unanswered_polls += 1;
+                if unanswered_polls >= 2 {
+                    poll_retrying = true;
+                    update_status(&status, &config, |current| {
+                        current.state = "retrying".to_string();
+                        current.message = "微信网关暂未响应，正在继续检查连接。".to_string();
+                    });
+                }
+                continue;
+            }
             Err(error) => {
+                unanswered_polls = 0;
+                poll_retrying = true;
                 update_status(&status, &config, |current| {
                     current.state = "retrying".to_string();
-                    current.message = format!("微信长轮询失败，稍后重试：{error}");
+                    current.message = format!("微信长轮询失败，稍后重试：{error:#}");
                 });
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {},
+                    _ = wait_for_stop(&stop) => break,
+                }
                 continue;
             }
         };
@@ -318,20 +353,22 @@ pub async fn run_weixin_connect_with_outbound(
             .await
             .ok()
             .and_then(|result| result.ok());
-            let result = process_weixin_message(
-                &client,
-                &app_config,
-                &mut app_server,
-                &mut state,
-                &message,
-                &text,
-                &stop,
-                &outbound,
-                &config.account_id,
-                &config.project_id,
-                !config.work_dir.is_empty(),
-            )
-            .await;
+            let result = tokio::select! {
+                result = process_weixin_message(
+                    &client,
+                    &app_config,
+                    &mut app_server,
+                    &mut state,
+                    &message,
+                    &text,
+                    &stop,
+                    &outbound,
+                    &config.account_id,
+                    &config.project_id,
+                    !config.work_dir.is_empty(),
+                ) => result,
+                _ = wait_for_stop(&stop) => Err(anyhow::anyhow!("微信连接已停止")),
+            };
 
             if let Some(mut server) = app_server.take() {
                 server.close().await;
@@ -360,7 +397,7 @@ pub async fn run_weixin_connect_with_outbound(
                             )
                             .await;
                         update_status(&status, &config, |current| {
-                            current.state = "retrying".to_string();
+                            current.state = "running".to_string();
                             current.message = format!("处理微信消息失败，等待下一条消息重试：{error}");
                             current.last_peer_id = message.from_user_id.clone();
                             current.last_message_at_ms = now_ms();
@@ -1278,11 +1315,14 @@ mod tests {
         };
         let status: SharedWeixinConnectStatus = Arc::new(Mutex::new(Default::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        let task = tokio::spawn(run_weixin_connect_with_codex_path(
+        let store = ConnectSessionStore::new(work_dir.path().join("connect-state.json"));
+        let task = tokio::spawn(run_weixin_connect_with_store(
             config,
             Arc::clone(&stop),
             Arc::clone(&status),
             WeixinCodexPath::new(""),
+            outbound::OutboundPolicy::new(false, "", ""),
+            store,
         ));
         // 轮询等待「已忽略」状态出现：固定 sleep 在并行测试负载下会抖动（CI/本地实测偶发）。
         // 循环正常退出时会写「微信连接已停止」，所以要在 stop 之前拿到快照。
@@ -1299,17 +1339,200 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         stop.store(true, Ordering::SeqCst);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
 
         assert!(
             message.contains("已忽略来自非白名单发送方的消息"),
             "状态栏应提示已忽略，实际：{message}"
         );
-        // 清理循环写入真实 app state 目录的测试状态文件
-        let _ = std::fs::remove_file(
-            crate::paths::default_app_state_dir()
-                .join("weixin-connect-state-unit-test-ignore.json"),
-        );
+    }
+
+    #[tokio::test]
+    async fn polling_failure_recovers_after_an_empty_gateway_response() {
+        let server = wiremock::MockServer::start().await;
+        let healthy = Arc::new(AtomicBool::new(false));
+        let response_healthy = Arc::clone(&healthy);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/ilink/bot/getupdates"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if response_healthy.load(Ordering::SeqCst) {
+                    wiremock::ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"ret": 0, "msgs": []}))
+                        .set_delay(std::time::Duration::from_millis(50))
+                } else {
+                    wiremock::ResponseTemplate::new(503)
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = WeixinConnectConfig {
+            base_url: server.uri(),
+            token: "test-token".into(),
+            work_dir: directory.path().display().to_string(),
+            ..WeixinConnectConfig::default()
+        };
+        let status: SharedWeixinConnectStatus = Arc::new(Mutex::new(Default::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run_weixin_connect_with_store(
+            config,
+            Arc::clone(&stop),
+            Arc::clone(&status),
+            WeixinCodexPath::new(""),
+            outbound::OutboundPolicy::new(false, "", ""),
+            ConnectSessionStore::new(directory.path().join("connect-state.json")),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while status.lock().unwrap().state != "retrying" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(status.lock().unwrap().message.contains("503"));
+        healthy.store(true, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while status.lock().unwrap().state != "running" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        stop.store(true, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_first_poll_stays_starting_and_can_be_stopped() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/ilink/bot/getupdates"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ret": 0, "msgs": []}))
+                    .set_delay(std::time::Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = WeixinConnectConfig {
+            base_url: server.uri(),
+            token: "test-token".into(),
+            work_dir: directory.path().display().to_string(),
+            ..WeixinConnectConfig::default()
+        };
+        let status: SharedWeixinConnectStatus = Arc::new(Mutex::new(Default::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run_weixin_connect_with_store(
+            config,
+            Arc::clone(&stop),
+            Arc::clone(&status),
+            WeixinCodexPath::new(""),
+            outbound::OutboundPolicy::new(false, "", ""),
+            ConnectSessionStore::new(directory.path().join("connect-state.json")),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while server.received_requests().await.unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(status.lock().unwrap().state, "starting");
+        stop.store(true, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.lock().unwrap().state, "stopped");
+    }
+
+    #[tokio::test]
+    async fn unanswered_polls_trigger_health_retry_and_recover() {
+        use std::sync::atomic::AtomicUsize;
+
+        let server = wiremock::MockServer::start().await;
+        let requests = Arc::new(AtomicUsize::new(0));
+        let responding = Arc::new(AtomicBool::new(false));
+        let response_requests = Arc::clone(&requests);
+        let response_enabled = Arc::clone(&responding);
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/ilink/bot/getupdates"))
+            .respond_with(move |_request: &wiremock::Request| {
+                let first = response_requests.fetch_add(1, Ordering::SeqCst) == 0;
+                let response = wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({
+                        "ret": 0,
+                        "msgs": [],
+                        "longpolling_timeout_ms": 1000
+                    }));
+                if first || response_enabled.load(Ordering::SeqCst) {
+                    response.set_delay(std::time::Duration::from_millis(50))
+                } else {
+                    response.set_delay(std::time::Duration::from_secs(7))
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config = WeixinConnectConfig {
+            base_url: server.uri(),
+            token: "test-token".into(),
+            work_dir: directory.path().display().to_string(),
+            ..WeixinConnectConfig::default()
+        };
+        let status: SharedWeixinConnectStatus = Arc::new(Mutex::new(Default::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(run_weixin_connect_with_store(
+            config,
+            Arc::clone(&stop),
+            Arc::clone(&status),
+            WeixinCodexPath::new(""),
+            outbound::OutboundPolicy::new(false, "", ""),
+            ConnectSessionStore::new(directory.path().join("connect-state.json")),
+        ));
+        let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while status.lock().unwrap().state != "running" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(started.is_ok(), "status: {:?}", status.lock().unwrap());
+        tokio::time::timeout(std::time::Duration::from_secs(16), async {
+            while status.lock().unwrap().state != "retrying" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let message = status.lock().unwrap().message.clone();
+        assert!(message.contains("网关暂未响应"), "{message}");
+        responding.store(true, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while status.lock().unwrap().state != "running" {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        stop.store(true, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
