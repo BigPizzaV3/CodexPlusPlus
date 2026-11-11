@@ -1004,6 +1004,11 @@
     try {
       const recoveryOptions = codexManagedSessionRecoveryOptions(options);
       const read = await originalSendRequest("thread/read", { threadId, includeTurns: false }, recoveryOptions);
+      // 侧边聊天是 ephemeral 分叉：没有 rollout、不能卸载恢复，上下文已在分叉时写入（#3041）。
+      if (read.thread?.ephemeral === true) {
+        contexts.set(threadId, context.signature);
+        return null;
+      }
       if (!["idle", "notLoaded"].includes(read.thread.status.type)) {
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
