@@ -913,6 +913,7 @@ pub struct ScriptMarketPayload {
 #[serde(rename_all = "camelCase")]
 pub struct SkillsPayload {
     pub skills: Vec<codex_plus_core::skills::SkillEntry>,
+    pub inventory_ok: bool,
     pub repos: Vec<codex_plus_core::skills::SkillRepo>,
     pub repository_skills: Vec<codex_plus_core::skills::SkillEntry>,
     pub repo_counts: std::collections::BTreeMap<String, usize>,
@@ -7285,7 +7286,7 @@ pub async fn extension_manager_data(key: String, name: String, params: Option<Va
                         _ => public::gateway_quota(&gateway, gateway::quota::get),
                     })
                 }
-                "installedSkills" => Ok(public::installed_skills(&default_skills_manager().local_inventory())),
+                "installedSkills" => Ok(public::installed_skills(&default_skills_manager().try_local_inventory()?)),
                 "installedPlugins" => codex_plus_core::plugin_market::installed_summary(&codex_plus_core::codex_home::default_codex_home_dir()),
                 "agentCollaboration" => {
                     let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as usize;
@@ -7405,7 +7406,7 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
 ///
 /// 单个仓库失败（限流、网络、仓库删了）不影响其它仓库，错误单独收集回前端。
 #[tauri::command]
-pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
+pub async fn refresh_skill_catalog() -> Result<CommandResult<SkillsPayload>, String> {
     let manager = default_skills_manager();
     let repos = manager.list_repos();
     let mut repo_errors = Vec::new();
@@ -7456,20 +7457,28 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
     } else {
         format!("Skills 列表已刷新，{} 个仓库拉取失败。", repo_errors.len())
     };
-    let payload = skills_payload(&manager, &all_cached_repo_skills(), repo_errors);
-    if payload.repo_errors.is_empty() {
-        ok(&message, payload)
-    } else {
-        failed(&message, payload)
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let payload = skills_payload(&manager, &all_cached_repo_skills(), repo_errors);
+        if payload.repo_errors.is_empty() {
+            ok(&message, payload)
+        } else {
+            failed(&message, payload)
+        }
+    }).await.map_err(|error| format!("读取 Skill 目录失败：{error}"))
 }
 
 /// 只读本地状态，不联网。切到 Skills 页时先用它把已装的列出来。
 #[tauri::command]
-pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    let payload = current_skills_payload(&manager);
-    ok("已加载本地 Skills。", payload)
+pub async fn list_installed_skills() -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let manager = default_skills_manager();
+        let payload = current_skills_payload(&manager);
+        if payload.inventory_ok {
+            ok("已加载本地 Skills。", payload)
+        } else {
+            failed("读取本地 Skills 失败。", payload)
+        }
+    }).await.map_err(|error| format!("读取本地 Skills 失败：{error}"))
 }
 
 /// 导入 cc-switch 已安装的 Skills。cc-switch 的 Skill 文件位于
@@ -7658,22 +7667,24 @@ async fn install_or_update_skill(
 }
 
 #[tauri::command]
-pub fn set_skill_enabled(id: String, enabled: bool) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    match manager.set_enabled(id.trim(), enabled) {
-        Ok(()) => ok(
-            if enabled {
-                "Skill 已启用，下次对话生效。"
-            } else {
-                "Skill 已停用。"
-            },
-            current_skills_payload(&manager),
-        ),
-        Err(error) => failed(
-            &format!("Skill 启停失败：{error}"),
-            current_skills_payload(&manager),
-        ),
-    }
+pub async fn set_skill_enabled(id: String, enabled: bool) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        match manager.set_enabled(id.trim(), enabled) {
+            Ok(()) => ok(
+                if enabled {
+                    "Skill 已启用，下次对话生效。"
+                } else {
+                    "Skill 已停用。"
+                },
+                current_skills_payload(&manager),
+            ),
+            Err(error) => failed(
+                &format!("Skill 启停失败：{error}"),
+                current_skills_payload(&manager),
+            ),
+        }
+    }).await.map_err(|error| format!("Skill 启停任务失败：{error}"))
 }
 
 #[tauri::command]
@@ -7816,6 +7827,18 @@ pub async fn inspect_skill_repo(
     match codex_plus_core::skills::resolve_repo_skills(repo.clone(), &snapshot.skills).await {
         Ok((resolved, skills)) => {
             let count = skills.len();
+            let worker_manager = manager.clone();
+            let worker_skills = skills.clone();
+            let entries = match tauri::async_runtime::spawn_blocking(move || {
+                worker_manager.try_merge_entries(&worker_skills)
+            }).await.map_err(|error| format!("读取 Skill 状态任务失败：{error}"))
+                .and_then(|result| result.map_err(|error| format!("{error:#}"))) {
+                Ok(entries) => entries,
+                Err(error) => return failed(
+                    &format!("读取 Skill 状态失败：{error}"),
+                    SkillRepositoryPayload { repo: resolved, skills: Vec::new(), skill_count: count },
+                ),
+            };
             // 预览未保存仓库不会修改仓库设置。
             {
                 let _coordination = skills_repo_coordination();
@@ -7829,9 +7852,7 @@ pub async fn inspect_skill_repo(
                 &format!("已解析仓库，发现 {count} 个 Skill。"),
                 SkillRepositoryPayload {
                     repo: resolved,
-                    skills: manager
-                        .merge_entries(&skills)
-                        .into_iter()
+                    skills: entries.into_iter()
                         .filter(|s| {
                             skills
                                 .iter()
@@ -7872,19 +7893,10 @@ pub fn delete_skill_repo(key: String) -> CommandResult<SkillsPayload> {
 fn skills_payload(
     manager: &codex_plus_core::skills::SkillsManager,
     remote: &[codex_plus_core::skills::RemoteSkill],
-    repo_errors: Vec<String>,
+    mut repo_errors: Vec<String>,
 ) -> SkillsPayload {
     let repos = manager.list_repos();
     let all_remote = all_cached_repo_skills();
-    let repository_skills = manager
-        .merge_entries(&all_remote)
-        .into_iter()
-        .filter(|skill| {
-            all_remote
-                .iter()
-                .any(|r| r.id == skill.id && r.repo_key == skill.repo_key)
-        })
-        .collect();
     let repo_counts = repo_skill_cache()
         .lock()
         .ok()
@@ -7909,12 +7921,43 @@ fn skills_payload(
         })
         .cloned()
         .collect();
+    let mut reused_inventory = None;
+    let repository_skills = if all_remote.is_empty() {
+        Vec::new()
+    } else {
+        match manager.try_merge_entries(&all_remote) {
+            Ok(entries) => {
+                let repository = entries.iter().filter(|skill|
+                    all_remote.iter().any(|r| r.id == skill.id && r.repo_key == skill.repo_key)
+                ).cloned().collect();
+                if remote == all_remote { reused_inventory = Some(Ok(entries)); }
+                repository
+            }
+            Err(error) => {
+                if remote == all_remote {
+                    reused_inventory = Some(Err(error));
+                } else {
+                    repo_errors.push(format!("读取 Skill 状态失败：{error:#}"));
+                }
+                Vec::new()
+            }
+        }
+    };
+    let skills = reused_inventory.unwrap_or_else(|| {
+        if remote.is_empty() { manager.try_local_inventory() } else { manager.try_merge_entries(&remote) }
+    });
+    let inventory_ok = skills.is_ok();
+    let skills = match skills {
+        Ok(skills) => skills,
+        Err(error) => {
+            let message = format!("读取 Skill 状态失败：{error:#}");
+            if !repo_errors.contains(&message) { repo_errors.push(message); }
+            Vec::new()
+        }
+    };
     SkillsPayload {
-        skills: if remote.is_empty() {
-            manager.local_inventory()
-        } else {
-            manager.merge_entries(&remote)
-        },
+        skills,
+        inventory_ok,
         repos,
         repository_skills,
         repo_counts,
@@ -7935,7 +7978,7 @@ fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> S
 }
 
 pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
-    codex_plus_core::skills::SkillsManager::new(
+    let manager = codex_plus_core::skills::SkillsManager::new(
         codex_plus_core::paths::default_skills_source_dir(),
         codex_plus_core::paths::default_skill_backups_dir(),
         codex_plus_core::paths::default_skills_state_path(),
@@ -7951,36 +7994,48 @@ pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager
             "grok".to_string(),
             codex_plus_core::grok_config::default_grok_home_dir().join("skills"),
         ),
-    ])
+    ]);
+    let shared = std::env::var_os("CODEX_PLUS_SHARED_SKILLS_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".agents").join("skills")));
+    match shared {
+        Some(path) => manager.with_shared_skills_dir(path),
+        None => manager,
+    }
 }
 
 /// 把 Skill 启用到 / 停用于某个 Agent（codex / claude / grok）。
 #[tauri::command]
-pub fn set_skill_enabled_for(
+pub async fn set_skill_enabled_for(
     agent: String,
     id: String,
     enabled: bool,
-) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    let name = match agent.as_str() {
-        "claude" => "Claude Code",
-        "grok" => "Grok",
-        _ => "Codex",
-    };
-    match manager.set_enabled_for(agent.trim(), id.trim(), enabled) {
-        Ok(()) => ok(
-            &if enabled {
-                format!("已启用到 {name}，下次对话生效。")
-            } else {
-                format!("已在 {name} 停用。")
-            },
-            current_skills_payload(&manager),
-        ),
-        Err(error) => failed(
-            &format!("Skill 启停失败：{error:#}"),
-            current_skills_payload(&manager),
-        ),
-    }
+    include_inventory: Option<bool>,
+) -> Result<CommandResult<Option<SkillsPayload>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let name = match agent.as_str() {
+            "claude" => "Claude Code",
+            "grok" => "Grok",
+            _ => "Codex",
+        };
+        let result = manager.set_enabled_for(agent.trim(), id.trim(), enabled);
+        let payload = include_inventory.unwrap_or(true).then(|| current_skills_payload(&manager));
+        match result {
+            Ok(()) => ok(
+                &if enabled {
+                    format!("已启用到 {name}，下次对话生效。")
+                } else {
+                    format!("已在 {name} 停用。")
+                },
+                payload,
+            ),
+            Err(error) => failed(
+                &format!("Skill 启停失败：{error:#}"),
+                payload,
+            ),
+        }
+    }).await.map_err(|error| format!("Skill 启停任务失败：{error}"))
 }
 
 /// 上一次成功拉取的远端清单，按仓库 key 存。

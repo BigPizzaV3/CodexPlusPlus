@@ -3009,6 +3009,13 @@ export const EN_PLAIN: Record<string, string> = {
 
   // Skills 面板
   "Skills": "Skills",
+  "共享": "Shared",
+  "本地安装": "Local installation",
+  "Codex++ 受控": "Managed by Codex++",
+  "状态未知": "Status unknown",
+  "Codex 状态未知": "Codex status unknown",
+  "同名冲突": "Name conflict",
+  "刷新目录中": "Refreshing catalog",
   "Skills 技能": "Skills",
   "Skills 仓库源": "Skill repositories",
   "从 GitHub 仓库安装 Skill 到 Codex。启用后软链到 ~/.codex/skills/，下次对话即可用。":
