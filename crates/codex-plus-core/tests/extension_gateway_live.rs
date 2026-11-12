@@ -270,6 +270,41 @@ export default (error) => error.status === 404 ? { kind: "fallback", model: "goo
     assert_eq!(count_posts("sk-found"), 1, "拓展模型应发到拓展供应商");
     let default_count = count_posts("sk-default");
 
+    // 等长改写且修改时间相同时，拓展缓存和运行中的 helper 都必须发现开关变化。
+    codex_plus_core::resident_helper::stop_resident_helper();
+    let scripts_config = root.join("user_scripts.json");
+    let enabled_config = br#"{"enabled":true ,"scripts":{"user:live":true}}"#;
+    let disabled_config = br#"{"enabled":false,"scripts":{"user:live":true}}"#;
+    assert_eq!(enabled_config.len(), disabled_config.len());
+    std::fs::write(&scripts_config, enabled_config).unwrap();
+    let metadata = std::fs::metadata(&scripts_config).unwrap();
+    let modified = metadata.modified().unwrap();
+    assert!(GatewaySettings::default().with_extension_providers().providers.iter().any(|provider| provider.relay.id == "found"));
+    std::fs::write(&scripts_config, disabled_config).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&scripts_config).unwrap().set_modified(modified).unwrap();
+    let updated = std::fs::metadata(&scripts_config).unwrap();
+    assert_eq!(updated.modified().unwrap(), modified);
+    assert_eq!(updated.len(), metadata.len());
+    assert!(
+        !GatewaySettings::default().with_extension_providers().providers.iter().any(|provider| provider.relay.id == "found"),
+        "等长且修改时间相同的配置变化也应立即刷新拓展供应商缓存"
+    );
+    std::fs::write(&scripts_config, enabled_config).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&scripts_config).unwrap().set_modified(modified).unwrap();
+    assert!(GatewaySettings::default().with_extension_providers().providers.iter().any(|provider| provider.relay.id == "found"));
+    codex_plus_core::resident_helper::ensure_resident_helper(port).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    std::fs::write(&scripts_config, disabled_config).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&scripts_config).unwrap().set_modified(modified).unwrap();
+    wait_for_catalog_model(&catalog_path, "found-a", false).await;
+    let response = client.post(&url).bearer_auth(token).json(&request("found-a")).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(count_posts("sk-default"), default_count);
+    assert_eq!(count_posts("sk-found"), 1);
+    std::fs::write(&scripts_config, enabled_config).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&scripts_config).unwrap().set_modified(modified).unwrap();
+    wait_for_catalog_model(&catalog_path, "found-a", true).await;
+
     let runtime = CoreRuntimeService::new(0, StatusStore::new(temp.path().join("status.json")))
         .with_user_scripts(codex_plus_core::user_scripts::default_user_script_manager());
     runtime.set_user_script_enabled("user:live".into(), false).await.unwrap();

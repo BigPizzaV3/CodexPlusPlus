@@ -1487,8 +1487,14 @@ mod dictation_privacy_tests {
         let status = || backend_status_value(Ok(json!({"status":"ok"})), Ok(settings.clone()), home.path()).unwrap();
         std::fs::write(&path, r#"{"models":[{"slug":"old"}]}"#).unwrap();
         let before = status();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let modified = metadata.modified().unwrap();
         assert_eq!(status(), before);
-        std::fs::write(&path, r#"{"models":[{"slug":"old"},{"slug":"new"}]}"#).unwrap();
+        std::fs::write(&path, r#"{"models":[{"slug":"new"}]}"#).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+        let updated = std::fs::metadata(&path).unwrap();
+        assert_eq!(updated.modified().unwrap(), modified);
+        assert_eq!(updated.len(), metadata.len());
         assert_ne!(status()["settingsRevision"], before["settingsRevision"]);
     }
 
@@ -1539,9 +1545,9 @@ fn backend_status_value(
             .map(|settings| {
                 // 多开实例的设置独立保存，但 Agent 发布的网关目录仍可更新。
                 if settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
-                    && let Some((modified, len)) = crate::model_catalog::gateway_catalog_revision(home)
+                    && let Some(catalog_revision) = crate::model_catalog::gateway_catalog_revision(home)
                 {
-                    return format!("{}:{modified:?}:{len}", settings.settings_revision);
+                    return format!("{}:{catalog_revision:016x}", settings.settings_revision);
                 }
                 settings.settings_revision.clone()
             })

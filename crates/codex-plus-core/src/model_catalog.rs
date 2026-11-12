@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -111,10 +112,12 @@ pub fn gateway_catalog_path(home: &Path) -> Option<PathBuf> {
     gateway_catalog_config(home).map(|(_, _, path)| path)
 }
 
-pub(crate) fn gateway_catalog_revision(home: &Path) -> Option<(std::time::SystemTime, u64)> {
+pub(crate) fn gateway_catalog_revision(home: &Path) -> Option<u64> {
     let (_, _, path) = gateway_catalog_config(home)?;
-    let metadata = path.metadata().ok()?;
-    Some((metadata.modified().ok()?, metadata.len()))
+    let content = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 fn live_gateway_model_catalog(home: &Path, profile: &RelayProfile) -> Option<Value> {
@@ -250,7 +253,13 @@ mod runtime_context_tests {
             ..RelayProfile::default()
         };
         let before = gateway_catalog_revision(&home).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let modified = metadata.modified().unwrap();
         std::fs::write(&path, r#"{"models":[{"slug":"new"}]}"#).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+        let updated = std::fs::metadata(&path).unwrap();
+        assert_eq!(updated.modified().unwrap(), modified);
+        assert_eq!(updated.len(), metadata.len());
         assert_eq!(live_gateway_model_catalog(&home, &profile).unwrap()["models"], json!(["new"]));
         assert_ne!(gateway_catalog_revision(&home).unwrap(), before);
     }

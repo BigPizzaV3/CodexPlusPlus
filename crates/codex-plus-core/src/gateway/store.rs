@@ -813,13 +813,13 @@ impl GatewaySettings {
         type Cached = (
             std::time::Instant,
             PathBuf,
-            Option<(Option<std::time::SystemTime>, u64)>,
+            Option<Vec<u8>>,
             Vec<(String, crate::user_scripts::ExtensionProvider)>,
         );
         static CACHE: std::sync::Mutex<Option<Cached>> = std::sync::Mutex::new(None);
         let manager = crate::user_scripts::default_user_script_manager();
         let config_path = manager.config_path().to_path_buf();
-        let revision = config_path.metadata().ok().map(|meta| (meta.modified().ok(), meta.len()));
+        let revision = std::fs::read(&config_path).ok();
         let providers = {
             let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match cache.as_ref() {

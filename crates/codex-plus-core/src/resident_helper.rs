@@ -133,7 +133,7 @@ fn start_helper(port: u16) -> anyhow::Result<()> {
                     return;
                 }
                 let scripts_config = crate::user_scripts::default_user_scripts_config_dir().join("user_scripts.json");
-                let revision = || scripts_config.metadata().ok().map(|meta| (meta.modified().ok(), meta.len()));
+                let revision = || std::fs::read(&scripts_config).ok();
                 let mut scripts_revision = revision();
                 let mut models_revision = crate::gateway::store::discovered_models_revision();
                 let _ = ready_tx.send(Ok(()));
