@@ -233,6 +233,20 @@ fn unknown_model(model: &str) -> bool {
 }
 
 impl RequestEvidence {
+    fn same_request(&self, other: &Self) -> bool {
+        let mut comparable = self.clone();
+        comparable.relay_name.clone_from(&other.relay_name);
+        comparable == *other
+    }
+
+    fn provider_name(&self) -> &str {
+        if self.relay_name.trim().is_empty() {
+            &self.relay_id
+        } else {
+            &self.relay_name
+        }
+    }
+
     fn could_be_success(&self) -> bool {
         !self.thread_id.is_empty()
             && self.agent.is_empty()
@@ -294,13 +308,7 @@ impl RequestEvidence {
     }
 
     fn keys(&self) -> Vec<RequestMatchKey> {
-        if !self.valid_request_counts()
-            || self.actual_model().is_none()
-            || [&self.upstream_model, &self.relay_id, &self.relay_name]
-                .iter()
-                .any(|value| value.is_empty())
-            || unknown_provider(&self.relay_id)
-        {
+        if !self.valid_request_counts() || self.actual_model().is_none() {
             return Vec::new();
         }
         let RequestEvidenceUsage {
@@ -332,8 +340,7 @@ impl RequestEvidence {
 
     fn actual_model(&self) -> Option<&str> {
         let model = self.upstream_model.as_str();
-        (!unknown_model(model) && !unknown_provider(&self.relay_id) && !self.relay_name.is_empty())
-            .then_some(model)
+        (!unknown_model(model) && !unknown_provider(&self.relay_id)).then_some(model)
     }
 }
 
@@ -683,14 +690,21 @@ impl RequestEvidenceCache {
             rows.retain(|row| row.timestamp_ms >= floor);
             let additional = rows
                 .iter()
-                .filter(|row| observed.get(&row.id) != Some(row))
+                .filter(|row| {
+                    !observed
+                        .get(&row.id)
+                        .is_some_and(|prior| prior.same_request(row))
+                })
                 .count();
             if self.records.len().saturating_add(additional) > MAX_ROWS_CAPTURED_PROXY {
                 limited = true;
                 continue;
             }
             for row in rows {
-                if observed.get(&row.id) == Some(&row) {
+                if observed
+                    .get(&row.id)
+                    .is_some_and(|prior| prior.same_request(&row))
+                {
                     continue;
                 }
                 observed.insert(row.id.clone(), row.clone());
@@ -752,7 +766,7 @@ impl RequestEvidenceCache {
         let current: HashSet<_> = requests.keys().cloned().collect();
         for saved in self.verified.values() {
             if let Some(record) = requests.get(&saved.request.id) {
-                if record != &saved.request {
+                if !record.same_request(&saved.request) {
                     blocked.insert(saved.request.id.clone());
                 }
             } else {
@@ -873,6 +887,7 @@ impl RequestEvidenceCache {
         let (mut recovered, mut tokens, mut retained) = (0usize, 0u64, 0usize);
         let (mut delayed_events, mut delayed_tokens) = (0usize, 0u64);
         let (mut model_events, mut direct_conflicts) = (0usize, 0usize);
+        let mut missing_names = HashSet::new();
         for (event, evidence) in events.iter_mut().zip(&event_keys) {
             // 请求日志没有轮次身份，不能把旧证明复用于拆分后的碰撞事件。
             if self.collision_families.contains(&event.original_id()) {
@@ -949,7 +964,7 @@ impl RequestEvidenceCache {
                     || evidence
                         .as_ref()
                         .is_none_or(|(key, at)| *key != saved_key || *at != saved.at)
-                    || candidate.is_none_or(|(i, _)| requests[i] != saved.request)
+                    || candidate.is_none_or(|(i, _)| !requests[i].same_request(&saved.request))
                 {
                     saved.rejected = true;
                 }
@@ -1045,9 +1060,14 @@ impl RequestEvidenceCache {
                 event.model = actual_model.to_owned();
                 model_events += 1;
             }
-            names
-                .entry(request.relay_id.clone())
-                .or_insert_with(|| request.relay_name.clone());
+            if request.relay_name.trim().is_empty() {
+                missing_names.insert(request.relay_id.clone());
+            } else {
+                let name = names.entry(request.relay_id.clone()).or_default();
+                if name.trim().is_empty() {
+                    name.clone_from(&request.relay_name);
+                }
+            }
             recovered += 1;
             tokens = tokens.saturating_add(event.delta.total_tokens);
             if delayed {
@@ -1055,6 +1075,12 @@ impl RequestEvidenceCache {
                 delayed_tokens = delayed_tokens.saturating_add(event.delta.total_tokens);
             }
             retained += usize::from(!current.contains(&request.id));
+        }
+        for id in missing_names {
+            let name = names.entry(id.clone()).or_default();
+            if name.trim().is_empty() {
+                *name = id;
+            }
         }
         json!({"source":"request-log-exact","scope":"index","recoveredEvents":recovered,"recoveredTokens":tokens,
             "recoveredModelEvents":model_events,"directProviderConflicts":direct_conflicts,
