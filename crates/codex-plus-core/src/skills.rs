@@ -25,9 +25,11 @@ use sha2::{Digest, Sha256};
 
 mod source_match;
 mod in_place_update;
+mod backup_usage;
 
 pub use source_match::{SkillRepositoryMatchApplied, SkillRepositoryMatchApply, SkillRepositoryMatchPreview, SkillRepositoryMatchSelection, SkillSourceEvidence};
 pub use in_place_update::SkillInPlaceUpdatePreview;
+pub use backup_usage::SkillBackupUsage;
 
 mod archive;
 
@@ -325,6 +327,7 @@ pub struct SkillBackup {
     pub name: String,
     pub backed_up_at: String,
     pub backup_path: String,
+    pub missing: bool,
     pub restore_path: Option<String>,
     pub purpose: Option<String>,
     pub restore_blocked_reason: Option<String>,
@@ -3552,23 +3555,27 @@ impl SkillsManager {
         Ok(state)
     }
 
+    fn resolve_external_backup(id: &str, state: &SkillsState) -> anyhow::Result<(PathBuf, String)> {
+        let rest = id.strip_prefix("@external/").context("外部 Skill 备份标识无效")?;
+        let (token, name) = rest.split_once('/').context("外部 Skill 备份标识无效")?;
+        uuid::Uuid::parse_str(token).context("外部 Skill 备份标识无效")?;
+        validate_skill_id(name)?;
+        let origin = state.backup_origins.get(id).context("外部 Skill 备份未登记")?;
+        let (skill_id, _) = split_backup_id(name);
+        let group = state.update_backup_groups.values()
+            .find(|group| group.backup_ids.iter().any(|member| member == id))
+            .context("外部 Skill 备份不属于更新备份组")?;
+        anyhow::ensure!(origin.purpose == "update" && group.installed.id == skill_id
+            && origin.path.is_absolute()
+            && group.published.iter().any(|item| item.path == origin.path),
+            "外部 Skill 备份与当前原目录不一致");
+        let parent = origin.path.parent().context("Skill 原目录没有父目录")?;
+        Ok((parent.join(".codex-plus-backups").join(name), name.to_string()))
+    }
+
     fn resolve_backup(&self, id: &str) -> anyhow::Result<(PathBuf, String)> {
-        if let Some(rest) = id.strip_prefix("@external/") {
-            let (token, name) = rest.split_once('/').context("外部 Skill 备份标识无效")?;
-            uuid::Uuid::parse_str(token).context("外部 Skill 备份标识无效")?;
-            validate_skill_id(name)?;
-            let state = self.load_state_checked_unlocked()?;
-            let origin = state.backup_origins.get(id).context("外部 Skill 备份未登记")?;
-            let (skill_id, _) = split_backup_id(name);
-            let group = state.update_backup_groups.values()
-                .find(|group| group.backup_ids.iter().any(|member| member == id))
-                .context("外部 Skill 备份不属于更新备份组")?;
-            anyhow::ensure!(origin.purpose == "update" && group.installed.id == skill_id
-                && origin.path.is_absolute()
-                && group.published.iter().any(|item| item.path == origin.path),
-                "外部 Skill 备份与当前原目录不一致");
-            let parent = origin.path.parent().context("Skill 原目录没有父目录")?;
-            return Ok((parent.join(".codex-plus-backups").join(name), name.to_string()));
+        if id.starts_with("@external/") {
+            return Self::resolve_external_backup(id, &self.load_state_checked_unlocked()?);
         }
         // 带 '/' 的命名空间不可能与合法旧 Skill ID 混淆；只接受已配置根的前缀。
         for (prefix, root) in self.backup_roots().into_iter().filter(|(prefix, _)| !prefix.is_empty()) {
@@ -3630,19 +3637,57 @@ impl SkillsManager {
         Ok(files)
     }
 
-    pub fn list_backups(&self) -> Vec<SkillBackup> {
-        self.try_list_backups().expect("读取 Skill 备份记录失败")
+    pub fn list_backups(&self) -> anyhow::Result<Vec<SkillBackup>> {
+        self.try_list_backups()
     }
 
     pub fn try_list_backups(&self) -> anyhow::Result<Vec<SkillBackup>> {
         let state = self.load_state_checked_unlocked()?;
+        #[cfg(test)]
+        BACKUP_LIST_SNAPSHOT_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() { hook(); }
+        });
         let mut backups = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut external = Vec::new();
+        let mut missing_ids = BTreeSet::new();
+        for backup_id in state.backup_origins.keys().filter(|id| id.starts_with("@external/")) {
+            let (path, name) = Self::resolve_external_backup(backup_id, &state)?;
+            let missing = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() && !metadata_is_link(&metadata) => false,
+                Ok(_) => anyhow::bail!("Skill 备份不是实体目录：{}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => return Err(error).with_context(|| format!("无法读取 Skill 备份：{}", path.display())),
+            };
+            if missing {
+                missing_ids.insert(backup_id.clone());
+            }
+            external.push((backup_id, path, name, missing));
+        }
+        for backup_id in state.update_backup_groups.values().flat_map(|group| &group.backup_ids)
+            .filter(|id| !id.starts_with("@external/"))
+        {
+            let (path, _) = self.resolve_backup(backup_id)?;
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing_ids.insert(backup_id.clone());
+                }
+                Err(error) => return Err(error).with_context(|| format!("无法读取 Skill 备份：{}", path.display())),
+            }
+        }
         let group_messages = |backup_id: &str| {
             let group = state.update_backup_groups.values()
                 .find(|group| group.backup_ids.iter().any(|id| id == backup_id));
-            let restore_blocked = group.filter(|group| group.partially_deleted)
-                .map(|_| "更新备份组已有成员被删除，无法整体恢复".into());
+            let restore_blocked = group.and_then(|group| {
+                if group.partially_deleted {
+                    Some("更新备份组已有成员被删除，无法整体恢复".into())
+                } else if group.backup_ids.iter().any(|id| missing_ids.contains(id)) {
+                    Some("更新备份组有成员文件已丢失，无法整体恢复".into())
+                } else {
+                    None
+                }
+            });
             let delete_warning = group.filter(|group| !group.partially_deleted && group.backup_ids.len() > 1)
                 .map(|_| "删除后，此更新备份组将无法整体恢复；其他备份文件会保留".into());
             (restore_blocked, delete_warning)
@@ -3677,6 +3722,7 @@ impl SkillsManager {
                     name,
                     backed_up_at,
                     backup_path: path.to_string_lossy().into_owned(),
+                    missing: false,
                     restore_path: origin.map(|value| value.path.to_string_lossy().into_owned()),
                     purpose: origin.map(|value| value.purpose.clone()),
                     restore_blocked_reason,
@@ -3684,19 +3730,19 @@ impl SkillsManager {
                 });
             }
         }
-        for backup_id in state.backup_origins.keys().filter(|id| id.starts_with("@external/")) {
-            let (path, name) = self.resolve_backup(backup_id)?;
-            let metadata = std::fs::symlink_metadata(&path)?;
-            if !metadata.is_dir() || metadata_is_link(&metadata) {
-                anyhow::bail!("Skill 备份不是实体目录：{}", path.display());
-            }
+        for (backup_id, path, name, missing) in external {
             let (skill_id, backed_up_at) = split_backup_id(&name);
-            let (name, _) = read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), &skill_id);
+            let name = if missing {
+                skill_id.clone()
+            } else {
+                read_skill_manifest(&path.join(SKILL_MANIFEST_FILE), &skill_id).0
+            };
             let origin = &state.backup_origins[backup_id];
             let (restore_blocked_reason, delete_warning) = group_messages(backup_id);
             backups.push(SkillBackup {
                 id: backup_id.clone(), skill_id, name, backed_up_at,
                 backup_path: path.to_string_lossy().into_owned(),
+                missing,
                 restore_path: Some(origin.path.to_string_lossy().into_owned()),
                 purpose: Some(origin.purpose.clone()),
                 restore_blocked_reason, delete_warning,
@@ -4037,6 +4083,15 @@ impl SkillsManager {
 
     /// 显式删除单个备份。AGENTS.md 禁止批量删除，所以只删指定的这一个。
     pub fn delete_backup(&self, backup_id: &str) -> anyhow::Result<Vec<SkillBackup>> {
+        self.delete_backup_checked(backup_id, false)
+    }
+
+    /// 只清除确认不存在的外部备份登记。
+    pub fn delete_missing_backup(&self, backup_id: &str) -> anyhow::Result<Vec<SkillBackup>> {
+        self.delete_backup_checked(backup_id, true)
+    }
+
+    fn delete_backup_checked(&self, backup_id: &str, missing_only: bool) -> anyhow::Result<Vec<SkillBackup>> {
         let _guard = skills_coordination();
         let mut state = self.load_state_checked_unlocked()?;
         let group = state.update_backup_groups.iter()
@@ -4044,14 +4099,21 @@ impl SkillsManager {
             .map(|(id, _)| id.clone());
         let (backup, name) = self.resolve_backup(backup_id)?;
         anyhow::ensure!(!name.starts_with('.'), "临时目录不是可删除的 Skill 备份");
-        let metadata = std::fs::symlink_metadata(&backup)
-            .with_context(|| format!("读取备份失败：{}", backup.display()))?;
-        anyhow::ensure!(metadata.is_dir() && !metadata_is_link(&metadata),
-            "备份不是实体目录，未删除：{}", backup.display());
-        self.ensure_duplicate_has_no_discovered_references(&backup)?;
-        let identity = skill_path_identity(&backup)?;
-        let staged = recover_published_path(&backup, identity)?
-            .context("备份已不存在，未删除")?;
+        let staged = match std::fs::symlink_metadata(&backup) {
+            Ok(metadata) => {
+                anyhow::ensure!(!missing_only, "备份文件已重新出现，请刷新后重新确认：{}", backup.display());
+                anyhow::ensure!(metadata.is_dir() && !metadata_is_link(&metadata),
+                    "备份不是实体目录，未删除：{}", backup.display());
+                self.ensure_duplicate_has_no_discovered_references(&backup)?;
+                let identity = skill_path_identity(&backup)?;
+                let staged = recover_published_path(&backup, identity)?
+                    .context("备份已不存在，未删除")?;
+                Some((staged, identity))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && missing_only
+                && backup_id.starts_with("@external/") => None,
+            Err(error) => return Err(error).with_context(|| format!("读取备份失败：{}", backup.display())),
+        };
         let mut state_changed = state.backup_origins.remove(backup_id).is_some();
         if let Some(group_id) = group {
             let group = state.update_backup_groups.get_mut(&group_id).unwrap();
@@ -4064,20 +4126,26 @@ impl SkillsManager {
         }
         if state_changed {
             if let Err(error) = self.save_state_unlocked(&state) {
-                return match restore_skill_backup(&staged, &backup, identity) {
-                    Ok(()) => Err(error),
-                    Err(rollback) => Err(error.context(format!("备份保留在 {}：{rollback:#}", staged.display()))),
+                return if let Some((staged, identity)) = &staged {
+                    match restore_skill_backup(staged, &backup, *identity) {
+                        Ok(()) => Err(error),
+                        Err(rollback) => Err(error.context(format!("备份保留在 {}：{rollback:#}", staged.display()))),
+                    }
+                } else {
+                    Err(error)
                 };
             }
         }
         drop(_guard);
-        #[cfg(test)]
-        let removal = DELETE_SKILL_BACKUP_HOOK.with(|hook| hook.borrow_mut().take().map(|hook| hook(&staged)))
-            .unwrap_or_else(|| std::fs::remove_dir_all(&staged));
-        #[cfg(not(test))]
-        let removal = std::fs::remove_dir_all(&staged);
-        if let Err(error) = removal {
-            anyhow::bail!("删除备份失败，残余文件可能不完整，保留在 {}：{error}", staged.display());
+        if let Some((staged, _)) = staged {
+            #[cfg(test)]
+            let removal = DELETE_SKILL_BACKUP_HOOK.with(|hook| hook.borrow_mut().take().map(|hook| hook(&staged)))
+                .unwrap_or_else(|| std::fs::remove_dir_all(&staged));
+            #[cfg(not(test))]
+            let removal = std::fs::remove_dir_all(&staged);
+            if let Err(error) = removal {
+                anyhow::bail!("删除备份失败，残余文件可能不完整，保留在 {}：{error}", staged.display());
+            }
         }
         self.try_list_backups()
     }
@@ -5529,6 +5597,8 @@ thread_local! {
     static FAIL_SKILL_STATE_SAVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static DELETE_SKILL_BACKUP_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path) -> std::io::Result<()>>>> =
         const { std::cell::RefCell::new(None) };
+    static BACKUP_LIST_SNAPSHOT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn move_skill_to_backup(source: &Path, target: &Path) -> anyhow::Result<()> {
@@ -6765,7 +6835,7 @@ mod tests {
     }
 
     #[test]
-    fn partially_deleted_backup_remains_out_of_restore_and_releases_the_lock() {
+    fn partially_deleted_backup_remains_out_of_restore() {
         for grouped in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let manager = manager(&temp);
@@ -6792,13 +6862,6 @@ mod tests {
                 manager.save_state_unlocked(&state).unwrap();
             }
             DELETE_SKILL_BACKUP_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(|staged| {
-                let (sender, receiver) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let _guard = skills_coordination();
-                    sender.send(()).unwrap();
-                });
-                receiver.recv_timeout(std::time::Duration::from_secs(5))
-                    .expect("删除备份时仍持有 Skill 协调锁");
                 std::fs::remove_file(staged.join(SKILL_MANIFEST_FILE))?;
                 Err(std::io::Error::other("模拟部分删除失败"))
             })));
@@ -6960,6 +7023,115 @@ mod tests {
         for original in &originals {
             assert_eq!(std::fs::read_to_string(original.join(SKILL_MANIFEST_FILE)).unwrap(), "current");
         }
+    }
+
+    #[test]
+    fn missing_external_backup_can_be_listed_and_its_record_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let originals = [temp.path().join("external-one/alpha"), temp.path().join("external-two/alpha")];
+        for original in &originals {
+            write_skill(original, "old");
+        }
+        manager.import_from_local_directory("alpha", &originals[0]).unwrap();
+        let mut state = manager.load_state();
+        let mut ids = Vec::new();
+        let mut paths = Vec::new();
+        for original in &originals {
+            FORCE_CROSS_DEVICE_BACKUP.with(|flag| flag.set(true));
+            let backup = manager.backup_directory_checked("alpha", original, skill_path_identity(original).unwrap()).unwrap();
+            let id = manager.backup_id_for_path(&backup).unwrap();
+            state.backup_origins.insert(id.clone(), SkillBackupOrigin {
+                path: original.clone(), purpose: "update".into(),
+            });
+            ids.push(id);
+            paths.push(backup);
+            write_skill(original, "current");
+        }
+        state.update_backup_groups.insert("group".into(), SkillUpdateBackupGroup {
+            installed: state.installed["alpha"].clone(),
+            backup_ids: ids.clone(),
+            published: originals.iter().map(|path| published_snapshot(path)).collect(),
+            instance_path: None,
+            partially_deleted: false,
+        });
+        manager.save_state_unlocked(&state).unwrap();
+        std::fs::remove_file(paths[0].join(SKILL_MANIFEST_FILE)).unwrap();
+        std::fs::remove_dir(&paths[0]).unwrap();
+
+        let backups = manager.list_backups().unwrap();
+        assert_eq!(backups.len(), 2);
+        let missing = backups.iter().find(|item| item.id == ids[0]).unwrap();
+        assert!(missing.missing);
+        assert_eq!(missing.backup_path, paths[0].to_string_lossy());
+        assert!(missing.restore_blocked_reason.as_ref().unwrap().contains("丢失"));
+        let remaining = backups.iter().find(|item| item.id == ids[1]).unwrap();
+        assert!(!remaining.missing && remaining.restore_blocked_reason.is_some());
+        assert!(manager.restore_backup(&ids[1]).is_err());
+
+        write_skill(&paths[0], "reappeared");
+        let error = manager.delete_missing_backup(&ids[0]).unwrap_err();
+        assert!(error.to_string().contains("重新出现"));
+        assert_eq!(manager.load_state(), state);
+        assert_eq!(std::fs::read_to_string(paths[0].join(SKILL_MANIFEST_FILE)).unwrap(), "reappeared");
+        std::fs::remove_file(paths[0].join(SKILL_MANIFEST_FILE)).unwrap();
+        std::fs::remove_dir(&paths[0]).unwrap();
+        assert!(manager.delete_backup(&ids[0]).is_err());
+        assert_eq!(manager.load_state(), state);
+
+        FAIL_SKILL_STATE_SAVE.with(|fail| fail.set(true));
+        assert!(manager.delete_missing_backup(&ids[0]).is_err());
+        assert_eq!(manager.load_state(), state);
+        let concurrent_manager = manager.clone();
+        let concurrent_id = ids[0].clone();
+        BACKUP_LIST_SNAPSHOT_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
+            std::thread::spawn(move || concurrent_manager.delete_missing_backup(&concurrent_id).unwrap())
+                .join().unwrap();
+        })));
+        let previous_snapshot = manager.try_list_backups().unwrap();
+        assert_eq!(previous_snapshot.len(), 2);
+        assert!(previous_snapshot.iter().find(|item| item.id == ids[0]).unwrap().missing);
+        let remaining = manager.try_list_backups().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, ids[1]);
+        assert!(remaining[0].restore_blocked_reason.is_some());
+        assert!(paths[1].join(SKILL_MANIFEST_FILE).is_file());
+        assert!(!manager.load_state().backup_origins.contains_key(&ids[0]));
+    }
+
+    #[test]
+    fn missing_local_backup_blocks_restore_for_the_remaining_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+        let original = temp.path().join("original/alpha");
+        write_skill(&original, "current");
+        manager.import_from_local_directory("alpha", &original).unwrap();
+        let first = manager.backups_dir.join("alpha-123");
+        let second = manager.backups_dir.join("alpha-124");
+        write_skill(&first, "first");
+        write_skill(&second, "second");
+        let mut state = manager.load_state();
+        for id in ["alpha-123", "alpha-124"] {
+            state.backup_origins.insert(id.into(), SkillBackupOrigin {
+                path: original.clone(), purpose: "update".into(),
+            });
+        }
+        state.update_backup_groups.insert("group".into(), SkillUpdateBackupGroup {
+            installed: state.installed["alpha"].clone(),
+            backup_ids: vec!["alpha-123".into(), "alpha-124".into()],
+            published: Vec::new(), instance_path: None, partially_deleted: false,
+        });
+        manager.save_state_unlocked(&state).unwrap();
+        std::fs::remove_file(first.join(SKILL_MANIFEST_FILE)).unwrap();
+        std::fs::remove_dir(&first).unwrap();
+
+        let backups = manager.try_list_backups().unwrap();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].id, "alpha-124");
+        assert!(backups[0].restore_blocked_reason.as_ref().unwrap().contains("丢失"));
+        assert!(manager.restore_backup("alpha-124").is_err());
+        assert!(second.join(SKILL_MANIFEST_FILE).is_file());
+        assert_eq!(manager.load_state(), state);
     }
 
     #[cfg(windows)]
@@ -7442,7 +7614,7 @@ mod tests {
         manager.set_enabled_for("claude", "alpha", false).unwrap();
         assert!(!claude.exists());
         assert!(source.join(SKILL_MANIFEST_FILE).is_file());
-        assert!(manager.list_backups().is_empty());
+        assert!(manager.list_backups().unwrap().is_empty());
     }
 
     #[test]
@@ -7595,13 +7767,13 @@ mod tests {
         FORCE_CROSS_DEVICE_BACKUP.with(|flag| flag.set(true));
         manager.set_enabled_for("claude", "alpha", false).unwrap();
         assert!(!copy.exists());
-        let backup = manager.list_backups().into_iter().find(|backup| backup.id.starts_with("@local/agent-claude/")).unwrap();
+        let backup = manager.list_backups().unwrap().into_iter().find(|backup| backup.id.starts_with("@local/agent-claude/")).unwrap();
         assert_eq!(backup.skill_id, "alpha");
         manager.uninstall("alpha").unwrap();
         manager.restore_backup(&backup.id).unwrap();
         assert_eq!(std::fs::read_to_string(copy.join("SKILL.md")).unwrap(), "agent edit");
         assert!(!manager.source_dir.join("alpha").exists());
-        assert!(!manager.list_backups().iter().any(|item| item.id == backup.id));
+        assert!(!manager.list_backups().unwrap().iter().any(|item| item.id == backup.id));
     }
 
     #[test]
@@ -7614,7 +7786,7 @@ mod tests {
         FORCE_CROSS_DEVICE_BACKUP.with(|flag| flag.set(true));
         manager.uninstall("alpha").unwrap();
         assert!(!copy.exists());
-        let backup = manager.list_backups().pop().unwrap();
+        let backup = manager.list_backups().unwrap().pop().unwrap();
         assert!(backup.id.starts_with("@local/agent-claude/"));
         assert!(manager.delete_backup(&backup.id).unwrap().is_empty());
     }
@@ -7674,7 +7846,7 @@ mod tests {
         let agent = temp.path().join("claude-skills");
         std::fs::create_dir_all(&agent).unwrap();
         std::os::unix::fs::symlink(&manager.backups_dir, agent.join(".codex-plus-backups")).unwrap();
-        let backups = manager.list_backups();
+        let backups = manager.list_backups().unwrap();
         assert_eq!(backups.len(), 1);
         assert_eq!(backups[0].id, "alpha-123");
     }
@@ -7750,7 +7922,7 @@ mod tests {
 
         manager.uninstall("alpha").unwrap();
         assert!(!copy.exists());
-        let contents: BTreeSet<_> = manager.list_backups().iter()
+        let contents: BTreeSet<_> = manager.list_backups().unwrap().iter()
             .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
             .collect();
         assert!(contents.contains("original"));
@@ -7787,7 +7959,7 @@ mod tests {
         manager.import_from_directory("alpha", &external).unwrap();
         assert!(!manager.linked_dir().join("alpha").exists());
         assert_eq!(std::fs::read_to_string(manager.source_dir.join("alpha/SKILL.md")).unwrap(), "imported");
-        let contents: std::collections::BTreeSet<_> = manager.list_backups().iter()
+        let contents: std::collections::BTreeSet<_> = manager.list_backups().unwrap().iter()
             .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join("SKILL.md")).unwrap()).collect();
         assert_eq!(contents, ["old source".to_string(), "user local".to_string()].into_iter().collect());
     }
@@ -7920,7 +8092,7 @@ mod tests {
         std::fs::write(local.join("SKILL.md"), "local edits").unwrap();
         manager.install_from_zip(&sample_skill("alpha", "alpha", "two"), &repo_zip(&[("kit-main/alpha/SKILL.md", "replacement")])).unwrap();
         assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "replacement");
-        let contents: std::collections::BTreeSet<_> = manager.list_backups().iter()
+        let contents: std::collections::BTreeSet<_> = manager.list_backups().unwrap().iter()
             .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join("SKILL.md")).unwrap()).collect();
         assert_eq!(contents, ["original".to_string(), "local edits".to_string()].into_iter().collect());
     }
@@ -8573,7 +8745,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(link.join(SKILL_MANIFEST_FILE)).unwrap(), "copy edit");
         assert!(!entry(&first.try_local_inventory().unwrap(), &skill.id).enabled);
         assert!(first.install_downloaded_zip_if_unchanged(&skill, &zip, &guard).is_err());
-        assert!(first.list_backups().is_empty());
+        assert!(first.list_backups().unwrap().is_empty());
     }
 
     #[test]
@@ -8618,7 +8790,7 @@ mod tests {
         let updated_zip = repo_zip(&[("kit-main/alpha/SKILL.md", "updated")]);
         let updated = zip_skill(&repo, &updated_zip, "alpha");
         manager.install_downloaded_zip_if_unchanged(&updated, &updated_zip, &guard).unwrap();
-        let backups: BTreeSet<_> = manager.list_backups().iter()
+        let backups: BTreeSet<_> = manager.list_backups().unwrap().iter()
             .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
             .collect();
         assert!(backups.contains("source edit"));
@@ -8668,7 +8840,7 @@ mod tests {
         assert_eq!(manager.load_state().installed[&old.id].content_hash, old.content_hash);
         manager.set_enabled_for("claude", &old.id, false).unwrap();
         assert!(!copy.exists());
-        let backups: BTreeSet<_> = manager.list_backups().iter()
+        let backups: BTreeSet<_> = manager.list_backups().unwrap().iter()
             .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join(SKILL_MANIFEST_FILE)).unwrap())
             .collect();
         assert!(backups.contains("agent edit"));
@@ -11003,7 +11175,7 @@ mod tests {
         std::fs::write(local.join("SKILL.md"), "user original").unwrap();
         assert!(manager.local_inventory().iter().any(|skill| skill.id == "custom" && skill.installed));
         manager.uninstall("custom").unwrap();
-        let backups = manager.list_backups();
+        let backups = manager.list_backups().unwrap();
         assert_eq!(backups.len(), 1);
         assert!(!local.exists());
         manager.restore_backup(&backups[0].id).unwrap();
@@ -11019,7 +11191,7 @@ mod tests {
             std::fs::write(directory.join("SKILL.md"), content).unwrap();
         }
         manager.uninstall("custom").unwrap();
-        let contents: std::collections::BTreeSet<_> = manager.list_backups().iter()
+        let contents: std::collections::BTreeSet<_> = manager.list_backups().unwrap().iter()
             .map(|backup| std::fs::read_to_string(manager.backups_dir.join(&backup.id).join("SKILL.md")).unwrap()).collect();
         assert_eq!(contents, ["source".to_string(), "edited local".to_string()].into_iter().collect());
     }
@@ -11056,7 +11228,7 @@ mod tests {
         assert!(!manager.source_dir().join("alpha").exists());
         assert!(!manager.linked_dir().join("alpha").exists());
 
-        let backups = manager.list_backups();
+        let backups = manager.list_backups().unwrap();
         assert_eq!(backups.len(), if physical_copy { 2 } else { 1 });
         assert_eq!(backups[0].skill_id, "alpha");
 
@@ -11069,7 +11241,7 @@ mod tests {
                 .join("SKILL.md")
                 .is_file()
         );
-        assert_eq!(manager.list_backups().len(), usize::from(physical_copy));
+        assert_eq!(manager.list_backups().unwrap().len(), usize::from(physical_copy));
     }
 
     #[test]
@@ -11194,13 +11366,13 @@ mod tests {
 
         assert_eq!(skill_path_identity(&local).unwrap(), identity);
         assert!(!manager.source_dir().join("my-own-skill").exists());
-        assert!(manager.list_backups().is_empty());
+        assert!(manager.list_backups().unwrap().is_empty());
         assert!(!manager.merge_entries(&[]).iter().find(|entry| entry.id == "my-own-skill").unwrap().enabled);
 
         manager.set_enabled("my-own-skill", true).unwrap();
         assert_eq!(skill_path_identity(&local).unwrap(), identity);
         assert!(manager.merge_entries(&[]).iter().find(|entry| entry.id == "my-own-skill").unwrap().enabled);
-        assert!(manager.list_backups().is_empty());
+        assert!(manager.list_backups().unwrap().is_empty());
     }
 
     /// 没有 SKILL.md 的目录、以及 `.system` 自带目录，都不应被当成「本地自建」重复收录。

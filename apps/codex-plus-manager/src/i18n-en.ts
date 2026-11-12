@@ -5,6 +5,7 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "尚无一致的更新基线，本地内容可能与仓库不同；确认后会先备份再替换。": "There is no matching update baseline. Local content may differ from the repository; confirming will back it up before replacement.",
   "说明中的链接": "Link in documentation",
   "脚本中的链接": "Link in a script",
   "包元数据": "Package metadata",
@@ -3047,6 +3048,14 @@ export const EN_PLAIN: Record<string, string> = {
   "管理 Grok CLI 的模型与 API 端点": "Manage Grok CLI models and API endpoints",
 
   // Skills 面板
+  "正在统计备份…": "Calculating backup sizes…",
+  "上次统计": "Previous calculation",
+  "刷新备份统计": "Refresh backup statistics",
+  "备份列表已变化，请刷新统计": "The backup list has changed. Refresh the statistics.",
+  "备份文件已丢失": "Backup files are missing",
+  "清除记录": "Clear record",
+  "清除备份记录": "Clear backup record",
+  "此操作不会删除其他文件。": "This will not delete any other files.",
   "Skills": "Skills",
   "共享": "Shared",
   "本地安装": "Local installation",
@@ -3567,6 +3576,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "备份数量：{0}": "Backups: {0}",
+  "已统计 {0}/{1} 份，文件大小：{2}": "Calculated {0}/{1} backups; file size: {2}",
+  "文件大小：{0}": "File size: {0}",
+  "清除已丢失备份“{0}”的记录？": "Clear the record for missing backup “{0}”?",
   "关联所选 {0} 项": "Associate {0} selected",
   "正在检查仓库 {0}/{1}": "Checking repositories {0}/{1}",
   "已暂停，已检查 {0}/{1} 个仓库": "Paused after checking {0}/{1} repositories",

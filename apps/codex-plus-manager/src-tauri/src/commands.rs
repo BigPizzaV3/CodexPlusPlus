@@ -7692,6 +7692,11 @@ pub async fn preview_skill_in_place_update(
 }
 
 #[tauri::command]
+pub fn discard_skill_in_place_update_preview(preview_id: String) {
+    codex_plus_core::skills::SkillsManager::discard_in_place_update_preview(&preview_id);
+}
+
+#[tauri::command]
 pub async fn execute_skill_in_place_update(preview_id: String) -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
     let result = async {
@@ -7947,11 +7952,23 @@ pub async fn restore_skill_backup(backup_id: String) -> Result<CommandResult<Ski
 }
 
 #[tauri::command]
-pub async fn delete_skill_backup(backup_id: String) -> Result<CommandResult<SkillsPayload>, String> {
+pub async fn delete_skill_backup(
+    backup_id: String,
+    missing_only: Option<bool>,
+) -> Result<CommandResult<SkillsPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = default_skills_manager();
-        match manager.delete_backup(backup_id.trim()) {
-            Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
+        let missing_only = missing_only.unwrap_or(false);
+        let result = if missing_only {
+            manager.delete_missing_backup(backup_id.trim())
+        } else {
+            manager.delete_backup(backup_id.trim())
+        };
+        match result {
+            Ok(_) => ok(
+                if missing_only { "已清除丢失的备份记录。" } else { "备份已删除。" },
+                current_skills_payload(&manager),
+            ),
             Err(error) => failed(
                 &format!("删除备份失败：{error}"),
                 current_skills_payload(&manager),

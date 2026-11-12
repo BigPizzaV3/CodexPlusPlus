@@ -312,9 +312,6 @@ impl SkillsManager {
             skipped_paths: update.skipped_paths.clone(),
         };
         let mut previews = update_previews();
-        previews.retain(|_, item| {
-            item.installed.id != id || !coordination_scopes_overlap(&item.scope, &update.scope)
-        });
         while previews.len() >= 4 {
             previews.pop_first();
         }
@@ -378,6 +375,10 @@ impl SkillsManager {
         Ok(update.remote.clone())
     }
 
+    pub fn discard_in_place_update_preview(preview_id: &str) {
+        update_previews().remove(preview_id);
+    }
+
     /// 只执行后端保存的预览，仓库 ZIP 和目标路径均不由调用方在确认时提供。
     pub fn execute_skill_in_place_update(
         &self,
@@ -397,31 +398,47 @@ impl SkillsManager {
             self.check_in_place_state(&update, &coordination)?;
         }
         let id = &update.installed.id;
-        let mut staged: Vec<PathBuf> = Vec::new();
+        let mut staged: Vec<(PathBuf, SkillPathIdentity)> = Vec::new();
+        let cleanup = |error: anyhow::Error, paths: &[(PathBuf, SkillPathIdentity)]| {
+            paths.iter().fold(error, |error, (path, identity)| {
+                match recover_published_path(path, *identity) {
+                    Ok(Some(recovery)) => match std::fs::remove_dir_all(&recovery) {
+                        Ok(()) => error,
+                        Err(cleanup) => error.context(format!("清理 Skill 暂存目录失败，保留在 {}：{cleanup}", recovery.display())),
+                    },
+                    Ok(None) => error,
+                    Err(cleanup) => error.context(format!("清理 Skill 暂存目录失败：{cleanup:#}")),
+                }
+            })
+        };
         for path in &update.paths {
             let parent = path.path.parent().context("Skill 原目录没有父目录")?;
             let staging = parent.join(format!(".codex-plus-update-{id}-{}", uuid::Uuid::new_v4()));
             if let Err(error) = std::fs::create_dir(&staging) {
                 let error = anyhow::Error::new(error)
                     .context(format!("创建 Skill 暂存目录失败：{}", staging.display()));
-                return Err(staged.iter().fold(error, |error, path| retain_staging_context(error, path)));
+                return Err(cleanup(error, &staged));
             }
-            staged.push(staging);
+            let identity = match skill_path_identity(&staging) {
+                Ok(identity) => identity,
+                Err(error) => return Err(cleanup(retain_staging_context(error, &staging), &staged)),
+            };
+            staged.push((staging, identity));
         }
         let result = (|| -> anyhow::Result<SkillsState> {
             let remote = archive::stage_downloaded_zip(
-                &update.repo, &update.zip, id, Some(&update.installed.repo_path), &staged[0],
+                &update.repo, &update.zip, id, Some(&update.installed.repo_path), &staged[0].0,
             )?;
             anyhow::ensure!(remote.repo_path == update.remote.repo_path
                 && remote.content_hash == update.remote.content_hash,
                 "仓库压缩包与预览版本不一致，请重新预览");
             if update.paths[0].marked {
-                std::fs::write(staged[0].join(MANAGED_COPY_MARKER), "")?;
+                std::fs::write(staged[0].0.join(MANAGED_COPY_MARKER), "")?;
             }
             for (index, path) in update.paths.iter().enumerate().skip(1) {
-                copy_dir_all(&staged[0], &staged[index])?;
+                copy_dir_all(&staged[0].0, &staged[index].0)?;
                 if path.marked {
-                    std::fs::write(staged[index].join(MANAGED_COPY_MARKER), "")?;
+                    std::fs::write(staged[index].0.join(MANAGED_COPY_MARKER), "")?;
                 }
             }
             self.check_in_place_contents(&update)?;
@@ -441,11 +458,12 @@ impl SkillsManager {
                     anyhow::ensure!(skill_directory_digest(&backup)? == Some(path.digest),
                         "更新期间 Skill 内容已改变，请重新预览：{}", path.path.display());
                 }
-                for (path, staging) in update.paths.iter().zip(&staged) {
-                    let identity = skill_path_identity(staging)?;
+                for (path, (staging, identity)) in update.paths.iter().zip(&staged) {
+                    anyhow::ensure!(skill_path_identity(staging)? == *identity,
+                        "Skill 暂存目录已被替换：{}", staging.display());
                     move_path_no_replace(staging, &path.path)?;
-                    published.push((path.path.clone(), identity));
-                    anyhow::ensure!(skill_path_identity(&path.path)? == identity,
+                    published.push((path.path.clone(), *identity));
+                    anyhow::ensure!(skill_path_identity(&path.path)? == *identity,
                         "Skill 更新期间目标路径发生变化");
                 }
                 let mut backup_ids = Vec::new();
@@ -529,9 +547,7 @@ impl SkillsManager {
             coordination.changed_skill(self.coordination_scope(), id);
             Ok(state)
         })();
-        result.map_err(|error| {
-            staged.iter().fold(error, |error, path| retain_staging_context(error, path))
-        })
+        result.map_err(|error| cleanup(error, &staged))
     }
 }
 
@@ -582,6 +598,40 @@ mod tests {
         let remote = parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).unwrap()
             .into_iter().find(|item| item.repo_path == "skills/alpha").unwrap();
         (temp, manager, repo, remote, zip)
+    }
+
+    #[test]
+    fn discarded_preview_cannot_be_executed() {
+        let (_temp, manager, _repo, remote, zip) = fixture();
+        let preview = manager.preview_skill_in_place_update("alpha", remote.clone(), zip).unwrap();
+        SkillsManager::discard_in_place_update_preview(&preview.preview_id);
+        assert!(manager.in_place_update_preview_remote(&preview.preview_id).is_err());
+        assert!(manager.execute_skill_in_place_update(&preview.preview_id, &remote).is_err());
+        SkillsManager::discard_in_place_update_preview(&preview.preview_id);
+    }
+
+    #[test]
+    fn discarding_an_older_preview_preserves_another_preview_for_the_same_skill() {
+        let (_temp, manager, _repo, remote, zip) = fixture();
+        let current = manager.preview_skill_in_place_update("alpha", remote.clone(), zip.clone()).unwrap();
+        let late = manager.preview_skill_in_place_update("alpha", remote.clone(), zip).unwrap();
+        SkillsManager::discard_in_place_update_preview(&late.preview_id);
+        assert_eq!(manager.in_place_update_preview_remote(&current.preview_id).unwrap().content_hash, remote.content_hash);
+        SkillsManager::discard_in_place_update_preview(&current.preview_id);
+    }
+
+    #[test]
+    fn update_without_a_baseline_still_checks_files_after_preview() {
+        let (temp, manager, _repo, remote, zip) = fixture();
+        let mut state = manager.load_state();
+        state.installed.get_mut("alpha").unwrap().content_hash.clear();
+        manager.save_state_unlocked(&state).unwrap();
+        let preview = manager.preview_skill_in_place_update("alpha", remote.clone(), zip).unwrap();
+        assert!(preview.current_hash.is_empty());
+        assert!(preview.conflicts.is_empty());
+        std::fs::write(temp.path().join("shared/alpha/details.txt"), "changed after preview").unwrap();
+        assert!(manager.execute_skill_in_place_update(&preview.preview_id, &remote).is_err());
+        assert_eq!(std::fs::read_to_string(temp.path().join("shared/alpha/details.txt")).unwrap(), "changed after preview");
     }
 
     #[cfg(unix)]
@@ -1183,6 +1233,59 @@ mod tests {
         let mut changed = remote;
         changed.content_hash = "different".into();
         assert!(manager.execute_skill_in_place_update(&preview.preview_id, &changed).is_err());
+        assert_eq!(std::fs::read_to_string(temp.path().join("shared/alpha/details.txt")).unwrap(), "old details");
+    }
+
+    #[test]
+    fn failed_archive_staging_cleans_only_created_directories() {
+        let (temp, manager, _, remote, zip) = fixture();
+        let unrelated = temp.path().join("shared/.codex-plus-update-alpha-unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+        std::fs::write(unrelated.join("user.txt"), "preserve").unwrap();
+        for invalid_zip in [true, false] {
+            let mut selected = remote.clone();
+            let bytes = if invalid_zip {
+                b"invalid archive".to_vec()
+            } else {
+                selected.content_hash = "different".into();
+                zip.clone()
+            };
+            let preview = manager.preview_skill_in_place_update("alpha", selected.clone(), bytes).unwrap();
+            assert!(manager.execute_skill_in_place_update(&preview.preview_id, &selected).is_err());
+            for parent in [temp.path().join("shared"), manager.source_dir.clone(), temp.path().join("agent")] {
+                let staging = std::fs::read_dir(parent).unwrap().map(|entry| entry.unwrap().path())
+                    .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with(".codex-plus-update-"))
+                    .collect::<Vec<_>>();
+                assert!(staging.iter().all(|path| path == &unrelated));
+            }
+            assert_eq!(std::fs::read_to_string(unrelated.join("user.txt")).unwrap(), "preserve");
+            assert_eq!(std::fs::read_to_string(temp.path().join("shared/alpha/details.txt")).unwrap(), "old details");
+        }
+    }
+
+    #[test]
+    fn replaced_staging_directory_is_not_published_or_deleted() {
+        let (temp, manager, _, remote, zip) = fixture();
+        let preview = manager.preview_skill_in_place_update("alpha", remote.clone(), zip).unwrap();
+        let parent = temp.path().join("shared");
+        let held = temp.path().join("moved-staging");
+        BEFORE_UPDATE_BACKUP.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let staging = std::fs::read_dir(&parent).unwrap().map(|entry| entry.unwrap().path())
+                    .find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".codex-plus-update-"))
+                    .unwrap();
+                std::fs::rename(&staging, &held).unwrap();
+                std::fs::create_dir(&staging).unwrap();
+                std::fs::write(staging.join("user.txt"), "preserve").unwrap();
+            }));
+        });
+        let error = manager.execute_skill_in_place_update(&preview.preview_id, &remote).unwrap_err();
+        assert!(format!("{error:#}").contains("暂存目录已被替换"));
+        let replacement = std::fs::read_dir(temp.path().join("shared")).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with(".codex-plus-update-"))
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(replacement.join("user.txt")).unwrap(), "preserve");
         assert_eq!(std::fs::read_to_string(temp.path().join("shared/alpha/details.txt")).unwrap(), "old details");
     }
 

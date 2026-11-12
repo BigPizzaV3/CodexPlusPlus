@@ -21,13 +21,22 @@ export function SkillInPlaceUpdateDrawer({ id, repoKey, localPath, onClose, onEx
   const [done, setDone] = useState(false);
   useEffect(() => {
     let active = true;
+    let previewId = "";
+    const discard = (id: string) => {
+      void invoke("discard_skill_in_place_update_preview", { previewId: id })
+        .catch((reason) => console.error("释放 Skill 更新预览失败", reason));
+    };
     setLoading(true); setPreview(null); setError("");
     void invoke<Preview>("preview_skill_in_place_update", { id, repoKey, localPath: localPath || null }).then((result) => {
-      if (!active) return;
-      if (result.status === "ok") setPreview(result);
+      if (result.status === "ok") {
+        previewId = result.previewId;
+        if (active) setPreview(result);
+        else discard(previewId);
+      }
+      else if (!active) return;
       else setError(result.message);
     }, (reason) => { if (active) setError(String(reason)); }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    return () => { active = false; if (previewId) discard(previewId); };
   }, [id, repoKey, localPath, revision]);
   const execute = async () => {
     if (!preview || preview.conflicts.length) return;
@@ -47,6 +56,7 @@ export function SkillInPlaceUpdateDrawer({ id, repoKey, localPath, onClose, onEx
     {error && <p className="mg-warning" role="alert">{error}</p>}
     {done && <p className="mg-notice" role="status">{t("原位更新已完成，原版本已保存到备份。")}</p>}
     {preview && <><dl className="mg-detail"><dt>{t("仓库")}</dt><dd>{preview.repoKey}</dd><dt>{t("仓库路径")}</dt><dd>{preview.repoPath || "/"}</dd><dt>{t("安装位置")}</dt><dd>{preview.targetPath}</dd><dt>{t("当前版本")}</dt><dd>{preview.currentHash || "—"}</dd><dt>{t("待更新版本")}</dt><dd>{preview.nextHash || "—"}</dd></dl>
+      {!preview.currentHash && <p className="mg-warning" role="alert">{t("尚无一致的更新基线，本地内容可能与仓库不同；确认后会先备份再替换。")}</p>}
       {!!preview.managedPaths?.length && <div><strong>{t("将同步的受控副本")}</strong><ul>{preview.managedPaths.map((path) => <li key={path}>{path}</li>)}</ul></div>}
       {!!preview.followedPaths?.length && <div><strong>{t("将随原件或受控副本更新的路径")}</strong><ul>{preview.followedPaths.map((path) => <li key={path}>{path}</li>)}</ul></div>}
       {!!preview.skippedPaths?.length && <div><strong>{t("独立或归属未确认的安装，保持不变")}</strong><ul>{preview.skippedPaths.map((path) => <li key={path}>{path}</li>)}</ul></div>}

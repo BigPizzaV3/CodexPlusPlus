@@ -23,6 +23,7 @@ import { SkillSourceMatchDrawer, type SourceSelection } from "./SkillSourceMatch
 import { SkillDuplicatesDrawer } from "./SkillDuplicatesDrawer";
 import { SkillFileTimes } from "./SkillFileTimes";
 import { SkillInPlaceUpdateDrawer } from "./SkillInPlaceUpdateDrawer";
+import { SkillBackupUsage } from "./SkillBackupUsage";
 import { TopbarActions } from "./TopbarActions";
 
 type Result = { status: string; message: string };
@@ -40,7 +41,7 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
   managedSourceError?: string | null; sourceVerified?: boolean; updateOwner?: string; installChannel?: string;
   displayInstances?: Skill[] };
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
-type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; restoreBlockedReason?: string | null; deleteWarning?: string | null };
+type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; missing?: boolean; restoreBlockedReason?: string | null; deleteWarning?: string | null };
 type SkillPayload = Result & { skills: Skill[]; inventoryOk: boolean; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string>; backups?: SkillBackup[]; backupsOk: boolean };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 type SourceApplyResult = SkillPayload & { applied: Array<{ localId: string; fromRepoKey: string; toRepoKey: string; localPath?: string | null }> };
@@ -219,16 +220,17 @@ function SkillBackupList({ backups, busy, onRestore, onDelete }: {
     <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "managed-source" ? t("受控源归档") : backup.purpose === "disabled" ? t("停用副本备份") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
       <small>{t("备份位置")}：{backup.backupPath || t("未知")}</small>
       <small>{t("恢复位置")}：{backup.restorePath || t("未记录")}</small>
-      <SkillFileTimes id={backup.skillId} backupId={backup.id}/>
+      {backup.missing ? <small className="mg-warning">{t("备份文件已丢失")}</small> : <SkillFileTimes id={backup.skillId} backupId={backup.id}/>}
       {backup.restoreBlockedReason && <small className="mg-warning">{backup.restoreBlockedReason}</small>}
-      <div className="mg-row-actions"><Button disabled={busy || !!backup.restoreBlockedReason} onClick={() => onRestore(backup)}>{t("恢复")}</Button>
-        <button type="button" className="mg-icon-button" disabled={busy} title={t("删除备份")} aria-label={`${t("删除备份")} ${backup.name || backup.skillId}`} onClick={() => onDelete(backup)}><Trash2 size={14}/></button></div></div>
+      <div className="mg-row-actions"><Button disabled={busy || !!backup.missing || !!backup.restoreBlockedReason} onClick={() => onRestore(backup)}>{t("恢复")}</Button>
+        <button type="button" className="mg-icon-button" disabled={busy} title={t(backup.missing ? "清除记录" : "删除备份")} aria-label={`${t(backup.missing ? "清除记录" : "删除备份")} ${backup.name || backup.skillId}`} onClick={() => onDelete(backup)}><Trash2 size={14}/></button></div></div>
   </div>)}</>;
 }
 function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete }: {
   backups: SkillBackup[]; busy: boolean; onClose: () => void; onRestore: (backup: SkillBackup) => void; onDelete: (backup: SkillBackup) => void;
 }) {
   return <ManagementDrawer title={t("Skill 备份")} dismissOnBackdrop={false} onClose={onClose}>
+    <SkillBackupUsage backupRevision={JSON.stringify(backups.map((backup) => [backup.id, !!backup.missing]))}/>
     {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDelete}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
   </ManagementDrawer>;
 }
@@ -722,8 +724,11 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const deleteBackup = async (backup: SkillBackup) => {
     const path = backup.backupPath ? `\n${backup.backupPath}` : "";
     const warning = backup.deleteWarning ? `\n\n${backup.deleteWarning}` : "";
-    if (!(await appConfirm(`${tf("删除 Skill 备份“{0}”？", [backup.name || backup.skillId])}${path}${warning}`, { title: t("删除 Skill 备份"), confirmText: t("删除"), danger: true }))) return;
-    await run("delete_skill_backup", { backupId: backup.id });
+    const message = backup.missing
+      ? `${tf("清除已丢失备份“{0}”的记录？", [backup.name || backup.skillId])}${path}\n\n${t("此操作不会删除其他文件。")}${warning}`
+      : `${tf("删除 Skill 备份“{0}”？", [backup.name || backup.skillId])}${path}${warning}`;
+    if (!(await appConfirm(message, { title: t(backup.missing ? "清除备份记录" : "删除 Skill 备份"), confirmText: t(backup.missing ? "清除记录" : "删除"), danger: true }))) return;
+    await run("delete_skill_backup", { backupId: backup.id, missingOnly: !!backup.missing });
   };
   const openRepo = (key: string) => { setRepoSelection(key); setDetail(null); setRepoOpen(true); };
   const deferredQuery = useDeferredValue(query);

@@ -39,8 +39,8 @@ test("a verified managed duplicate can be archived despite other independent sam
     },
     t: (value: string) => value, appConfirm: async (message: string) => { confirmations.push(message); return true; },
     invoke: async () => ({ status: "ok", previewId: "verified-preview", candidates: [
-      { id: "rea", sharedPath: "C:/agents/rea", codexPath: "C:/codex/rea", status: "identical-managed" },
-      { id: "rea", kind: "source", sharedPath: "C:/codex/rea", codexPath: "C:/managed/rea", originalRootKind: "codex", status: "identical-source" },
+      { id: "alpha", sharedPath: "C:/agents/alpha", codexPath: "C:/codex/alpha", status: "identical-managed" },
+      { id: "alpha", kind: "source", sharedPath: "C:/codex/alpha", codexPath: "C:/managed/alpha", originalRootKind: "codex", status: "identical-source" },
       { id: "other", sharedPath: "C:/agents/other", codexPath: "C:/codex/other", status: "different" },
       { id: "unknown", sharedPath: "C:/agents/unknown", codexPath: "C:/codex/unknown", status: "unsupported", detail: "无法确定名称规则的启用状态" },
     ] }),
@@ -73,7 +73,7 @@ test("a verified managed duplicate can be archived despite other independent sam
   await buttons[0].props.onClick();
   await buttons[1].props.onClick();
   await tick();
-  assert.deepEqual(archives, [["verified-preview", "rea", "shared"], ["verified-preview", "rea", "source"]]);
-  assert.ok(confirmations[1].includes("C:/managed/rea"));
-  assert.ok(confirmations[1].includes("C:/codex/rea"));
+  assert.deepEqual(archives, [["verified-preview", "alpha", "shared"], ["verified-preview", "alpha", "source"]]);
+  assert.ok(confirmations[1].includes("C:/managed/alpha"));
+  assert.ok(confirmations[1].includes("C:/codex/alpha"));
 });
