@@ -182,26 +182,32 @@ fn discover_roots(home: &Path, codex: &Path) -> Result<Vec<CacheRoot>> {
         app_data.push((app, home.join("Library/Application Support").join(name)));
     }
     #[cfg(target_os = "windows")]
-    if let Some(base) = std::env::var_os("APPDATA") {
-        for app in ["Codex", "Claude"] {
-            app_data.push((app, PathBuf::from(&base).join(app)));
-        }
+    {
+        let roaming = std::env::var_os("APPDATA").map(PathBuf::from);
+        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        app_data.extend(windows_app_data(roaming.as_deref(), local.as_deref()));
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     for app in ["Codex", "Claude"] {
         app_data.push((app, home.join(".config").join(app)));
     }
     for (app, base) in app_data {
-        add_electron_roots(&mut roots, app, &base, home, 0)?;
+        add_app_cache_roots(&mut roots, app, &base, home)?;
     }
-    roots.sort_by(|a, b| a.path.cmp(&b.path));
+    roots.sort_by(|a, b| {
+        a.path
+            .components()
+            .count()
+            .cmp(&b.path.components().count())
+            .then_with(|| a.path.cmp(&b.path))
+    });
     roots.dedup_by(|a, b| a.path == b.path);
     // 自定义 CODEX_HOME 可能落在另一白名单目录内，避免重复统计或重复清理。
     let mut distinct: Vec<CacheRoot> = Vec::new();
     for root in roots {
         if !distinct
             .iter()
-            .any(|parent| root.path.starts_with(&parent.path))
+            .any(|parent| relative_cache_path(&parent.path, &root.path).is_some())
         {
             distinct.push(root);
         }
@@ -209,8 +215,68 @@ fn discover_roots(home: &Path, codex: &Path) -> Result<Vec<CacheRoot>> {
     Ok(distinct)
 }
 
+#[cfg(windows)]
+fn windows_app_data(roaming: Option<&Path>, local: Option<&Path>) -> Vec<(&'static str, PathBuf)> {
+    let mut paths = Vec::new();
+    if let Some(roaming) = roaming {
+        for app in ["Codex", "Claude"] {
+            paths.push((app, roaming.join(app)));
+        }
+    }
+    if let Some(local) = local {
+        // 复用启动器支持的官方包身份；不递归搜索 Packages，也不扫描整个 LocalCache。
+        for family in crate::app_paths::OPENAI_PACKAGE_FAMILY_NAMES {
+            paths.push((
+                "Codex",
+                local
+                    .join("Packages")
+                    .join(family)
+                    .join("LocalCache/Roaming/Codex"),
+            ));
+        }
+    }
+    paths
+}
+
+// 只统一 Windows 盘符/UNC 的普通与 verbatim 前缀，不 canonicalize 候选目录：
+// 提前解析链接会掩盖中间目录的 junction/symlink，绕过后面的逐级安全检查。
+fn relative_cache_path(home: &Path, path: &Path) -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        path.strip_prefix(home).ok().map(Path::to_path_buf)
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut parts = path.components();
+        for expected in home.components() {
+            let actual = parts.next()?;
+            let equal = match (expected, actual) {
+                (Component::Prefix(left), Component::Prefix(right)) => {
+                    match (left.kind(), right.kind()) {
+                        (
+                            Prefix::Disk(a) | Prefix::VerbatimDisk(a),
+                            Prefix::Disk(b) | Prefix::VerbatimDisk(b),
+                        ) => a.eq_ignore_ascii_case(&b),
+                        (
+                            Prefix::UNC(a, b) | Prefix::VerbatimUNC(a, b),
+                            Prefix::UNC(c, d) | Prefix::VerbatimUNC(c, d),
+                        ) => a == c && b == d,
+                        _ => left == right,
+                    }
+                }
+                _ => expected == actual,
+            };
+            if !equal {
+                return None;
+            }
+        }
+        Some(parts.as_path().to_path_buf())
+    }
+}
+
 fn protected_path(home: &Path, path: &Path) -> bool {
-    path.strip_prefix(home).is_ok_and(|relative| {
+    relative_cache_path(home, path).is_some_and(|relative| {
         relative.components().any(|part| {
             let name = part.as_os_str().to_string_lossy().to_lowercase();
             if name == ".env" || name.starts_with(".env.") {
@@ -231,6 +297,21 @@ fn protected_path(home: &Path, path: &Path) -> bool {
             )
         })
     })
+}
+
+fn add_app_cache_roots(
+    roots: &mut Vec<CacheRoot>,
+    app: &str,
+    base: &Path,
+    home: &Path,
+) -> Result<()> {
+    add_electron_roots(roots, app, base, home, 0)?;
+    // 新版 Codex 将浏览器 profile 放在 web/Codex 下；单独作为 profile 根，
+    // 不消耗 Default/Partitions 的递归深度，也不把整个 web 目录加入清理。
+    if app == "Codex" {
+        add_electron_roots(roots, app, &base.join("web/Codex"), home, 0)?;
+    }
+    Ok(())
 }
 
 fn add_electron_roots(
@@ -275,7 +356,7 @@ fn add_electron_roots(
 
 // 所有祖先都检查，避免缓存路径或中间目录被链接到会话、凭据或仓库。
 fn safe_path(home: &Path, path: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(home) else {
+    let Some(relative) = relative_cache_path(home, path) else {
         return false;
     };
     if relative.as_os_str().is_empty() {
@@ -623,6 +704,7 @@ fn apps_from_process_names(names: &str) -> BTreeSet<String> {
         if name.contains("codex.app/")
             || executable == "codex"
             || executable.starts_with("codex helper")
+            || (cfg!(windows) && ["chatgpt", "chatgpt (beta)"].contains(&executable))
         {
             running.insert("Codex".into());
         }
@@ -690,6 +772,243 @@ mod tests {
                 .iter()
                 .all(|group| !group.path.starts_with(r"\\?\"))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_plain_codex_home_is_scanned_under_canonical_user_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let codex = crate::paths::strip_verbatim_prefix(&home).join(".codex");
+        old_file(&codex.join("cache/old"), "cache");
+        old_file(&codex.join("cache/auth.json"), "credential");
+        old_file(&codex.join(".tmp/work"), "temp");
+        fs::write(codex.join("cache/recent"), "recent").unwrap();
+        let plan = scan(
+            &home,
+            discover_roots(&home, &codex).unwrap(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        assert!(
+            plan.report.warnings.is_empty(),
+            "{:?}",
+            plan.report.warnings
+        );
+        let cache = plan
+            .report
+            .groups
+            .iter()
+            .find(|group| group.kind == "cache")
+            .unwrap();
+        assert_eq!(cache.total_bytes, 11);
+        assert_eq!(cache.eligible_bytes, 5);
+        assert!(
+            plan.report
+                .groups
+                .iter()
+                .any(|group| group.kind == "temporary" && !group.cleanable)
+        );
+        let ids = selected(&plan);
+        let scan_id = plan.report.scan_id.clone();
+        let result = plan
+            .clean_with_processes(&scan_id, &ids, true, SystemTime::now(), BTreeSet::new())
+            .unwrap();
+        assert_eq!(result.removed_files, 1);
+        assert!(codex.join("cache/auth.json").exists());
+        assert!(codex.join("cache/recent").exists());
+        assert!(codex.join(".tmp/work").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_prefix_comparison_preserves_path_boundaries() {
+        assert_eq!(
+            relative_cache_path(
+                Path::new(r"\\?\C:\Users\me"),
+                Path::new(r"C:\Users\me\.codex\cache")
+            ),
+            Some(PathBuf::from(r".codex\cache"))
+        );
+        assert_eq!(
+            relative_cache_path(
+                Path::new(r"\\server\share\me"),
+                Path::new(r"\\?\UNC\server\share\me\cache")
+            ),
+            Some(PathBuf::from("cache"))
+        );
+        assert!(
+            relative_cache_path(
+                Path::new(r"\\?\C:\Users\me"),
+                Path::new(r"C:\Users\me-other\cache")
+            )
+            .is_none()
+        );
+        assert!(
+            relative_cache_path(
+                Path::new(r"\\server\share\me"),
+                Path::new(r"\\?\UNC\server\other\me\cache")
+            )
+            .is_none()
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let plain = crate::paths::strip_verbatim_prefix(&home);
+        fs::create_dir(plain.join("cache")).unwrap();
+        assert!(!safe_path(&home, &plain));
+        assert!(!safe_path(&home, &plain.join("cache/../cache")));
+        assert!(protected_path(&home, &plain.join("plugins/cache")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_store_host_blocks_cleanup_without_a_cli_process() {
+        for process in ["ChatGPT.exe", "ChatGPT (Beta).exe"] {
+            let (_temp, plan) = fixture();
+            let ids = selected(&plan);
+            let scan_id = plan.report.scan_id.clone();
+            assert!(
+                plan.clean_with_processes(
+                    &scan_id,
+                    &ids,
+                    true,
+                    SystemTime::now(),
+                    apps_from_process_names(process)
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_store_and_standalone_profiles_only_include_cache_allowlist() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let plain = crate::paths::strip_verbatim_prefix(&home);
+        let roaming = plain.join("AppData/Roaming");
+        let local = plain.join("AppData/Local");
+        let store = local.join("Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/Roaming/Codex");
+        let cached = [
+            roaming.join("Codex/Cache/data"),
+            roaming.join("Codex/web/Codex/Default/Cache/data"),
+            store.join("Cache/data"),
+            store.join("web/Codex/Default/Cache/data"),
+            store.join("web/Codex/Default/Partitions/preview/Code Cache/data"),
+        ];
+        let preserved = [
+            store.join("web/Codex/Default/Cookies"),
+            store.join("web/Codex/Default/Local Storage/leveldb/data"),
+            store.join("web/Codex/sessions/history"),
+            store.join("web/Codex/plugins/cache/data"),
+            store.join("web/Codex/vm_bundles/resource"),
+            local.join("Packages/Unrelated.App_abc/LocalCache/Roaming/Codex/Cache/data"),
+            local.join("Packages/OpenAI.Codex_2p2nqsd0c76g0/LocalCache/unrelated/data"),
+        ];
+        for path in &cached {
+            old_file(path, "cache");
+        }
+        for path in &preserved {
+            old_file(path, "keep");
+        }
+        let mut roots = Vec::new();
+        for (app, base) in windows_app_data(Some(&roaming), Some(&local)) {
+            add_app_cache_roots(&mut roots, app, &base, &home).unwrap();
+        }
+        let plan = scan(&home, roots, SystemTime::now()).unwrap();
+        assert!(plan.report.warnings.is_empty());
+        assert_eq!(plan.files.len(), cached.len());
+        let ids = selected(&plan);
+        let scan_id = plan.report.scan_id.clone();
+        let result = plan
+            .clean_with_processes(&scan_id, &ids, true, SystemTime::now(), BTreeSet::new())
+            .unwrap();
+        assert_eq!(result.removed_files, cached.len());
+        for path in &preserved {
+            assert!(path.exists(), "{}", path.display());
+        }
+        assert!(
+            windows_app_data(None, Some(&local))
+                .iter()
+                .any(|(_, base)| base == &store)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mixed_prefix_nested_roots_are_not_counted_twice() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let codex =
+            crate::paths::strip_verbatim_prefix(&home).join(".codex-session-delete/updates");
+        old_file(&codex.join("cache/data"), "cache");
+        let plan = scan(
+            &home,
+            discover_roots(&home, &codex).unwrap(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        assert_eq!(plan.report.groups.len(), 1);
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.report.groups[0].total_bytes, 5);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_junctions_are_rejected_during_scan_and_before_cleanup() {
+        fn junction(link: &Path, target: &Path) {
+            let result = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(
+                    crate::paths::strip_verbatim_prefix(link)
+                        .components()
+                        .collect::<PathBuf>(),
+                )
+                .arg(
+                    crate::paths::strip_verbatim_prefix(target)
+                        .components()
+                        .collect::<PathBuf>(),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        let (temp, _) = fixture();
+        let home = temp.path().canonicalize().unwrap();
+        let codex = crate::paths::strip_verbatim_prefix(&home).join(".codex");
+        let target = home.join("target");
+        old_file(&target.join("old"), "cache");
+        junction(&codex.join("cache/linked"), &target);
+        let plan = scan(
+            &home,
+            discover_roots(&home, &codex).unwrap(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        assert_eq!(plan.files.len(), 1);
+        fs::rename(codex.join("cache"), codex.join("original-cache")).unwrap();
+        junction(&codex.join("cache"), &target);
+        assert!(!safe_path(&home, &codex.join("cache/old")));
+        let ids = selected(&plan);
+        let scan_id = plan.report.scan_id.clone();
+        let result = plan
+            .clean_with_processes(&scan_id, &ids, true, SystemTime::now(), BTreeSet::new())
+            .unwrap();
+        assert_eq!(result.removed_files, 0);
+        assert_eq!(result.skipped_files, 1);
+        let rescanned = scan(
+            &home,
+            discover_roots(&home, &codex).unwrap(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        assert!(rescanned.files.is_empty());
+        assert!(!rescanned.report.warnings.is_empty());
+        assert_eq!(fs::read(target.join("old")).unwrap(), b"cache");
     }
 
     #[test]

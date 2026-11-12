@@ -1201,7 +1201,7 @@ export const EN_PLAIN: Record<string, string> = {
   "清理所选缓存": "Clean selected caches",
   "正在确认或清理缓存…": "Confirming or cleaning caches…",
   "点击扫描查看占用。扫描结果有效期为 10 分钟。": "Scan to see cache sizes. Scan results expire after 10 minutes.",
-  "未发现可识别的缓存目录。": "No recognized cache directories found.",
+  "未发现可统计的缓存目录；如有扫描提示，请查看被跳过的目录。": "No cache directories could be counted. Check any scan warnings for skipped directories.",
   "扫描提示（部分目录可能未统计）": "Scan warnings (some directories may be excluded)",
   "查看清理失败的文件": "View files that could not be cleaned",
   "大小按文件逻辑长度统计，实际释放空间可能不同。缓存可能在应用重启后重新生成。": "Sizes reflect logical file lengths; actual space reclaimed may differ. Caches may be regenerated when apps restart.",
