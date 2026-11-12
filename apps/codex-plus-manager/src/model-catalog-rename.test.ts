@@ -173,6 +173,7 @@ function runtime(initial = catalog({ "group/stable": "Before rename" }), include
     __codexSessionDeleteBridge: async (path: string) => {
       paths.push(path);
       if (path === "/settings/get") return { enhancementsEnabled: true, modelCatalogFingerprint: fingerprint };
+      if (path === "/gateway/connection-generation") return { status: "ok", active: true, generation: "baseline" };
       if (path === "/codex-model-catalog") return catalogRead();
       throw new Error(`unexpected bridge request: ${path}`);
     },
@@ -233,7 +234,7 @@ test("installed picker and native model/list use the renamed group after a setti
 
   app.change(catalog({ "group/stable": "After rename" }));
   await app.harness.heartbeat();
-  assert.deepEqual(app.paths, ["/settings/get", "/codex-model-catalog"]);
+  assert.deepEqual(app.paths, ["/settings/get", "/gateway/connection-generation", "/codex-model-catalog"]);
   app.harness.patch(list);
   assert.equal(native.querySelector(".codex-plus-model-group-own-label")?.textContent, "After rename");
   assert.equal(app.harness.recents()[0].label, "After rename");

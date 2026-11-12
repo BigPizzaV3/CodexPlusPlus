@@ -4996,7 +4996,7 @@ export function App() {
         void navigate(issue.includes("供应商池是空的") ? "gatewayProviders" : "gateway");
         return;
       }
-      const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true } });
+      const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true }, reconnect: true });
       publishGatewayPayload(result);
       await refreshSettings(true);
       await showNotice(t("切换到网关"), result.message, isSuccessStatus(result.status as Status) ? "ok" : "failed");

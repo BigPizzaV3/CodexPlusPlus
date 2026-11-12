@@ -190,6 +190,7 @@ function fixture(source = runtimeSource) {
     performance: { getEntriesByType: () => [] },
     URL,
     crypto: { randomUUID: () => `fixture-request-${++state.uuidCount}` },
+    codexGatewayRecoveryEnabled: () => false,
   });
   vm.runInContext(source, context);
   const api = context.window.__codexPlusNativeThreadGoal;

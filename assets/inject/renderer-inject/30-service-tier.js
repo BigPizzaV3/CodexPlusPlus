@@ -245,6 +245,271 @@
     }
   }
 
+  const codexGatewayPreparations = new Map();
+  const codexGatewayPreparationTimeoutMs = 120000;
+  let codexGatewayBaselinePromise = null;
+
+  function codexGatewayRecoveryEnabled() {
+    return codexRemoteSessionActiveProfile()?.id === "codex-plus-gateway";
+  }
+
+  async function codexGatewayConnectionGeneration() {
+    const connection = await readCodexAppServerPreparation("/gateway/connection-generation", {});
+    if (connection?.status !== "ok" || typeof connection.active !== "boolean"
+        || typeof connection.generation !== "string") {
+      throw new Error(connection?.message || "读取网关连接状态失败，请稍后重试");
+    }
+    return connection;
+  }
+
+  function initializeCodexGatewayBaseline(active = true) {
+    if (!active) return codexGatewayBaselinePromise ||= Promise.resolve({ active: false, generation: "" });
+    return codexGatewayBaselinePromise ||= codexGatewayConnectionGeneration().catch((error) => {
+      sendCodexPlusDiagnostic("gateway_baseline_read_failed", { errorMessage: String(error?.message || error) });
+      return null;
+    });
+  }
+
+  function noteCodexGatewayThreadStart(method, params, result, hostId, generation) {
+    if (hostId !== "local" || typeof generation !== "string" || !codexGatewayRecoveryEnabled()) return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return;
+      return noteCodexGatewayThreadStart(String(params.method), params.params, result, hostId, generation);
+    }
+    if (method !== "thread/start" || !result?.thread?.id) return;
+    if (!codexGatewayPreparations.has(result.thread.id)) {
+      codexGatewayPreparations.set(result.thread.id, { generation, tail: null });
+    }
+  }
+
+  async function prepareCodexGatewayReconnect(method, params, hostId, sendRequest, client) {
+    if (hostId !== "local" || !codexGatewayRecoveryEnabled()) return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return;
+      return prepareCodexGatewayReconnect(String(params.method), params.params, hostId,
+        (nestedMethod, nestedParams, options) => sendRequest(method,
+          { ...params, method: nestedMethod, params: nestedParams }, options), client);
+    }
+    if (method === "thread/start") {
+      try {
+        const gateway = await codexGatewayConnectionGeneration();
+        return gateway.active ? gateway.generation : undefined;
+      } catch (error) {
+        sendCodexPlusDiagnostic("gateway_generation_read_failed", { errorMessage: String(error?.message || error) });
+        return;
+      }
+    }
+    if (method !== "turn/start" || !params?.threadId) return;
+    const threadId = params.threadId;
+    let state = codexGatewayPreparations.get(threadId);
+    if (!state) codexGatewayPreparations.set(threadId, state = { generation: undefined, tail: null });
+    const previous = state.tail;
+    let release;
+    const tail = state.tail = new Promise((resolve) => { release = resolve; });
+    const controller = new AbortController();
+    const signal = controller.signal;
+    let timer;
+    const work = (async () => {
+      let mayContinueNatively = true;
+      try {
+        await previous;
+        signal.throwIfAborted();
+        if (state.ephemeral) return;
+        const baseline = await initializeCodexGatewayBaseline();
+        signal.throwIfAborted();
+        let gateway;
+        try {
+          gateway = await codexGatewayConnectionGeneration();
+        } catch (error) {
+          signal.throwIfAborted();
+          sendCodexPlusDiagnostic("gateway_generation_read_failed", { errorMessage: String(error?.message || error) });
+          return;
+        }
+        signal.throwIfAborted();
+        if (state.generation === undefined) state.generation = baseline?.generation ?? gateway.generation;
+        if (!gateway.active || state.generation === gateway.generation) return;
+        const pending = window.__codexPlusConnectionRecoveryPending ||= new Set();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        const options = { timeoutMs: codexAppServerPreparationTimeoutMs };
+        const read = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+        signal.throwIfAborted();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        if (read.thread.ephemeral === true) {
+          state.ephemeral = true;
+          return;
+        }
+        const cached = client ? await client.getConversation(threadId) : null;
+        signal.throwIfAborted();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        if (read.thread.status.type === "active"
+            || cached?.threadRuntimeStatus?.type === "active") {
+          sendCodexPlusDiagnostic("gateway_recovery_active", {});
+          if (typeof showToast === "function") {
+            showToast("网关连接已变化；活动回复会继续，此时发送可能仍使用旧连接。", { type: "warn" });
+          }
+          return;
+        }
+        const config = await sendRequest("config/read", {
+          cwd: params.cwd ?? read.thread.cwd ?? null, includeLayers: false,
+        }, options);
+        signal.throwIfAborted();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        const provider = config.config.model_provider ?? "openai";
+        if (read.thread.modelProvider !== provider) {
+          sendCodexPlusDiagnostic("gateway_recovery_provider_mismatch", {});
+          if (typeof showToast === "function") {
+            showToast("当前会话供应商与网关不一致，消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+          }
+          return;
+        }
+        const loaded = read.thread.status.type !== "notLoaded" || cached?.resumeState === "resumed";
+        pending.add(threadId);
+        let subscription;
+        let handle;
+        try {
+          if (loaded) {
+            let turns;
+            try {
+              turns = await sendRequest("thread/turns/list", { threadId, limit: 1, itemsView: "notLoaded" }, options);
+            } catch (error) {
+              if (String(error?.message || error).includes("is not materialized yet")) return;
+              throw error;
+            }
+            signal.throwIfAborted();
+            if (turns.data.length === 0) return;
+          }
+          const settings = params.collaborationMode?.settings;
+          const effort = settings && Object.prototype.hasOwnProperty.call(settings, "reasoning_effort")
+            ? settings.reasoning_effort
+            : params.reasoningEffort ?? params.effort ?? read.thread.reasoningEffort ?? null;
+          const resumeParams = {
+            threadId, modelProvider: provider,
+            model: settings?.model ?? params.model ?? read.thread.model ?? null,
+            config: effort === null ? {} : { model_reasoning_effort: effort },
+          };
+          let unloaded = read.thread.status.type === "notLoaded";
+          let resumed;
+          if (client && !unloaded) {
+            subscription = client.subscribe({
+              type: "notification", key: { hostId: "local" }, methods: ["thread/status/changed"],
+              listener: ({ params: event }) => {
+                if (event?.threadId === threadId && event.status?.type === "notLoaded") unloaded = true;
+              },
+            });
+            handle = await subscription;
+            signal.throwIfAborted();
+          }
+          if (loaded && !unloaded) {
+            // 保留客户端缓存，避免界面在等待卸载时提前重新订阅。
+            mayContinueNatively = false;
+            await sendRequest("thread/unsubscribe", { threadId }, options);
+            signal.throwIfAborted();
+          }
+          if (!unloaded) {
+            const current = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+            signal.throwIfAborted();
+            unloaded = current.thread.status.type === "notLoaded";
+          }
+          if (!unloaded && client && read.thread.status.type === "idle") {
+            mayContinueNatively = false;
+            resumed = await sendRequest("thread/resume", resumeParams, options);
+            signal.throwIfAborted();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            signal.throwIfAborted();
+            if (!unloaded) {
+              await sendRequest("thread/unsubscribe", { threadId }, options);
+              signal.throwIfAborted();
+              resumed = null;
+            }
+          }
+          const deadline = Date.now() + 70000;
+          while (!unloaded && Date.now() < deadline) {
+            const current = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+            signal.throwIfAborted();
+            unloaded = current.thread.status.type === "notLoaded";
+            if (!unloaded) await new Promise((resolve) => setTimeout(resolve, 500));
+            signal.throwIfAborted();
+          }
+          if (!unloaded) throw new Error("会话仍被占用，无法重新连接网关，请稍后重新发送");
+          if (!resumed) {
+            mayContinueNatively = false;
+            resumed = await sendRequest("thread/resume", resumeParams, options);
+            signal.throwIfAborted();
+          }
+          if (resumed.modelProvider !== provider) throw new Error("会话尚未切换到目标供应商，请重试");
+          if (effort === null) {
+            const collaborationMode = params.collaborationMode?.mode
+              ? params.collaborationMode : resumed.collaborationMode;
+            if (collaborationMode) {
+              await sendRequest("thread/settings/update", {
+                threadId,
+                collaborationMode: {
+                  ...collaborationMode,
+                  settings: { ...collaborationMode.settings, reasoning_effort: null },
+                },
+              }, options);
+              signal.throwIfAborted();
+            }
+          }
+          let currentGateway;
+          try {
+            currentGateway = await codexGatewayConnectionGeneration();
+          } catch (error) {
+            signal.throwIfAborted();
+            sendCodexPlusDiagnostic("gateway_generation_read_failed", { errorMessage: String(error?.message || error) });
+            return;
+          }
+          signal.throwIfAborted();
+          if (!currentGateway.active || currentGateway.generation !== gateway.generation) {
+            throw new Error("网关连接已变化，请重新发送");
+          }
+          state.generation = gateway.generation;
+        } finally {
+          handle?.[Symbol.dispose]();
+          subscription?.[Symbol.dispose]();
+          pending.delete(threadId);
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!mayContinueNatively || window.__codexPlusContextRefreshPending?.has(threadId)
+            || window.__codexPlusConnectionRecoveryPending?.has(threadId)) throw error;
+        sendCodexPlusDiagnostic("gateway_recovery_preflight_failed", { errorMessage: String(error?.message || error) });
+        if (typeof showToast === "function") {
+          showToast("网关连接检查未完成，本次消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+        }
+      } finally {
+        release();
+        if (state.tail === tail) {
+          if (state.generation === undefined) codexGatewayPreparations.delete(threadId);
+          else state.tail = null;
+        }
+      }
+    })();
+    try {
+      await Promise.race([work, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error("网关连接准备超时，请重新发送");
+          controller.abort(error);
+          reject(error);
+        }, codexGatewayPreparationTimeoutMs);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function codexManagedSessionConnection() {
     const profile = codexRemoteSessionActiveProfile();
     const connection = codexPlusBackendSettings.managedSessionConnection;
@@ -359,7 +624,9 @@
     if (typeof prepareCodexThreadContextStart === "function") {
       nextParams = await prepareCodexThreadContextStart("thread/start", nextParams, client.hostId);
     }
+    const gatewayGeneration = await prepareCodexGatewayReconnect("thread/start", nextParams, client.hostId);
     const result = await prewarm(nextParams, options);
+    noteCodexGatewayThreadStart("thread/start", nextParams, result, client.hostId, gatewayGeneration);
     noteCodexManagedSessionStart("thread/start", nextParams, result, client.hostId);
     if (typeof noteCodexThreadRuntimeContext === "function") {
       noteCodexThreadRuntimeContext("thread/start", nextParams, result, client.hostId);
@@ -1024,6 +1291,9 @@
       const previousSettings = codexPlusBackendSettings;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof initializeCodexGatewayBaseline === "function") {
+        void initializeCodexGatewayBaseline(codexGatewayRecoveryEnabled());
+      }
       if (typeof refreshCodexModelCatalogForSettings === "function") {
         refreshCodexModelCatalogForSettings(previousSettings, codexPlusBackendSettings);
       }

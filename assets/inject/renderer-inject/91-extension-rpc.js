@@ -21,7 +21,7 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 7;
+  const codexPlusRpcInterceptorVersion = 9;
   const codexPlusRpcMiddlewareTimeoutMs = 5000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
@@ -352,8 +352,15 @@
     const hasStart = codexPlusRpcIsPlainObject(value.start?.request) && Array.isArray(value.start.request.input);
     const hasSteer = codexPlusRpcIsPlainObject(value.steer) && Array.isArray(value.steer.input);
     const refreshContext = hasStart && value.executionHostId === "local" && codexPlusRpcContextEnabled();
-    if ((!hasStart && !hasSteer) || (!codexPlusRpcWantsTurnHooks() && !refreshContext)) return null;
+    const prepareGateway = hasStart && value.executionHostId === "local"
+      && typeof codexGatewayRecoveryEnabled === "function" && codexGatewayRecoveryEnabled()
+      && codexPlusRpcIsPlainObject(value.resume)
+      && typeof value.conversationId === "string" && value.conversationId === value.resume.conversationId
+      && (value.start.request.threadId === undefined || value.start.request.threadId === value.conversationId);
+    const wantsHooks = codexPlusRpcWantsTurnHooks();
+    if ((!hasStart && !hasSteer) || (!wantsHooks && !refreshContext && !prepareGateway)) return null;
     const plan = async (signal) => {
+      if (!wantsHooks) return null;
       const decoded = codexPlusRpcDecode(value);
       const conversationId = decoded.conversationId;
       const carriers = [];
@@ -388,11 +395,25 @@
       }
       return ["resolve", frame[1], codexPlusRpcEncode(decoded), ...frame.slice(3)];
     };
-    if (refreshContext) {
+    if (refreshContext || prepareGateway) {
       plan.context = async (nextFrame) => {
         if (nextFrame[0] !== "resolve") return nextFrame;
         const decoded = codexPlusRpcDecode(nextFrame[2]);
-        const client = await codexPlusAppServerClient("local");
+        let client;
+        try {
+          client = await codexPlusAppServerClient("local");
+          if (!client) throw new Error("app-server client unavailable");
+        } catch (error) {
+          if (refreshContext) throw error;
+          codexPlusMarkExtensionFailure("", `网关连接检查不可用：${String(error?.message || error)}`);
+          return nextFrame;
+        }
+        if (prepareGateway) {
+          await prepareCodexGatewayReconnect("turn/start",
+            { ...decoded.start.request, threadId: decoded.conversationId }, "local",
+            (method, params, options) => client.sendRequest(method, params, options), client);
+        }
+        if (!refreshContext) return nextFrame;
         const sendRequest = async (method, params, options) => {
           if (method === "thread/unsubscribe") {
             await client.unsubscribeInactiveConversation(params.threadId);

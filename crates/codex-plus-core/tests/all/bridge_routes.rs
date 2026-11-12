@@ -32,6 +32,7 @@ async fn bridge_routes_cover_all_current_paths() {
 
     let cases = [
         ("/settings/get", json!({})),
+        ("/gateway/connection-generation", json!({})),
         ("/settings/set", json!({"providerSyncEnabled": true})),
         ("/settings/catalog", json!({})),
         ("/settings/public", json!({})),
@@ -107,6 +108,47 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn gateway_connection_generation_uses_current_home_and_reports_read_errors() {
+    let service = Arc::new(FakeSettings::default());
+    let home = service.codex_home_dir();
+    let ctx = BridgeContext::new(service.clone(), Arc::new(FakeRuntime::default()), Arc::new(FakeData));
+
+    let initial = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(initial, json!({"status": "ok", "active": false, "generation": ""}));
+    let generation = codex_plus_core::gateway::connection_generation::publish(&home).unwrap();
+    {
+        let mut settings = service.settings.lock().unwrap();
+        settings.relay_profiles_enabled = true;
+        settings.active_relay_id = codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+    }
+    let active = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(active, json!({"status": "ok", "active": true, "generation": generation}));
+    service.settings.lock().unwrap().relay_profiles_enabled = false;
+    let disabled = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(disabled["active"], false);
+    service.settings.lock().unwrap().relay_profiles_enabled = true;
+    service.settings.lock().unwrap().active_relay_id = "direct".into();
+    let direct = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(direct["active"], false);
+
+    let marker = home.join("codex-plus-gateway-connection-generation");
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::create_dir(&marker).unwrap();
+    let direct = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(direct, json!({"status": "ok", "active": false, "generation": ""}));
+    let settings = handle_bridge_request(ctx.clone(), "/settings/get", json!({})).await;
+    assert_eq!(settings["activeRelayId"], "direct");
+    let saved = handle_bridge_request(ctx.clone(), "/settings/set", json!({"providerSyncEnabled": true})).await;
+    assert_eq!(saved["providerSyncEnabled"], true);
+    service.settings.lock().unwrap().active_relay_id =
+        codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await["status"],
+        "failed"
+    );
 }
 
 #[tokio::test]
@@ -1813,6 +1855,9 @@ impl FakeSettings {
 
 #[async_trait]
 impl BridgeSettingsService for FakeSettings {
+    fn codex_home_dir(&self) -> std::path::PathBuf {
+        self.agent_pet_cache.path().join("codex")
+    }
     fn agent_pet_cache_dir(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("agent-pet-cache")
     }

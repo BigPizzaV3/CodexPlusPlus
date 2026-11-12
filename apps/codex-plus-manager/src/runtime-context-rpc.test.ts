@@ -16,6 +16,9 @@ function runtime() {
     enabled: true,
     startFailure: "",
     refreshFailure: "",
+    gatewayEnabled: false,
+    gatewayFailure: "",
+    clientFailure: "",
     chain: async (value: any) => value,
   };
   const acknowledgements = new Map<string, () => void>();
@@ -61,6 +64,7 @@ function runtime() {
   const create = new Function("window", "codexPlusExtensionListeners", "codexPlusExtensionInterceptors",
     "codexPlusRunWaterfall", "codexPlusMarkExtensionFailure", "showToast", "codexPerModelContextEnabled",
     "prepareCodexThreadContextStart", "codexPlusAppServerClient", "refreshCodexThreadModelBeforeTurn",
+    "codexGatewayRecoveryEnabled", "prepareCodexGatewayReconnect",
     "runCodexPlusExtensionCallback",
     `${source}\nreturn { decode: codexPlusRpcDecode, install: installCodexPlusRpcFrameInterceptor };`);
   const listeners = new Map();
@@ -75,6 +79,7 @@ function runtime() {
     },
     async (hostId: string) => {
       assert.equal(hostId, "local");
+      if (state.clientFailure) throw new Error(state.clientFailure);
       return client;
     },
     async (host: any, sendRequest: any, method: string, params: any) => {
@@ -84,7 +89,14 @@ function runtime() {
       await sendRequest("thread/resume", { threadId: params.threadId, excludeTurns: true }, { timeoutMs: 5000 });
       await sendRequest("thread/unsubscribe", { threadId: params.threadId }, { timeoutMs: 5000 });
       await sendRequest("thread/resume", { threadId: params.threadId, config: { model_context_window: 262144 } });
-    }, (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }));
+    },
+    () => state.gatewayEnabled,
+    async (_method: string, params: any, _host: string, sendRequest: any) => {
+      calls.push({ method: "gateway", params });
+      if (state.gatewayFailure) throw new Error(state.gatewayFailure);
+      await sendRequest("gateway/check", { threadId: params.threadId }, { timeoutMs: 5000 });
+    },
+    (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }));
   const settle = async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -115,6 +127,43 @@ function turnFrame(hostId: string | undefined = "local"): Frame {
 }
 
 describe("runtime context through host RPC", () => {
+  it("passes the original frame through when the gateway client cannot be found", async () => {
+    const env = runtime();
+    env.state.enabled = false;
+    env.state.gatewayEnabled = true;
+    env.state.clientFailure = "client unavailable";
+    const frame = turnFrame();
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.equal(env.sent.at(-1), frame);
+    assert.equal(env.calls.length, 0);
+  });
+
+  it("prepares the gateway before context refresh and sends the original turn", async () => {
+    const env = runtime();
+    env.state.gatewayEnabled = true;
+    const frame = turnFrame();
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.deepEqual(env.calls.slice(0, 3).map((call) => call.method), ["gateway", "gateway/check", "refresh"]);
+    assert.equal(env.calls[0].params.threadId, "thread");
+    assert.equal(env.sent.at(-1)?.[0], "resolve");
+  });
+
+  it("rejects a failed gateway preparation and leaves remote turns untouched", async () => {
+    const env = runtime();
+    env.state.enabled = false;
+    env.state.gatewayEnabled = true;
+    env.state.gatewayFailure = "gateway unavailable";
+    env.port.postMessage(turnFrame());
+    await env.settle();
+    assert.deepEqual(env.sent.at(-1), ["reject", 7, ["error", "Error", "gateway unavailable"]]);
+    assert.equal(env.calls.some((call) => call.method === "refresh"), false);
+    const remote = turnFrame("remote");
+    env.port.postMessage(remote);
+    assert.equal(env.sent.at(-1), remote);
+  });
+
   it("adds fresh settings before creating a proven local conversation and preserves callbacks", async () => {
     const env = runtime();
     env.subscribe("local");
@@ -331,7 +380,7 @@ describe("runtime context through host RPC", () => {
     const original = env.window.__codexPlusRpcFrameInterceptor.original;
     env.window.__codexPlusRpcFrameInterceptor.version = 6;
     env.api.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 7);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 9);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
   });
 
