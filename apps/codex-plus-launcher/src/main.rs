@@ -66,6 +66,7 @@ impl StartupReply {
 
 struct SessionState {
     ready: bool,
+    closing: bool,
     attach_only: bool,
     options: LaunchOptions,
     requested_at_ms: u64,
@@ -135,13 +136,24 @@ fn clear_session_probe() {
         .unwrap_or_else(|error| error.into_inner()) = None;
 }
 
+fn mark_session_closing(state: &Mutex<SessionState>) {
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    state.ready = false;
+    state.closing = true;
+    clear_session_probe();
+}
+
 type SessionRunner = Arc<
     dyn Fn(LaunchOptions, tokio::sync::oneshot::Receiver<()>, StartupReply) -> SessionFuture
         + Send
         + Sync,
 >;
-type ActivationRunner =
-    Arc<dyn Fn(LaunchOptions, u64) -> Pin<Box<dyn Future<Output = Result<()>>>> + Send + Sync>;
+type ActivationRunner = Arc<
+    dyn Fn(LaunchOptions, u64, Arc<Mutex<SessionState>>)
+            -> Pin<Box<dyn Future<Output = Result<()>>>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Debug)]
 struct StartupBusy;
@@ -196,6 +208,7 @@ impl EmbeddedSession {
     ) -> Result<Self> {
         let state = Arc::new(Mutex::new(SessionState {
             ready: false,
+            closing: false,
             attach_only,
             options: options.clone(),
             requested_at_ms,
@@ -328,10 +341,11 @@ fn runtime_commands_sender() -> Result<tokio::sync::mpsc::UnboundedSender<Runtim
     worker.commands_or_start(|| {
         RuntimeWorker::spawn(
             Arc::new(|options, stop, ready| Box::pin(run_embedded_session(options, stop, ready))),
-            Arc::new(|options, started_at_ms| {
-                Box::pin(
-                    async move { activate_and_write_running_status(&options, started_at_ms).await },
-                )
+            Arc::new(|options, started_at_ms, state| {
+                Box::pin(async move {
+                    activate_existing_codex_app(&options).await?;
+                    publish_activated_session(&options, started_at_ms, &state)
+                })
             }),
         )
     })
@@ -481,17 +495,27 @@ async fn runtime_commands(
                         if let Some(current) = &session {
                             let current_options = {
                                 let state = current.state.lock().unwrap_or_else(|error| error.into_inner());
+                                if !state.ready && !state.closing {
+                                    let _ = ready.send(Err(StartupBusy.into()));
+                                    continue;
+                                }
                                 state.ready.then(|| (state.options.clone(), state.status_started_at_ms, state.launch_extra_args.clone()))
                             };
-                            let result = match current_options {
-                                Some((current_options, started_at_ms, launch_extra_args)) => {
+                            if let Some((current_options, started_at_ms, launch_extra_args)) = current_options {
+                                let result = if attach_only { Ok(()) } else { activate(current_options.clone(), started_at_ms, current.state.clone()).await };
+                                let state = current.state.lock().unwrap_or_else(|error| error.into_inner());
+                                // 激活跨 await 时旧目标可能已退出，不能把新打开的 App 交给旧 helper。
+                                if state.ready && !state.closing && !current.thread.is_finished() {
                                     record_session_probe(&current_options, started_at_ms, launch_extra_args);
-                                    if attach_only { Ok(()) } else { activate(current_options, started_at_ms).await }
+                                    let _ = ready.send(result);
+                                    continue;
                                 }
-                                None => Err(StartupBusy.into()),
-                            };
-                            let _ = ready.send(result);
-                            continue;
+                            }
+                        }
+                        // 先等退出中的会话释放 helper/runtime，再走完整启动；不取消已开始的恢复事务。
+                        if let Some(previous) = session.take() {
+                            let _ = previous.join().await;
+                            clear_session_probe();
                         }
                         match EmbeddedSession::spawn(options, requested_at_ms, attach_only, ready.clone(), runner.clone()) {
                             Ok(current) => session = Some(current),
@@ -661,6 +685,8 @@ async fn run_embedded_session(
                 },
             )
             .await;
+            mark_session_closing(hooks.session_state.as_ref().unwrap());
+            hooks.core.stop_bridge_watchdog().await;
             handle.stop_isolated_api_quota_gate().await;
             stopped_by_host = host_stop;
             result
@@ -669,6 +695,7 @@ async fn run_embedded_session(
         Err(error) => Err(error),
     };
     // 启动中取消也要显式清理。不能依赖进程退出，否则 GUI 仍在时端口和系统浏览器会残留。
+    mark_session_closing(hooks.session_state.as_ref().unwrap());
     hooks.shutdown_helper(options.helper_port).await;
     hooks.stop_native_browser_compatibility().await;
     if stopped_by_host {
@@ -796,6 +823,10 @@ async fn activate_and_write_running_status(
     started_at_ms: u64,
 ) -> Result<()> {
     activate_existing_codex_app(options).await?;
+    write_activated_running_status(options, started_at_ms)
+}
+
+fn write_activated_running_status(options: &LaunchOptions, started_at_ms: u64) -> Result<()> {
     options.status_store.save_latest(&LaunchStatus {
         status: "running".to_string(),
         message: "Existing Codex instance activated".to_string(),
@@ -809,6 +840,16 @@ async fn activate_and_write_running_status(
         aumid: None,
         ..LaunchStatus::default()
     })
+}
+
+fn publish_activated_session(
+    options: &LaunchOptions,
+    started_at_ms: u64,
+    state: &Mutex<SessionState>,
+) -> Result<()> {
+    let state = state.lock().unwrap_or_else(|error| error.into_inner());
+    anyhow::ensure!(state.ready && !state.closing, "原 Codex 会话已退出，正在重新准备后台服务");
+    write_activated_running_status(options, started_at_ms)
 }
 
 async fn wait_for_session_exit_or_stop(
@@ -1485,11 +1526,9 @@ impl LaunchHooks for LauncherHooks {
     ) -> anyhow::Result<()> {
         let result = self.core.wait_for_codex_exit(launch, debug_port).await;
         if let Some(state) = &self.session_state {
-            state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .ready = false;
+            mark_session_closing(state);
         }
+        self.core.stop_bridge_watchdog().await;
         result
     }
 
@@ -2393,7 +2432,7 @@ mod tests {
                     let _ = stop.await;
                 })
             }),
-            Arc::new(|_, _| panic!("restoration must not activate or restart Codex")),
+            Arc::new(|_, _, _| panic!("restoration must not activate or restart Codex")),
         )
         .unwrap();
         for _ in 0..2 {
@@ -2423,7 +2462,7 @@ mod tests {
                             let _ = stop.await;
                         })
                     }),
-                    Arc::new(|_, _| Box::pin(async { Ok(()) })),
+                    Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
                 )
             })
             .unwrap();
@@ -2457,6 +2496,89 @@ mod tests {
         assert!(state.begin_shutdown().is_none());
         let rejected = state.commands_or_start(|| panic!("shutdown must not initialize a runtime"));
         assert!(rejected.unwrap_err().to_string().contains("正在退出"));
+    }
+
+    #[test]
+    fn embedded_runtime_rebuilds_if_the_session_exits_during_activation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let temp = tempfile::tempdir().unwrap();
+        let options = LaunchOptions {
+            status_store: codex_plus_core::status::StatusStore::new(temp.path().join("status.json")),
+            ..LaunchOptions::default()
+        };
+        let launched = Arc::new(AtomicUsize::new(0));
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let (exit, exiting) = tokio::sync::oneshot::channel();
+        let (closing, closed) = tokio::sync::oneshot::channel();
+        let (cleanup, cleanup_allowed) = tokio::sync::oneshot::channel();
+        let exiting = Arc::new(Mutex::new(Some(exiting)));
+        let cleanup_allowed = Arc::new(Mutex::new(Some(cleanup_allowed)));
+        let closing = Arc::new(Mutex::new(Some(closing)));
+        let runner: SessionRunner = {
+            let launched = launched.clone();
+            let cleaned = cleaned.clone();
+            Arc::new(move |_, stop, ready| {
+                let generation = launched.fetch_add(1, Ordering::SeqCst);
+                let cleaned = cleaned.clone();
+                let exiting = exiting.lock().unwrap().take();
+                let cleanup_allowed = cleanup_allowed.lock().unwrap().take();
+                let closing = closing.lock().unwrap().take();
+                Box::pin(async move {
+                    assert_eq!(cleaned.load(Ordering::SeqCst), generation);
+                    let state = ready.state.clone();
+                    ready.send(Ok(())).unwrap();
+                    if generation == 0 {
+                        exiting.unwrap().await.unwrap();
+                        mark_session_closing(&state);
+                        closing.unwrap().send(()).unwrap();
+                        cleanup_allowed.unwrap().await.unwrap();
+                    } else {
+                        let _ = stop.await;
+                    }
+                    cleaned.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+        };
+        let activation = Arc::new(Mutex::new(Some((exit, closed, cleanup))));
+        let worker = RuntimeWorker::spawn(runner, Arc::new(move |options, started_at_ms, state| {
+            let (exit, closed, cleanup) = activation.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                exit.send(()).unwrap();
+                closed.await.unwrap();
+                let result = publish_activated_session(&options, started_at_ms, &state);
+                cleanup.send(()).unwrap();
+                result
+            })
+        })).unwrap();
+        send_test_command(&worker, |reply| test_start_command(options.clone(), reply)).unwrap();
+        send_test_command(&worker, |reply| test_start_command(options.clone(), reply)).unwrap();
+        send_test_command(&worker, RuntimeCommand::Shutdown).unwrap();
+        worker.thread.join().unwrap();
+        assert_eq!(launched.load(Ordering::SeqCst), 2, "activation must not reuse an exiting session");
+        assert_eq!(cleaned.load(Ordering::SeqCst), 2);
+        assert!(options.status_store.load_latest().unwrap().is_none(), "stale activation must not publish running");
+    }
+
+    #[test]
+    fn embedded_runtime_keeps_a_live_session_when_activation_fails() {
+        let launched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let launches = launched.clone();
+        let worker = RuntimeWorker::spawn(
+            Arc::new(move |_, stop, ready| {
+                launches.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    ready.send(Ok(())).unwrap();
+                    let _ = stop.await;
+                })
+            }),
+            Arc::new(|_, _, _| Box::pin(async { anyhow::bail!("fixture activation error") })),
+        ).unwrap();
+        send_test_command(&worker, |reply| test_start_command(LaunchOptions::default(), reply)).unwrap();
+        let result = send_test_command(&worker, |reply| test_start_command(LaunchOptions::default(), reply));
+        send_test_command(&worker, RuntimeCommand::Shutdown).unwrap();
+        worker.thread.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("fixture activation error"));
+        assert_eq!(launched.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -2539,7 +2661,7 @@ mod tests {
         let activated = activations.clone();
         let worker = RuntimeWorker::spawn(
             runner,
-            Arc::new(move |options, started_at_ms| {
+            Arc::new(move |options, started_at_ms, _| {
                 assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
                 assert_eq!(started_at_ms, 100);
                 activated.fetch_add(1, Ordering::SeqCst);
@@ -2595,7 +2717,7 @@ mod tests {
             })
         });
         let worker =
-            RuntimeWorker::spawn(runner, Arc::new(|_, _| Box::pin(async { Ok(()) }))).unwrap();
+            RuntimeWorker::spawn(runner, Arc::new(|_, _, _| Box::pin(async { Ok(()) }))).unwrap();
         let (ready, pending) = mpsc::channel();
         worker
             .commands
@@ -2628,7 +2750,7 @@ mod tests {
             })
         });
         let worker =
-            RuntimeWorker::spawn(runner, Arc::new(|_, _| Box::pin(async { Ok(()) }))).unwrap();
+            RuntimeWorker::spawn(runner, Arc::new(|_, _, _| Box::pin(async { Ok(()) }))).unwrap();
         let (ready, pending) = mpsc::channel();
         worker
             .commands
