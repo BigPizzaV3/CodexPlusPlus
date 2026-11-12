@@ -907,6 +907,49 @@ mod tests {
     }
 
     #[test]
+    fn archived_source_preserves_repository_association_and_updates_the_codex_original() {
+        let (temp, manager, repo, remote, zip) = fixture();
+        let shared = temp.path().join("shared/alpha");
+        let codex = manager.linked_dir().join("alpha");
+        std::fs::create_dir_all(manager.linked_dir()).unwrap();
+        std::fs::rename(&shared, &codex).unwrap();
+        std::fs::write(codex.join(MANAGED_COPY_MARKER), "").unwrap();
+        std::fs::rename(temp.path().join("agent/alpha"), temp.path().join("held-agent")).unwrap();
+        let mut state = manager.load_state();
+        state.installed.get_mut("alpha").unwrap().original_dir = None;
+        manager.save_state_unlocked(&state).unwrap();
+
+        let duplicates = manager.preview_skill_duplicates().unwrap();
+        assert_eq!(duplicates.candidates.iter().find(|item| item.kind == "source").unwrap().status, "identical-source");
+        manager.archive_skill_managed_source(&duplicates.preview_id, "alpha").unwrap();
+        let original = codex.canonicalize().unwrap();
+        let unselected = manager.preview_repository_matches(&repo, &[remote.clone()], Some("alpha")).unwrap();
+        assert!(unselected.matches.iter().any(|item| item.conflict.is_none()));
+        let matches = manager.preview_repository_matches_for_instance(
+            &repo, &[remote.clone()], "alpha", &original,
+        ).unwrap();
+        let selected = matches.matches.iter().find(|item| item.repo_path == remote.repo_path).unwrap();
+        let selection = SkillRepositoryMatchSelection {
+            preview_id: matches.preview_id.clone(), local_id: "alpha".into(),
+            repo_key: repo.key(), repo_path: selected.repo_path.clone(),
+            local_path: Some(original.clone()), manual: false,
+        };
+        let result = manager.apply_repository_matches(&[selection], &[remote.clone()]).unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let preview = manager.preview_skill_in_place_update_for_instance(
+            "alpha", &original, remote.clone(), zip,
+        ).unwrap();
+        assert!(preview.conflicts.is_empty(), "{:?}", preview.conflicts);
+        let state = manager.execute_skill_in_place_update(&preview.preview_id, &remote).unwrap();
+        assert!(codex.join(MANAGED_COPY_MARKER).is_file());
+        assert_eq!(std::fs::read_to_string(codex.join("details.txt")).unwrap(), "new details");
+        let group = state.update_backup_groups.values().next().unwrap();
+        manager.restore_backup(&group.backup_ids[0]).unwrap();
+        assert!(codex.join(MANAGED_COPY_MARKER).is_file());
+        assert_eq!(std::fs::read_to_string(codex.join("details.txt")).unwrap(), "old details");
+    }
+
+    #[test]
     fn legacy_single_instance_source_remains_available_at_its_location() {
         let (temp, manager, repo, remote, zip) = fixture();
         let original = temp.path().join("shared/alpha");

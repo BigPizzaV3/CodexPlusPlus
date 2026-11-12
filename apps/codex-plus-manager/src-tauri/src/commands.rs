@@ -7482,6 +7482,14 @@ pub async fn list_installed_skills() -> Result<CommandResult<SkillsPayload>, Str
     }).await.map_err(|error| format!("读取本地 Skills 失败：{error}"))
 }
 
+#[tauri::command]
+pub async fn list_skill_file_times(id: String, root_kind: String, backup_id: Option<String>) -> Result<Vec<codex_plus_core::skills::SkillFileTime>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        default_skills_manager().skill_file_times(&id, &root_kind, backup_id.as_deref())
+            .map_err(|error| format!("读取 Skill 文件时间失败：{error:#}"))
+    }).await.map_err(|error| format!("读取 Skill 文件时间失败：{error}"))?
+}
+
 async fn resolve_skill_repo_for_operation(
     manager: &codex_plus_core::skills::SkillsManager,
     repo_key: &str,
@@ -7605,6 +7613,38 @@ pub async fn discover_skill_source_evidence(id: String, local_path: Option<Strin
             ),
         }
     }).await.map_err(|error| format!("检查来源线索失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn preview_skill_duplicates() -> Result<CommandResult<codex_plus_core::skills::SkillDuplicatePreview>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        match default_skills_manager().preview_skill_duplicates() {
+            Ok(preview) => ok("重复副本已检查。", preview),
+            Err(error) => failed(
+                &format!("检查重复副本失败：{error:#}"),
+                codex_plus_core::skills::SkillDuplicatePreview {
+                    preview_id: String::new(),
+                    candidates: Vec::new(),
+                },
+            ),
+        }
+    }).await.map_err(|error| format!("检查重复副本失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn archive_skill_duplicate(preview_id: String, id: String, kind: Option<String>) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let result = match kind.as_deref() {
+            None | Some("shared") => manager.archive_skill_duplicate(&preview_id, &id),
+            Some("source") => manager.archive_skill_managed_source(&preview_id, &id),
+            Some(_) => Err(anyhow::anyhow!("未知的重复副本类型")),
+        };
+        match result {
+            Ok(_) => ok("重复副本已归档，可恢复至原位置。", current_skills_payload(&manager)),
+            Err(error) => failed(&format!("归档重复副本失败：{error:#}"), current_skills_payload(&manager)),
+        }
+    }).await.map_err(|error| format!("归档重复副本失败：{error}"))
 }
 
 #[tauri::command]
