@@ -3570,13 +3570,13 @@ async fn handle_protocol_proxy_connection_inner(
         request_log.record_final_response(final_usage);
         return Ok(());
     }
-    let response_json = non_stream_body_to_responses(
+    let (response_json, usage) = non_stream_body_to_responses(
         upstream.wire_api,
         &upstream_body,
         request_json.as_ref(),
     )?;
     let body = serde_json::to_vec(&response_json)?;
-    request_log.record_usage_json(&body);
+    request_log.entry.usage = request_log.entry.usage.take().or(usage);
     write_http_response_with_usage(stream, "200 OK", "application/json; charset=utf-8", &body, usage_headers).await?;
     log_helper_response(
         "helper.protocol_proxy_ok",
@@ -3596,24 +3596,31 @@ mod final_response_gateway_tests;
 #[cfg(test)]
 #[path = "launcher/reported_usage_tests.rs"]
 mod reported_usage_tests;
-/// 非流式的 Chat / Anthropic 上游响应体 → Responses 响应 JSON。
+/// 转换非流式响应，同时为请求日志保留转换后省略的显式缓存零值。
 pub(crate) fn non_stream_body_to_responses(
     wire_api: crate::protocol_proxy::UpstreamWireApi,
     upstream_body: &[u8],
     request_json: Option<&Value>,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<(Value, Option<crate::request_log::RequestUsage>)> {
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
         // ChatGPT 订阅后端只回流式结果：客户端要非流式时，从 response.completed 里取完整响应。
         if let Ok(upstream_json) = serde_json::from_slice::<serde_json::Value>(upstream_body) {
-            return Ok(upstream_json);
+            let usage = upstream_json.get("usage").and_then(crate::request_log::usage_from_usage_value);
+            return Ok((upstream_json, usage));
         }
         if let Some(response) =
             crate::gateway::chatgpt_backend::responses_json_from_sse(upstream_body)
         {
-            return Ok(response);
+            let usage = response.get("usage").and_then(crate::request_log::usage_from_usage_value);
+            return Ok((response, usage));
         }
     }
     let upstream_json: serde_json::Value = serde_json::from_slice(upstream_body)?;
+    let explicit_chat_zero = wire_api == crate::protocol_proxy::UpstreamWireApi::ChatCompletions
+        && upstream_json
+            .pointer("/usage/prompt_tokens_details/cached_tokens")
+            .or_else(|| upstream_json.pointer("/usage/input_tokens_details/cached_tokens"))
+            .and_then(Value::as_u64) == Some(0);
     // Anthropic 上游先落成 chat 响应体，再复用同一份 chat → Responses 映射；
     // 签名思考块要挂回 Responses 的 reasoning item，下一轮才能原样回放。
     let (chat_json, thinking_blocks) =
@@ -3635,7 +3642,14 @@ pub(crate) fn non_stream_body_to_responses(
     if !thinking_blocks.is_empty() {
         crate::anthropic_bridge::attach_thinking_to_responses(&mut response_json, &thinking_blocks);
     }
-    Ok(response_json)
+    let mut usage = crate::request_log::usage_from_response_json(&response_json);
+    if let Some(usage) = usage.as_mut()
+        && explicit_chat_zero
+        && usage.cached_tokens == 0
+    {
+        usage.cached_tokens_known = true;
+    }
+    Ok((response_json, usage))
 }
 
 async fn handle_dictation_connection(
@@ -5483,6 +5497,10 @@ impl<'a, S: SseSink> ExtensionResponseSink<'a, S> {
     pub(crate) async fn new(inner: &'a mut S, request_path: &str, request: Option<&Value>) -> Self {
         let filter = crate::extension_gateway::ResponseFilter::start(request_path, request).await;
         Self { inner, filter }
+    }
+
+    pub(crate) fn is_unmodified(&self) -> bool {
+        self.filter.is_none()
     }
 
     /// 上游结束后调用：交出残余字节与中间件在流尾追加的事件。
@@ -10152,8 +10170,9 @@ mod tests {
 
 #[cfg(test)]
 mod proxy_stream_tests {
-    use super::forward_protocol_proxy_stream;
+    use super::{forward_protocol_proxy_stream, non_stream_body_to_responses};
     use crate::protocol_proxy::UpstreamWireApi;
+    use serde_json::Value;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -10268,7 +10287,42 @@ mod proxy_stream_tests {
         assert_eq!(usage.input_tokens, 120);
         assert_eq!(usage.output_tokens, 30);
         assert_eq!(usage.cached_tokens, 100);
+        assert!(usage.cached_tokens_known);
         assert_eq!(usage.reasoning_tokens, 8);
+    }
+
+    #[tokio::test]
+    async fn chat_usage_keeps_explicit_zero_in_logs_without_changing_wire_format() {
+        for cached in [None, Some(0), Some(7)] {
+            let mut usage = serde_json::json!({"prompt_tokens": 10, "completion_tokens": 2});
+            if let Some(cached) = cached {
+                usage["prompt_tokens_details"] = serde_json::json!({"cached_tokens": cached});
+            }
+            let chat = serde_json::json!({"id": "test", "model": "test-model", "usage": usage,
+                "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]});
+            let (response, logged) = non_stream_body_to_responses(
+                UpstreamWireApi::ChatCompletions, chat.to_string().as_bytes(), None,
+            ).unwrap();
+            let logged = logged.unwrap();
+            assert_eq!(logged.cached_tokens_known, cached.is_some());
+            assert_eq!(logged.cached_tokens, cached.unwrap_or(0));
+            assert_eq!(logged.input_tokens, 10 - cached.unwrap_or(0));
+            assert_eq!(logged.output_tokens, 2);
+            assert_eq!(response.pointer("/usage/input_tokens_details/cached_tokens").and_then(Value::as_u64),
+                cached.filter(|&value| value > 0));
+
+            let sse = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"hi\"}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n");
+            let (failure, body, _, logged) = forward_fixture_with_prefix_and_delay(
+                &[], &sse, false, UpstreamWireApi::ChatCompletions, Duration::ZERO,
+            ).await;
+            assert_eq!(failure, None);
+            let logged = logged.unwrap();
+            assert_eq!(logged.cached_tokens_known, cached.is_some());
+            assert_eq!(logged.cached_tokens, cached.unwrap_or(0));
+            assert_eq!(logged.input_tokens, 10);
+            assert_eq!(logged.output_tokens, 2);
+            assert_eq!(body.contains("\"cached_tokens\""), cached.is_some_and(|value| value > 0));
+        }
     }
 
     #[tokio::test]
@@ -10294,6 +10348,7 @@ mod proxy_stream_tests {
         assert_eq!(usage.input_tokens, 7);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.cached_tokens, 50);
+        assert!(usage.cached_tokens_known);
     }
 
     #[tokio::test]
