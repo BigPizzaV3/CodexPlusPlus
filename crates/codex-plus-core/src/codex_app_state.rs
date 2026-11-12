@@ -14,9 +14,8 @@ const BACKUP_ROOT: &str = "backups_state/app-state-sync";
 const SNAPSHOT_FILE: &str = "latest-safe-state.json";
 const SNAPSHOT_VERSION: u64 = 1;
 const ACCOUNT_RENDERER_STATE_KEY: &str = "electron-account-renderer-state-v1";
-/// 非官方登录时被挪走的账号隔离容器（见 [`reconcile_account_scope`]）。
+/// 旧版本非官方模式挪走的容器；新共享模式只迁回，不再拆走原生隔离容器。
 const DETACHED_ACCOUNT_STATE_FILE: &str = "backups_state/account-scope/detached-renderer-state.json";
-const DETACHED_ACCOUNT_STATE_VERSION: u64 = 1;
 
 const WORKSPACE_PATH_ARRAY_KEYS: &[&str] = &["electron-saved-workspace-roots", "project-order"];
 
@@ -329,6 +328,12 @@ pub enum AccountScopeOutcome {
         owner: Option<String>,
         backup_path: PathBuf,
     },
+    /// 普通本地项目共享已准备好，原生账号容器仍由 Codex 管理。
+    Shared {
+        root_project_count: usize,
+        restored_legacy_scope: bool,
+        backup_path: PathBuf,
+    },
 }
 
 /// 新版 Codex（26.1103+）按 ChatGPT 账号隔离本地项目：登录过一次就会在
@@ -338,10 +343,10 @@ pub enum AccountScopeOutcome {
 /// 没有 ChatGPT 身份的 API Key / 网关 / 聚合模式一直停在匿名身份，于是项目列表永远是空的，
 /// 在匿名身份下新建的项目下次启动也会消失（#2947 / #3018 / #3011，原生 Codex 同样复现）。
 ///
-/// 容器不存在时构造函数什么都不做，所以：
-/// - `keep_projects` 为真：沿用旁路备份，所有身份使用同一份普通本地项目和会话分类；
-///   只在首次启用时导入各账号，之后以共享记录为准，避免旧快照复活删除的项目；
-/// - `keep_projects` 为假：有旁路文件就把容器放回去，顶层项目归还给当初合并来源的账号。
+/// 共享模式沿用这个入口和写前备份，但必须保留原生容器：删容器会同时关闭私有 atoms、
+/// 云项目和待发送消息的身份隔离，不能扩展到官方账号。只把普通本地元数据放入共享记录；
+/// 匿名启动时的原生清空由 renderer 的通知协调器恢复。
+/// 旧版旁路容器在启用时迁回；关闭共享时继续兼容旧版的归还流程。
 ///
 /// 只能在 Codex 未运行时调用，否则 Codex 会用内存里的状态覆盖回去。写之前整份备份。
 pub fn reconcile_account_scope(
@@ -360,35 +365,28 @@ pub fn reconcile_account_scope(
         let original = Value::Object(state.clone());
         let shared = shared_projects::prepare(home, &state, detached.as_ref().map(|d| &d.container))?;
         shared_projects::apply(&mut state, &shared);
-        // 已经挪过一次、Codex 又建了新容器（例如在 Codex 里直接登录过）：旧旁路里的身份也要留住。
         let mut container = accounts;
-        if let Some(container) = container.as_mut()
-            && let Some(previous) = detached.as_ref()
-        {
-            merge_missing_inactive_scopes(container, &previous.container);
+        if let Some(previous) = detached.as_ref() {
+            match container.as_mut() {
+                Some(current) => merge_missing_inactive_scopes(current, &previous.container),
+                // 原 owner 仍指向原根状态；owner=null 时保留 inactive 的完整私有快照。
+                None => container = previous.container.as_object().cloned(),
+            }
         }
-        let source_owner = container.as_ref().and_then(|container| {
-            container["owner"].as_str().map(str::to_owned)
-                .or_else(|| latest_project_scope(container))
-        }).or_else(|| detached.as_ref().and_then(|d| d.source_owner.clone()));
-        state.remove(ACCOUNT_RENDERER_STATE_KEY);
-        if Value::Object(state.clone()) == original {
+        if let Some(container) = container {
+            state.insert(ACCOUNT_RENDERER_STATE_KEY.to_string(), Value::Object(container));
+        }
+        if Value::Object(state.clone()) == original && detached.is_none() {
             return Ok(AccountScopeOutcome::Unchanged);
         }
         let backup_path = create_backup(home, &original)?;
-        if let Some(container) = container {
-            write_detached_account_state(
-                home,
-                &DetachedAccountState {
-                    container: Value::Object(container),
-                    source_owner: source_owner.clone(),
-                },
-            )?;
-        }
         write_global_state(home, &Value::Object(state.clone()))?;
-        return Ok(AccountScopeOutcome::Detached {
-            source_owner,
+        if detached.is_some() {
+            let _ = fs::remove_file(detached_account_state_path(home));
+        }
+        return Ok(AccountScopeOutcome::Shared {
             root_project_count: project_count(&state),
+            restored_legacy_scope: detached.is_some(),
             backup_path,
         });
     }
@@ -486,6 +484,17 @@ pub fn reconcile_account_scope_nonfatal(
                 }),
             );
         }
+        Ok(AccountScopeOutcome::Shared { root_project_count, restored_legacy_scope, backup_path }) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_app_state.local_projects_shared",
+                json!({
+                    "source": source,
+                    "rootProjectCount": root_project_count,
+                    "restoredLegacyScope": restored_legacy_scope,
+                    "backupPath": backup_path.to_string_lossy(),
+                }),
+            );
+        }
         Err(error) => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "codex_app_state.account_scope_failed",
@@ -531,21 +540,6 @@ fn load_detached_account_state(home: &Path) -> anyhow::Result<Option<DetachedAcc
     }))
 }
 
-fn write_detached_account_state(home: &Path, detached: &DetachedAccountState) -> anyhow::Result<()> {
-    let path = detached_account_state_path(home);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let body = json!({
-        "version": DETACHED_ACCOUNT_STATE_VERSION,
-        "managedBy": "Codex++ keepProjectsWithoutAccount",
-        "detachedAtMs": now_ms() as u64,
-        "sourceOwner": detached.source_owner,
-        "container": detached.container,
-    });
-    crate::settings::atomic_write(&path, serde_json::to_string_pretty(&body)?.as_bytes())
-}
-
 /// 旁路里有、当前容器里没有的 inactive 身份补进来；当前 owner 不补（它的数据在顶层）。
 fn merge_missing_inactive_scopes(target: &mut Map<String, Value>, saved: &Value) {
     let owner = target.get("owner").and_then(Value::as_str).map(str::to_owned);
@@ -560,27 +554,6 @@ fn merge_missing_inactive_scopes(target: &mut Map<String, Value>, saved: &Value)
             inactive.insert(id.clone(), scope.clone());
         }
     }
-}
-
-/// 有项目的身份里，项目最近更新过的那个（同为 0 时取项目多的）。
-fn latest_project_scope(container: &Map<String, Value>) -> Option<String> {
-    container["inactive"]
-        .as_object()?
-        .iter()
-        .filter_map(|(owner, scope)| {
-            let projects = scope["globals"].get("local-projects")?.as_object()?;
-            if projects.is_empty() {
-                return None;
-            }
-            let latest = projects
-                .values()
-                .filter_map(|project| project.get("updatedAt").and_then(Value::as_u64))
-                .max()
-                .unwrap_or(0);
-            Some((latest, projects.len(), owner.clone()))
-        })
-        .max()
-        .map(|(_, _, owner)| owner)
 }
 
 fn project_count(state: &Map<String, Value>) -> usize {

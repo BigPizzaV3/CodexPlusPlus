@@ -674,6 +674,18 @@ fn write_state(home: &std::path::Path, state: Value) {
     .unwrap();
 }
 
+fn legacy_detached_state(home: &std::path::Path) {
+    let mut state = anonymous_state_with_two_accounts();
+    let container = state.as_object_mut().unwrap().remove(ACCOUNTS).unwrap();
+    state["local-projects"]["recent"] = project("recent", 9);
+    let path = home.join(DETACHED);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, json!({
+        "version":1, "sourceOwner":"recent-account", "container":container,
+    }).to_string()).unwrap();
+    write_state(home, state);
+}
+
 /// 登录过两个 ChatGPT 账号、现在改用 API Key：owner=null，匿名身份在顶层新建了一个项目。
 fn anonymous_state_with_two_accounts() -> Value {
     json!({
@@ -706,23 +718,23 @@ fn anonymous_state_with_two_accounts() -> Value {
 }
 
 #[test]
-fn keep_projects_detaches_container_and_combines_all_local_accounts_once() {
+fn keep_projects_preserves_native_account_container_and_combines_local_accounts_once() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     write_state(home, anonymous_state_with_two_accounts());
 
     let outcome = reconcile_account_scope(home, true).unwrap();
-    let AccountScopeOutcome::Detached { source_owner, root_project_count, backup_path } = outcome
+    let AccountScopeOutcome::Shared { root_project_count, restored_legacy_scope, backup_path } = outcome
     else {
-        panic!("expected detach, got {outcome:?}");
+        panic!("expected shared projects, got {outcome:?}");
     };
-    assert_eq!(source_owner.as_deref(), Some("recent-account"));
+    assert!(!restored_legacy_scope);
     assert_eq!(root_project_count, 3);
     assert!(backup_path.join(".codex-global-state.json").exists());
 
     let state = read_state(home);
-    // 容器不在了：Codex 启动时 selectRendererOwner(null) 就不会清空顶层。
-    assert!(state.get(ACCOUNTS).is_none());
+    // 原生容器必须保留，账号私有 globals/atoms 继续按原生规则切换。
+    assert_eq!(state[ACCOUNTS], anonymous_state_with_two_accounts()[ACCOUNTS]);
     assert!(state["local-projects"].get("anon").is_some());
     assert!(state["local-projects"].get("recent").is_some());
     assert!(state["local-projects"].get("old").is_some());
@@ -730,14 +742,7 @@ fn keep_projects_detaches_container_and_combines_all_local_accounts_once() {
     assert_eq!(state["thread-project-assignments"]["t1"]["projectId"], "old");
     assert_eq!(state["thread-project-assignments"]["t2"]["projectId"], "recent");
 
-    // 旁路文件原样保存了整个容器（含没被合并的旧账号）。
-    let detached: Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join(DETACHED)).unwrap()).unwrap();
-    assert_eq!(detached["sourceOwner"], "recent-account");
-    assert_eq!(
-        detached["container"],
-        anonymous_state_with_two_accounts()[ACCOUNTS]
-    );
+    assert!(!home.join(DETACHED).exists());
 
     // 稳定状态下再跑一次什么都不做。
     assert_eq!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Unchanged);
@@ -748,7 +753,7 @@ fn keep_projects_does_not_share_account_atoms_or_queued_follow_ups() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let mut state = anonymous_state_with_two_accounts();
-    // 只剩旧账号有项目：它的 atoms 只补缺失键，排队追问不带过来。
+    // 只剩旧账号有项目：仅导入本地项目，不把它的 atoms 或排队追问带到根状态。
     state[ACCOUNTS]["inactive"].as_object_mut().unwrap().remove("recent-account");
     write_state(home, state);
 
@@ -771,20 +776,18 @@ fn keep_projects_keeps_root_when_owner_is_an_account() {
     let outcome = reconcile_account_scope(home, true).unwrap();
     assert!(matches!(
         outcome,
-            AccountScopeOutcome::Detached { ref source_owner, root_project_count: 3, .. }
-            if source_owner.as_deref() == Some("current-account")
+            AccountScopeOutcome::Shared { root_project_count: 3, .. }
     ));
     let state = read_state(home);
     assert_eq!(state["project-order"], json!(["anon", "recent", "old"]));
-    assert!(state.get(ACCOUNTS).is_none());
+    assert_eq!(state[ACCOUNTS]["owner"], "current-account");
 }
 
 #[test]
 fn reattach_returns_root_projects_to_source_account() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    write_state(home, anonymous_state_with_two_accounts());
-    reconcile_account_scope(home, true).unwrap();
+    legacy_detached_state(home);
 
     // 非官方模式期间又新建了一个项目。
     let mut state = read_state(home);
@@ -816,8 +819,7 @@ fn reattach_returns_root_projects_to_source_account() {
 fn reattach_keeps_container_codex_rebuilt_and_restores_missing_scopes() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    write_state(home, anonymous_state_with_two_accounts());
-    reconcile_account_scope(home, true).unwrap();
+    legacy_detached_state(home);
 
     // 用户在 Codex 里直接登录了第三个账号，Codex 重建了只有它自己的容器。
     let mut state = read_state(home);
@@ -843,7 +845,7 @@ fn account_scope_seeds_anonymous_projects_without_requiring_a_previous_login() {
     assert_eq!(reconcile_account_scope(home, false).unwrap(), AccountScopeOutcome::Unchanged);
     assert_eq!(read_state(home), state);
     assert!(!home.join("backups_state").exists());
-    assert!(matches!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Detached { .. }));
+    assert!(matches!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Shared { .. }));
     assert!(read_state(home).get(SHARED).is_some());
     assert_eq!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Unchanged);
 }
@@ -1022,4 +1024,46 @@ fn shared_projects_cloud_scope_restart_does_not_erase_unprojected_canonical_memb
     assert_eq!(next[SHARED]["projects"]["old"], project("old", 1));
     assert_eq!(next["local-projects"]["old"], cloud);
     assert_eq!(next["thread-project-assignments"]["t1"]["projectKind"], "remote");
+}
+
+#[test]
+fn shared_projects_migrates_legacy_detach_without_disabling_native_identity_isolation() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    legacy_detached_state(home);
+    let outcome = reconcile_account_scope(home, true).unwrap();
+    assert!(matches!(outcome, AccountScopeOutcome::Shared { restored_legacy_scope: true, .. }));
+    let next = read_state(home);
+    assert_eq!(next[ACCOUNTS], anonymous_state_with_two_accounts()[ACCOUNTS]);
+    assert!(next[SHARED]["projects"].get("old").is_some());
+    assert!(!home.join(DETACHED).exists());
+    let backup: Value = serde_json::from_slice(
+        &std::fs::read(home.join(".codex-global-state.json.bak")).unwrap()).unwrap();
+    assert_eq!(backup[ACCOUNTS], next[ACCOUNTS]);
+}
+
+#[test]
+fn shared_projects_keeps_private_atoms_cloud_and_pending_messages_with_their_native_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let mut state = anonymous_state_with_two_accounts();
+    state[ACCOUNTS]["owner"] = json!("account-a");
+    state[ACCOUNTS]["inactive"]["old-account"]["atoms"] = json!({"private-setting":"private-b"});
+    state["electron-persisted-atom-state"] = json!({"private-setting":"private-a"});
+    state["queued-follow-ups"] = json!({"pending-a":["do not move"]});
+    state["local-projects"]["cloud-a"] = json!({
+        "id":"cloud-a", "name":"cloud-a", "rootPaths":["/cloud"], "createdAt":1, "updatedAt":2,
+        "chatgptProjectId":"cloud-origin-a",
+    });
+    write_state(home, state.clone());
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert_eq!(next[ACCOUNTS], state[ACCOUNTS]);
+    assert_eq!(next["electron-persisted-atom-state"], state["electron-persisted-atom-state"]);
+    assert_eq!(next["queued-follow-ups"], state["queued-follow-ups"]);
+    assert_eq!(next["local-projects"]["cloud-a"], state["local-projects"]["cloud-a"]);
+    let shared = next[SHARED].to_string();
+    for private in ["private-a", "private-b", "pending-a", "cloud-origin-a"] {
+        assert!(!shared.contains(private), "{private} must not enter the shared record");
+    }
 }
