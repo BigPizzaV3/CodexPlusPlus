@@ -111,6 +111,11 @@ impl Host for CodexPlusHost {
         fingerprint(&models, &windows, &model)
     }
 
+    /// Code 页签默认和命令行共用 ~/.claude（与 ClaudeMom 一致）：平时建的会话直接能打开。
+    fn default_code_share_home(&self) -> bool {
+        true
+    }
+
     fn dictation_ready(&self, _config: &ClaudeLocalSettings) -> bool {
         let Ok(settings) = SettingsStore::default().load() else {
             return false;

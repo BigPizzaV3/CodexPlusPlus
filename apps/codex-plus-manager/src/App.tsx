@@ -16403,6 +16403,8 @@ type ClaudeLocalConfig = {
   sessionSync?: boolean;
   listAllModels?: boolean;
   hideUnroutedModels?: boolean;
+  /** Code 页签是否和命令行共用 ~/.claude；不写按默认（共用）。 */
+  codeShareHome?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -17014,6 +17016,26 @@ function ClaudeLocalizationScreen(
               ]}
               value={local?.config.plan || "ultra"}
             />
+          </CxRow>
+          <CxRow
+            detail={(local?.config.codeShareHome ?? true)
+              ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。")
+              : t("Code 页签用独立目录，请求走 Codex++ 网关；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
+            title={t("和命令行共用 ~/.claude")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("和命令行共用 ~/.claude")}
+                checked={local?.config.codeShareHome ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, codeShareHome: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{(local?.config.codeShareHome ?? true) ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
           </CxRow>
           <CxRow detail={t("启动 Claude 前同步 3p 模式与完整功能模式的 Code 会话")} title={t("会话同步")}>
             <div className="claude-l10n-actions">
