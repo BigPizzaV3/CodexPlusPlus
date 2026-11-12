@@ -174,7 +174,7 @@ test("a missing backup can be cleared but cannot be restored", () => {
   }).outputText;
   const context: Record<string, any> = {
     exports: {}, fragment: "fragment", jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    Button: "Button", SkillFileTimes: "SkillFileTimes", Trash2: "Trash2", t: (value: string) => value,
+    Button: "Button", Trash2: "Trash2", t: (value: string) => value,
   };
   vm.createContext(context);
   vm.runInContext(compiled, context);
@@ -185,5 +185,4 @@ test("a missing backup can be cleared but cannot be restored", () => {
   assert.ok(content(root).includes("备份文件已丢失"));
   assert.equal(find(root, (item) => item.type === "Button").props.disabled, true);
   assert.ok(find(root, (item) => item.props["aria-label"] === "清除记录 alpha"));
-  assert.equal(find(root, (item) => item.type === "SkillFileTimes"), undefined);
 });
