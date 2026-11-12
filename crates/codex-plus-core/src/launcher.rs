@@ -602,7 +602,7 @@ struct HelperRuntime {
 }
 
 struct BridgeWatchdogRuntime {
-    shutdown: tokio::sync::oneshot::Sender<()>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -1267,6 +1267,19 @@ impl DefaultLaunchHooks {
     pub async fn set_bridge_reinjector(&self, reinjector: BridgeReinjector) {
         *self.bridge_reinjector.lock().await = Some(reinjector);
     }
+
+    /// 不再开始重注入，等待已经开始的工作完成后再释放 helper。
+    pub async fn stop_bridge_watchdog(&self) {
+        let mut slot = self.bridge_watchdog.lock().await;
+        if let Some(runtime) = slot.as_mut() {
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            // 退出等待可能被宿主 stop 分支取消；保留句柄让外层清理继续等待。
+            let _ = (&mut runtime.task).await;
+        }
+        slot.take();
+    }
 }
 
 fn helper_bind_host() -> String {
@@ -1867,6 +1880,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
+                    biased;
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
                         let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
@@ -1902,13 +1916,15 @@ impl LaunchHooks for DefaultLaunchHooks {
                 let _ = pet_cursor_task.await;
             }
         });
-        if let Some(runtime) = self
+        if let Some(mut runtime) = self
             .bridge_watchdog
             .lock()
             .await
-            .replace(BridgeWatchdogRuntime { shutdown, task })
+            .replace(BridgeWatchdogRuntime { shutdown: Some(shutdown), task })
         {
-            let _ = runtime.shutdown.send(());
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
             let _ = runtime.task.await;
         }
         Ok(())
@@ -1989,10 +2005,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
-        if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
+        self.stop_bridge_watchdog().await;
         if let Some(runtime) = self.helper.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -8077,6 +8090,47 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stopping_bridge_watchdog_waits_for_its_cleanup_and_is_idempotent() {
+        let hooks = super::DefaultLaunchHooks::default();
+        let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let done = cleaned.clone();
+        let task = tokio::spawn(async move {
+            let _ = stopped.await;
+            tokio::task::yield_now().await;
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime { shutdown: Some(shutdown), task });
+        hooks.stop_bridge_watchdog().await;
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+        hooks.stop_bridge_watchdog().await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_watchdog_stop_keeps_the_join_handle_for_outer_cleanup() {
+        let hooks = std::sync::Arc::new(super::DefaultLaunchHooks::default());
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            stopped.await.unwrap();
+            entered.send(()).unwrap();
+            finished.await.unwrap();
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime { shutdown: Some(shutdown), task });
+        let stopping = hooks.clone();
+        let stop = tokio::spawn(async move { stopping.stop_bridge_watchdog().await });
+        waiting.await.unwrap();
+        stop.abort();
+        let _ = stop.await;
+        assert!(hooks.bridge_watchdog.lock().await.is_some());
+        finish.send(()).unwrap();
+        hooks.stop_bridge_watchdog().await;
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
