@@ -11,8 +11,6 @@ mod dsh_plugin_commands;
 mod extension_community_commands;
 mod extension_curation_commands;
 mod extension_publish_commands;
-mod claude_mom_commands;
-pub mod flavor;
 mod gateway_commands;
 mod global_dictation;
 pub mod install;
@@ -31,6 +29,8 @@ use tauri::{Emitter, Manager, WindowEvent};
 pub(crate) const TRAY_ID: &str = "codex_plus_tray";
 /// 主窗口的标签。轻量模式下主窗口会被销毁、按需重建（#2677），统一按这个标签查找。
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+/// 主窗口按需重建时加载的页面（启动时的 `?showUpdate=1` 只在首次启动用）。
+const MAIN_WINDOW_URL: &str = "/index.html";
 
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
@@ -241,11 +241,6 @@ pub fn run() {
     // 失败只记诊断日志，不影响启动。
     #[cfg(target_os = "macos")]
     std::thread::spawn(codex_plus_core::update::macos::cleanup_stale_update_transactions);
-    let claude_mom = flavor::is_claude_mom();
-    // ClaudeMom 不经网关：恢复本地代理之前先把选中的上游交给 Claude 本地服务。
-    if claude_mom {
-        claude_mom_commands::apply_saved_upstream();
-    }
     // Codex++ 重启后在原端口恢复 Claude 仍挂接着的本地代理（后台做，不阻塞启动）。
     std::thread::spawn(|| {
         match codex_plus_core::claude_local_backend::resume_attached_proxy() {
@@ -270,15 +265,12 @@ pub fn run() {
         codex_plus_core::launcher::set_http_body_limit_bytes(
             settings.helper_max_request_body_bytes(),
         );
-        // 皮肤是 Codex 的增强，ClaudeMom 不碰。
-        if !claude_mom
-            && let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
-                settings.enhancements_enabled
-                    && settings.codex_app_dream_skin_enabled
-                    && !settings.codex_app_dream_skin_paused,
-                &settings.codex_app_dream_skin_theme_config,
-            )
-        {
+        if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+            settings.enhancements_enabled
+                && settings.codex_app_dream_skin_enabled
+                && !settings.codex_app_dream_skin_paused,
+            &settings.codex_app_dream_skin_theme_config,
+        ) {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "manager.dream_skin_base_theme_sync_failed",
                 serde_json::json!({ "message": error.to_string() }),
@@ -293,11 +285,10 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            let url = if show_update && !claude_mom {
+            let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {
-                // 主窗口按需重建时也按变体加载（Codex++ 的 index.html / ClaudeMom 的 claude-mom.html）。
-                flavor::main_window().url
+                MAIN_WINDOW_URL
             };
             lightweight::install_ready_listener(app.handle());
             build_main_window(app.handle(), url, !start_minimized)?;
@@ -305,12 +296,9 @@ pub fn run() {
             gateway_commands::set_app_handle(app.handle().clone());
             // Codex 钩子的分发条目里写的是程序绝对路径：程序换了位置（更新、换安装目录）后
             // 旧条目会指向不存在的路径，启动时按当前程序与拓展同步一次。没有拓展钩子时只读不写。
-            // ClaudeMom 不管 Codex，不能把 Codex 的钩子改指到自己。
-            if !claude_mom {
-                tauri::async_runtime::spawn_blocking(|| {
-                    codex_plus_core::extension_hooks::sync_default(&commands::default_user_script_manager());
-                });
-            }
+            tauri::async_runtime::spawn_blocking(|| {
+                codex_plus_core::extension_hooks::sync_default(&commands::default_user_script_manager());
+            });
             codex_plus_core::settings::set_external_settings_change_listener(
                 gateway_commands::notify_settings_changed,
             );
@@ -328,31 +316,19 @@ pub fn run() {
             });
             start_window_activation_listener(app.handle().clone());
             // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
-            if !claude_mom {
-                cu_pip::start(app.handle().clone());
-            }
-            // 微信连接、接管 / 启动 Codex 都是 Codex 的功能，ClaudeMom 不做。
-            if !claude_mom {
-                commands::start_weixin_connect_from_saved_settings();
-                commands::resume_existing_codex_background(
-                    app.handle().clone(),
-                    start_codex_at_login || start_codex_on_open,
-                );
-            }
+            cu_pip::start(app.handle().clone());
+            commands::start_weixin_connect_from_saved_settings();
+            commands::resume_existing_codex_background(
+                app.handle().clone(),
+                start_codex_at_login || start_codex_on_open,
+            );
             // 网关模式：有 Agent 走网关时常驻 helper 必须在线。后台线程里跑，
             // WSL 网卡查询与监听绑定不拖慢窗口出现。
-            // ClaudeMom 没有网关，直连上游。
-            if !claude_mom {
-                gateway_commands::start_from_saved_state_in_background();
-                gateway_commands::start_model_watch();
-            }
-            // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。ClaudeMom 不接管 Codex。
-            if !claude_mom {
-                auto_takeover::start_supervisor();
-            }
-            if !claude_mom
-                && let Err(error) = global_dictation::apply_config()
-            {
+            gateway_commands::start_from_saved_state_in_background();
+            gateway_commands::start_model_watch();
+            // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
+            auto_takeover::start_supervisor();
+            if let Err(error) = global_dictation::apply_config() {
                 let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                     "dictation.global_hotkey_start_failed",
                     serde_json::json!({ "message": error.to_string() }),
@@ -389,13 +365,6 @@ pub fn run() {
             commands::load_global_dictation_hotkey,
             commands::set_global_dictation_hotkey,
             commands::claude_local_status,
-            claude_mom_commands::claude_mom_load,
-            claude_mom_commands::claude_mom_save_profile,
-            claude_mom_commands::claude_mom_delete_profile,
-            claude_mom_commands::claude_mom_set_active,
-            claude_mom_commands::claude_mom_import,
-            claude_mom_commands::claude_mom_fetch_models,
-            claude_mom_commands::claude_mom_set_voice,
             commands::claude_local_configure,
             commands::claude_local_action,
             commands::claude_localization_status,
@@ -809,7 +778,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
-        .tooltip(flavor::app_name())
+        .tooltip("Codex++")
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
                 show_main_window(app);
@@ -997,11 +966,11 @@ fn build_main_window<R: tauri::Runtime>(
         MAIN_WINDOW_LABEL,
         tauri::WebviewUrl::App(url.into()),
     )
-    .title(flavor::app_name())
+    .title("Codex++")
     .visible(visible)
     .focused(visible)
-    .inner_size(flavor::main_window().size.0, flavor::main_window().size.1)
-    .min_inner_size(flavor::main_window().min_size.0, flavor::main_window().min_size.1);
+    .inner_size(1180.0, 820.0)
+    .min_inner_size(960.0, 720.0);
     // macOS 去掉系统标题栏：红黄绿按钮浮在侧栏左上角（系统默认位置，中心约在顶部 14px），页面标题占据标题栏那一行。
     // 不用 traffic_light_position：实测首次显示时不生效，缩放后又可能跳回，按钮和标题会对不齐。
     // 前端据此给 <html> 加 mac-titlebar（见 mac-titlebar.ts），留出按钮位置并把标题行做成拖动区域。
@@ -1028,7 +997,7 @@ pub(crate) fn ensure_main_window<R: tauri::Runtime>(
     if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
         return Some((window, false));
     }
-    match build_main_window(app_handle, flavor::main_window().url, false) {
+    match build_main_window(app_handle, MAIN_WINDOW_URL, false) {
         Ok(window) => {
             lightweight::restore_geometry(&window);
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -1194,12 +1163,7 @@ pub fn focus_existing_manager_window() {
             if process.process_id == current_process_id {
                 continue;
             }
-            let names: &[&str] = if flavor::is_claude_mom() {
-                &["claude-mom.exe", "ClaudeMom.exe"]
-            } else {
-                &["codex-plus-plus.exe", "codex-plus-plus-manager.exe"]
-            };
-            if names
+            if ["codex-plus-plus.exe", "codex-plus-plus-manager.exe"]
                 .iter()
                 .any(|name| process.exe_file.eq_ignore_ascii_case(name))
                 && codex_plus_core::windows_activate_process_window(process.process_id)

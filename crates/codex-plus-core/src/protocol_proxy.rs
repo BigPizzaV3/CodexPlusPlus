@@ -197,43 +197,9 @@ pub(crate) fn is_managed_protocol_proxy_base_url(value: &str) -> bool {
     managed_protocol_proxy_base_urls().iter().any(|url| parsed.as_str() == url)
 }
 
-/// 某个状态目录里持久化的协议代理端口，没有时是默认的 57321。
-/// 用来找另一个进程（ClaudeMom 读 Codex++）的本地网关端口。
-pub fn protocol_proxy_port_in(state_dir: &std::path::Path) -> u16 {
-    read_persisted_protocol_proxy_port(&state_dir.join(PROTOCOL_PROXY_PORT_FILE))
-        .unwrap_or(DEFAULT_PROTOCOL_PROXY_PORT)
-}
-
-/// 给当前状态目录种一个默认协议代理端口：只在还没有持久化端口时写入。
-///
-/// 供独立变体（ClaudeMom）首次启动用：它和 Codex++ 能同时运行，不能都抢 57321。
-/// 已有持久化端口（包括 10013 迁移过的）一律不动，之后的迁移逻辑照常生效。
-pub fn seed_default_protocol_proxy_port(port: u16) -> anyhow::Result<()> {
-    seed_protocol_proxy_port_at(&persisted_protocol_proxy_port_path(), port)
-}
-
-fn seed_protocol_proxy_port_at(path: &std::path::Path, port: u16) -> anyhow::Result<()> {
-    if port == 0 || read_persisted_protocol_proxy_port(path).is_some() {
-        return Ok(());
-    }
-    persist_protocol_proxy_port(path, port)
-}
-
 #[cfg(test)]
 mod managed_port_history_tests {
     use super::*;
-
-    #[test]
-    fn seeding_only_applies_to_a_fresh_state_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join(PROTOCOL_PROXY_PORT_FILE);
-        seed_protocol_proxy_port_at(&path, 57421).unwrap();
-        assert_eq!(read_persisted_protocol_proxy_port(&path), Some(57421));
-        // 已经有端口（比如迁移过）时再种不覆盖。
-        persist_protocol_proxy_port(&path, 58001).unwrap();
-        seed_protocol_proxy_port_at(&path, 57421).unwrap();
-        assert_eq!(read_persisted_protocol_proxy_port(&path), Some(58001));
-    }
 
     #[test]
     fn repeated_port_migrations_keep_every_managed_port() {

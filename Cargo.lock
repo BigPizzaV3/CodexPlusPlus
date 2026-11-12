@@ -509,6 +509,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude-local"
+version = "0.1.0"
+source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=9765eb81da1d3f36b1fd4c3f2031a186ea007e0d#9765eb81da1d3f36b1fd4c3f2031a186ea007e0d"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "directories",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "time",
+ "url",
+ "uuid",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "codex-plus-core"
 version = "2.6.6"
 dependencies = [
@@ -517,6 +536,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "block2",
+ "claude-local",
  "directories",
  "ecb",
  "flate2",
