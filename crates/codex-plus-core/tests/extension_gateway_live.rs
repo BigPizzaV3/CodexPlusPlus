@@ -4,9 +4,13 @@
 //! 单独成一个测试程序：要改平台配置目录环境变量，而网关中间件清单是进程级缓存，
 //! 和 tests/all 里其它跑代理请求的用例同进程会互相读到对方的缓存。
 
-use codex_plus_core::gateway::store::GatewaySettings;
+use codex_plus_core::gateway::apply::{ApplyContext, ProviderInput, create_provider, enable_binding};
+use codex_plus_core::gateway::store::{AgentBinding, GatewaySettings, GatewayStore};
 use codex_plus_core::protocol_proxy::open_responses_proxy_request_with_settings;
-use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::routes::{BridgeRuntimeService, CoreRuntimeService};
+use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore};
+use codex_plus_core::status::StatusStore;
+use codex_plus_core::tools::{ToolId, claude::ClaudeContext};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,7 +47,9 @@ async fn serve(listener: tokio::net::TcpListener, seen: Seen) {
                 break (head, String::from_utf8_lossy(&buffer[end + 4..]).to_string());
             };
             seen.lock().unwrap().push((head.clone(), body.clone()));
-            let (status, payload) = if head.starts_with("GET /v1/models") {
+            let (status, payload) = if head.starts_with("GET /late/models") {
+                ("200 OK", json!({ "object": "list", "data": [{ "id": "late-model" }] }))
+            } else if head.starts_with("GET /v1/models") {
                 ("200 OK", json!({ "object": "list", "data": [{ "id": "found-a" }, { "id": "found-b" }] }))
             } else if body.contains("\"bad-model\"") {
                 ("404 Not Found", json!({ "error": { "message": "model not found" } }))
@@ -57,6 +63,18 @@ async fn serve(listener: tokio::net::TcpListener, seen: Seen) {
     }
 }
 
+async fn wait_for_catalog_model(path: &std::path::Path, model: &str, available: bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let catalog: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            if catalog["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == model) == available {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.expect("拓展模型目录没有及时更新");
+}
+
 #[tokio::test]
 async fn gateway_extensions_on_the_real_request_path() {
     if codex_plus_core::dsh_plugins::locate_node().is_none() {
@@ -64,11 +82,18 @@ async fn gateway_extensions_on_the_real_request_path() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
-    let config_home_env = if cfg!(windows) { "APPDATA" } else { "XDG_CONFIG_HOME" };
+    let codex_home = temp.path().join("codex");
+    let sqlite_home = temp.path().join("sqlite");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::create_dir_all(&sqlite_home).unwrap();
     // SAFETY: 本测试程序只有这一个用例，没有别的线程在读环境变量。
     unsafe {
-        std::env::set_var(config_home_env, temp.path());
+        std::env::set_var("APPDATA", temp.path());
+        std::env::set_var("XDG_CONFIG_HOME", temp.path());
         std::env::set_var(codex_plus_core::paths::STATE_DIR_ENV, temp.path().join("state"));
+        std::env::set_var("CODEX_HOME", &codex_home);
+        std::env::set_var("CODEX_SQLITE_HOME", &sqlite_home);
+        std::env::set_var("HOME", temp.path());
     }
     let root = temp.path().join("Codex++");
     assert_eq!(
@@ -144,4 +169,180 @@ export default (error) => error.status === 404 ? { kind: "fallback", model: "goo
     }
     assert_eq!(models, "found-a\nfound-b");
     assert!(seen.lock().unwrap().iter().any(|(head, _)| head.starts_with("GET /v1/models") && head.to_ascii_lowercase().contains("bearer sk-found")));
+
+    // #3072：拓展停用后，已发布给 Codex 的模型不能静默改发到默认供应商。
+    let port = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let state = temp.path().join("state");
+    let ctx = ApplyContext {
+        gateway: GatewayStore::default(),
+        claude: ClaudeContext {
+            store_path: state.join("claude-providers.json"),
+            claude_home: temp.path().join("claude"),
+            backup_root: state.join("backups"),
+        },
+        grok_home: temp.path().join("grok"),
+        codex_home: codex_home.clone(),
+        settings: SettingsStore::default(),
+        backup_root: state.join("backups"),
+        port,
+        agent_env: codex_plus_core::gateway::agents::AgentEnv::at(temp.path().join("home")),
+    };
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Default".into(),
+            base_url: format!("http://{address}/v1"),
+            protocol: RelayProtocol::Responses,
+            keys: vec!["sk-default".into()],
+            model: "default-model".into(),
+            model_list: "default-model".into(),
+            ..ProviderInput::default()
+        },
+        "test:default",
+        None,
+    )
+    .unwrap();
+    let mut direct = codex_plus_core::provider_import::pool_relay_profile(
+        "直连",
+        "https://api.direct.test/v1",
+        "sk-direct",
+        RelayProtocol::Responses,
+        "direct-model",
+        "direct-model",
+        &[],
+    )
+    .unwrap();
+    direct.id = "direct".into();
+    direct.relay_mode = RelayMode::PureApi;
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut direct).unwrap();
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        relay_profiles: vec![direct],
+        active_relay_id: "direct".into(),
+        ..BackendSettings::default()
+    };
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings,
+        &ctx.codex_home,
+        settings,
+        "direct",
+    )
+    .unwrap();
+    let gateway = enable_binding(
+        &ctx,
+        &ToolId::Codex,
+        AgentBinding {
+            model: "default-model".into(),
+            ..AgentBinding::default()
+        },
+    )
+    .unwrap();
+    let token = &gateway.bindings["codex"].token;
+    let config = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
+    let config: toml::Value = toml::from_str(&config).unwrap();
+    let pointer = std::path::PathBuf::from(config["model_catalog_json"].as_str().unwrap());
+    let catalog_path = if pointer.is_absolute() { pointer } else { codex_home.join(pointer) };
+    let catalog: Value = serde_json::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    assert!(
+        catalog["models"].as_array().unwrap().iter().any(|entry| entry["slug"] == "found-a"),
+        "发现的拓展模型必须已经公布给 Codex：{catalog}"
+    );
+
+    codex_plus_core::resident_helper::ensure_resident_helper(port).unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{port}/gw/codex/v1/responses");
+    let request = |model| json!({
+        "model": model, "stream": false,
+        "input": [{ "type": "message", "role": "user", "content": "hi" }]
+    });
+    let response = client.post(&url).bearer_auth(token).json(&request("found-a")).send().await.unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    assert_eq!(status.as_u16(), 200, "{text}");
+    let count_posts = |key: &str| {
+        seen.lock().unwrap().iter().filter(|(head, _)| {
+            head.starts_with("POST") && head.to_ascii_lowercase().contains(&format!("authorization: bearer {key}"))
+        }).count()
+    };
+    assert_eq!(count_posts("sk-found"), 1, "拓展模型应发到拓展供应商");
+    let default_count = count_posts("sk-default");
+
+    let runtime = CoreRuntimeService::new(0, StatusStore::new(temp.path().join("status.json")))
+        .with_user_scripts(codex_plus_core::user_scripts::default_user_script_manager());
+    runtime.set_user_script_enabled("user:live".into(), false).await.unwrap();
+    assert!(
+        !GatewaySettings::default().with_extension_providers().providers.iter().any(|provider| provider.relay.id == "found"),
+        "拓展供应商缓存应在停用后立即刷新"
+    );
+    let response = client.post(&url).bearer_auth(token).json(&request("found-a")).send().await.unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    assert_eq!(count_posts("sk-default"), default_count, "旧模型不可改发默认供应商");
+    assert_eq!(count_posts("sk-found"), 1, "停用后的拓展也不可收到请求");
+    assert_eq!(status.as_u16(), 400, "{text}");
+    let error: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(error["error"]["code"], "model_not_found");
+    assert!(text.contains("请重新选择模型"), "{text}");
+    wait_for_catalog_model(&catalog_path, "found-a", false).await;
+
+    let response = client.post(&url).bearer_auth(token).json(&request("default-model")).send().await.unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    assert_eq!(status.as_u16(), 200, "{text}");
+    assert_eq!(count_posts("sk-default"), default_count + 1, "默认模型应仍可用");
+
+    runtime.set_user_script_enabled("user:live".into(), true).await.unwrap();
+    wait_for_catalog_model(&catalog_path, "found-a", true).await;
+    assert!(
+        GatewaySettings::default().with_extension_providers().providers.iter().any(|provider| provider.relay.id == "found"),
+        "拓展供应商缓存应在重新启用后立即刷新"
+    );
+    let response = client.post(&url).bearer_auth(token).json(&request("found-a")).send().await.unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    assert_eq!(status.as_u16(), 200, "{text}");
+    assert_eq!(count_posts("sk-found"), 2, "重新启用后应继续使用原拓展供应商");
+
+    // 在 helper 已运行时新增异步发现模型的拓展，发现完成后也要发布。
+    let late = root.join("user_scripts/late");
+    std::fs::create_dir_all(&late).unwrap();
+    std::fs::write(late.join("codexpp.json"), json!({
+        "id": "late", "name": "后添加的拓展",
+        "providers": [{ "id": "late", "protocol": "responses",
+            "baseUrl": format!("http://{address}/late"), "apiKey": "sk-late", "discoverModels": true }]
+    }).to_string()).unwrap();
+    runtime.set_user_script_enabled("user:late".into(), true).await.unwrap();
+    wait_for_catalog_model(&catalog_path, "late-model", true).await;
+    let response = client.post(&url).bearer_auth(token).json(&request("late-model")).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(count_posts("sk-late"), 1);
+
+    runtime.delete_user_script("user:late".into()).await.unwrap();
+    wait_for_catalog_model(&catalog_path, "late-model", false).await;
+    let response = client.post(&url).bearer_auth(token).json(&request("late-model")).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(count_posts("sk-default"), default_count + 1);
+    assert_eq!(count_posts("sk-late"), 1);
+
+    // 常驻 helper 停止期间改了拓展开关，重新启动后也要追上最新目录。
+    codex_plus_core::resident_helper::stop_resident_helper();
+    runtime.set_user_script_enabled("user:live".into(), false).await.unwrap();
+    codex_plus_core::resident_helper::ensure_resident_helper(port).unwrap();
+    wait_for_catalog_model(&catalog_path, "found-a", false).await;
+    let response = client.post(&url).bearer_auth(token).json(&request("found-a")).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(count_posts("sk-default"), default_count + 1);
+    assert_eq!(count_posts("sk-found"), 2);
+
+    codex_plus_core::resident_helper::stop_resident_helper();
+    runtime.set_user_script_enabled("user:live".into(), true).await.unwrap();
+    codex_plus_core::resident_helper::ensure_resident_helper(port).unwrap();
+    wait_for_catalog_model(&catalog_path, "found-a", true).await;
+    let response = client.post(&url).bearer_auth(token).json(&request("found-a")).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(count_posts("sk-found"), 3);
+    codex_plus_core::resident_helper::stop_resident_helper();
 }
