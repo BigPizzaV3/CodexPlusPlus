@@ -155,7 +155,7 @@ impl Controller {
                     metadata.modified().ok(),
                     observed_file_identity(&source, &metadata)?,
                 ));
-                if state.stamp == stamp {
+                if state.stamp == stamp && !scan::needs_inheritance_repair(&state, &source)? {
                     return Ok(());
                 }
             }
@@ -496,7 +496,7 @@ impl Controller {
                 report.bytes_read += state.bytes_read.saturating_sub(before);
                 match result {
                     Ok(true) => report.processed_sources += 1,
-                    Ok(false) if state.reader.is_some() => {
+                    Ok(false) if state.reader.is_some() || state.repair_offset.is_some() => {
                         let progressed = state.bytes_read > before;
                         self.active = Some((path, state));
                         if !progressed {
@@ -509,7 +509,8 @@ impl Controller {
                         report.deferred_sources += 1;
                     }
                     Err(error) => {
-                        if error.downcast_ref::<super::SealedReviewRequired>().is_some()
+                        if (error.downcast_ref::<super::SealedReviewRequired>().is_some()
+                            || state.repair_offset.is_some() && !storage_full(&error))
                             && self.paused_sources.len() < MAX_PENDING_SOURCES
                         {
                             self.paused_sources.insert(path.clone());

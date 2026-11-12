@@ -4,6 +4,7 @@ use anyhow::{Context, ensure};
 use chrono::{Local, NaiveDate};
 use rusqlite::Transaction;
 use std::collections::BTreeSet;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -98,10 +99,33 @@ pub(super) fn restore_source(index: &PersistentIndex, path: &Path) -> anyhow::Re
                 state.offset == saved.offset,
                 "source checkpoint offset mismatch"
             );
+            if needs_inheritance_repair(&state, path)? {
+                return Ok(FileState { repair_offset: Some(saved.offset), ..FileState::default() });
+            }
             Ok(state)
         }
         None => Ok(FileState::default()),
     }
+}
+
+pub(super) fn needs_inheritance_repair(state: &FileState, path: &Path) -> anyhow::Result<bool> {
+    if state.identity_conflict || state.history_boundary.parent.is_none()
+        || state.history_boundary.start.is_some() || path.extension().is_some_and(|ext| ext == "zst")
+    {
+        return Ok(false);
+    }
+    let mut first = Vec::new();
+    BufReader::new(std::fs::File::open(path)?.take(64 * 1024)).read_until(b'\n', &mut first)?;
+    if first.last() != Some(&b'\n') {
+        return Ok(false);
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&first).context("cannot read usage source header")?;
+    let payload = &meta["payload"];
+    let session = payload["id"].as_str().and_then(crate::usage_history::normalize_session_id);
+    Ok(meta["type"] == "session_meta" && session.as_deref() == Some(&state.session)
+        && crate::usage_history::UsageHistoryBoundary::from_meta(
+            payload, &state.session, meta["ordinal"].as_u64(),
+        ).parent.is_none())
 }
 
 pub(super) fn scan_source(
@@ -129,31 +153,47 @@ pub(super) fn scan_source_resolved(
         &SourceBatch,
     ) -> anyhow::Result<Resolution>,
 ) -> anyhow::Result<bool> {
+    let repair_offset = state.repair_offset;
     ensure!(
-        state.events.is_empty()
+        repair_offset.is_some() || (state.events.is_empty()
             && state.event_positions.is_empty()
-            && state.execution_observations.is_empty(),
+            && state.execution_observations.is_empty()),
         "uncommitted source observations"
     );
     let source = encode_source(path);
     let previous = index.source_state(&source)?;
     let expected_offset = previous.as_ref().map_or(0, |saved| saved.offset);
     ensure!(
-        checkpoint::committed_offset(state) == expected_offset,
+        repair_offset.unwrap_or_else(|| checkpoint::committed_offset(state)) == expected_offset,
         "source state is not at the committed offset"
     );
     let saved = checkpoint::save(state)?;
     let result = (|| {
         let old_stamp = state.stamp;
         let was_invalid = state.invalid_counts;
+        let read_before = state.bytes_read;
         state.capture_positions = true;
         let completed = state.read_with_budget(path, cutoff, budget)?;
+        if repair_offset.is_some() && !completed {
+            ensure!(state.bytes_read != read_before || budget.read_left == 0 || budget.source_left == 0,
+                "usage inheritance replay is blocked by an incomplete line or the scan budget");
+            // Do not publish a partially replayed source or advance its committed cursor.
+            state.repair_offset = repair_offset;
+            return Ok(false);
+        }
         let Some(stamp) = state.stamp else {
             return Ok(completed);
         };
         let identity = encode_identity(stamp.2.context("source identity is unavailable")?);
         let compressed = path.extension().is_some_and(|extension| extension == "zst");
-        let replace = previous.is_some()
+        if repair_offset.is_some() {
+            ensure!(previous.as_ref().is_some_and(|saved| saved.identity == identity)
+                && checkpoint::committed_offset(state) >= expected_offset
+                && state.history_boundary.parent.is_none()
+                && state.issues == 0 && !state.execution_incomplete,
+                "cannot replace the old usage checkpoint with an incomplete replay");
+        }
+        let replace = repair_offset.is_some() || previous.is_some()
             && (state.identity_conflict
                 || previous
                     .as_ref()
@@ -267,10 +307,15 @@ pub(super) fn scan_source_resolved(
             );
             Ok(events)
         })?;
+        state.repair_offset = None;
         Ok(completed)
     })();
     match result {
         Ok(completed) => Ok(completed),
+        Err(error) if repair_offset.is_some() => {
+            *state = FileState { repair_offset, ..FileState::default() };
+            Err(error)
+        }
         Err(error) => {
             *state = FileState::default();
             match checkpoint::restore(&saved) {
@@ -294,6 +339,67 @@ mod tests {
     use std::io::Write;
 
     const SESSION: &str = "00000000-0000-4000-8000-000000000010";
+
+    #[test]
+    fn inherited_source_replay_keeps_old_checkpoint_until_atomic_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("usage.sqlite");
+        let path = root.path().join("rollout-child.jsonl");
+        let parent = "00000000-0000-4000-8000-000000000011";
+        let time = Local::now().to_rfc3339();
+        let cutoff = Local::now().date_naive();
+        let mut header = json!({"type":"session_meta","ordinal":0,"payload":{
+            "id":SESSION,"parent_thread_id":parent,"model_provider":"provider-a",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":SESSION}}}
+        }});
+        let context = json!({"type":"turn_context","ordinal":1,"timestamp":time,
+            "payload":{"model":"test-model"}});
+        let event = json!({"type":"event_msg","ordinal":2,"timestamp":time,"payload":{
+            "type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":1},
+            "last_token_usage":{"input_tokens":100,"output_tokens":1}}
+        }});
+        std::fs::write(&path, format!("{header}\n{context}\n{event}\n")).unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        let key = encode_source(&path);
+        let mut index = PersistentIndex::open(&database).unwrap();
+        let mut state = restore_source(&index, &path).unwrap();
+        let resolve = |tx: &Transaction<'_>, sessions: &BTreeSet<String>| {
+            super::super::resolve::resolve(tx, sessions, &BTreeMap::new())
+        };
+        let budget = || index_budget::Budget::new(std::iter::empty());
+        assert!(scan_source(&mut index, &mut state, &path, cutoff, &mut budget(), resolve).unwrap());
+        let old = index.source_state(&key).unwrap().unwrap();
+        let revision = index.revision().unwrap();
+        header["payload"]["source"]["subagent"]["thread_spawn"]["parent_thread_id"] = json!(parent);
+        std::fs::write(&path, format!("{header}\n{context}\n{event}\n")).unwrap();
+        let mut state = restore_source(&index, &path).unwrap();
+        assert_eq!(state.repair_offset, Some(old.offset));
+        let mut small = budget();
+        small.read_left = 100;
+        small.source_left = 100;
+        assert!(!scan_source(&mut index, &mut state, &path, cutoff, &mut small, resolve).unwrap());
+        assert_eq!(index.source_state(&key).unwrap().unwrap(), old);
+        assert_eq!(index.revision().unwrap(), revision);
+        drop(state);
+        drop(index);
+        let mut index = PersistentIndex::open(&database).unwrap();
+        let mut state = restore_source(&index, &path).unwrap();
+        assert!(scan_source(&mut index, &mut state, &path, cutoff, &mut budget(), |_, _| {
+            anyhow::bail!("synthetic commit failure")
+        }).is_err());
+        assert_eq!(index.source_state(&key).unwrap().unwrap(), old);
+        assert!(scan_source(&mut index, &mut state, &path, cutoff, &mut budget(), resolve).unwrap());
+        assert_eq!(state.repair_offset, None);
+        let row = index.db.query_row(
+            "SELECT count(*), sum(input), min(model), min(provider), sum(count_incomplete) FROM usage_events",
+            [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?)),
+        ).unwrap();
+        assert_eq!(row, (1, 100, "test-model".into(), "provider-a".into(), 0));
+        let state = restore_source(&index, &path).unwrap();
+        assert_eq!(state.repair_offset, None);
+        assert_eq!(index.revision().unwrap(), revision + 1);
+    }
 
     fn usage(input: u64) -> String {
         json!({

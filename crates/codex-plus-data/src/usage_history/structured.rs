@@ -1506,6 +1506,7 @@ struct FileState {
     pending_count_gap: bool,
     identity_conflict: bool,
     continuation: bool,
+    repair_offset: Option<u64>,
     events: Vec<UsageEvent>,
     capture_positions: bool,
     event_positions: Vec<u64>,
@@ -3182,7 +3183,7 @@ impl FileState {
                 }
                 context.provider = payload["model_provider"].as_str().unwrap_or("").to_owned();
                 context.role = role.into();
-                let boundary = super::UsageHistoryBoundary::from_meta(&payload, &context.session);
+                let boundary = super::UsageHistoryBoundary::from_meta(&payload, &context.session, None);
                 // 复制头的原始 ordinal 为 0；其局部边界平移到当前文件的 ordinal。
                 context.prefix = boundary
                     .parent
@@ -3229,7 +3230,7 @@ impl FileState {
                     .insert(parent);
                 self.role = role.into();
             }
-            self.history_boundary = super::UsageHistoryBoundary::from_meta(&payload, &self.session);
+            self.history_boundary = super::UsageHistoryBoundary::from_meta(&payload, &self.session, ordinal);
             self.continuation = payload["history_base"]["end_ordinal_exclusive"]
                 .as_u64()
                 .is_some_and(|ordinal| ordinal > 0);

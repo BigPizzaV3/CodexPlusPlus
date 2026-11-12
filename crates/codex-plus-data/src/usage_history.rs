@@ -259,15 +259,33 @@ pub(crate) struct UsageHistoryBoundary {
 }
 
 impl UsageHistoryBoundary {
-    pub(crate) fn from_meta(payload: &Value, session: &str) -> Self {
-        Self {
-            parent: payload["forked_from_id"]
+    pub(crate) fn from_meta(payload: &Value, session: &str, ordinal: Option<u64>) -> Self {
+        let fork = payload["forked_from_id"].as_str();
+        let mut parent = fork
+            .or_else(|| payload["parent_thread_id"].as_str())
+            .and_then(normalize_session_id)
+            .filter(|parent| parent != session);
+        let start = payload["subagent_history_start_ordinal"].as_u64();
+        if start.is_none() && payload["subagent_history_start_ordinal"].is_null() {
+            let base = &payload["history_base"];
+            let reference = base["end_ordinal_exclusive"]
+                .as_u64()
+                .is_some_and(|end| end > 0 && ordinal == Some(end))
+                && base["end_byte_offset"].as_u64().is_some_and(|end| end > 0)
+                && base["thread_id"].as_str().and_then(normalize_session_id).is_some();
+            let spawn = payload["source"]["subagent"]["thread_spawn"]["parent_thread_id"]
                 .as_str()
-                .or_else(|| payload["parent_thread_id"].as_str())
-                .and_then(normalize_session_id)
-                .filter(|parent| parent != session),
-            start: payload["subagent_history_start_ordinal"].as_u64(),
+                .and_then(normalize_session_id);
+            let fresh_child = ordinal == Some(0)
+                && payload["forked_from_id"].is_null()
+                && base.is_null()
+                && spawn.is_some() && spawn == parent;
+            // 引用式续段和独立子会话没有写入父会话前缀。
+            if reference || fresh_child {
+                parent = None;
+            }
         }
+        Self { parent, start }
     }
 
     pub(crate) fn contains(&self, ordinal: Option<u64>) -> bool {

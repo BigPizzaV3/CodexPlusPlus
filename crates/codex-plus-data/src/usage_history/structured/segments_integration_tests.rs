@@ -767,6 +767,56 @@ fn local_subagent_parent_relationship_alone_does_not_imply_copied_history() {
 }
 
 #[test]
+fn local_fork_reference_and_fresh_spawn_keep_own_usage() {
+    for mode in ["reference", "reference-without-last", "mismatched-reference", "spawn", "conflicting-spawn"] {
+        let mut fixture = SegmentFixture::new();
+        let mut head = fixture.head();
+        let mut context = fixture.context("own");
+        let mut usage = fixture.usage(1_000, 500, 100);
+        if mode.ends_with("spawn") {
+            head["ordinal"] = json!(0);
+            head["payload"]["parent_thread_id"] = json!(OTHER_SEGMENT_SESSION);
+            head["payload"]["source"] = json!({"subagent":{"thread_spawn":{
+                "parent_thread_id": if mode == "spawn" { OTHER_SEGMENT_SESSION } else { SEGMENT_SESSION }
+            }}});
+            context["ordinal"] = json!(1);
+            usage["ordinal"] = json!(2);
+        } else {
+            head["ordinal"] = json!(100);
+            head["payload"]["forked_from_id"] = json!(OTHER_SEGMENT_SESSION);
+            head["payload"]["history_base"] = json!({
+                "thread_id":OTHER_SEGMENT_SESSION,
+                "end_ordinal_exclusive":if mode == "mismatched-reference" { 99 } else { 100 },
+                "end_byte_offset":4096
+            });
+            context["ordinal"] = json!(101);
+            usage["ordinal"] = json!(102);
+            if mode == "reference-without-last" {
+                usage["payload"]["info"]["last_token_usage"] = Value::Null;
+            }
+        }
+        let text = [head, context, usage].into_iter()
+            .map(|row| format!("{row}\n")).collect::<String>();
+        fs::write(fixture.home.join("sessions/rollout-child.jsonl"), text).unwrap();
+        let snapshot = fixture.snapshot();
+        let event = &snapshot.events[0];
+        assert_eq!(event.session, SEGMENT_SESSION, "{mode}");
+        match mode {
+            "mismatched-reference" | "conflicting-spawn" => assert!(event.count_incomplete, "{mode}"),
+            "reference-without-last" => {
+                assert!(event.count_incomplete);
+                assert_eq!(segment_response(&snapshot)["days"], json!([]));
+            }
+            _ => {
+                assert!(!event.count_incomplete && !event.count_uncertain, "{mode}");
+                assert_eq!(event.model, "gpt-6.1-sol");
+                assert_eq!(event.delta.input_tokens, 100);
+            }
+        }
+    }
+}
+
+#[test]
 fn local_unknown_inherited_owner_temporarily_blocks_parent_request_evidence() {
     let mut fixture = SegmentFixture::new();
     let mut parent = fixture.head();
