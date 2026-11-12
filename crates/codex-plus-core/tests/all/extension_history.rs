@@ -79,6 +79,63 @@ fn session_queries_list_filter_and_search_read_only() {
 }
 
 #[test]
+fn read_title_uses_latest_sidebar_name_and_refreshes_after_changes() {
+    let _guard = crate::common::global_state_lock();
+    let home = home_with_threads();
+    let home = home.path();
+    let index = home.join("session_index.jsonl");
+
+    assert_eq!(call(home, "readTitle", &json!("t-a")).unwrap(), "画曲线图");
+    fs::write(
+        &index,
+        concat!(
+            "{\"id\":\"t-a\",\"thread_name\":\"旧名\"}\n",
+            "not json\n",
+            "{\"id\":\"t-a\",\"thread_name\":\" 新名 \"}\r\n",
+            "{\"id\":\"t-a\",\"thread_name\":\"  \"}\n",
+            "{\"id\":\"ghost\",\"thread_name\":\"不存在的会话\"}\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(call(home, "readTitle", &json!("t-a")).unwrap(), "新名");
+    assert_eq!(call(home, "readTitle", &json!("t-b")).unwrap(), "修 100% 的 bug");
+    assert!(call(home, "readTitle", &json!("ghost")).unwrap_err().to_string().contains("没有找到会话"));
+
+    // 文件指纹不变时复用缓存；超过最大缓存时间后仍会重新读取。
+    let modified = fs::metadata(&index).unwrap().modified().unwrap();
+    let text = fs::read_to_string(&index).unwrap().replace(" 新名 ", " 缓存 ");
+    fs::write(&index, text).unwrap();
+    fs::OpenOptions::new().write(true).open(&index).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    assert_eq!(call(home, "readTitle", &json!("t-a")).unwrap(), "新名");
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new().append(true).open(&index).unwrap();
+    writeln!(file, "{{\"id\":\"t-a\",\"thread_name\":\"再次改名\"}}").unwrap();
+    drop(file);
+    assert_eq!(call(home, "readTitle", &json!("t-a")).unwrap(), "再次改名");
+
+    fs::remove_file(&index).unwrap();
+    assert_eq!(call(home, "readTitle", &json!("t-a")).unwrap(), "画曲线图");
+}
+
+#[test]
+fn read_title_keeps_names_separate_between_homes() {
+    let _guard = crate::common::global_state_lock();
+    let first = home_with_threads();
+    let second = home_with_threads();
+    fs::write(first.path().join("session_index.jsonl"), "{\"id\":\"t-a\",\"thread_name\":\"第一处\"}\n").unwrap();
+    fs::write(second.path().join("session_index.jsonl"), "{\"id\":\"t-a\",\"thread_name\":\"第二处\"}\n").unwrap();
+    assert_eq!(call(first.path(), "readTitle", &json!("t-a")).unwrap(), "第一处");
+    assert_eq!(call(second.path(), "readTitle", &json!("t-a")).unwrap(), "第二处");
+    assert_eq!(call(first.path(), "readTitle", &json!("t-a")).unwrap(), "第一处");
+    let second_index = second.path().join("session_index.jsonl");
+    fs::remove_file(&second_index).unwrap();
+    fs::create_dir(&second_index).unwrap();
+    assert_eq!(call(second.path(), "readTitle", &json!("t-a")).unwrap(), "画曲线图");
+}
+
+#[test]
 fn session_events_follow_the_event_log_shape() {
     let _guard = crate::common::global_state_lock();
     let home = home_with_threads();
