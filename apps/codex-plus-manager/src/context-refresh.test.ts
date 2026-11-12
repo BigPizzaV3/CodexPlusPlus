@@ -147,10 +147,14 @@ describe("runtime context refresh", () => {
     env.state.status = "idle";
     env.state.turns = 0;
     env.calls.length = 0;
-    await assert.rejects(env.refresh(), /尚无历史/);
-    assert.equal(env.calls.some(call => call.method === "thread/unsubscribe"), false);
+    // #3062：没有历史的新线程（26.1106 的 attachToSource 侧聊）放行原生首轮，不卸载、不记签名。
+    assert.equal(await env.refresh(), null);
+    assert.deepEqual(env.calls.map(call => call.method), ["thread/read", "thread/turns/list"]);
+    assert.equal(env.context.window.__codexPlusThreadContexts?.size ?? 0, 0);
     env.state.turns = 1;
-    await env.refresh();
+    env.calls.length = 0;
+    assert.equal(await env.refresh(), true, "the next submission applies the context once history exists");
+    assert.equal(env.calls.some(call => call.method === "thread/unsubscribe"), true);
   });
 
   // #3041：侧边聊天是 ephemeral 分叉，没有历史也不能卸载恢复；不报「尚无历史」，也不重建。

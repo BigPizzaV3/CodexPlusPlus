@@ -1034,7 +1034,12 @@
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
       const turns = await originalSendRequest("thread/turns/list",
         { threadId, limit: 1, itemsView: "notLoaded" }, recoveryOptions);
-      if (turns.data.length === 0) throw new Error("此新会话尚无历史，请重新新建会话以应用上下文配置");
+      // 还没有历史的新线程不能卸载恢复。Codex 26.1106 起侧边聊天用 attachToSource 分叉、不再标 ephemeral（#3062），
+      // 拦下发送会让侧聊完全不可用：放行原生首轮，不记签名，等有了历史后的下一次发送再应用上下文配置。
+      if (turns.data.length === 0) {
+        sendCodexPlusDiagnostic("thread_model_context_refresh_deferred", { threadId, reason: "no_history" });
+        return null;
+      }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
       if (current.thread.status.type !== "idle") throw new Error("请先等待当前回复结束，再应用上下文配置");
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
