@@ -325,7 +325,7 @@ impl SkillsManager {
                 }
             }
             let mut command = std::process::Command::new("git");
-            command.args(["-C"]).arg(&target).args(["remote", "get-url", "origin"]);
+            command.args(["-C"]).arg(&target).args(["rev-parse", "--show-toplevel"]);
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -334,8 +334,21 @@ impl SkillsManager {
             let git = command.output();
             match git {
                 Ok(output) if output.status.success() => {
-                    for repo in github_repositories(&String::from_utf8_lossy(&output.stdout)) {
-                        evidence.insert((repo, "git-remote".into(), target.clone()));
+                    let root = String::from_utf8(output.stdout)?;
+                    if Path::new(root.trim_end_matches(['\r', '\n'])).canonicalize()? == target {
+                        let mut command = std::process::Command::new("git");
+                        command.args(["-C"]).arg(&target).args(["remote", "get-url", "origin"]);
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::process::CommandExt;
+                            command.creation_flags(crate::windows_create_no_window());
+                        }
+                        let output = command.output()?;
+                        if output.status.success() {
+                            for repo in github_repositories(&String::from_utf8_lossy(&output.stdout)) {
+                                evidence.insert((repo, "git-remote".into(), target.clone()));
+                            }
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -721,11 +734,13 @@ impl SkillsManager {
                 item.repo_key = selection.repo_key.clone();
                 item.repo_path = selection.repo_path.clone();
                 if !same_source {
-                    item.content_hash = snapshot.local_hash;
+                    item.content_hash = if confirmed.exact { snapshot.local_hash } else { String::new() };
                     item.update_owner.clear();
                     if item.install_channel.is_empty() {
                         item.install_channel = "local".into();
                     }
+                } else if item.content_hash.is_empty() && confirmed.exact {
+                    item.content_hash = snapshot.local_hash;
                 }
                 if snapshot.original_dir.is_some() && item.update_owner == "manager" {
                     item.update_owner.clear();
@@ -1121,6 +1136,67 @@ mod tests {
     }
 
     #[test]
+    fn differing_associations_do_not_report_a_repository_update() {
+        for manual in [false, true] {
+            for selected_instance in [false, true] {
+                let (temp, manager, repo) = fixture();
+                let shared = temp.path().join("shared");
+                write_skill(&shared, "alpha", "local");
+                let original = shared.join("alpha");
+                let local_hash = local_repository_hash(&original).unwrap();
+                let mut remote = vec![candidate(
+                    &repo,
+                    if manual { "skills/unrelated" } else { "skills/alpha" },
+                    "different-remote-content".into(),
+                )];
+                let preview = if selected_instance {
+                    manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", &original).unwrap()
+                } else {
+                    manager.preview_repository_matches(&repo, &remote, Some("alpha")).unwrap()
+                };
+                let found = if manual { &preview.manual_candidates[0] } else { &preview.matches[0] };
+                assert!(!found.exact);
+                let result = manager.apply_repository_matches(&[selection(&preview, found, manual)], &remote).unwrap();
+                assert!(result.errors.is_empty(), "{:?}", result.errors);
+                let state = manager.load_state();
+                let installed = if selected_instance {
+                    &state.instance_records["alpha"].values().next().unwrap().installed
+                } else {
+                    &state.installed["alpha"]
+                };
+                assert!(installed.content_hash.is_empty());
+                assert!(installed.update_owner.is_empty());
+                assert_eq!(local_repository_hash(&original).unwrap(), local_hash);
+                let entries = manager.merge_entries(&remote);
+                assert!(entries.iter().any(|entry| entry.id == "alpha" && entry.installed));
+                assert!(entries.iter().filter(|entry| entry.id == "alpha").all(|entry| !entry.update_available));
+                assert!(entries.iter().flat_map(|entry| &entry.locations).all(|location| !location.update_available));
+
+                remote[0].content_hash = local_hash.clone();
+                let preview = if selected_instance {
+                    manager.preview_repository_matches_for_instance(&repo, &remote, "alpha", &original).unwrap()
+                } else {
+                    manager.preview_repository_matches(&repo, &remote, Some("alpha")).unwrap()
+                };
+                assert!(preview.matches[0].exact);
+                let result = manager.apply_repository_matches(&[selection(&preview, &preview.matches[0], false)], &remote).unwrap();
+                assert!(result.errors.is_empty(), "{:?}", result.errors);
+                let state = manager.load_state();
+                let installed = if selected_instance {
+                    &state.instance_records["alpha"].values().next().unwrap().installed
+                } else {
+                    &state.installed["alpha"]
+                };
+                assert_eq!(installed.content_hash, local_hash);
+                remote[0].content_hash = "later-remote-version".into();
+                let entries = manager.merge_entries(&remote);
+                assert!(entries.iter().filter(|entry| entry.id == "alpha").any(|entry|
+                    entry.update_available || entry.locations.iter().any(|location| location.update_available)));
+            }
+        }
+    }
+
+    #[test]
     fn adopted_shared_skill_tracks_matching_managed_copies_without_taking_update_ownership() {
         let (temp, manager, repo) = fixture();
         let manager = manager.with_agent_dirs(vec![
@@ -1377,6 +1453,35 @@ mod tests {
         assert!(evidence.iter().any(|item| item.repo == "example/engine" && item.kind == "script-link"));
         assert!(evidence.iter().any(|item| item.repo == "example/locked" && item.kind == "lock"));
         assert!(!manager.load_state().installed.contains_key("alpha"));
+    }
+
+    #[test]
+    fn source_evidence_ignores_parent_git_remote_but_accepts_skill_repository_root() {
+        let (temp, manager, _) = fixture();
+        let shared = temp.path().join("shared");
+        write_skill(&shared, "alpha", "source");
+        let original = shared.join("alpha");
+        let git = |directory: &Path, arguments: &[&str]| {
+            let mut command = std::process::Command::new("git");
+            command.arg("-C").arg(directory).args(arguments);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(crate::windows_create_no_window());
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(&shared, &["init", "-q"]);
+        git(&shared, &["remote", "add", "origin", "https://github.com/example/dotfiles.git"]);
+        let evidence = manager.discover_skill_source_evidence("alpha").unwrap();
+        assert!(!evidence.iter().any(|item| item.kind == "git-remote"));
+
+        git(&original, &["init", "-q"]);
+        git(&original, &["remote", "add", "origin", "https://github.com/example/alpha.git"]);
+        let evidence = manager.discover_skill_source_evidence("alpha").unwrap();
+        assert!(evidence.iter().any(|item| item.kind == "git-remote" && item.repo == "example/alpha"));
+        assert!(!evidence.iter().any(|item| item.repo == "example/dotfiles"));
     }
 
     #[test]
