@@ -3923,8 +3923,10 @@ async fn open_responses_proxy_request_once(
         };
         // Kimi 官方 Responses 只认 `reasoning.encrypted_content`：Codex 私有的
         // `output.encrypted_content` 会让整包 400（issue #3026），发出前去掉。
+        // 经第三方中转调 Kimi 模型时地址认不出来，按模型名再判一次（#3068）。
         if wire_api == UpstreamWireApi::Responses
-            && crate::relay_config::upstream_is_kimi_official_responses(&relay)
+            && (crate::relay_config::upstream_is_kimi_official_responses(&relay)
+                || request_model_is_kimi(&upstream_body))
         {
             tidy_kimi_include(&mut upstream_body);
         }
@@ -5181,6 +5183,13 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
 
 /// Kimi 官方 Responses 的 `include` 只认 `reasoning.encrypted_content`（#3026）：
 /// 去掉 Codex 私有的 `output.encrypted_content`，其余项保留；过滤后为空就整个去掉。
+/// 请求的模型名带 `kimi`（如 `kimi-k3.1-pro`、`moonshot/kimi-k2`）：中转站转发的也是 Kimi 的接口（#3068）。
+fn request_model_is_kimi(body: &Value) -> bool {
+    body.get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| model.to_ascii_lowercase().contains("kimi"))
+}
+
 fn tidy_kimi_include(body: &mut Value) {
     let Some(object) = body.as_object_mut() else {
         return;
@@ -12096,6 +12105,16 @@ mod kimi_include_tests {
             ..Default::default()
         };
         assert!(!crate::relay_config::upstream_is_kimi_official_responses(&relay));
+    }
+
+    #[test]
+    fn kimi_models_behind_third_party_relays_are_recognized_by_name() {
+        for model in ["kimi-k3.1-pro", "Kimi-K2", "moonshot/kimi-k2-thinking"] {
+            assert!(request_model_is_kimi(&json!({ "model": model })), "{model}");
+        }
+        for body in [json!({ "model": "gpt-6.1-sol" }), json!({ "model": "deepseek-v4-pro" }), json!({})] {
+            assert!(!request_model_is_kimi(&body), "{body}");
+        }
     }
 
     #[test]
