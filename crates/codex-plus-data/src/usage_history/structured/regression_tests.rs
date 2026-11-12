@@ -85,11 +85,16 @@ fn local_missing_initial_baseline_does_not_assign_lifetime_usage_to_today() {
     let mut fixture = Fixture::new();
     let mut segment = fixture.usage(2_000, 100);
     segment["payload"]["info"]["last_token_usage"] = Value::Null;
-    fixture.write_continuation_segment("rollout-b.jsonl", vec![segment]);
+    fixture.write_continuation_segment("rollout-b.jsonl", vec![segment.clone()]);
     let response = snapshot_response(&fixture.snapshot());
     assert_eq!(response["complete"], false);
     assert_eq!(response["days"], json!([]));
-    fixture.write_segment("rollout-a.jsonl", vec![fixture.usage(1_000, 99)]);
+    let previous = fixture.usage(1_000, 99);
+    fixture.write_segment("rollout-a.jsonl", vec![previous.clone()]);
+    let response = snapshot_response(&fixture.snapshot());
+    assert_eq!(response["complete"], false);
+    assert_eq!(response["days"][0]["usage"]["totalTokens"], 110);
+    fixture.write_continuation_segment("rollout-c.jsonl", vec![previous, segment]);
     let response = snapshot_response(&fixture.snapshot());
     assert_eq!(response["complete"], true);
     assert_eq!(response["days"][0]["usage"]["totalTokens"], 220);
@@ -379,8 +384,8 @@ fn local_missing_cache_preserves_cumulative_counts_across_segments() {
         });
         let third = fixture.usage(3_000, 3);
         if split {
-            fixture.write_segment("rollout-a.jsonl", vec![first]);
-            fixture.write_continuation_segment("rollout-b.jsonl", vec![second, third]);
+            fixture.write_segment("rollout-a.jsonl", vec![first.clone()]);
+            fixture.write_continuation_segment("rollout-b.jsonl", vec![first, second, third]);
         } else {
             fixture.write_segment("rollout-a.jsonl", vec![first, second, third]);
         }
@@ -567,13 +572,9 @@ fn local_competing_last_values_are_incomplete_in_both_orders() {
             fixture.write_segment("rollout-b.jsonl", vec![second]);
             let snapshot = fixture.snapshot();
             let response = snapshot_response(&snapshot);
-            let uncertain = if metadata_variant == 0 { 2 } else { 3 };
             assert_eq!(response["complete"], false);
-            assert_eq!(response["scan"]["uncertainCountEvents"], uncertain);
-            assert_eq!(
-                response["days"][0]["usage"]["totalTokens"],
-                if metadata_variant == 0 { 220 } else { 110 }
-            );
+            assert_eq!(response["scan"]["uncertainCountEvents"], 2);
+            assert_eq!(response["days"][0]["usage"]["totalTokens"], 220);
             assert!(!snapshot.events.last().unwrap().count_uncertain);
             let db = rusqlite::Connection::open(
                 fixture
@@ -647,8 +648,8 @@ fn local_missing_last_after_reset_does_not_claim_complete() {
             "reasoning_output_tokens": 2
         });
         if split {
-            fixture.write_segment("rollout-a.jsonl", vec![first]);
-            fixture.write_continuation_segment("rollout-b.jsonl", vec![reset, later]);
+            fixture.write_segment("rollout-a.jsonl", vec![first.clone()]);
+            fixture.write_continuation_segment("rollout-b.jsonl", vec![first, reset, later]);
         } else {
             fixture.write_segment("rollout-a.jsonl", vec![first, reset, later]);
         }
@@ -1018,7 +1019,12 @@ fn oversized_context_recovers_on_a_later_continuation() {
     );
     fixture.write_continuation_segment(
         "rollout-b.jsonl",
-        vec![fixture.context(2_500, "new-model"), fixture.usage(3_000, 3)],
+        vec![
+            fixture.context(1_500, &"x".repeat(257)),
+            fixture.usage(2_000, 2),
+            fixture.context(2_500, "new-model"),
+            fixture.usage(3_000, 3),
+        ],
     );
     for phase in ["fresh", "reopened"] {
         if phase == "reopened" {
@@ -2005,7 +2011,7 @@ fn shared_session_baseline_can_make_different_file_deltas_agree() {
 }
 
 #[test]
-fn zero_or_missing_reasoning_delta_cannot_hide_a_duplicate_conflict() {
+fn missing_reasoning_preserves_counts_but_zero_delta_remains_a_conflict() {
     for zero_delta in [false, true] {
         for baseline_first in [false, true] {
             let mut fixture = Fixture::new();
@@ -2028,9 +2034,15 @@ fn zero_or_missing_reasoning_delta_cannot_hide_a_duplicate_conflict() {
             let snapshot = fixture.snapshot();
             let response = snapshot_response(&snapshot);
             assert_eq!(snapshot.events.len(), 1);
-            assert_eq!(response["complete"], false);
-            assert_eq!(response["scan"]["uncertainCountEvents"], 1);
-            assert_eq!(response["days"], json!([]));
+            if zero_delta {
+                assert_eq!(response["complete"], false);
+                assert_eq!(response["scan"]["uncertainCountEvents"], 1);
+                assert_eq!(response["days"], json!([]));
+            } else {
+                assert_eq!(response["complete"], true);
+                assert_eq!(response["days"][0]["usage"]["totalTokens"], 110);
+                assert_eq!(response["days"][0]["usage"]["reasoningKnown"], false);
+            }
         }
     }
 }
@@ -2110,6 +2122,42 @@ fn conflict_survives_first_cache_open_failure_and_retry() {
         snapshot_response(&fixture.snapshot())["scan"]["uncertainCountEvents"],
         1
     );
+}
+
+#[test]
+fn incomplete_source_and_cache_failure_recover_without_a_durable_conflict() {
+    let mut fixture = Fixture::new();
+    let cache = fixture._root.path().join("cache");
+    fs::write(&cache, "not a directory").unwrap();
+    let event = fixture.usage(1_000, 1);
+    let mut previous = fixture.usage(0, 1);
+    previous["timestamp"] = json!((Local::now() - Days::days(RETENTION_DAYS + 2)).to_rfc3339());
+    previous["payload"]["info"]["total_token_usage"] = json!({
+        "input_tokens": 80, "output_tokens": 5, "cached_input_tokens": 10,
+        "reasoning_output_tokens": 1
+    });
+    let mut invalid = fixture.usage(2_000, 2);
+    invalid["payload"]["info"]["total_token_usage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("input_tokens");
+    fixture.write_segment("rollout-a.jsonl", vec![previous, event.clone(), invalid]);
+    fixture.write_segment("rollout-b.jsonl", vec![event.clone()]);
+    let failed = fixture
+        .index
+        .update_with_request_log(&fixture.home, &fixture.log);
+    assert!(failed.issues > 0);
+    assert!(failed.events[0].count_incomplete);
+    assert!(!failed.events[0].count_uncertain);
+
+    fs::remove_file(&cache).unwrap();
+    fixture.write_segment("rollout-a.jsonl", vec![event.clone()]);
+    fixture.write_segment("rollout-b.jsonl", vec![event]);
+    let recovered = snapshot_response(&fixture.snapshot());
+    assert_eq!(recovered["complete"], true);
+    assert_eq!(recovered["days"][0]["usage"]["totalTokens"], 110);
+    reopen_index(&mut fixture);
+    assert_eq!(snapshot_response(&fixture.snapshot())["complete"], true);
 }
 
 #[test]
