@@ -24,6 +24,7 @@ Var LegacyDeleteTries
 !define MUI_UNICON "${ROOT}\apps\codex-plus-manager\src-tauri\icons\icon.ico"
 
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryPageLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -69,6 +70,29 @@ Var LegacyDeleteTries
 !insertmacro WAIT_FOR_PROCESS_EXIT WaitForProcessExit ""
 !insertmacro WAIT_FOR_PROCESS_EXIT un.WaitForProcessExit un.
 
+; 安装目录若被手动改到 Program Files / Windows 等系统目录，普通权限写不进
+; codex-plus-plus.exe，安装时报“无权限操作”并要求提权（issue #3061）。
+; 默认目录在用户目录下无需提权；发现是系统目录时立即回到目录页让用户改选，
+; 而不是装到一半失败。
+Function DirectoryPageLeave
+  StrLen $3 "$PROGRAMFILES64"
+  StrCpy $4 "$INSTDIR" $3
+  StrCmp "$4" "$PROGRAMFILES64" 0 protected_dir_check_next
+    Call ProtectedDirWarn
+    Abort
+  protected_dir_check_next:
+  StrLen $3 "$PROGRAMFILES"
+  StrCpy $4 "$INSTDIR" $3
+  StrCmp "$4" "$PROGRAMFILES" 0 protected_dir_done
+    Call ProtectedDirWarn
+    Abort
+  protected_dir_done:
+FunctionEnd
+
+Function ProtectedDirWarn
+  MessageBox MB_OK|MB_ICONEXCLAMATION "所选安装目录位于系统目录（Program Files），普通权限无法替换其中的程序文件，安装时会报“无权限操作”。$\n$\n建议保持默认安装目录（用户目录下，无需管理员权限），或改选其他非系统目录后继续安装。"
+FunctionEnd
+
 Section "Install"
   SetOutPath "$INSTDIR"
   ; 与 Rust 安装入口共用卸载登记，必须在本轮写登记之前判断是否覆盖升级。
@@ -98,6 +122,23 @@ Section "Install"
     MessageBox MB_OK|MB_ICONSTOP "旧管理工具仍被占用。请退出 Codex++ 后重新安装。"
     Abort
   legacy_binary_removed:
+  ; 主 exe 同样先轮询删除再 File：进程退出后文件锁未必立刻释放，且 Delete 静默
+  ; 失败会让 File 直接弹出系统级“无权限操作/无法写入”对话框，用户误以为缺权限
+  ; 去找管理员提权（issue #3061）。这里换成明确的中文提示，覆盖进程占用、杀软
+  ; 锁定与装进系统目录三种成因，可重试而不是一次失败就中止。
+  StrCpy $LegacyDeleteTries 0
+  main_binary_delete_loop:
+  Delete "$INSTDIR\codex-plus-plus.exe"
+  IfFileExists "$INSTDIR\codex-plus-plus.exe" 0 main_binary_removed
+    IntOp $LegacyDeleteTries $LegacyDeleteTries + 1
+    IntCmp $LegacyDeleteTries 20 main_binary_delete_failed
+    Sleep 500
+    Goto main_binary_delete_loop
+  main_binary_delete_failed:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "无法替换 codex-plus-plus.exe：文件仍被占用或无写入权限。请确认已从系统托盘退出 Codex++（或在任务管理器结束 codex-plus-plus.exe）；若仍失败，请检查杀毒软件是否锁定该文件。若安装目录在 Program Files 等系统目录，普通权限无法写入，请改用默认安装目录或以管理员身份运行安装器。$\n$\n点“重试”继续等待，点“取消”中止安装。" IDRETRY main_binary_delete_loop IDCANCEL main_binary_abort
+  main_binary_abort:
+    Abort
+  main_binary_removed:
   File "${ROOT}\dist\windows\app\codex-plus-plus.exe"
 
   ; 只迁移确实存在的桌面入口，用户删掉的入口在升级时仍不补建（issue #2376）。
