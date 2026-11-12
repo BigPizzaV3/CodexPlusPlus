@@ -16405,6 +16405,8 @@ type ClaudeLocalConfig = {
   hideUnroutedModels?: boolean;
   /** Code 页签是否和命令行共用 ~/.claude；不写按默认（共用）。 */
   codeShareHome?: boolean;
+  /** 启动前把命令行建的会话加进 Desktop 的会话列表；不写按默认（开）。 */
+  importCliSessions?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -17034,6 +17036,24 @@ function ClaudeLocalizationScreen(
                 type="checkbox"
               />
               <span>{(local?.config.codeShareHome ?? true) ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
+          </CxRow>
+          <CxRow
+            detail={t("启动 Claude 前，把终端、BaoCode 等命令行里建的会话加进左侧列表（已在列表里的、删过的不会重复加）。")}
+            title={t("显示命令行会话")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("显示命令行会话")}
+                checked={local?.config.importCliSessions ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, importCliSessions: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{(local?.config.importCliSessions ?? true) ? t("已开启") : t("已关闭")}</span>
               <ToggleVisual />
             </label>
           </CxRow>

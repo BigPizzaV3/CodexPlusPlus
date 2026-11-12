@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 # Claude Desktop 完整功能模式核心（ClaudeMom 仓库，两边共用一份）。
-claude-local = { git = "https://github.com/BigPizzaV3/ClaudeMom", rev = "8b358aa2de0470f90019994410214f02bbc220ee" }
+claude-local = { git = "https://github.com/BigPizzaV3/ClaudeMom", rev = "cbb54ef81bcadb4e9762868c8ba58236fbcaf216" }
 aes-gcm.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"

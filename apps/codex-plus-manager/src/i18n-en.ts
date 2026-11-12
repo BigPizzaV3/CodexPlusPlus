@@ -1691,6 +1691,8 @@ export const EN_PLAIN: Record<string, string> = {
   "保存子智能体模型策略": "Save subagent model policy",
   "会话同步": "Session sync",
   "和命令行共用 ~/.claude": "Share ~/.claude with the CLI",
+  "显示命令行会话": "Show CLI sessions",
+  "启动 Claude 前，把终端、BaoCode 等命令行里建的会话加进左侧列表（已在列表里的、删过的不会重复加）。": "Before launching Claude, add sessions created in the terminal, BaoCode and other CLIs to the sidebar (sessions already listed or deleted are skipped).",
   "Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。": "The Code tab shares ~/.claude with the Claude Code CLI: same sessions, MCP servers and plugins. API settings (env) in ~/.claude/settings.json take precedence over the gateway. Takes effect the next time Claude is launched from here.",
   "Code 页签用独立目录，请求走 Codex++ 网关；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。": "The Code tab uses its own folder and goes through the Codex++ gateway; sessions created in the CLI or 3p mode need session sync to open.",
   "启动 Claude 前同步 3p 模式与完整功能模式的 Code 会话": "Sync Code sessions between 3p mode and the full local mode before launching Claude",
