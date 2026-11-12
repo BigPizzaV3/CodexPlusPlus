@@ -4844,7 +4844,7 @@ describe("extension rpc frame interception", () => {
       ["reject", -0.5, ["error", "Error", "blocked by policy"]],
     ]);
     const rpc = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-rpc.js", import.meta.url), "utf8");
-    assert.match(rpc, /codexPlusRpcInterceptorVersion = 7;/);
+    assert.match(rpc, /codexPlusRpcInterceptorVersion = 9;/);
     assert.doesNotMatch(rpc, /codexPlusRpcPlanResume|prepareCodexThreadProviderResume|codexPlusRpcResumeGates/);
   });
 

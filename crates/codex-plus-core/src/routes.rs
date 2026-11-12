@@ -73,6 +73,10 @@ pub trait BridgeSettingsService: Send + Sync {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings>;
 
+    fn codex_home_dir(&self) -> PathBuf {
+        crate::relay_config::default_codex_home_dir()
+    }
+
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
     }
@@ -364,6 +368,19 @@ pub async fn handle_bridge_request(
     );
     let result = match path {
         "/settings/get" => settings_value(&ctx, ctx.settings.get_settings().await).await,
+        "/gateway/connection-generation" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                let active = settings.relay_profiles_enabled
+                    && settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
+                if active {
+                    crate::gateway::connection_generation::read(&ctx.settings.codex_home_dir())
+                        .map(|generation| json!({ "status": "ok", "active": true, "generation": generation }))
+                } else {
+                    Ok(json!({ "status": "ok", "active": false, "generation": "" }))
+                }
+            }
+            Err(error) => Err(error),
+        },
         "/dictation/status" => ctx.settings.get_settings().await.map(|settings| {
             let effective = crate::dictation::effective_settings(&settings);
             let mut status = crate::dictation::public_status(&effective);

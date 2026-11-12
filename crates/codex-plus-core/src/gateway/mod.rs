@@ -32,6 +32,7 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod connection_generation;
 pub mod diagnostics;
 pub mod disconnect_preview;
 pub mod drift;
