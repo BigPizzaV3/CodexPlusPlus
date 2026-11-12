@@ -16397,6 +16397,8 @@ type ClaudeLocalConfig = {
   voiceInput: boolean;
   computerUse: boolean;
   backgroundMode: boolean;
+  /** 无视 Claude 对后台模式的 macOS 版本上限（默认关）。 */
+  forceBackgroundMode?: boolean;
   displayName?: string;
   email?: string;
   plan?: string;
@@ -17099,13 +17101,25 @@ function ClaudeLocalizationScreen(
                 ["voiceInput", "原生听写", "本地原生听写"],
                 ["computerUse", "电脑控制", "本地电脑控制"],
                 ["backgroundMode", "后台模式", "本地后台模式"],
+                ["forceBackgroundMode", "新系统也开后台模式", "本地后台模式不限系统版本"],
               ] as const).map(([key, label, ariaLabel]) => (
-                <label className="switch-row compact" key={key}>
+                <label
+                  className="switch-row compact"
+                  key={key}
+                  title={key === "forceBackgroundMode"
+                    ? t("Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定")
+                    : undefined}
+                >
                   <input
                     aria-label={t(ariaLabel)}
-                    checked={local.config[key]}
+                    checked={local.config[key] ?? false}
                     disabled={localDisabled}
-                    onChange={(event) => void configureLocal({ ...local.config, [key]: event.currentTarget.checked })}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      // 关后台模式时一并关掉「新系统也开」，否则保存时会被它重新打开。
+                      const extra = key === "backgroundMode" && !checked ? { forceBackgroundMode: false } : {};
+                      void configureLocal({ ...local.config, [key]: checked, ...extra });
+                    }}
                     type="checkbox"
                   />
                   <span><strong>{t(label)}</strong></span>
