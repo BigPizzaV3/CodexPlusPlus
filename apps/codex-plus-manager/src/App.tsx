@@ -482,6 +482,7 @@ type BackendSettings = WhaleBalanceSettings & {
   threadModelFollowSwitchEnabled?: boolean;
   /** 任意登录账号与不登录状态共享本地项目；沿用已有开关和备份链路。 */
   keepProjectsWithoutAccount?: boolean;
+  nativeAuthPendingApplication?: string | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
   /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
@@ -8240,7 +8241,7 @@ function RelayScreen({
         )}
       />
       {connection}
-      <NativeAuthControl />
+      <NativeAuthControl onRestart={() => actions.restart()} />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
       {!normalized.relayProfilesEnabled ? (

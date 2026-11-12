@@ -465,6 +465,9 @@ pub trait LaunchHooks: Send + Sync {
     fn codex_desktop_running(&self) -> bool {
         false
     }
+    fn confirm_native_auth_application(&self, home: &Path, pending: Option<&str>) -> anyhow::Result<()> {
+        crate::native_auth::mark_native_auth_selection_applied(home, pending)
+    }
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
@@ -917,6 +920,7 @@ where
         timeline.mark("start_native_browser_compatibility", 5);
         hooks.start_native_browser_compatibility(&settings).await;
         let home = hooks.codex_home_dir();
+        let native_was_running = hooks.codex_desktop_running();
         timeline.mark("cleanup_unsupported_config", 10);
         hooks.cleanup_unsupported_config(&settings)?;
         crate::relay_config::ensure_windows_sandbox_usable_for_current_user(&home)?;
@@ -933,7 +937,7 @@ where
         crate::codex_app_state::reconcile_account_scope_nonfatal(
             &home,
             &settings,
-            hooks.codex_desktop_running(),
+            native_was_running,
             "launcher.before_launch",
         );
         if hooks.has_pending_remote_control_session_recoveries()
@@ -1175,6 +1179,16 @@ where
             options.status_store.save_latest(&status)?;
             status_started_at_ms = status.started_at_ms;
             hooks.write_status("running").await;
+            if !native_was_running
+                && let Err(_) = hooks.confirm_native_auth_application(
+                    &home, settings.native_auth_pending_application.as_deref(),
+                )
+            {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.native_auth_application_unconfirmed",
+                    serde_json::json!({ "reason": "selection_changed_or_unapplied" }),
+                );
+            }
         }
 
         // 全部可失败的启动步骤完成后才创建，错误清理路径不会遗留监督任务。

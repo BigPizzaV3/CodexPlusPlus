@@ -514,6 +514,7 @@ pub fn set_native_auth_selection(account_ref: Option<&str>) -> anyhow::Result<()
         },
         None => NativeAuthSelection::None,
     });
+    settings.native_auth_pending_application = Some(uuid::Uuid::new_v4().to_string());
     settings_store.save_with_commit(&settings, |_| {
         if read_auth(&home)? != previous_auth {
             anyhow::bail!("原生登录已被其他进程更新，已停止切换，请重试");
@@ -521,6 +522,67 @@ pub fn set_native_auth_selection(account_ref: Option<&str>) -> anyhow::Result<()
         crate::settings::atomic_write(&auth_path, next_auth.as_bytes())
     })?;
     Ok(())
+}
+
+/// 启动流程只确认它启动时那次选择；期间有更新的选择则仍保持待应用。
+pub fn mark_native_auth_selection_applied(home: &Path, pending: Option<&str>) -> anyhow::Result<()> {
+    let Some(pending) = pending else { return Ok(()) };
+    if !is_default_home(home) {
+        return Ok(());
+    }
+    mark_native_auth_selection_applied_with(
+        home, &SettingsStore::default(), &GatewayStore::default(), pending,
+    )
+}
+
+fn mark_native_auth_selection_applied_with(
+    home: &Path,
+    store: &SettingsStore,
+    gateway: &GatewayStore,
+    pending: &str,
+) -> anyhow::Result<()> {
+    let mut settings = store.load()?;
+    if settings.native_auth_pending_application.as_deref() != Some(pending) {
+        return Ok(());
+    }
+    let live = read_auth(home)?.unwrap_or_default();
+    let gateway = gateway.load()?;
+    let selected = selection_account_ref(&settings)
+        .and_then(|id| gateway.provider(id))
+        .map(|provider| provider.relay.auth_contents.as_str());
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    if !native_selection_projection_ready(&settings, &live, selected, &config) {
+        anyhow::bail!("原生登录凭据或连接身份尚未完成应用");
+    }
+    settings.native_auth_pending_application = None;
+    store.save(&settings)
+}
+
+fn native_selection_projection_ready(
+    settings: &BackendSettings,
+    live: &str,
+    selected: Option<&str>,
+    config: &str,
+) -> bool {
+    let managed = settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
+    let live_official = crate::relay_config::relay_session_provider_from_config(config)
+        == crate::settings::RelaySessionProvider::Openai;
+    let saved_official = settings.active_relay_session_provider()
+        == crate::settings::RelaySessionProvider::Openai;
+    match settings.native_auth_selection.as_ref() {
+        Some(NativeAuthSelection::None) => {
+            (!managed || (!live_official && !saved_official))
+                && crate::official_login::official_login_from_auth_contents(live).is_none()
+        }
+        Some(NativeAuthSelection::Account { .. }) => {
+            (!managed || (live_official && saved_official))
+                && crate::official_login::official_login_from_auth_contents(live).is_some()
+                && selected.is_some_and(|saved| same_account(live, saved))
+                && serde_json::from_str::<Value>(live)
+                    .ok().is_some_and(|value| value["auth_mode"] == "chatgpt")
+        }
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -740,5 +802,86 @@ mod tests {
             project_native_auth(temp.path(), "unchanged").unwrap(),
             "unchanged"
         );
+    }
+
+    fn pending_fixture() -> (tempfile::TempDir, SettingsStore, GatewayStore) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        store.save(&BackendSettings {
+            active_relay_id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.to_string(),
+                relay_mode: crate::settings::RelayMode::Official,
+                config_contents: "model_provider = \"openai\"\n".into(),
+                ..Default::default()
+            }],
+            native_auth_selection: Some(NativeAuthSelection::Account { account_ref: "chosen".into() }),
+            native_auth_pending_application: Some("current-choice".into()),
+            ..Default::default()
+        }).unwrap();
+        let gateway = GatewayStore::at(temp.path().join("gateway.json"));
+        let provider: GatewayProvider = serde_json::from_value(json!({
+            "enabled": false, "source": "fixture",
+            "relay": RelayProfile {
+                id: "chosen".into(), name: "Fixture".into(),
+                relay_mode: crate::settings::RelayMode::Official,
+                auth_contents: auth("alice", 1), ..Default::default()
+            }
+        })).unwrap();
+        gateway.update(|settings| { settings.providers.push(provider); Ok(()) }).unwrap();
+        std::fs::write(temp.path().join("auth.json"), auth("alice", 1)).unwrap();
+        std::fs::write(temp.path().join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+        (temp, store, gateway)
+    }
+
+    #[test]
+    fn pending_native_choice_clears_only_after_the_matching_projection_is_ready() {
+        let (temp, store, gateway) = pending_fixture();
+        mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "current-choice").unwrap();
+        assert!(store.load().unwrap().native_auth_pending_application.is_none());
+    }
+
+    #[test]
+    fn older_launch_does_not_clear_a_newer_native_choice() {
+        let (temp, store, gateway) = pending_fixture();
+        let before = std::fs::read(temp.path().join("settings.json")).unwrap();
+        mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "older-choice").unwrap();
+        assert_eq!(store.load().unwrap().native_auth_pending_application.as_deref(), Some("current-choice"));
+        assert_eq!(std::fs::read(temp.path().join("settings.json")).unwrap(), before);
+    }
+
+    #[test]
+    fn pure_api_config_does_not_confirm_a_chatgpt_choice_even_when_auth_matches() {
+        let (temp, store, gateway) = pending_fixture();
+        std::fs::write(temp.path().join("config.toml"),
+            "model_provider = \"custom\"\n[model_providers.custom]\nrequires_openai_auth = false\n").unwrap();
+        assert!(mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "current-choice").is_err());
+        assert!(store.load().unwrap().native_auth_pending_application.is_some());
+    }
+
+    #[test]
+    fn mismatched_runtime_projection_stays_pending() {
+        let (temp, store, gateway) = pending_fixture();
+        std::fs::write(temp.path().join("auth.json"), auth("bob", 1)).unwrap();
+        assert!(mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "current-choice").is_err());
+        assert!(store.load().unwrap().native_auth_pending_application.is_some());
+    }
+
+    #[test]
+    fn signed_out_choice_requires_native_oauth_to_be_removed_before_confirmation() {
+        let (temp, store, gateway) = pending_fixture();
+        let mut settings = store.load().unwrap();
+        settings.native_auth_selection = Some(NativeAuthSelection::None);
+        store.save(&settings).unwrap();
+        assert!(mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "current-choice").is_err());
+        std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"fixture-api"}"#).unwrap();
+        assert!(mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "current-choice").is_err(),
+            "Removing OAuth alone does not make an old official provider a signed-out connection");
+        let mut settings = store.load().unwrap();
+        settings.relay_profiles[0].config_contents = "model_provider = \"custom\"\n".into();
+        store.save(&settings).unwrap();
+        std::fs::write(temp.path().join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        mark_native_auth_selection_applied_with(temp.path(), &store, &gateway, "current-choice").unwrap();
+        assert!(store.load().unwrap().native_auth_pending_application.is_none());
     }
 }

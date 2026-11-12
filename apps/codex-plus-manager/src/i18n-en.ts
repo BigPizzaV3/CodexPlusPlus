@@ -5,6 +5,9 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "重启 Codex 应用登录选择": "Restart Codex to apply sign-in selection",
+  "已写入凭证：": "Saved credentials: ",
+  "登录选择已保存，重启 Codex 后生效。": "Sign-in selection saved. Restart Codex to apply.",
   "跨账号共用本地项目": "Share local projects across accounts",
   "任意 ChatGPT 账号与不登录状态共用本地项目和会话分类。首次开启汇总已有本地项目，之后的修改和删除共用；云端、远程项目与登录凭证仍保持隔离。写入前自动备份，重新启动 Codex 后生效。": "Share local projects and thread assignments across all ChatGPT accounts and signed-out mode. Existing local projects are combined once; later edits and deletions are shared. Cloud projects, remote projects, and credentials remain isolated. State is backed up before changes. Restart Codex to apply.",
   "Codex 登录": "Codex sign-in",

@@ -1221,6 +1221,9 @@ pub struct BackendSettings {
     /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。
     #[serde(rename = "nativeAuthSelection", default)]
     pub native_auth_selection: Option<NativeAuthSelection>,
+    /// 每次显式选择生成一次；只有对应的全新启动成功后清除，不把写盘当成运行时生效。
+    #[serde(rename = "nativeAuthPendingApplication", default, skip_serializing_if = "Option::is_none")]
+    pub native_auth_pending_application: Option<String>,
     #[serde(rename = "providerSyncSavedProviders", default)]
     pub provider_sync_saved_providers: Vec<String>,
     #[serde(rename = "providerSyncManualProviders", default)]
@@ -1626,6 +1629,7 @@ impl Default for BackendSettings {
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
             native_auth_selection: None,
+            native_auth_pending_application: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),

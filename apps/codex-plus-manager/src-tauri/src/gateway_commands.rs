@@ -149,6 +149,8 @@ pub struct NativeAuthState {
     pub actual_label: String,
     pub accounts: Vec<NativeAuthAccount>,
     pub drift: Option<String>,
+    /// 写入凭据不代表已运行的 app-server 重载了身份。
+    pub restart_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -538,7 +540,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
             source: provider.source.clone(),
         });
     }
-    let drift = match settings.native_auth_selection.as_ref() {
+    let mut drift = match settings.native_auth_selection.as_ref() {
         Some(codex_plus_core::settings::NativeAuthSelection::None) if has_native_login => {
             Some("当前 auth 仍有登录凭据".to_string())
         }
@@ -549,6 +551,20 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         }
         _ => None,
     };
+    if drift.is_none()
+        && settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID
+        && let Some(selection) = settings.native_auth_selection.as_ref()
+    {
+        let expected = matches!(selection, codex_plus_core::settings::NativeAuthSelection::Account { .. });
+        let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+        let live_official = codex_plus_core::relay_config::relay_session_provider_from_config(&config)
+            == codex_plus_core::settings::RelaySessionProvider::Openai;
+        let saved_official = settings.active_relay_session_provider()
+            == codex_plus_core::settings::RelaySessionProvider::Openai;
+        if expected != live_official || expected != saved_official {
+            drift = Some("当前连接尚未切换到所选登录身份，请重新应用".to_string());
+        }
+    }
     Ok(NativeAuthState {
         managed: settings.native_auth_selection.is_some(),
         selection: settings.native_auth_selection,
@@ -556,6 +572,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         actual_label,
         accounts,
         drift,
+        restart_required: settings.native_auth_pending_application.is_some(),
     })
 }
 
@@ -570,6 +587,7 @@ pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
             actual_label: String::new(),
             accounts: Vec::new(),
             drift: Some(error.to_string()),
+            restart_required: false,
         }),
     }
 }
@@ -591,6 +609,10 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
             }
         }
         codex_plus_core::native_auth::set_native_auth_selection(account_ref.as_deref())?;
+        // 复用网关已有的官方会话身份转换，不能只写 auth 而继续留下 requires_openai_auth=false。
+        if apply::sync_codex_identity(&context()).is_err() {
+            anyhow::bail!("登录选择已保存，但连接身份同步失败，请重新应用；尚未重启 Codex");
+        }
         notify_settings_changed();
         native_auth_state()
     })();
@@ -603,6 +625,7 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
             actual_label: String::new(),
             accounts: Vec::new(),
             drift: Some(error.to_string()),
+            restart_required: true,
         }),
     }
 }

@@ -1487,6 +1487,36 @@ async fn shared_local_projects_starts_the_bridge_even_without_other_enhancements
 }
 
 #[tokio::test]
+async fn native_login_choice_is_confirmed_only_for_a_successful_fresh_launch() {
+    for (was_running, injection_failed) in [(false, false), (true, false), (false, true)] {
+        let _state = crate::common::IsolatedTestState::new();
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Codex.app");
+        std::fs::create_dir_all(&app).unwrap();
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+            native_auth_pending_application: Some("fixture-choice".into()),
+            ..Default::default()
+        });
+        hooks.codex_was_running = was_running;
+        if injection_failed {
+            hooks = hooks.with_inject_error("fixture bridge unavailable");
+        }
+        let handle = launch_and_inject_with_hooks(LaunchOptions {
+            app_dir: Some(app),
+            status_store: StatusStore::new(temp.path().join("status.json")),
+            ..Default::default()
+        }, &hooks).await.unwrap();
+        handle.wait_for_codex_exit().await.unwrap();
+        let recorded = events.lock().unwrap();
+        assert_eq!(
+            recorded.iter().any(|event| event == "native-auth-applied:fixture-choice"),
+            !was_running && !injection_failed, "{recorded:?}",
+        );
+    }
+}
+
+#[tokio::test]
 async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enhancements() {
     let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
@@ -2885,6 +2915,7 @@ async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
 
 #[derive(Clone)]
 struct FakeHooks {
+    codex_was_running: bool,
     directory: Arc<tempfile::TempDir>,
     events: Arc<Mutex<Vec<String>>>,
     settings: BackendSettings,
@@ -2909,6 +2940,7 @@ struct FakeHooks {
 impl FakeHooks {
     fn new(events: Arc<Mutex<Vec<String>>>) -> Self {
         Self {
+            codex_was_running: false,
             directory: Arc::new(tempfile::tempdir().unwrap()),
             events,
             settings: BackendSettings::default(),
@@ -2987,6 +3019,17 @@ impl FakeHooks {
 
 #[async_trait::async_trait(?Send)]
 impl LaunchHooks for FakeHooks {
+    fn codex_desktop_running(&self) -> bool {
+        self.codex_was_running
+    }
+
+    fn confirm_native_auth_application(&self, _home: &Path, pending: Option<&str>) -> anyhow::Result<()> {
+        if let Some(pending) = pending {
+            self.event(format!("native-auth-applied:{pending}"));
+        }
+        Ok(())
+    }
+
     fn codex_home_dir(&self) -> PathBuf {
         self.directory.path().to_path_buf()
     }
