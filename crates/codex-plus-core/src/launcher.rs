@@ -897,6 +897,8 @@ where
     let mut helper_port = hooks.select_helper_port(options.helper_port);
     // 被拓展顶替的内置拓展（原生 Fast、强制中文、Work 视图、原生浏览器兼容……）在这次启动里按「关」处理。
     let settings = hooks.effective_settings(hooks.load_settings().await?);
+    // 本地项目共享沿用独立开关；关增强总开关时仍需这条原生通知桥接。
+    let renderer_required = settings.enhancements_enabled || settings.keep_projects_without_account;
     // 请求体上限必须在 helper 绑定端口、开始接收请求前生效；环境变量优先级更高，
     // 由 configured_http_body_bytes 统一处理。
     set_http_body_limit_bytes(settings.helper_max_request_body_bytes());
@@ -1051,7 +1053,7 @@ where
             helper_port = hooks.select_protocol_proxy_port();
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
         }
-        if settings.enhancements_enabled || protocol_proxy_enabled {
+        if renderer_required || protocol_proxy_enabled {
             // macOS 重启时旧 launcher 的 socket 释放可能稍晚于进程退出。
             timeline.mark("helper_bind", 60);
             let bind_retry_timeout_ms =
@@ -1110,7 +1112,7 @@ where
         timeline.mark("launch_codex_done", 80);
 
         let mut injection_degraded = false;
-        if settings.enhancements_enabled {
+        if renderer_required {
             timeline.mark("ensure_injection", 85);
             let injection_ready = hooks
                 .ensure_injection(debug_port, helper_port, &app_dir)
@@ -1118,7 +1120,8 @@ where
             timeline.mark("ensure_injection_done", 95);
             if injection_ready {
                 keep_launched_on_error = false;
-                if (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
+                if settings.enhancements_enabled
+                    && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
                     && let Err(error) = hooks.apply_native_module_patches_on_launch(debug_port).await
                 {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1126,7 +1129,9 @@ where
                         serde_json::json!({ "message": error.to_string() }),
                     );
                 }
-                if let Err(error) = hooks.reload_for_extension_preloads(debug_port).await {
+                if settings.enhancements_enabled
+                    && let Err(error) = hooks.reload_for_extension_preloads(debug_port).await
+                {
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "launcher.extension_preload_reload_failed",
                         serde_json::json!({ "message": error.to_string() }),
@@ -1134,9 +1139,9 @@ where
                 }
                 // 注入成功后页面已加载，此时可以通过 CDP 清理 Electron Local Storage
                 // 中残留的带后缀模型名，避免模型选择器继续显示废弃项。
-                hooks
-                    .sanitize_local_storage_model_suffixes(debug_port)
-                    .await;
+                if settings.enhancements_enabled {
+                    hooks.sanitize_local_storage_model_suffixes(debug_port).await;
+                }
             } else {
                 let degraded = launch_status(
                     "running_degraded",
@@ -1154,11 +1159,11 @@ where
 
         // 注入降级或只启用协议代理也要固定身份；后台重注入不能为旧启动器换绑实例。
         hooks.capture_injected_launch_identity(debug_port).await;
-        if settings.enhancements_enabled && !injection_degraded {
+        if renderer_required && !injection_degraded {
             hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
-        if !settings.enhancements_enabled || !injection_degraded {
+        if !renderer_required || !injection_degraded {
             timeline.mark("ready", 100);
             let status = launch_status(
                 "running",

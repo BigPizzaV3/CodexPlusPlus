@@ -160,6 +160,17 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
     if let Some(record) = state.get(shared_projects::KEY).filter(|v| v["enabled"] == true).cloned() {
         shared_projects::validate(home, &record)?;
         let before = state.clone();
+        // 共享记录只拥有普通本地条目；旧快照不能先覆盖当前的其他主机/云项目或额外分类。
+        for key in [
+            "local-projects", "project-order", "thread-project-assignments",
+            "thread-project-membership-host-ids", "projectless-thread-ids",
+            "pinned-project-ids", "selected-project",
+        ] {
+            match original.get(key) {
+                Some(value) => { state.insert(key.to_string(), value.clone()); }
+                None => { state.remove(key); }
+            }
+        }
         shared_projects::apply(&mut state, &record);
         if state != before {
             changed_keys.insert(shared_projects::KEY.to_string());

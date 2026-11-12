@@ -996,3 +996,30 @@ fn shared_projects_unknown_record_is_never_replaced() {
     assert_eq!(read_state(home), state);
     assert!(!home.join(DETACHED).exists());
 }
+
+#[test]
+fn shared_projects_cloud_scope_restart_does_not_erase_unprojected_canonical_membership() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_state(home, anonymous_state_with_two_accounts());
+    reconcile_account_scope(home, true).unwrap();
+    let mut state = read_state(home);
+    let canonical = state[SHARED]["memberships"]["t1"].clone();
+    state[SHARED]["preparedForLaunch"] = json!(false);
+    state[SHARED]["lastScope"] = json!({"owner":"cloud-account", "projects":[], "memberships":[]});
+    state["local-projects"] = json!({"old": {
+        "id":"old", "name":"cloud", "rootPaths":["/cloud"], "createdAt":1, "updatedAt":9,
+        "chatgptProjectId":"cloud-project"
+    }});
+    state["thread-project-assignments"] = json!({"t1":{"projectKind":"remote","projectId":"remote"}});
+    state["thread-project-membership-host-ids"] = json!({"t1":"remote-host"});
+    state[ACCOUNTS] = json!({"owner":"cloud-account","inactive":{}});
+    let cloud = state["local-projects"]["old"].clone();
+    write_state(home, state);
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert_eq!(next[SHARED]["memberships"]["t1"], canonical);
+    assert_eq!(next[SHARED]["projects"]["old"], project("old", 1));
+    assert_eq!(next["local-projects"]["old"], cloud);
+    assert_eq!(next["thread-project-assignments"]["t1"]["projectKind"], "remote");
+}

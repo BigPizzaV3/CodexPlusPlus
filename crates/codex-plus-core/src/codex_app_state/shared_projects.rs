@@ -42,7 +42,11 @@ fn local_project(id: &str, value: &Value) -> bool {
                             !root.contains("://")
                                 && (root.starts_with('/')
                                     || root.starts_with("\\\\")
-                                    || (root.as_bytes().get(1) == Some(&b':')
+                                    || (root
+                                        .as_bytes()
+                                        .first()
+                                        .is_some_and(u8::is_ascii_alphabetic)
+                                        && root.as_bytes().get(1) == Some(&b':')
                                         && root
                                             .as_bytes()
                                             .get(2)
@@ -186,7 +190,14 @@ pub(super) fn prepare(
             if let Some(globals) = final_globals {
                 let observed = array(saved["lastScope"].get("projects"));
                 let before = object(saved.get("projects"));
+                let observed_memberships = array(saved["lastScope"].get("memberships"));
+                let previous_memberships = object(saved.get("memberships"));
                 merge_source(&mut saved, &globals, true);
+                for (id, entry) in previous_memberships {
+                    if !observed_memberships.contains(&json!(id)) {
+                        saved["memberships"][&id] = entry;
+                    }
+                }
                 let hosts = object(globals.get("thread-project-membership-host-ids"));
                 let projectless = array(globals.get("projectless-thread-ids"));
                 for id in array(saved["lastScope"].get("memberships"))

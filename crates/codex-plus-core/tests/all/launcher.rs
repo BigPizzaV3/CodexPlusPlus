@@ -1458,6 +1458,35 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
 }
 
 #[tokio::test]
+async fn shared_local_projects_starts_the_bridge_even_without_other_enhancements() {
+    let _state = crate::common::IsolatedTestState::new();
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        keep_projects_without_account: true,
+        ..BackendSettings::default()
+    });
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
+            status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
+        },
+        &hooks,
+    ).await.unwrap();
+    handle.wait_for_codex_exit().await.unwrap();
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|event| event == "start-helper:57321"), "{events:?}");
+    assert!(events.iter().any(|event| event == "inject:9229:57321"), "{events:?}");
+    assert!(events.iter().any(|event| event == "shutdown-helper:57321"), "{events:?}");
+}
+
+#[tokio::test]
 async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enhancements() {
     let _state = crate::common::IsolatedTestState::new();
     let temp = tempfile::tempdir().unwrap();
