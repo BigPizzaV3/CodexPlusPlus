@@ -80,7 +80,7 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | Claude Desktop | An enhanced Claude.app copy with Chinese UI, composer dictation, and Computer Use; the official app stays untouched |
 | Session management | Codex, Claude Code, Claude Desktop, and Grok sessions in one list; bulk deletion with undo, Markdown export, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |
 | Codex multi-launch | Start an isolated Codex instance per provider identity, each with its own config, sessions, and user data directory; restart or stop each one individually |
-| Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), or Claude Code and receive results in the same chat; tasks for a busy agent run concurrently up to a limit, then queue |
+| Sub-agent collaboration | Delegate in natural language from a Codex chat to Codex CLI, DeepSeek Harness (dsh), Claude Code, or Google Antigravity (`agy`) and receive results in the same chat; tasks for a busy agent run concurrently up to a limit, then queue |
 | Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, dictation with a global hotkey, native composer predictions, conversation width and scroll restore, native Fast unlock, Goals, next-step suggestions, skins, and image overlays |
 | Usage status line | Output throughput, cache hit rate, and context usage below the composer, read from local Codex session records |
 | Tray panel and WeChat | A tray quick panel to switch models and check usage and recent requests; QR login connects personal WeChat to local Codex sessions |
