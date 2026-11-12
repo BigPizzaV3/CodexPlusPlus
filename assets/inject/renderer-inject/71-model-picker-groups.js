@@ -32,6 +32,8 @@
   /** 沿用旧键中的供应商归属缓存，不再读取旧折叠状态。 */
   const codexPlusModelPickerGroupsStoreKey = "codexPlus.modelPicker.collapsedGroups.v1";
   const codexPlusModelPickerViewStoreKey = "codexPlus.modelPicker.viewMode.v1";
+  /** 折叠分组 id 列表，跨重启/重注入持久化（issue #3073）。 */
+  const codexPlusModelPickerCollapsedListStoreKey = "codexPlus.modelPicker.collapsedList.v1";
   /** 分组标题与工具条节点上的归属标记。 */
   const codexPlusModelPickerGroupsExtMark = "builtin-model-picker-groups";
   /** 样式表节点 id。 */
@@ -219,6 +221,39 @@
       const mode = window.localStorage?.getItem(codexPlusModelPickerViewStoreKey);
       if (mode === "icons" || mode === "list") state.viewMode = mode;
     } catch {}
+    codexPlusModelPickerLoadCollapsed();
+  }
+
+  /**
+   * 恢复持久化的折叠分组 id（issue #3073）。
+   *
+   * 折叠状态过去只留在页面内存里（重注入交接的 viewState），Codex 重启后丢光，
+   * 选择器就退回全部展开。这里与供应商归属缓存分开存一份 id 列表；分页注入后
+   * 第一次打补丁时合并进来。不按当前分组裁剪：重启后目录可能晚于菜单出现，
+   * 先裁剪会把「仍存在的组」也清掉。
+   */
+  function codexPlusModelPickerLoadCollapsed() {
+    const state = codexPlusModelPickerGroupsState;
+    if (state.collapsedLoaded) return;
+    state.collapsedLoaded = true;
+    try {
+      const raw = window.localStorage?.getItem(codexPlusModelPickerCollapsedListStoreKey);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === "string" && id) state.collapsed.add(id);
+        }
+      }
+    } catch {}
+  }
+
+  function codexPlusModelPickerPersistCollapsed() {
+    try {
+      window.localStorage?.setItem(
+        codexPlusModelPickerCollapsedListStoreKey,
+        JSON.stringify([...codexPlusModelPickerGroupsState.collapsed]),
+      );
+    } catch {}
   }
 
   /** 只保存自己覆盖的属性；WeakMap 随重注入交接，不保留已关闭菜单。 */
@@ -340,6 +375,7 @@
         if (action === "collapse") state.collapsed.add(group.id);
         else state.collapsed.delete(group.id);
       });
+      codexPlusModelPickerPersistCollapsed();
     }
     codexPlusModelPickerPatch(list);
     list.querySelector(`[data-codex-plus-model-action="${action === "list" ? "icons" : action === "icons" ? "list" : action}"]`)?.focus({ preventScroll: true });
@@ -1452,6 +1488,7 @@
       if (state.viewMode === "list") {
         if (entry.groupId && state.collapsed.has(entry.groupId)) {
           state.collapsed.delete(entry.groupId);
+          codexPlusModelPickerPersistCollapsed();
           codexPlusModelPickerPatch(list);
         }
       } else if (entry.groupId && state.activeGroupId !== entry.groupId) {
@@ -1689,6 +1726,7 @@
         const id = header.getAttribute(codexPlusModelPickerGroupIdAttr);
         if (event.key === "ArrowLeft") codexPlusModelPickerGroupsState.collapsed.add(id);
         else codexPlusModelPickerGroupsState.collapsed.delete(id);
+        codexPlusModelPickerPersistCollapsed();
         codexPlusModelPickerPatch(list);
         return;
       }
@@ -1775,6 +1813,7 @@
         const collapsed = codexPlusModelPickerGroupsState.collapsed;
         if (collapsed.has(groupId)) collapsed.delete(groupId);
         else collapsed.add(groupId);
+        codexPlusModelPickerPersistCollapsed();
         codexPlusModelPickerPatch(currentList);
       } else {
         codexPlusModelPickerNavigate(currentList, groupId);
@@ -2094,7 +2133,7 @@
     if (state.activeList === list) return;
     if (state.activeList) {
       codexPlusModelPickerClear(state.activeList);
-      state.collapsed?.clear();
+      // 折叠状态跨菜单/重启保留（issue #3073），换列表节点时不再清空。
     }
     state.activeGroupId = "";
     state.activeList = list;
