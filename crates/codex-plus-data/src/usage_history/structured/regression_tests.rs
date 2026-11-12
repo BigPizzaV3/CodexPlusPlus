@@ -2757,6 +2757,314 @@ fn uncertain_counts_do_not_make_another_event_match_a_request_uniquely() {
 }
 
 #[test]
+fn uncertain_events_only_block_requests_in_their_competition_window() {
+    let mut fixture = Fixture::new();
+    fixture.write_classified_segment("rollout-a.jsonl", "model-a", "custom", "main");
+    let mut event = fixture.snapshot().events.remove(0);
+    let at = DateTime::parse_from_rfc3339(&event.timestamp)
+        .unwrap()
+        .timestamp_millis();
+    let mut proof = request();
+    proof.started_at_ms = at - 100;
+    proof.timestamp_ms = at - 10;
+    event.provider.clear();
+
+    for lag in [10, 100_000] {
+        proof.timestamp_ms = at - lag;
+        proof.started_at_ms = proof.timestamp_ms - 100;
+        for kind in ["counts", "cache", "context"] {
+            for scope in ["same", "alias", "other"] {
+                for offset in [-120_001, -120_000, 120_000, 120_001] {
+                    let mut uncertain = event.clone();
+                    uncertain.id = [33; 32];
+                    uncertain.timestamp =
+                        DateTime::from_timestamp_millis(proof.timestamp_ms + offset)
+                            .unwrap()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                    uncertain.delta = Tokens::new(20, 0, 2);
+                    match kind {
+                        "counts" => uncertain.count_uncertain = true,
+                        "cache" => uncertain.delta.cached_known = false,
+                        "context" => uncertain.context_conflicts.model = true,
+                        _ => unreachable!(),
+                    }
+                    let mut aliases = BTreeMap::new();
+                    match scope {
+                        "alias" => {
+                            uncertain.session = "alias-child".into();
+                            aliases.insert(uncertain.session.clone(), event.session.clone());
+                        }
+                        "other" => uncertain.session = "another-session".into(),
+                        _ => {}
+                    }
+                    let mut events = vec![event.clone(), uncertain.clone()];
+                    let mut cache = RequestEvidenceCache::default();
+                    cache.records.push(proof.clone());
+                    let result = cache.attribute(&mut events, &mut BTreeMap::new(), &aliases);
+                    let recovered =
+                        scope == "other" || offset.abs() > DELAYED_REQUEST_MATCH_WINDOW_MS;
+                    assert_eq!(
+                        result["recoveredEvents"],
+                        usize::from(recovered),
+                        "{kind}, {scope}, {lag}, {offset}"
+                    );
+                    assert_eq!(
+                        events[0].delta, event.delta,
+                        "{kind}, {scope}, {lag}, {offset}"
+                    );
+                    assert_eq!(
+                        events[1].delta, uncertain.delta,
+                        "{kind}, {scope}, {lag}, {offset}"
+                    );
+                    assert_eq!(
+                        unknown_provider(&events[0].provider),
+                        !recovered,
+                        "{kind}, {scope}, {lag}, {offset}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn request_log_recovers_after_a_distant_uncertain_counter_reset() {
+    for reset_gap in [2_000, 300_000] {
+        let mut fixture = Fixture::new();
+        fixture.start -= 400_000;
+        let mut reset = fixture.usage(2_000, 1);
+        reset["payload"]["info"]["total_token_usage"] = json!({
+            "input_tokens": 5, "cached_input_tokens": 0, "output_tokens": 1
+        });
+        reset["payload"]["info"]["last_token_usage"] = Value::Null;
+        let mut target = fixture.usage(2_000 + reset_gap, 1);
+        target["payload"]["info"]["total_token_usage"] = json!({
+            "input_tokens": 105, "cached_input_tokens": 20, "output_tokens": 11
+        });
+        fixture.write_segment(
+            "rollout-a.jsonl",
+            vec![
+                fixture.context(500, "model-a"),
+                fixture.usage(1_000, 1),
+                reset,
+                target,
+            ],
+        );
+        let before = fixture.snapshot();
+        assert_eq!(before.events.len(), 3);
+        assert!(before.events[1].count_uncertain);
+        assert!(!before.events[2].count_uncertain);
+        assert!(unknown_provider(&before.events[2].provider));
+        let original = before.events[2].clone();
+        let at = DateTime::parse_from_rfc3339(&original.timestamp)
+            .unwrap()
+            .timestamp_millis();
+        let mut proof = request();
+        proof.started_at_ms = at - 100;
+        proof.timestamp_ms = at - 10;
+        fs::write(
+            &fixture.log,
+            format!("{}\n", serde_json::to_string(&proof).unwrap()),
+        )
+        .unwrap();
+        let after = fixture.snapshot();
+        assert_eq!(after.events.len(), before.events.len());
+        for (left, right) in before.events.iter().zip(&after.events) {
+            assert_eq!(left.id, right.id);
+            assert_eq!(left.delta, right.delta);
+            assert_eq!(left.timestamp, right.timestamp);
+        }
+        let recovered = reset_gap > DELAYED_REQUEST_MATCH_WINDOW_MS;
+        assert_eq!(
+            unknown_provider(&after.events[2].provider),
+            !recovered,
+            "reset_gap={reset_gap}"
+        );
+        if recovered {
+            assert_eq!(after.events[2].provider, "supplier-a");
+            reopen_index(&mut fixture);
+            let restored = fixture.snapshot();
+            assert_eq!(restored.events[2].provider, "supplier-a");
+            assert_eq!(restored.events[2].delta, original.delta);
+        }
+    }
+}
+
+#[test]
+fn incomplete_counts_remain_a_session_wide_attribution_gap() {
+    let mut fixture = Fixture::new();
+    fixture.write_classified_segment("rollout-a.jsonl", "model-a", "custom", "main");
+    let mut event = fixture.snapshot().events.remove(0);
+    let at = DateTime::parse_from_rfc3339(&event.timestamp)
+        .unwrap()
+        .timestamp_millis();
+    let mut proof = request();
+    proof.started_at_ms = at - 100;
+    proof.timestamp_ms = at - 10;
+    event.provider.clear();
+    let mut incomplete = event.clone();
+    incomplete.id = [33; 32];
+    incomplete.count_incomplete = true;
+    incomplete.timestamp = DateTime::from_timestamp_millis(at + 600_000)
+        .unwrap()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut cache = RequestEvidenceCache::default();
+    cache.records.push(proof);
+    let mut events = vec![event, incomplete];
+    let result = cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new());
+    assert_eq!(result["recoveredEvents"], 0);
+    assert!(unknown_provider(&events[0].provider));
+}
+
+#[test]
+fn temporary_uncertain_competition_does_not_reject_saved_attribution() {
+    let mut fixture = Fixture::new();
+    fixture.write_classified_segment("rollout-a.jsonl", "model-a", "custom", "main");
+    let mut event = fixture.snapshot().events.remove(0);
+    let at = DateTime::parse_from_rfc3339(&event.timestamp)
+        .unwrap()
+        .timestamp_millis();
+    let mut proof = request();
+    proof.started_at_ms = at - 100;
+    proof.timestamp_ms = at - 10;
+    event.provider.clear();
+    let mut cache = RequestEvidenceCache::default();
+    cache.records.push(proof);
+    let mut events = vec![event.clone()];
+    assert_eq!(
+        cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+        1
+    );
+    for same_counts in [false, true] {
+        let mut uncertain = event.clone();
+        uncertain.id = [33; 32];
+        uncertain.count_uncertain = true;
+        if !same_counts {
+            uncertain.delta = Tokens::new(20, 0, 2);
+        }
+        events = vec![event.clone(), uncertain];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            0
+        );
+        assert!(!cache.verified[&event.id].rejected);
+        events = vec![event.clone()];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            1
+        );
+    }
+    let mut confirmed_competitor = event.clone();
+    confirmed_competitor.id = [33; 32];
+    events = vec![event.clone(), confirmed_competitor];
+    assert_eq!(
+        cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+        0
+    );
+    assert!(cache.verified[&event.id].rejected);
+    events = vec![event];
+    assert_eq!(
+        cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+        0
+    );
+}
+
+#[test]
+fn uncertain_competition_does_not_hide_a_saved_evidence_conflict() {
+    for conflict in ["event-model", "request-identity"] {
+        let mut fixture = Fixture::new();
+        fixture.write_classified_segment("rollout-a.jsonl", "model-a", "custom", "main");
+        let mut event = fixture.snapshot().events.remove(0);
+        let at = DateTime::parse_from_rfc3339(&event.timestamp)
+            .unwrap()
+            .timestamp_millis();
+        let mut proof = request();
+        proof.started_at_ms = at - 100;
+        proof.timestamp_ms = at - 10;
+        event.provider.clear();
+        let mut cache = RequestEvidenceCache::default();
+        cache.records.push(proof.clone());
+        let mut events = vec![event.clone()];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            1
+        );
+        let mut changed = event.clone();
+        if conflict == "event-model" {
+            changed.model = "model-b".into();
+        } else {
+            let mut conflicting_request = proof.clone();
+            conflicting_request.relay_id = "supplier-b".into();
+            cache.records.push(conflicting_request);
+            let mut other_request = proof.clone();
+            other_request.id = "another-request".into();
+            cache.records.push(other_request);
+        }
+        let mut uncertain = event.clone();
+        uncertain.id = [33; 32];
+        uncertain.count_uncertain = true;
+        uncertain.delta = Tokens::new(20, 0, 2);
+        events = vec![changed, uncertain];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            0,
+            "{conflict}"
+        );
+        assert!(cache.verified[&event.id].rejected, "{conflict}");
+        cache.records = vec![proof];
+        events = vec![event.clone()];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            0,
+            "{conflict}"
+        );
+    }
+}
+
+#[test]
+fn temporary_event_count_gaps_do_not_reject_saved_attribution() {
+    let mut fixture = Fixture::new();
+    fixture.write_classified_segment("rollout-a.jsonl", "model-a", "custom", "main");
+    let mut event = fixture.snapshot().events.remove(0);
+    let at = DateTime::parse_from_rfc3339(&event.timestamp)
+        .unwrap()
+        .timestamp_millis();
+    let mut proof = request();
+    proof.started_at_ms = at - 100;
+    proof.timestamp_ms = at - 10;
+    event.provider.clear();
+    let mut cache = RequestEvidenceCache::default();
+    cache.records.push(proof);
+    let mut events = vec![event.clone()];
+    assert_eq!(
+        cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+        1
+    );
+    for gap in ["uncertain", "incomplete", "cache"] {
+        let mut incomplete = event.clone();
+        match gap {
+            "uncertain" => incomplete.count_uncertain = true,
+            "incomplete" => incomplete.count_incomplete = true,
+            "cache" => incomplete.delta.cached_known = false,
+            _ => unreachable!(),
+        }
+        events = vec![incomplete];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            0,
+            "{gap}"
+        );
+        assert!(!cache.verified[&event.id].rejected, "{gap}");
+        events = vec![event.clone()];
+        assert_eq!(
+            cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new())["recoveredEvents"],
+            1,
+            "{gap}"
+        );
+    }
+}
+
+#[test]
 fn repeated_requests_and_competing_receipts_cannot_reuse_proof() {
     let record = request();
     let row = receipt("receipt-1");
