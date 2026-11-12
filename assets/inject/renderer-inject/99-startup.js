@@ -36,6 +36,7 @@
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  installCodexSharedLocalProjects();
   // 内置功能挂到拓展内核上（见 96-builtin-extensions.js）。旧版直接挂在 body 上的多开身份提示先摘掉，
   // 现在由内置拓展经 overlay 插槽画。用户脚本注入包下发停用 / 顶替状态后会再调一次。
   document.querySelector('body > #codex-plus-instance-identity[data-codex-plus-ext="instance-identity"]')?.remove();

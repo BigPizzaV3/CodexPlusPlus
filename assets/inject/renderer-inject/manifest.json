@@ -51,6 +51,11 @@
       "lines": 133
     },
     {
+      "name": "35-shared-local-projects.js",
+      "description": "现有本地项目保留入口的原生账号切换通知协调",
+      "lines": 442
+    },
+    {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
       "lines": 2419
@@ -208,7 +213,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 43
+      "lines": 44
     },
     {
       "name": "99-tail.js",

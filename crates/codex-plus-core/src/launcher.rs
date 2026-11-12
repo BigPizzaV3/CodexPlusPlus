@@ -927,7 +927,7 @@ where
                 "launcher.after_provider_sync",
             );
         }
-        // #2947 / #3018：非官方登录时 Codex 每次启动都清空匿名身份的项目，开关打开时启动前挪走账号容器。
+        // #2947 / #3018：沿用已有入口，启用时在任意登录状态下准备共享本地项目并备份账号容器。
         crate::codex_app_state::reconcile_account_scope_nonfatal(
             &home,
             &settings,

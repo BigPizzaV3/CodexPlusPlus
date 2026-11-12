@@ -480,7 +480,7 @@ type BackendSettings = WhaleBalanceSettings & {
   /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
   managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
-  /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
+  /** 任意登录账号与不登录状态共享本地项目；沿用已有开关和备份链路。 */
   keepProjectsWithoutAccount?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -10918,10 +10918,10 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                 <ToggleVisual />
               </label>
             </SettingRow>
-            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
+            <SettingRow title={t("跨账号共用本地项目")} description={t("任意 ChatGPT 账号与不登录状态共用本地项目和会话分类。首次开启汇总已有本地项目，之后的修改和删除共用；云端、远程项目与登录凭证仍保持隔离。写入前自动备份，重新启动 Codex 后生效。")}>
               <label className="relay-bare-switch">
                 <input
-                  aria-label={t("非官方登录时保留本地项目")}
+                  aria-label={t("跨账号共用本地项目")}
                   checked={Boolean(form.keepProjectsWithoutAccount)}
                   onChange={(event) => onFormChange({ ...form, keepProjectsWithoutAccount: event.currentTarget.checked })}
                   type="checkbox"

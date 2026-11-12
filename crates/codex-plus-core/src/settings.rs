@@ -1214,9 +1214,8 @@ pub struct BackendSettings {
     /// 默认关闭；用户手动改过模型的会话不受影响。
     #[serde(rename = "threadModelFollowSwitchEnabled", default)]
     pub thread_model_follow_switch_enabled: bool,
-    /// 非官方登录（API Key / 网关 / 聚合）时保留本地项目（#2947 / #3018）。
-    /// Codex 登录过 ChatGPT 后会建账号隔离容器，匿名身份的项目每次启动都被清空；
-    /// 打开后启动前把容器挪走、项目留在顶层，切回官方登录时再放回。默认关闭。
+    /// 任意 ChatGPT 账号与不登录状态共用普通本地项目和会话分类（#2947 / #3018）。
+    /// 沿用原开关和离线备份链路；云端、远程项目及账号私有状态不共享。默认关闭。
     #[serde(rename = "keepProjectsWithoutAccount", default)]
     pub keep_projects_without_account: bool,
     /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。

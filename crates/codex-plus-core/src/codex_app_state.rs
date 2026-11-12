@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use serde_json::{Map, Value, json};
 
+mod shared_projects;
+
 const GLOBAL_STATE_FILE: &str = ".codex-global-state.json";
 const GLOBAL_STATE_BACKUP_FILE: &str = ".codex-global-state.json.bak";
 const BACKUP_ROOT: &str = "backups_state/app-state-sync";
@@ -15,8 +17,6 @@ const ACCOUNT_RENDERER_STATE_KEY: &str = "electron-account-renderer-state-v1";
 /// 非官方登录时被挪走的账号隔离容器（见 [`reconcile_account_scope`]）。
 const DETACHED_ACCOUNT_STATE_FILE: &str = "backups_state/account-scope/detached-renderer-state.json";
 const DETACHED_ACCOUNT_STATE_VERSION: u64 = 1;
-/// 合并旧账号项目时不带过来的键：排队中的追问搬到别的身份下可能被重放。
-const ACCOUNT_SCOPE_MERGE_SKIP_KEYS: &[&str] = &["queued-follow-ups"];
 
 const WORKSPACE_PATH_ARRAY_KEYS: &[&str] = &["electron-saved-workspace-roots", "project-order"];
 
@@ -155,6 +155,15 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
     }
     if let Some(snapshot) = load_snapshot(home)? {
         merge_safe_snapshot(&mut state, &snapshot, &mut changed_keys);
+    }
+    // 快照只能补故障状态，不能覆盖已经建立的共享项目决定（尤其是删除墓碑）。
+    if let Some(record) = state.get(shared_projects::KEY).filter(|v| v["enabled"] == true).cloned() {
+        shared_projects::validate(home, &record)?;
+        let before = state.clone();
+        shared_projects::apply(&mut state, &record);
+        if state != before {
+            changed_keys.insert(shared_projects::KEY.to_string());
+        }
     }
 
     let next = Value::Object(state);
@@ -319,8 +328,8 @@ pub enum AccountScopeOutcome {
 /// 在匿名身份下新建的项目下次启动也会消失（#2947 / #3018 / #3011，原生 Codex 同样复现）。
 ///
 /// 容器不存在时构造函数什么都不做，所以：
-/// - `keep_projects` 为真（开关打开且当前不是官方登录）：把容器原样挪到旁路文件，
-///   并把最近活跃的那个账号的项目合并到顶层（只加不删）；
+/// - `keep_projects` 为真：沿用旁路备份，所有身份使用同一份普通本地项目和会话分类；
+///   只在首次启用时导入各账号，之后以共享记录为准，避免旧快照复活删除的项目；
 /// - `keep_projects` 为假：有旁路文件就把容器放回去，顶层项目归还给当初合并来源的账号。
 ///
 /// 只能在 Codex 未运行时调用，否则 Codex 会用内存里的状态覆盖回去。写之前整份备份。
@@ -333,39 +342,38 @@ pub fn reconcile_account_scope(
     };
     let detached = load_detached_account_state(home)?;
     if keep_projects {
-        if !state.contains_key(ACCOUNT_RENDERER_STATE_KEY) {
-            return Ok(AccountScopeOutcome::Unchanged);
-        }
-        let Some(accounts) = account_renderer_state(&state).cloned() else {
+        let accounts = account_renderer_state(&state).cloned();
+        if state.contains_key(ACCOUNT_RENDERER_STATE_KEY) && accounts.is_none() {
             anyhow::bail!("unrecognized account renderer state; refusing to detach");
-        };
+        }
         let original = Value::Object(state.clone());
+        let shared = shared_projects::prepare(home, &state, detached.as_ref().map(|d| &d.container))?;
+        shared_projects::apply(&mut state, &shared);
         // 已经挪过一次、Codex 又建了新容器（例如在 Codex 里直接登录过）：旧旁路里的身份也要留住。
         let mut container = accounts;
-        if let Some(previous) = detached.as_ref() {
-            merge_missing_inactive_scopes(&mut container, &previous.container);
+        if let Some(container) = container.as_mut()
+            && let Some(previous) = detached.as_ref()
+        {
+            merge_missing_inactive_scopes(container, &previous.container);
         }
-        let source_owner = match container["owner"].as_str() {
-            // 顶层就是这个账号的数据，原样保留即可。
-            Some(owner) => Some(owner.to_string()),
-            None => {
-                let source = latest_project_scope(&container);
-                if let Some(owner) = source.as_deref() {
-                    let scope = container["inactive"][owner].clone();
-                    merge_scope_into_root(&mut state, &scope);
-                }
-                source
-            }
-        };
+        let source_owner = container.as_ref().and_then(|container| {
+            container["owner"].as_str().map(str::to_owned)
+                .or_else(|| latest_project_scope(container))
+        }).or_else(|| detached.as_ref().and_then(|d| d.source_owner.clone()));
         state.remove(ACCOUNT_RENDERER_STATE_KEY);
+        if Value::Object(state.clone()) == original {
+            return Ok(AccountScopeOutcome::Unchanged);
+        }
         let backup_path = create_backup(home, &original)?;
-        write_detached_account_state(
-            home,
-            &DetachedAccountState {
-                container: Value::Object(container),
-                source_owner: source_owner.clone(),
-            },
-        )?;
+        if let Some(container) = container {
+            write_detached_account_state(
+                home,
+                &DetachedAccountState {
+                    container: Value::Object(container),
+                    source_owner: source_owner.clone(),
+                },
+            )?;
+        }
         write_global_state(home, &Value::Object(state.clone()))?;
         return Ok(AccountScopeOutcome::Detached {
             source_owner,
@@ -374,10 +382,19 @@ pub fn reconcile_account_scope(
         });
     }
 
-    let Some(detached) = detached else {
-        return Ok(AccountScopeOutcome::Unchanged);
-    };
     let original = Value::Object(state.clone());
+    if let Some(record) = state.get_mut(shared_projects::KEY).and_then(Value::as_object_mut) {
+        record.insert("enabled".to_string(), json!(false));
+    }
+    let Some(detached) = detached else {
+        if Value::Object(state.clone()) == original {
+            return Ok(AccountScopeOutcome::Unchanged);
+        }
+        let owner = account_renderer_state(&state).and_then(|c| c["owner"].as_str()).map(str::to_owned);
+        let backup_path = create_backup(home, &original)?;
+        write_global_state(home, &Value::Object(state))?;
+        return Ok(AccountScopeOutcome::Reattached { owner, backup_path });
+    };
     let owner = if let Some(current) = account_renderer_state(&state).cloned() {
         // Codex 自己重建了容器（登录过 ChatGPT），顶层已归属当前账号；只补回旁路里有、文件里没有的身份。
         let mut current = current;
@@ -420,12 +437,8 @@ pub fn reconcile_account_scope_nonfatal(
     codex_running: bool,
     source: &str,
 ) {
-    // 供应商管理关着时不知道 Codex 用的是哪种登录，不介入。
-    if !settings.relay_profiles_enabled {
-        return;
-    }
-    let keep_projects = settings.keep_projects_without_account
-        && !crate::official_login::is_official_login_profile(&settings.active_relay_profile());
+    // 本地项目共享由这个已有开关独立控制，不再把供应商类型当成原生登录状态。
+    let keep_projects = settings.keep_projects_without_account;
     if codex_running {
         if keep_projects || detached_account_state_path(home).exists() {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -557,57 +570,6 @@ fn latest_project_scope(container: &Map<String, Value>) -> Option<String> {
         })
         .max()
         .map(|(_, _, owner)| owner)
-}
-
-/// 把身份的 globals / atoms 并进顶层：顶层已有的条目优先，只加不删。
-fn merge_scope_into_root(state: &mut Map<String, Value>, scope: &Value) {
-    if let Some(globals) = scope.get("globals").and_then(Value::as_object) {
-        for (key, saved) in globals {
-            if ACCOUNT_SCOPE_MERGE_SKIP_KEYS.contains(&key.as_str()) {
-                continue;
-            }
-            let merged = match state.get(key) {
-                None | Some(Value::Null) => saved.clone(),
-                Some(current) => merge_root_first(current, saved),
-            };
-            state.insert(key.clone(), merged);
-        }
-    }
-    if let Some(atoms) = scope.get("atoms").and_then(Value::as_object)
-        && !atoms.is_empty()
-    {
-        let root = state
-            .entry("electron-persisted-atom-state".to_string())
-            .or_insert_with(|| json!({}));
-        if let Some(root) = root.as_object_mut() {
-            for (key, value) in atoms {
-                root.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-        }
-    }
-}
-
-fn merge_root_first(current: &Value, saved: &Value) -> Value {
-    match (current, saved) {
-        (Value::Object(current), Value::Object(saved)) => {
-            let mut merged = saved.clone();
-            for (key, value) in current {
-                merged.insert(key.clone(), value.clone());
-            }
-            Value::Object(merged)
-        }
-        // 列表（项目顺序、无项目会话）：来源账号的在前，顶层多出来的接在后面。
-        (Value::Array(current), Value::Array(saved)) => {
-            let mut merged = saved.clone();
-            for value in current {
-                if !merged.contains(value) {
-                    merged.push(value.clone());
-                }
-            }
-            Value::Array(merged)
-        }
-        _ => current.clone(),
-    }
 }
 
 fn project_count(state: &Map<String, Value>) -> usize {
