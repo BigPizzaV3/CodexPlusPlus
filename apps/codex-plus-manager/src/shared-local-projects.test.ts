@@ -231,6 +231,31 @@ test("native standalone order notifications and renamed projects are shared", as
   assert.equal(f.data["local-projects"].p.name, "renamed");
   f.dispose();
 });
+test("non-account full atom synchronization does not roll back pending project edits", async () => {
+  const f = fixture({ ...baseline(), "local-projects": { p: project("p"), q: project("q") }, "project-order": ["p", "q"] });
+  f.start(); await f.drain();
+  f.data["local-projects"].p.name = "renamed";
+  f.notify({ type: "global-state-updated", keys: ["local-projects"] });
+  await f.services.projects.setProjectOrder(["q", "p"]);
+  f.notify({ type: "persisted-atom-sync", state: { "sidebar-width": 300 } });
+  await f.drain();
+  assert.equal(f.data["local-projects"].p.name, "renamed");
+  assert.equal(f.data[key].projects.p.name, "renamed");
+  assert.deepEqual(f.data["project-order"], ["q", "p"]);
+  assert.deepEqual(f.data[key].order, ["q", "p"]);
+  f.dispose();
+});
+test("deleting the final project and an unrelated atom sync are not mistaken for a scope reset", async () => {
+  const f = fixture({ ...empty(), "local-projects": { p: project("p") }, "project-order": ["p"] });
+  f.start(); await f.drain();
+  await f.services.projects.removeLocal("p");
+  f.notify({ type: "persisted-atom-sync", state: {} });
+  await f.drain();
+  assert.equal(f.data["local-projects"].p, undefined);
+  assert.equal(f.data[key].projects.p, undefined);
+  assert.deepEqual(f.errors, []);
+  f.dispose();
+});
 test("native deletion remains a tombstone across accounts and repeated anonymous restarts", async () => {
   const f = fixture();
   f.start(); await f.drain();

@@ -53,7 +53,7 @@
     {
       "name": "35-shared-local-projects.js",
       "description": "现有本地项目保留入口的原生账号切换通知协调",
-      "lines": 442
+      "lines": 448
     },
     {
       "name": "40-backend-settings.js",

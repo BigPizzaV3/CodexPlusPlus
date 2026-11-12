@@ -294,8 +294,14 @@
             const token = { epoch, owner: await owner() };
             let current = await view(token);
             let record = await load(token, current);
-            const changedScope = !stable || stable.owner !== token.owner || stable.epoch !== epoch;
             const messages = events.splice(0);
+            // A full atom sync also happens when opening an overlay, without an
+            // account change. Only the matching empty project reset needs recovery.
+            const reset = messages.some((e) => e.type === "persisted-atom-sync")
+              && !messages.some((e) => e.deletionSnapshot)
+              && !Object.keys(current.raw).length && !Object.keys(current.assignments).length
+              && !current.projectless.length && !current.order.length;
+            const changedScope = !stable || stable.owner !== token.owner || stable.epoch !== epoch || reset;
             if (initial && record.preparedForLaunch !== true && record.lastScope?.owner != null && id(record.lastScope.owner)
                 && Array.isArray(record.lastScope.projects) && Array.isArray(record.lastScope.memberships)) {
               const container = await native(token, () => read(ownerKey));
@@ -354,7 +360,7 @@
       notify(message) {
         if (!active()) return;
         if (message?.type === "persisted-atom-sync") {
-          epoch++;
+          events.push({ type: message.type });
           pending = true;
         } else if (message?.type === "thread-project-memberships-updated") {
           const entries = Array.isArray(message.memberships) ? message.memberships
