@@ -432,7 +432,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "37";
+  const codexAppServerModelRequestPatchVersion = "38";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -12402,6 +12402,25 @@
     return { requestMethod, threadId, model };
   }
 
+  function codexThreadContextSignature(config) {
+    // 路由别名交给原生 turn/start；只有实际窗口配置变化才需要卸载线程。
+    return JSON.stringify([config.model_context_window, config.model_auto_compact_token_limit]);
+  }
+
+  function codexThreadContextMatches(cached, context) {
+    if (cached === context.signature) return true;
+    try {
+      // 热重注入保留了旧版内存缓存：[modelAlias, config]。
+      const previous = JSON.parse(cached);
+      return Array.isArray(previous) && previous.length === 2
+        && typeof previous[0] === "string" && previous[1]
+        && typeof previous[1] === "object" && !Array.isArray(previous[1])
+        && codexThreadContextSignature(previous[1]) === context.signature;
+    } catch {
+      return false;
+    }
+  }
+
   async function codexThreadRuntimeContext(params) {
     const catalog = await loadCodexModelCatalog(true);
     const runtime = catalog.runtimeContext;
@@ -12412,7 +12431,7 @@
     if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
     const model = codexThreadModelRequestState("", params).model || catalog.model;
     const config = runtime.models[model];
-    return config ? { model, config, signature: JSON.stringify([model, config]) } : null;
+    return config ? { model, config, signature: codexThreadContextSignature(config) } : null;
   }
 
   async function prepareCodexThreadContextStart(method, params, hostId) {
@@ -12441,7 +12460,7 @@
       model_auto_compact_token_limit: params.config.model_auto_compact_token_limit,
     };
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    contexts.set(state.threadId, JSON.stringify([state.model, config]));
+    contexts.set(state.threadId, codexThreadContextSignature(config));
     if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
   }
 
@@ -12460,7 +12479,7 @@
     const context = await codexThreadRuntimeContext(params);
     if (!context) return null;
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    if (contexts.get(threadId) === context.signature) return null;
+    if (codexThreadContextMatches(contexts.get(threadId), context)) return null;
     if (window.__codexPlusConnectionRecoveryPending?.has(threadId)
         || window.__codexPlusContextRefreshPending?.has(threadId)) {
       throw new Error("此会话正在检查连接，请稍后重新发送");

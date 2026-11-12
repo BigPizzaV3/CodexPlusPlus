@@ -83,6 +83,43 @@ describe("runtime context refresh", () => {
     }
   });
 
+  it("keeps equal-context account aliases on the native turn path even after a quota failure", async () => {
+    const env = runtime();
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    env.state.runtime.models.alias = {
+      model_auto_compact_token_limit: 117964, model_context_window: 131072,
+    };
+    env.state.status = "active";
+    for (const model of ["alias", "selected", "alias"]) {
+      env.turn.collaborationMode.settings.model = model;
+      assert.equal(await env.refresh(), null);
+      assert.equal(env.turn.collaborationMode.settings.model, model);
+    }
+    assert.equal(env.calls.length, 0, "equal limits must not unsubscribe or resume the native thread");
+  });
+
+  it("recognizes an equal-context cache left by the previous injection version", async () => {
+    const env = runtime();
+    env.context.window.__codexPlusThreadContexts = new Map([["thread", JSON.stringify([
+      "old-account-alias",
+      { model_auto_compact_token_limit: 117964, model_context_window: 131072 },
+    ])]]);
+    env.state.status = "active";
+    assert.equal(await env.refresh(), null);
+    assert.equal(env.calls.length, 0);
+  });
+
+  it("still checks thread safety when an account alias changes the actual context limits", async () => {
+    const env = runtime();
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    env.turn.collaborationMode.settings.model = "other";
+    env.state.status = "active";
+    await assert.rejects(env.refresh(), /当前回复/);
+    assert.deepEqual(env.calls.map(call => call.method), ["thread/read"]);
+  });
+
   it("uses collaboration-mode model selection and preserves permissions and workspace settings", async () => {
     const env = runtime();
     env.turn.collaborationMode.settings.model = "other";
