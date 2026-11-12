@@ -48,7 +48,7 @@ export function SkillDuplicatesDrawer({ onClose, onArchive }: {
     finally { setBusy(false); }
   };
   return <ManagementDrawer title={t("重复副本预览")} dismissOnBackdrop={false} onClose={busy ? () => {} : onClose}
-    footer={<><button type="button" className="cx-secondary" disabled={busy || loading} onClick={() => setRevision((old) => old + 1)}><RefreshCw size={14}/>{t("重新检查")}</button><button type="button" className="cx-secondary" disabled={busy} onClick={onClose}>{t("关闭")}</button></>}>
+    footer={<><button type="button" className="cx-secondary" disabled={busy || loading} onClick={() => setRevision((old) => old + 1)}><RefreshCw size={14}/>{t("重新检查")}</button><button type="button" className="cx-secondary" disabled={busy} onClick={onClose}>{t("关闭预览")}</button></>}>
     {loading && <p className="mg-muted" role="status">{t("正在检查…")}</p>}
     {error && <p className="mg-warning" role="alert">{error}</p>}
     {preview && !preview.candidates.length && <p className="mg-muted">{t("没有发现可比较的重复副本。")}</p>}
