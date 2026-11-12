@@ -196,9 +196,7 @@ fn stop_context(
             .transpose()?,
     };
     Ok(StopContext {
-        // 商店版装在非系统卷时，C 盘的 WindowsApps 包目录是指向实际卷的 junction，
-        // 而进程映像报的是实际卷路径（#3010）。按解析后的真实路径比较，解析不了才用原路径。
-        executable: normalized_path(executable).map(|path| resolved_path_text(&path).unwrap_or(path))?,
+        executable: normalized_path(executable)?,
         user_data,
         debug_port_only: extra_args.is_none(),
         listener_identity: None,
@@ -244,7 +242,7 @@ impl HeldMainProcess for crate::windows_integration::VerifiedStopProcess {
 
     fn possible_target(&self, context: &StopContext) -> Result<Option<bool>> {
         let image = normalized_path(&self.image()?)?;
-        if !image_matches(&context.executable, &image) {
+        if !executable_matches(&context.executable, &image) {
             return Ok(Some(false));
         }
         let arguments = self.arguments()?;
@@ -426,7 +424,7 @@ fn candidate_facts<P: HeldMainProcess>(
                 "已接管的 Codex 监听进程创建身份发生变化"
             );
             let image = normalized_path(&facts.image)?;
-            if !image_matches(&context.executable, &image) {
+            if !executable_matches(&context.executable, &image) {
                 return Ok(None);
             }
             if facts.owner != context.owner {
@@ -528,7 +526,7 @@ enum TargetClassification {
 fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<TargetClassification> {
     anyhow::ensure!(facts.birth != 0, "缺少 Codex 进程创建身份");
     let image = normalized_path(&facts.image)?;
-    if !image_matches(&context.executable, &image) {
+    if !executable_matches(&context.executable, &image) {
         return Ok(TargetClassification::Irrelevant("Codex 入口（可执行文件映像）"));
     }
     if facts.owner.user_sid != context.owner.user_sid {
@@ -599,7 +597,10 @@ fn parsed_arguments_resolving(
         .ok_or_else(|| anyhow::anyhow!("Codex 命令行缺少 argv[0]"))?;
     let first = normalized_path_text(first)?;
     anyhow::ensure!(
-        first == image || resolve(&first).is_some_and(|resolved| resolved == image),
+        first == image
+            || resolve(&first).is_some_and(|resolved| {
+                resolved == image || resolve(image).is_some_and(|image| image == resolved)
+            }),
         "Codex argv[0] 与实际映像不一致"
     );
     parsed_launch_arguments(&arguments[1..])
@@ -701,6 +702,27 @@ fn normalized_path_text(path: &str) -> Result<String> {
         path.pop();
     }
     Ok(path)
+}
+
+/// 先按字面比较；对不上时两边都解析成真实路径再比一次（#3010）。
+/// 商店版装在非系统卷时，预期入口可能是 C 盘 WindowsApps 下的 junction 别名、映像是实际卷路径；
+/// 反过来短文件名（8.3）等写法也可能只在一侧解析。只跟随链接，仍要求是同一个可执行文件。
+fn executable_matches(expected: &str, actual: &str) -> bool {
+    executable_matches_resolving(expected, actual, resolved_path_text)
+}
+
+fn executable_matches_resolving(
+    expected: &str,
+    actual: &str,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> bool {
+    if image_matches(expected, actual) {
+        return true;
+    }
+    match (resolve(expected), resolve(actual)) {
+        (Some(expected), Some(actual)) => image_matches(&expected, &actual),
+        _ => false,
+    }
 }
 
 fn image_matches(expected: &str, actual: &str) -> bool {
@@ -824,7 +846,7 @@ mod tests {
             anyhow::ensure!(self.0.exiting_after_alive_checks.is_none(), "模拟映像已读不到");
             let facts = &self.0.facts[0];
             let image = normalized_path(&facts.image)?;
-            if !image_matches(&context.executable, &image) {
+            if !executable_matches(&context.executable, &image) {
                 return Ok(Some(false));
             }
             Ok(match parsed_arguments(&facts.arguments, &image) {
@@ -1295,6 +1317,25 @@ mod tests {
         assert!(!target_matches(&candidate, &expected).unwrap());
     }
 
+    /// #3010：预期入口和映像只要有一侧是别名，就两边都解析后再比；字面相同（如都用 8.3 短名）不依赖解析。
+    #[test]
+    fn executable_match_resolves_both_sides_only_when_literal_paths_differ() {
+        let alias = normalized_path_text(IMAGE).unwrap();
+        let real = normalized_path_text(r"D:\WindowsApps\OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe").unwrap();
+        let short = normalized_path_text(r"C:\Users\RUNNER~1\AppData\Local\Temp\x\ChatGPT.exe").unwrap();
+        let resolve = |path: &str| Some(if path == alias { real.clone() } else if path == short {
+            "c:\\users\\runneradmin\\appdata\\local\\temp\\x\\chatgpt.exe".to_string()
+        } else { path.to_string() });
+        assert!(executable_matches_resolving(&alias, &real, resolve));
+        // CI 的临时目录是 8.3 短名：预期和映像都是短名时字面就相同，不能因为只解析一侧而失配。
+        assert!(executable_matches_resolving(&short, &short, |_| None));
+        assert!(executable_matches_resolving(&short, &short, resolve));
+        // 解析不了时保持严格比较；解析到不同文件不放行。
+        assert!(!executable_matches_resolving(&alias, &real, |_| None));
+        let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
+        assert!(!executable_matches_resolving(&alias, &other, resolve));
+    }
+
     /// #3010：商店版装在 D 盘时，argv[0] 是 C 盘 WindowsApps 下的 junction 别名，映像是 D 盘真实路径。
     #[test]
     fn junction_alias_argv0_matches_the_real_image_only_through_resolution() {
@@ -1313,7 +1354,8 @@ mod tests {
         assert!(format!("{error:#}").contains("argv[0] 与实际映像不一致"));
         // 解析到别的文件也不能放行。
         let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
-        assert!(parsed_arguments_resolving(&arguments, &image, |_| Some(other.clone())).is_err());
+        let resolves_to_other = |path: &str| (path == alias_key).then(|| other.clone());
+        assert!(parsed_arguments_resolving(&arguments, &image, resolves_to_other).is_err());
         // 字面相同仍直接通过，不依赖解析。
         assert!(parsed_arguments_resolving(&[real.to_string()], &image, |_| None).is_ok());
     }
