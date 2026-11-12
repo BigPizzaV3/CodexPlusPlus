@@ -288,15 +288,31 @@ fn disabling_new_flags_does_not_resurrect_true_from_preserved_unknown_fields() {
     let mut initial = settings("https://upstream.test", RelayProtocol::Responses, "auto");
     initial.relay_profiles[0].trust_upstream_catalog_lite = true;
     initial.relay_profiles[0].strict_responses_reasoning = true;
+    initial.relay_profiles[0].strip_responses_image_detail = true;
+    initial.relay_profiles[0].disable_tool_search = true;
+    initial.relay_profiles[0].pure_api_image_generation = true;
+    initial.relay_profiles[0].multi_agent = "v1".into();
     store.save(&initial).unwrap();
     let mut current = store.load().unwrap();
     assert!(current.relay_profiles[0].strict_responses_reasoning);
+    assert!(current.relay_profiles[0].strip_responses_image_detail);
+    assert!(current.relay_profiles[0].disable_tool_search);
+    assert!(current.relay_profiles[0].pure_api_image_generation);
+    assert_eq!(current.relay_profiles[0].multi_agent, "v1");
     current.relay_profiles[0].strict_responses_reasoning = false;
     current.relay_profiles[0].trust_upstream_catalog_lite = false;
+    current.relay_profiles[0].strip_responses_image_detail = false;
+    current.relay_profiles[0].disable_tool_search = false;
+    current.relay_profiles[0].pure_api_image_generation = false;
+    current.relay_profiles[0].multi_agent.clear();
     store.save(&current).unwrap();
     let reloaded = store.load().unwrap();
     assert!(!reloaded.relay_profiles[0].strict_responses_reasoning);
     assert!(!reloaded.relay_profiles[0].trust_upstream_catalog_lite);
+    assert!(!reloaded.relay_profiles[0].strip_responses_image_detail);
+    assert!(!reloaded.relay_profiles[0].disable_tool_search);
+    assert!(!reloaded.relay_profiles[0].pure_api_image_generation);
+    assert!(reloaded.relay_profiles[0].multi_agent.is_empty());
     let disk: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(
         disk["relayProfiles"][0]
@@ -308,4 +324,16 @@ fn disabling_new_flags_does_not_resurrect_true_from_preserved_unknown_fields() {
             .get("trustUpstreamCatalogLite")
             .is_none()
     );
+    assert!(
+        disk["relayProfiles"][0]
+            .get("stripResponsesImageDetail")
+            .is_none()
+    );
+    assert!(disk["relayProfiles"][0].get("disableToolSearch").is_none());
+    assert!(
+        disk["relayProfiles"][0]
+            .get("pureApiImageGeneration")
+            .is_none()
+    );
+    assert!(disk["relayProfiles"][0].get("multiAgent").is_none());
 }
