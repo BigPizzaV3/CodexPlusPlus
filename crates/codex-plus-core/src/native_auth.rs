@@ -807,18 +807,23 @@ mod tests {
     fn pending_fixture() -> (tempfile::TempDir, SettingsStore, GatewayStore) {
         let temp = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(temp.path().join("settings.json"));
+        let managed = crate::gateway::apply::codex_gateway_profile(
+            &crate::gateway::store::GatewaySettings::default(),
+            &crate::gateway::store::AgentBinding {
+                token: "fixture-gateway-token".into(), model: "fixture-model".into(),
+                ..Default::default()
+            },
+            57321, true,
+        ).unwrap();
         store.save(&BackendSettings {
             active_relay_id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.to_string(),
-            relay_profiles: vec![RelayProfile {
-                id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.to_string(),
-                relay_mode: crate::settings::RelayMode::Official,
-                config_contents: "model_provider = \"openai\"\n".into(),
-                ..Default::default()
-            }],
+            relay_profiles: vec![managed],
             native_auth_selection: Some(NativeAuthSelection::Account { account_ref: "chosen".into() }),
             native_auth_pending_application: Some("current-choice".into()),
             ..Default::default()
         }).unwrap();
+        assert_eq!(store.load().unwrap().active_relay_session_provider(),
+            crate::settings::RelaySessionProvider::Openai);
         let gateway = GatewayStore::at(temp.path().join("gateway.json"));
         let provider: GatewayProvider = serde_json::from_value(json!({
             "enabled": false, "source": "fixture",
