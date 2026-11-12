@@ -139,12 +139,43 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         anyhow::ensure!(!listener.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
     }
     if let Some(port) = owned_debug_port {
-        anyhow::ensure!(
-            crate::windows_integration::loopback_listener_process_ids(port)?.is_empty(),
-            "停止后调试端口出现其他监听者，未继续启动"
-        );
+        // 停止后复核（#3074）：短暂的暂态监听者（例如同实例正在退出的残留进程）
+        // 允许有限等待其退出；超时仍占用则失败并附上脱敏身份摘要，明确显示未启动新实例。
+        ensure_debug_port_released(
+            port,
+            crate::windows_integration::loopback_listener_summaries,
+            || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
+            Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
+        )?;
     }
     Ok(stopped)
+}
+
+/// 停止后复核调试端口：短暂的暂态监听者（例如同实例正在退出的残留进程）允许有限等待其退出；
+/// 超时仍有监听者则失败并附上脱敏身份摘要（PID 与映像文件名），明确显示旧窗口已关闭、未启动新实例，
+/// 不放宽进程归属保护，也不停止未知归属的监听者。
+#[cfg_attr(not(test), allow(dead_code))]
+fn ensure_debug_port_released(
+    port: u16,
+    mut listener_summaries: impl FnMut(u16) -> Result<Vec<String>>,
+    mut wait: impl FnMut(),
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let summaries = listener_summaries(port)?;
+        if summaries.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "停止后调试端口仍有 {} 个监听者（{}）：旧窗口已关闭，未启动新实例；请确认监听者身份或结束残留进程后重试",
+                summaries.len(),
+                summaries.join("、")
+            );
+        }
+        wait();
+    }
 }
 
 fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Result<()> {
@@ -1658,6 +1689,61 @@ mod tests {
                 b"ok"
             );
         }
+    }
+
+    #[test]
+    fn debug_port_released_waits_for_transient_listener_then_succeeds() {
+        let reads = std::cell::Cell::new(0_u32);
+        let waits = std::cell::Cell::new(0_u32);
+        ensure_debug_port_released(
+            9222,
+            |_port| {
+                let n = reads.get();
+                reads.set(n + 1);
+                if n < 3 {
+                    Ok(vec!["pid 4242（ChatGPT.exe）".to_owned()])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            || waits.set(waits.get() + 1),
+            Duration::from_millis(100),
+        )
+        .expect("暂态监听者退出后应通过停止后复核");
+        assert!(reads.get() >= 4);
+        assert!(waits.get() >= 3);
+    }
+
+    #[test]
+    fn debug_port_released_reports_sanitized_listener_identity_on_timeout() {
+        let error = ensure_debug_port_released(
+            9222,
+            |_port| {
+                Ok(vec![
+                    "pid 4242（ChatGPT.exe）".to_owned(),
+                    "pid 512".to_owned(),
+                ])
+            },
+            || {},
+            Duration::from_millis(0),
+        )
+        .expect_err("超时仍有监听者应失败");
+        let message = error.to_string();
+        assert!(message.contains("2 个监听者"), "{message}");
+        assert!(message.contains("pid 4242（ChatGPT.exe）"), "{message}");
+        assert!(message.contains("pid 512"), "{message}");
+        assert!(message.contains("旧窗口已关闭，未启动新实例"), "{message}");
+    }
+
+    #[test]
+    fn debug_port_released_propagates_listener_query_errors() {
+        let result = ensure_debug_port_released(
+            9222,
+            |_port| Err(anyhow::anyhow!("监听者查询失败")),
+            || {},
+            Duration::from_millis(100),
+        );
+        assert!(result.is_err());
     }
 
     #[cfg(windows)]
