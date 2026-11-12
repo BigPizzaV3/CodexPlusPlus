@@ -196,7 +196,9 @@ fn stop_context(
             .transpose()?,
     };
     Ok(StopContext {
-        executable: normalized_path(executable)?,
+        // 商店版装在非系统卷时，C 盘的 WindowsApps 包目录是指向实际卷的 junction，
+        // 而进程映像报的是实际卷路径（#3010）。按解析后的真实路径比较，解析不了才用原路径。
+        executable: normalized_path(executable).map(|path| resolved_path_text(&path).unwrap_or(path))?,
         user_data,
         debug_port_only: extra_args.is_none(),
         listener_identity: None,
@@ -582,14 +584,31 @@ struct ParsedArguments {
 }
 
 fn parsed_arguments(arguments: &[String], image: &str) -> Result<ParsedArguments> {
+    parsed_arguments_resolving(arguments, image, resolved_path_text)
+}
+
+/// argv[0] 可能是 junction 别名（C 盘 WindowsApps 包目录），映像是实际卷路径（#3010）：
+/// 字面不同时再按解析后的真实路径比较一次。解析只跟随链接，不放宽「同一个可执行文件」的要求。
+fn parsed_arguments_resolving(
+    arguments: &[String],
+    image: &str,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> Result<ParsedArguments> {
     let first = arguments
         .first()
         .ok_or_else(|| anyhow::anyhow!("Codex 命令行缺少 argv[0]"))?;
+    let first = normalized_path_text(first)?;
     anyhow::ensure!(
-        normalized_path_text(first)? == image,
+        first == image || resolve(&first).is_some_and(|resolved| resolved == image),
         "Codex argv[0] 与实际映像不一致"
     );
     parsed_launch_arguments(&arguments[1..])
+}
+
+/// 解析链接后的真实路径（已归一化）；路径不存在或无权访问时返回 None，由调用方沿用原路径。
+fn resolved_path_text(path: &str) -> Option<String> {
+    let resolved = std::fs::canonicalize(path).ok()?;
+    normalized_path_text(resolved.to_str()?).ok()
 }
 
 fn parsed_launch_arguments(arguments: &[String]) -> Result<ParsedArguments> {
@@ -1274,6 +1293,29 @@ mod tests {
         assert!(!target_matches(&candidate, &expected).unwrap());
         candidate.image = PathBuf::from(IMAGE.replace("__publisher", "__other"));
         assert!(!target_matches(&candidate, &expected).unwrap());
+    }
+
+    /// #3010：商店版装在 D 盘时，argv[0] 是 C 盘 WindowsApps 下的 junction 别名，映像是 D 盘真实路径。
+    #[test]
+    fn junction_alias_argv0_matches_the_real_image_only_through_resolution() {
+        let alias = IMAGE;
+        let real = r"D:\WindowsApps\OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe";
+        let image = normalized_path_text(real).unwrap();
+        let arguments = vec![alias.to_string(), "--remote-debugging-port=9229".to_string()];
+        let alias_key = normalized_path_text(alias).unwrap();
+        let resolves_to_real = |path: &str| (path == alias_key).then(|| image.clone());
+        let parsed = parsed_arguments_resolving(&arguments, &image, resolves_to_real).unwrap();
+        assert_eq!(parsed.debug_port, Some(9229));
+        // 解析不到（路径不存在 / 无权访问）时保持原来的严格比较。
+        let error = parsed_arguments_resolving(&arguments, &image, |_| None)
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("argv[0] 与实际映像不一致"));
+        // 解析到别的文件也不能放行。
+        let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
+        assert!(parsed_arguments_resolving(&arguments, &image, |_| Some(other.clone())).is_err());
+        // 字面相同仍直接通过，不依赖解析。
+        assert!(parsed_arguments_resolving(&[real.to_string()], &image, |_| None).is_ok());
     }
 
     #[test]
