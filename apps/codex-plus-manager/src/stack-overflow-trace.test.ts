@@ -72,7 +72,8 @@ describe("stack overflow trace (#3036)", () => {
     assert.throws(() => target.other("thread/start"), TypeError);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    assert.deepEqual(logged.map((entry) => [entry.event, entry.detail.where, entry.detail.method]), [
+    assert.deepEqual(logged.map((entry: { event: string; detail: any }) =>
+      [entry.event, entry.detail.where, entry.detail.method]), [
       ["stack_overflow", "client.sync", "thread/start"],
       ["stack_overflow", "client.later", "thread/start"],
     ], "同一入口只记一次，非栈溢出不记");

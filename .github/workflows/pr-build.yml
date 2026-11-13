@@ -371,6 +371,24 @@ jobs:
         run: cargo test --workspace
 
       # 以下打 DEB 的步骤只在手动触发时跑；PR 和推送 main 只跑测试。
+      # sherpa-onnx-sys 见到 target/sherpa-onnx-prebuilt/<包>/lib 就直接用，不再下载；
+      # 缓存里恢复出缺静态库的目录会链接失败。缺库就清掉，构建脚本会重新下载。
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=target/sherpa-onnx-prebuilt
+          [ -d "$root" ] || exit 0
+          for extracted in "$root"/*/; do
+            extracted="${extracted%/}"
+            [ -d "$extracted" ] || continue
+            if [ ! -f "$extracted/lib/libsherpa-onnx-c-api.a" ]; then
+              echo "缺 libsherpa-onnx-c-api.a，清掉 $extracted 和对应压缩包"
+              rm -r -- "$extracted"
+              rm -f -- "$extracted.tar.bz2"
+            fi
+          done
+
       - name: Build Linux application
         if: github.event_name == 'workflow_dispatch'
         run: cargo build --release -p codex-plus-manager
