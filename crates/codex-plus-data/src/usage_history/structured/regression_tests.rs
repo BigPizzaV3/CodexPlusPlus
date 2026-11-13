@@ -4,6 +4,36 @@ use super::*;
 mod actual_attribution_tests;
 
 #[test]
+fn request_evidence_waits_for_in_process_log_trimming() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("request-log.jsonl");
+    fs::write(&path, "").unwrap();
+    let guard = codex_plus_core::request_log::lock_request_log().unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let read_path = path.clone();
+    let thread = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let mut cache = RequestEvidenceCache::default();
+        cache.refresh(&read_path);
+        result_tx.send(cache.records).unwrap();
+    });
+    started_rx.recv().unwrap();
+    assert!(matches!(
+        result_rx.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    fs::write(&path, "{\"id\":\"retained\"}\n").unwrap();
+    drop(guard);
+    let records = result_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, "retained");
+    thread.join().unwrap();
+}
+
+#[test]
 fn local_large_json_strings_keep_only_safe_skill_receipts() {
     let dense = format!("[{}0]", "0,".repeat(40_000));
     assert!(dense.len() > tool_receipts::MAX_JSON_TEXT_BYTES);
