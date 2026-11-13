@@ -248,6 +248,7 @@
         throw error;
       }
     };
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "sendRequest", "plugin.sendRequest");
     client.__codexPluginMarketplaceUnlockPatch = codexPluginMarketplaceUnlockVersion;
     return true;
   }
@@ -468,6 +469,7 @@
         return bridge.__codexPluginMarketplaceOriginalSendMessageFromView(nextMessage);
       };
     }
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(bridge, "sendMessageFromView", "bridge.sendMessageFromView");
     bridge.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
     window.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
     sendCodexPlusDiagnostic("plugin_marketplace_bridge_patch_installed", {});
