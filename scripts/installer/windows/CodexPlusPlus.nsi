@@ -70,27 +70,28 @@ Var LegacyDeleteTries
 !insertmacro WAIT_FOR_PROCESS_EXIT WaitForProcessExit ""
 !insertmacro WAIT_FOR_PROCESS_EXIT un.WaitForProcessExit un.
 
-; 安装目录若被手动改到 Program Files / Windows 等系统目录，普通权限写不进
+; 安装目录若被手动改到 Program Files 等系统目录，普通权限写不进
 ; codex-plus-plus.exe，安装时报“无权限操作”并要求提权（issue #3061）。
-; 默认目录在用户目录下无需提权；发现是系统目录时立即回到目录页让用户改选，
-; 而不是装到一半失败。
+; 默认目录在用户目录下无需提权；发现是系统目录时先提示，默认回到目录页改选，
+; 而不是装到一半失败。以管理员身份运行、确实要装到系统目录的用户仍可选「是」继续。
 Function DirectoryPageLeave
   StrLen $3 "$PROGRAMFILES64"
   StrCpy $4 "$INSTDIR" $3
   StrCmp "$4" "$PROGRAMFILES64" 0 protected_dir_check_next
     Call ProtectedDirWarn
-    Abort
+    Goto protected_dir_done
   protected_dir_check_next:
   StrLen $3 "$PROGRAMFILES"
   StrCpy $4 "$INSTDIR" $3
   StrCmp "$4" "$PROGRAMFILES" 0 protected_dir_done
     Call ProtectedDirWarn
-    Abort
   protected_dir_done:
 FunctionEnd
 
 Function ProtectedDirWarn
-  MessageBox MB_OK|MB_ICONEXCLAMATION "所选安装目录位于系统目录（Program Files），普通权限无法替换其中的程序文件，安装时会报“无权限操作”。$\n$\n建议保持默认安装目录（用户目录下，无需管理员权限），或改选其他非系统目录后继续安装。"
+  MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "所选安装目录位于系统目录（Program Files），普通权限无法替换其中的程序文件，安装时会报“无权限操作”。$\n$\n建议保持默认安装目录（用户目录下，无需管理员权限），或改选其他非系统目录。$\n$\n仍要安装到这里吗？（需要以管理员身份运行安装器）" IDYES protected_dir_confirmed
+    Abort
+  protected_dir_confirmed:
 FunctionEnd
 
 Section "Install"
@@ -135,7 +136,11 @@ Section "Install"
     Sleep 500
     Goto main_binary_delete_loop
   main_binary_delete_failed:
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "无法替换 codex-plus-plus.exe：文件仍被占用或无写入权限。请确认已从系统托盘退出 Codex++（或在任务管理器结束 codex-plus-plus.exe）；若仍失败，请检查杀毒软件是否锁定该文件。若安装目录在 Program Files 等系统目录，普通权限无法写入，请改用默认安装目录或以管理员身份运行安装器。$\n$\n点“重试”继续等待，点“取消”中止安装。" IDRETRY main_binary_delete_loop IDCANCEL main_binary_abort
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "无法替换 codex-plus-plus.exe：文件仍被占用或无写入权限。请确认已从系统托盘退出 Codex++（或在任务管理器结束 codex-plus-plus.exe）；若仍失败，请检查杀毒软件是否锁定该文件。若安装目录在 Program Files 等系统目录，普通权限无法写入，请改用默认安装目录或以管理员身份运行安装器。$\n$\n点“重试”继续等待，点“取消”中止安装。" IDRETRY main_binary_delete_retry IDCANCEL main_binary_abort
+  main_binary_delete_retry:
+    ; 重试要重新计数，否则计数已过 20，IntCmp 不再命中，会无提示地一直轮询。
+    StrCpy $LegacyDeleteTries 0
+    Goto main_binary_delete_loop
   main_binary_abort:
     Abort
   main_binary_removed:

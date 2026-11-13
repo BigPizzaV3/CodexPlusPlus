@@ -248,6 +248,9 @@ fn windows_installer_guards_protected_dirs_and_locked_main_binary() {
     assert!(nsi.contains("StrCmp \"$4\" \"$PROGRAMFILES64\" 0 protected_dir_check_next"));
     assert!(nsi.contains("StrCmp \"$4\" \"$PROGRAMFILES\" 0 protected_dir_done"));
     assert!(nsi.contains("Call ProtectedDirWarn"));
+    // 以管理员身份运行、确实要装到系统目录的用户仍可确认继续，不能一律拦死。
+    assert!(nsi.contains("MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2"));
+    assert!(nsi.contains("IDYES protected_dir_confirmed"));
 
     // 覆盖升级时主 exe 可能因残留文件锁替换失败，File 直接弹系统级“无权限
     // 操作”对话框误导用户找管理员提权；安装段必须先轮询删除并给出可重试的
@@ -267,7 +270,12 @@ fn windows_installer_guards_protected_dirs_and_locked_main_binary() {
         .unwrap();
     assert!(delete_idx < file_idx);
     assert!(install.contains("IntCmp $LegacyDeleteTries 20 main_binary_delete_failed"));
-    assert!(install.contains("IDRETRY main_binary_delete_loop IDCANCEL main_binary_abort"));
+    assert!(install.contains("IDRETRY main_binary_delete_retry IDCANCEL main_binary_abort"));
+    // 重试必须重新计数，否则计数越过 20 后不再弹窗、无提示地一直轮询。
+    let retry = install.split_once("main_binary_delete_retry:\n").unwrap().1;
+    let retry = retry.split_once("main_binary_abort:").unwrap().0;
+    assert!(retry.contains("StrCpy $LegacyDeleteTries 0"));
+    assert!(retry.contains("Goto main_binary_delete_loop"));
     assert!(install.contains("main_binary_abort:\n    Abort"));
 }
 
