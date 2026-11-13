@@ -1109,10 +1109,8 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
         })
 }
 
-/// 接入前对账 auth.json 里的 ChatGPT 登录：若它属于池里某个已停用的网关自有账号，
-/// 那份 token 多半是过期代际——留着它启动 Codex 只会弹官方登录门，而用户要的其实是
-/// 纯 API Key 模式。把这种登录从 auth.json 里拿掉（OPENAI_API_KEY 等其余字段不动）。
-/// 不属于池里任何账号的登录视为用户自己登的，不碰。
+/// 接入前对账 ChatGPT 登录：只清理同一身份、已停用且仍标记借出的网关登录。
+/// 用户在原生 Codex 中自行建立的会话不因供应商池的启用状态而被移除。
 fn reconcile_codex_sign_in(
     ctx: &ApplyContext,
     gateway: &GatewaySettings,
@@ -1130,23 +1128,12 @@ fn reconcile_codex_sign_in(
     }
     let path = ctx.codex_home.join("auth.json");
     let live = std::fs::read_to_string(&path).unwrap_or_default();
-    let account = serde_json::from_str::<Value>(&live)
-        .ok()
-        .and_then(|auth| {
-            auth.pointer("/tokens/account_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    let owner = (!account.is_empty()).then(|| {
-        gateway.providers.iter().find(|provider| {
-            crate::official_login::is_gateway_owned_login(&provider.relay)
-                && crate::official_login::chatgpt_account_id_from_auth_contents(
-                    &provider.relay.auth_contents,
-                ) == account
-        })
+    let owner = gateway.providers.iter().find(|provider| {
+        crate::official_login::is_gateway_owned_login(&provider.relay)
+            && crate::native_auth::same_account(&provider.relay.auth_contents, &live)
     });
-    if let Some(Some(provider)) = owner.filter(|entry| entry.is_some_and(|p| !p.enabled))
+    if let Some(provider) = owner.filter(|provider|
+        !provider.enabled && crate::official_login::is_lent_to_codex(&provider.relay))
         && let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&live)
     {
         let removed = object.remove("tokens").is_some()
@@ -1184,6 +1171,21 @@ fn release_signed_out_selection_after_native_login(
         return Ok(false);
     }
     // 显式退出已在当时移除凭据；此后出现的新登录由 Codex 用户自己控制。
+    let live = std::fs::read_to_string(ctx.codex_home.join("auth.json"))?;
+    ctx.gateway.update(|gateway| {
+        for provider in &mut gateway.providers {
+            if crate::official_login::is_lent_to_codex(&provider.relay)
+                && crate::native_auth::same_account(&provider.relay.auth_contents, &live)
+            {
+                let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
+                if let Some(object) = auth.as_object_mut() {
+                    object.remove(crate::official_login::LENT_TO_CODEX_MARKER);
+                }
+                provider.relay.auth_contents = serde_json::to_string_pretty(&auth)?;
+            }
+        }
+        Ok(())
+    })?;
     let mut adopted = settings.clone();
     adopted.native_auth_selection = None;
     adopted.settings_revision = ctx.settings.save_versioned(&adopted)?;

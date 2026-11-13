@@ -2153,9 +2153,14 @@ fn seed_unsigned_managed_codex(ctx: &ApplyContext) {
 }
 
 fn selected_login(account: &str) -> String {
+    use base64::Engine;
+    let id_token = format!("e30.{}.fixture", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        json!({"sub": format!("fixture-user-{account}"),
+            "https://api.openai.com/auth": {"chatgpt_account_id": account}}).to_string(),
+    ));
     json!({
         "auth_mode":"chatgpt", "codex_plus_gateway":true,
-        "tokens":{"id_token":"fixture-id", "access_token":format!("fixture-{account}"),
+        "tokens":{"id_token":id_token, "access_token":format!("fixture-{account}"),
             "refresh_token":format!("fixture-refresh-{account}"), "account_id":account}
     }).to_string()
 }
@@ -2259,7 +2264,7 @@ fn native_login_after_explicit_sign_out_is_kept_when_synchronizing_gateway_ident
     assert_eq!(auth["auth_mode"], "chatgpt");
     assert_eq!(auth["last_refresh"], login["last_refresh"]);
     assert_eq!(auth["external-field"], login["external-field"]);
-    assert_eq!(auth["OPENAI_API_KEY"], login["OPENAI_API_KEY"]);
+    assert!(auth["OPENAI_API_KEY"].as_str().is_some_and(|key| key.starts_with("cpx-gw-codex-")));
     let applied_auth = std::fs::read(ctx.codex_home.join("auth.json")).unwrap();
     assert!(!sync_codex_identity(ctx).unwrap());
     assert_eq!(std::fs::read(ctx.codex_home.join("auth.json")).unwrap(), applied_auth);
@@ -2332,6 +2337,88 @@ fn explicit_sign_out_without_live_login_does_not_borrow_an_available_pool_accoun
         let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
         assert!(auth.get("tokens").is_none());
     }
+}
+
+#[test]
+fn native_relogin_to_a_disabled_pool_account_survives_refresh_and_new_loans_still_return() {
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::NativeAuthSelection;
+    let fixture = fixture(29564);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let stored = selected_login("shared-account");
+    let (_, id) = add_provider(&ctx.gateway, RelayProfile {
+        name: "Saved login".into(), relay_mode: RelayMode::Official,
+        auth_contents: stored.clone(), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    ctx.gateway.update(|gateway| {
+        let provider = gateway.providers.iter_mut().find(|p| p.relay.id == id).unwrap();
+        let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
+        auth[codex_plus_core::official_login::LENT_TO_CODEX_MARKER] = json!(true);
+        provider.relay.auth_contents = auth.to_string();
+        provider.enabled = false;
+        Ok(())
+    }).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let mut native: Value = serde_json::from_str(&stored).unwrap();
+    native["tokens"]["access_token"] = json!("new-native-access");
+    native["tokens"]["refresh_token"] = json!("new-native-refresh");
+    std::fs::write(ctx.codex_home.join("auth.json"), native.to_string()).unwrap();
+    sync_codex_identity(ctx).unwrap();
+    assert!(ctx.settings.load().unwrap().native_auth_selection.is_none());
+    let gateway = ctx.gateway.load().unwrap();
+    assert!(!codex_plus_core::official_login::is_lent_to_codex(&gateway.provider(&id).unwrap().relay));
+    let pool_auth: Value = serde_json::from_str(&gateway.provider(&id).unwrap().relay.auth_contents).unwrap();
+    assert_eq!(pool_auth["tokens"], serde_json::from_str::<Value>(&stored).unwrap()["tokens"]);
+    for _ in 0..2 {
+        refresh_enabled(ctx).unwrap();
+        enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+        let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["tokens"], native["tokens"]);
+    }
+    // 用户再退出后，下一次真正借出的登录仍由原有借用生命周期管理。
+    std::fs::write(ctx.codex_home.join("auth.json"), r#"{"OPENAI_API_KEY":"fixture"}"#).unwrap();
+    set_provider_enabled(&ctx.gateway, &id, true).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(codex_plus_core::official_login::is_lent_to_codex(&ctx.gateway.load().unwrap().provider(&id).unwrap().relay));
+    set_provider_enabled(&ctx.gateway, &id, false).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert!(auth.get("tokens").is_none());
+}
+
+#[test]
+fn a_disabled_loan_in_the_same_workspace_does_not_own_another_users_native_login() {
+    use base64::Engine;
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::NativeAuthSelection;
+    let fixture = fixture(29565);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let mut stored: Value = serde_json::from_str(&selected_login("team-workspace")).unwrap();
+    stored[codex_plus_core::official_login::LENT_TO_CODEX_MARKER] = json!(true);
+    let (_, id) = add_provider(&ctx.gateway, RelayProfile {
+        name: "Other member".into(), relay_mode: RelayMode::Official,
+        auth_contents: stored.to_string(), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    set_provider_enabled(&ctx.gateway, &id, false).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let mut native = stored;
+    native["tokens"]["id_token"] = json!(format!("e30.{}.fixture",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({"sub":"different-native-user"}).to_string())));
+    native["tokens"]["access_token"] = json!("different-user-access");
+    native["tokens"]["refresh_token"] = json!("different-user-refresh");
+    std::fs::write(ctx.codex_home.join("auth.json"), native.to_string()).unwrap();
+    sync_codex_identity(ctx).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"], native["tokens"]);
+    assert!(codex_plus_core::official_login::is_lent_to_codex(&ctx.gateway.load().unwrap().provider(&id).unwrap().relay));
 }
 
 /// Codex 自己没登录、池里有网关登录的 ChatGPT 账号：接入时借给 Codex 登录（官方身份），
