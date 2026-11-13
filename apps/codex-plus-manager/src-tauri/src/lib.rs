@@ -241,6 +241,26 @@ pub fn run() {
     // 失败只记诊断日志，不影响启动。
     #[cfg(target_os = "macos")]
     std::thread::spawn(codex_plus_core::update::macos::cleanup_stale_update_transactions);
+    // 已经装上的版本不再需要安装包：删掉 updates/ 里不高于当前版本的安装包（#3094）。
+    std::thread::spawn(|| {
+        let removed = codex_plus_core::update::prune_installed_installers(
+            &codex_plus_core::paths::default_app_state_dir().join("updates"),
+            codex_plus_core::version::VERSION,
+        );
+        if !removed.is_empty() {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "update.installers_pruned",
+                serde_json::json!({
+                    "count": removed.len(),
+                    "files": removed
+                        .iter()
+                        .filter_map(|path| path.file_name())
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                }),
+            );
+        }
+    });
     // Codex++ 重启后在原端口恢复 Claude 仍挂接着的本地代理（后台做，不阻塞启动）。
     std::thread::spawn(|| {
         match codex_plus_core::claude_local_backend::resume_attached_proxy() {

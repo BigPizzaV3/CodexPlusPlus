@@ -539,6 +539,62 @@ fn prune_old_installers(download_dir: &Path, current: &Path) {
     }
 }
 
+/// 已经装上的版本不再需要安装包（#3094）：启动时删掉 `updates/` 里版本号不高于当前运行版本的
+/// 安装包及其完成标记，比当前新的（后台已下好、还没装）保留。文件名里认不出版本号的不动。
+/// 安装器可能还在收尾、文件被占用时删不掉，留到下次启动再删。返回删掉的安装包。
+pub fn prune_installed_installers(download_dir: &Path, current_version: &str) -> Vec<PathBuf> {
+    let Ok(current) = parse_version_tag(current_version) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(download_dir) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        if !is_installer_asset_path(&path) {
+            continue;
+        }
+        let Some(mut version) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(installer_file_version)
+        else {
+            continue;
+        };
+        let mut current = current.clone();
+        let len = version.len().max(current.len());
+        version.resize(len, 0);
+        current.resize(len, 0);
+        if version > current {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            let _ = std::fs::remove_file(completion_marker(&path));
+            removed.push(path);
+        }
+    }
+    removed
+}
+
+/// 从 `CodexPlusPlus-2.6.7-windows-x64-setup.exe` 这类文件名里取第一个 `数字.数字.数字` 版本号。
+fn installer_file_version(name: &str) -> Option<Vec<u64>> {
+    name.split(['-', '_', ' '])
+        .map(|part| part.trim_start_matches(['v', 'V']))
+        .find(|part| {
+            let segments: Vec<&str> = part.split('.').collect();
+            segments.len() >= 3
+                && segments[..3]
+                    .iter()
+                    .all(|segment| !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+        .and_then(|part| {
+            part.split('.')
+                .take(3)
+                .map(|segment| segment.parse::<u64>().ok())
+                .collect()
+        })
+}
+
 fn is_installer_asset_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
