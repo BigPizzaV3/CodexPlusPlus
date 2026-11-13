@@ -116,8 +116,14 @@ jobs:
           if ($env:RUST_TEST_FILTER) {
             cargo test --workspace -- $env:RUST_TEST_FILTER --test-threads=1
           } else {
-            cargo test --workspace
+            cargo test --workspace --exclude codex-plus-data
           }
+
+      - name: Data tests (shared memory budget)
+        if: ${{ !inputs.rust_test_filter }}
+        timeout-minutes: 60
+        # 大行索引用例共享进程级缓冲预算，避免不同夹具并发耗尽预算而提前返回 partial。
+        run: cargo test -p codex-plus-data -- --test-threads=1
 
       - name: Build release application
         # PR 和推送 main 只跑测试：release 是第二套完整编译，Windows 上要多 10 分钟左右。
@@ -368,7 +374,12 @@ jobs:
       - name: Rust tests
         # 有用例卡死时到点失败，不要一直占着 runner 到作业 6 小时上限（编译加测试平时 20 分钟左右）。
         timeout-minutes: 60
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude codex-plus-data
+
+      - name: Data tests (shared memory budget)
+        timeout-minutes: 60
+        # 与 Windows 一致，只串行化共用全局缓冲预算的 data 测试。
+        run: cargo test -p codex-plus-data -- --test-threads=1
 
       # 以下打 DEB 的步骤只在手动触发时跑；PR 和推送 main 只跑测试。
       - name: Build Linux application
