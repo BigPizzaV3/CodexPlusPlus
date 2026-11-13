@@ -120,6 +120,16 @@ describe("runtime context refresh", () => {
     assert.deepEqual(env.calls.map(call => call.method), ["thread/read"]);
   });
 
+  it("refreshes context after a finished turn leaves a system error status", async () => {
+    const env = runtime();
+    env.state.status = "systemError";
+    env.snapshot.thread.status.type = "systemError";
+    assert.equal(await env.refresh(), true);
+    assert.deepEqual(env.calls.map(call => call.method),
+      ["thread/read", "thread/turns/list", "thread/resume", "thread/unsubscribe", "thread/resume"]);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 131072);
+  });
+
   it("uses collaboration-mode model selection and preserves permissions and workspace settings", async () => {
     const env = runtime();
     env.turn.collaborationMode.settings.model = "other";

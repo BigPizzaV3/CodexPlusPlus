@@ -3158,7 +3158,9 @@ async fn handle_protocol_proxy_connection_inner(
                 let file_unsupported = error.downcast_ref::<crate::protocol_proxy::UnsupportedInputFile>();
                 let vlm_failure = error.downcast_ref::<crate::vision::VlmPreprocessError>();
                 let local_limited = error.downcast_ref::<crate::gateway::pipeline::LocalRateLimited>();
+                let retired_model = error.downcast_ref::<crate::gateway::server::RetiredCodexModel>();
                 let status = if unsupported.is_some() || search_unsupported.is_some() || file_unsupported.is_some()
+                    || retired_model.is_some()
                     || matches!(vlm_failure, Some(crate::vision::VlmPreprocessError::MissingConfiguration)) {
                     "400 Bad Request"
                 } else if local_limited.is_some() {
@@ -3175,6 +3177,9 @@ async fn handle_protocol_proxy_connection_inner(
                         .or_else(|| search_unsupported.map(|error| error.response_body()))
                         .or_else(|| file_unsupported.map(|error| error.response_body()))
                         .or_else(|| vlm_failure.map(|error| error.response_body()))
+                        .or_else(|| retired_model.map(|error| serde_json::json!({
+                            "error": { "message": error.to_string(), "type": "invalid_request_error", "code": "model_not_found" }
+                        })))
                         .unwrap_or_else(
                             || serde_json::json!({"status":"failed","message":error_chain.clone()}),
                         ),

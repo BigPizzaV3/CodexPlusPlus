@@ -455,6 +455,10 @@ async fn handle_images(
     write_error(stream, agent, 502, &message).await
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("所选网关模型 {0} 已不可用，请重新选择模型")]
+pub(crate) struct RetiredCodexModel(pub String);
+
 /// Grok 等 Responses 客户端：按 Agent 绑定选上游，返回值交给 Codex 代理的输出链路。
 ///
 /// 第二项是成功时占着的限速名额：调用方要持有到响应转发完（流式读完、出错或客户端断开）再放掉。
@@ -472,15 +476,23 @@ pub(crate) async fn open_responses_for_agent(
     let mut request: Value = serde_json::from_str(request_body)?;
     // 起名模型：Codex 给会话起名的请求改发到绑定指定的模型，不落到订阅额度上。
     let title_model = route::title_model_override(&gateway, agent, &request);
-    if title_model.is_none()
+    let conversation_request = title_model.is_none()
         && !route::is_codex_title_request(&request)
-        && request["model"] != crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL
-    {
+        && request["model"] != crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL;
+    if conversation_request {
         super::subagent_models::prepare(&gateway, agent, &mut request, session_headers).await?;
     }
     let model = title_model
         .as_deref()
         .unwrap_or_else(|| request.get("model").and_then(Value::as_str).unwrap_or(""));
+    if *agent == ToolId::Codex && conversation_request
+        && let Some(binding) = gateway.active_binding(agent)
+    {
+        let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+        if route::retired_codex_model(&gateway, binding, &slug) || route::is_disabled_group_model(&gateway, &slug) {
+            return Err(RetiredCodexModel(slug).into());
+        }
+    }
     let conversation = session_headers.session_id.map(str::to_string).or_else(|| {
         request
             .get("prompt_cache_key")

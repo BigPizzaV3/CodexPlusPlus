@@ -1064,7 +1064,7 @@
         contexts.set(threadId, context.signature);
         return null;
       }
-      if (!["idle", "notLoaded"].includes(read.thread.status.type)) {
+      if (!["idle", "notLoaded", "systemError"].includes(read.thread.status.type)) {
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
@@ -1077,7 +1077,7 @@
         return null;
       }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
-      if (current.thread.status.type !== "idle") throw new Error("请先等待当前回复结束，再应用上下文配置");
+      if (!["idle", "systemError"].includes(current.thread.status.type)) throw new Error("请先等待当前回复结束，再应用上下文配置");
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
       resumeParams.modelProvider = current.modelProvider;
       resumeParams.config = { ...resumeParams.config, ...context.config };
@@ -1085,7 +1085,7 @@
       resumeParams = applyCodexManagedSessionConnection("thread/resume", resumeParams, "local");
       await originalSendRequest("thread/unsubscribe", { threadId }, recoveryOptions);
       const resumed = await originalSendRequest("thread/resume", resumeParams, recoveryOptions);
-      if (resumed.thread.status.type !== "idle") throw new Error("会话已开始其他回复，请等待结束后重新发送");
+      if (!["idle", "systemError"].includes(resumed.thread.status.type)) throw new Error("会话已开始其他回复，请等待结束后重新发送");
       contexts.set(threadId, context.signature);
       if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
       sendCodexPlusDiagnostic("thread_model_context_refreshed", { threadId, model: context.model });

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -48,6 +49,11 @@ pub async fn read_codex_model_catalog() -> Value {
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
             let profile = settings.active_relay_profile();
+            if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+                && let Some(catalog) = live_gateway_model_catalog(&home, &profile)
+            {
+                return model_catalog_with_prices(catalog, Some(&settings), &home);
+            }
             let catalog = if let Some(aggregate) = crate::aggregate_catalog::active_model_aggregation(&settings) {
                 crate::aggregate_catalog::catalog_summary(&home, &settings, &aggregate)
                     .unwrap_or_else(|_| relay_profile_model_catalog_value(&home, &profile))
@@ -92,6 +98,49 @@ pub async fn read_codex_model_catalog() -> Value {
     };
     let catalog = read_codex_model_catalog_from_home(&home, &env, client).await;
     model_catalog_with_prices(catalog, loaded_settings.as_ref(), &home)
+}
+
+fn gateway_catalog_config(home: &Path) -> Option<(CodexConfig, HashMap<String, String>, PathBuf)> {
+    let (config, effective, _) = load_codex_config(&home.join("config.toml"));
+    let path = resolve_config_path(home, effective.get("model_catalog_json")?);
+    path.ends_with("model-catalogs/codex-plus-gateway.json")
+        .then_some((config, effective, path))
+}
+
+/// 网关多开实例使用管理器发布的同一份模型目录。
+pub fn gateway_catalog_path(home: &Path) -> Option<PathBuf> {
+    gateway_catalog_config(home).map(|(_, _, path)| path)
+}
+
+pub(crate) fn gateway_catalog_revision(home: &Path) -> Option<u64> {
+    let (_, _, path) = gateway_catalog_config(home)?;
+    let content = std::fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+fn live_gateway_model_catalog(home: &Path, profile: &RelayProfile) -> Option<Value> {
+    let (config, effective, _) = gateway_catalog_config(home)?;
+    let (models, metadata, source) = models_from_config_model_catalog_json(home, &effective);
+    let source = source.expect("managed gateway catalog pointer is present");
+    let model = models.iter().find(|model| **model == config.effective_model).or_else(|| models.first());
+    Some(json!({
+        "status": source["status"],
+        "message": source["message"],
+        "path": home.join("config.toml").to_string_lossy(),
+        "service_tier": service_tier_value(&effective),
+        "model": model.map(String::as_str).unwrap_or_default(),
+        "effective_config_model": config.effective_model,
+        "model_provider": profile.id,
+        "codex_model_provider": effective.get("model_provider"),
+        "provider_name": profile.name,
+        "default_model": model.map(String::as_str).unwrap_or_default(),
+        "models": models,
+        "modelMetadata": metadata,
+        "sources": [source],
+        "responses_api": responses_api_status("unknown", "", "")
+    }))
 }
 
 /// 给目录里每个模型附上公开价格表的单价（`codex_plus_price`），前端模型选择器按它画价格条。
@@ -161,6 +210,59 @@ fn runtime_context_value(home: &Path) -> anyhow::Result<Value> {
 #[cfg(test)]
 mod runtime_context_tests {
     use super::*;
+
+    #[test]
+    fn gateway_catalog_reads_live_models_instead_of_worker_snapshot() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("model-catalogs/codex-plus-gateway.json");
+        std::fs::create_dir(path.parent().unwrap()).unwrap();
+        std::fs::write(home.path().join("config.toml"),
+            "model = 'old'\nmodel_provider = 'custom'\nmodel_catalog_json = 'model-catalogs/codex-plus-gateway.json'\n").unwrap();
+        let profile = RelayProfile {
+            id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into(),
+            model: "old".into(),
+            model_list: "old\nremoved".into(),
+            ..RelayProfile::default()
+        };
+        std::fs::write(&path, r#"{"models":[{"slug":"old"}]}"#).unwrap();
+        let revision = gateway_catalog_revision(home.path()).unwrap();
+        std::fs::write(&path, r#"{"models":[{"slug":"added","codex_plus_group_id":"new-provider"},{"slug":"hidden","visibility":"hide"}]}"#).unwrap();
+        let catalog = live_gateway_model_catalog(home.path(), &profile).unwrap();
+        assert_eq!(catalog["models"], json!(["added"]));
+        assert_eq!(catalog["model"], "added");
+        assert_eq!(catalog["model_provider"], profile.id);
+        assert_eq!(catalog["modelMetadata"]["added"]["codex_plus_group_id"], "new-provider");
+        assert_ne!(gateway_catalog_revision(home.path()).unwrap(), revision);
+        std::fs::write(&path, "invalid catalog").unwrap();
+        assert_eq!(live_gateway_model_catalog(home.path(), &profile).unwrap()["status"], "failed");
+    }
+
+    #[test]
+    fn gateway_catalog_reads_shared_manager_catalog_from_instance_home() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("instance");
+        let path = root.path().join("manager/model-catalogs/codex-plus-gateway.json");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(home.join("config.toml"), format!(
+            "model = 'old'\nmodel_catalog_json = '{}'\n", path.display()
+        )).unwrap();
+        std::fs::write(&path, r#"{"models":[{"slug":"old"}]}"#).unwrap();
+        let profile = RelayProfile {
+            id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into(),
+            ..RelayProfile::default()
+        };
+        let before = gateway_catalog_revision(&home).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let modified = metadata.modified().unwrap();
+        std::fs::write(&path, r#"{"models":[{"slug":"new"}]}"#).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+        let updated = std::fs::metadata(&path).unwrap();
+        assert_eq!(updated.modified().unwrap(), modified);
+        assert_eq!(updated.len(), metadata.len());
+        assert_eq!(live_gateway_model_catalog(&home, &profile).unwrap()["models"], json!(["new"]));
+        assert_ne!(gateway_catalog_revision(&home).unwrap(), before);
+    }
 
     #[test]
     fn runtime_context_uses_live_managed_catalog_defaults_and_explicit_compaction() {

@@ -485,6 +485,9 @@ pub struct AgentBinding {
     /// 已写给这个 Agent 的明确选择；更换默认模型后旧会话仍可能使用。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_selections: Vec<DefaultModelSelection>,
+    /// Codex 曾公布且有明确路由的模型，失效后不能当成从未见过的模型回退。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub known_models: std::collections::BTreeSet<String>,
     /// 额外暴露给 Agent 的模型（每行一个，可带 `[1M]` 窗口后缀）。
     #[serde(default)]
     pub extra_models: Vec<String>,
@@ -532,6 +535,7 @@ impl Default for AgentBinding {
             model: String::new(),
             default_model_selection: None,
             model_selections: Vec::new(),
+            known_models: Default::default(),
             extra_models: Vec::new(),
             claude_roles: ClaudeRoleModels::default(),
             unknown_model: UnknownModelPolicy::default(),
@@ -804,19 +808,29 @@ impl GatewaySettings {
     /// 拓展写了 `override: true` 时顶替已有的（位置不变）。
     /// 只在构建 Agent 的模型资料与网关路由这些只读的地方调用，不要在读-改-写里用，免得写进 gateway.json。
     ///
-    /// 网关每个请求都会走到这里：拓展目录的扫描结果缓存 3 秒，拓展启停、改配置后很快生效。
+    /// 网关每个请求都会走到这里：扫描结果缓存 3 秒，拓展配置变化时立即刷新。
     pub fn with_extension_providers(self) -> Self {
-        type Cached = (std::time::Instant, Vec<(String, crate::user_scripts::ExtensionProvider)>);
+        type Cached = (
+            std::time::Instant,
+            PathBuf,
+            Option<Vec<u8>>,
+            Vec<(String, crate::user_scripts::ExtensionProvider)>,
+        );
         static CACHE: std::sync::Mutex<Option<Cached>> = std::sync::Mutex::new(None);
+        let manager = crate::user_scripts::default_user_script_manager();
+        let config_path = manager.config_path().to_path_buf();
+        let revision = std::fs::read(&config_path).ok();
         let providers = {
             let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match cache.as_ref() {
-                Some((at, list)) if at.elapsed() < std::time::Duration::from_secs(3) => list.clone(),
+                Some((at, path, cached_revision, list))
+                    if at.elapsed() < std::time::Duration::from_secs(3)
+                        && path == &config_path && cached_revision == &revision => list.clone(),
                 _ => {
-                    let list = crate::user_scripts::default_user_script_manager()
+                    let list = manager
                         .enabled_extension_providers()
                         .unwrap_or_default();
-                    *cache = Some((std::time::Instant::now(), list.clone()));
+                    *cache = Some((std::time::Instant::now(), config_path, revision, list.clone()));
                     list
                 }
             }
@@ -888,7 +902,12 @@ impl GatewaySettings {
 /// 拓展供应商从上游拉到的模型：供应商 id + 地址 → (拉取时间, 模型)。过期就在后台重拉，这次先用旧的。
 type DiscoveredModels = std::collections::HashMap<String, (std::time::Instant, Vec<String>)>;
 static DISCOVERED_MODELS: std::sync::LazyLock<std::sync::Mutex<DiscoveredModels>> = std::sync::LazyLock::new(Default::default);
+static DISCOVERED_MODELS_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const DISCOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+pub(crate) fn discovered_models_revision() -> u64 {
+    DISCOVERED_MODELS_REVISION.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider) -> Vec<String> {
     let key = format!("{}|{}", provider.id, provider.base_url);
@@ -921,7 +940,11 @@ fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider
             handle.spawn(async move {
                 match crate::gateway::model_sync::upstream_models(&relay).await {
                     Ok(models) => {
-                        DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(key, (std::time::Instant::now(), models));
+                        let mut cache = DISCOVERED_MODELS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if cache.get(&key).is_none_or(|(_, previous)| previous != &models) {
+                            DISCOVERED_MODELS_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        cache.insert(key, (std::time::Instant::now(), models));
                     }
                     Err(error) => {
                         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -972,6 +995,19 @@ impl GatewayStore {
         let before = read_store(&self.path)?;
         let mut settings = before.clone();
         let value = edit(&mut settings)?;
+        if let Some(previous) = before.active_binding(&ToolId::Codex)
+            && let Some(binding) = settings.active_binding(&ToolId::Codex)
+            && (before.providers != settings.providers || before.groups != settings.groups
+                || previous.pool_exclude != binding.pool_exclude)
+        {
+            let retired: Vec<_> = super::route::codex_binding_models(&before, previous)
+                .into_iter()
+                .filter(|model| super::route::codex_model_available(&before, previous, model)
+                    && !super::route::codex_model_available(&settings, binding, model))
+                .map(|model| model.to_ascii_lowercase())
+                .collect();
+            settings.bindings.get_mut(ToolId::Codex.as_str()).unwrap().known_models.extend(retired);
+        }
         if settings != before {
             write_store(&self.path, &settings)?;
         }
