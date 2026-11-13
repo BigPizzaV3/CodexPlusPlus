@@ -7266,8 +7266,12 @@ impl ChatSseState {
 
         {
             let state = self.tools.entry(chat_index).or_default();
-            if let Some(id) = id_delta {
-                state.call_id = id;
+            if state.call_id.is_empty()
+                && let Some(id) = id_delta.as_deref().filter(|id| !id.trim().is_empty())
+            {
+                // Some providers repeat a streamed tool call with an empty id.
+                // The first non-empty id is the stable identity for this call.
+                state.call_id = id.to_string();
             }
             // 流式场景下 thought_signature/extra_content 通常随首个分片到达，
             // 此时 call_id 已就位；按 call_id 记住，供下一轮回传（issue #332/#1012）。

@@ -4438,6 +4438,45 @@ data: [DONE]
 }
 
 #[test]
+fn chat_sse_ignores_empty_tool_call_id_delta_after_valid_id() {
+    let converted = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_qwen_auto","model":"qwentokenplan/auto","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_qwen","type":"function","function":{"name":"exec","arguments":""}}]}}]}
+
+data: {"id":"chatcmpl_qwen_auto","model":"qwentokenplan/auto","choices":[{"delta":{"tool_calls":[{"index":0,"id":"","function":{"arguments":"{\"cmd\":"}}]}}]}
+
+data: {"id":"chatcmpl_qwen_auto","model":"qwentokenplan/auto","choices":[{"delta":{"tool_calls":[{"index":0,"id":"","function":{"arguments":"\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+    );
+
+    let events = converted
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .collect::<Vec<_>>();
+    let tool_items = events
+        .iter()
+        .filter_map(|event| {
+            let item = event
+                .get("item")
+                .or_else(|| event.pointer("/response/output/0"))?;
+            (item["type"] == "function_call").then(|| item.clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(tool_items.len(), 3, "应产出 added、done 和 completed 三个工具项");
+    for item in &tool_items {
+        assert_eq!(item["id"], "fc_call_qwen", "工具项 id 被空 id 增量污染：{item}");
+        assert_eq!(
+            item["call_id"], "call_qwen",
+            "工具项 call_id 被空 id 增量污染：{item}"
+        );
+    }
+}
+
+#[test]
 fn chat_sse_maps_custom_tool_call_with_request_context() {
     let converted = chat_sse_to_responses_sse_with_request(
         r#"data: {"id":"chatcmpl_custom","model":"gpt-5.4","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom","type":"function","function":{"name":"exec"}}]}}]}
