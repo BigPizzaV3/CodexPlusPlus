@@ -1421,6 +1421,24 @@ pub(crate) fn loopback_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32
     Ok(ids)
 }
 
+/// 停止后复核失败时的监听者脱敏身份摘要：只暴露 PID 与映像文件名，不记录完整路径或参数（#3074）。
+#[cfg(windows)]
+pub(crate) fn loopback_listener_summaries(port: u16) -> anyhow::Result<Vec<String>> {
+    Ok(loopback_listener_process_ids(port)?
+        .into_iter()
+        .map(|process_id| {
+            let image = query_process_image_path(process_id).and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+            match image {
+                Some(name) => format!("pid {process_id}（{name}）"),
+                None => format!("pid {process_id}"),
+            }
+        })
+        .collect())
+}
+
 #[cfg(any(windows, test))]
 fn unique_listener_process_id(ids: &[u32]) -> anyhow::Result<Option<u32>> {
     let first = ids.first().copied();
