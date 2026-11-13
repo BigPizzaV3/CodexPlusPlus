@@ -12242,7 +12242,9 @@
     const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
     const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
       .find((name) => typeof name === "string" && allowed.has(name));
-    for (const key of ["defaultModel", "default_model"]) {
+    // 选择器「重置为默认」读的是 defaultModelSlug 和 versionOptions 里 id=latest 的版本，
+    // 只补 defaultModel/default_model 会让重置落到网关目录之外的模型（#3058）。
+    for (const key of ["defaultModel", "default_model", "defaultModelSlug", "default_model_slug"]) {
       const original = value[key];
       const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
       if (!name || allowed.has(name)) continue;
@@ -12252,6 +12254,40 @@
       }
       value[key] = patched;
       changed = true;
+    }
+    const versionOptions = value.versionOptions;
+    if (Array.isArray(versionOptions)) {
+      const patched = versionOptions.map((version) => {
+        if (!version || typeof version !== "object") return version;
+        let next = version;
+        const versionName = (key) => {
+          const current = next[key];
+          return typeof current === "string" && current && !allowed.has(current) ? current : "";
+        };
+        for (const key of ["defaultModelSlug", "default_model_slug"]) {
+          if (versionName(key)) {
+            if (next === version) next = { ...version };
+            next[key] = fallback;
+          }
+        }
+        const options = next.options;
+        if (Array.isArray(options) && options.some((option) => {
+          const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
+          return typeof name === "string" && name && !allowed.has(name);
+        })) {
+          if (next === version) next = { ...version };
+          next.options = options.map((option) => {
+            const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
+            return typeof name === "string" && name && !allowed.has(name) ? codexPlusModelDescriptor(fallback) : option;
+          });
+        }
+        return next;
+      });
+      if (patched.some((version, index) => version !== versionOptions[index])) {
+        snapshot.fields.versionOptions = { original: versionOptions, patched };
+        value.versionOptions = patched;
+        changed = true;
+      }
     }
     codexPlusModelDefaultSnapshots.set(value, snapshot);
     return changed;
