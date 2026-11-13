@@ -637,6 +637,40 @@ async fn send_sse<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
+async fn forward_response_event<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    lane: &str,
+    response: &mut ActiveResponse,
+    text: &str,
+) -> anyhow::Result<()> {
+    let bytes = response.transformer.push_bytes(format!("data: {text}\n\n").as_bytes());
+    let bytes = if let Some(filter) = response.filter.as_mut() {
+        filter.push(&bytes).await
+    } else {
+        bytes
+    };
+    send_sse(ws, lane, &bytes).await
+}
+
+async fn finish_response<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    lane: &str,
+    response: &mut ActiveResponse,
+) -> anyhow::Result<()> {
+    // 断线也要放行阶段填补暂存的完成事件，并结束本响应的中间件。
+    let bytes = response.transformer.flush_pending();
+    let bytes = if let Some(filter) = response.filter.as_mut() {
+        filter.push(&bytes).await
+    } else {
+        bytes
+    };
+    send_sse(ws, lane, &bytes).await?;
+    if let Some(filter) = response.filter.as_mut() {
+        send_sse(ws, lane, &filter.finish().await).await?;
+    }
+    Ok(())
+}
+
 /// 下游握手完成后仍通过既有准备链为每个 response.create 选模型、认证和 Key。
 pub(crate) async fn handle(
     stream: &mut tokio::net::TcpStream,
@@ -805,6 +839,7 @@ pub(crate) async fn handle(
                     for lane in failed {
                         if let Some(mut response) = active.remove(&lane) {
                             response.log.entry.status_code = 502;
+                            finish_response(&mut ws, &lane, &mut response).await?;
                             record_failure(&response, 502, b"");
                         }
                         send_message(&mut ws, error_event(&lane, 502, "WS 上游连接已关闭；生成结果可能不完整，未自动重发")).await?;
@@ -824,9 +859,10 @@ pub(crate) async fn handle(
                                 let status = error_status(&event);
                                 response.log.entry.status_code = status;
                                 response.log.record_stream(Some("failed"), None, None);
+                                forward_response_event(&mut ws, &lane, &mut response, &text).await?;
+                                finish_response(&mut ws, &lane, &mut response).await?;
                                 record_failure(&response, status, text.as_bytes());
                             }
-                            send_sse(&mut ws, &lane, format!("data: {text}\n\n").as_bytes()).await?;
                         }
                         continue;
                     }
@@ -844,11 +880,9 @@ pub(crate) async fn handle(
                         });
                     }
                     if kind.ends_with(".delta") { response.log.mark_first_token_at(crate::launcher::current_time_ms()); }
-                    let bytes = response.transformer.push_bytes(format!("data: {text}\n\n").as_bytes());
-                    let bytes = if let Some(filter) = response.filter.as_mut() { filter.push(&bytes).await } else { bytes };
-                    send_sse(&mut ws, &lane, &bytes).await?;
+                    forward_response_event(&mut ws, &lane, response, &text).await?;
                     if matches!(kind, "response.completed" | "response.failed" | "response.incomplete" | "error") {
-                        if let Some(filter) = response.filter.as_mut() { send_sse(&mut ws, &lane, &filter.finish().await).await?; }
+                        finish_response(&mut ws, &lane, response).await?;
                         let success = kind == "response.completed" && event.pointer("/response/status").and_then(Value::as_str).is_none_or(|s| s == "completed");
                         let error = event.pointer("/response/error").unwrap_or(&event["error"]);
                         let status = error_status(&event);

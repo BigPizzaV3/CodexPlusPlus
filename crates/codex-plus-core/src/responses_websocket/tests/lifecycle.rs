@@ -77,3 +77,79 @@ async fn gateway_ws_temporary_key_failover_preserves_sticky_key() {
         "Temporary concurrency failover overwrote the original sticky key"
     );
 }
+
+async fn pending_message_on_failure(lane: &str, connection_error: bool) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fixture = Fixture::new(profile(listener.local_addr().unwrap()));
+    let path = fixture.temp.path().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    settings["codexAppThirdPartyReasoningCollapse"] = json!(true);
+    std::fs::write(&path, settings.to_string()).unwrap();
+    let upstream_lane = lane.to_string();
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        next(&mut ws).await;
+        let mut created =
+            json!({"type":"response.created","response":{"id":"partial","status":"in_progress"}});
+        let mut done = json!({"type":"response.output_item.done","output_index":0,"item":{"id":"msg-partial","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"finished answer","annotations":[]}]}});
+        if !upstream_lane.is_empty() {
+            created["stream_id"] = json!(upstream_lane);
+            done["stream_id"] = json!(upstream_lane);
+        }
+        send(&mut ws, created).await;
+        send(&mut ws, done).await;
+        if connection_error {
+            send(&mut ws, json!({"type":"error","status":429,"error":{"code":"rate_limit_exceeded","message":"limited"}})).await;
+            let _ = ws.next().await;
+        } else {
+            ws.close(None).await.unwrap();
+        }
+    });
+    let (url, task) = helper(1).await;
+    let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
+    send(&mut ws, create(lane)).await;
+    let mut observed = Vec::new();
+    loop {
+        let event = next(&mut ws).await;
+        let done = event["type"] == "error";
+        observed.push(event);
+        if done {
+            break;
+        }
+    }
+    ws.close(None).await.unwrap();
+    drop(ws);
+    finish(task).await;
+    finish(upstream).await;
+    assert_eq!(
+        observed.len(),
+        3,
+        "Pending message must precede the failure: {observed:?}"
+    );
+    assert_eq!(observed[1]["type"], "response.output_item.done");
+    assert_eq!(observed[1]["item"]["content"][0]["text"], "finished answer");
+    assert!(
+        observed[1]["item"].get("phase").is_none(),
+        "Failure must not guess the final phase"
+    );
+    if !lane.is_empty() {
+        assert!(observed.iter().all(|event| event["stream_id"] == lane));
+    }
+}
+
+#[tokio::test]
+async fn helper_ws_disconnect_flushes_pending_message() {
+    if isolated("lifecycle::helper_ws_disconnect_flushes_pending_message").await {
+        return;
+    }
+    pending_message_on_failure("", false).await;
+}
+
+#[tokio::test]
+async fn helper_ws_connection_error_flushes_pending_named_message() {
+    if isolated("lifecycle::helper_ws_connection_error_flushes_pending_named_message").await {
+        return;
+    }
+    pending_message_on_failure("worker", true).await;
+}
