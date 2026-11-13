@@ -37,7 +37,7 @@ const LINUX_CODEX_EXECUTABLES: &[&str] = &[
 
 
 #[cfg(windows)]
-const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
+pub(crate) const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
     "OpenAI.Codex_2p2nqsd0c76g0",
     "OpenAI.CodexBeta_2p2nqsd0c76g0",
     "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
