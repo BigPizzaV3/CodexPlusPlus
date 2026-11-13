@@ -2220,11 +2220,17 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     // 浏览器里的网页能对 127.0.0.1 发「简单请求」（不触发预检），读不到答复，但请求照样执行、照样计费。
-    // Agent 都不带 Origin；带了的模型 / 生图 / 转写请求一律拒绝，免得本地服务被网页拿去用池里的额度。
-    if method == "POST"
+    // Agent 都不带 Origin；WS 升级也在路由和鉴权前拦截，免得网页使用上游额度并读取输出。
+    if (method == "POST"
+        || (method == "GET"
+            && header_value_from_headers(&request_headers, "upgrade")
+                .is_some_and(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))))
         && is_billable_proxy_path(path)
-        && header_value_from_headers(&request_headers, "origin")
-            .is_some_and(|origin| !origin.trim().is_empty())
+        && request_headers.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("origin") && !value.trim().is_empty()
+            })
+        })
     {
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "forbidden",

@@ -13,6 +13,7 @@ response.create
 ## 范围
 
 - 普通 `/responses`、`/v1/responses` 等已有普通 Responses 别名；网关现有 Responses Agent 路由。
+- 普通代理与网关在升级和鉴权前拒绝带非空 `Origin` 的 WS 请求（403），避免网页使用本地上游凭据并读取输出；不带 Origin 或只带空值的客户端保持兼容。
 - 每个逻辑响应复用现有准备链。握手只是准备成功，终态才记录请求成功。
 - 同一连接多轮、工具结果回传、`previous_response_id`、`generate:false`；按 `stream_id` 分流、同流 FIFO。
 - 子代理使用同一入口；保留父子线程及逐回合元数据。多个客户端连接并行，状态独立。
