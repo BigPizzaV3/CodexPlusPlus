@@ -899,3 +899,5 @@ fn websocket_error_without_http_status_preserves_failure_classification() {
         );
     }
 }
+
+mod lifecycle;

@@ -294,11 +294,25 @@ async fn open_candidates(
             };
             let failure = match attempt {
                 Ok(Attempt::Success(mut upstream)) => {
+                    // 限速临时顶替不改原会话粘性；WS 将同一规则保留到响应终态。
+                    let same_relay_skipped = deferred
+                        .iter()
+                        .any(|skipped| skipped.relay.id == candidate.relay.id);
+                    let conversation = if same_relay_skipped {
+                        None
+                    } else {
+                        plan.conversation.as_deref()
+                    };
                     if let GatewayUpstream::Pipeline(response) = &mut upstream
                         && let Some(ready) = response.websocket.as_mut()
                     {
                         // WS 握手只是准备成功；收到生成终态后才记 Key 成功与路由粘性。
-                        ready.gateway = Some((plan.clone(), candidate.clone()));
+                        ready.gateway = Some(crate::responses_websocket::GatewayResponse {
+                            plan: plan.clone(),
+                            candidate: candidate.clone(),
+                            key_conversation: conversation.map(str::to_string),
+                            remember_route: deferred.is_empty(),
+                        });
                         observe_quota_headers(&candidate.relay, &ready.headers);
                         return Ok(GatewayOutcome {
                             upstream,
@@ -310,14 +324,6 @@ async fn open_candidates(
                     recorder.step(candidate, "answered", None, upstream.status_code());
                     // 排在它前面的候选因为限速满了被跳过：这次只是临时顶替，不改会话固定
                     // （同一家的 Key 粘性、模型组记住的成员都保持原样）。
-                    let same_relay_skipped = deferred
-                        .iter()
-                        .any(|skipped| skipped.relay.id == candidate.relay.id);
-                    let conversation = if same_relay_skipped {
-                        None
-                    } else {
-                        plan.conversation.as_deref()
-                    };
                     key_pool::record_success(&candidate.key, conversation);
                     crate::gateway::speed::record(
                         &candidate.relay.id,

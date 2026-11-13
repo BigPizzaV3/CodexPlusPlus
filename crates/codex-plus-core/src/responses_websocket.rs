@@ -86,10 +86,17 @@ pub(crate) struct PreparedWebsocket {
     // 同指纹首次握手串行，其他指纹及 Key 排队互不阻塞；注册连接之后释放。
     registration: Option<tokio::sync::OwnedMutexGuard<()>>,
     pub(crate) headers: reqwest::header::HeaderMap,
-    pub(crate) gateway: Option<(RoutePlan, GatewayCandidate)>,
+    pub(crate) gateway: Option<GatewayResponse>,
     pub(crate) rotation: Option<crate::settings::BackendSettings>,
     pub(crate) recorder: Option<crate::gateway::activity::RouteRecorder>,
     pub(crate) busy: Option<crate::gateway::activity::InFlight>,
+}
+
+pub(crate) struct GatewayResponse {
+    pub(crate) plan: RoutePlan,
+    pub(crate) candidate: GatewayCandidate,
+    pub(crate) key_conversation: Option<String>,
+    pub(crate) remember_route: bool,
 }
 
 pub(crate) enum PreparedUpstream {
@@ -384,9 +391,9 @@ impl Drop for ActiveResponse {
         if let Some(mut recorder) = self.ready.recorder.take() {
             let success =
                 self.log.entry.success && self.log.entry.stream_outcome.as_deref() == Some("ok");
-            if let Some((_, candidate)) = &self.ready.gateway {
+            if let Some(gateway) = &self.ready.gateway {
                 recorder.step(
-                    candidate,
+                    &gateway.candidate,
                     if success { "answered" } else { "failed" },
                     None,
                     Some(self.log.entry.status_code),
@@ -425,7 +432,8 @@ fn error_status(event: &Value) -> u16 {
 }
 
 fn record_failure(response: &ActiveResponse, status: u16, body: &[u8]) {
-    if let Some((_, candidate)) = &response.ready.gateway {
+    if let Some(gateway) = &response.ready.gateway {
+        let candidate = &gateway.candidate;
         let class = crate::gateway::key_pool::classify_failure(
             status,
             &reqwest::header::HeaderMap::new(),
@@ -832,7 +840,7 @@ pub(crate) async fn handle(
                         registry.lock().unwrap_or_else(|p| p.into_inner()).responses.insert(response_id.into(), Affinity {
                             connection: id.clone(), relay: response.ready.relay.clone(),
                             model: response.ready.body["model"].as_str().unwrap_or("").into(),
-                            key: response.ready.gateway.as_ref().map(|(_, c)| c.key.clone()),
+                            key: response.ready.gateway.as_ref().map(|gateway| gateway.candidate.key.clone()),
                         });
                     }
                     if kind.ends_with(".delta") { response.log.mark_first_token_at(crate::launcher::current_time_ms()); }
@@ -849,9 +857,12 @@ pub(crate) async fn handle(
                         response.log.record_stream(if success { None } else if kind == "response.incomplete" { Some("incomplete") } else { Some("failed") }, None, None);
                         if success { response.log.record_final_response(response.transformer.final_response_usage()); }
                         if success {
-                            if let Some((plan, candidate)) = &response.ready.gateway {
-                                crate::gateway::key_pool::record_success(&candidate.key, plan.conversation.as_deref());
-                                crate::gateway::route::remember_answer(plan, candidate);
+                            if let Some(gateway) = &response.ready.gateway {
+                                let candidate = &gateway.candidate;
+                                crate::gateway::key_pool::record_success(&candidate.key, gateway.key_conversation.as_deref());
+                                if gateway.remember_route {
+                                    crate::gateway::route::remember_answer(&gateway.plan, candidate);
+                                }
                                 crate::gateway::speed::record(&candidate.relay.id, &candidate.upstream_model, response.started.elapsed());
                             }
                             if let Some(settings) = &response.ready.rotation {
