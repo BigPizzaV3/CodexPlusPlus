@@ -378,9 +378,9 @@ describe("runtime context through host RPC", () => {
   it("upgrades an older interceptor without wrapping it", () => {
     const env = runtime();
     const original = env.window.__codexPlusRpcFrameInterceptor.original;
-    env.window.__codexPlusRpcFrameInterceptor.version = 6;
+    env.window.__codexPlusRpcFrameInterceptor.version = 18;
     env.api.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 9);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 19);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
   });
 
