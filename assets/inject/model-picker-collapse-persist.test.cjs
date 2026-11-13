@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { test } = require("node:test");
-const vm = require("node:path") === null ? null : require("node:vm");
+const vm = require("node:vm");
 const path = require("node:path");
 
 const source = readFileSync(path.join(__dirname, "renderer-inject", "71-model-picker-groups.js"), "utf8");
@@ -85,9 +85,9 @@ test("坏数据不抛错、不污染状态", () => {
     getItem: () => "not-json{",
     setItem() {},
   };
-  const { state } = makeContext(store);
-  const { ctx } = makeContext(store);
+  const { ctx, state } = makeContext(store);
   vm.runInContext(`var codexPlusModelPickerLoadCollapsed; ${extract("codexPlusModelPickerLoadCollapsed", "function codexPlusModelPickerPersistCollapsed")}`, ctx);
   ctx.codexPlusModelPickerLoadCollapsed();
   assert.equal(state.collapsed.size, 1, "只保留交接来的 id");
+  assert.ok(state.collapsed.has("旧实例交接的组"));
 });
