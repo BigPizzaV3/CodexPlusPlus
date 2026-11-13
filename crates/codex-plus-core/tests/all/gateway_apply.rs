@@ -2235,23 +2235,103 @@ fn native_selection_does_not_reconnect_a_disabled_or_taken_over_gateway() {
 }
 
 #[test]
-fn explicit_signed_out_choice_overrides_stale_live_oauth_when_synchronizing_gateway_identity() {
+fn native_login_after_explicit_sign_out_is_kept_when_synchronizing_gateway_identity() {
     use codex_plus_core::gateway::apply::sync_codex_identity;
     use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
     let fixture = fixture(29559);
     let ctx = &fixture.ctx;
     seed_unsigned_managed_codex(ctx);
-    std::fs::write(ctx.codex_home.join("auth.json"), selected_login("old-account")).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let mut login: Value = serde_json::from_str(&selected_login("new-native-account")).unwrap();
+    login["OPENAI_API_KEY"] = json!("fixture-api-key");
+    login["last_refresh"] = json!("2026-11-14T00:00:00Z");
+    login["external-field"] = json!({"preserved": true});
+    std::fs::write(ctx.codex_home.join("auth.json"), login.to_string()).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    let settings = ctx.settings.load().unwrap();
+    assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Openai);
+    assert!(settings.native_auth_selection.is_none());
+    let auth: Value = serde_json::from_str(
+        &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"], login["tokens"]);
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["last_refresh"], login["last_refresh"]);
+    assert_eq!(auth["external-field"], login["external-field"]);
+    assert_eq!(auth["OPENAI_API_KEY"], login["OPENAI_API_KEY"]);
+    let applied_auth = std::fs::read(ctx.codex_home.join("auth.json")).unwrap();
+    assert!(!sync_codex_identity(ctx).unwrap());
+    assert_eq!(std::fs::read(ctx.codex_home.join("auth.json")).unwrap(), applied_auth);
+}
+
+#[test]
+fn native_login_clears_old_sign_out_choice_even_when_the_connection_already_matches() {
+    use codex_plus_core::gateway::{apply::sync_codex_identity, connection_generation};
+    use codex_plus_core::settings::NativeAuthSelection;
+    let fixture = fixture(29561);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let login = selected_login("new-native-account");
+    std::fs::write(ctx.codex_home.join("auth.json"), &login).unwrap();
     assert!(sync_codex_identity(ctx).unwrap());
     let mut settings = ctx.settings.load().unwrap();
     settings.native_auth_selection = Some(NativeAuthSelection::None);
     ctx.settings.save(&settings).unwrap();
-    assert!(sync_codex_identity(ctx).unwrap());
-    assert_eq!(ctx.settings.load().unwrap().active_relay_session_provider(), RelaySessionProvider::Custom);
-    let auth: Value = serde_json::from_str(
-        &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
-    assert!(auth.get("tokens").is_none());
+    let config = std::fs::read(ctx.codex_home.join("config.toml")).unwrap();
+    let auth = std::fs::read(ctx.codex_home.join("auth.json")).unwrap();
+    let generation = connection_generation::read(&ctx.codex_home).unwrap();
     assert!(!sync_codex_identity(ctx).unwrap());
+    assert!(ctx.settings.load().unwrap().native_auth_selection.is_none());
+    assert_eq!(std::fs::read(ctx.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(std::fs::read(ctx.codex_home.join("config.toml")).unwrap(), config);
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), generation);
+}
+
+#[test]
+fn gateway_reapplication_respects_a_native_login_after_explicit_sign_out() {
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29562);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let login = selected_login("native-reapplication");
+    std::fs::write(ctx.codex_home.join("auth.json"), &login).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let settings = ctx.settings.load().unwrap();
+    assert!(settings.native_auth_selection.is_none());
+    assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Openai);
+    let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"], serde_json::from_str::<Value>(&login).unwrap()["tokens"]);
+}
+
+#[test]
+fn explicit_sign_out_without_live_login_does_not_borrow_an_available_pool_account() {
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29563);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    add_provider(&ctx.gateway, RelayProfile {
+        name: "Available saved login".into(), relay_mode: RelayMode::Official,
+        auth_contents: selected_login("saved-pool-account"), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    for live in [r#"{"OPENAI_API_KEY":"fixture-key"}"#,
+        r#"{"OPENAI_API_KEY":"fixture-key","tokens":{"access_token":"  "}}"#] {
+        std::fs::write(ctx.codex_home.join("auth.json"), live).unwrap();
+        sync_codex_identity(ctx).unwrap();
+        enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+        let settings = ctx.settings.load().unwrap();
+        assert_eq!(settings.native_auth_selection, Some(NativeAuthSelection::None));
+        assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Custom);
+        let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+        assert!(auth.get("tokens").is_none());
+    }
 }
 
 /// Codex 自己没登录、池里有网关登录的 ChatGPT 账号：接入时借给 Codex 登录（官方身份），

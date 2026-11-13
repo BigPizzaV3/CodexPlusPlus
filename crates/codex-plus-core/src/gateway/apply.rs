@@ -1113,16 +1113,20 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
 /// 那份 token 多半是过期代际——留着它启动 Codex 只会弹官方登录门，而用户要的其实是
 /// 纯 API Key 模式。把这种登录从 auth.json 里拿掉（OPENAI_API_KEY 等其余字段不动）。
 /// 不属于池里任何账号的登录视为用户自己登的，不碰。
-fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> bool {
-    if let Ok(settings) = ctx.settings.load() {
-        match settings.native_auth_selection {
-            // 网关是否消费这个供应商与用户显式选择的原生登录相互独立。
-            Some(crate::settings::NativeAuthSelection::Account { .. }) => {
-                return codex_signed_in(&ctx.codex_home);
-            }
-            Some(crate::settings::NativeAuthSelection::None) => return false,
-            None => {}
+fn reconcile_codex_sign_in(
+    ctx: &ApplyContext,
+    gateway: &GatewaySettings,
+    settings: &mut BackendSettings,
+) -> anyhow::Result<bool> {
+    match settings.native_auth_selection.as_ref() {
+        // 网关是否消费这个供应商与用户显式选择的原生登录相互独立。
+        Some(crate::settings::NativeAuthSelection::Account { .. }) => {
+            return Ok(codex_signed_in(&ctx.codex_home));
         }
+        Some(crate::settings::NativeAuthSelection::None) => {
+            return release_signed_out_selection_after_native_login(ctx, settings);
+        }
+        None => {}
     }
     let path = ctx.codex_home.join("auth.json");
     let live = std::fs::read_to_string(&path).unwrap_or_default();
@@ -1167,7 +1171,24 @@ fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> boo
             );
         }
     }
-    codex_signed_in(&ctx.codex_home)
+    Ok(codex_signed_in(&ctx.codex_home))
+}
+
+fn release_signed_out_selection_after_native_login(
+    ctx: &ApplyContext,
+    settings: &mut BackendSettings,
+) -> anyhow::Result<bool> {
+    if settings.native_auth_selection != Some(crate::settings::NativeAuthSelection::None)
+        || !codex_signed_in(&ctx.codex_home)
+    {
+        return Ok(false);
+    }
+    // 显式退出已在当时移除凭据；此后出现的新登录由 Codex 用户自己控制。
+    let mut adopted = settings.clone();
+    adopted.native_auth_selection = None;
+    adopted.settings_revision = ctx.settings.save_versioned(&adopted)?;
+    *settings = adopted;
+    Ok(true)
 }
 
 /// 接入网关前 Codex 实时配置的副本。只在实时配置与直连模式的记录对不上时才存：
@@ -1550,7 +1571,7 @@ fn write_codex(
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();
     // Codex 自己没登录、池里有网关登录的 ChatGPT 账号：借给 Codex，让它以官方身份接入。
     // WSL 模式下不用官方身份（见 [`codex_gateway_profile_on`]），也就不借。
-    let signed_in = reconcile_codex_sign_in(ctx, gateway);
+    let signed_in = reconcile_codex_sign_in(ctx, gateway, &mut settings)?;
     let lend = (!signed_in
         && wsl_host.is_none()
         && crate::native_auth::selection_allows_auto_lend(&settings))
@@ -2444,7 +2465,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     else {
         return Ok(false);
     };
-    let settings = ctx.settings.load()?;
+    let mut settings = ctx.settings.load()?;
     if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID {
         return Ok(false);
     }
@@ -2462,8 +2483,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     }
     let keeps_login =
         settings.active_relay_session_provider() == crate::settings::RelaySessionProvider::Openai;
-    let can_sign_in = (settings.native_auth_selection != Some(crate::settings::NativeAuthSelection::None)
-        && codex_signed_in(&ctx.codex_home))
+    let can_sign_in = codex_signed_in(&ctx.codex_home)
         || (crate::native_auth::selection_allows_auto_lend(&settings)
             && lendable_login(&gateway).is_some());
     let image_config_matches = if can_sign_in {
@@ -2485,6 +2505,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
         registered == crate::gateway::images::targets(&gateway, &ToolId::Codex, None).is_ok()
     };
     if keeps_login == can_sign_in && image_config_matches {
+        release_signed_out_selection_after_native_login(ctx, &mut settings)?;
         return Ok(false);
     }
     if write_codex(ctx, &gateway, &binding.clone(), false)? {
