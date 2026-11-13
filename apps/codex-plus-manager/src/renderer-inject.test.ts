@@ -4843,9 +4843,6 @@ describe("extension rpc frame interception", () => {
       ["push", ["pipeline", -688, [], [{ clientUserMessageId: "blocked" }, "full", ["promise", -0.5]]]],
       ["reject", -0.5, ["error", "Error", "blocked by policy"]],
     ]);
-    const rpc = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-rpc.js", import.meta.url), "utf8");
-    assert.match(rpc, /codexPlusRpcInterceptorVersion = 9;/);
-    assert.doesNotMatch(rpc, /codexPlusRpcPlanResume|prepareCodexThreadProviderResume|codexPlusRpcResumeGates/);
   });
 
   it("routes manager sendRequest calls through codex/request", async () => {

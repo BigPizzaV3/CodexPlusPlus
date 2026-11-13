@@ -1150,7 +1150,8 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId,
+        providerRefreshFailed, originalSendRequest, options?.__codexPlusProviderResume, client);
       const connectionParams = await prepareCodexManagedSessionConnection(String(method || ""),
         resumeParams, client.hostId, originalSendRequest);
       const nextParams = await prepareCodexThreadContextStart(String(method || ""), connectionParams, client.hostId);
@@ -1354,7 +1355,8 @@
     if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
-      || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
+      || (codexPlusBackendSettingsLoaded
+        && (codexRemoteSessionProviderPatchEnabled() || codexPlusBackendSettings.providerSyncEnabled))
       || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
       || (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware());
     if (!wanted) return false;
@@ -1406,7 +1408,8 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest.bind(client));
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId,
+        providerRefreshFailed, originalSendRequest.bind(client), options?.__codexPlusProviderResume, client);
       // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
       // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const connectionParams = await prepareCodexManagedSessionConnection(String(method || ""),
@@ -1478,7 +1481,8 @@
   let appServerModelRequestPatchRetryDelayMs = 250;
 
   function scheduleAppServerModelRequestPatchRetry() {
-    if (!codexRemoteSessionProviderPatchEnabled()) return;
+    if (!codexRemoteSessionProviderPatchEnabled()
+        && !(codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled)) return;
     if (appServerModelRequestPatchRetryTimer) return;
     // issue #2256/#2255：固定 250ms 重试在 Codex 改 asset 命名后变成每秒 4 轮的全量
     // rescan（每轮 fetch 全部 app asset）。改为指数退避， miss 计满后由熔断停掉。
@@ -1577,16 +1581,18 @@
     if (codexPerModelContextEnabled()) void installCodexThreadContextObserver();
     const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
       && codexPlusExtensionWantsRequestMiddleware();
+    const providerSyncEnabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled;
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
+        || providerSyncEnabled
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
           || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
           || extensionWantsRequests) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
     }
-    // 网关恢复和拓展需要时，请启动器捕获客户端类（每页一次）。
-    if ((extensionWantsRequests || codexGatewayRecoveryEnabled())
+    // 供应商同步、网关恢复或拓展需要时，请启动器捕获客户端类（每页一次）。
+    if ((extensionWantsRequests || providerSyncEnabled || codexGatewayRecoveryEnabled())
         && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
       window.__codexPlusExtensionRequestCaptureAsked = true;
       void postJson("/extensions/request-capture", {}).catch(() => {});

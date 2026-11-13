@@ -297,6 +297,9 @@ pub trait BridgeDataService: Send + Sync {
     async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
         anyhow::bail!("Remote Control session recovery is unavailable")
     }
+    async fn prepare_thread_provider(&self, _request: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "changed": false, "message": "Thread provider preparation is unavailable"}))
+    }
 }
 
 /// 拓展脚本在独立 Codex 页面（例如宠物 overlay）执行表达式。
@@ -700,6 +703,15 @@ pub async fn handle_bridge_request(
                 .unwrap_or_default()
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
+        }
+        "/thread-provider/prepare" => {
+            if payload.get("host_id").and_then(Value::as_str) != Some("local")
+                || !payload.get("hostId").is_none_or(|host| host.as_str() == Some("local"))
+            {
+                Err(anyhow::anyhow!("Thread provider preparation is local-only"))
+            } else {
+                ctx.data.prepare_thread_provider(payload.clone()).await
+            }
         }
         "/thread-resume-model-metadata" => {
             let request = payload.clone();
@@ -1859,6 +1871,41 @@ fn empty_user_script_inventory() -> Value {
         "enabled": true,
         "scripts": []
     })
+}
+
+#[cfg(test)]
+mod thread_provider_prepare_route_tests {
+    use super::*;
+
+    fn context() -> BridgeContext {
+        BridgeContext::core(Arc::new(CoreRuntimeService::new(
+            0,
+            StatusStore::new(PathBuf::from("unused-thread-provider-status.json")),
+        )))
+    }
+
+    #[tokio::test]
+    async fn thread_provider_prepare_route_defaults_to_explicit_unavailable() {
+        let response = handle_bridge_request(context(), "/thread-provider/prepare", json!({
+            "host_id": "local", "thread_id": "thread-1",
+            "source_provider": "openai", "target_provider": "custom",
+        })).await;
+        assert_eq!(response["status"], "unavailable");
+        assert_eq!(response["changed"], false);
+    }
+
+    #[tokio::test]
+    async fn thread_provider_prepare_route_rejects_unknown_or_conflicting_hosts() {
+        for payload in [
+            json!({}),
+            json!({"host_id": "ssh"}),
+            json!({"host_id": "local", "hostId": "ssh"}),
+        ] {
+            let response = handle_bridge_request(context(), "/thread-provider/prepare", payload).await;
+            assert_eq!(response["status"], "failed");
+            assert!(response["message"].as_str().unwrap().contains("local-only"));
+        }
+    }
 }
 
 #[cfg(test)]

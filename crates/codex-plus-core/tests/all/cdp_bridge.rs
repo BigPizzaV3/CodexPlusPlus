@@ -3375,7 +3375,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"43\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"48\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3528,7 +3528,7 @@ fn injection_script_keeps_remote_provider_patch_installed_for_openai_identity() 
 
     assert!(script
         .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()"));
-    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()) return;"));
+    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()\n        && !(codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled)) return;"));
 }
 
 #[test]

@@ -11,6 +11,7 @@ const source = renderer.slice(
 
 function runtime() {
   const calls: { method: string; params: any }[] = [];
+  const preparations: any[] = [];
   const window = {} as any;
   const state = {
     profile: { id: "aggregate", relayMode: "aggregate" },
@@ -35,15 +36,19 @@ function runtime() {
   const create = new Function("window", "codexPlusBackendSettings", "codexRemoteSessionActiveProfile",
     "validThreadScrollSessionKey", "loadBackendSettingsState", "codexAppServerPreparationTimeoutMs",
     "nativeHostClient", "sendCodexPlusDiagnostic", "codexRemoteSessionTargetProvider",
-    "applyCodexServiceTierRequestOnly", "prepareCodexGatewayReconnect", "noteCodexGatewayThreadStart", `${source}
+    "applyCodexServiceTierRequestOnly", "prepareCodexGatewayReconnect", "noteCodexGatewayThreadStart",
+    "prepareCodexThreadProviderWithTimeout", `${source}
     return { apply: applyCodexManagedSessionConnection, prepare: prepareCodexManagedSessionConnection,
       send: sendCodexManagedSessionTurn,
       prewarm: prewarmCodexManagedSession, observeError: observeCodexManagedSessionConnectionError,
       note: noteCodexManagedSessionStart };`);
   const api = create(window, state.settings, () => state.profile, (id: string) => id === "thread" ? id : "",
     async () => state.refresh, 1500, () => client, () => {}, () => "custom",
-    (_method: string, params: any) => params, async () => {}, () => {});
-  return { ...api, state, calls, client, window };
+    (_method: string, params: any) => params, async () => {}, () => {},
+    async (method: string, params: any, hostId: string, _send: any, _internal: any, knownManaged: boolean) => {
+      preparations.push({ method, params, hostId, knownManaged });
+    });
+  return { ...api, state, calls, client, window, preparations };
 }
 
 describe("managed aggregate session connection", () => {
@@ -476,6 +481,8 @@ describe("managed aggregate session connection", () => {
     const patched = await api.prepare("thread/resume", params, "local",
       async () => ({ thread: { modelProvider: "codex_plus_managed" } }));
     assert.equal(patched.modelProvider, "custom");
+    assert.deepEqual(api.preparations, [{ method: "thread/resume", params: { threadId: "thread", modelProvider: "custom" },
+      hostId: "local", knownManaged: true }]);
     const ordinary = await api.prepare("thread/resume", params, "local",
       async () => ({ thread: { modelProvider: "other" } }));
     assert.equal(ordinary, params);
