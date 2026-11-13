@@ -236,6 +236,31 @@ fn adapt_input(input: Vec<Value>) -> Vec<Value> {
         if is_message && object.get("role").and_then(Value::as_str) == Some("system") {
             object.insert("role".to_string(), Value::String("developer".to_string()));
         }
+        // #3101：ChatGPT 订阅共享（subscription sharing）只接受白名单里的输入项类型，
+        // Codex 专属的 local_shell_call / tool_search_call 等不在白名单（报
+        // subscription_sharing_unsupported_capability），改写成等价的 function_call 系列。
+        // 白名单依据：错误文案「…developer function and custom tool call items…」。
+        match kind.as_deref() {
+            Some("local_shell_call") => {
+                object.insert("type".to_string(), json!("function_call"));
+            }
+            Some("local_shell_call_output") => {
+                object.insert("type".to_string(), json!("function_call_output"));
+            }
+            Some("tool_search_call") => {
+                object.insert("type".to_string(), json!("function_call"));
+                if object.get("name").is_none() {
+                    object.insert("name".to_string(), json!("tool_search"));
+                }
+            }
+            Some("tool_search_output") => {
+                if let Some(tools) = object.remove("tools") {
+                    object.insert("output".to_string(), json!(tools.to_string()));
+                }
+                object.insert("type".to_string(), json!("function_call_output"));
+            }
+            _ => {}
+        }
         out.push(Value::Object(object));
     }
     out
@@ -756,6 +781,32 @@ mod tests {
         }
         std::fs::write(temp.path().join("models_cache.json"), "{invalid").unwrap();
         assert_eq!(codex_version(temp.path()), builtin);
+    }
+
+    #[test]
+    fn adapt_input_remaps_codex_specific_tool_types_for_subscription_sharing() {
+        // #3101：ChatGPT 订阅共享不认 local_shell_call / tool_search_call 等 Codex 专属类型，
+        // adapt_input 要把它们改写成等价的 function_call / function_call_output。
+        let input = vec![
+            json!({ "type": "local_shell_call", "call_id": "lsc_1", "name": "bash", "arguments": "{\"cmd\": \"ls\"}" }),
+            json!({ "type": "local_shell_call_output", "call_id": "lsc_1", "output": "a.txt" }),
+            json!({ "type": "tool_search_call", "call_id": "tsc_1", "arguments": {} }),
+            json!({ "type": "tool_search_output", "call_id": "tsc_1", "tools": [{ "name": "bash" }] }),
+            json!({ "type": "function_call", "call_id": "fc_1", "name": "read", "arguments": "{}" }),
+            json!({ "type": "function_call_output", "call_id": "fc_1", "output": "ok" }),
+        ];
+        let adapted = adapt_input(input);
+        assert_eq!(adapted[0]["type"], "function_call", "local_shell_call → function_call");
+        assert_eq!(adapted[0]["name"], "bash");
+        assert_eq!(adapted[1]["type"], "function_call_output", "local_shell_call_output → function_call_output");
+        assert_eq!(adapted[2]["type"], "function_call", "tool_search_call → function_call");
+        assert_eq!(adapted[2]["name"], "tool_search");
+        assert_eq!(adapted[3]["type"], "function_call_output", "tool_search_output → function_call_output");
+        assert!(adapted[3]["output"].as_str().unwrap().contains("bash"), "tools 内容保留在 output 里");
+        assert!(adapted[3].get("tools").is_none(), "原 tools 字段已移除");
+        // 原生的 function_call 不受影响。
+        assert_eq!(adapted[4]["type"], "function_call");
+        assert_eq!(adapted[5]["type"], "function_call_output");
     }
 
     #[test]
