@@ -2275,6 +2275,7 @@ pub(crate) async fn handle_helper_connection_on(
                         raw_path,
                         &request_headers,
                         &request.body,
+                        request.read_ahead.clone(),
                         remote_addr_text,
                     ),
                 ),
@@ -2334,6 +2335,9 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "GET" {
+        if !crate::protocol_proxy::is_responses_compact_proxy_path(path) {
+            return crate::responses_websocket::handle(&mut stream, &request_headers, request.read_ahead, path, ProxyOpener::Legacy).await;
+        }
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "upgrade_required",
             "message": "WebSocket transport is not supported by the local protocol proxy; retry with HTTP."
@@ -2957,7 +2961,7 @@ impl ProxyRequestLog {
     }
 
     /// 仅在全部响应字节成功写出并正常关闭后调用；usage 必须来自最终终态。
-    fn record_final_response(&mut self, usage: Option<crate::request_log::RequestUsage>) {
+    pub(crate) fn record_final_response(&mut self, usage: Option<crate::request_log::RequestUsage>) {
         self.entry.final_response_evidence = None;
         if self.final_response_eligible
             && self.entry.success
@@ -6113,7 +6117,7 @@ async fn read_http_request_with_limits(
                 if end > MAX_HTTP_HEADER_BYTES {
                     return Err(HttpRequestReadError::bad_request("HTTP 请求头过大"));
                 }
-                if is_local_dictation_ws_upgrade(&buffer[..end]) {
+                if is_local_dictation_ws_upgrade(&buffer[..end]) || is_responses_ws_upgrade(&buffer[..end]) {
                     // The first WebSocket frame can arrive in the same TCP read as the
                     // upgrade headers. Do not consume it as an HTTP body.
                     local_dictation_upgrade = true;
@@ -6192,6 +6196,17 @@ fn is_local_dictation_ws_upgrade(headers: &[u8]) -> bool {
     method == "GET"
         && raw_path.split('?').next() == Some("/dictation/claude-stream")
         && crate::extension_backend::is_websocket_upgrade(&headers)
+}
+
+fn is_responses_ws_upgrade(headers: &[u8]) -> bool {
+    let headers = String::from_utf8_lossy(headers);
+    let line = headers.lines().next().unwrap_or_default();
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default().split('?').next().unwrap_or_default();
+    method == "GET" && crate::extension_backend::is_websocket_upgrade(&headers)
+        && ((crate::protocol_proxy::is_responses_proxy_path(path) && !crate::protocol_proxy::is_responses_compact_proxy_path(path))
+            || (crate::gateway::is_gateway_path(path) && path.ends_with("/responses")))
 }
 
 fn http_body_framing(headers: &[u8]) -> Result<HttpBodyFraming, HttpRequestReadError> {
@@ -8176,6 +8191,7 @@ mod tests {
             request_trace: Some(trace),
             exec_adapted: false,
             exec_outcome: None,
+            websocket: None,
             response: None,
         };
         let usage = crate::request_log::final_response_usage(&serde_json::json!({
@@ -9097,13 +9113,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn helper_returns_426_for_responses_websocket_upgrade() {
+    async fn helper_rejects_incomplete_responses_websocket_upgrade() {
         let response = send_raw_helper_request(
             b"GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
         )
         .await;
 
-        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 400 Bad Request"));
     }
 
     #[tokio::test]

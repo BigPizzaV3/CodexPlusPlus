@@ -87,6 +87,29 @@ pub struct GatewayRequest<'a> {
     pub queue_timeout: Duration,
 }
 
+// WS 准备尚未提交生成，取消/换候选要同时退掉 RPM。
+struct AttemptSlot {
+    slot: Option<KeySlot>,
+    refund: bool,
+}
+impl AttemptSlot {
+    fn cancel(mut self) {
+        if let Some(slot) = self.slot.take() {
+            slot.cancel();
+        }
+    }
+    fn take(mut self) -> KeySlot {
+        self.slot.take().expect("held KeySlot")
+    }
+}
+impl Drop for AttemptSlot {
+    fn drop(&mut self) {
+        if self.refund && let Some(slot) = self.slot.take() {
+            slot.cancel();
+        }
+    }
+}
+
 /// 依次尝试路由计划里的候选，并把路由过程记到路由动态里。
 pub async fn open(
     settings: &BackendSettings,
@@ -94,7 +117,15 @@ pub async fn open(
     request: GatewayRequest<'_>,
 ) -> anyhow::Result<GatewayOutcome> {
     let mut recorder = RouteRecorder::new(plan);
-    let result = open_candidates(settings, plan, request, &mut recorder).await;
+    let mut result = open_candidates(settings, plan, request, &mut recorder).await;
+    if let Ok(outcome) = &mut result
+        && let GatewayUpstream::Pipeline(response) = &mut outcome.upstream
+        && let Some(ready) = response.websocket.as_mut()
+    {
+        ready.recorder = Some(recorder);
+        ready.busy = outcome.busy.take();
+        return result;
+    }
     let answered = result
         .as_ref()
         .is_ok_and(|outcome| outcome.upstream.is_success());
@@ -199,6 +230,10 @@ async fn open_candidates(
                 deferred.push(candidate);
                 continue;
             };
+            let slot = AttemptSlot {
+                slot: Some(slot),
+                refund: crate::responses_websocket::active(),
+            };
             let has_more = index + 1 < total || !deferred.is_empty();
             trace.attempts += 1;
             trace.relay_id = candidate.relay.id.clone();
@@ -259,6 +294,19 @@ async fn open_candidates(
             };
             let failure = match attempt {
                 Ok(Attempt::Success(mut upstream)) => {
+                    if let GatewayUpstream::Pipeline(response) = &mut upstream
+                        && let Some(ready) = response.websocket.as_mut()
+                    {
+                        // WS 握手只是准备成功；收到生成终态后才记 Key 成功与路由粘性。
+                        ready.gateway = Some((plan.clone(), candidate.clone()));
+                        observe_quota_headers(&candidate.relay, &ready.headers);
+                        return Ok(GatewayOutcome {
+                            upstream,
+                            trace,
+                            busy: Some(busy),
+                            slot: Some(slot.take()),
+                        });
+                    }
                     recorder.step(candidate, "answered", None, upstream.status_code());
                     // 排在它前面的候选因为限速满了被跳过：这次只是临时顶替，不改会话固定
                     // （同一家的 Key 粘性、模型组记住的成员都保持原样）。
@@ -303,7 +351,7 @@ async fn open_candidates(
                         upstream,
                         trace,
                         busy: Some(busy),
-                        slot: Some(slot),
+                        slot: Some(slot.take()),
                     });
                 }
                 Ok(Attempt::Failed { upstream, class }) => {
@@ -390,7 +438,7 @@ async fn open_candidates(
 /// 拓展用 `gateway.replaces` 关掉 `builtin:key-cooldown` 时 429 / 额度耗尽不再让 Key 冷却，
 /// 关掉 `builtin:key-breaker` 时 5xx / 连接失败不再计入供应商熔断；换不换下一个候选照旧按分类定，
 /// 要不要避开这个 Key / 供应商由拓展在 route 段自己决定。
-fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -> bool {
+pub(crate) fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -> bool {
     let replaced = match class {
         FailureClass::RateLimited { .. } | FailureClass::QuotaExhausted { .. } => {
             crate::extension_gateway::builtin_replaced("builtin:key-cooldown")
@@ -761,12 +809,21 @@ fn observe_quota(relay: &crate::settings::RelayProfile, upstream: &GatewayUpstre
         }
         GatewayUpstream::Cooling(_) => None,
     };
+    if let Some(headers) = headers {
+        observe_quota_headers(relay, headers);
+    }
+}
+
+fn observe_quota_headers(
+    relay: &crate::settings::RelayProfile,
+    headers: &reqwest::header::HeaderMap,
+) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0);
     if let Some(quota) =
-        headers.and_then(|headers| crate::gateway::quota::from_codex_headers(headers, now))
+        crate::gateway::quota::from_codex_headers(headers, now)
     {
         crate::gateway::quota::record_for_relay(relay, quota);
     }
@@ -810,7 +867,8 @@ fn conversation_seed(request: &GatewayRequest<'_>) -> Option<String> {
 
 /// 这些错误是请求内容本身不被支持（附件、加密内容、原生搜索、缺视觉配置），换上游也一样。
 fn is_request_rejection(error: &anyhow::Error) -> bool {
-    error
+    error.is::<crate::responses_websocket::Unsupported>()
+        || error
         .downcast_ref::<crate::protocol_proxy::UnsupportedEncryptedAgentContent>()
         .is_some()
         || error

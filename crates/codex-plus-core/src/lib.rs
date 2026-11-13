@@ -80,6 +80,7 @@ pub mod ports;
 // 独立插件市场按需下载安装，不调用原生授权安装流程。
 pub mod plugin_market;
 pub mod protocol_proxy;
+pub(crate) mod responses_websocket;
 pub mod provider_import;
 pub mod proxy;
 pub mod relay_billing;

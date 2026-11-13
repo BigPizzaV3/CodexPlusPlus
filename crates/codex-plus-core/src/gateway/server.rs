@@ -109,6 +109,7 @@ pub(crate) async fn handle(
     path: &str,
     headers: &str,
     body: &[u8],
+    read_ahead: Vec<u8>,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     // `path` 带查询串：取出 Gemini 的 `?key=` 后去掉，后面的日志、路由都只用路径。
@@ -170,6 +171,9 @@ pub(crate) async fn handle(
         .await;
     }
     match (&agent, method, tail.as_str()) {
+        (ToolId::Grok | ToolId::Codex | ToolId::Unknown(_), "GET", "/responses") => {
+            crate::responses_websocket::handle(stream, headers, read_ahead, path, ProxyOpener::Gateway(agent)).await
+        }
         (ToolId::Unknown(_), "POST", "/chat/completions") => {
             handle_claude_messages(
                 stream,
@@ -499,7 +503,8 @@ pub(crate) async fn open_responses_for_agent(
             .and_then(Value::as_str)
             .map(str::to_string)
     });
-    let plan = route::resolve_plan(&gateway, agent, model, conversation.as_deref())?;
+    let mut plan = route::resolve_plan(&gateway, agent, model, conversation.as_deref())?;
+    crate::responses_websocket::restrict_plan(&mut plan)?;
     let outcome = pipeline::open(
         &settings,
         &plan,
@@ -567,6 +572,7 @@ fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: None,
     }
 }
