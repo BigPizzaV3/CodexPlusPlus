@@ -2135,6 +2135,102 @@ fn signed_in_codex_keeps_its_chatgpt_identity_through_the_gateway() {
     assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
 }
 
+fn seed_unsigned_managed_codex(ctx: &ApplyContext) {
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: "direct".into(),
+        relay_profiles: vec![direct_relay("direct", "fixture-model")],
+        ..Default::default()
+    };
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings, &ctx.codex_home, settings, "",
+    ).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    assert_eq!(
+        ctx.settings.load().unwrap().active_relay_session_provider(),
+        codex_plus_core::settings::RelaySessionProvider::Custom,
+    );
+}
+
+fn selected_login(account: &str) -> String {
+    json!({
+        "auth_mode":"chatgpt", "codex_plus_gateway":true,
+        "tokens":{"id_token":"fixture-id", "access_token":format!("fixture-{account}"),
+            "refresh_token":format!("fixture-refresh-{account}"), "account_id":account}
+    }).to_string()
+}
+
+#[test]
+fn explicit_native_selection_updates_managed_session_identity_without_changing_gateway_route() {
+    use codex_plus_core::gateway::apply::sync_codex_identity;
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29557);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    for account in ["account-a", "account-b"] {
+        let mut settings = ctx.settings.load().unwrap();
+        settings.native_auth_selection = Some(NativeAuthSelection::Account { account_ref: account.into() });
+        settings.native_auth_pending_application = Some(format!("pending-{account}"));
+        ctx.settings.save(&settings).unwrap();
+        std::fs::write(ctx.codex_home.join("auth.json"), selected_login(account)).unwrap();
+        sync_codex_identity(ctx).unwrap();
+        let settings = ctx.settings.load().unwrap();
+        assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Openai);
+        assert_eq!(settings.native_auth_pending_application.as_deref(), Some(format!("pending-{account}").as_str()));
+        let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+        assert!(config.contains("model_provider = \"openai\""));
+        assert!(config.contains("http://127.0.0.1:29557/gw/codex/v1"));
+        assert_eq!(codex_plus_core::gateway::drift::check(ctx, &ToolId::Codex), None);
+        let auth: Value = serde_json::from_str(
+            &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["tokens"]["account_id"], account);
+    }
+}
+
+#[test]
+fn explicitly_selected_disabled_subscription_is_not_stripped_as_a_stale_lent_login() {
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29558);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let auth = selected_login("saved-disabled");
+    let (_, id) = add_provider(&ctx.gateway, RelayProfile {
+        name: "Saved disabled account".into(), relay_mode: RelayMode::Official,
+        auth_contents: auth.clone(), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    set_provider_enabled(&ctx.gateway, &id, false).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::Account { account_ref: id });
+    ctx.settings.save(&settings).unwrap();
+    std::fs::write(ctx.codex_home.join("auth.json"), auth).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    assert_eq!(ctx.settings.load().unwrap().active_relay_session_provider(), RelaySessionProvider::Openai);
+    let auth: Value = serde_json::from_str(
+        &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"]["account_id"], "saved-disabled");
+}
+
+#[test]
+fn explicit_signed_out_choice_overrides_stale_live_oauth_when_synchronizing_gateway_identity() {
+    use codex_plus_core::gateway::apply::sync_codex_identity;
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29559);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    std::fs::write(ctx.codex_home.join("auth.json"), selected_login("old-account")).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    assert_eq!(ctx.settings.load().unwrap().active_relay_session_provider(), RelaySessionProvider::Custom);
+    let auth: Value = serde_json::from_str(
+        &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert!(auth.get("tokens").is_none());
+    assert!(!sync_codex_identity(ctx).unwrap());
+}
+
 /// Codex 自己没登录、池里有网关登录的 ChatGPT 账号：接入时借给 Codex 登录（官方身份），
 /// 借出期间以 Codex 那份 token 为准；断开时把最新一代收回网关，Codex 回到没登录的样子。
 #[test]

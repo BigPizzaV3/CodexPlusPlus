@@ -1123,6 +1123,16 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
 /// 纯 API Key 模式。把这种登录从 auth.json 里拿掉（OPENAI_API_KEY 等其余字段不动）。
 /// 不属于池里任何账号的登录视为用户自己登的，不碰。
 fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> bool {
+    if let Ok(settings) = ctx.settings.load() {
+        match settings.native_auth_selection {
+            // 网关是否消费这个供应商与用户显式选择的原生登录相互独立。
+            Some(crate::settings::NativeAuthSelection::Account { .. }) => {
+                return codex_signed_in(&ctx.codex_home);
+            }
+            Some(crate::settings::NativeAuthSelection::None) => return false,
+            None => {}
+        }
+    }
     let path = ctx.codex_home.join("auth.json");
     let live = std::fs::read_to_string(&path).unwrap_or_default();
     let account = serde_json::from_str::<Value>(&live)
@@ -2444,7 +2454,8 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     }
     let keeps_login =
         settings.active_relay_session_provider() == crate::settings::RelaySessionProvider::Openai;
-    let can_sign_in = codex_signed_in(&ctx.codex_home)
+    let can_sign_in = (settings.native_auth_selection != Some(crate::settings::NativeAuthSelection::None)
+        && codex_signed_in(&ctx.codex_home))
         || (crate::native_auth::selection_allows_auto_lend(&settings)
             && lendable_login(&gateway).is_some());
     let image_config_matches = if can_sign_in {

@@ -674,6 +674,18 @@ fn write_state(home: &std::path::Path, state: Value) {
     .unwrap();
 }
 
+fn legacy_detached_state(home: &std::path::Path) {
+    let mut state = anonymous_state_with_two_accounts();
+    let container = state.as_object_mut().unwrap().remove(ACCOUNTS).unwrap();
+    state["local-projects"]["recent"] = project("recent", 9);
+    let path = home.join(DETACHED);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, json!({
+        "version":1, "sourceOwner":"recent-account", "container":container,
+    }).to_string()).unwrap();
+    write_state(home, state);
+}
+
 /// 登录过两个 ChatGPT 账号、现在改用 API Key：owner=null，匿名身份在顶层新建了一个项目。
 fn anonymous_state_with_two_accounts() -> Value {
     json!({
@@ -688,7 +700,7 @@ fn anonymous_state_with_two_accounts() -> Value {
                     "globals": {
                         "local-projects": { "old": project("old", 1) },
                         "project-order": ["old"],
-                        "thread-project-assignments": { "t1": { "projectId": "old" } },
+                        "thread-project-assignments": { "t1": { "projectKind": "local", "projectId": "old" } },
                         "queued-follow-ups": { "t1": ["replay me"] }
                     }
                 },
@@ -697,7 +709,7 @@ fn anonymous_state_with_two_accounts() -> Value {
                     "globals": {
                         "local-projects": { "recent": project("recent", 9) },
                         "project-order": ["recent"],
-                        "thread-project-assignments": { "t2": { "projectId": "recent" } }
+                        "thread-project-assignments": { "t2": { "projectKind": "local", "projectId": "recent" } }
                     }
                 }
             }
@@ -706,59 +718,50 @@ fn anonymous_state_with_two_accounts() -> Value {
 }
 
 #[test]
-fn keep_projects_detaches_container_and_merges_latest_account_projects() {
+fn keep_projects_preserves_native_account_container_and_combines_local_accounts_once() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     write_state(home, anonymous_state_with_two_accounts());
 
     let outcome = reconcile_account_scope(home, true).unwrap();
-    let AccountScopeOutcome::Detached { source_owner, root_project_count, backup_path } = outcome
+    let AccountScopeOutcome::Shared { root_project_count, restored_legacy_scope, backup_path } = outcome
     else {
-        panic!("expected detach, got {outcome:?}");
+        panic!("expected shared projects, got {outcome:?}");
     };
-    assert_eq!(source_owner.as_deref(), Some("recent-account"));
-    assert_eq!(root_project_count, 2);
+    assert!(!restored_legacy_scope);
+    assert_eq!(root_project_count, 3);
     assert!(backup_path.join(".codex-global-state.json").exists());
 
     let state = read_state(home);
-    // 容器不在了：Codex 启动时 selectRendererOwner(null) 就不会清空顶层。
-    assert!(state.get(ACCOUNTS).is_none());
+    // 原生容器必须保留，账号私有 globals/atoms 继续按原生规则切换。
+    assert_eq!(state[ACCOUNTS], anonymous_state_with_two_accounts()[ACCOUNTS]);
     assert!(state["local-projects"].get("anon").is_some());
     assert!(state["local-projects"].get("recent").is_some());
-    assert!(state["local-projects"].get("old").is_none());
-    assert_eq!(state["project-order"], json!(["recent", "anon"]));
+    assert!(state["local-projects"].get("old").is_some());
+    assert_eq!(state["project-order"], json!(["anon", "recent", "old"]));
+    assert_eq!(state["thread-project-assignments"]["t1"]["projectId"], "old");
     assert_eq!(state["thread-project-assignments"]["t2"]["projectId"], "recent");
 
-    // 旁路文件原样保存了整个容器（含没被合并的旧账号）。
-    let detached: Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join(DETACHED)).unwrap()).unwrap();
-    assert_eq!(detached["sourceOwner"], "recent-account");
-    assert_eq!(
-        detached["container"],
-        anonymous_state_with_two_accounts()[ACCOUNTS]
-    );
+    assert!(!home.join(DETACHED).exists());
 
     // 稳定状态下再跑一次什么都不做。
     assert_eq!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Unchanged);
 }
 
 #[test]
-fn keep_projects_merge_is_additive_and_skips_queued_follow_ups() {
+fn keep_projects_does_not_share_account_atoms_or_queued_follow_ups() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let mut state = anonymous_state_with_two_accounts();
-    // 只剩旧账号有项目：它的 atoms 只补缺失键，排队追问不带过来。
+    // 只剩旧账号有项目：仅导入本地项目，不把它的 atoms 或排队追问带到根状态。
     state[ACCOUNTS]["inactive"].as_object_mut().unwrap().remove("recent-account");
     write_state(home, state);
 
     reconcile_account_scope(home, true).unwrap();
     let state = read_state(home);
-    assert_eq!(state["project-order"], json!(["old", "anon"]));
+    assert_eq!(state["project-order"], json!(["anon", "old"]));
     assert_eq!(state["electron-persisted-atom-state"]["sidebar-width"], 300);
-    assert_eq!(
-        state["electron-persisted-atom-state"]["unified-sidebar-project-order-v1"],
-        json!(["old"])
-    );
+    assert!(state["electron-persisted-atom-state"].get("unified-sidebar-project-order-v1").is_none());
     assert!(state.get("queued-follow-ups").is_none());
 }
 
@@ -773,20 +776,18 @@ fn keep_projects_keeps_root_when_owner_is_an_account() {
     let outcome = reconcile_account_scope(home, true).unwrap();
     assert!(matches!(
         outcome,
-        AccountScopeOutcome::Detached { ref source_owner, root_project_count: 1, .. }
-            if source_owner.as_deref() == Some("current-account")
+            AccountScopeOutcome::Shared { root_project_count: 3, .. }
     ));
     let state = read_state(home);
-    assert_eq!(state["project-order"], json!(["anon"]));
-    assert!(state.get(ACCOUNTS).is_none());
+    assert_eq!(state["project-order"], json!(["anon", "recent", "old"]));
+    assert_eq!(state[ACCOUNTS]["owner"], "current-account");
 }
 
 #[test]
 fn reattach_returns_root_projects_to_source_account() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    write_state(home, anonymous_state_with_two_accounts());
-    reconcile_account_scope(home, true).unwrap();
+    legacy_detached_state(home);
 
     // 非官方模式期间又新建了一个项目。
     let mut state = read_state(home);
@@ -818,8 +819,7 @@ fn reattach_returns_root_projects_to_source_account() {
 fn reattach_keeps_container_codex_rebuilt_and_restores_missing_scopes() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    write_state(home, anonymous_state_with_two_accounts());
-    reconcile_account_scope(home, true).unwrap();
+    legacy_detached_state(home);
 
     // 用户在 Codex 里直接登录了第三个账号，Codex 重建了只有它自己的容器。
     let mut state = read_state(home);
@@ -836,16 +836,18 @@ fn reattach_keeps_container_codex_rebuilt_and_restores_missing_scopes() {
 }
 
 #[test]
-fn account_scope_without_container_or_detached_file_is_untouched() {
+fn account_scope_seeds_anonymous_projects_without_requiring_a_previous_login() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let state = json!({ "local-projects": { "anon": project("anon", 1) } });
     write_state(home, state.clone());
 
-    assert_eq!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Unchanged);
     assert_eq!(reconcile_account_scope(home, false).unwrap(), AccountScopeOutcome::Unchanged);
     assert_eq!(read_state(home), state);
     assert!(!home.join("backups_state").exists());
+    assert!(matches!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Shared { .. }));
+    assert!(read_state(home).get(SHARED).is_some());
+    assert_eq!(reconcile_account_scope(home, true).unwrap(), AccountScopeOutcome::Unchanged);
 }
 
 #[test]
@@ -858,4 +860,210 @@ fn keep_projects_refuses_unknown_container_shape_without_writing() {
     assert!(reconcile_account_scope(home, true).is_err());
     assert_eq!(read_state(home), state);
     assert!(!home.join(DETACHED).exists());
+}
+
+const SHARED: &str = "codex-plus-shared-local-projects-v1";
+
+#[test]
+fn shared_projects_import_preserves_active_projectless_and_remote_memberships() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let mut state = anonymous_state_with_two_accounts();
+    state["projectless-thread-ids"] = json!(["t1"]);
+    state["thread-project-assignments"] = json!({
+        "t2": {"projectKind": "remote", "projectId": "remote-project"}
+    });
+    state["thread-project-membership-host-ids"] = json!({"t2": "remote-host"});
+    write_state(home, state);
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert!(next["thread-project-assignments"].get("t1").is_none());
+    assert_eq!(next[SHARED]["memberships"]["t1"]["assignment"], Value::Null);
+    assert_eq!(next[SHARED]["memberships"]["t1"]["projectless"], true);
+    assert!(next[SHARED]["memberships"].get("t2").is_none());
+    assert_eq!(next["thread-project-assignments"]["t2"]["projectKind"], "remote");
+}
+
+#[test]
+fn shared_projects_tombstones_win_over_inactive_scopes_and_stale_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_state(home, anonymous_state_with_two_accounts());
+    reconcile_account_scope(home, true).unwrap();
+    capture_app_state_snapshot(home).unwrap();
+    let mut state = read_state(home);
+    state[SHARED]["projects"].as_object_mut().unwrap().remove("old");
+    state[SHARED]["memberships"]["t1"] = json!({
+        "threadId": "t1", "hostId": "local", "assignment": null, "projectless": true,
+    });
+    state["local-projects"].as_object_mut().unwrap().remove("old");
+    state["thread-project-assignments"] = json!({"extra": {"projectKind":"local", "projectId":"old"}});
+    state["pinned-project-ids"] = json!(["old", "recent"]);
+    state["selected-project"] = json!("old");
+    write_state(home, state);
+    sync_app_state_after_provider_switch(home).unwrap();
+    let state = read_state(home);
+    assert!(state["local-projects"].get("old").is_none());
+    assert!(state["thread-project-assignments"].get("extra").is_none());
+    assert!(state["projectless-thread-ids"].as_array().unwrap().contains(&json!("extra")));
+    assert_eq!(state["pinned-project-ids"], json!(["recent"]));
+    assert!(state.get("selected-project").is_none());
+    reconcile_account_scope(home, true).unwrap();
+    assert!(read_state(home)["local-projects"].get("old").is_none());
+}
+
+#[test]
+fn shared_projects_keeps_cloud_collisions_and_never_copies_private_globals() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let mut state = anonymous_state_with_two_accounts();
+    state["local-projects"]["old"] = project("old", 100);
+    state["local-projects"]["old"]["chatgptProjectId"] = json!("cloud");
+    state[ACCOUNTS]["inactive"]["old-account"]["globals"]["private-setting"] = json!("private");
+    write_state(home, state.clone());
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert_eq!(next["local-projects"]["old"], state["local-projects"]["old"]);
+    assert_eq!(next[SHARED]["projects"]["old"], project("old", 1));
+    assert!(next.get("private-setting").is_none());
+}
+
+#[test]
+fn shared_projects_existing_r2_record_is_not_rebootstrapped() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_state(home, anonymous_state_with_two_accounts());
+    reconcile_account_scope(home, true).unwrap();
+    let mut state = read_state(home);
+    let backup = state[SHARED]["backup"].clone();
+    state[SHARED]["projects"].as_object_mut().unwrap().remove("old");
+    state[SHARED]["memberships"].as_object_mut().unwrap().remove("t1");
+    state[SHARED].as_object_mut().unwrap().remove("enabled");
+    state[SHARED].as_object_mut().unwrap().remove("preparedForLaunch");
+    state[ACCOUNTS] = anonymous_state_with_two_accounts()[ACCOUNTS].clone();
+    write_state(home, state);
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert!(next["local-projects"].get("old").is_none());
+    assert_eq!(next[SHARED]["backup"], backup);
+    assert!(next[SHARED]["knownProjects"].as_array().unwrap().contains(&json!("old")));
+}
+
+#[test]
+fn shared_projects_capture_final_native_scope_after_an_old_window_was_retired() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_state(home, anonymous_state_with_two_accounts());
+    reconcile_account_scope(home, true).unwrap();
+    let mut state = read_state(home);
+    state[SHARED]["preparedForLaunch"] = json!(false);
+    state[SHARED]["lastScope"] = json!({"owner":"account-a", "projects":["old", "recent", "anon"], "memberships":["t1", "t2"]});
+    let mut final_globals = state.clone();
+    final_globals["local-projects"].as_object_mut().unwrap().remove("old");
+    final_globals["thread-project-assignments"].as_object_mut().unwrap().remove("t1");
+    final_globals["projectless-thread-ids"] = json!(["t1"]);
+    state[ACCOUNTS] = json!({"owner":"account-b", "inactive": {
+        "account-a": {"globals": final_globals, "atoms": {}}
+    }});
+    state["local-projects"] = json!({});
+    write_state(home, state);
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert!(next["local-projects"].get("old").is_none());
+    assert_eq!(next[SHARED]["memberships"]["t1"]["assignment"], Value::Null);
+    assert_eq!(next[SHARED]["memberships"]["t1"]["projectless"], true);
+}
+
+#[test]
+fn shared_projects_disable_retains_canonical_and_original_account_backups() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_state(home, anonymous_state_with_two_accounts());
+    reconcile_account_scope(home, true).unwrap();
+    reconcile_account_scope(home, false).unwrap();
+    let next = read_state(home);
+    assert_eq!(next[SHARED]["enabled"], false);
+    assert_eq!(next[ACCOUNTS]["inactive"]["old-account"],
+        anonymous_state_with_two_accounts()[ACCOUNTS]["inactive"]["old-account"]);
+}
+
+#[test]
+fn shared_projects_unknown_record_is_never_replaced() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let mut state = anonymous_state_with_two_accounts();
+    state[SHARED] = json!({"version": 99});
+    write_state(home, state.clone());
+    assert!(reconcile_account_scope(home, true).is_err());
+    assert_eq!(read_state(home), state);
+    assert!(!home.join(DETACHED).exists());
+}
+
+#[test]
+fn shared_projects_cloud_scope_restart_does_not_erase_unprojected_canonical_membership() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    write_state(home, anonymous_state_with_two_accounts());
+    reconcile_account_scope(home, true).unwrap();
+    let mut state = read_state(home);
+    let canonical = state[SHARED]["memberships"]["t1"].clone();
+    state[SHARED]["preparedForLaunch"] = json!(false);
+    state[SHARED]["lastScope"] = json!({"owner":"cloud-account", "projects":[], "memberships":[]});
+    state["local-projects"] = json!({"old": {
+        "id":"old", "name":"cloud", "rootPaths":["/cloud"], "createdAt":1, "updatedAt":9,
+        "chatgptProjectId":"cloud-project"
+    }});
+    state["thread-project-assignments"] = json!({"t1":{"projectKind":"remote","projectId":"remote"}});
+    state["thread-project-membership-host-ids"] = json!({"t1":"remote-host"});
+    state[ACCOUNTS] = json!({"owner":"cloud-account","inactive":{}});
+    let cloud = state["local-projects"]["old"].clone();
+    write_state(home, state);
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert_eq!(next[SHARED]["memberships"]["t1"], canonical);
+    assert_eq!(next[SHARED]["projects"]["old"], project("old", 1));
+    assert_eq!(next["local-projects"]["old"], cloud);
+    assert_eq!(next["thread-project-assignments"]["t1"]["projectKind"], "remote");
+}
+
+#[test]
+fn shared_projects_migrates_legacy_detach_without_disabling_native_identity_isolation() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    legacy_detached_state(home);
+    let outcome = reconcile_account_scope(home, true).unwrap();
+    assert!(matches!(outcome, AccountScopeOutcome::Shared { restored_legacy_scope: true, .. }));
+    let next = read_state(home);
+    assert_eq!(next[ACCOUNTS], anonymous_state_with_two_accounts()[ACCOUNTS]);
+    assert!(next[SHARED]["projects"].get("old").is_some());
+    assert!(!home.join(DETACHED).exists());
+    let backup: Value = serde_json::from_slice(
+        &std::fs::read(home.join(".codex-global-state.json.bak")).unwrap()).unwrap();
+    assert_eq!(backup[ACCOUNTS], next[ACCOUNTS]);
+}
+
+#[test]
+fn shared_projects_keeps_private_atoms_cloud_and_pending_messages_with_their_native_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let mut state = anonymous_state_with_two_accounts();
+    state[ACCOUNTS]["owner"] = json!("account-a");
+    state[ACCOUNTS]["inactive"]["old-account"]["atoms"] = json!({"private-setting":"private-b"});
+    state["electron-persisted-atom-state"] = json!({"private-setting":"private-a"});
+    state["queued-follow-ups"] = json!({"pending-a":["do not move"]});
+    state["local-projects"]["cloud-a"] = json!({
+        "id":"cloud-a", "name":"cloud-a", "rootPaths":["/cloud"], "createdAt":1, "updatedAt":2,
+        "chatgptProjectId":"cloud-origin-a",
+    });
+    write_state(home, state.clone());
+    reconcile_account_scope(home, true).unwrap();
+    let next = read_state(home);
+    assert_eq!(next[ACCOUNTS], state[ACCOUNTS]);
+    assert_eq!(next["electron-persisted-atom-state"], state["electron-persisted-atom-state"]);
+    assert_eq!(next["queued-follow-ups"], state["queued-follow-ups"]);
+    assert_eq!(next["local-projects"]["cloud-a"], state["local-projects"]["cloud-a"]);
+    let shared = next[SHARED].to_string();
+    for private in ["private-a", "private-b", "pending-a", "cloud-origin-a"] {
+        assert!(!shared.contains(private), "{private} must not enter the shared record");
+    }
 }
