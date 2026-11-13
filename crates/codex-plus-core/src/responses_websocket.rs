@@ -104,10 +104,21 @@ pub(crate) enum PreparedUpstream {
     Rejected(reqwest::Response),
 }
 
-fn connection_id(relay_id: &str, request: &reqwest::Request) -> String {
+fn connection_id(
+    relay_id: &str,
+    request: &reqwest::Request,
+    official_account_scope: Option<&str>,
+) -> String {
+    let official_account_scope = official_account_scope.map(str::trim).filter(|id| !id.is_empty());
     let mut hash = Sha256::new();
     hash.update(relay_id.as_bytes());
     hash.update(request.url().as_str().as_bytes());
+    if let Some(scope) = official_account_scope {
+        // 使用签发方、用户与工作区的完整身份；同账号刷新不改变存活连接的身份。
+        hash.update(b"\0official-account\0");
+        hash.update(scope.as_bytes());
+        hash.update([0]);
+    }
     let mut headers: Vec<_> = request
         .headers()
         .iter()
@@ -124,7 +135,8 @@ fn connection_id(relay_id: &str, request: &reqwest::Request) -> String {
                     | "sec-websocket-version"
                     | "sec-websocket-protocol"
                     | "sec-websocket-extensions"
-            ) && !crate::protocol_proxy::is_volatile_client_identity_header(name.as_str())
+            ) && !(official_account_scope.is_some() && name.as_str() == "authorization")
+                && !crate::protocol_proxy::is_volatile_client_identity_header(name.as_str())
         })
         .collect();
     headers.sort_by_key(|(name, _)| name.as_str());
@@ -143,13 +155,14 @@ pub(crate) async fn prepare(
     mut builder: reqwest::RequestBuilder,
     body: Value,
     timeout: Duration,
+    official_account_scope: Option<&str>,
 ) -> anyhow::Result<PreparedUpstream> {
     for (name, value) in crate::extension_gateway::extension_headers() {
         builder = builder.header(name, value);
     }
     let (client, request) = builder.build_split();
     let mut request = request?;
-    let fingerprint = connection_id(relay_id, &request);
+    let fingerprint = connection_id(relay_id, &request, official_account_scope);
     let registry = REQUEST.with(|ctx| ctx.registry.clone());
     let lock = {
         let mut registry = registry.lock().unwrap_or_else(|p| p.into_inner());

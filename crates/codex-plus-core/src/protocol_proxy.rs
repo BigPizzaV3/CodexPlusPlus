@@ -4128,7 +4128,10 @@ async fn open_responses_proxy_request_once(
                 &relay, &endpoint, &upstream_body, wire_api, false,
                 original_user_agent, beta_features, session_headers, official_credential.as_ref(),
             )?;
-            let mut prepared = crate::responses_websocket::prepare(&relay.id, builder, upstream_body.clone(), header_timeout).await;
+            let mut prepared = crate::responses_websocket::prepare(
+                &relay.id, builder, upstream_body.clone(), header_timeout,
+                official_credential.as_ref().and_then(|credential| credential.account_scope.as_deref()),
+            ).await;
             // 尚未提交 response.create，401 刷新与握手失败换候选仍是安全的。
             if official_member && matches!(&prepared, Ok(crate::responses_websocket::PreparedUpstream::Rejected(response)) if response.status() == reqwest::StatusCode::UNAUTHORIZED) {
                 if let Ok(credential) = crate::official_login::resolve_official_credential(&relay, true).await {
@@ -4138,7 +4141,10 @@ async fn open_responses_proxy_request_once(
                         original_user_agent, beta_features, session_headers, official_credential.as_ref(),
                     )?;
                     request_attempt += 1;
-                    prepared = crate::responses_websocket::prepare(&relay.id, builder, upstream_body, header_timeout).await;
+                    prepared = crate::responses_websocket::prepare(
+                        &relay.id, builder, upstream_body, header_timeout,
+                        official_credential.as_ref().and_then(|credential| credential.account_scope.as_deref()),
+                    ).await;
                 }
             }
             let (websocket, response, status_code) = match prepared {

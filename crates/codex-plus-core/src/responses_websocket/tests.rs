@@ -39,6 +39,7 @@ async fn native_upgrade_preserves_auth_and_does_not_generate_during_prepare() {
                 builder,
                 json!({"model":"test"}),
                 Duration::from_secs(5),
+                None,
             )
             .await
             .unwrap() else {
