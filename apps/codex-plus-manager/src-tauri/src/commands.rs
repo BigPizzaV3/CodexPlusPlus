@@ -4748,7 +4748,7 @@ pub fn save_settings(
     if let Some(revision) = expected_revision {
         settings.settings_revision = revision;
     }
-    let settings = normalize_settings_before_save(settings);
+    let mut settings = normalize_settings_before_save(settings);
     // 保存诊断：供应商模型列表被改小/改大时能直接看出「提交上来的到底是什么」。
     // 用户反馈过「删掉一行保存后又变回三行」，只有把每次保存的行数记下来才能区分
     // 「界面没提交改动」和「提交了又被别处覆盖」。
@@ -4778,6 +4778,8 @@ pub fn save_settings(
     };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
+    // 原生登录仅由独立选择命令更新，普通偏好表单不能覆盖刚发布的身份。
+    settings.native_auth_selection = previous.native_auth_selection.clone();
     if let Err(error) = codex_plus_core::connect::outbound::validate_settings_change(&previous, &settings) {
         return failed(
             &error.to_string(),
@@ -11845,6 +11847,39 @@ cwd = \"/tmp\"
         assert!(result.message.contains("revision_conflict"));
         assert!(result.payload.settings.provider_sync_enabled);
         assert_eq!(result.payload.revision, current_revision);
+    }
+
+    #[test]
+    fn manager_preferences_save_preserves_the_latest_explicit_native_login() {
+        let _guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(
+            Some(temp.path().join("settings.json")),
+        );
+        let store = SettingsStore::default();
+        store.save(&BackendSettings {
+            enhancements_enabled: false,
+            codex_app_auto_takeover: false,
+            ..BackendSettings::default()
+        }).unwrap();
+        let stale = store.load().unwrap();
+        let mut outcomes = Vec::new();
+        for selection in [
+            Some(codex_plus_core::settings::NativeAuthSelection::Account { account_ref: "fixture-a".into() }),
+            Some(codex_plus_core::settings::NativeAuthSelection::None),
+        ] {
+            let mut current = store.load().unwrap();
+            current.native_auth_selection = selection.clone();
+            store.save(&current).unwrap();
+            let revision = store.revision().unwrap();
+            let result = save_settings(stale.clone(), Some(revision));
+            outcomes.push((result.status, store.load().unwrap().native_auth_selection, selection));
+        }
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
+        for (status, actual, expected) in outcomes {
+            assert_eq!(status, "ok");
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]

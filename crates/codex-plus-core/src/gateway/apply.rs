@@ -1114,6 +1114,16 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
 /// 纯 API Key 模式。把这种登录从 auth.json 里拿掉（OPENAI_API_KEY 等其余字段不动）。
 /// 不属于池里任何账号的登录视为用户自己登的，不碰。
 fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> bool {
+    if let Ok(settings) = ctx.settings.load() {
+        match settings.native_auth_selection {
+            // 网关是否消费这个供应商与用户显式选择的原生登录相互独立。
+            Some(crate::settings::NativeAuthSelection::Account { .. }) => {
+                return codex_signed_in(&ctx.codex_home);
+            }
+            Some(crate::settings::NativeAuthSelection::None) => return false,
+            None => {}
+        }
+    }
     let path = ctx.codex_home.join("auth.json");
     let live = std::fs::read_to_string(&path).unwrap_or_default();
     let account = serde_json::from_str::<Value>(&live)
@@ -2407,6 +2417,24 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
 
 /// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
 /// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
+pub fn sync_codex_identity_after_selection(ctx: &ApplyContext) -> anyhow::Result<()> {
+    let changed = sync_codex_identity(ctx)?;
+    // A/B 同为官方身份时配置不变，但已有线程仍需读到新的凭据代际。
+    // 连接代际仅供重连，不代表运行中的原生 OAuth 已重载。
+    if !changed {
+        let settings = ctx.settings.load()?;
+        let gateway = ctx.gateway.load()?;
+        if settings.active_relay_id == CODEX_GATEWAY_RELAY_ID
+            && gateway.binding(&ToolId::Codex).is_some_and(|binding| binding.enabled)
+            && !crate::wsl_network::codex_runs_in_wsl(&ctx.codex_home)
+            && taken_over(ctx, &ToolId::Codex).is_none()
+        {
+            crate::gateway::connection_generation::publish(&ctx.codex_home)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
@@ -2434,7 +2462,8 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     }
     let keeps_login =
         settings.active_relay_session_provider() == crate::settings::RelaySessionProvider::Openai;
-    let can_sign_in = codex_signed_in(&ctx.codex_home)
+    let can_sign_in = (settings.native_auth_selection != Some(crate::settings::NativeAuthSelection::None)
+        && codex_signed_in(&ctx.codex_home))
         || (crate::native_auth::selection_allows_auto_lend(&settings)
             && lendable_login(&gateway).is_some());
     let image_config_matches = if can_sign_in {
