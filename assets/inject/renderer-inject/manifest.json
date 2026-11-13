@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 483
+      "lines": 553
     },
     {
       "name": "01-registry.js",
@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1319
+      "lines": 1320
     },
     {
       "name": "31-config-read-deadline.js",
@@ -68,7 +68,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1945
+      "lines": 1947
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -83,7 +83,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1649
+      "lines": 1655
     },
     {
       "name": "71-model-picker-groups.js",

@@ -1188,6 +1188,9 @@
         return await prewarmCodexManagedSession(client, originalPrewarmThreadStart, params, options);
       };
     }
+    // #3036：只记录栈溢出，不改行为。
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "sendRequest", "client.sendRequest");
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "prewarmThreadStart", "client.prewarmThreadStart");
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     return true;
   }
@@ -1457,6 +1460,9 @@
         return await prewarmCodexManagedSession(this, originalPrewarmThreadStart.bind(this), params, options);
       };
     }
+    // #3036：只记录栈溢出，不改行为。
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(proto, "sendRequest", "prototype.sendRequest");
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(proto, "prewarmThreadStart", "prototype.prewarmThreadStart");
     proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
     sendCodexPlusDiagnostic("app_server_client_prototype_patch_installed", {});

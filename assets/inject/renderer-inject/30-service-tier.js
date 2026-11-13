@@ -1224,6 +1224,7 @@
         dispatcher.dispatchMessage = (type, payload) => {
           return dispatchCodexPlusMessage(dispatcher, type, payload);
         };
+        if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(dispatcher, "dispatchMessage", "dispatcher.dispatchMessage");
         installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix);
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
         serviceTierDispatcherPatchMissCount = 0;
