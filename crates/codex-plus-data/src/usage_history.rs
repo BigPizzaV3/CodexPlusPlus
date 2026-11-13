@@ -76,11 +76,22 @@ impl Tokens {
 
     pub(crate) fn parse(value: &Value) -> Option<Self> {
         let cached = value["cached_input_tokens"].as_u64();
-        let mut tokens = Self::new(
-            value["input_tokens"].as_u64()?,
-            cached.unwrap_or(0),
-            value["output_tokens"].as_u64()?,
-        );
+        let input = value["input_tokens"].as_u64()?;
+        let output = value["output_tokens"].as_u64()?;
+        // 部分原生记录的输入不含缓存；只在完整总数等式证明时统一为含缓存口径。
+        let input = match (
+            cached,
+            value["cache_write_input_tokens"].as_u64(),
+            value["total_tokens"].as_u64(),
+        ) {
+            (Some(cached), Some(written), Some(total)) => input
+                .checked_add(cached)
+                .and_then(|input| input.checked_add(written))
+                .filter(|input| input.checked_add(output) == Some(total))
+                .unwrap_or(input),
+            _ => input,
+        };
+        let mut tokens = Self::new(input, cached.unwrap_or(0), output);
         tokens.cached_known = cached.is_some_and(|count| count <= tokens.input_tokens);
         tokens.reasoning_output_tokens = value["reasoning_output_tokens"]
             .as_u64()
