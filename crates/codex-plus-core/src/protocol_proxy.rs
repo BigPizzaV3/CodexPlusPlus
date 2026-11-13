@@ -1331,9 +1331,9 @@ pub fn responses_to_chat_completions_with_options(
     remove_unsupported_native_search(&mut body)?;
     validate_chat_attachments(&body)?;
     expand_local_compaction_history(&mut body);
-    if input_has_native_compaction(&body) {
-        return Err(NativeCompactionUnsupported::history().into());
-    }
+    // #3106：剩下的是原生上游签发的加密压缩项，Chat 协议无法表达，换成占位说明，其余历史照常转换。
+    // 代理入口已按候选决定过是切换还是降级（见 open_responses_proxy_request_once），这里兜底。
+    degrade_native_compaction_history(&mut body);
     // agent_message 的 encrypted_content 片段在 multi_agent v2 里实际承载明文任务；
     // 转换时按文本透传，opaque 内容则明确失败，避免静默发空任务。
     let mut result = json!({});
@@ -3116,6 +3116,41 @@ fn expand_compaction_item(item: &Value) -> Option<Value> {
     }))
 }
 
+/// 原生压缩项（#3106）降级成的占位说明：写给模型看，措辞与 [`COMPACTION_REPLAY_PREFIX`] 一样用英文。
+const NATIVE_COMPACTION_PLACEHOLDER: &str = "[Context note] The earlier part of this conversation was compacted by a different provider. That compaction summary is stored in an encrypted format that cannot be read under the current protocol, so the earlier context has been omitted. Continue from the remaining conversation, and ask the user if essential earlier details are missing.";
+
+/// 把展开本地摘要后仍留在 input 里的原生 compaction 项（Responses 原生上游签发的 Fernet 密文，
+/// 网关无法解密）换成一条 user 占位说明，返回替换了几项。
+/// 位置不变：compaction 项本来就代替压缩前的整段历史，占位说明留在原处，前后顺序与配对不受影响。
+fn degrade_native_compaction_history(body: &mut Value) -> usize {
+    let placeholder = || {
+        json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": NATIVE_COMPACTION_PLACEHOLDER }]
+        })
+    };
+    let is_native =
+        |item: &Value| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE);
+    let mut degraded = 0;
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items.iter_mut() {
+                if is_native(item) {
+                    *item = placeholder();
+                    degraded += 1;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) if is_native(input) => {
+            *input = json!([placeholder()]);
+            degraded = 1;
+        }
+        _ => {}
+    }
+    degraded
+}
+
 fn expand_local_compaction_history(body: &mut Value) {
     match body.get_mut("input") {
         Some(Value::Array(items)) => {
@@ -3879,6 +3914,20 @@ async fn open_responses_proxy_request_once(
         if let Some(candidate) = local_candidate {
             logical_body = candidate.body;
         }
+        // #3106：Responses 原生上游签发的加密压缩项（Fernet 密文），Chat / Anthropic 桥接读不了。
+        // 还能切到下一个候选时保持原来的做法（交给后面也许能读它的 Responses 上游）；
+        // 已经没得切（最后一个候选、聚合 / 强制上游不切换）时换成占位说明继续发，
+        // 否则这段历史每轮都要重放，每条后续消息都 400，会话永久锁死。
+        let native_compaction_degraded = if relay.requires_protocol_proxy_conversion()
+            && !(has_more_candidates && !strict_aggregate_model)
+        {
+            degrade_native_compaction_history(&mut logical_body)
+        } else {
+            0
+        };
+        if native_compaction_degraded > 0 {
+            log_foreign_compaction_dropped(&relay, native_compaction_degraded, "bridge_placeholder");
+        }
         let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
             match upstream_request_parts(
                 &relay,
@@ -3975,7 +4024,8 @@ async fn open_responses_proxy_request_once(
             }
         }
         // 按这次实际发出的请求算：换到别的候选、压缩项没被去掉时不再标出。
-        foreign_compaction_dropped = compaction_dropped_now;
+        // 桥接换成占位说明的原生压缩项（#3106）同样丢了压缩前的上下文，一并标出。
+        foreign_compaction_dropped = compaction_dropped_now || native_compaction_degraded > 0;
         // #2917：这家（供应商 + Key / 账号）的这个模型拒收过推理项的明文 content，提前清空。
         // 拒收重发时请求从头重建，也是靠这里清空。
         if foreign_reasoning_handled {
@@ -6035,6 +6085,8 @@ async fn upstream_request_parts(
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
     // Chat 与 Anthropic 上游都没有原生压缩项，只能走合成摘要路径。
+    // 走到这里还带着原生压缩项，说明调用方还有别的候选可切（没得切时已换成占位说明，#3106），
+    // 交回这个错误让它换下一个候选。
     if relay.requires_protocol_proxy_conversion() && input_has_native_compaction(&request_json) {
         return Err(NativeCompactionUnsupported::history().into());
     }
