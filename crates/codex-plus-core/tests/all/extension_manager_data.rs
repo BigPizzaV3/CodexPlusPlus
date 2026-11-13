@@ -202,6 +202,9 @@ fn skills_view_excludes_paths_descriptions_and_uninstalled_entries() {
         managed: true,
         locations: Vec::new(),
         conflict: None,
+        original_dir: Some("SECRET_ORIGINAL_PATH".into()),
+        install_channel: "SECRET_CHANNEL".into(),
+        ..Default::default()
     };
     let mut remote = entry.clone();
     remote.installed = false;
