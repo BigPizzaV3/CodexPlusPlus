@@ -860,16 +860,30 @@ impl RequestEvidenceCache {
                 .collect::<Vec<usize>>()
         };
         let delayed_reverse = reverse_counts(DELAYED_REQUEST_MATCH_WINDOW_MS);
-        let uncertain_sessions: HashSet<_> = events
-            .iter()
-            .filter(|event| {
-                event.count_uncertain
-                    || event.count_incomplete
-                    || !event.delta.cached_known
-                    || event.context_conflicts.any()
-            })
-            .filter_map(|event| aliases.resolve(&event.session))
-            .collect();
+        // 来源计数缺口可能藏有未知时间的事件；可定位的不确定事件只参与附近请求的竞争。
+        let mut incomplete_sessions = HashSet::new();
+        let mut uncertain_times: HashMap<String, Vec<i64>> = HashMap::new();
+        for event in events.iter().filter(|event| {
+            event.count_uncertain
+                || event.count_incomplete
+                || !event.delta.cached_known
+                || event.context_conflicts.any()
+        }) {
+            let Some(session) = aliases.resolve(&event.session) else {
+                continue;
+            };
+            let at = DateTime::parse_from_rfc3339(&event.timestamp)
+                .ok()
+                .map(|time| time.timestamp_millis());
+            if event.count_incomplete || at.is_none() {
+                incomplete_sessions.insert(session);
+            } else if let Some(at) = at {
+                uncertain_times.entry(session).or_default().push(at);
+            }
+        }
+        for times in uncertain_times.values_mut() {
+            times.sort_unstable();
+        }
         let (mut recovered, mut tokens, mut retained) = (0usize, 0u64, 0usize);
         let (mut delayed_events, mut delayed_tokens) = (0usize, 0u64);
         let (mut model_events, mut direct_conflicts) = (0usize, 0usize);
@@ -889,12 +903,15 @@ impl RequestEvidenceCache {
             }
             if self.captured_id_check_failed
                 || event.count_uncertain
+                || event.count_incomplete
+                || !event.delta.cached_known
                 || evidence
                     .as_ref()
-                    .is_some_and(|(key, _)| uncertain_sessions.contains(&key.session))
+                    .is_some_and(|(key, _)| incomplete_sessions.contains(&key.session))
             {
                 continue;
             }
+            let mut uncertain_competition = false;
             let candidate = evidence.as_ref().and_then(|(key, at)| {
                 if let Some(records) = uncertain_requests.get(&key.session) {
                     let start = records.partition_point(|record| {
@@ -922,6 +939,22 @@ impl RequestEvidenceCache {
                 }
                 let i = entries[start].1;
                 let request = &requests[i];
+                // 以请求时间为中心，与反向唯一性使用同一窗口。
+                if let Some(times) = uncertain_times.get(&key.session) {
+                    let first = times.partition_point(|at| {
+                        *at < request
+                            .timestamp_ms
+                            .saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                    });
+                    if times.get(first).is_some_and(|at| {
+                        *at <= request
+                            .timestamp_ms
+                            .saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                    }) {
+                        uncertain_competition = true;
+                        return None;
+                    }
+                }
                 if delayed_reverse[i] != 1 {
                     return None;
                 }
@@ -949,10 +982,15 @@ impl RequestEvidenceCache {
                     || evidence
                         .as_ref()
                         .is_none_or(|(key, at)| *key != saved_key || *at != saved.at)
-                    || candidate.is_none_or(|(i, _)| requests[i] != saved.request)
+                    || blocked.contains(&saved.request.id)
+                    || !uncertain_competition
+                        && candidate.is_none_or(|(i, _)| requests[i] != saved.request)
                 {
                     saved.rejected = true;
                 }
+            }
+            if uncertain_competition {
+                continue;
             }
             let Some((i, delayed)) = candidate else {
                 continue;
