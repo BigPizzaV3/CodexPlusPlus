@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Loader2, RefreshCw } from "lucide-react";
+import { Check, Loader2, RefreshCw, RotateCw } from "lucide-react";
 import { t } from "./i18n";
 import { nativeAuthSelection, savedAuthLabel, type NativeAuthResult, type NativeAuthState } from "./native-auth-model";
 import { AppSelect } from "./AppSelect";
@@ -36,12 +36,14 @@ function useSavedAuthAccounts() {
   return { state, setState, loading, error, setError, reload };
 }
 
-export function NativeAuthControl() {
+export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boolean> }) {
   const { state, setState, loading, error, setError, reload } = useSavedAuthAccounts();
   const [chosen, setChosen] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const current = state ? nativeAuthSelection(state) : "";
   const value = chosen ?? current;
+  const busy = loading || saving || restarting;
   const save = async () => {
     if (!state || !value || saving || loading) return;
     setSaving(true);
@@ -54,9 +56,25 @@ export function NativeAuthControl() {
       setState(result);
       setChosen(null);
     } catch (failure) {
+      await reload();
       setError(String(failure));
     } finally {
       setSaving(false);
+    }
+  };
+  const restart = async () => {
+    if (!onRestart || busy) return;
+    setRestarting(true);
+    setError("");
+    try {
+      if (await onRestart()) {
+        setChosen(null);
+        await reload();
+      }
+    } catch (failure) {
+      setError(String(failure));
+    } finally {
+      setRestarting(false);
     }
   };
   return (
@@ -64,7 +82,7 @@ export function NativeAuthControl() {
       <CxRow className="native-auth-current" icon={<AgentIcon agent="codex" />} title={t("Codex 登录")}>
         <AppSelect
           ariaLabel={t("Codex 当前登录")}
-          disabled={!state || loading || saving}
+          disabled={!state || busy}
           id="native-auth-account"
           onChange={setChosen}
           size="sm"
@@ -76,14 +94,20 @@ export function NativeAuthControl() {
           ]}
           value={value}
         />
-        <button aria-label={saving ? t("保存中") : t("应用当前登录选择")} className="native-auth-action" disabled={!state || !value || loading || saving || (value === current && !state.drift)} onClick={() => void save()} title={t("应用当前登录选择")} type="button">
+        <button aria-label={saving ? t("保存中") : t("应用当前登录选择")} className="native-auth-action" disabled={!state || !value || busy} onClick={() => void save()} title={t("应用当前登录选择")} type="button">
           {saving ? <Loader2 className="animate-spin" /> : <Check />}
         </button>
-        <button aria-label={t("刷新登录账号")} className="native-auth-action" disabled={loading || saving} onClick={() => { setChosen(null); void reload(); }} title={t("刷新登录账号")} type="button">
+        {state?.managed && onRestart ? (
+          <button aria-label={t("重启 Codex 应用登录选择")} className="native-auth-action" disabled={busy || chosen !== null || !!state.drift || !!state.restartBlockedReason} onClick={() => void restart()} title={t("重启 Codex 应用登录选择")} type="button">
+            <RotateCw className={restarting ? "animate-spin" : ""} />
+          </button>
+        ) : null}
+        <button aria-label={t("刷新登录账号")} className="native-auth-action" disabled={busy} onClick={() => { setChosen(null); void reload(); }} title={t("刷新登录账号")} type="button">
           <RefreshCw className={loading ? "animate-spin" : ""} />
         </button>
       </CxRow>
-      {error ? <p className="native-auth-error" role="alert">{error}</p> : state?.drift ? <p className="native-auth-error" role="status">{state.drift} · {t("实际登录：")}{state.actualLabel || t("未登录")}</p> : null}
+      {state ? <p className="native-auth-pending">{t("已写入凭证：")}{state.actualLabel || t("未登录")}</p> : null}
+      {error ? <p className="native-auth-error" role="alert">{error}</p> : state?.drift ? <p className="native-auth-error" role="status">{state.drift}</p> : state?.restartBlockedReason ? <p className="native-auth-pending" role="status">{t(state.restartBlockedReason)}</p> : state?.managed ? <p className="native-auth-pending" role="status">{t("更改登录选择后，请关闭所有 Codex 实例并重新启动。")}</p> : null}
     </div>
   );
 }
