@@ -8893,3 +8893,112 @@ fn stale_codex_managed_mcp_in_snapshot_is_dropped_when_live_is_empty() {
     .unwrap();
     assert!(!out.contains("node_repl"), "{out}");
 }
+
+/// 回归（#3115）：`[[skills.config]]` 是按 path / name 列条的数组，切换渠道时
+/// 不能把整段换成模板里的那几条。模板同 path 的条目覆盖，其余 live 条目保留。
+#[test]
+fn apply_relay_config_preserves_live_skills_config_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"[[skills.config]]
+path = "/home/u/.codex/skills/alpha/SKILL.md"
+enabled = false
+
+[[skills.config]]
+path = "/home/u/.codex/skills/beta/SKILL.md"
+enabled = false
+
+[[skills.config]]
+path = "/home/u/.codex/skills/gamma/SKILL.md"
+enabled = false
+"#,
+    )
+    .unwrap();
+    let common = r#"[[skills.config]]
+path = "/home/u/.codex/skills/beta/SKILL.md"
+enabled = true
+"#;
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: "gpt-5".to_string(),
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+base_url = "https://relay.example.test/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
+        use_common_config: true,
+        ..RelayProfile::default()
+    };
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, common).unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+    let entries: Vec<(String, bool)> = doc["skills"]["config"]
+        .as_array_of_tables()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["path"].as_str().unwrap().to_string(),
+                entry["enabled"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![
+            ("/home/u/.codex/skills/alpha/SKILL.md".to_string(), false),
+            ("/home/u/.codex/skills/beta/SKILL.md".to_string(), true),
+            ("/home/u/.codex/skills/gamma/SKILL.md".to_string(), false),
+        ],
+        "live 的自定义条目要保留，模板同 path 的条目覆盖：{updated}"
+    );
+}
+
+#[test]
+fn normalize_config_text_keeps_every_repeated_array_of_tables_entry() {
+    // issue #3115：`[[skills.config]]` 一个条目一个块，逐块合并阶段必须按条目
+    // 追加，不能用「后出现的块整棵覆盖数组」——否则切换供应商后用户写在
+    // config.toml / 通用配置里的 N 条技能启停规则会塌缩成最后一条。
+    let mut text = String::from("model = \"gpt-x\"\n\n");
+    for index in 0..5 {
+        text.push_str(&format!(
+            "[[skills.config]]\npath = \"C:\\\\Users\\\\u\\\\.codex\\\\skills\\\\skill{index}\\\\SKILL.md\"\nenabled = false\n\n"
+        ));
+    }
+    text.push_str("[[skills.config]]\npath = \"C:\\\\Users\\\\u\\\\.codex\\\\skills\\\\Chinesizing\\\\SKILL.md\"\nenabled = true\n");
+    let normalized = codex_plus_core::relay_config::normalize_config_text(&text);
+    assert_eq!(normalized.matches("[[skills.config]]").count(), 6);
+    assert!(normalized.contains("Chinesizing"));
+    assert!(normalized.contains("skill0"));
+    assert!(normalized.contains("skill4"));
+}
+
+#[test]
+fn normalize_config_text_still_merges_repeated_standard_tables_last_wins() {
+    // 守住原有语义：标准表重复声明时仍按键合并、后值覆盖（与 merge_toml_item
+    // 数组表追加分支互补，不改变标准表的既有行为）。
+    let normalized = codex_plus_core::relay_config::normalize_config_text(
+        "[mcp_servers.node_repl]\ncommand = \"old\"\n\n[mcp_servers.node_repl]\ncommand = \"new\"\nargs = [\"-y\"]\n",
+    );
+    let doc = normalized.parse::<toml_edit::DocumentMut>().unwrap();
+    let server = &doc["mcp_servers"]["node_repl"];
+    assert_eq!(
+        server.get("command").and_then(|value| value.as_str()),
+        Some("new")
+    );
+    assert_eq!(
+        server
+            .get("args")
+            .and_then(|value| value.as_array())
+            .map(|array| array.len()),
+        Some(1)
+    );
+}

@@ -13,6 +13,7 @@ export type NativeAuthState = {
   actualLabel: string;
   accounts: SavedAuthAccount[];
   drift: string | null;
+  restartBlockedReason?: string | null;
 };
 
 export type NativeAuthResult = NativeAuthState & { status: string; message: string };

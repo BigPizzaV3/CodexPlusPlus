@@ -5,6 +5,13 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "重启 Codex 应用登录选择": "Restart Codex to apply sign-in selection",
+  "已写入凭证：": "Saved credentials: ",
+  "更改登录选择后，请关闭所有 Codex 实例并重新启动。": "After changing sign-in selection, close all Codex instances and restart.",
+  "当前直连配置不支持所选登录状态；请先调整连接身份": "The direct connection does not support the selected sign-in state. Change its session identity first.",
+  "Codex 网关连接未启用；登录选择已保存，接入后再应用": "Codex gateway connection is off. Sign-in selection is saved; connect it before applying.",
+  "Codex 配置已由其他工具接管；请先恢复网关连接": "Another tool has taken over the Codex configuration. Restore the gateway connection first.",
+  "WSL 连接不使用官方登录身份；当前选择无法在此连接生效": "The WSL connection does not use official sign-in identity. This selection cannot apply there.",
   "Codex 登录": "Codex sign-in",
   "额度待刷新": "Usage awaiting refresh",
   "待刷新": "Awaiting refresh",

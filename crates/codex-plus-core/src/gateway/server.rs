@@ -65,6 +65,12 @@ fn query_param(path: &str, name: &str) -> Option<String> {
     })
 }
 
+/// Anthropic 官方客户端（Claude Desktop）的连通性探针：`HEAD|GET /api/hello`。
+/// 这类请求不带认证头，按 liveness 放行（见 `handle` 里的 #3096 注释）。
+fn is_unauthenticated_health_probe(method: &str, tail: &str) -> bool {
+    matches!(method, "HEAD" | "GET") && tail == "/api/hello"
+}
+
 fn client_token(headers: &str) -> Option<String> {
     if let Some(key) = header_value_from_headers(headers, "x-api-key")
         .map(|value| value.trim().to_string())
@@ -130,6 +136,22 @@ pub(crate) async fn handle(
         );
         return write_error(stream, &agent, 503, &message).await;
     };
+    // Anthropic 官方客户端（Claude Desktop）的连通性探针：`HEAD|GET /api/hello`
+    // 不带任何认证。它在真实推理请求之前发出，回 401 会被客户端当成「网关不可达」，
+    // 造成明明 POST /v1/messages 正常、连接状态却偶发显示断线的误报（#3096）。
+    // 按 liveness 处理：直接回 200 空响应，不泄露任何配置或 token 信息。
+    if is_unauthenticated_health_probe(method, &tail) {
+        log_helper_response(
+            "gateway.health_probe",
+            method,
+            path,
+            "200 OK",
+            remote_addr_text,
+        );
+        write_http_response(stream, "200 OK", JSON, &[]).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     // Gemini 客户端把 Key 放在 `x-goog-api-key` 或查询串 `?key=` 里。
     let provided = client_token(headers)
         .or_else(|| header_value_from_headers(headers, "x-goog-api-key"))
@@ -1565,6 +1587,17 @@ mod tests {
             ))
         );
         assert_eq!(split_gateway_path("/v1/messages"), None);
+    }
+
+    #[test]
+    fn unauthenticated_health_probe_matches_liveness_paths_only() {
+        assert!(is_unauthenticated_health_probe("HEAD", "/api/hello"));
+        assert!(is_unauthenticated_health_probe("GET", "/api/hello"));
+        // 真实推理端点必须继续走认证，不能被探针放行误伤。
+        assert!(!is_unauthenticated_health_probe("POST", "/api/hello"));
+        assert!(!is_unauthenticated_health_probe("HEAD", "/messages"));
+        assert!(!is_unauthenticated_health_probe("HEAD", "/v1/messages"));
+        assert!(!is_unauthenticated_health_probe("GET", "/api/hello/x"));
     }
 
     #[test]

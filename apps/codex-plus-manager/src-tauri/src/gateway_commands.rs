@@ -149,6 +149,8 @@ pub struct NativeAuthState {
     pub actual_label: String,
     pub accounts: Vec<NativeAuthAccount>,
     pub drift: Option<String>,
+    /// 当前连接不能应用所选身份时，提示先处理连接而非反复重启。
+    pub restart_blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -538,7 +540,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
             source: provider.source.clone(),
         });
     }
-    let drift = match settings.native_auth_selection.as_ref() {
+    let mut drift = match settings.native_auth_selection.as_ref() {
         Some(codex_plus_core::settings::NativeAuthSelection::None) if has_native_login => {
             Some("当前 auth 仍有登录凭据".to_string())
         }
@@ -549,6 +551,31 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         }
         _ => None,
     };
+    let managed = settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID;
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let live_official = codex_plus_core::relay_config::relay_session_provider_from_config(&config)
+        == codex_plus_core::settings::RelaySessionProvider::Openai;
+    let blocked_reason = if let Some(selection) = settings.native_auth_selection.as_ref() {
+        let binding_enabled = gateway.binding(&ToolId::Codex).is_some_and(|binding| binding.enabled);
+        let taken_over = codex_plus_core::gateway::drift::check(&context(), &ToolId::Codex).is_some();
+        let wants_account = matches!(selection, codex_plus_core::settings::NativeAuthSelection::Account { .. });
+        native_auth_restart_blocker(managed, binding_enabled, taken_over,
+            wants_account && codex_plus_core::wsl_network::codex_runs_in_wsl(&home),
+            wants_account, live_official)
+    } else {
+        None
+    };
+    if drift.is_none() && blocked_reason.is_none()
+        && settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID
+        && let Some(selection) = settings.native_auth_selection.as_ref()
+    {
+        let expected = matches!(selection, codex_plus_core::settings::NativeAuthSelection::Account { .. });
+        let saved_official = settings.active_relay_session_provider()
+            == codex_plus_core::settings::RelaySessionProvider::Openai;
+        if expected != live_official || expected != saved_official {
+            drift = Some("当前连接尚未切换到所选登录身份，请重新应用".to_string());
+        }
+    }
     Ok(NativeAuthState {
         managed: settings.native_auth_selection.is_some(),
         selection: settings.native_auth_selection,
@@ -556,7 +583,29 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         actual_label,
         accounts,
         drift,
+        restart_blocked_reason: blocked_reason.map(str::to_string),
     })
+}
+
+fn native_auth_restart_blocker(
+    managed: bool,
+    binding_enabled: bool,
+    taken_over: bool,
+    wsl_account: bool,
+    wants_account: bool,
+    live_official: bool,
+) -> Option<&'static str> {
+    if managed && !binding_enabled {
+        Some("Codex 网关连接未启用；登录选择已保存，接入后再应用")
+    } else if managed && taken_over {
+        Some("Codex 配置已由其他工具接管；请先恢复网关连接")
+    } else if wsl_account {
+        Some("WSL 连接不使用官方登录身份；当前选择无法在此连接生效")
+    } else if wants_account != live_official && !managed {
+        Some("当前直连配置不支持所选登录状态；请先调整连接身份")
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -570,6 +619,7 @@ pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
             actual_label: String::new(),
             accounts: Vec::new(),
             drift: Some(error.to_string()),
+            restart_blocked_reason: None,
         }),
     }
 }
@@ -592,18 +642,42 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
         }
         codex_plus_core::native_auth::set_native_auth_selection(account_ref.as_deref())?;
         notify_settings_changed();
+        // 复用网关已有的官方会话身份转换，不能只写 auth 而继续留下 requires_openai_auth=false。
+        if apply::sync_codex_identity_after_selection(&context()).is_err() {
+            anyhow::bail!("登录选择已保存，但连接身份同步失败，请重新应用；尚未重启 Codex");
+        }
+        notify_settings_changed();
         native_auth_state()
     })();
     match result {
         Ok(state) => ok("原生登录选择已保存。", state),
-        Err(error) => failed(&format!("保存原生登录选择失败：{error}"), NativeAuthState {
-            managed: false,
-            selection: None,
-            actual_account_ref: None,
-            actual_label: String::new(),
-            accounts: Vec::new(),
-            drift: Some(error.to_string()),
-        }),
+        Err(error) => failed(&format!("保存原生登录选择失败：{error}"),
+            native_auth_state().unwrap_or(NativeAuthState {
+                managed: false,
+                selection: None,
+                actual_account_ref: None,
+                actual_label: String::new(),
+                accounts: Vec::new(),
+                drift: Some(error.to_string()),
+                restart_blocked_reason: None,
+            })),
+    }
+}
+
+#[cfg(test)]
+mod native_auth_restart_tests {
+    use super::native_auth_restart_blocker;
+
+    #[test]
+    fn unavailable_connection_never_promises_that_a_restart_will_apply_the_login() {
+        assert!(native_auth_restart_blocker(true, false, false, false, true, false).is_some());
+        assert!(native_auth_restart_blocker(true, true, true, false, true, false).is_some());
+        assert!(native_auth_restart_blocker(true, true, false, true, true, false).is_some());
+        assert!(native_auth_restart_blocker(false, false, false, false, true, false).is_some());
+        assert!(native_auth_restart_blocker(false, false, false, false, false, true).is_some());
+        assert_eq!(native_auth_restart_blocker(false, false, false, false, true, true), None);
+        assert_eq!(native_auth_restart_blocker(false, false, false, false, false, false), None);
+        assert_eq!(native_auth_restart_blocker(true, true, false, false, true, true), None);
     }
 }
 
