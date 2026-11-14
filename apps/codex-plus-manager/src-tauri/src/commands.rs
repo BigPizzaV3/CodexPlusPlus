@@ -918,6 +918,7 @@ pub struct SkillsPayload {
     pub repository_skills: Vec<codex_plus_core::skills::SkillEntry>,
     pub repo_counts: std::collections::BTreeMap<String, usize>,
     pub backups: Vec<codex_plus_core::skills::SkillBackup>,
+    pub backups_ok: bool,
     /// 单个仓库拉取失败不该让整块面板空掉，把错误单独带回前端提示。
     pub repo_errors: Vec<String>,
     pub skills_dir: String,
@@ -7491,6 +7492,200 @@ pub async fn list_installed_skills() -> Result<CommandResult<SkillsPayload>, Str
     }).await.map_err(|error| format!("读取本地 Skills 失败：{error}"))
 }
 
+async fn resolve_skill_repo_for_operation(
+    manager: &codex_plus_core::skills::SkillsManager,
+    repo_key: &str,
+) -> anyhow::Result<Vec<codex_plus_core::skills::RemoteSkill>> {
+    let (guard, snapshot) = {
+        let _coordination = skills_repo_coordination();
+        (manager.capture_repo_guard(repo_key)?, repo_skill_cache_snapshot(repo_key))
+    };
+    let (resolved, skills) =
+        codex_plus_core::skills::resolve_repo_skills(guard.repo.clone(), &snapshot.skills).await?;
+    anyhow::ensure!(resolved.key() == repo_key, "仓库分支已变化，请先重新检查仓库");
+    let _coordination = skills_repo_coordination();
+    anyhow::ensure!(manager.repo_guard_is_current(&guard)?, "仓库在检查期间已改变，请重试");
+    store_repo_skills_if_current(repo_key, &skills, &snapshot);
+    Ok(skills)
+}
+
+#[tauri::command]
+pub async fn find_skill_repository_matches(
+    repo_key: String,
+    id: Option<String>,
+    local_path: Option<String>,
+) -> CommandResult<codex_plus_core::skills::SkillRepositoryMatchPreview> {
+    let manager = default_skills_manager();
+    let result = async {
+        let skills = resolve_skill_repo_for_operation(&manager, &repo_key).await?;
+        let repo = manager.list_repos().into_iter().find(|repo| repo.key() == repo_key)
+            .ok_or_else(|| anyhow::anyhow!("仓库已不存在"))?;
+        tauri::async_runtime::spawn_blocking(move || {
+            match (id.as_deref(), local_path.as_deref()) {
+                (Some(id), Some(path)) => manager.preview_repository_matches_for_instance(
+                    &repo, &skills, id, std::path::Path::new(path),
+                ),
+                (None, Some(_)) => anyhow::bail!("选择安装位置时必须指定 Skill"),
+                (_, None) => manager.preview_repository_matches(&repo, &skills, id.as_deref()),
+            }
+        }).await?
+    }.await;
+    match result {
+        Ok(preview) => ok("来源候选已检查，请确认后关联。", preview),
+        Err(error) => failed(
+            &format!("匹配 Skill 来源失败：{error:#}"),
+            codex_plus_core::skills::SkillRepositoryMatchPreview::default(),
+        ),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRepositoryApplyPayload {
+    #[serde(flatten)]
+    skills: SkillsPayload,
+    applied: Vec<codex_plus_core::skills::SkillRepositoryMatchApplied>,
+    errors: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn apply_skill_repository_matches(
+    selections: Vec<codex_plus_core::skills::SkillRepositoryMatchSelection>,
+) -> Result<CommandResult<SkillRepositoryApplyPayload>, String> {
+    let manager = default_skills_manager();
+    let keys: std::collections::BTreeSet<_> = selections.iter()
+        .map(|selection| selection.repo_key.clone()).collect();
+    let mut remote = Vec::new();
+    let mut errors = Vec::new();
+    let mut available = std::collections::BTreeSet::new();
+    for key in keys {
+        match resolve_skill_repo_for_operation(&manager, &key).await {
+            Ok(skills) => {
+                available.insert(key);
+                remote.extend(skills);
+            }
+            Err(error) => errors.push(format!("{key}：{error:#}")),
+        }
+    }
+    let valid: Vec<_> = selections.into_iter()
+        .filter(|selection| available.contains(&selection.repo_key)).collect();
+    tauri::async_runtime::spawn_blocking(move || {
+        let applied = match manager.apply_repository_matches(&valid, &remote) {
+            Ok(outcome) => {
+                errors.extend(outcome.errors);
+                outcome.applied
+            }
+            Err(error) => {
+                errors.push(format!("{error:#}"));
+                Vec::new()
+            }
+        };
+        let payload = SkillRepositoryApplyPayload {
+            skills: current_skills_payload(&manager),
+            applied,
+            errors,
+        };
+        if payload.errors.is_empty() {
+            ok("已关联所选来源，更新方式未改变。", payload)
+        } else {
+            failed(&format!("部分来源未关联：{}", payload.errors.join("；")), payload)
+        }
+    }).await.map_err(|error| format!("关联 Skill 来源失败：{error}"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSourceEvidencePayload {
+    evidence: Vec<codex_plus_core::skills::SkillSourceEvidence>,
+}
+
+#[tauri::command]
+pub async fn discover_skill_source_evidence(id: String, local_path: Option<String>) -> Result<CommandResult<SkillSourceEvidencePayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let evidence = match local_path.as_deref() {
+            Some(path) => manager.discover_skill_source_evidence_for_instance(id.trim(), std::path::Path::new(path)),
+            None => manager.discover_skill_source_evidence(id.trim()),
+        };
+        match evidence {
+            Ok(evidence) => ok("已检查本地来源线索。", SkillSourceEvidencePayload { evidence }),
+            Err(error) => failed(
+                &format!("检查来源线索失败：{error:#}"),
+                SkillSourceEvidencePayload { evidence: Vec::new() },
+            ),
+        }
+    }).await.map_err(|error| format!("检查来源线索失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn preview_skill_in_place_update(
+    id: String,
+    repo_key: String,
+    local_path: Option<String>,
+) -> CommandResult<codex_plus_core::skills::SkillInPlaceUpdatePreview> {
+    let manager = default_skills_manager();
+    let result = async {
+        let inventory = manager.try_local_inventory()?;
+        let repo_path = if let Some(path) = local_path.as_deref() {
+            let path = std::path::Path::new(path);
+            inventory.iter().filter(|skill| skill.id == id).find_map(|skill| {
+                skill.locations.iter()
+                    .find(|location| location.original_path.as_deref() == Some(path) && location.repo_key == repo_key)
+                    .map(|location| location.repo_path.clone())
+                    .or_else(|| (skill.original_dir.as_deref() == Some(path) && skill.repo_key == repo_key)
+                        .then(|| skill.repo_path.clone()))
+            })
+        } else {
+            inventory.iter().find(|skill| skill.id == id && skill.repo_key == repo_key)
+                .map(|skill| skill.repo_path.clone())
+        }.ok_or_else(|| anyhow::anyhow!("未找到指定位置已关联的 Skill"))?;
+        let remote = resolve_skill_repo_for_operation(&manager, &repo_key).await?
+            .into_iter().find(|skill| skill.repo_path == repo_path)
+            .ok_or_else(|| anyhow::anyhow!("仓库中已找不到该 Skill 路径"))?;
+        let repo = manager.list_repos().into_iter().find(|repo| repo.key() == repo_key)
+            .ok_or_else(|| anyhow::anyhow!("仓库已不存在"))?;
+        let zip = codex_plus_core::skills::download_repo_zip(&repo).await?;
+        match local_path.as_deref() {
+            Some(path) => manager.preview_skill_in_place_update_for_instance(
+                &id, std::path::Path::new(path), remote, zip,
+            ),
+            None => manager.preview_skill_in_place_update(&id, remote, zip),
+        }
+    }.await;
+    match result {
+        Ok(preview) => ok("请检查原目录及更新版本。", preview),
+        Err(error) => failed(
+            &format!("预览原位更新失败：{error:#}"),
+            codex_plus_core::skills::SkillInPlaceUpdatePreview::default(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn discard_skill_in_place_update_preview(preview_id: String) {
+    codex_plus_core::skills::SkillsManager::discard_in_place_update_preview(&preview_id);
+}
+
+#[tauri::command]
+pub async fn execute_skill_in_place_update(preview_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let result = async {
+        let expected = manager.in_place_update_preview_remote(&preview_id)?;
+        let observed = resolve_skill_repo_for_operation(&manager, &expected.repo_key).await?
+            .into_iter().find(|skill| skill.repo_path == expected.repo_path)
+            .ok_or_else(|| anyhow::anyhow!("预览后仓库中已找不到该 Skill，请重新预览"))?;
+        let worker = manager.clone();
+        tauri::async_runtime::spawn_blocking(move ||
+            worker.execute_skill_in_place_update(&preview_id, &observed)
+        ).await.map_err(|error| anyhow::anyhow!("原位更新任务失败：{error}"))??;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    match result {
+        Ok(()) => ok("Skill 已原位更新，原版本已备份。", current_skills_payload(&manager)),
+        Err(error) => failed(&format!("原位更新失败：{error:#}"), current_skills_payload(&manager)),
+    }
+}
+
 /// 导入 cc-switch 已安装的 Skills。cc-switch 的 Skill 文件位于
 /// `%USERPROFILE%/.cc-switch/skills/<id>/SKILL.md`，不在其 SQLite 数据库中。
 #[tauri::command]
@@ -7713,27 +7908,43 @@ pub fn uninstall_skill(id: String) -> CommandResult<SkillsPayload> {
 }
 
 #[tauri::command]
-pub fn restore_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    match manager.restore_backup(backup_id.trim()) {
-        Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
-        Err(error) => failed(
-            &format!("从备份恢复失败：{error}"),
-            current_skills_payload(&manager),
-        ),
-    }
+pub async fn restore_skill_backup(backup_id: String) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        match manager.restore_backup(backup_id.trim()) {
+            Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
+            Err(error) => failed(
+                &format!("从备份恢复失败：{error}"),
+                current_skills_payload(&manager),
+            ),
+        }
+    }).await.map_err(|error| format!("从备份恢复失败：{error}"))
 }
 
 #[tauri::command]
-pub fn delete_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
-    let manager = default_skills_manager();
-    match manager.delete_backup(backup_id.trim()) {
-        Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
-        Err(error) => failed(
-            &format!("删除备份失败：{error}"),
-            current_skills_payload(&manager),
-        ),
-    }
+pub async fn delete_skill_backup(
+    backup_id: String,
+    missing_only: Option<bool>,
+) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let missing_only = missing_only.unwrap_or(false);
+        let result = if missing_only {
+            manager.delete_missing_backup(backup_id.trim())
+        } else {
+            manager.delete_backup(backup_id.trim())
+        };
+        match result {
+            Ok(_) => ok(
+                if missing_only { "已清除丢失的备份记录。" } else { "备份已删除。" },
+                current_skills_payload(&manager),
+            ),
+            Err(error) => failed(
+                &format!("删除备份失败：{error}"),
+                current_skills_payload(&manager),
+            ),
+        }
+    }).await.map_err(|error| format!("删除备份失败：{error}"))
 }
 
 #[tauri::command]
@@ -7965,13 +8176,23 @@ fn skills_payload(
             Vec::new()
         }
     };
+    let backups = manager.try_list_backups();
+    let backups_ok = backups.is_ok();
+    let backups = match backups {
+        Ok(backups) => backups,
+        Err(error) => {
+            repo_errors.push(format!("读取 Skill 备份失败：{error:#}"));
+            Vec::new()
+        }
+    };
     SkillsPayload {
         skills,
         inventory_ok,
         repos,
         repository_skills,
         repo_counts,
-        backups: manager.list_backups(),
+        backups,
+        backups_ok,
         repo_errors,
         skills_dir: manager.source_dir().to_string_lossy().to_string(),
         codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),

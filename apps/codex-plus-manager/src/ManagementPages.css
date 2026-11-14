@@ -45,6 +45,16 @@
 .mg-skills-page .mg-drawer h2{min-width:0;overflow-wrap:anywhere}
 .mg-skills-page .mg-drawer>header{height:auto;min-height:64px;gap:12px;padding-block:12px}
 .mg-skills-page .mg-drawer>header>.mg-icon-button{flex-shrink:0}
+.mg-skill-detail{display:flex;flex-direction:column;gap:10px;min-width:0}
+.mg-skill-detail>.mg-notice{margin:0;padding:8px 10px}
+.mg-skill-detail .mg-detail{grid-template-columns:100px minmax(0,1fr);gap:6px 12px;line-height:1.45}
+.mg-skill-detail .mg-link-button{max-width:100%;min-width:0}
+.mg-skill-detail .mg-row-actions{justify-content:flex-start;flex-wrap:wrap;gap:6px;margin-top:4px}
+.mg-skill-detail>section h3{margin:0 0 6px;font-size:13px}
+.mg-skill-detail .mg-source-row{grid-template-columns:minmax(0,1fr);gap:4px;padding:7px 0}
+.mg-skill-detail .mg-source-row>div:first-child{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;min-width:0}
+.mg-skill-detail .mg-source-row strong{overflow-wrap:anywhere}
+.mg-skill-detail .mg-source-row small{margin-top:2px}
 @media (max-width:900px){.mg-skill-head,.mg-skill-row{grid-template-columns:minmax(0,1fr) 110px 124px 116px;gap:8px}}
 @media (max-width:680px){.mg-skill-head,.mg-skill-row{grid-template-columns:minmax(0,1fr) 80px 104px 105px;gap:6px;padding-inline:8px}.mg-form-grid{grid-template-columns:1fr}.mg-skill-row .mg-button{padding-inline:6px}.mg-status-toggle{width:36px}.mg-skill-status{gap:5px}}
 /* Skills 页的颜色、按钮和表格与 MCP 页共用；这里只保留仓库抽屉自己的分隔线和强调色。 */
