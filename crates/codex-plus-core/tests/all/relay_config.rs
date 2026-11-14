@@ -8893,3 +8893,44 @@ fn stale_codex_managed_mcp_in_snapshot_is_dropped_when_live_is_empty() {
     .unwrap();
     assert!(!out.contains("node_repl"), "{out}");
 }
+
+#[test]
+fn normalize_config_text_keeps_every_repeated_array_of_tables_entry() {
+    // issue #3115：`[[skills.config]]` 一个条目一个块，逐块合并阶段必须按条目
+    // 追加，不能用「后出现的块整棵覆盖数组」——否则切换供应商后用户写在
+    // config.toml / 通用配置里的 N 条技能启停规则会塌缩成最后一条。
+    let mut text = String::from("model = \"gpt-x\"\n\n");
+    for index in 0..5 {
+        text.push_str(&format!(
+            "[[skills.config]]\npath = \"C:\\\\Users\\\\u\\\\.codex\\\\skills\\\\skill{index}\\\\SKILL.md\"\nenabled = false\n\n"
+        ));
+    }
+    text.push_str("[[skills.config]]\npath = \"C:\\\\Users\\\\u\\\\.codex\\\\skills\\\\Chinesizing\\\\SKILL.md\"\nenabled = true\n");
+    let normalized = codex_plus_core::relay_config::normalize_config_text(&text);
+    assert_eq!(normalized.matches("[[skills.config]]").count(), 6);
+    assert!(normalized.contains("Chinesizing"));
+    assert!(normalized.contains("skill0"));
+    assert!(normalized.contains("skill4"));
+}
+
+#[test]
+fn normalize_config_text_still_merges_repeated_standard_tables_last_wins() {
+    // 守住原有语义：标准表重复声明时仍按键合并、后值覆盖（与 merge_toml_item
+    // 数组表追加分支互补，不改变标准表的既有行为）。
+    let normalized = codex_plus_core::relay_config::normalize_config_text(
+        "[mcp_servers.node_repl]\ncommand = \"old\"\n\n[mcp_servers.node_repl]\ncommand = \"new\"\nargs = [\"-y\"]\n",
+    );
+    let doc = normalized.parse::<toml_edit::DocumentMut>().unwrap();
+    let server = &doc["mcp_servers"]["node_repl"];
+    assert_eq!(
+        server.get("command").and_then(|value| value.as_str()),
+        Some("new")
+    );
+    assert_eq!(
+        server
+            .get("args")
+            .and_then(|value| value.as_array())
+            .map(|array| array.len()),
+        Some(1)
+    );
+}
