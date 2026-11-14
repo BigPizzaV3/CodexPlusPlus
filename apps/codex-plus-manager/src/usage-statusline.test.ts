@@ -57,6 +57,7 @@ const sandboxSource = [
   declaration("codexPlusUsageFinalTurnUsage"),
   declaration("codexPlusUsageMessageUsage"),
   declaration("codexPlusUsageSnapshot"),
+  declaration("codexPlusUsageSpeedDisplay"),
   declaration("codexPlusUsageValidThreadId"),
   declaration("codexPlusUsageVisible"),
   declaration("codexPlusUsageVisibleConversationId"),
@@ -66,10 +67,11 @@ const sandboxSource = [
   declaration("codexPlusUsageLegacyThreadId"),
   declaration("codexPlusUsageResolveThread"),
   declaration("codexPlusUsageThreadId"),
-  "return { codexPlusUsagePercent, codexPlusUsageDecodeRate, codexPlusUsageCallRate, codexPlusUsageFirstTokenMs, codexPlusUsageText, codexPlusUsageRate, codexPlusUsageTurnCache, codexPlusUsageFinalTurnUsage, codexPlusUsageSnapshot, codexPlusUsageThreadId, codexPlusUsageResolveThread };",
+  "return { codexPlusUsagePercent, codexPlusUsageDecodeRate, codexPlusUsageCallRate, codexPlusUsageFirstTokenMs, codexPlusUsageText, codexPlusUsageRate, codexPlusUsageTurnCache, codexPlusUsageFinalTurnUsage, codexPlusUsageSnapshot, codexPlusUsageSpeedDisplay, codexPlusUsageThreadId, codexPlusUsageResolveThread };",
 ].join("\n");
 
 type Sandbox = {
+  codexPlusUsageSpeedDisplay: (snapshot: unknown) => { value: string; source: "decode" | "throughput" | "none" };
   codexPlusUsagePercent: (numerator: number, denominator: number) => number | null;
   codexPlusUsageDecodeRate: (requests: Array<Record<string, any>>, threadId: string) => number | null;
   codexPlusUsageCallRate: (requests: Array<Record<string, any>>, threadId: string) => number | null;
@@ -218,6 +220,18 @@ test("状态栏文案明确区分 decode_tps、call_tps 与近似整轮吞吐", 
   assert.match(text.callTitle("80"), /不含工具执行/);
   assert.match(text.throughputTitle("60"), /近似/);
   assert.match(text.throughputTitle("60"), /不是精确的 e2e_tps/);
+});
+
+test("请求日志没有样本时主速度位退回整轮近似吞吐，不永久显示 --", () => {
+  const { codexPlusUsageSpeedDisplay } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  // 有 decode 样本：照常显示 decode_tps。
+  assert.deepEqual(codexPlusUsageSpeedDisplay({ decodeSpeed: 199.6, outputThroughput: 40 }), { value: "200", source: "decode" });
+  // 直连上游 / 不走本地代理时没有 request-log 样本：退回 rollout 推算的近似吞吐。
+  assert.deepEqual(codexPlusUsageSpeedDisplay({ decodeSpeed: null, outputThroughput: 32.8 }), { value: "33", source: "throughput" });
+  assert.deepEqual(codexPlusUsageSpeedDisplay({ decodeSpeed: Number.NaN, outputThroughput: 12 }), { value: "12", source: "throughput" });
+  // 两者都没有才是占位符。
+  assert.deepEqual(codexPlusUsageSpeedDisplay({ decodeSpeed: null, outputThroughput: null }), { value: "--", source: "none" });
+  assert.deepEqual(codexPlusUsageSpeedDisplay(null), { value: "--", source: "none" });
 });
 
 test("首 token 延迟与解码速度使用同一成功请求窗口，并按输出 token 加权", () => {

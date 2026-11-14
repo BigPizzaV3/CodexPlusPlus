@@ -756,6 +756,19 @@
     };
   }
 
+  /**
+   * 主速度位的取值：优先 decode_tps；请求日志没有样本时（直连上游、不走本地代理的 profile）
+   * 退回 rollout 推算的整轮近似吞吐，不能比改版前更差地永久显示 `--`。
+   * `source` 决定悬停文案用哪种口径，避免把近似吞吐标成 decode_tps。
+   */
+  function codexPlusUsageSpeedDisplay(snapshot) {
+    const usable = (value) => value !== null && value !== undefined && Number.isFinite(Number(value));
+    const round = (value) => String(Math.max(0, Math.round(Number(value))));
+    if (usable(snapshot?.decodeSpeed)) return { value: round(snapshot.decodeSpeed), source: "decode" };
+    if (usable(snapshot?.outputThroughput)) return { value: round(snapshot.outputThroughput), source: "throughput" };
+    return { value: "--", source: "none" };
+  }
+
   /** `snapshot` 为 null 时渲染占位符：会话已确定但还没有第一条 token 事件。 */
   function codexPlusUsageRender(snapshot) {
     const node = codexPlusUsageState.node;
@@ -763,7 +776,11 @@
     const parts = codexPlusUsageState.parts || codexPlusUsageBuild(node);
     const text = codexPlusUsageText();
     const format = (value) => (value === null || value === undefined || Number.isNaN(value) ? "--" : value);
-    const speed = snapshot?.decodeSpeed == null ? "--" : String(Math.max(0, Math.round(snapshot.decodeSpeed)));
+    const speedDisplay = codexPlusUsageSpeedDisplay(snapshot);
+    const speed = speedDisplay.value;
+    // 主速度位已经在显示近似吞吐时，悬停里不再重复一条同值的近似吞吐。
+    const speedFromThroughput = speedDisplay.source === "throughput";
+    const speedTitle = speedFromThroughput ? text.throughputTitle(speed) : text.speedTitle(format(speed));
     const firstToken = snapshot?.firstTokenMs == null
       ? "--"
       : `${(Math.max(0, snapshot.firstTokenMs) / 1000).toFixed(1)}s`;
@@ -778,7 +795,7 @@
     const stale = snapshot?.stale === true;
     const contextWindow = snapshot?.modelContextWindow || 0;
     // 指纹一样就不写 DOM：每秒一次无意义赋值会让 Codex 的 MutationObserver 空转。
-    const fingerprint = [speed, firstToken, callTps, outputThroughput, cache, context, stale, contextWindow].join("|");
+    const fingerprint = [speed, speedDisplay.source, firstToken, callTps, outputThroughput, cache, context, stale, contextWindow].join("|");
     if (fingerprint === codexPlusUsageState.lastFingerprint) return;
     codexPlusUsageState.lastFingerprint = fingerprint;
 
@@ -792,15 +809,15 @@
     }
     node.dataset.stale = String(stale);
     node.setAttribute("title", [
-      text.speedTitle(format(speed)),
+      speedTitle,
       text.ttftTitle(firstToken === "--" ? "--" : firstToken.replace(/s$/, "")),
       callTps == null ? "" : text.callTitle(format(callTps)),
-      outputThroughput == null ? "" : text.throughputTitle(format(outputThroughput)),
+      outputThroughput == null || speedFromThroughput ? "" : text.throughputTitle(format(outputThroughput)),
       text.cacheTitle(format(cache)),
       text.contextTitle(format(context)),
       contextWindow > 0 ? text.windowTitle(codexPlusUsageFormatNumber(contextWindow)) : "",
     ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}${text.separator}${[text.speedTitle(speed), text.ttft(firstToken), text.cache(cache), context].join(text.comma)}`);
+    node.setAttribute("aria-label", `${text.aria}${text.separator}${[speedTitle, text.ttft(firstToken), text.cache(cache), context].join(text.comma)}`);
   }
 
   /** 把 token 角标放到本轮最后一个已完成 assistant 动作栏，和原生时间提示同一行。 */
