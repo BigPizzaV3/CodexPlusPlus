@@ -653,4 +653,32 @@ describe("native default model fallback in pure API filtering", () => {
     patch(host, null);
     assert.equal(host.defaultModel, userChoice);
   });
+
+  it("redirects in-set native defaults to the effective configured default (issue #3122)", () => {
+    const snapshots = new WeakMap();
+    const patch = new Function("codexModelCatalog", "codexPlusModelDefaultSnapshots", "modelFilterPolicy",
+      "codexPlusModelMetadata", "modelReasoningEfforts", `${descriptor}\n${defaults}\nreturn patchModelDefaults;`)(
+      { model: "my-gateway-model", default_model: "my-gateway-model" }, snapshots, () => "pureApi:local",
+      () => null, () => []);
+    const allowed = new Set(["gpt-6.1-codex", "my-gateway-model"]);
+    const host: any = {
+      defaultModel: "gpt-6.1-codex",
+      default_model: "gpt-6.1-codex",
+      defaultModelSlug: "gpt-6.1-codex",
+      versionOptions: [
+        { id: "latest", defaultModelSlug: "gpt-6.1-codex", options: [{ model: "gpt-6.1-codex" }] },
+      ],
+    };
+    assert.equal(patch(host, allowed), true);
+    assert.equal(host.defaultModel, "my-gateway-model");
+    assert.equal(host.default_model, "my-gateway-model");
+    assert.equal(host.defaultModelSlug, "my-gateway-model");
+    assert.equal(host.versionOptions[0].defaultModelSlug, "my-gateway-model");
+    assert.equal(host.versionOptions[0].options[0].model, "my-gateway-model");
+
+    // 原生默认仍在允许集合内（可手动选择）：与有效配置默认一致时不改写。
+    const untouched: any = { defaultModel: "my-gateway-model" };
+    assert.equal(patch(untouched, allowed), false);
+    assert.equal(untouched.defaultModel, "my-gateway-model");
+  });
 });
