@@ -22,7 +22,9 @@
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
   const codexPlusRpcInterceptorVersion = 19;
-  const codexPlusRpcMiddlewareTimeoutMs = 5000;
+  const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
+    && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
+    ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
   const codexPlusRpcPreparationTimeoutMs = 120000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
@@ -648,12 +650,34 @@
       clearTimeout(timer);
     }
     if (!plan.context || deferContext || replaced?.[codexPlusRpcPushFailure]) return replaced;
+    // plan.context 里会等 app-server 往返（网关预检、模型刷新）；一旦挂住，
+    // 端口队列会卡死后续所有帧，渲染层首批请求就永远停在 fetching（issue #3098）。
+    // 所以 context 也必须限时：超时不显式拒绝本轮（那是我们自己的刷新失败，
+    // 不该拦用户的消息），而是原样转发当前帧，让本轮按宿主参数照常走。
+    let contextTimedOut = false;
+    let contextTimer = null;
     try {
-      return await plan.context(replaced || frame);
-    } catch (error) {
-      const reason = String(error?.message || error);
-      codexPlusRpcRejectNotice(reason);
-      return plan.contextFailure(reason);
+      return await Promise.race([
+        (async () => {
+          try {
+            return await plan.context(replaced || frame);
+          } catch (error) {
+            if (contextTimedOut) return undefined;
+            const reason = String(error?.message || error);
+            codexPlusRpcRejectNotice(reason);
+            try { return plan.contextFailure(reason); } catch { return undefined; }
+          }
+        })(),
+        new Promise((resolve) => {
+          contextTimer = setTimeout(() => {
+            contextTimedOut = true;
+            resolve(undefined);
+          }, codexPlusRpcMiddlewareTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(contextTimer);
+      if (contextTimedOut) codexPlusMarkExtensionFailure("", "rpc 上下文改写超时，已原样发出本轮消息");
     }
   }
 
