@@ -2493,6 +2493,94 @@ pub fn delete_context_entry_from_common_config(
     Ok(normalize_optional_toml(doc))
 }
 
+/// `[[skills.config]]` 是 codex 现在的技能启停写法：一个数组，每项按 `path`（或 `name`）
+/// 标识一个技能。它和 `[mcp_servers.<id>]` / `[plugins.<id>]` 这种「按 id 分表」的结构不同，
+/// 不能把整个 `config` 当成一个 id 覆盖，否则用户自己写进去的条目会被模板里的几条顶掉（#3115）。
+const SKILLS_CONFIG_KEY: &str = "config";
+
+fn skill_config_entry_key(entry: &toml_edit::Table) -> Option<String> {
+    entry
+        .get("path")
+        .and_then(Item::as_str)
+        .map(str::to_string)
+        .or_else(|| entry.get("name").and_then(Item::as_str).map(str::to_string))
+}
+
+fn skill_config_entries_of(table: &toml_edit::Table) -> Vec<toml_edit::Table> {
+    table
+        .get(SKILLS_CONFIG_KEY)
+        .and_then(Item::as_array_of_tables)
+        .map(|entries| entries.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn write_skill_config_entries(table: &mut toml_edit::Table, entries: Vec<toml_edit::Table>) {
+    if entries.is_empty() {
+        table.remove(SKILLS_CONFIG_KEY);
+        return;
+    }
+    let mut array = toml_edit::ArrayOfTables::new();
+    for entry in entries {
+        array.push(entry);
+    }
+    table.insert(SKILLS_CONFIG_KEY, Item::ArrayOfTables(array));
+}
+
+/// 模板（managed）里的技能条目按 `path` / `name` 覆盖同名的 live 条目，其余 live 条目原样保留。
+fn merge_managed_skill_config(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
+    let managed_entries = skill_config_entries_of(managed);
+    if managed_entries.is_empty() {
+        return;
+    }
+    let mut target_entries = skill_config_entries_of(target);
+    for managed_entry in managed_entries {
+        let key = skill_config_entry_key(&managed_entry);
+        match key.as_deref().and_then(|key| {
+            target_entries
+                .iter()
+                .position(|entry| skill_config_entry_key(entry).as_deref() == Some(key))
+        }) {
+            Some(index) => target_entries[index] = managed_entry,
+            None => target_entries.push(managed_entry),
+        }
+    }
+    write_skill_config_entries(target, target_entries);
+}
+
+/// 删掉模板里出现过的技能条目（同样按 `path` / `name` 匹配），其余保留。
+fn remove_managed_skill_config(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
+    let managed_keys: std::collections::HashSet<String> = skill_config_entries_of(managed)
+        .iter()
+        .filter_map(skill_config_entry_key)
+        .collect();
+    if managed_keys.is_empty() {
+        return;
+    }
+    let mut entries = skill_config_entries_of(target);
+    entries.retain(|entry| {
+        skill_config_entry_key(entry).is_none_or(|key| !managed_keys.contains(&key))
+    });
+    write_skill_config_entries(target, entries);
+}
+
+/// 把 live 里模板没有的技能条目补回目标（同一个技能以模板为准）。
+fn preserve_unmanaged_skill_config(target: &mut toml_edit::Table, live: &toml_edit::Table) {
+    let live_entries = skill_config_entries_of(live);
+    if live_entries.is_empty() {
+        return;
+    }
+    let mut target_entries = skill_config_entries_of(target);
+    let existing: std::collections::HashSet<String> =
+        target_entries.iter().filter_map(skill_config_entry_key).collect();
+    for entry in live_entries {
+        match skill_config_entry_key(&entry) {
+            Some(key) if existing.contains(&key) => {}
+            _ => target_entries.push(entry),
+        }
+    }
+    write_skill_config_entries(target, target_entries);
+}
+
 /// 剥掉通用配置里供应商各自持有的键，丢掉历史遗留的 `[skills.<id>]` 死表，
 /// 再丢掉标记为 `enabled = false` 的上下文条目，得到本次切换真正要合并进
 /// config.toml 的那份通用配置。
@@ -2619,11 +2707,21 @@ fn merge_managed_context_table(
     if target.get(table_name).is_none() {
         target[table_name] = toml_edit::table();
     }
+    if table_name == "skills" {
+        if let (Some(target_plain), Some(managed_plain)) =
+            (target.get_mut(table_name).and_then(Item::as_table_mut), managed.get(table_name).and_then(Item::as_table))
+        {
+            merge_managed_skill_config(target_plain, managed_plain);
+        }
+    }
     let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
         target[table_name] = managed_item.clone();
         return;
     };
     for (id, item) in managed_table.iter() {
+        if table_name == "skills" && id == SKILLS_CONFIG_KEY {
+            continue;
+        }
         target_table.insert(id, item.clone());
     }
 }
@@ -2645,10 +2743,20 @@ fn remove_managed_context_entry_table(
     let Some(managed_table) = managed_item.as_table_like() else {
         return;
     };
+    if table_name == "skills" {
+        if let (Some(target_plain), Some(managed_plain)) =
+            (target.get_mut(table_name).and_then(Item::as_table_mut), managed.get(table_name).and_then(Item::as_table))
+        {
+            remove_managed_skill_config(target_plain, managed_plain);
+        }
+    }
     let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
         return;
     };
     for (id, _) in managed_table.iter() {
+        if table_name == "skills" && id == SKILLS_CONFIG_KEY {
+            continue;
+        }
         target_table.remove(id);
     }
 }
@@ -2678,6 +2786,14 @@ fn preserve_unmanaged_context_table(
     if target.get(table_name).is_none() {
         target[table_name] = toml_edit::table();
     }
+    if table_name == "skills" {
+        if let (Some(target_plain), Some(live_plain)) = (
+            target.get_mut(table_name).and_then(Item::as_table_mut),
+            live.get(table_name).and_then(Item::as_table),
+        ) {
+            preserve_unmanaged_skill_config(target_plain, live_plain);
+        }
+    }
     let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
         return;
     };
@@ -2692,6 +2808,9 @@ fn preserve_unmanaged_context_table(
         })
         .unwrap_or_default();
     for (id, item) in live_table.iter() {
+        if table_name == "skills" && id == SKILLS_CONFIG_KEY {
+            continue;
+        }
         if !managed_ids.contains(id) && target_table.get(id).is_none() {
             target_table.insert(id, item.clone());
         }
