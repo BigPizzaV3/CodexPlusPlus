@@ -135,6 +135,89 @@ fn local_component_corrections_change_proof_without_replaying_consumption() {
 }
 
 #[test]
+fn local_exclusive_cache_usage_preserves_last_and_cumulative_counts() {
+    let before = Tokens::parse(&json!({
+        "input_tokens": 32_489, "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0, "output_tokens": 285, "total_tokens": 32_774
+    }))
+    .unwrap();
+    let total = Tokens::parse(&json!({
+        "input_tokens": 43_781, "cached_input_tokens": 32_486,
+        "cache_write_input_tokens": 0, "output_tokens": 590, "total_tokens": 76_857
+    }))
+    .unwrap();
+    let last = Tokens::parse(&json!({
+        "input_tokens": 11_292, "cached_input_tokens": 32_486,
+        "cache_write_input_tokens": 0, "output_tokens": 305,
+        "reasoning_output_tokens": 10, "total_tokens": 44_083
+    }))
+    .unwrap();
+    assert_eq!(last.input_tokens, 43_778);
+    assert_eq!(last.cached_input_tokens, 32_486);
+    assert_eq!(last.total_tokens, 44_083);
+    assert!(last.cached_known);
+    assert_eq!(last.reasoning_output_tokens, Some(10));
+    let delta = total.usage_delta(Some(before), Some(last));
+    assert_eq!(delta.input_tokens, last.input_tokens);
+    assert_eq!(delta.output_tokens, last.output_tokens);
+    assert_eq!(delta.cached_input_tokens, last.cached_input_tokens);
+    assert_eq!(delta.total_tokens, last.total_tokens);
+    assert!(delta.cached_known);
+    assert_eq!(total.usage_delta(Some(total), Some(last)).total_tokens, 0);
+}
+
+#[test]
+fn local_exclusive_cache_usage_counts_write_once_and_keeps_read_separate() {
+    for (input, cached, written, output) in [(10, 5, 3, 2), (0, 40, 10, 5)] {
+        let inclusive_input = input + cached + written;
+        let parsed = Tokens::parse(&json!({
+            "input_tokens": input, "cached_input_tokens": cached,
+            "cache_write_input_tokens": written, "output_tokens": output,
+            "reasoning_output_tokens": 1, "total_tokens": inclusive_input + output
+        }))
+        .unwrap();
+        assert_eq!(parsed.input_tokens, inclusive_input);
+        assert_eq!(parsed.cached_input_tokens, cached);
+        assert_eq!(parsed.total_tokens, inclusive_input + output);
+        assert_eq!(parsed.reasoning_output_tokens, Some(1));
+        assert!(parsed.cached_known);
+    }
+}
+
+#[test]
+fn local_cache_usage_requires_a_complete_consistent_exclusive_equation() {
+    for value in [
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "cache_write_input_tokens": 20, "output_tokens": 10, "total_tokens": 110}),
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "cache_write_input_tokens": 20, "output_tokens": 10, "total_tokens": 500}),
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "cache_write_input_tokens": 20, "output_tokens": 10}),
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "output_tokens": 10, "total_tokens": 190}),
+    ] {
+        let parsed = Tokens::parse(&value).unwrap();
+        assert_eq!(parsed.input_tokens, 100);
+        assert_eq!(parsed.cached_input_tokens, 80);
+        assert_eq!(parsed.total_tokens, 110);
+        assert!(parsed.cached_known);
+    }
+    let missing_cache = Tokens::parse(&json!({
+        "input_tokens": 100, "cache_write_input_tokens": 20,
+        "output_tokens": 10, "total_tokens": 210
+    }))
+    .unwrap();
+    assert_eq!(missing_cache.input_tokens, 100);
+    assert!(!missing_cache.cached_known);
+    let overflow = Tokens::parse(&json!({
+        "input_tokens": u64::MAX, "cached_input_tokens": 1,
+        "cache_write_input_tokens": 0, "output_tokens": 1, "total_tokens": 1
+    }))
+    .unwrap();
+    assert_eq!(overflow.input_tokens, u64::MAX);
+}
+
+#[test]
 fn local_out_of_range_components_are_not_clamped_into_known_counts() {
     let parsed = Tokens::parse(&json!({
         "input_tokens": 100, "cached_input_tokens": 101,
