@@ -44,8 +44,14 @@ const sandboxSource = [
   declaration("codexPlusUsageMaxIntervalSeconds"),
   declaration("codexPlusUsageDecodeSampleLimit"),
   declaration("codexPlusUsageFirstTokenSampleLimit"),
+  declaration("codexPlusUsageMinTimingWindowMs"),
+  declaration("codexPlusUsageMaxPlausibleTps"),
+  declaration("codexPlusUsageTimingSampleIsPlausible"),
   declaration("codexPlusUsageDecodeRate"),
+  declaration("codexPlusUsageCallRate"),
   declaration("codexPlusUsageFirstTokenMs"),
+  declaration("codexPlusUsageFormatNumber"),
+  declaration("codexPlusUsageText"),
   declaration("codexPlusUsageRate"),
   declaration("codexPlusUsageTurnCache"),
   declaration("codexPlusUsageFinalTurnUsage"),
@@ -60,19 +66,26 @@ const sandboxSource = [
   declaration("codexPlusUsageLegacyThreadId"),
   declaration("codexPlusUsageResolveThread"),
   declaration("codexPlusUsageThreadId"),
-  "return { codexPlusUsagePercent, codexPlusUsageDecodeRate, codexPlusUsageFirstTokenMs, codexPlusUsageRate, codexPlusUsageTurnCache, codexPlusUsageFinalTurnUsage, codexPlusUsageSnapshot, codexPlusUsageThreadId, codexPlusUsageResolveThread };",
+  "return { codexPlusUsagePercent, codexPlusUsageDecodeRate, codexPlusUsageCallRate, codexPlusUsageFirstTokenMs, codexPlusUsageText, codexPlusUsageRate, codexPlusUsageTurnCache, codexPlusUsageFinalTurnUsage, codexPlusUsageSnapshot, codexPlusUsageThreadId, codexPlusUsageResolveThread };",
 ].join("\n");
 
 type Sandbox = {
   codexPlusUsagePercent: (numerator: number, denominator: number) => number | null;
   codexPlusUsageDecodeRate: (requests: Array<Record<string, any>>, threadId: string) => number | null;
+  codexPlusUsageCallRate: (requests: Array<Record<string, any>>, threadId: string) => number | null;
   codexPlusUsageFirstTokenMs: (requests: Array<Record<string, any>>, threadId: string) => number | null;
+  codexPlusUsageText: () => {
+    speedTitle: (value: string) => string;
+    callTitle: (value: string) => string;
+    throughputTitle: (value: string) => string;
+  };
   codexPlusUsageRate: (events: Array<Record<string, unknown>>) => number | null;
   codexPlusUsageTurnCache: (events: Array<Record<string, unknown>>) => number | null;
   codexPlusUsageFinalTurnUsage: (history: Array<Record<string, any>>) => Map<string, { usage: { total: number } }>;
   codexPlusUsageSnapshot: (source: unknown) => {
     speed: number | null;
     decodeSpeed: number | null;
+    callTps: number | null;
     outputThroughput: number | null;
     cache: number | null;
     context: number | null;
@@ -142,6 +155,10 @@ test("解码速度取最近十次成功请求，并按首 token 后的输出 tok
     request("new-2", 400, 1000, 6000),
     // 短请求单算很高，但加权后只能按 200 token / 1 秒计入。
     request("short", 200, 500, 1500),
+    // 上游把整段流压缩后，1ms 的“解码窗口”不是有效样本。
+    request("buffered", 10_000, 1000, 1001),
+    // 刚好超过 50ms 但相当于 20 万 tok/s，仍属于整块回放异常。
+    request("impossible-rate", 10_000, 1000, 1050),
     request("failed", 9999, 100, 900, { success: false }),
     request("waiting", 9999, null, 9000),
     request("other-thread", 9999, 100, 900, { threadId: "thread-2" }),
@@ -149,6 +166,58 @@ test("解码速度取最近十次成功请求，并按首 token 后的输出 tok
   // (800 + 400 + 200) / (8 + 5 + 1) = 100。
   assert.equal(codexPlusUsageDecodeRate(requests, "thread-1"), 100);
   assert.equal(codexPlusUsageDecodeRate([], "thread-1"), null);
+});
+
+test("模型调用吞吐按完整请求耗时聚合，包含首 token 等待但不要求首 token 时间", () => {
+  const { codexPlusUsageCallRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  const request = (id: string, outputTokens: number, firstTokenMs: number | null, durationMs: number, extra = {}) => ({
+    id,
+    threadId: "thread-1",
+    success: true,
+    firstTokenMs,
+    durationMs,
+    usage: { outputTokens },
+    ...extra,
+  });
+  const requests = [
+    request("long", 800, 2000, 10_000),
+    request("short", 200, null, 5000),
+    request("too-short", 9999, 0, 20),
+    request("failed", 9999, 100, 900, { success: false }),
+    request("other-thread", 9999, 100, 900, { threadId: "thread-2" }),
+  ];
+  // (800 + 200) / (10 + 5) = 66.67 tok/s；首 token 缺失不影响完整调用耗时的口径。
+  assert.ok(Math.abs(codexPlusUsageCallRate(requests, "thread-1")! - 200 / 3) < 1e-9);
+  assert.equal(codexPlusUsageCallRate([], "thread-1"), null);
+});
+
+test("调用吞吐最多使用最近十次成功请求，异常高速样本不参与聚合", () => {
+  const { codexPlusUsageCallRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  const request = (id: string, outputTokens: number, durationMs: number) => ({
+    id,
+    threadId: "thread-1",
+    success: true,
+    firstTokenMs: null,
+    durationMs,
+    usage: { outputTokens },
+  });
+  const recent = Array.from({ length: 10 }, (_, index) => request(`recent-${index}`, 100, 1000));
+  const older = request("older", 10_000, 1000);
+  const impossible = request("impossible", 10_000, 50);
+  // 只取最近 10 条成功请求，再排除 20 万 tok/s 的异常样本。
+  assert.equal(codexPlusUsageCallRate([impossible, ...recent, older], "thread-1"), 100);
+});
+
+test("状态栏文案明确区分 decode_tps、call_tps 与近似整轮吞吐", () => {
+  const { codexPlusUsageText } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
+  const text = codexPlusUsageText();
+  assert.match(text.speedTitle("100"), /decode_tps/);
+  assert.match(text.speedTitle("100"), /50ms/);
+  assert.match(text.speedTitle("100"), /5000 tok\/s/);
+  assert.match(text.callTitle("80"), /call_tps/);
+  assert.match(text.callTitle("80"), /不含工具执行/);
+  assert.match(text.throughputTitle("60"), /近似/);
+  assert.match(text.throughputTitle("60"), /不是精确的 e2e_tps/);
 });
 
 test("首 token 延迟与解码速度使用同一成功请求窗口，并按输出 token 加权", () => {
@@ -276,6 +345,7 @@ test("缓存命中与上下文占用按 Codex 的口径取值", () => {
     }],
   });
   assert.equal(withDecode?.decodeSpeed, 200);
+  assert.ok(Math.abs(withDecode?.callTps! - 400 / 3) < 1e-9);
   assert.equal(withDecode?.speed, null, "旧 speed 字段仍保留输出吞吐口径");
 
   // 窗口缺失时上下文占用必须是 null，不能算成 0% 骗人。
@@ -676,7 +746,9 @@ function lifecycle() {
     ...["codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageIdleIntervalMs",
       "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs", "codexPlusUsageFailureLimit",
       "codexPlusUsagePercent", "codexPlusUsageLatestTurn", "codexPlusUsageMaxIntervalSeconds",
-      "codexPlusUsageDecodeSampleLimit", "codexPlusUsageFirstTokenSampleLimit", "codexPlusUsageDecodeRate",
+      "codexPlusUsageDecodeSampleLimit", "codexPlusUsageFirstTokenSampleLimit", "codexPlusUsageMinTimingWindowMs",
+      "codexPlusUsageMaxPlausibleTps", "codexPlusUsageTimingSampleIsPlausible",
+      "codexPlusUsageDecodeRate", "codexPlusUsageCallRate",
       "codexPlusUsageFirstTokenMs", "codexPlusUsageRate", "codexPlusUsageTurnCache", "codexPlusUsageSnapshot",
       "codexPlusUsageHide", "codexPlusUsageShow", "codexPlusUsageSyncPlacement", "codexPlusUsageSlotHost", "codexPlusUsageNodePlaced",
       "codexPlusUsageDiagnosticLimit", "codexPlusUsageDiagnoseOnce", "codexPlusUsageNoteDataGaps",

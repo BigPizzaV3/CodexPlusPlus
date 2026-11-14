@@ -44,6 +44,10 @@
   const codexPlusUsageDecodeSampleLimit = 10;
   /** 首 token 延迟与解码速度共用最近成功请求窗口。 */
   const codexPlusUsageFirstTokenSampleLimit = codexPlusUsageDecodeSampleLimit;
+  /** 低于这个窗口的样本无法区分真实解码与上游整块/压缩下发，不能拿来算速度。 */
+  const codexPlusUsageMinTimingWindowMs = 50;
+  /** 单路模型流不可能达到这个量级；超过时按整块回放等异常遥测丢弃。 */
+  const codexPlusUsageMaxPlausibleTps = 5000;
   /** 完整 turn 用量只在进入会话和完成后刷新；短时间内虚拟滚动重挂载不必整读 rollout。 */
   const codexPlusUsageTurnUsageCacheMs = 300000;
   /** 连续失败到这个次数后停掉轮询，避免桥接不可用时每秒写诊断日志。 */
@@ -96,9 +100,10 @@
         aria: "用量状态栏",
         separator: "：",
         comma: "，",
-        speedTitle: (value) => `解码速度 ${value} tok/s（最近最多 10 次已完成请求的加权平均，按输出 token ÷ 首 token 后的生成耗时，不含首 token 等待和工具执行）`,
+        speedTitle: (value) => `解码速度（decode_tps）${value} tok/s（最近最多 10 次已完成请求的加权平均，按输出 token ÷ 首 token 后的生成耗时；不含首 token 等待和工具执行，并忽略不足 50ms 或超过 5000 tok/s 的异常样本）`,
         ttftTitle: (value) => `首 token 延迟 ${value}s（最近最多 10 次成功请求的加权平均，按输出 token 加权，包含排队与提示词处理）`,
-        throughputTitle: (value) => `输出吞吐 ${value} tok/s（包含首 token 等待和工具执行的整请求口径，仅作对比）`,
+        callTitle: (value) => `模型调用吞吐（call_tps）${value} tok/s（最近最多 10 次成功请求，输出 token ÷ 完整请求耗时；含首 token 等待，不含工具执行）`,
+        throughputTitle: (value) => `整轮近似吞吐 ${value} tok/s（由 rollout 相邻 token 事件估算，包含首 token 等待、工具和轮次内等待；不是精确的 e2e_tps，仅作对比）`,
         cacheTitle: (value) => `缓存命中 ${value}`,
         contextTitle: (value) => `上下文占用 ${value}`,
         windowTitle: (value) => `窗口 ${value}`,
@@ -120,9 +125,10 @@
         aria: "Usage status line",
         separator: ": ",
         comma: ", ",
-        speedTitle: (value) => `Decode speed ${value} tok/s (token-weighted average of up to 10 completed requests, using output tokens ÷ generation time after the first token; excludes first-token wait and tool runs)`,
+        speedTitle: (value) => `Decode speed (decode_tps) ${value} tok/s (token-weighted average of up to 10 completed requests, using output tokens ÷ generation time after the first token; excludes first-token wait and tool runs, and ignores anomalous samples below 50ms or above 5000 tok/s)`,
         ttftTitle: (value) => `First-token latency ${value}s (token-weighted average of up to 10 successful requests, including queueing and prompt processing)`,
-        throughputTitle: (value) => `Output throughput ${value} tok/s (whole-request timing including first-token wait and tool runs; shown only for comparison)`,
+        callTitle: (value) => `Model-call throughput (call_tps) ${value} tok/s (up to 10 successful requests, output tokens ÷ full request time; includes first-token wait and excludes tool runs)`,
+        throughputTitle: (value) => `Approximate turn throughput ${value} tok/s (estimated from adjacent rollout token events and includes first-token wait, tools, and in-turn waiting; not exact e2e_tps, shown only for comparison)`,
         cacheTitle: (value) => `Cache hit ${value}`,
         contextTitle: (value) => `Context used ${value}`,
         windowTitle: (value) => `window ${value}`,
@@ -512,6 +518,12 @@
     return Math.min(100, Math.max(0, (numerator / denominator) * 100));
   }
 
+  function codexPlusUsageTimingSampleIsPlausible(outputTokens, elapsedMs) {
+    if (!(outputTokens > 0) || !Number.isFinite(elapsedMs)
+      || elapsedMs < codexPlusUsageMinTimingWindowMs) return false;
+    return outputTokens / (elapsedMs / 1000) <= codexPlusUsageMaxPlausibleTps;
+  }
+
   /**
    * 只取真实 turn_id 对应的最近一轮。total_token_usage 是会话累计，不会在换轮时
    * 清零；旧记录或尾部截断缺少轮边界时只用最后一次调用，避免把前几轮混进来。
@@ -546,10 +558,35 @@
       const firstTokenMs = request?.firstTokenMs == null
         ? Number.NaN
         : Number(request.firstTokenMs);
-      if (outputTokens <= 0 || !Number.isFinite(firstTokenMs) || firstTokenMs < 0
-        || durationMs <= firstTokenMs) continue;
+      const decodeWindowMs = durationMs - firstTokenMs;
+      if (!Number.isFinite(firstTokenMs) || firstTokenMs < 0
+        || !codexPlusUsageTimingSampleIsPlausible(outputTokens, decodeWindowMs)) continue;
       tokens += outputTokens;
-      seconds += (durationMs - firstTokenMs) / 1000;
+      seconds += decodeWindowMs / 1000;
+      samples += 1;
+    }
+    return seconds > 0 ? tokens / seconds : null;
+  }
+
+  /**
+   * 模型调用吞吐（call_tps）：输出 token 除以完整请求耗时，包含首 token 等待，
+   * 不包含工具执行。与 decode_tps 分开聚合，不能拿解码速度冒充接口调用速度。
+   */
+  function codexPlusUsageCallRate(requests, threadId) {
+    if (!Array.isArray(requests)) return null;
+    let tokens = 0;
+    let seconds = 0;
+    let samples = 0;
+    for (const request of requests) {
+      if (samples >= codexPlusUsageDecodeSampleLimit) break;
+      const requestThreadId = String(request?.threadId || "");
+      if (threadId && requestThreadId !== threadId) continue;
+      if (request?.success !== true) continue;
+      const outputTokens = Number(request?.usage?.outputTokens) || 0;
+      const durationMs = Number(request?.durationMs) || 0;
+      if (!codexPlusUsageTimingSampleIsPlausible(outputTokens, durationMs)) continue;
+      tokens += outputTokens;
+      seconds += durationMs / 1000;
       samples += 1;
     }
     return seconds > 0 ? tokens / seconds : null;
@@ -710,6 +747,7 @@
       speed: outputThroughput,
       decodeSpeed: codexPlusUsageDecodeRate(bundle.requests, String(bundle.threadId || latest.thread_id || "")),
       firstTokenMs: codexPlusUsageFirstTokenMs(bundle.requests, String(bundle.threadId || latest.thread_id || "")),
+      callTps: codexPlusUsageCallRate(bundle.requests, String(bundle.threadId || latest.thread_id || "")),
       outputThroughput,
       cache: codexPlusUsageTurnCache(events),
       context: codexPlusUsagePercent(Number(latest.total_tokens), Number(latest.context_window)),
@@ -729,6 +767,9 @@
     const firstToken = snapshot?.firstTokenMs == null
       ? "--"
       : `${(Math.max(0, snapshot.firstTokenMs) / 1000).toFixed(1)}s`;
+    const callTps = snapshot?.callTps == null
+      ? null
+      : String(Math.max(0, Math.round(snapshot.callTps)));
     const outputThroughput = snapshot?.outputThroughput == null
       ? null
       : String(Math.max(0, Math.round(snapshot.outputThroughput)));
@@ -737,7 +778,7 @@
     const stale = snapshot?.stale === true;
     const contextWindow = snapshot?.modelContextWindow || 0;
     // 指纹一样就不写 DOM：每秒一次无意义赋值会让 Codex 的 MutationObserver 空转。
-    const fingerprint = [speed, firstToken, outputThroughput, cache, context, stale, contextWindow].join("|");
+    const fingerprint = [speed, firstToken, callTps, outputThroughput, cache, context, stale, contextWindow].join("|");
     if (fingerprint === codexPlusUsageState.lastFingerprint) return;
     codexPlusUsageState.lastFingerprint = fingerprint;
 
@@ -753,6 +794,7 @@
     node.setAttribute("title", [
       text.speedTitle(format(speed)),
       text.ttftTitle(firstToken === "--" ? "--" : firstToken.replace(/s$/, "")),
+      callTps == null ? "" : text.callTitle(format(callTps)),
       outputThroughput == null ? "" : text.throughputTitle(format(outputThroughput)),
       text.cacheTitle(format(cache)),
       text.contextTitle(format(context)),
