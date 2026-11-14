@@ -51,6 +51,14 @@ jobs:
           shared-key: windows
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        # 缓存可能只保留 lib 目录；同时失效 build-script 输出，确保首次测试前重新解压。
+        run: |
+          node --test scripts/tests/prepare-sherpa-cache.test.cjs
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean --package sherpa-onnx-sys
+
       - name: Install NSIS
         # 安装包只在手动触发时打，PR 和推送 main 都不需要 NSIS。
         if: github.event_name == 'workflow_dispatch'
@@ -310,6 +318,14 @@ jobs:
         with:
           key: linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          node --test scripts/tests/prepare-sherpa-cache.test.cjs
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean --package sherpa-onnx-sys
+
       # runner 默认的 azure.archive.ubuntu.com 偶尔整段连不上（2026-11-11 所有 Linux 作业在这里卡了一个多小时）：
       # 单次尝试限时，失败后换官方源再装一次，整步到点失败，不再一直占着 runner。
       - name: Install Linux build dependencies
@@ -382,24 +398,6 @@ jobs:
         run: cargo test -p codex-plus-data -- --test-threads=1
 
       # 以下打 DEB 的步骤只在手动触发时跑；PR 和推送 main 只跑测试。
-      # sherpa-onnx-sys 见到 target/sherpa-onnx-prebuilt/<包>/lib 就直接用，不再下载；
-      # 缓存里恢复出缺静态库的目录会链接失败。缺库就清掉，构建脚本会重新下载。
-      - name: Check sherpa-onnx prebuilt cache
-        shell: bash
-        run: |
-          set -euo pipefail
-          root=target/sherpa-onnx-prebuilt
-          [ -d "$root" ] || exit 0
-          for extracted in "$root"/*/; do
-            extracted="${extracted%/}"
-            [ -d "$extracted" ] || continue
-            if [ ! -f "$extracted/lib/libsherpa-onnx-c-api.a" ]; then
-              echo "缺 libsherpa-onnx-c-api.a，清掉 $extracted 和对应压缩包"
-              rm -r -- "$extracted"
-              rm -f -- "$extracted.tar.bz2"
-            fi
-          done
-
       - name: Build Linux application
         if: github.event_name == 'workflow_dispatch'
         run: cargo build --release -p codex-plus-manager
