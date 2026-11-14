@@ -12655,11 +12655,17 @@
       .find((name) => typeof name === "string" && allowed.has(name));
     // 选择器「重置为默认」读的是 defaultModelSlug 和 versionOptions 里 id=latest 的版本，
     // 只补 defaultModel/default_model 会让重置落到网关目录之外的模型（#3058）。
+    // 网关目录可能同时保留原生默认模型（#3122）：它虽在允许集合内，重置仍应回到
+    // 当前有效配置的默认模型，而不是 Statsig 下发的原生默认。
+    const configuredDefault = [codexModelCatalog.default_model, codexModelCatalog.model]
+      .find((name) => typeof name === "string" && allowed.has(name)) || fallback;
+    const replaced = new Set();
     for (const key of ["defaultModel", "default_model", "defaultModelSlug", "default_model_slug"]) {
       const original = value[key];
       const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
-      if (!name || allowed.has(name)) continue;
-      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
+      if (!name || name === configuredDefault) continue;
+      replaced.add(name);
+      const patched = typeof original === "string" ? configuredDefault : codexPlusModelDescriptor(configuredDefault);
       if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
         snapshot.fields[key] = { original, patched };
       }
@@ -12673,23 +12679,24 @@
         let next = version;
         const versionName = (key) => {
           const current = next[key];
-          return typeof current === "string" && current && !allowed.has(current) ? current : "";
+          return typeof current === "string" && current && current !== configuredDefault ? current : "";
         };
         for (const key of ["defaultModelSlug", "default_model_slug"]) {
           if (versionName(key)) {
             if (next === version) next = { ...version };
-            next[key] = fallback;
+            next[key] = configuredDefault;
           }
         }
         const options = next.options;
         if (Array.isArray(options) && options.some((option) => {
           const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
-          return typeof name === "string" && name && !allowed.has(name);
+          return typeof name === "string" && name && (!allowed.has(name) || replaced.has(name));
         })) {
           if (next === version) next = { ...version };
           next.options = options.map((option) => {
             const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
-            return typeof name === "string" && name && !allowed.has(name) ? codexPlusModelDescriptor(fallback) : option;
+            return typeof name === "string" && name && (!allowed.has(name) || replaced.has(name))
+              ? codexPlusModelDescriptor(configuredDefault) : option;
           });
         }
         return next;
