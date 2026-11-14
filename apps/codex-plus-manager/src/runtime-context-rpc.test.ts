@@ -20,6 +20,7 @@ function runtime() {
     gatewayFailure: "",
     clientFailure: "",
     chain: async (value: any) => value,
+    hangRequests: new Set<string>(),
   };
   const acknowledgements = new Map<string, () => void>();
   class PortMessageEvent extends MessageEvent<any> {
@@ -47,6 +48,7 @@ function runtime() {
   const port = new MessagePort();
   const client = {
     async sendRequest(method: string, params: any, options: any) {
+      if (state.hangRequests.has(method)) return new Promise(() => {});
       calls.push({ method, params, options });
       await new Promise<void>((resolve) => {
         acknowledgements.set(method, resolve);
@@ -65,7 +67,7 @@ function runtime() {
     "codexPlusRunWaterfall", "codexPlusMarkExtensionFailure", "showToast", "codexPerModelContextEnabled",
     "prepareCodexThreadContextStart", "codexPlusAppServerClient", "refreshCodexThreadModelBeforeTurn",
     "codexGatewayRecoveryEnabled", "prepareCodexGatewayReconnect",
-    "runCodexPlusExtensionCallback",
+    "runCodexPlusExtensionCallback", "codexPlusRpcMiddlewareTimeoutMsOverride",
     `${source}\nreturn { decode: codexPlusRpcDecode, install: installCodexPlusRpcFrameInterceptor };`);
   const listeners = new Map();
   const api = create(window, listeners, interceptors, (_name: string, value: any) => state.chain(value),
@@ -96,7 +98,8 @@ function runtime() {
       if (state.gatewayFailure) throw new Error(state.gatewayFailure);
       await sendRequest("gateway/check", { threadId: params.threadId }, { timeoutMs: 5000 });
     },
-    (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }));
+    (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }),
+    40);
   const settle = async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -407,5 +410,16 @@ describe("runtime context through host RPC", () => {
     assert.equal(env.sent.at(-1)![0], "resolve");
     assert.ok(env.failures.some((failure) => failure.includes("extension broken")));
     assert.equal(env.calls.at(-1).method, "resumeThread");
+  });
+
+  it("forwards a hung context frame unchanged after the middleware timeout (issue #3098)", async () => {
+    const env = runtime();
+    env.state.gatewayEnabled = true;
+    env.state.hangRequests.add("gateway/check");
+    const frame = turnFrame();
+    env.port.postMessage(frame);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(env.sent.at(-1), frame, "超时后原帧必须原样发出，不能让端口队列卡死");
+    assert.ok(env.failures.some((failure) => failure.includes("超时")));
   });
 });

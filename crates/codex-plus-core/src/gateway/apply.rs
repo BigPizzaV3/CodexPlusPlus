@@ -1118,30 +1118,31 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
         })
 }
 
-/// 接入前对账 auth.json 里的 ChatGPT 登录：若它属于池里某个已停用的网关自有账号，
-/// 那份 token 多半是过期代际——留着它启动 Codex 只会弹官方登录门，而用户要的其实是
-/// 纯 API Key 模式。把这种登录从 auth.json 里拿掉（OPENAI_API_KEY 等其余字段不动）。
-/// 不属于池里任何账号的登录视为用户自己登的，不碰。
-fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> bool {
+/// 接入前对账 ChatGPT 登录：只清理同一身份、已停用且仍标记借出的网关登录。
+/// 用户在原生 Codex 中自行建立的会话不因供应商池的启用状态而被移除。
+fn reconcile_codex_sign_in(
+    ctx: &ApplyContext,
+    gateway: &GatewaySettings,
+    settings: &mut BackendSettings,
+) -> anyhow::Result<bool> {
+    match settings.native_auth_selection.as_ref() {
+        // 网关是否消费这个供应商与用户显式选择的原生登录相互独立。
+        Some(crate::settings::NativeAuthSelection::Account { .. }) => {
+            return Ok(codex_signed_in(&ctx.codex_home));
+        }
+        Some(crate::settings::NativeAuthSelection::None) => {
+            return release_signed_out_selection_after_native_login(ctx, settings);
+        }
+        None => {}
+    }
     let path = ctx.codex_home.join("auth.json");
     let live = std::fs::read_to_string(&path).unwrap_or_default();
-    let account = serde_json::from_str::<Value>(&live)
-        .ok()
-        .and_then(|auth| {
-            auth.pointer("/tokens/account_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    let owner = (!account.is_empty()).then(|| {
-        gateway.providers.iter().find(|provider| {
-            crate::official_login::is_gateway_owned_login(&provider.relay)
-                && crate::official_login::chatgpt_account_id_from_auth_contents(
-                    &provider.relay.auth_contents,
-                ) == account
-        })
+    let owner = gateway.providers.iter().find(|provider| {
+        crate::official_login::is_gateway_owned_login(&provider.relay)
+            && crate::native_auth::same_account(&provider.relay.auth_contents, &live)
     });
-    if let Some(Some(provider)) = owner.filter(|entry| entry.is_some_and(|p| !p.enabled))
+    if let Some(provider) = owner.filter(|provider|
+        !provider.enabled && crate::official_login::is_lent_to_codex(&provider.relay))
         && let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&live)
     {
         let removed = object.remove("tokens").is_some()
@@ -1166,7 +1167,39 @@ fn reconcile_codex_sign_in(ctx: &ApplyContext, gateway: &GatewaySettings) -> boo
             );
         }
     }
-    codex_signed_in(&ctx.codex_home)
+    Ok(codex_signed_in(&ctx.codex_home))
+}
+
+fn release_signed_out_selection_after_native_login(
+    ctx: &ApplyContext,
+    settings: &mut BackendSettings,
+) -> anyhow::Result<bool> {
+    if settings.native_auth_selection != Some(crate::settings::NativeAuthSelection::None)
+        || !codex_signed_in(&ctx.codex_home)
+    {
+        return Ok(false);
+    }
+    // 显式退出已在当时移除凭据；此后出现的新登录由 Codex 用户自己控制。
+    let live = std::fs::read_to_string(ctx.codex_home.join("auth.json"))?;
+    ctx.gateway.update(|gateway| {
+        for provider in &mut gateway.providers {
+            if crate::official_login::is_lent_to_codex(&provider.relay)
+                && crate::native_auth::same_account(&provider.relay.auth_contents, &live)
+            {
+                let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
+                if let Some(object) = auth.as_object_mut() {
+                    object.remove(crate::official_login::LENT_TO_CODEX_MARKER);
+                }
+                provider.relay.auth_contents = serde_json::to_string_pretty(&auth)?;
+            }
+        }
+        Ok(())
+    })?;
+    let mut adopted = settings.clone();
+    adopted.native_auth_selection = None;
+    adopted.settings_revision = ctx.settings.save_versioned(&adopted)?;
+    *settings = adopted;
+    Ok(true)
 }
 
 /// 接入网关前 Codex 实时配置的副本。只在实时配置与直连模式的记录对不上时才存：
@@ -1549,7 +1582,7 @@ fn write_codex(
     let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();
     // Codex 自己没登录、池里有网关登录的 ChatGPT 账号：借给 Codex，让它以官方身份接入。
     // WSL 模式下不用官方身份（见 [`codex_gateway_profile_on`]），也就不借。
-    let signed_in = reconcile_codex_sign_in(ctx, gateway);
+    let signed_in = reconcile_codex_sign_in(ctx, gateway, &mut settings)?;
     let lend = (!signed_in
         && wsl_host.is_none()
         && crate::native_auth::selection_allows_auto_lend(&settings))
@@ -2417,6 +2450,24 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
 
 /// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
 /// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
+pub fn sync_codex_identity_after_selection(ctx: &ApplyContext) -> anyhow::Result<()> {
+    let changed = sync_codex_identity(ctx)?;
+    // A/B 同为官方身份时配置不变，但已有线程仍需读到新的凭据代际。
+    // 连接代际仅供重连，不代表运行中的原生 OAuth 已重载。
+    if !changed {
+        let settings = ctx.settings.load()?;
+        let gateway = ctx.gateway.load()?;
+        if settings.active_relay_id == CODEX_GATEWAY_RELAY_ID
+            && gateway.binding(&ToolId::Codex).is_some_and(|binding| binding.enabled)
+            && !crate::wsl_network::codex_runs_in_wsl(&ctx.codex_home)
+            && taken_over(ctx, &ToolId::Codex).is_none()
+        {
+            crate::gateway::connection_generation::publish(&ctx.codex_home)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let gateway = ctx.gateway.load()?;
@@ -2426,7 +2477,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     else {
         return Ok(false);
     };
-    let settings = ctx.settings.load()?;
+    let mut settings = ctx.settings.load()?;
     if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID {
         return Ok(false);
     }
@@ -2466,6 +2517,7 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
         registered == crate::gateway::images::targets(&gateway, &ToolId::Codex, None).is_ok()
     };
     if keeps_login == can_sign_in && image_config_matches {
+        release_signed_out_selection_after_native_login(ctx, &mut settings)?;
         return Ok(false);
     }
     if write_codex(ctx, &gateway, &binding.clone(), false)? {
