@@ -71,7 +71,10 @@ impl BridgeRuntimeService for UnusedRuntime {
 #[derive(Default)]
 struct MockData {
     queries: Mutex<Vec<Value>>,
+    committed_queries: Mutex<Vec<Value>>,
     archive_queries: Mutex<Vec<Value>>,
+    execution_queries: Mutex<Vec<Value>>,
+    detail_queries: Mutex<Vec<Value>>,
     clears: AtomicUsize,
 }
 
@@ -81,8 +84,20 @@ impl BridgeDataService for MockData {
         self.queries.lock().unwrap().push(payload.clone());
         Ok(json!({"status":"ok","complete":true,"echo":payload}))
     }
+    async fn usage_history_committed(&self, payload: Value) -> anyhow::Result<Value> {
+        self.committed_queries.lock().unwrap().push(payload.clone());
+        Ok(json!({"status":"partial","source":"persistent-local-rollout","echo":payload}))
+    }
     async fn usage_archive(&self, payload: Value) -> anyhow::Result<Value> {
         self.archive_queries.lock().unwrap().push(payload.clone());
+        Ok(json!({"status":"ok","echo":payload}))
+    }
+    async fn usage_executions(&self, payload: Value) -> anyhow::Result<Value> {
+        self.execution_queries.lock().unwrap().push(payload.clone());
+        Ok(json!({"status":"ok","echo":payload}))
+    }
+    async fn usage_execution_detail(&self, payload: Value) -> anyhow::Result<Value> {
+        self.detail_queries.lock().unwrap().push(payload.clone());
         Ok(json!({"status":"ok","echo":payload}))
     }
     async fn clear_usage_history(&self) {
@@ -157,6 +172,42 @@ async fn enabled_usage_history_forwards_original_payload_without_clearing() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn committed_history_requires_explicit_snapshot_and_never_calls_old_history() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (ctx, data) = context(Some(true));
+    for payload in [json!({}), json!({"snapshot":"legacy"})] {
+        let result = handle_bridge_request(ctx.clone(), "/usage/history-committed", payload).await;
+        assert_eq!(result["status"], "unavailable");
+        assert_eq!(result["source"], "persistent-local-rollout");
+    }
+    assert!(data.committed_queries.lock().unwrap().is_empty());
+    let payload = json!({"snapshot":"committed","period":"all"});
+    let result = handle_bridge_request(ctx, "/usage/history-committed", payload.clone()).await;
+    assert_eq!(result["source"], "persistent-local-rollout");
+    assert_eq!(*data.committed_queries.lock().unwrap(), vec![payload]);
+    assert!(data.queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn committed_history_respects_disabled_or_unavailable_settings() {
+    let _state = crate::common::IsolatedTestState::new();
+    for enabled in [Some(false), None] {
+        let (ctx, data) = context(enabled);
+        let result = handle_bridge_request(
+            ctx,
+            "/usage/history-committed",
+            json!({"snapshot":"committed"}),
+        ).await;
+        assert_eq!(result["status"], "unavailable");
+        assert_eq!(result["enabled"], false);
+        assert_eq!(result["source"], "persistent-local-rollout");
+        assert!(data.committed_queries.lock().unwrap().is_empty());
+        assert!(data.queries.lock().unwrap().is_empty());
+        assert_eq!(data.clears.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn archive_rejects_disabled_and_failed_settings_without_touching_data() {
     let _state = crate::common::IsolatedTestState::new();
     for enabled in [Some(false), None] {
@@ -192,6 +243,39 @@ async fn archive_forwards_to_independent_service_only_when_enabled() {
         assert!(data.queries.lock().unwrap().is_empty());
         assert_eq!(data.clears.load(Ordering::SeqCst), 0);
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn execution_routes_require_enabled_usage_history() {
+    let _state = crate::common::IsolatedTestState::new();
+    for enabled in [Some(false), None] {
+        let (ctx, data) = context(enabled);
+        for route in ["/usage/executions", "/usage/execution-detail"] {
+            let result = handle_bridge_request(ctx.clone(), route, json!({"id":"test"})).await;
+            assert_eq!(result["status"], "unavailable");
+            assert_eq!(result["enabled"], false);
+        }
+        assert!(data.execution_queries.lock().unwrap().is_empty());
+        assert!(data.detail_queries.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn execution_routes_forward_the_original_scope_and_identity() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (ctx, data) = context(Some(true));
+    let list = json!({"startAt":"2026-11-10T00:00:00+08:00","limit":10,"scopeSessionId":"session","cursor":"cursor","revision":4});
+    let detail = json!({"sessionId":"session","id":"call"});
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/usage/executions", list.clone()).await,
+        json!({"status":"ok","echo":list})
+    );
+    assert_eq!(
+        handle_bridge_request(ctx, "/usage/execution-detail", detail.clone()).await,
+        json!({"status":"ok","echo":detail})
+    );
+    assert_eq!(*data.execution_queries.lock().unwrap(), vec![list]);
+    assert_eq!(*data.detail_queries.lock().unwrap(), vec![detail]);
 }
 
 #[tokio::test(flavor = "current_thread")]

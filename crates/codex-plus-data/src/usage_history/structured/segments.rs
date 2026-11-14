@@ -93,12 +93,17 @@ pub(super) fn causal_order(
                 .or_insert(next)
         })
         .collect();
-    let mut original: Vec<_> = events.drain(..).map(Some).collect();
-    events.extend(
-        order
-            .into_iter()
-            .map(|position| original[position].take().unwrap()),
-    );
+    // 复用入度数组保存排列，避免重排时再复制一整份 UsageEvent 向量。
+    for (destination, &position) in order.iter().enumerate() {
+        indegree[position] = destination;
+    }
+    for position in 0..events.len() {
+        while indegree[position] != position {
+            let destination = indegree[position];
+            events.swap(position, destination);
+            indegree.swap(position, destination);
+        }
+    }
     (components, cyclic)
 }
 

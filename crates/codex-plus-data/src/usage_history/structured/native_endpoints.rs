@@ -486,6 +486,45 @@ fn event_key(
     ))
 }
 
+fn blocked_attributions(
+    events: &[UsageEvent],
+    keys: &[Option<(RequestMatchKey, i64)>],
+    aliases: &RequestSessionAliases,
+) -> HashSet<[u8; 32]> {
+    let mut uncertain: HashMap<String, (Vec<i64>, bool)> = HashMap::new();
+    for event in events.iter().filter(|event| {
+        event.count_incomplete
+            || event.count_uncertain
+            || !event.delta.cached_known
+            || event.context_conflicts.any()
+    }) {
+        if let Some(session) = aliases.resolve(&event.session) {
+            let (times, missing_time) = uncertain.entry(session).or_default();
+            match DateTime::parse_from_rfc3339(&event.timestamp) {
+                Ok(at) => times.push(at.timestamp_millis()),
+                Err(_) => *missing_time = true,
+            }
+        }
+    }
+    for (times, _) in uncertain.values_mut() {
+        times.sort_unstable();
+    }
+    if uncertain.is_empty() {
+        return HashSet::new();
+    }
+    events
+        .iter()
+        .zip(keys)
+        .filter_map(|(event, key)| {
+            let (key, at) = key.as_ref()?;
+            let (times, missing_time) = uncertain.get(&key.session)?;
+            let start = times.partition_point(|time| *time < at.saturating_sub(WINDOW_MS));
+            (*missing_time || times.get(start).is_some_and(|time| *time <= at.saturating_add(WINDOW_MS)))
+                .then_some(event.id)
+        })
+        .collect()
+}
+
 impl Cache {
     pub(super) fn restore_after_failed_load(&mut self, records: HashMap<[u8; 32], Attribution>) {
         let previously_persisted = std::mem::take(&mut self.persisted);
@@ -724,15 +763,11 @@ impl Cache {
         scan_complete: bool,
     ) -> Value {
         let aliases = RequestSessionAliases::new(session_aliases);
-        let blocked_sessions: HashSet<_> = events
-            .iter()
-            .filter(|event| event.count_incomplete || !event.delta.cached_known)
-            .filter_map(|event| aliases.resolve(&event.session))
-            .collect();
         let keys: Vec<_> = events
             .iter()
             .map(|event| event_key(event, &aliases))
             .collect();
+        let blocked_events = blocked_attributions(events, &keys, &aliases);
         let now = Local::now().timestamp_millis();
         let cutoff = provider_cache::ProviderCache::since(
             Local::now().date_naive() - Days::days(RETENTION_DAYS - 1),
@@ -753,7 +788,7 @@ impl Cache {
             if !scan_complete
                 || event.count_uncertain
                 || event.context_conflicts.any()
-                || blocked_sessions.contains(&key.session)
+                || blocked_events.contains(&event.id)
                 || !unknown_provider(&event.provider)
                 || event.turn.is_empty()
             {
@@ -972,10 +1007,11 @@ impl Cache {
             binding_since,
             &coverage,
             scan_complete,
-            &blocked_sessions,
+            &blocked_events,
         );
         for (event, key) in events.iter().zip(&keys) {
-            if key.as_ref().is_some_and(|(key, at)| {
+            if !blocked_events.contains(&event.id)
+                && key.as_ref().is_some_and(|(key, at)| {
                 checked.contains(&key.session)
                     && coverage.get(&key.session).is_some_and(|(floor, complete)| {
                         *complete && at.saturating_sub(WINDOW_MS) >= *floor
@@ -1000,7 +1036,7 @@ impl Cache {
         binding_since: i64,
         coverage: &BTreeMap<String, (i64, bool)>,
         scan_complete: bool,
-        blocked_sessions: &HashSet<String>,
+        blocked_events: &HashSet<[u8; 32]>,
     ) -> (usize, u64) {
         type Group = (String, String, String);
         let mut requests: BTreeMap<Group, Vec<&Request>> = BTreeMap::new();
@@ -1039,7 +1075,7 @@ impl Cache {
             let Some((key, at)) = key else {
                 continue;
             };
-            if blocked_sessions.contains(&key.session) {
+            if blocked_events.contains(&event.id) {
                 continue;
             }
             let group = (key.session.clone(), event.turn.clone(), key.model.clone());
@@ -1473,11 +1509,103 @@ mod tests {
             at - 1,
             &BTreeMap::new(),
             true,
-            &HashSet::from(["session".to_string()]),
+            &HashSet::from([event.id]),
         );
         assert_eq!(result.0, 0);
         assert!(unknown_provider(&events[0].provider));
         assert!(!cache.verified[&event.id].rejected);
+    }
+
+    #[test]
+    fn uncertain_events_only_block_native_attribution_in_the_competing_window() {
+        let at = Local::now().timestamp_millis() - 2 * WINDOW_MS;
+        let event = UsageEvent {
+            id: [20; 32],
+            session: "session".into(),
+            turn: "turn".into(),
+            model: "model-a".into(),
+            timestamp: DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+            date: Local::now().date_naive(),
+            total: Tokens::new(100, 20, 10),
+            delta: Tokens::new(100, 20, 10),
+            has_file_baseline: false,
+            last: None,
+            count_uncertain: false,
+            count_incomplete: false,
+            provider: String::new(),
+            provider_source: None,
+            role: "main".into(),
+            inherited: false,
+            legacy_identity: None,
+            context_conflicts: ContextConflicts::default(),
+        };
+        let aliases = RequestSessionAliases::new(&BTreeMap::from([(
+            "alias".into(),
+            "session".into(),
+        )]));
+        for (offset, session, missing_time, expected) in [
+            (-WINDOW_MS, "alias", false, true),
+            (WINDOW_MS, "session", false, true),
+            (-WINDOW_MS - 1, "session", false, false),
+            (WINDOW_MS + 1, "session", false, false),
+            (0, "other", false, false),
+            (0, "session", true, true),
+        ] {
+            for uncertainty in 0..4 {
+                let mut other = event.clone();
+                other.id = [21; 32];
+                other.session = session.into();
+                other.turn = "other-turn".into();
+                other.timestamp = if missing_time {
+                    "invalid".into()
+                } else {
+                    DateTime::from_timestamp_millis(at + offset)
+                        .unwrap()
+                        .to_rfc3339()
+                };
+                match uncertainty {
+                    0 => other.count_incomplete = true,
+                    1 => other.delta.cached_known = false,
+                    2 => other.count_uncertain = true,
+                    _ => other.context_conflicts.turn = true,
+                }
+                let mut events = vec![event.clone(), other];
+                let keys: Vec<_> = events
+                    .iter()
+                    .map(|row| event_key(row, &aliases))
+                    .collect();
+                let blocked = blocked_attributions(&events, &keys, &aliases);
+                assert_eq!(blocked.contains(&event.id), expected);
+
+                let (key, _) = keys[0].as_ref().unwrap();
+                let mut cache = Cache::default();
+                cache.verified.insert(
+                    event.id,
+                    Attribution {
+                        key: key.clone(),
+                        at,
+                        turn: event.turn.clone(),
+                        provider: "supplier-a".into(),
+                        version: 2,
+                        binding_since: at - 1,
+                        rejected: false,
+                        count_conflict: 0,
+                        original_model: String::new(),
+                    },
+                );
+                cache.apply(
+                    &mut events,
+                    &keys,
+                    &[],
+                    at - 1,
+                    &BTreeMap::new(),
+                    true,
+                    &blocked,
+                );
+                assert_eq!(events[0].provider == "supplier-a", !expected);
+                assert!(!cache.verified[&event.id].rejected);
+            }
+        }
     }
 
     #[test]

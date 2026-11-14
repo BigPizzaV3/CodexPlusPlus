@@ -17,6 +17,9 @@ type CodexPlusExtensionRoute =
   | "/diagnostics/log"
   | "/thread-usage-history"
   | "/usage/history"
+  | "/usage/history-committed"
+  | "/usage/executions"
+  | "/usage/execution-detail"
   | "/usage/archive"
   | "/archived-thread"
   | "/export-markdown"
@@ -48,6 +51,147 @@ interface CodexPlusCallOptions {
   /** 超时毫秒数，默认 26000。超时只放弃等待，服务端任务仍会跑完。 */
   timeout?: number;
 }
+
+interface CodexPlusUsageTrend {
+  startAt: number;
+  endAt: number;
+  /** 自动选择的时间桶宽度；日精度桶按本地日历生成，以桶自身边界为准。 */
+  intervalMs: number;
+  precision: "exact" | "day";
+  /** 最多 120 个桶，保留没有用量的零值桶。 */
+  buckets: Array<{
+    startAt: number;
+    endAt: number;
+    recordCount: number;
+    usage: CodexPlusCommittedUsageTokens;
+    models: Array<{
+      model: string;
+      recordCount: number;
+      usage: CodexPlusCommittedUsageTokens;
+    }>;
+    breakdowns: Array<{
+      model: string;
+      provider: string;
+      providerName: string | null;
+      role: string;
+      /** 该字段包含固定截止前的历史推断，不能当作已证实的实际身份。 */
+      modelInferred?: boolean;
+      providerInferred?: boolean;
+      recordCount: number;
+      usage: CodexPlusCommittedUsageTokens;
+    }>;
+  }>;
+}
+
+interface CodexPlusCommittedUsageTokens {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningOutputTokens: number | null;
+  cachedKnown: boolean;
+  reasoningKnown: boolean;
+}
+
+interface CodexPlusExecutionsQuery {
+  startAt: number;
+  endAt: number;
+  scopeSessionId?: string;
+  limit?: number;
+  revision?: number;
+  cursor?: string;
+  search?: string;
+  kind?: "skill" | "mcp" | "tool";
+  /** 无搜索时按需返回最多 100 个名称组和每组最多 64 个时间桶。 */
+  includeActivitySummary?: boolean;
+}
+
+interface CodexPlusExecutionActivity {
+  groups: Array<{
+    kind: "skill" | "mcp" | "tool";
+    name: string;
+    namespace: string;
+    count: number;
+    /** [从 startAt 开始的桶序号, 调用次数, 桶内首次调用的毫秒时间戳]；省略零值桶。 */
+    timeline: Array<[number, number, number]>;
+  }>;
+  groupCount: number;
+  startAt: number;
+  bucketWidthMs: number;
+  bucketCount: 64;
+  /** 旧分类缺失或范围包含已压缩的日汇总时为 false。 */
+  complete: boolean;
+}
+
+interface CodexPlusExecutionScan {
+  processing: boolean;
+  ready: boolean;
+  migratingSources?: boolean;
+  storageError?: string | null;
+  storageNearLimit?: boolean;
+  error?: string;
+}
+
+interface CodexPlusExecutionDetailQuery {
+  sessionId: string;
+  id: string;
+  revision: number;
+}
+
+type CodexPlusExecutionDetailResult =
+  | { status: "unavailable"; enabled?: boolean; message?: string }
+  | { status: "stale" }
+  | { status: "not_found"; revision: number }
+  | {
+      status: "ok" | "partial";
+      revision: number;
+      detail: { input: unknown; output: unknown[]; durationMs?: number };
+    };
+
+type CodexPlusExecutionsResult =
+  | { status: "unavailable"; complete: false; enabled?: boolean; message?: string; scan?: CodexPlusExecutionScan }
+  | { status: "stale"; complete: false; scan?: CodexPlusExecutionScan }
+  | {
+      status: "ok" | "partial";
+      complete: boolean;
+      revision: number;
+      items: Array<{
+        sessionId: string;
+        id: string;
+        timestampMs: number;
+        /** 技能和 MCP 的名称、命名空间及类别可保留至逐次记录到期。 */
+        name?: string;
+        namespace?: string;
+        kind?: "skill" | "mcp" | "tool";
+      }>;
+      nextCursor: string | null;
+      dailySummaries: Array<{
+        day: string;
+        count: number;
+        partial: boolean;
+        skill: number;
+        mcp: number;
+        tool: number;
+        classificationComplete: boolean;
+      }>;
+      summary: {
+        total: number | null;
+        matched: number | null;
+        conflicts: number;
+        recentSkill: number;
+        recentMcp: number;
+        recentTool: number;
+        /** 已识别的范围内分类次数；classificationComplete=false 时是下界，非整日跨越压缩范围时为 null。 */
+        skill: number | null;
+        mcp: number | null;
+        tool: number | null;
+        classificationComplete: boolean;
+      };
+      coverage: { complete: boolean; precision: "exact" | "day"; reason: string };
+      searchApplied: boolean;
+      activitySummary: CodexPlusExecutionActivity | null;
+      scan?: CodexPlusExecutionScan;
+    };
 
 interface CodexPlusRegisterOptions {
   /** 显式指定归属脚本。默认取当前正在初始化的脚本，一般不用传。 */
@@ -134,9 +278,11 @@ interface CodexPlusMenuItemDefinition extends Record<string, unknown> {
 interface CodexPlusCurrentSession {
   readonly id: string;
   readonly title: string;
-  /** 会话所在的主机，本机为 "local"。 */
+  /** 会话所在的主机，本机为 "local"；归属未确认时也为 "local"。 */
   readonly hostId: string;
-  /** 是否为远程 / SSH 会话。 */
+  /** 是否已确认主机归属。 */
+  readonly hostKnown: boolean;
+  /** 是否为远程 / SSH 会话；仅在 hostKnown 为 true 时可确定。 */
   readonly remote: boolean;
 }
 
@@ -188,6 +334,8 @@ interface CodexPlusExtensionApi {
   toast(message: string, options?: CodexPlusToastOptions): { ok: boolean; value?: CodexPlusDispose };
 
   /** 调用后端白名单路由，失败时 reject。 */
+  call(route: "/usage/executions", payload: CodexPlusExecutionsQuery, options?: CodexPlusCallOptions): Promise<CodexPlusExecutionsResult>;
+  call(route: "/usage/execution-detail", payload: CodexPlusExecutionDetailQuery, options?: CodexPlusCallOptions): Promise<CodexPlusExecutionDetailResult>;
   call<T = unknown>(
     route: CodexPlusExtensionRoute,
     payload?: Record<string, unknown>,
@@ -710,6 +858,8 @@ interface CodexPlusExtensionContext {
   onScan(handler: () => void, options?: { phase?: "deferred" | "light" }): CodexPlusDispose & { run(): void };
 
   /** 拓展包只能调 codexpp.json `permissions.routes` 里声明的路由。 */
+  call(route: "/usage/executions", payload: CodexPlusExecutionsQuery, options?: CodexPlusCallOptions): Promise<CodexPlusExecutionsResult>;
+  call(route: "/usage/execution-detail", payload: CodexPlusExecutionDetailQuery, options?: CodexPlusCallOptions): Promise<CodexPlusExecutionDetailResult>;
   call<T = unknown>(route: CodexPlusExtensionRoute, payload?: Record<string, unknown>, options?: CodexPlusCallOptions): Promise<T>;
   toast(message: string, options?: CodexPlusToastOptions): { ok: boolean; value?: CodexPlusDispose };
   fail(error: unknown): void;

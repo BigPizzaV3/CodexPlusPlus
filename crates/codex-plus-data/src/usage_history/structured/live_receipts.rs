@@ -197,7 +197,10 @@ pub(super) fn match_captured_receipts(
             }
         }
         for row in captured.into_iter().filter(|row| row.timestamp_ms >= floor) {
-            if observed.get(&row.id) == Some(&row) {
+            if observed
+                .get(&row.id)
+                .is_some_and(|current| current.same_identity(&row))
+            {
                 continue;
             }
             if combined.len() >= MAX_ROWS_CAPTURED_PROXY {
@@ -340,7 +343,10 @@ pub(super) fn match_receipts(
                     || receipt
                         .request_signatures
                         .get(id)
-                        .is_some_and(|saved| saved != &request_signature(record))
+                        .is_some_and(|saved| {
+                            saved != &request_signature(record)
+                                && saved != &legacy_request_signature(record)
+                        })
                 {
                     rejected.insert(index);
                 }
@@ -533,7 +539,11 @@ pub(super) fn match_receipts(
                 "id":receipt.id,"sessionId":receipt.session_id,"timestamp":receipt.timestamp,
                 "input":delta.input,"output":delta.output,"cached":delta.cached,
                 "model":model,
-                "provider":record.relay_id,"providerName":record.relay_name,
+                "provider":record.relay_id,"providerName":if record.relay_name.trim().is_empty() {
+                    &record.relay_id
+                } else {
+                    &record.relay_name
+                },
                 "requestIds":candidate_ids,
                 "requestSignatures":candidate_ids.iter().map(|id|
                     (id.clone(),request_signature(ids[id.as_str()]))).collect::<BTreeMap<_,_>>()
@@ -898,10 +908,34 @@ mod completion_lag_tests {
             &json!([saved])
         )));
     }
+
+    #[test]
+    fn saved_request_signature_ignores_supplier_display_name() {
+        let record = request("stable-id", 100_000, 0, 10, 2, 3);
+        let mut saved = receipt("one", 100_000, 10, 2, 3);
+        let result = match_receipts(&[record.clone()], &BTreeMap::new(), &json!([saved.clone()]));
+        assert!(positive(&result));
+        for key in ["model", "provider", "requestIds", "requestSignatures"] {
+            saved[key] = result[0][key].clone();
+        }
+        let mut renamed = record;
+        renamed.relay_name = "Renamed".into();
+        assert!(positive(&match_receipts(
+            &[renamed],
+            &BTreeMap::new(),
+            &json!([saved])
+        )));
+    }
 }
 
 fn request_signature(record: &RequestEvidence) -> String {
+    let mut normalized = record.clone();
+    normalized.relay_name.clear();
+    legacy_request_signature(&normalized)
+}
+
+fn legacy_request_signature(record: &RequestEvidence) -> String {
     // 只散列已脱敏的匹配字段，用于日志部分轮转后复核仍存在的单条请求。
-    let digest = Sha256::digest(serde_json::to_vec(record).unwrap_or_default());
+    let digest = Sha256::digest(serde_json::to_vec(record).expect("serialize request evidence"));
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -1,5 +1,6 @@
 //! 缓存最小请求证据与已核验的供应商归属，不保存会话用量历史。
 use super::*;
+use anyhow::Context;
 use rusqlite::{Connection, params};
 
 pub(super) fn storage_dir(home: &Path, settings_path: &Path) -> PathBuf {
@@ -54,6 +55,21 @@ impl ProviderCache {
     }
 
     pub(super) fn read_snapshot(storage: &Path, cutoff: NaiveDate) -> anyhow::Result<Self> {
+        Self::read_snapshot_inner(storage, cutoff, true)
+    }
+
+    pub(super) fn read_evidence_snapshot(
+        storage: &Path,
+        cutoff: NaiveDate,
+    ) -> anyhow::Result<Self> {
+        Self::read_snapshot_inner(storage, cutoff, false)
+    }
+
+    fn read_snapshot_inner(
+        storage: &Path,
+        cutoff: NaiveDate,
+        load_aliases: bool,
+    ) -> anyhow::Result<Self> {
         let path = database_path(storage)?;
         if !fs::symlink_metadata(&path)?.is_file() {
             anyhow::bail!("provider cache is not a regular file");
@@ -67,7 +83,7 @@ impl ProviderCache {
             anyhow::bail!("unsupported provider cache version");
         }
         let mut aliases = BTreeMap::new();
-        {
+        if load_aliases {
             let mut statement =
                 db.prepare("SELECT id,target FROM aliases WHERE last_seen>=?1 LIMIT ?2")?;
             let rows = statement
@@ -89,6 +105,32 @@ impl ProviderCache {
             cutoff: Some(cutoff),
             ..Self::default()
         })
+    }
+
+    pub(super) fn aliases_for(
+        &self,
+        session: &str,
+        limit: usize,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        let db = self.db.as_ref().context("provider cache unavailable")?;
+        let mut statement = db.prepare(
+            "SELECT id, target FROM aliases
+             WHERE (id = ?1 OR target = ?1) AND last_seen >= ?2 LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![
+                session,
+                Self::since(self.cutoff.expect("opened provider cache has a cutoff")),
+                limit + 1,
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let aliases = rows.collect::<Result<BTreeMap<_, _>, _>>()?;
+        anyhow::ensure!(
+            aliases.len() <= limit,
+            "provider alias window exceeds batch limit"
+        );
+        Ok(aliases)
     }
 
     pub(super) fn open(&mut self, home: &Path, cutoff: NaiveDate) -> anyhow::Result<bool> {
@@ -125,6 +167,7 @@ impl ProviderCache {
              CREATE TABLE IF NOT EXISTS aliases(
                  id TEXT PRIMARY KEY NOT NULL, target TEXT NOT NULL
              ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS aliases_target ON aliases(target, id);
              CREATE TABLE IF NOT EXISTS native_attributions(
                  id BLOB PRIMARY KEY NOT NULL, at INTEGER NOT NULL, data TEXT NOT NULL
              ) WITHOUT ROWID;
@@ -385,6 +428,29 @@ impl ProviderCache {
         Ok(records)
     }
 
+    pub(super) fn endpoint_binding_since_read_only(
+        &self,
+        endpoints: &BTreeMap<String, Option<String>>,
+    ) -> anyhow::Result<Option<i64>> {
+        use rusqlite::OptionalExtension;
+        let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(endpoints)?));
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
+        let previous: Option<(String, i64)> = db
+            .query_row(
+                "SELECT fingerprint,since FROM native_endpoint_binding WHERE singleton=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let now = Local::now().timestamp_millis();
+        Ok(previous
+            .filter(|(old, since)| *old == fingerprint && *since > 0 && *since <= now)
+            .map(|(_, since)| since))
+    }
+
     pub(super) fn endpoint_binding_since(
         &mut self,
         endpoints: &BTreeMap<String, Option<String>>,
@@ -553,14 +619,17 @@ impl ProviderCache {
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
-        let tx = db.unchecked_transaction()?;
-        let (floor, complete): (i64, bool) = tx.query_row(
+        let tx = db
+            .is_autocommit()
+            .then(|| db.unchecked_transaction())
+            .transpose()?;
+        let (floor, complete): (i64, bool) = db.query_row(
             "SELECT coalesce(max(floor),0),coalesce(min(complete),1) FROM native_capture_cursors",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let mut floor = floor.max(self.capture_floor("completed_native_requests")?);
-        let mut statement = tx.prepare(
+        let mut statement = db.prepare(
             "SELECT data FROM completed_native_requests WHERE session=?1 AND at>?2 AND at<=?3
              ORDER BY at DESC,id LIMIT 2001",
         )?;
@@ -580,7 +649,9 @@ impl ProviderCache {
             result.retain(|row| row.at > floor);
         }
         drop(statement);
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(Captured {
             rows: result,
             floor,
@@ -628,10 +699,15 @@ impl ProviderCache {
                 let data = serde_json::to_string(row)?;
                 let (old, denied): (Option<String>, bool) =
                     previous.query_row([&row.id], |entry| Ok((entry.get(0)?, entry.get(1)?)))?;
+                let changed = old
+                    .as_ref()
+                    .map(|old| serde_json::from_str::<RequestEvidence>(old))
+                    .transpose()?
+                    .is_some_and(|old| !old.same_identity(row));
                 let denied = denied
                     || duplicates.contains(row.id.as_str())
                     || row.keys().is_empty()
-                    || old.as_ref().is_some_and(|old| old != &data);
+                    || changed;
                 let at = if row.timestamp_ms > 0 {
                     row.timestamp_ms
                 } else {
@@ -736,17 +812,16 @@ impl ProviderCache {
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
-        let mut current: BTreeMap<&str, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<&str, &RequestEvidence> = BTreeMap::new();
         let mut rejected = HashSet::new();
         for row in rows {
             if row.id.is_empty() || row.id.len() > 256 {
                 continue;
             }
-            let fingerprint = Sha256::digest(serde_json::to_vec(row)?).into();
             if row.keys().is_empty()
                 || current
-                    .insert(row.id.as_str(), fingerprint)
-                    .is_some_and(|old| old != fingerprint)
+                    .insert(row.id.as_str(), row)
+                    .is_some_and(|old| !old.same_identity(row))
             {
                 rejected.insert(row.id.clone());
             }
@@ -769,8 +844,11 @@ impl ProviderCache {
             })?;
             for row in stored {
                 let (id, data) = row?;
-                let fingerprint: [u8; 32] = Sha256::digest(data.as_bytes()).into();
-                if current.get(id.as_str()) != Some(&fingerprint) {
+                let saved: RequestEvidence = serde_json::from_str(&data)?;
+                if current
+                    .get(id.as_str())
+                    .is_none_or(|current| !current.same_identity(&saved))
+                {
                     rejected.insert(id);
                 }
             }

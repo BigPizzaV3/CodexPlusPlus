@@ -1205,6 +1205,10 @@ fn anthropic_usage(body: &[u8]) -> Option<crate::request_log::RequestUsage> {
         input_tokens: number("input_tokens") + cached + number("cache_creation_input_tokens"),
         output_tokens: number("output_tokens"),
         cached_tokens: cached,
+        cached_tokens_known: usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .is_some(),
         reasoning_tokens: 0,
     })
 }
@@ -1217,6 +1221,7 @@ struct AnthropicSseObserver {
     stopped: bool,
     input_tokens: u64,
     cached_tokens: u64,
+    cached_tokens_known: bool,
     output_tokens: u64,
 }
 
@@ -1254,6 +1259,7 @@ impl AnthropicSseObserver {
                 }
                 if let Some(cached) = number("cache_read_input_tokens") {
                     self.cached_tokens = cached;
+                    self.cached_tokens_known = true;
                 }
                 if let Some(output) = number("output_tokens") {
                     self.output_tokens = output;
@@ -1268,6 +1274,7 @@ impl AnthropicSseObserver {
                 input_tokens: self.input_tokens,
                 output_tokens: self.output_tokens,
                 cached_tokens: self.cached_tokens,
+                cached_tokens_known: self.cached_tokens_known,
                 reasoning_tokens: 0,
             }
         })
@@ -1584,7 +1591,27 @@ mod tests {
         let usage = observer.usage().unwrap();
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.cached_tokens, 90);
+        assert!(usage.cached_tokens_known);
         assert_eq!(usage.output_tokens, 7);
         assert!(observer.stopped);
+    }
+
+    #[test]
+    fn anthropic_request_usage_preserves_cache_presence() {
+        for (cached, known) in [
+            (None, false),
+            (Some(0), true),
+        ] {
+            let mut usage = json!({"input_tokens": 10, "output_tokens": 2});
+            if let Some(cached) = cached {
+                usage["cache_read_input_tokens"] = json!(cached);
+            }
+            let body = serde_json::to_vec(&json!({"usage":usage})).unwrap();
+            assert_eq!(anthropic_usage(&body).unwrap().cached_tokens_known, known);
+            let mut observer = AnthropicSseObserver::default();
+            let event = json!({"type":"message_start","message":{"usage":usage}});
+            observer.push(format!("data: {event}\n\n").as_bytes());
+            assert_eq!(observer.usage().unwrap().cached_tokens_known, known);
+        }
     }
 }

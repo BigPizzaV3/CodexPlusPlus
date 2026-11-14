@@ -30,7 +30,12 @@ mod actual_attribution {
             records,
             ..Default::default()
         };
-        let result = cache.attribute(events, &mut BTreeMap::new(), &BTreeMap::new());
+        let result = cache.attribute_with_actual_model(
+            events,
+            &mut BTreeMap::new(),
+            &BTreeMap::new(),
+            true,
+        );
         (cache, result)
     }
 
@@ -63,6 +68,84 @@ mod actual_attribution {
                 }
             );
         }
+    }
+
+    #[test]
+    fn exact_request_uses_sent_model_for_a_known_requested_model() {
+        for provider in ["custom", "supplier-b"] {
+            let original = event("requested-model", provider);
+            let record = proof(&original);
+            let mut events = vec![original.clone()];
+            let (mut cache, result) = apply(&mut events, vec![record.clone()]);
+            assert_eq!(result["recoveredEvents"], 1, "provider={provider}");
+            assert_eq!(result["recoveredModelEvents"], 1);
+            assert_eq!(events[0].model, "actual-b");
+            assert_eq!(events[0].provider, "supplier-b");
+            assert_eq!(events[0].id, original.id);
+            assert_eq!(events[0].timestamp, original.timestamp);
+            assert_eq!(events[0].total, original.total);
+            assert_eq!(events[0].delta, original.delta);
+
+            cache.records.clear();
+            let mut retained = vec![original.clone()];
+            cache.attribute_with_actual_model(
+                &mut retained,
+                &mut BTreeMap::new(),
+                &BTreeMap::new(),
+                true,
+            );
+            assert_eq!(retained[0].model, "actual-b");
+
+            let mut competitor = record;
+            competitor.id = "competing-request".into();
+            cache.records.push(competitor);
+            let mut revoked = vec![original.clone()];
+            cache.attribute_with_actual_model(
+                &mut revoked,
+                &mut BTreeMap::new(),
+                &BTreeMap::new(),
+                true,
+            );
+            assert_eq!(revoked[0].model, original.model);
+            assert_eq!(revoked[0].provider, original.provider);
+            assert_eq!(revoked[0].delta, original.delta);
+        }
+    }
+
+    #[test]
+    fn exact_requested_model_requires_a_full_unambiguous_match() {
+        let original = event("requested-model", "custom");
+        for mutation in 0..4 {
+            let mut record = proof(&original);
+            match mutation {
+                0 => record.model = "unrelated-request".into(),
+                1 => record.usage.as_mut().unwrap().cached_tokens = None,
+                2 => record.thread_id = "different-session".into(),
+                _ => record.timestamp_ms += DELAYED_REQUEST_MATCH_WINDOW_MS + 1_000,
+            }
+            let mut events = vec![original.clone()];
+            let (_, result) = apply(&mut events, vec![record]);
+            assert_eq!(result["recoveredEvents"], 0, "mutation={mutation}");
+            assert_eq!(events[0].model, original.model);
+            assert_eq!(events[0].provider, original.provider);
+            assert_eq!(events[0].delta, original.delta);
+        }
+    }
+
+    #[test]
+    fn exact_requested_model_waits_for_complete_capture() {
+        let original = event("requested-model", "supplier-b");
+        let mut cache = RequestEvidenceCache {
+            records: vec![proof(&original)],
+            captured_complete: Some(HashSet::new()),
+            ..Default::default()
+        };
+        let mut events = vec![original.clone()];
+        let result = cache.attribute(&mut events, &mut BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(result["recoveredEvents"], 0);
+        assert_eq!(events[0].model, original.model);
+        assert_eq!(events[0].provider, original.provider);
+        assert_eq!(events[0].delta, original.delta);
     }
 
     #[test]
