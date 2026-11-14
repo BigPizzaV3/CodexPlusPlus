@@ -3754,6 +3754,25 @@ fn restore_optional_file_bytes(path: &Path, contents: Option<&[u8]>) -> anyhow::
     Ok(())
 }
 
+/// 按完整文件写入供应商，并遵守「切换时保留」（`relayPreserveNonproviderSettings`）。
+///
+/// 切换供应商、网关重写走 core 的 `relay_switch`，早已读这个开关；但重启同步、手动「应用」
+/// 这几条管理器自己的写入路径以前直接调不带保留的版本，开关打开也照样用快照覆盖 live
+/// 里改过的 MCP 等设置（#3115）。这里统一成同一条规则；开关关闭时与原来完全一致。
+fn apply_relay_profile_honoring_preservation(
+    home: &Path,
+    relay: &RelayProfile,
+    settings: &BackendSettings,
+) -> anyhow::Result<codex_plus_core::relay_config::RelayApplyResult> {
+    codex_plus_core::relay_config::apply_relay_profile_with_preservation(
+        home,
+        relay,
+        &relay_combined_common_config(settings),
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
+        settings.relay_preserve_nonprovider_settings,
+    )
+}
+
 fn sync_active_relay_to_home(
     settings: &BackendSettings,
     home: &Path,
@@ -3770,11 +3789,7 @@ fn sync_active_relay_to_home(
             .active_aggregate_relay_profile()
             .ok_or_else(|| anyhow::anyhow!("当前聚合供应商配置不完整"))?;
         if aggregate.model_aggregation_enabled {
-            return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
-                home,
-                &relay,
-                &relay_combined_common_config(settings),
-            );
+            return apply_relay_profile_honoring_preservation(home, &relay, settings);
         }
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
@@ -3798,11 +3813,7 @@ fn sync_active_relay_to_home(
         );
     }
     if relay_has_complete_files(&relay) {
-        return codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
-            home,
-            &relay,
-            &relay_combined_common_config(settings),
-        );
+        return apply_relay_profile_honoring_preservation(home, &relay, settings);
     }
 
     let mut base_url = relay.base_url.trim().to_string();
@@ -10295,11 +10306,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         return response;
     }
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
-            &home,
-            &relay,
-            &relay_combined_common_config(&settings),
-        ) {
+        return match apply_relay_profile_honoring_preservation(&home, &relay, &settings) {
             Ok(result) => {
                 finish_codex_app_state_after_provider_switch(
                     &home,
@@ -10409,12 +10416,7 @@ fn apply_aggregate_relay_injection_to_home(
                 .active_aggregate_relay_profile()
                 .is_some_and(|aggregate| aggregate.model_aggregation_enabled)
         {
-            let common_config = relay_combined_common_config(&settings);
-            match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
-                home,
-                &profile,
-                &common_config,
-            ) {
+            match apply_relay_profile_honoring_preservation(home, &profile, &settings) {
                 Ok(result) => {
                     let status = codex_plus_core::relay_config::relay_status_from_home(home);
                     let mut message =
@@ -10492,11 +10494,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
     let relay = settings.active_relay_profile();
     log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
     if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules(
-            &home,
-            &relay,
-            &relay_combined_common_config(&settings),
-        ) {
+        return match apply_relay_profile_honoring_preservation(&home, &relay, &settings) {
             Ok(result) => {
                 finish_codex_app_state_after_provider_switch(
                     &home,
@@ -12504,6 +12502,45 @@ base_url = "https://example.invalid/v1"
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
         assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
         assert!(!config.contains(r#"base_url = "https://source.example/v1""#));
+    }
+
+    /// #3115：重启时的同步也要遵守「切换时保留」——live 里改过的 MCP 条目（路径、超时、env）
+    /// 不被供应商快照里的旧条目顶掉；不开时仍按快照写，默认行为不变。
+    #[test]
+    fn active_relay_sync_honors_preserve_nonprovider_setting() {
+        for preserve in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::write(
+                temp.path().join("config.toml"),
+                "model = \"gpt-5\"\n\n[mcp_servers.my_tool]\ncommand = \"/new/my-tool\"\ntool_timeout_sec = 120\n\n[mcp_servers.my_tool.env]\nMY_TOKEN = \"live-token\"\n",
+            )
+            .unwrap();
+            let settings = BackendSettings {
+                active_relay_id: "relay".to_string(),
+                relay_preserve_nonprovider_settings: preserve,
+                relay_profiles: vec![RelayProfile {
+                    id: "relay".to_string(),
+                    relay_mode: RelayMode::PureApi,
+                    base_url: "https://relay.example/v1".to_string(),
+                    api_key: "sk-relay".to_string(),
+                    config_contents: "model = \"qwen3-coder\"\nmodel_provider = \"custom\"\n\n[model_providers.custom]\nname = \"custom\"\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\"\nexperimental_bearer_token = \"sk-relay\"\n\n[mcp_servers.my_tool]\ncommand = \"/old/my-tool\"\n".to_string(),
+                    auth_contents: "{\"OPENAI_API_KEY\":\"sk-relay\"}\n".to_string(),
+                    ..RelayProfile::default()
+                }],
+                ..BackendSettings::default()
+            };
+
+            sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+            let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+            assert!(config.contains("https://relay.example/v1"), "{config}");
+            // 开：live 的新路径、超时、env 胜出；关：快照里的旧条目胜出（与切换路径一致）。
+            assert_eq!(config.contains("/new/my-tool"), preserve, "preserve={preserve}：{config}");
+            assert_eq!(config.contains("/old/my-tool"), !preserve, "preserve={preserve}：{config}");
+            if preserve {
+                assert!(config.contains("tool_timeout_sec = 120") && config.contains("live-token"), "{config}");
+            }
+        }
     }
 
     #[test]

@@ -2985,7 +2985,9 @@ enabled = true
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains("[mcp_servers.enabled_one]"));
     assert!(config.contains("[plugins.enabled_two]"));
-    assert!(!config.contains("[plugins.disabled_one]"));
+    // 插件停用要写成 `enabled = false`：条目被删掉，Codex 就当它没装（#3115）。
+    let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(doc["plugins"]["disabled_one"]["enabled"].as_bool(), Some(false), "{config}");
     assert!(!config.contains("[skills.disabled_skill]"));
 }
 
@@ -5091,7 +5093,74 @@ enabled = true
 
     assert!(updated.contains(r#"[plugins."github@openai-curated"]"#), "{updated}");
     assert!(updated.contains(r#"[plugins."figma@openai-curated"]"#), "{updated}");
-    assert!(!updated.contains(r#"[plugins."notion@codex-plus-market"]"#), "{updated}");
+    // 停用的插件留在 live 里写成 `enabled = false`，不是整条删掉（#3115）。
+    let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(
+        doc["plugins"]["notion@codex-plus-market"]["enabled"].as_bool(),
+        Some(false),
+        "{updated}"
+    );
+}
+
+/// #3115：在「插件配置」里停用内置插件（列表行的 Codex 标签、或编辑成 `enabled = false`）。
+/// Codex 把 config.toml 里没有条目的插件当成「未安装」，内置插件随后会被当作启用装回，
+/// 所以停用必须在 live 里落成 `enabled = false`；再启用时改回 true。
+#[test]
+fn disabling_a_live_bundled_plugin_writes_enabled_false_instead_of_removing_it() {
+    let live = r#"model = "gpt-5"
+
+[plugins."chrome@openai-bundled"]
+enabled = true
+
+[plugins."browser@openai-bundled"]
+enabled = true
+"#;
+    let disabled = r#"[plugins."chrome@openai-bundled"]
+enabled = false
+"#;
+
+    let updated = sync_live_config_context_entries(live, disabled).unwrap();
+    let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(doc["plugins"]["chrome@openai-bundled"]["enabled"].as_bool(), Some(false), "{updated}");
+    assert_eq!(doc["plugins"]["browser@openai-bundled"]["enabled"].as_bool(), Some(true), "{updated}");
+    assert_eq!(updated.matches(r#"[plugins."chrome@openai-bundled"]"#).count(), 1, "{updated}");
+
+    let enabled = r#"[plugins."chrome@openai-bundled"]
+enabled = true
+"#;
+    let updated = sync_live_config_context_entries(&updated, enabled).unwrap();
+    let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(doc["plugins"]["chrome@openai-bundled"]["enabled"].as_bool(), Some(true), "{updated}");
+}
+
+/// 切换供应商的 apply 流程同样要把停用的托管插件写成 `enabled = false`，
+/// 不能被 live 里旧的 `enabled = true` 补回，也不能整条删掉（#3115）。
+#[test]
+fn relay_apply_writes_disabled_managed_plugin_as_enabled_false() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"model = "gpt-5"
+
+[plugins."chrome@openai-bundled"]
+enabled = true
+"#,
+    )
+    .unwrap();
+    let mut profile = pure_api_profile_named("中转", r#"model = "qwen3-coder""#);
+    profile.use_common_config = true;
+
+    apply_relay_profile_with_preservation(
+        temp.path(),
+        &profile,
+        "[plugins.\"chrome@openai-bundled\"]\nenabled = false\n",
+        57321,
+        false,
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+    assert_eq!(doc["plugins"]["chrome@openai-bundled"]["enabled"].as_bool(), Some(false), "{config}");
 }
 
 #[test]

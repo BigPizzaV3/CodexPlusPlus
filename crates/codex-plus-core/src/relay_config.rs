@@ -2832,8 +2832,12 @@ const CODEX_PLUS_OWNED_MCP_SERVER_IDS: &[&str] = &[
     crate::computer_use::CODEX_SERVER_ID,
 ];
 
+/// 停用的托管条目不写进 live。只对 MCP（以及遗留的 `[skills.<id>]`）这样做：
+/// 插件不能删——Codex 把「config.toml 里没有 `[plugins."<id>"]`」当成「未安装」，
+/// 停用必须写成 `enabled = false`；删掉后内置插件（`*@openai-bundled`）会被 Codex
+/// 当作启用重新装回，界面上的停用、编辑成 `enabled = false` 也就都白做了（#3115）。
 fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
-    for table_name in ["mcp_servers", "skills", "plugins"] {
+    for table_name in ["mcp_servers", "skills"] {
         let Some(item) = table.get_mut(table_name) else {
             continue;
         };

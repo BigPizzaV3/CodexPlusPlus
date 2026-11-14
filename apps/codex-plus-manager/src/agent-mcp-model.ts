@@ -54,3 +54,22 @@ export function mergeMcpRows(codex: AgentMcpEntry[], others: Partial<Record<"cla
 export function mcpCount(rows: McpRow[], agent: McpAgentId): number {
   return rows.filter((row) => mcpOn(row, agent)).length;
 }
+
+/** 表体根上写明的启停状态：`enabled = true/false`（或旧写法 `disabled = …`）；没写返回 undefined。
+ *  只看第一个子表（`[env]` 等）之前的根字段。 */
+export function bodyEnabledState(body: string | undefined): boolean | undefined {
+  for (const line of (body ?? "").split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) break;
+    const match = /^\s*(enabled|disabled)\s*=\s*(true|false)\s*(?:#.*)?$/i.exec(line);
+    if (match) return (match[1].toLowerCase() === "enabled") === (match[2].toLowerCase() === "true");
+  }
+  return undefined;
+}
+
+/** 编辑器里用户亲手改了启停（例如插件把 `enabled = true` 改成 `false`）时返回新状态，否则 undefined。
+ *  没改启停行时保存仍沿用各 Agent 原来的启停（表体可能取自另一家停用的条目）；改了就以用户为准（#3115）。 */
+export function editedEnabledState(original: string | undefined, edited: string): boolean | undefined {
+  const next = bodyEnabledState(edited);
+  if (next === undefined) return undefined;
+  return next === (bodyEnabledState(original) ?? true) ? undefined : next;
+}
