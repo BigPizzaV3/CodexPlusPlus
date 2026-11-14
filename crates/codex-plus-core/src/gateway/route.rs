@@ -772,8 +772,9 @@ pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
     format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
 }
 
-/// 同 [`claude_desktop_alias`]，但供应商池里配置的窗口超过 Desktop 自带的 200k 硬编码时，
+/// 同 [`claude_desktop_alias`]，但供应商池里配置的窗口达到 1M（`>= 1_000_000`）时，
 /// 给 id 追加 `[1m]` 后缀：Desktop 会按 1M 注册这个模型（cc-switch 同款做法）。
+/// 中间档（256K/512K）不标：Desktop 只认 200k 与 1M 两档，误标会把窗口算错。
 /// 请求回来时后缀在 [`effective_model_detailed`] → [`claude_alias_target`] 里剥掉，路由不受影响。
 pub fn claude_desktop_model_id(
     gateway: &GatewaySettings,
@@ -783,7 +784,7 @@ pub fn claude_desktop_model_id(
 ) -> String {
     let mut id = claude_desktop_alias(model, has_effort);
     if binding.is_some_and(|binding| {
-        model_entry_window(gateway, binding, model).is_some_and(|window| window > 200_000)
+        model_entry_window(gateway, binding, model).is_some_and(|window| window >= 1_000_000)
     }) {
         id.push_str("[1m]");
     }
@@ -2166,10 +2167,11 @@ mod tests {
         );
     }
 
-    /// #3107：池里配置了超过 Desktop 自带 200k 硬编码的窗口时，Desktop 模型列表的 id 追加
-    /// `[1m]` 后缀（Desktop 按 1M 注册该模型）；带后缀的 id 请求回来仍能路由到原模型。
+    /// #3112：池里配置的窗口达到 1M（`>= 1_000_000`）时，Desktop 模型列表的 id 追加
+    /// `[1m]` 后缀（Desktop 按 1M 注册该模型）；256K/512K 中间档不标，避免误报 1M。
+    /// 带后缀的 id 请求回来仍能路由到原模型。
     #[test]
-    fn desktop_model_id_appends_1m_suffix_when_window_exceeds_200k() {
+    fn desktop_model_id_appends_1m_suffix_only_when_window_at_least_1m() {
         let mut gateway = gateway("kimi-k3");
         let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
         let alias = claude_desktop_alias("kimi-k3", false);
@@ -2189,7 +2191,30 @@ mod tests {
             "kimi-k3"
         );
 
-        // 不超过 200k 的窗口不加后缀。
+        // 中间档（256K/512K，含略低于 1M 的窗口）不标 1M：Desktop 只认 200k 与 1M 两档。
+        for window in [256_000, 512_000, 999_999] {
+            gateway.providers[1]
+                .model_windows
+                .insert("kimi-k3".into(), window);
+            let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+            assert_eq!(
+                claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false),
+                alias,
+                "window {window} 不应标 1M"
+            );
+        }
+
+        // 恰好 1M 算达标。
+        gateway.providers[1]
+            .model_windows
+            .insert("kimi-k3".into(), 1_000_000);
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        assert_eq!(
+            claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false),
+            format!("{alias}[1m]")
+        );
+
+        // 不超过 1M 阈值的常见 200k 窗口不加后缀。
         gateway.providers[1]
             .model_windows
             .insert("kimi-k3".into(), 200_000);

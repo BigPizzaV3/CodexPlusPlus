@@ -1363,6 +1363,9 @@ async fn handle_models(
                     let has_effort = binding.is_some_and(|binding| {
                         !route::model_entry_reasoning_levels(gateway, binding, model).is_empty()
                     });
+                    let window = binding
+                        .and_then(|binding| route::model_entry_window(gateway, binding, model));
+                    let is_1m = window.is_some_and(|window| window >= 1_000_000);
                     let id =
                         route::claude_desktop_model_id(gateway, binding.as_deref(), model, has_effort);
                     let mut row = json!({
@@ -1376,6 +1379,13 @@ async fn handle_models(
                     });
                     if id != *model {
                         row["description"] = json!("经 Codex++ 网关转发");
+                    }
+                    // Desktop 5.11492.2 的 1M 发现逻辑只认 /v1/models 条目上的
+                    // supports_1m 或 max_input_tokens >= 1e6（或 plain 与 [1m] 成对出现），
+                    // 单独一个 X[1m] id 不会置位 1M：窗口 >= 1M 时两个标记都补上。
+                    if is_1m {
+                        row["supports_1m"] = json!(true);
+                        row["max_input_tokens"] = json!(1_000_000);
                     }
                     row
                 })
@@ -1526,6 +1536,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #3112：Desktop 的 /v1/models 目录条目在窗口 >= 1M 时补 `supports_1m: true` 与
+    /// `max_input_tokens: 1000000`（Desktop 5.11492.2 只认条目上的这两个标记，单独
+    /// 一个 X[1m] id 不会置位 1M）；256K/512K 中间档不带这些字段、id 也不带 [1m]。
+    #[tokio::test]
+    async fn desktop_models_catalog_marks_1m_only_at_or_above_1m() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(serde_json::from_str(
+            r#"{
+                "relay": {
+                    "id": "kimi",
+                    "name": "kimi",
+                    "relayMode": "pureApi",
+                    "baseUrl": "https://kimi.test/v1",
+                    "apiKey": "sk-kimi",
+                    "modelList": "kimi-k3"
+                }
+            }"#,
+        )
+        .unwrap());
+        gateway.bindings.insert(
+            "claude-desktop".to_string(),
+            AgentBinding {
+                enabled: true,
+                model: "kimi-k3".to_string(),
+                ..AgentBinding::default()
+            },
+        );
+        let alias = route::claude_desktop_alias("kimi-k3", false);
+        let agent = ToolId::Unknown("claude-desktop".to_string());
+
+        // 中间档（512K）不标 1M：id 无后缀，条目上也没有 1M 字段。
+        gateway.providers[0]
+            .model_windows
+            .insert("kimi-k3".to_string(), 512_000);
+        let rows = models_response(&gateway, &agent, false).await["data"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let row = rows.iter().find(|row| row["id"] == alias).unwrap();
+        assert!(row.get("supports_1m").is_none());
+        assert!(row.get("max_input_tokens").is_none());
+
+        // 窗口 >= 1M：id 带 [1m] 后缀，条目带 supports_1m 与 max_input_tokens。
+        gateway.providers[0]
+            .model_windows
+            .insert("kimi-k3".to_string(), 1_000_000);
+        let rows = models_response(&gateway, &agent, false).await["data"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let row = rows
+            .iter()
+            .find(|row| row["id"] == format!("{alias}[1m]"))
+            .unwrap();
+        assert_eq!(row["supports_1m"], true);
+        assert_eq!(row["max_input_tokens"], 1_000_000);
     }
 
     #[test]
