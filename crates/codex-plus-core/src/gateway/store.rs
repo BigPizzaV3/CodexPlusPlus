@@ -664,7 +664,7 @@ pub struct GatewaySettings {
     pub favorite_models: Vec<String>,
     /// 各 Agent 的生图模型（键是 Agent id）：没有或空串是自动（见 [`crate::gateway::images`]），
     /// `off` 是关闭，其余是 `<供应商 id>/<模型>`。不放在 [`AgentBinding`] 里：界面保存绑定时整份替换。
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub image_models: BTreeMap<String, String>,
     /// 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转，见 [`Self::inline_image_urls_for`]）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1277,6 +1277,33 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("\"imageModel\""), "旧字段不再写：{text}");
         assert!(text.contains("\"imageModels\""), "{text}");
+    }
+
+    #[test]
+    fn array_shaped_top_level_image_models_does_not_break_parse() {
+        // 历史上出现过顶层 imageModels 被写成数组（值是模型名列表）的坏文件：
+        // 读侧期望 BTreeMap<String,String>，serde 报 "invalid type: sequence,
+        // expected a map"，整份 gateway.json 解析失败 → 网关 503 且无法自愈
+        // （update/save 先 read_store，读坏就写不回去）。用 lenient 反序列化兜底：
+        // 数组型 imageModels 落成空 map，文件照常解析，下次保存自动清干净。
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("gateway.json");
+        fs::write(
+            &path,
+            r#"{ "version": 4, "imageModels": ["glm-5.3", "glm-5-turbo", "glm-5.3-flash"] }"#,
+        )
+        .unwrap();
+        let store = GatewayStore::at(path.clone());
+        let settings = store.load().unwrap();
+        assert!(
+            settings.image_models.is_empty(),
+            "数组型 imageModels 被丢弃成空 map：{:?}",
+            settings.image_models
+        );
+        // 自愈：保存后坏数组不再写回（空 map 不落盘）。
+        store.save(&settings).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("[\"glm-5.3\""), "坏数组不应写回：{text}");
     }
 
     #[test]
