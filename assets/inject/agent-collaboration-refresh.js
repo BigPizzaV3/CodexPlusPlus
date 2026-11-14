@@ -4,7 +4,7 @@
   const queryKey = ["mcp", "servers", "status", "local", "full"];
   const expectedTools = [
     "list_agents", "delegate_task", "delegate_to_deepseek", "delegate_to_claude_code",
-    "delegate_to_codex", "send_task", "get_task", "wait_task", "list_tasks", "cancel_task",
+    "delegate_to_codex", "delegate_to_antigravity", "send_task", "get_task", "wait_task", "list_tasks", "cancel_task",
   ];
   const report = {
     status: "unavailable", message: "当前 Codex 尚未建立可用的本机连接，未重读配置。",

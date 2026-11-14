@@ -174,7 +174,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   </tr>
   <tr>
     <td valign="top"><strong>🖱️ Computer Use 共享</strong><br>把 Codex 的桌面与浏览器控制接给其他 Agent。</td>
-    <td valign="top"><strong>🤝 子 Agent 协作</strong><br>在 Codex 对话里委派 DeepSeek、Claude Code，可排队并发。</td>
+    <td valign="top"><strong>🤝 子 Agent 协作</strong><br>在 Codex 对话里委派 DeepSeek、Claude Code、Google Antigravity，可排队并发。</td>
   </tr>
   <tr>
     <td valign="top"><strong>💬 会话管理</strong><br>Codex、Claude Code、Claude Desktop、Grok 的会话放在一起；删除撤销、导出、<a href="docs/turn-rewind.md">轮次回退</a>。</td>

@@ -139,12 +139,43 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         anyhow::ensure!(!listener.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
     }
     if let Some(port) = owned_debug_port {
-        anyhow::ensure!(
-            crate::windows_integration::loopback_listener_process_ids(port)?.is_empty(),
-            "停止后调试端口出现其他监听者，未继续启动"
-        );
+        // 停止后复核（#3074）：短暂的暂态监听者（例如同实例正在退出的残留进程）
+        // 允许有限等待其退出；超时仍占用则失败并附上脱敏身份摘要，明确显示未启动新实例。
+        ensure_debug_port_released(
+            port,
+            crate::windows_integration::loopback_listener_summaries,
+            || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
+            Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
+        )?;
     }
     Ok(stopped)
+}
+
+/// 停止后复核调试端口：短暂的暂态监听者（例如同实例正在退出的残留进程）允许有限等待其退出；
+/// 超时仍有监听者则失败并附上脱敏身份摘要（PID 与映像文件名），明确显示旧窗口已关闭、未启动新实例，
+/// 不放宽进程归属保护，也不停止未知归属的监听者。
+#[cfg_attr(not(test), allow(dead_code))]
+fn ensure_debug_port_released(
+    port: u16,
+    mut listener_summaries: impl FnMut(u16) -> Result<Vec<String>>,
+    mut wait: impl FnMut(),
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let summaries = listener_summaries(port)?;
+        if summaries.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "停止后调试端口仍有 {} 个监听者（{}）：旧窗口已关闭，未启动新实例；请确认监听者身份或结束残留进程后重试",
+                summaries.len(),
+                summaries.join("、")
+            );
+        }
+        wait();
+    }
 }
 
 fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Result<()> {
@@ -242,7 +273,7 @@ impl HeldMainProcess for crate::windows_integration::VerifiedStopProcess {
 
     fn possible_target(&self, context: &StopContext) -> Result<Option<bool>> {
         let image = normalized_path(&self.image()?)?;
-        if !image_matches(&context.executable, &image) {
+        if !executable_matches(&context.executable, &image) {
             return Ok(Some(false));
         }
         let arguments = self.arguments()?;
@@ -424,7 +455,7 @@ fn candidate_facts<P: HeldMainProcess>(
                 "已接管的 Codex 监听进程创建身份发生变化"
             );
             let image = normalized_path(&facts.image)?;
-            if !image_matches(&context.executable, &image) {
+            if !executable_matches(&context.executable, &image) {
                 return Ok(None);
             }
             if facts.owner != context.owner {
@@ -526,7 +557,7 @@ enum TargetClassification {
 fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<TargetClassification> {
     anyhow::ensure!(facts.birth != 0, "缺少 Codex 进程创建身份");
     let image = normalized_path(&facts.image)?;
-    if !image_matches(&context.executable, &image) {
+    if !executable_matches(&context.executable, &image) {
         return Ok(TargetClassification::Irrelevant("Codex 入口（可执行文件映像）"));
     }
     if facts.owner.user_sid != context.owner.user_sid {
@@ -582,14 +613,34 @@ struct ParsedArguments {
 }
 
 fn parsed_arguments(arguments: &[String], image: &str) -> Result<ParsedArguments> {
+    parsed_arguments_resolving(arguments, image, resolved_path_text)
+}
+
+/// argv[0] 可能是 junction 别名（C 盘 WindowsApps 包目录），映像是实际卷路径（#3010）：
+/// 字面不同时再按解析后的真实路径比较一次。解析只跟随链接，不放宽「同一个可执行文件」的要求。
+fn parsed_arguments_resolving(
+    arguments: &[String],
+    image: &str,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> Result<ParsedArguments> {
     let first = arguments
         .first()
         .ok_or_else(|| anyhow::anyhow!("Codex 命令行缺少 argv[0]"))?;
+    let first = normalized_path_text(first)?;
     anyhow::ensure!(
-        normalized_path_text(first)? == image,
+        first == image
+            || resolve(&first).is_some_and(|resolved| {
+                resolved == image || resolve(image).is_some_and(|image| image == resolved)
+            }),
         "Codex argv[0] 与实际映像不一致"
     );
     parsed_launch_arguments(&arguments[1..])
+}
+
+/// 解析链接后的真实路径（已归一化）；路径不存在或无权访问时返回 None，由调用方沿用原路径。
+fn resolved_path_text(path: &str) -> Option<String> {
+    let resolved = std::fs::canonicalize(path).ok()?;
+    normalized_path_text(resolved.to_str()?).ok()
 }
 
 fn parsed_launch_arguments(arguments: &[String]) -> Result<ParsedArguments> {
@@ -682,6 +733,27 @@ fn normalized_path_text(path: &str) -> Result<String> {
         path.pop();
     }
     Ok(path)
+}
+
+/// 先按字面比较；对不上时两边都解析成真实路径再比一次（#3010）。
+/// 商店版装在非系统卷时，预期入口可能是 C 盘 WindowsApps 下的 junction 别名、映像是实际卷路径；
+/// 反过来短文件名（8.3）等写法也可能只在一侧解析。只跟随链接，仍要求是同一个可执行文件。
+fn executable_matches(expected: &str, actual: &str) -> bool {
+    executable_matches_resolving(expected, actual, resolved_path_text)
+}
+
+fn executable_matches_resolving(
+    expected: &str,
+    actual: &str,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> bool {
+    if image_matches(expected, actual) {
+        return true;
+    }
+    match (resolve(expected), resolve(actual)) {
+        (Some(expected), Some(actual)) => image_matches(&expected, &actual),
+        _ => false,
+    }
 }
 
 fn image_matches(expected: &str, actual: &str) -> bool {
@@ -805,7 +877,7 @@ mod tests {
             anyhow::ensure!(self.0.exiting_after_alive_checks.is_none(), "模拟映像已读不到");
             let facts = &self.0.facts[0];
             let image = normalized_path(&facts.image)?;
-            if !image_matches(&context.executable, &image) {
+            if !executable_matches(&context.executable, &image) {
                 return Ok(Some(false));
             }
             Ok(match parsed_arguments(&facts.arguments, &image) {
@@ -1276,6 +1348,49 @@ mod tests {
         assert!(!target_matches(&candidate, &expected).unwrap());
     }
 
+    /// #3010：预期入口和映像只要有一侧是别名，就两边都解析后再比；字面相同（如都用 8.3 短名）不依赖解析。
+    #[test]
+    fn executable_match_resolves_both_sides_only_when_literal_paths_differ() {
+        let alias = normalized_path_text(IMAGE).unwrap();
+        let real = normalized_path_text(r"D:\WindowsApps\OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe").unwrap();
+        let short = normalized_path_text(r"C:\Users\RUNNER~1\AppData\Local\Temp\x\ChatGPT.exe").unwrap();
+        let resolve = |path: &str| Some(if path == alias { real.clone() } else if path == short {
+            "c:\\users\\runneradmin\\appdata\\local\\temp\\x\\chatgpt.exe".to_string()
+        } else { path.to_string() });
+        assert!(executable_matches_resolving(&alias, &real, resolve));
+        // CI 的临时目录是 8.3 短名：预期和映像都是短名时字面就相同，不能因为只解析一侧而失配。
+        assert!(executable_matches_resolving(&short, &short, |_| None));
+        assert!(executable_matches_resolving(&short, &short, resolve));
+        // 解析不了时保持严格比较；解析到不同文件不放行。
+        assert!(!executable_matches_resolving(&alias, &real, |_| None));
+        let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
+        assert!(!executable_matches_resolving(&alias, &other, resolve));
+    }
+
+    /// #3010：商店版装在 D 盘时，argv[0] 是 C 盘 WindowsApps 下的 junction 别名，映像是 D 盘真实路径。
+    #[test]
+    fn junction_alias_argv0_matches_the_real_image_only_through_resolution() {
+        let alias = IMAGE;
+        let real = r"D:\WindowsApps\OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe";
+        let image = normalized_path_text(real).unwrap();
+        let arguments = vec![alias.to_string(), "--remote-debugging-port=9229".to_string()];
+        let alias_key = normalized_path_text(alias).unwrap();
+        let resolves_to_real = |path: &str| (path == alias_key).then(|| image.clone());
+        let parsed = parsed_arguments_resolving(&arguments, &image, resolves_to_real).unwrap();
+        assert_eq!(parsed.debug_port, Some(9229));
+        // 解析不到（路径不存在 / 无权访问）时保持原来的严格比较。
+        let error = parsed_arguments_resolving(&arguments, &image, |_| None)
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("argv[0] 与实际映像不一致"));
+        // 解析到别的文件也不能放行。
+        let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
+        let resolves_to_other = |path: &str| (path == alias_key).then(|| other.clone());
+        assert!(parsed_arguments_resolving(&arguments, &image, resolves_to_other).is_err());
+        // 字面相同仍直接通过，不依赖解析。
+        assert!(parsed_arguments_resolving(&[real.to_string()], &image, |_| None).is_ok());
+    }
+
     #[test]
     fn package_update_retains_the_same_family_and_entry_requirement() {
         let current = normalized_path_text(IMAGE).unwrap();
@@ -1574,6 +1689,61 @@ mod tests {
                 b"ok"
             );
         }
+    }
+
+    #[test]
+    fn debug_port_released_waits_for_transient_listener_then_succeeds() {
+        let reads = std::cell::Cell::new(0_u32);
+        let waits = std::cell::Cell::new(0_u32);
+        ensure_debug_port_released(
+            9222,
+            |_port| {
+                let n = reads.get();
+                reads.set(n + 1);
+                if n < 3 {
+                    Ok(vec!["pid 4242（ChatGPT.exe）".to_owned()])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            || waits.set(waits.get() + 1),
+            Duration::from_millis(100),
+        )
+        .expect("暂态监听者退出后应通过停止后复核");
+        assert!(reads.get() >= 4);
+        assert!(waits.get() >= 3);
+    }
+
+    #[test]
+    fn debug_port_released_reports_sanitized_listener_identity_on_timeout() {
+        let error = ensure_debug_port_released(
+            9222,
+            |_port| {
+                Ok(vec![
+                    "pid 4242（ChatGPT.exe）".to_owned(),
+                    "pid 512".to_owned(),
+                ])
+            },
+            || {},
+            Duration::from_millis(0),
+        )
+        .expect_err("超时仍有监听者应失败");
+        let message = error.to_string();
+        assert!(message.contains("2 个监听者"), "{message}");
+        assert!(message.contains("pid 4242（ChatGPT.exe）"), "{message}");
+        assert!(message.contains("pid 512"), "{message}");
+        assert!(message.contains("旧窗口已关闭，未启动新实例"), "{message}");
+    }
+
+    #[test]
+    fn debug_port_released_propagates_listener_query_errors() {
+        let result = ensure_debug_port_released(
+            9222,
+            |_port| Err(anyhow::anyhow!("监听者查询失败")),
+            || {},
+            Duration::from_millis(100),
+        );
+        assert!(result.is_err());
     }
 
     #[cfg(windows)]

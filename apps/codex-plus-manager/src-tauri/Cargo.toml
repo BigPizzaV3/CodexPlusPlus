@@ -14,11 +14,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "codex-plus-plus"
 path = "src/main.rs"
 
-# ClaudeMom：只做 Claude Desktop 完整功能模式的独立程序，与 Codex++ 共用全部代码（见 src/flavor.rs）。
-[[bin]]
-name = "claude-mom"
-path = "src/claude_mom.rs"
-
 [[bin]]
 name = "codex-plus-legacy-shim"
 path = "src/legacy_shim.rs"

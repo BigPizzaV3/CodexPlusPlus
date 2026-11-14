@@ -237,6 +237,49 @@ fn windows_uninstaller_restores_proxy_config_before_deleting_main_exe() {
 }
 
 #[test]
+fn windows_installer_guards_protected_dirs_and_locked_main_binary() {
+    // issue #3061：装到 Program Files 等系统目录时普通权限写不进 exe，报
+    // “无权限操作”并要求提权。目录页离开时先拦截并提示改目录。
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi")
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert!(nsi.contains("!define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryPageLeave"));
+    assert!(nsi.contains("StrCpy $4 \"$INSTDIR\" $3"));
+    assert!(nsi.contains("StrCmp \"$4\" \"$PROGRAMFILES64\" 0 protected_dir_check_next"));
+    assert!(nsi.contains("StrCmp \"$4\" \"$PROGRAMFILES\" 0 protected_dir_done"));
+    assert!(nsi.contains("Call ProtectedDirWarn"));
+    // 以管理员身份运行、确实要装到系统目录的用户仍可确认继续，不能一律拦死。
+    assert!(nsi.contains("MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2"));
+    assert!(nsi.contains("IDYES protected_dir_confirmed"));
+
+    // 覆盖升级时主 exe 可能因残留文件锁替换失败，File 直接弹系统级“无权限
+    // 操作”对话框误导用户找管理员提权；安装段必须先轮询删除并给出可重试的
+    // 明确提示。
+    let install = nsi
+        .split_once("Section \"Install\"")
+        .unwrap()
+        .1
+        .split_once("SectionEnd")
+        .unwrap()
+        .0;
+    let file_idx = install
+        .find(r#"File "${ROOT}\dist\windows\app\codex-plus-plus.exe""#)
+        .unwrap();
+    let delete_idx = install
+        .find(r#"Delete "$INSTDIR\codex-plus-plus.exe""#)
+        .unwrap();
+    assert!(delete_idx < file_idx);
+    assert!(install.contains("IntCmp $LegacyDeleteTries 20 main_binary_delete_failed"));
+    assert!(install.contains("IDRETRY main_binary_delete_retry IDCANCEL main_binary_abort"));
+    // 重试必须重新计数，否则计数越过 20 后不再弹窗、无提示地一直轮询。
+    let retry = install.split_once("main_binary_delete_retry:\n").unwrap().1;
+    let retry = retry.split_once("main_binary_abort:").unwrap().0;
+    assert!(retry.contains("StrCpy $LegacyDeleteTries 0"));
+    assert!(retry.contains("Goto main_binary_delete_loop"));
+    assert!(install.contains("main_binary_abort:\n    Abort"));
+}
+
+#[test]
 fn macos_dmg_includes_one_visible_app_and_hidden_legacy_updater() {
     let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh").unwrap();
     assert!(script.contains("ln -s /Applications \"$STAGE/Applications\""));

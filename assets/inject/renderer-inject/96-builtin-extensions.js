@@ -274,7 +274,8 @@
       installThreadScrollNavigationCapture();
       installThreadScrollUserIntentCapture();
       installThreadScrollRouteHooks();
-      scheduleThreadScrollSync(true);
+      // 可见性恢复和普通 DOM 补扫不是导航，不能重新锁住旧的阅读位置。
+      scheduleThreadScrollSync();
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
     let enabled = threadScrollRestoreEnabled();

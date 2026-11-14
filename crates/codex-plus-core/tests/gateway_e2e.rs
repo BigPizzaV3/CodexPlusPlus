@@ -309,7 +309,13 @@ async fn gateway_end_to_end() {
         );
         std::env::set_var("CODEX_HOME", &codex_home);
         std::env::set_var("CODEX_SQLITE_HOME", &sqlite_home);
+        std::env::set_var("APPDATA", state_dir.path());
+        std::env::set_var("XDG_CONFIG_HOME", state_dir.path());
     }
+    assert_eq!(
+        codex_plus_core::user_scripts::default_user_scripts_config_dir(),
+        state_dir.path().join("Codex++"),
+    );
     native_auth_compatibility(&codex_home).await;
     let port = {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1757,6 +1763,51 @@ async fn gateway_end_to_end() {
         serde_json::from_str::<Value>(&text).unwrap()["type"],
         "error"
     );
+
+    // #3072: an unavailable, previously advertised model must not reach the default upstream.
+    let (added_base, added_seen) = mock_upstream(vec![(
+        200, "text/event-stream", chat_sse("added model reply"),
+    )]).await;
+    gateway.providers.extend(providers(vec![relay(
+        "added", &added_base, "synthetic-added", RelayProtocol::ChatCompletions, "new-model",
+    )]));
+    let token = "cpx-gw-codex-e2e";
+    let mut codex_binding = binding("deepseek-v4-pro", token);
+    codex_binding.extra_models.push("added/private-model".into());
+    gateway.bindings.insert("codex".into(), codex_binding);
+    save(&gateway);
+    let store = GatewayStore::default();
+    let request = |model| json!({"model":model,"stream":true,"input":[{"role":"user","content":"test"}]});
+    let path = "/gw/codex/v1/responses";
+    assert_eq!(post(port, path, token, &request("new-model")).await.0, 200);
+    assert_eq!(post(port, path, token, &request("added/private-model")).await.0, 200);
+    assert_eq!(added_seen.lock().unwrap().last().unwrap().1["model"], "private-model");
+    let generic_count = generic_seen.lock().unwrap().len();
+    let mut added_count = 2;
+    for delete in [false, true] {
+        if delete {
+            codex_plus_core::gateway::apply::delete_provider(&store, "added").unwrap();
+        } else {
+            codex_plus_core::gateway::apply::set_provider_enabled(&store, "added", false).unwrap();
+        }
+        for model in ["new-model", "added/private-model"] {
+            let (status, text) = post(port, path, token, &request(model)).await;
+            assert_eq!(status, 400, "{model}: {text}");
+            let error: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(error["error"]["code"], "model_not_found");
+            assert!(text.contains("请重新选择模型"), "{model}: {text}");
+        }
+        assert_eq!(generic_seen.lock().unwrap().len(), generic_count);
+        assert_eq!(added_seen.lock().unwrap().len(), added_count);
+        if !delete {
+            codex_plus_core::gateway::apply::set_provider_enabled(&store, "added", true).unwrap();
+            assert_eq!(post(port, path, token, &request("new-model")).await.0, 200);
+            added_count += 1;
+            assert_eq!(added_seen.lock().unwrap().len(), added_count);
+        }
+    }
+    assert_eq!(post(port, path, token, &request("unrecognized-model")).await.0, 200);
+    assert_eq!(generic_seen.lock().unwrap().last().unwrap().1["model"], "deepseek-v4-pro");
 
     codex_plus_core::resident_helper::stop_resident_helper();
 }

@@ -432,19 +432,20 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "37";
+  const codexAppServerModelRequestPatchVersion = "48";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
   const codexPluginMarketplaceUnlockVersion = "17";
   const codexThreadScrollMaxEntries = 120;
+  const codexThreadScrollAnchorBlocks = "p, pre, li, h1, h2, h3, h4, h5, h6, table, blockquote";
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
   const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
   const codexThreadScrollUserIntentWindowMs = 1200;
   const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
-  const codexThreadScrollRouteHooksVersion = "dispatcher:2";
-  const codexThreadScrollListenerVersion = "4";
+  const codexThreadScrollRouteHooksVersion = "dispatcher:3";
+  const codexThreadScrollListenerVersion = "5";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
@@ -481,6 +482,76 @@
     conversationViewContentAnchor: "[data-thread-user-message-navigation-content]",
     conversationViewFooter: "[data-thread-scroll-footer]",
   };
+
+  // #3036 / #3078：经 Codex++ 启动后新建对话报「Maximum call stack size exceeded」。页面里的异常不进日志，
+  // 定位不到是哪一段在递归。这里只做记录：发往 app-server 的几处包装捕获到栈溢出时，把栈的前几十行写进
+  // codex-plus.log（renderer stack_overflow），然后原样抛出；返回值、this 和原函数上的标记属性都不变。
+  const codexPlusStackOverflowSeen = window.__codexPlusStackOverflowSeen || (window.__codexPlusStackOverflowSeen = new Set());
+
+  function codexPlusIsStackOverflow(error) {
+    return error?.name === "RangeError" && /maximum call stack/i.test(String(error?.message || ""));
+  }
+
+  function codexPlusNoteStackOverflow(where, method, error) {
+    try {
+      if (!codexPlusIsStackOverflow(error)) return;
+      const key = `${where}|${method || ""}`;
+      // 每个入口只记一次，同一页面最多 16 条，避免反复重试刷屏。
+      if (codexPlusStackOverflowSeen.has(key) || codexPlusStackOverflowSeen.size >= 16) return;
+      codexPlusStackOverflowSeen.add(key);
+      sendCodexPlusDiagnostic("stack_overflow", {
+        where,
+        method: String(method || "").slice(0, 120),
+        stack: String(error?.stack || "").split("\n").slice(0, 40).join("\n").slice(0, 6000),
+      });
+    } catch (_) {}
+  }
+
+  /** 给 target[key] 上已经装好的函数套一层只记录栈溢出的外壳；已经套过就不再套。 */
+  function codexPlusTraceStackOverflow(target, key, where) {
+    try {
+      const fn = target?.[key];
+      if (typeof fn !== "function" || fn.__codexPlusStackOverflowTraced) return false;
+      const traced = function codexPlusStackOverflowTraced(...args) {
+        const method = typeof args[0] === "string" ? args[0] : "";
+        let result;
+        try {
+          result = fn.apply(this, args);
+        } catch (error) {
+          codexPlusNoteStackOverflow(where, method, error);
+          throw error;
+        }
+        // 只旁听失败，不替换返回的 Promise（调用方可能依赖它本身）。
+        if (result && typeof result.then === "function") {
+          try {
+            result.then(undefined, (error) => codexPlusNoteStackOverflow(where, method, error));
+          } catch (_) {}
+        }
+        return result;
+      };
+      Object.assign(traced, fn);
+      traced.__codexPlusStackOverflowTraced = fn;
+      target[key] = traced;
+      // 不可写的对象在非严格模式下赋值会静默失败，回读确认。
+      return target[key] === traced;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 没被 Codex 自己接住的栈溢出（事件回调、未处理的 Promise）也记一笔。
+  try {
+    if (window.__codexPlusStackOverflowListeners) {
+      window.removeEventListener("error", window.__codexPlusStackOverflowListeners.error, true);
+      window.removeEventListener("unhandledrejection", window.__codexPlusStackOverflowListeners.rejection, true);
+    }
+    window.__codexPlusStackOverflowListeners = {
+      error: (event) => codexPlusNoteStackOverflow("window.error", "", event?.error),
+      rejection: (event) => codexPlusNoteStackOverflow("unhandledrejection", "", event?.reason),
+    };
+    window.addEventListener("error", window.__codexPlusStackOverflowListeners.error, true);
+    window.addEventListener("unhandledrejection", window.__codexPlusStackOverflowListeners.rejection, true);
+  } catch (_) {}
   /**
    * 拓展注册中心。
    *
@@ -4225,7 +4296,14 @@
     return nextParams;
   }
 
-  async function prepareCodexPureApiResume(method, params, hostId, refreshFailed = false, sendRequest) {
+  function warnCodexActiveOldProvider() {
+    sendCodexPlusDiagnostic("thread_active_old_provider", {});
+    if (typeof showToast === "function") {
+      showToast("当前会话可能仍使用旧供应商连接，切换尚未确认；继续操作可能沿用旧连接。", { type: "warn" });
+    }
+  }
+
+  async function prepareCodexPureApiResume(method, params, hostId, refreshFailed = false, sendRequest, internalResume, nativeClient) {
     if (hostId !== "local") return params;
     if ([params?.hostId, params?.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
     if (method === "send-cli-request-for-host" && params?.method) {
@@ -4240,97 +4318,422 @@
         sendRequest && ((nestedMethod, nestedParams, options) => {
           assertEnvelope();
           return sendRequest(method, { ...params, method: nestedMethod, params: nestedParams }, options);
-        }));
+        }), internalResume, nativeClient);
       assertEnvelope();
       return nested === params.params ? params : { ...params, params: nested };
     }
-    if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
-        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
+    if (!["thread/resume", "turn/start"].includes(method)
+        || !params || typeof params !== "object" || Array.isArray(params)) {
       return params;
     }
-    const specified = (value) => typeof value === "string" && !!value.trim();
-    const target = codexRemoteSessionTargetProvider();
-    if (target === "openai") return params;
-    const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
-    // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
-    if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
-    if (specified(params.config?.model)) {
-      return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
+    if (method === "thread/resume" && !internalResume
+        && codexRemoteSessionActiveProfile()?.relayMode === "pureApi") {
+      if (codexPlusBackendSettings.providerSyncEnabled) {
+        const prepared = await prepareCodexThreadProviderWithTimeout(method, params, hostId, sendRequest, internalResume);
+        if (prepared === false) return params;
+      }
+      if (!params.threadId) return params;
+      const specified = (value) => typeof value === "string" && !!value.trim();
+      const target = codexRemoteSessionTargetProvider();
+      if (target === "openai") return params;
+      const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
+      if (specified(params.model) || (requestedProvider && requestedProvider !== "openai"
+          && requestedProvider !== "codex_plus_managed" && requestedProvider !== target)) return params;
+      if (specified(params.config?.model)) {
+        return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
+      }
+      if (!target) throw new Error("当前纯 API 供应商不可用");
+      const requestSignature = () => JSON.stringify([params.threadId,
+        ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
+        params.config]);
+      const requestBefore = requestSignature();
+      const signature = () => {
+        const profile = codexRemoteSessionActiveProfile();
+        return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
+      };
+      const before = signature();
+      const assertUnchanged = () => {
+        if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+        if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
+      };
+      let metadata;
+      let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+      if (!fallbackReason) {
+        try {
+          metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+            { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+        } catch {
+          fallbackReason = "metadata_unavailable";
+        }
+      }
+      assertUnchanged();
+      if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
+          || typeof metadata.model !== "string" || !metadata.model.trim()
+          || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
+          || (metadata.reasoningEffort !== null
+            && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
+        fallbackReason ||= "metadata_unavailable";
+      }
+      if (sendRequest) {
+        let timer;
+        let read;
+        try {
+          read = await Promise.race([
+            sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
+              { timeoutMs: codexAppServerPreparationTimeoutMs }),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
+          ]);
+        } catch {
+          fallbackReason = "thread_state_unavailable";
+        } finally { clearTimeout(timer); }
+        assertUnchanged();
+        const status = read?.thread?.status?.type;
+        if (!["idle", "notLoaded", "active"].includes(status)) {
+          fallbackReason = "thread_state_unavailable";
+        } else if (status === "active") {
+          if (read.thread.modelProvider !== target) warnCodexActiveOldProvider();
+          return params;
+        } else if (status === "idle" && read.thread.modelProvider === target) {
+          return params;
+        } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
+          if (status === "idle" && read.thread.modelProvider === "codex_plus_managed") {
+            await prepareCodexThreadProviderWithTimeout(method, { ...params, modelProvider: target },
+              hostId, sendRequest, internalResume, true);
+            assertUnchanged();
+          } else {
+            throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+          }
+        }
+      }
+      const config = { ...(params.config || {}) };
+      delete config.model;
+      if (config.model_provider === "codex_plus_managed") delete config.model_provider;
+      delete config["model_providers.codex_plus_managed"];
+      if (!specified(config.model_reasoning_effort)) {
+        delete config.model_reasoning_effort;
+        if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+      }
+      const next = { ...params, modelProvider: target, config };
+      if (fallbackReason) {
+        delete next.model;
+        sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+      } else {
+        next.model = metadata.model;
+      }
+      delete next.model_provider;
+      (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
+      return next;
     }
-    if (!target) throw new Error("当前纯 API 供应商不可用");
-    const requestSignature = () => JSON.stringify([params.threadId,
-      ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
-      params.config]);
-    const requestBefore = requestSignature();
-    const signature = () => {
-      const profile = codexRemoteSessionActiveProfile();
-      return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
-    };
-    const before = signature();
-    const assertUnchanged = () => {
-      if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
-      if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
-    };
-    let metadata;
-    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
-    if (!fallbackReason) {
+    let knownManaged = (params.modelProvider ?? params.model_provider ?? params.config?.model_provider) === "codex_plus_managed"
+      || !!window.__codexPlusManagedSessionStarts?.has(params.threadId)
+      || codexThreadProviderPreparations.get(params.threadId)?.preparedProvider === "codex_plus_managed";
+    if (method === "turn/start" && !codexPlusBackendSettings.providerSyncEnabled && !knownManaged
+        && typeof nativeClient?.getConversation === "function") {
       try {
-        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
-          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
-      } catch {
-        fallbackReason = "metadata_unavailable";
+        knownManaged = (await nativeClient.getConversation(params.threadId))?.modelProvider === "codex_plus_managed";
+      } catch (error) {
+        sendCodexPlusDiagnostic("thread_provider_cache_read_failed", { errorMessage: String(error?.message || error) });
       }
     }
-    assertUnchanged();
-    if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
-        || typeof metadata.model !== "string" || !metadata.model.trim()
-        || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
-        || (metadata.reasoningEffort !== null
-          && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
-      fallbackReason ||= "metadata_unavailable";
+    await prepareCodexThreadProviderWithTimeout(method, params, hostId, sendRequest, internalResume, knownManaged);
+    return params;
+  }
+
+  async function prepareCodexThreadProviderWithTimeout(method, params, hostId, sendRequest, internalResume, knownManaged = false) {
+    const controller = new AbortController();
+    let timer;
+    try {
+      return await Promise.race([
+        (async () => {
+          return await prepareCodexThreadProviderResume(params, hostId, sendRequest, null, internalResume,
+            controller.signal, method === "turn/start", knownManaged);
+        })(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const error = new Error("会话准备超时，请重试");
+            controller.abort(error);
+            reject(error);
+          }, codexThreadProviderPreparationTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
-    if (sendRequest) {
-      // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
-      let timer;
+  }
+
+  const codexThreadProviderPreparations = new Map();
+  const codexThreadProviderPreparationTimeoutMs = 120000;
+  // 卸载确认的轮询上限：供应商切换后旧连接的卸载是异步落地的，给单次回读留出等待窗口。
+  // 顶层不读 window：分片在 Node 测试沙盒里直接求值，window 在调用时才存在。
+  const unloadWaitOptions = () => ({
+    timeoutMs: window.__codexPlusUnloadWaitTimeoutMs ?? 15000,
+    pollMs: window.__codexPlusUnloadWaitPollMs ?? 400,
+  });
+  let codexThreadProviderResumeSequence = 0;
+
+  function codexThreadProviderResumeParams(threadId, provider, params, thread) {
+    const settings = params.collaborationMode?.settings;
+    const model = settings?.model ?? params.model ?? thread.model ?? null;
+    const effort = settings && Object.prototype.hasOwnProperty.call(settings, "reasoning_effort")
+      ? settings.reasoning_effort
+      : params.reasoningEffort ?? params.effort ?? params.config?.model_reasoning_effort ?? thread.reasoningEffort ?? null;
+    return {
+      threadId, modelProvider: provider, model,
+      config: effort === null ? null : { model_reasoning_effort: effort },
+    };
+  }
+
+  async function prepareCodexThreadProviderResume(params, hostId, sendRequest, client, internalResume, signal, resumeBeforeTurn = false, knownManaged = false) {
+    if (hostId !== "local"
+        || [params?.hostId, params?.host_id].some((host) => typeof host === "string" && host !== "local")) return null;
+    const threadId = params.threadId || params.conversationId;
+    if (!threadId) return null; // 原生也支持按 path 恢复；没有 thread id 时不改写。
+    signal?.throwIfAborted();
+    const gatewayState = codexGatewayPreparations.get(threadId);
+    if (gatewayState?.resuming && gatewayState.resuming === internalResume) return null;
+    if (gatewayState?.tail) throw new Error("此会话正在检查连接，请稍后重新发送");
+    let state = codexThreadProviderPreparations.get(threadId);
+    // 显式恢复经过同一 RPC 拦截器；放行本次正在建立的同一连接，避免等待自身。
+    if (state?.resuming && state.resuming === internalResume) return null;
+    if (!codexPlusBackendSettings.providerSyncEnabled
+        && !knownManaged && !state?.tail
+        && !(typeof codexManagedSessionConnection === "function" && codexManagedSessionConnection())) return null;
+    if (!state) codexThreadProviderPreparations.set(threadId, state = { pending: null, tail: null });
+    const previous = state.tail;
+    let release;
+    const tail = state.tail = new Promise((resolve) => { release = resolve; });
+    const unlock = () => {
+      release();
+      if (state.tail === tail) {
+        if (!state.pending && !state.preparedProvider) codexThreadProviderPreparations.delete(threadId);
+        else state.tail = null;
+      }
+    };
+    let timer;
+    let onAbort;
+    try {
+      if (previous) {
+        const waits = [previous, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("等待会话供应商准备超时，请重试")),
+            codexThreadProviderPreparationTimeoutMs);
+        })];
+        if (signal) waits.push(new Promise((_, reject) => {
+          onAbort = () => reject(signal.reason);
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        }));
+        await Promise.race(waits);
+      }
+      signal?.throwIfAborted();
+    } catch (error) {
+      // 等前一持有者真正结束后再交棒，超时的等待者不能解除它的锁。
+      if (previous) void previous.then(unlock);
+      else unlock();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
+    try {
+      const managed = typeof codexManagedSessionConnection === "function" ? codexManagedSessionConnection() : null;
+      if (codexRemoteSessionActiveProfile()?.relayMode === "aggregate" && !managed) {
+        if (state.pending) throw new Error("聚合供应商连接不可用，请重新选择供应商后重试");
+        sendCodexPlusDiagnostic("thread_provider_aggregate_connection_unavailable", {});
+        if (typeof showToast === "function") {
+          showToast("聚合供应商连接暂不可用，本次操作将交由原生会话处理，可能仍使用旧供应商。", { type: "warn" });
+        }
+        return false;
+      }
+      if (!codexPlusBackendSettings.providerSyncEnabled && !managed && !knownManaged) return null;
+      const signature = () => {
+        const profile = codexRemoteSessionActiveProfile();
+        return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents,
+          profile?.relayMode === "aggregate" ? codexPlusBackendSettings.managedSessionConnection?.baseUrl : null]);
+      };
+      const before = signature();
+      const options = { timeoutMs: codexAppServerPreparationTimeoutMs };
       let read;
       try {
-        read = await Promise.race([
-          sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
-            { timeoutMs: codexAppServerPreparationTimeoutMs }),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
-        ]);
-      } catch {
-        fallbackReason = "thread_state_unavailable";
-      } finally { clearTimeout(timer); }
-      assertUnchanged();
-      const status = read?.thread?.status?.type;
-      if (!["idle", "notLoaded", "active"].includes(status)) {
-        fallbackReason = "thread_state_unavailable";
-      } else if (status !== "notLoaded") {
-        if (read.thread.modelProvider !== target) {
-          throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
-        }
-        return params;
+        read = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+        if (state.pending) throw error;
+        sendCodexPlusDiagnostic("thread_provider_preflight_read_failed", {
+          method: "thread/read", errorMessage: String(error?.message || error),
+        });
+        return false;
       }
+      signal?.throwIfAborted();
+      if (read.thread.ephemeral === true) {
+        const target = managed?.provider ?? codexRemoteSessionTargetProvider();
+        if (target && read.thread.modelProvider && read.thread.modelProvider !== target) warnCodexActiveOldProvider();
+        return null;
+      }
+      const cached = client ? await client.getConversation(threadId) : null;
+      signal?.throwIfAborted();
+      if (read.thread.status.type === "active" || cached?.threadRuntimeStatus?.type === "active") {
+        const target = managed?.provider ?? codexRemoteSessionTargetProvider();
+        const connected = state.client === client && state.preparedProvider
+          ? state.preparedProvider : cached?.modelProvider ?? read.thread.modelProvider;
+        if (target && connected && connected !== target) warnCodexActiveOldProvider();
+        return null;
+      }
+      let config;
+      try {
+        config = await sendRequest("config/read", {
+          cwd: params.cwd ?? read.thread.cwd ?? null, includeLayers: false,
+        }, options);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+        if (state.pending) throw error;
+        sendCodexPlusDiagnostic("thread_provider_preflight_read_failed", {
+          method: "config/read", errorMessage: String(error?.message || error),
+        });
+        return false;
+      }
+      signal?.throwIfAborted();
+      if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+      const sourceProvider = read.thread.modelProvider;
+      const requestedProvider = params.modelProvider ?? params.model_provider ?? params.config?.model_provider;
+      const targetProvider = managed?.provider ?? (requestedProvider === "codex_plus_managed"
+        ? codexRemoteSessionTargetProvider() || config.config.model_provider || "openai"
+        : requestedProvider ?? config.config.model_provider ?? "openai");
+      if (targetProvider === "codex_plus_managed" && !managed) return null;
+      if (read.thread.status.type === "notLoaded") state.preparedProvider = null;
+      // 原生恢复不会刷新缓存的 provider 标签；只信任本层实际恢复响应确认过的连接。
+      const runtimeProvider = state.client === client && state.preparedProvider
+        ? state.preparedProvider
+        : cached?.resumeState === "resumed" ? cached.modelProvider : sourceProvider;
+      const loaded = read.thread.status.type !== "notLoaded" || cached?.resumeState === "resumed";
+      if (typeof sourceProvider !== "string" || !sourceProvider
+          || typeof targetProvider !== "string" || !targetProvider) return null;
+      const needsIndex = codexPlusBackendSettings.providerSyncEnabled && sourceProvider !== targetProvider
+        && sourceProvider !== "codex_plus_managed" && targetProvider !== "codex_plus_managed";
+      if (!codexPlusBackendSettings.providerSyncEnabled && !managed
+          && sourceProvider !== "codex_plus_managed" && runtimeProvider !== "codex_plus_managed") return null;
+      if (!needsIndex && runtimeProvider === targetProvider && !state.pending) return null;
+      if (window.__codexPlusContextRefreshPending?.has(threadId)
+          || window.__codexPlusConnectionRecoveryPending?.has(threadId)) {
+        throw new Error("此会话正在检查连接，请稍后重新发送");
+      }
+      const gatewayEnabled = codexGatewayRecoveryEnabled();
+      if (resumeBeforeTurn && ((managed && sourceProvider !== "codex_plus_managed") || (gatewayEnabled && loaded))) {
+        let turns;
+        try {
+          turns = await sendRequest("thread/turns/list", { threadId, limit: 1, itemsView: "notLoaded" }, options);
+          signal?.throwIfAborted();
+        } catch (error) {
+          if (String(error?.message || error).includes("is not materialized yet")) return null;
+          throw error;
+        }
+        if (turns.data.length === 0) return null;
+      }
+      if (loaded) {
+        state.preparedProvider = null;
+        state.client = null;
+        const current = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+        signal?.throwIfAborted();
+        if (current.thread.status.type === "active") {
+          if (runtimeProvider !== targetProvider) warnCodexActiveOldProvider();
+          return null;
+        }
+      }
+      if (!codexPlusBackendSettings.providerSyncEnabled && sourceProvider !== targetProvider
+          && sourceProvider !== "codex_plus_managed" && targetProvider !== "codex_plus_managed") {
+        throw new Error("会话供应商与当前网关不一致，请开启供应商同步后重试");
+      }
+      if (needsIndex) {
+        const result = await postJson("/thread-provider/prepare", {
+          host_id: "local", thread_id: threadId, source_provider: sourceProvider, target_provider: targetProvider,
+        });
+        if (result?.status !== "ok") throw new Error(result?.message || result?.error || "会话供应商准备失败");
+        state.pending = { sourceProvider: runtimeProvider, targetProvider };
+        if (result.backup_retention_warnings?.length) {
+          sendCodexPlusDiagnostic("thread_provider_backup_retention_warning", {
+            warnings: result.backup_retention_warnings,
+          });
+        }
+        signal?.throwIfAborted();
+      }
+      if (state.pending?.targetProvider !== targetProvider) {
+        state.pending = { sourceProvider: runtimeProvider, targetProvider };
+      }
+      if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+      if (loaded) {
+        const current = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+        signal?.throwIfAborted();
+        if (current.thread.status.type === "active") {
+          if (runtimeProvider !== targetProvider) warnCodexActiveOldProvider();
+          return null;
+        }
+        if (client) {
+          if (cached?.resumeState !== "needs_resume") {
+            await client.unsubscribeInactiveConversation(threadId);
+            signal?.throwIfAborted();
+          } else if (current.thread.status.type !== "notLoaded") {
+            // 恢复期间再次接入时，宿主缓存仍是 needs_resume，但服务端已重新加载。
+            await sendRequest("thread/unsubscribe", { threadId }, options);
+            signal?.throwIfAborted();
+          }
+        } else {
+          await sendRequest("thread/unsubscribe", { threadId }, options);
+          signal?.throwIfAborted();
+        }
+        // 卸载异步落地：有界轮询确认后再继续，避免单次回读竞态把正常卸载误判为失败。
+        const unloadDeadline = Date.now() + unloadWaitOptions().timeoutMs;
+        for (;;) {
+          const after = client
+            ? await client.getConversation(threadId)
+            : await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+          signal?.throwIfAborted();
+          if (client ? after?.resumeState === "needs_resume" : after.thread.status.type === "notLoaded") break;
+          if (Date.now() >= unloadDeadline) throw new Error("旧供应商会话尚未卸载，请稍后重试");
+          await new Promise((resolve) => setTimeout(resolve, unloadWaitOptions().pollMs));
+          signal?.throwIfAborted();
+        }
+      }
+      if (client ? loaded || managed || sourceProvider === "codex_plus_managed" : resumeBeforeTurn) {
+        const current = client ? read : await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+        signal?.throwIfAborted();
+        // 供应商恢复也会加载当前网关连接；只登记本次恢复前后都确认的代次。
+        const gateway = gatewayEnabled ? await readCodexGatewayGenerationForRecovery() : null;
+        signal?.throwIfAborted();
+        let resumeParams = codexThreadProviderResumeParams(threadId, targetProvider, params, current.thread);
+        if (managed) resumeParams = applyCodexManagedSessionConnection("thread/resume", resumeParams, hostId);
+        state.resuming = ++codexThreadProviderResumeSequence;
+        try {
+          const resumed = await sendRequest("thread/resume", resumeParams,
+            { ...options, __codexPlusProviderResume: state.resuming });
+          signal?.throwIfAborted();
+          if (resumed.modelProvider !== targetProvider) throw new Error("会话尚未切换到目标供应商，请重试");
+          if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+          state.client = client;
+          state.preparedProvider = targetProvider;
+        } finally {
+          state.resuming = null;
+        }
+        if (gateway?.active) {
+          const currentGateway = await readCodexGatewayGenerationForRecovery();
+          signal?.throwIfAborted();
+          if (currentGateway && (!currentGateway.active || currentGateway.generation !== gateway.generation)) {
+            throw new Error("网关连接已变化，请重新发送");
+          }
+          if (currentGateway) {
+            const connection = codexGatewayPreparations.get(threadId) || { tail: null };
+            connection.generation = gateway.generation;
+            codexGatewayPreparations.set(threadId, connection);
+          }
+        }
+      }
+      const prepared = state.pending;
+      state.pending = null;
+      // 宿主使用原来的 resume 候选恢复；旧客户端也保留原始 model/effort 参数。
+      return prepared;
+    } finally {
+      unlock();
     }
-    const config = { ...(params.config || {}) };
-    delete config.model;
-    // 降级时不带入部分历史设置，显式请求档位始终优先。
-    if (!specified(config.model_reasoning_effort)) {
-      delete config.model_reasoning_effort;
-      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
-    }
-    const next = { ...params, modelProvider: target, config };
-    if (fallbackReason) {
-      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
-      delete next.model;
-      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
-    } else {
-      next.model = metadata.model;
-    }
-    delete next.model_provider;
-    (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
-    return next;
   }
 
   function verifyCodexPureApiResumeResult(method, params, result, hostId) {
@@ -4346,6 +4749,270 @@
     if (modelMismatch || providerMismatch || reasoningEffortMismatch) {
       sendCodexPlusDiagnostic("pure_api_resume_result_mismatch",
         { modelMismatch, providerMismatch, reasoningEffortMismatch });
+    }
+  }
+
+  const codexGatewayPreparations = new Map();
+  let codexGatewayResumeSequence = 0;
+  const codexGatewayPreparationTimeoutMs = 120000;
+  let codexGatewayBaselinePromise = null;
+
+  function codexGatewayRecoveryEnabled() {
+    return codexRemoteSessionActiveProfile()?.id === "codex-plus-gateway";
+  }
+
+  async function codexGatewayConnectionGeneration() {
+    const connection = await readCodexAppServerPreparation("/gateway/connection-generation", {});
+    if (connection?.status !== "ok" || typeof connection.active !== "boolean"
+        || typeof connection.generation !== "string") {
+      throw new Error(connection?.message || "读取网关连接状态失败，请稍后重试");
+    }
+    return connection;
+  }
+
+  async function readCodexGatewayGenerationForRecovery() {
+    try {
+      return await codexGatewayConnectionGeneration();
+    } catch (error) {
+      sendCodexPlusDiagnostic("gateway_generation_read_failed", { errorMessage: String(error?.message || error) });
+      return null;
+    }
+  }
+
+  function initializeCodexGatewayBaseline(active = true) {
+    if (!active) return codexGatewayBaselinePromise ||= Promise.resolve({ active: false, generation: "" });
+    return codexGatewayBaselinePromise ||= codexGatewayConnectionGeneration().catch((error) => {
+      sendCodexPlusDiagnostic("gateway_baseline_read_failed", { errorMessage: String(error?.message || error) });
+      return null;
+    });
+  }
+
+  function noteCodexGatewayThreadStart(method, params, result, hostId, generation) {
+    if (hostId !== "local" || typeof generation !== "string" || !codexGatewayRecoveryEnabled()) return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return;
+      return noteCodexGatewayThreadStart(String(params.method), params.params, result, hostId, generation);
+    }
+    if (method !== "thread/start" || !result?.thread?.id) return;
+    if (!codexGatewayPreparations.has(result.thread.id)) {
+      codexGatewayPreparations.set(result.thread.id, { generation, tail: null });
+    }
+  }
+
+  async function prepareCodexGatewayReconnect(method, params, hostId, sendRequest, client, outerSignal) {
+    if (hostId !== "local" || !codexGatewayRecoveryEnabled()) return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return;
+      return prepareCodexGatewayReconnect(String(params.method), params.params, hostId,
+        (nestedMethod, nestedParams, options) => sendRequest(method,
+          { ...params, method: nestedMethod, params: nestedParams }, options), client, outerSignal);
+    }
+    if (method === "thread/start") {
+      const gateway = await readCodexGatewayGenerationForRecovery();
+      return gateway?.active ? gateway.generation : undefined;
+    }
+    if (method !== "turn/start" || !params?.threadId) return;
+    const threadId = params.threadId;
+    if (typeof codexThreadProviderPreparations !== "undefined" && codexThreadProviderPreparations.get(threadId)?.tail) {
+      throw new Error("此会话正在检查连接，请稍后重新发送");
+    }
+    let state = codexGatewayPreparations.get(threadId);
+    if (!state) codexGatewayPreparations.set(threadId, state = { generation: undefined, tail: null });
+    const previous = state.tail;
+    let release;
+    const tail = state.tail = new Promise((resolve) => { release = resolve; });
+    const controller = new AbortController();
+    const signal = outerSignal ? AbortSignal.any([outerSignal, controller.signal]) : controller.signal;
+    let timer;
+    const work = (async () => {
+      let mayContinueNatively = true;
+      try {
+        await previous;
+        signal.throwIfAborted();
+        if (state.ephemeral) return;
+        const baseline = await initializeCodexGatewayBaseline();
+        signal.throwIfAborted();
+        const gateway = await readCodexGatewayGenerationForRecovery();
+        signal.throwIfAborted();
+        if (!gateway) return;
+        if (state.generation === undefined) state.generation = baseline?.generation ?? gateway.generation;
+        if (!gateway.active || state.generation === gateway.generation) return;
+        const pending = window.__codexPlusConnectionRecoveryPending ||= new Set();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        const options = { timeoutMs: codexAppServerPreparationTimeoutMs };
+        const read = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+        signal.throwIfAborted();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        if (read.thread.ephemeral === true) {
+          state.ephemeral = true;
+          return;
+        }
+        const cached = client ? await client.getConversation(threadId) : null;
+        signal.throwIfAborted();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        if (read.thread.status.type === "active"
+            || cached?.threadRuntimeStatus?.type === "active") {
+          sendCodexPlusDiagnostic("gateway_recovery_active", {});
+          if (typeof showToast === "function") {
+            showToast("网关连接已变化；活动回复会继续，此时发送可能仍使用旧连接。", { type: "warn" });
+          }
+          return;
+        }
+        const config = await sendRequest("config/read", {
+          cwd: params.cwd ?? read.thread.cwd ?? null, includeLayers: false,
+        }, options);
+        signal.throwIfAborted();
+        if (window.__codexPlusContextRefreshPending?.has(threadId) || pending.has(threadId)) {
+          mayContinueNatively = false;
+          throw new Error("此会话正在检查连接，请稍后重新发送");
+        }
+        const provider = config.config.model_provider ?? "openai";
+        if (read.thread.modelProvider !== provider) {
+          sendCodexPlusDiagnostic("gateway_recovery_provider_mismatch", {});
+          if (typeof showToast === "function") {
+            showToast("当前会话供应商与网关不一致，消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+          }
+          return;
+        }
+        const loaded = read.thread.status.type !== "notLoaded" || cached?.resumeState === "resumed";
+        pending.add(threadId);
+        let subscription;
+        let handle;
+        try {
+          if (loaded) {
+            let turns;
+            try {
+              turns = await sendRequest("thread/turns/list", { threadId, limit: 1, itemsView: "notLoaded" }, options);
+            } catch (error) {
+              if (String(error?.message || error).includes("is not materialized yet")) return;
+              throw error;
+            }
+            signal.throwIfAborted();
+            if (turns.data.length === 0) return;
+          }
+          const settings = params.collaborationMode?.settings;
+          const effort = settings && Object.prototype.hasOwnProperty.call(settings, "reasoning_effort")
+            ? settings.reasoning_effort
+            : params.reasoningEffort ?? params.effort ?? read.thread.reasoningEffort ?? null;
+          const resumeParams = {
+            threadId, modelProvider: provider,
+            model: settings?.model ?? params.model ?? read.thread.model ?? null,
+            config: effort === null ? {} : { model_reasoning_effort: effort },
+          };
+          let unloaded = read.thread.status.type === "notLoaded";
+          let resumed;
+          if (client && !unloaded) {
+            subscription = client.subscribe({
+              type: "notification", key: { hostId: "local" }, methods: ["thread/status/changed"],
+              listener: ({ params: event }) => {
+                if (event?.threadId === threadId && event.status?.type === "notLoaded") unloaded = true;
+              },
+            });
+            handle = await subscription;
+            signal.throwIfAborted();
+          }
+          if (loaded && !unloaded) {
+            // 保留客户端缓存，避免界面在等待卸载时提前重新订阅。
+            mayContinueNatively = false;
+            await sendRequest("thread/unsubscribe", { threadId }, options);
+            signal.throwIfAborted();
+          }
+          if (!unloaded) {
+            const current = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+            signal.throwIfAborted();
+            unloaded = current.thread.status.type === "notLoaded";
+          }
+          if (!unloaded && client && read.thread.status.type === "idle") {
+            mayContinueNatively = false;
+            state.resuming = --codexGatewayResumeSequence;
+            resumed = await sendRequest("thread/resume", resumeParams, { ...options, __codexPlusProviderResume: state.resuming });
+            signal.throwIfAborted();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            signal.throwIfAborted();
+            if (!unloaded) {
+              await sendRequest("thread/unsubscribe", { threadId }, options);
+              signal.throwIfAborted();
+              resumed = null;
+            }
+          }
+          const deadline = Date.now() + 70000;
+          while (!unloaded && Date.now() < deadline) {
+            const current = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+            signal.throwIfAborted();
+            unloaded = current.thread.status.type === "notLoaded";
+            if (!unloaded) await new Promise((resolve) => setTimeout(resolve, 500));
+            signal.throwIfAborted();
+          }
+          if (!unloaded) throw new Error("会话仍被占用，无法重新连接网关，请稍后重新发送");
+          if (!resumed) {
+            mayContinueNatively = false;
+            state.resuming = --codexGatewayResumeSequence;
+            resumed = await sendRequest("thread/resume", resumeParams, { ...options, __codexPlusProviderResume: state.resuming });
+            signal.throwIfAborted();
+          }
+          if (resumed.modelProvider !== provider) throw new Error("会话尚未切换到目标供应商，请重试");
+          if (effort === null) {
+            const collaborationMode = params.collaborationMode?.mode
+              ? params.collaborationMode : resumed.collaborationMode;
+            if (collaborationMode) {
+              await sendRequest("thread/settings/update", {
+                threadId,
+                collaborationMode: {
+                  ...collaborationMode,
+                  settings: { ...collaborationMode.settings, reasoning_effort: null },
+                },
+              }, options);
+              signal.throwIfAborted();
+            }
+          }
+          const currentGateway = await readCodexGatewayGenerationForRecovery();
+          signal.throwIfAborted();
+          if (!currentGateway) return;
+          if (!currentGateway.active || currentGateway.generation !== gateway.generation) {
+            throw new Error("网关连接已变化，请重新发送");
+          }
+          state.generation = gateway.generation;
+        } finally {
+          state.resuming = null;
+          handle?.[Symbol.dispose]();
+          subscription?.[Symbol.dispose]();
+          pending.delete(threadId);
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!mayContinueNatively || window.__codexPlusContextRefreshPending?.has(threadId)
+            || window.__codexPlusConnectionRecoveryPending?.has(threadId)) throw error;
+        sendCodexPlusDiagnostic("gateway_recovery_preflight_failed", { errorMessage: String(error?.message || error) });
+        if (typeof showToast === "function") {
+          showToast("网关连接检查未完成，本次消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+        }
+      } finally {
+        release();
+        if (state.tail === tail) {
+          if (state.generation === undefined) codexGatewayPreparations.delete(threadId);
+          else state.tail = null;
+        }
+      }
+    })();
+    try {
+      await Promise.race([work, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error("网关连接准备超时，请重新发送");
+          controller.abort(error);
+          reject(error);
+        }, codexGatewayPreparationTimeoutMs);
+      })]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -4420,6 +5087,8 @@
     if (provider !== "codex_plus_managed") return params;
     const target = codexRemoteSessionTargetProvider();
     if (!target || target === "codex_plus_managed") throw new Error("请先选择可用的供应商配置");
+    await prepareCodexThreadProviderWithTimeout(method, { ...params, modelProvider: target },
+      hostId, sendRequest, null, true);
     const config = { ...(params.config || {}) };
     delete config.model_provider;
     delete config["model_providers.codex_plus_managed"];
@@ -4463,7 +5132,9 @@
     if (typeof prepareCodexThreadContextStart === "function") {
       nextParams = await prepareCodexThreadContextStart("thread/start", nextParams, client.hostId);
     }
+    const gatewayGeneration = await prepareCodexGatewayReconnect("thread/start", nextParams, client.hostId);
     const result = await prewarm(nextParams, options);
+    noteCodexGatewayThreadStart("thread/start", nextParams, result, client.hostId, gatewayGeneration);
     noteCodexManagedSessionStart("thread/start", nextParams, result, client.hostId);
     if (typeof noteCodexThreadRuntimeContext === "function") {
       noteCodexThreadRuntimeContext("thread/start", nextParams, result, client.hostId);
@@ -5061,6 +5732,7 @@
         dispatcher.dispatchMessage = (type, payload) => {
           return dispatchCodexPlusMessage(dispatcher, type, payload);
         };
+        if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(dispatcher, "dispatchMessage", "dispatcher.dispatchMessage");
         installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix);
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
         serviceTierDispatcherPatchMissCount = 0;
@@ -5128,6 +5800,9 @@
       const previousSettings = codexPlusBackendSettings;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (typeof initializeCodexGatewayBaseline === "function") {
+        void initializeCodexGatewayBaseline(codexGatewayRecoveryEnabled());
+      }
       if (typeof refreshCodexModelCatalogForSettings === "function") {
         refreshCodexModelCatalogForSettings(previousSettings, codexPlusBackendSettings);
       }
@@ -5149,6 +5824,23 @@
     // service-tier harness 在 70 分片提前返回，尚未初始化 93 分片的录音状态。
     // 语音听写由内置拓展「语音听写」登记成扫描步骤；它停用 / 被顶替时这里什么也不做。
     if (!window.__CODEX_PLUS_TEST_SERVICE_TIER__ && typeof runCodexPlusScanStep === "function") runCodexPlusScanStep("builtin:dictation");
+    if (codexPlusBackendSettings.providerSyncEnabled && typeof codexPlusAppServerClient === "function") {
+      // 短暂订阅只登记本机 receiver；不依赖上下文 observer，也不保留通知监听器。
+      void codexPlusAppServerClient("local").then(async (client) => {
+        const subscription = client.subscribe({
+          type: "notification", key: { hostId: "local" },
+          methods: ["thread/tokenUsage/updated"], listener: () => {},
+        });
+        try {
+          const handle = await subscription;
+          handle[Symbol.dispose]();
+        } finally {
+          subscription[Symbol.dispose]();
+        }
+      }).catch((error) => sendCodexPlusDiagnostic("provider_resume_receiver_binding_failed", {
+        errorMessage: String(error?.message || error),
+      }));
+    }
     return true;
   }
   // 原生准备会话时会读取本地配置；该 fetch 没有默认超时，丢失响应会同时
@@ -9013,6 +9705,7 @@
         throw error;
       }
     };
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "sendRequest", "plugin.sendRequest");
     client.__codexPluginMarketplaceUnlockPatch = codexPluginMarketplaceUnlockVersion;
     return true;
   }
@@ -9233,6 +9926,7 @@
         return bridge.__codexPluginMarketplaceOriginalSendMessageFromView(nextMessage);
       };
     }
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(bridge, "sendMessageFromView", "bridge.sendMessageFromView");
     bridge.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
     window.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
     sendCodexPlusDiagnostic("plugin_marketplace_bridge_patch_installed", {});
@@ -9886,6 +10580,11 @@
           at: finiteNonNegativeNumber(value.at),
         };
         if (typeof value.atBottom === "boolean") entries[safeKey].atBottom = value.atBottom;
+        const anchor = value.anchor;
+        if (anchor && typeof anchor.key === "string" && anchor.key.length > 0 && anchor.key.length <= 512
+            && Number.isInteger(anchor.block) && anchor.block >= -1 && Number.isFinite(anchor.offset)) {
+          entries[safeKey].anchor = { key: anchor.key, block: anchor.block, offset: anchor.offset };
+        }
       });
       window.__codexThreadScrollEntries = entries;
       return { ...entries };
@@ -9948,6 +10647,7 @@
         restoreLock: null,
         applyingRestore: false,
         pendingNavigation: null,
+        resumeSessionId: "",
         userScrollIntentUntil: 0,
         userCancelledRestoreSessionId: "",
       };
@@ -9978,6 +10678,7 @@
     runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
     runtime.userCancelledRestoreSessionId = cancelledSessionId;
     runtime.pendingNavigation = null;
+    runtime.resumeSessionId = "";
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
     window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
     clearThreadScrollRestoreTimers();
@@ -10035,6 +10736,7 @@
       scrollHeight: entry.scrollHeight,
       clientHeight: entry.clientHeight,
       atBottom: entry.atBottom,
+      anchor: entry.anchor,
       expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
     };
     return runtime.restoreLock;
@@ -10048,10 +10750,44 @@
 
   function threadScrollTargetTop(scroller, entry) {
     const range = threadScrollRange(scroller);
-    const targetTop = finiteScrollNumber(entry.targetTop ?? entry.top);
+    let targetTop = finiteScrollNumber(entry.targetTop ?? entry.top);
     const savedBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
     const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom : Math.abs(targetTop - savedBottom) <= 2;
-    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, targetTop));
+    if (atBottom) return range.bottom;
+    if (entry.anchor) {
+      const unit = scroller.querySelector(`[data-content-search-unit-key="${CSS.escape(entry.anchor.key)}"]`);
+      const block = entry.anchor.block === -1 ? unit : unit?.querySelectorAll(codexThreadScrollAnchorBlocks)[entry.anchor.block];
+      if (block) {
+        const rect = scroller.getBoundingClientRect();
+        const blockRect = block.getBoundingClientRect();
+        // rect 使用缩放后的坐标，scrollTop 使用布局坐标。
+        if (rect.height > 0 && blockRect.height > 0) {
+          targetTop = scroller.scrollTop + (blockRect.top - rect.top) * scroller.offsetHeight / rect.height - entry.anchor.offset;
+        }
+      }
+    }
+    return Math.max(range.min, Math.min(range.max, targetTop));
+  }
+
+  function captureThreadScrollAnchor(scroller) {
+    const rect = scroller.getBoundingClientRect();
+    if (rect.height <= 0 || rect.width <= 0) return null;
+    // 只命中视口内的消息，避免逐个测量长会话中的历史节点。
+    for (const y of [0.1, 0.3, 0.5]) {
+      for (const x of [0.5, 0.25, 0.75]) {
+        const hit = document.elementFromPoint(rect.left + rect.width * x, rect.top + rect.height * y);
+        const unit = hit?.closest("[data-content-search-unit-key]");
+        if (!unit || !scroller.contains(unit)) continue;
+        const candidate = hit.closest(codexThreadScrollAnchorBlocks);
+        const block = candidate && unit.contains(candidate) ? candidate : unit;
+        return {
+          key: unit.getAttribute("data-content-search-unit-key"),
+          block: block === unit ? -1 : [...unit.querySelectorAll(codexThreadScrollAnchorBlocks)].indexOf(block),
+          offset: (block.getBoundingClientRect().top - rect.top) * scroller.offsetHeight / rect.height,
+        };
+      }
+    }
+    return null;
   }
 
   function threadScrollNearBottom(scroller, top) {
@@ -10209,6 +10945,7 @@
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
     if (!key || !scroller) return;
+    if (runtime.resumeSessionId || scroller.clientWidth === 0) return;
     if (activeThreadScrollRestoreLock(key)) return;
     const snapshot = {
       top: finiteScrollNumber(scroller.scrollTop),
@@ -10220,8 +10957,11 @@
     // 会话加载时的空容器不能覆盖之前的阅读位置。
     if (snapshot.scrollHeight <= snapshot.clientHeight && !scroller.querySelector("[data-turn-key]")) return;
     snapshot.atBottom = Math.abs(threadScrollRange(scroller).bottom - snapshot.top) <= 2;
-    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
     const entries = readThreadScrollEntries();
+    const anchor = snapshot.atBottom ? null : captureThreadScrollAnchor(scroller);
+    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight
+        && (!anchor || JSON.stringify(entries[key]?.anchor) === JSON.stringify(anchor))) return;
+    if (anchor) snapshot.anchor = anchor;
     entries[key] = snapshot;
     writeThreadScrollEntries(entries);
     runtime.lastSavedTop = snapshot.top;
@@ -10288,15 +11028,26 @@
     const nextSessionId = currentThreadScrollSessionId();
     if (!nextSessionId) return;
     if (!threadScrollRestoreEnabled()) {
+      runtime.resumeSessionId = "";
       bindThreadScrollListener(null);
       clearThreadScrollRestoreTimers();
       clearThreadScrollRestoreLock();
       runtime.activeSessionId = nextSessionId;
       return;
     }
-    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
+    if (document.visibilityState === "hidden") return;
+    if (runtime.resumeSessionId && runtime.resumeSessionId !== nextSessionId) runtime.resumeSessionId = "";
     const nextScroller = currentThreadScroller();
     bindThreadScrollListener(nextScroller);
+    // 页面仍在挂载时保留导航待处理状态，容器出现后的补扫再恢复一次。
+    if (!nextScroller) return;
+    if (runtime.resumeSessionId === nextSessionId) {
+      runtime.resumeSessionId = "";
+      // 先建立恢复锁，再允许后续 scroll 事件保存重新展开后的布局。
+      scheduleThreadScrollRestore(nextSessionId);
+      restoreThreadScrollPosition(nextSessionId);
+    }
+    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
     if (runtime.activeSessionId !== nextSessionId) {
       runtime.lastSavedTop = -1;
       runtime.lastSavedHeight = -1;
@@ -10396,6 +11147,7 @@
       saveNow: saveThreadScrollPositionNow,
       prepareRestoreLock: prepareThreadScrollRestoreLock,
       scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
+      visibilityChanged: handleThreadScrollVisibilityChange,
     };
   }
 
@@ -10486,11 +11238,29 @@
       window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
     };
     window.__codexThreadScrollVisibilityHandler = () => {
-      if (document.visibilityState === "hidden") window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.visibilityChanged?.();
     };
     window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
     window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
     document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+  }
+
+  function handleThreadScrollVisibilityChange() {
+    if (!threadScrollRestoreEnabled()) return;
+    const runtime = threadScrollRuntime();
+    if (document.visibilityState === "hidden") {
+      saveThreadScrollPositionNow();
+      runtime.resumeSessionId = runtime.activeSessionId;
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollSyncTimers();
+      return;
+    }
+    if (!runtime.resumeSessionId) return;
+    // 隐藏前的手动滚动取消的是旧导航，不应阻止恢复刚保存的当前位置。
+    runtime.userScrollIntentUntil = 0;
+    runtime.userCancelledRestoreSessionId = "";
+    syncThreadScrollState();
+    scheduleThreadScrollSyncAttempts(false);
   }
 
   async function postJson(path, payload) {
@@ -11364,41 +12134,67 @@
     const envelope = codexPlusPluginNativeRequests.get(key);
     if (!envelope) return false;
     codexPlusPluginNativeRequests.delete(key);
+    // 返回 true 意味着这个回包已被我们从原生路径摘下：后续处理必须限时，
+    // 超时或出错都要把原始回包原样投回渲染层，绝不能让宿主请求永久 pending
+    // （issue #3098：首批 vscode 查询全部停在 fetching 就是这条链挂死的表现）。
+    let delivered = false;
+    const deliverOriginal = () => {
+      if (delivered) return;
+      delivered = true;
+      codexPlusPluginNativeDeliver(data);
+    };
     void (async () => {
-      let payload;
-      let nativeError;
-      let wrapped = false;
-      if (fetchResponse) {
-        if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
-        try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
-          codexPlusPluginNativeDeliver(data);
-          return;
-        }
-        if (payload?.error) nativeError = payload.error;
-        wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
-      } else {
-        payload = data.message?.result;
-        nativeError = data.message?.error;
+      try {
+        await Promise.race([
+          (async () => {
+            let payload;
+            let nativeError;
+            let wrapped = false;
+            if (fetchResponse) {
+              if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
+              try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
+                deliverOriginal();
+                return;
+              }
+              if (payload?.error) nativeError = payload.error;
+              wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
+            } else {
+              payload = data.message?.result;
+              nativeError = data.message?.error;
+            }
+            if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
+              deliverOriginal();
+              return;
+            }
+            const original = nativeError ? {} : wrapped ? payload.result : payload;
+            const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
+            let next;
+            if (fetchResponse) {
+              const response = wrapped ? { ...payload, result: merged } : merged;
+              if (wrapped) delete response.error;
+              next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
+              delete next.body;
+              delete next.error;
+            } else {
+              const message = { ...data.message, result: merged };
+              delete message.error;
+              next = { ...data, message };
+            }
+            if (!delivered) {
+              delivered = true;
+              codexPlusPluginNativeDeliver(next);
+            }
+          })(),
+          new Promise((_resolve, reject) => {
+            setTimeout(() => reject(new Error("插件市场回包处理超时")), 15_000);
+          }),
+        ]);
+      } catch (error) {
+        try { codexPlusMarkExtensionFailure("", `插件市场回包处理失败，已原样转发：${String(error?.message || error)}`); } catch {}
+      } finally {
+        deliverOriginal();
       }
-      if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
-        codexPlusPluginNativeDeliver(data);
-        return;
-      }
-      const original = nativeError ? {} : wrapped ? payload.result : payload;
-      const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
-      if (fetchResponse) {
-        const response = wrapped ? { ...payload, result: merged } : merged;
-        if (wrapped) delete response.error;
-        const next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
-        delete next.body;
-        delete next.error;
-        codexPlusPluginNativeDeliver(next);
-      } else {
-        const message = { ...data.message, result: merged };
-        delete message.error;
-        codexPlusPluginNativeDeliver({ ...data, message });
-      }
-    })().catch((error) => codexPlusPluginNativeReply(envelope, null, error));
+    })();
     return true;
   }
 
@@ -11972,16 +12768,59 @@
     const snapshot = codexPlusModelDefaultSnapshots.get(value) || { policy, fields: {} };
     const fallback = [codexModelCatalog.model, codexModelCatalog.default_model, ...allowed]
       .find((name) => typeof name === "string" && allowed.has(name));
-    for (const key of ["defaultModel", "default_model"]) {
+    // 选择器「重置为默认」读的是 defaultModelSlug 和 versionOptions 里 id=latest 的版本，
+    // 只补 defaultModel/default_model 会让重置落到网关目录之外的模型（#3058）。
+    // 网关目录可能同时保留原生默认模型（#3122）：它虽在允许集合内，重置仍应回到
+    // 当前有效配置的默认模型，而不是 Statsig 下发的原生默认。
+    const configuredDefault = [codexModelCatalog.default_model, codexModelCatalog.model]
+      .find((name) => typeof name === "string" && allowed.has(name)) || fallback;
+    const replaced = new Set();
+    for (const key of ["defaultModel", "default_model", "defaultModelSlug", "default_model_slug"]) {
       const original = value[key];
       const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
-      if (!name || allowed.has(name)) continue;
-      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
+      if (!name || name === configuredDefault) continue;
+      replaced.add(name);
+      const patched = typeof original === "string" ? configuredDefault : codexPlusModelDescriptor(configuredDefault);
       if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
         snapshot.fields[key] = { original, patched };
       }
       value[key] = patched;
       changed = true;
+    }
+    const versionOptions = value.versionOptions;
+    if (Array.isArray(versionOptions)) {
+      const patched = versionOptions.map((version) => {
+        if (!version || typeof version !== "object") return version;
+        let next = version;
+        const versionName = (key) => {
+          const current = next[key];
+          return typeof current === "string" && current && current !== configuredDefault ? current : "";
+        };
+        for (const key of ["defaultModelSlug", "default_model_slug"]) {
+          if (versionName(key)) {
+            if (next === version) next = { ...version };
+            next[key] = configuredDefault;
+          }
+        }
+        const options = next.options;
+        if (Array.isArray(options) && options.some((option) => {
+          const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
+          return typeof name === "string" && name && (!allowed.has(name) || replaced.has(name));
+        })) {
+          if (next === version) next = { ...version };
+          next.options = options.map((option) => {
+            const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
+            return typeof name === "string" && name && (!allowed.has(name) || replaced.has(name))
+              ? codexPlusModelDescriptor(configuredDefault) : option;
+          });
+        }
+        return next;
+      });
+      if (patched.some((version, index) => version !== versionOptions[index])) {
+        snapshot.fields.versionOptions = { original: versionOptions, patched };
+        value.versionOptions = patched;
+        changed = true;
+      }
     }
     codexPlusModelDefaultSnapshots.set(value, snapshot);
     return changed;
@@ -12402,6 +13241,25 @@
     return { requestMethod, threadId, model };
   }
 
+  function codexThreadContextSignature(config) {
+    // 路由别名交给原生 turn/start；只有实际窗口配置变化才需要卸载线程。
+    return JSON.stringify([config.model_context_window, config.model_auto_compact_token_limit]);
+  }
+
+  function codexThreadContextMatches(cached, context) {
+    if (cached === context.signature) return true;
+    try {
+      // 热重注入保留了旧版内存缓存：[modelAlias, config]。
+      const previous = JSON.parse(cached);
+      return Array.isArray(previous) && previous.length === 2
+        && typeof previous[0] === "string" && previous[1]
+        && typeof previous[1] === "object" && !Array.isArray(previous[1])
+        && codexThreadContextSignature(previous[1]) === context.signature;
+    } catch {
+      return false;
+    }
+  }
+
   async function codexThreadRuntimeContext(params) {
     const catalog = await loadCodexModelCatalog(true);
     const runtime = catalog.runtimeContext;
@@ -12412,7 +13270,7 @@
     if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
     const model = codexThreadModelRequestState("", params).model || catalog.model;
     const config = runtime.models[model];
-    return config ? { model, config, signature: JSON.stringify([model, config]) } : null;
+    return config ? { model, config, signature: codexThreadContextSignature(config) } : null;
   }
 
   async function prepareCodexThreadContextStart(method, params, hostId) {
@@ -12441,7 +13299,7 @@
       model_auto_compact_token_limit: params.config.model_auto_compact_token_limit,
     };
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    contexts.set(state.threadId, JSON.stringify([state.model, config]));
+    contexts.set(state.threadId, codexThreadContextSignature(config));
     if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
   }
 
@@ -12460,7 +13318,7 @@
     const context = await codexThreadRuntimeContext(params);
     if (!context) return null;
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    if (contexts.get(threadId) === context.signature) return null;
+    if (codexThreadContextMatches(contexts.get(threadId), context)) return null;
     if (window.__codexPlusConnectionRecoveryPending?.has(threadId)
         || window.__codexPlusContextRefreshPending?.has(threadId)) {
       throw new Error("此会话正在检查连接，请稍后重新发送");
@@ -12475,15 +13333,20 @@
         contexts.set(threadId, context.signature);
         return null;
       }
-      if (!["idle", "notLoaded"].includes(read.thread.status.type)) {
+      if (!["idle", "notLoaded", "systemError"].includes(read.thread.status.type)) {
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
       const turns = await originalSendRequest("thread/turns/list",
         { threadId, limit: 1, itemsView: "notLoaded" }, recoveryOptions);
-      if (turns.data.length === 0) throw new Error("此新会话尚无历史，请重新新建会话以应用上下文配置");
+      // 还没有历史的新线程不能卸载恢复。Codex 26.1106 起侧边聊天用 attachToSource 分叉、不再标 ephemeral（#3062），
+      // 拦下发送会让侧聊完全不可用：放行原生首轮，不记签名，等有了历史后的下一次发送再应用上下文配置。
+      if (turns.data.length === 0) {
+        sendCodexPlusDiagnostic("thread_model_context_refresh_deferred", { threadId, reason: "no_history" });
+        return null;
+      }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
-      if (current.thread.status.type !== "idle") throw new Error("请先等待当前回复结束，再应用上下文配置");
+      if (!["idle", "systemError"].includes(current.thread.status.type)) throw new Error("请先等待当前回复结束，再应用上下文配置");
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
       resumeParams.modelProvider = current.modelProvider;
       resumeParams.config = { ...resumeParams.config, ...context.config };
@@ -12491,7 +13354,7 @@
       resumeParams = applyCodexManagedSessionConnection("thread/resume", resumeParams, "local");
       await originalSendRequest("thread/unsubscribe", { threadId }, recoveryOptions);
       const resumed = await originalSendRequest("thread/resume", resumeParams, recoveryOptions);
-      if (resumed.thread.status.type !== "idle") throw new Error("会话已开始其他回复，请等待结束后重新发送");
+      if (!["idle", "systemError"].includes(resumed.thread.status.type)) throw new Error("会话已开始其他回复，请等待结束后重新发送");
       contexts.set(threadId, context.signature);
       if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
       sendCodexPlusDiagnostic("thread_model_context_refreshed", { threadId, model: context.model });
@@ -12556,10 +13419,12 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId,
+        providerRefreshFailed, originalSendRequest, options?.__codexPlusProviderResume, client);
       const connectionParams = await prepareCodexManagedSessionConnection(String(method || ""),
         resumeParams, client.hostId, originalSendRequest);
       const nextParams = await prepareCodexThreadContextStart(String(method || ""), connectionParams, client.hostId);
+      const gatewayGeneration = await prepareCodexGatewayReconnect(String(method || ""), nextParams, client.hostId, originalSendRequest);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -12572,6 +13437,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
+      noteCodexGatewayThreadStart(String(method || ""), nextParams, result, client.hostId, gatewayGeneration);
       verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       noteCodexThreadRuntimeContext(String(method || ""), nextParams, result, client.hostId);
@@ -12592,6 +13458,9 @@
         return await prewarmCodexManagedSession(client, originalPrewarmThreadStart, params, options);
       };
     }
+    // #3036：只记录栈溢出，不改行为。
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "sendRequest", "client.sendRequest");
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "prewarmThreadStart", "client.prewarmThreadStart");
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     return true;
   }
@@ -12755,7 +13624,8 @@
     if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
-      || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
+      || (codexPlusBackendSettingsLoaded
+        && (codexRemoteSessionProviderPatchEnabled() || codexPlusBackendSettings.providerSyncEnabled))
       || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
       || (typeof codexPlusExtensionWantsRequestMiddleware === "function" && codexPlusExtensionWantsRequestMiddleware());
     if (!wanted) return false;
@@ -12807,12 +13677,14 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest.bind(client));
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId,
+        providerRefreshFailed, originalSendRequest.bind(client), options?.__codexPlusProviderResume, client);
       // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
       // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const connectionParams = await prepareCodexManagedSessionConnection(String(method || ""),
         resumeParams, client.hostId, originalSendRequest.bind(client));
       const nextParams = await prepareCodexThreadContextStart(String(method || ""), connectionParams, client.hostId);
+      const gatewayGeneration = await prepareCodexGatewayReconnect(String(method || ""), nextParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -12825,6 +13697,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
+      noteCodexGatewayThreadStart(String(method || ""), nextParams, result, client.hostId, gatewayGeneration);
       verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       noteCodexThreadRuntimeContext(String(method || ""), nextParams, result, client.hostId);
@@ -12859,6 +13732,9 @@
         return await prewarmCodexManagedSession(this, originalPrewarmThreadStart.bind(this), params, options);
       };
     }
+    // #3036：只记录栈溢出，不改行为。
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(proto, "sendRequest", "prototype.sendRequest");
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(proto, "prewarmThreadStart", "prototype.prewarmThreadStart");
     proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
     sendCodexPlusDiagnostic("app_server_client_prototype_patch_installed", {});
@@ -12874,7 +13750,8 @@
   let appServerModelRequestPatchRetryDelayMs = 250;
 
   function scheduleAppServerModelRequestPatchRetry() {
-    if (!codexRemoteSessionProviderPatchEnabled()) return;
+    if (!codexRemoteSessionProviderPatchEnabled()
+        && !(codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled)) return;
     if (appServerModelRequestPatchRetryTimer) return;
     // issue #2256/#2255：固定 250ms 重试在 Codex 改 asset 命名后变成每秒 4 轮的全量
     // rescan（每轮 fetch 全部 app asset）。改为指数退避， miss 计满后由熔断停掉。
@@ -12973,16 +13850,19 @@
     if (codexPerModelContextEnabled()) void installCodexThreadContextObserver();
     const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
       && codexPlusExtensionWantsRequestMiddleware();
+    const providerSyncEnabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled;
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
+        || providerSyncEnabled
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
           || codexPlusSettings().sessionDelete || codexPlusSettings().sideChatSave
           || extensionWantsRequests) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
     }
-    // 启动器平时只在模型解锁 / 会话删除开启时捕获客户端类；只有拓展需要时，请它按需补开（每页一次）。
-    if (extensionWantsRequests && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
+    // 供应商同步、网关恢复或拓展需要时，请启动器捕获客户端类（每页一次）。
+    if ((extensionWantsRequests || providerSyncEnabled || codexGatewayRecoveryEnabled())
+        && !window.__codexPlusAppServerClientClass && !window.__codexPlusExtensionRequestCaptureAsked) {
       window.__codexPlusExtensionRequestCaptureAsked = true;
       void postJson("/extensions/request-capture", {}).catch(() => {});
     }
@@ -13082,6 +13962,8 @@
   /** 沿用旧键中的供应商归属缓存，不再读取旧折叠状态。 */
   const codexPlusModelPickerGroupsStoreKey = "codexPlus.modelPicker.collapsedGroups.v1";
   const codexPlusModelPickerViewStoreKey = "codexPlus.modelPicker.viewMode.v1";
+  /** 折叠分组 id 列表，跨重启/重注入持久化（issue #3073）。 */
+  const codexPlusModelPickerCollapsedListStoreKey = "codexPlus.modelPicker.collapsedList.v1";
   /** 分组标题与工具条节点上的归属标记。 */
   const codexPlusModelPickerGroupsExtMark = "builtin-model-picker-groups";
   /** 样式表节点 id。 */
@@ -13269,6 +14151,39 @@
       const mode = window.localStorage?.getItem(codexPlusModelPickerViewStoreKey);
       if (mode === "icons" || mode === "list") state.viewMode = mode;
     } catch {}
+    codexPlusModelPickerLoadCollapsed();
+  }
+
+  /**
+   * 恢复持久化的折叠分组 id（issue #3073）。
+   *
+   * 折叠状态过去只留在页面内存里（重注入交接的 viewState），Codex 重启后丢光，
+   * 选择器就退回全部展开。这里与供应商归属缓存分开存一份 id 列表；分页注入后
+   * 第一次打补丁时合并进来。不按当前分组裁剪：重启后目录可能晚于菜单出现，
+   * 先裁剪会把「仍存在的组」也清掉。
+   */
+  function codexPlusModelPickerLoadCollapsed() {
+    const state = codexPlusModelPickerGroupsState;
+    if (state.collapsedLoaded) return;
+    state.collapsedLoaded = true;
+    try {
+      const raw = window.localStorage?.getItem(codexPlusModelPickerCollapsedListStoreKey);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === "string" && id) state.collapsed.add(id);
+        }
+      }
+    } catch {}
+  }
+
+  function codexPlusModelPickerPersistCollapsed() {
+    try {
+      window.localStorage?.setItem(
+        codexPlusModelPickerCollapsedListStoreKey,
+        JSON.stringify([...codexPlusModelPickerGroupsState.collapsed]),
+      );
+    } catch {}
   }
 
   /** 只保存自己覆盖的属性；WeakMap 随重注入交接，不保留已关闭菜单。 */
@@ -13390,6 +14305,7 @@
         if (action === "collapse") state.collapsed.add(group.id);
         else state.collapsed.delete(group.id);
       });
+      codexPlusModelPickerPersistCollapsed();
     }
     codexPlusModelPickerPatch(list);
     list.querySelector(`[data-codex-plus-model-action="${action === "list" ? "icons" : action === "icons" ? "list" : action}"]`)?.focus({ preventScroll: true });
@@ -14502,6 +15418,7 @@
       if (state.viewMode === "list") {
         if (entry.groupId && state.collapsed.has(entry.groupId)) {
           state.collapsed.delete(entry.groupId);
+          codexPlusModelPickerPersistCollapsed();
           codexPlusModelPickerPatch(list);
         }
       } else if (entry.groupId && state.activeGroupId !== entry.groupId) {
@@ -14739,6 +15656,7 @@
         const id = header.getAttribute(codexPlusModelPickerGroupIdAttr);
         if (event.key === "ArrowLeft") codexPlusModelPickerGroupsState.collapsed.add(id);
         else codexPlusModelPickerGroupsState.collapsed.delete(id);
+        codexPlusModelPickerPersistCollapsed();
         codexPlusModelPickerPatch(list);
         return;
       }
@@ -14825,6 +15743,7 @@
         const collapsed = codexPlusModelPickerGroupsState.collapsed;
         if (collapsed.has(groupId)) collapsed.delete(groupId);
         else collapsed.add(groupId);
+        codexPlusModelPickerPersistCollapsed();
         codexPlusModelPickerPatch(currentList);
       } else {
         codexPlusModelPickerNavigate(currentList, groupId);
@@ -15144,7 +16063,7 @@
     if (state.activeList === list) return;
     if (state.activeList) {
       codexPlusModelPickerClear(state.activeList);
-      state.collapsed?.clear();
+      // 折叠状态跨菜单/重启保留（issue #3073），换列表节点时不再清空。
     }
     state.activeGroupId = "";
     state.activeList = list;
@@ -20939,18 +21858,38 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 7;
-  const codexPlusRpcMiddlewareTimeoutMs = 5000;
+  const codexPlusRpcInterceptorVersion = 19;
+  const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
+    && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
+    ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
+  const codexPlusRpcPreparationTimeoutMs = 120000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
   const codexPlusRpcPushFailure = Symbol("codexPlusRpcPushFailure");
   const codexPlusRpcPortQueues = new WeakMap();
   const codexPlusRpcRejectionPorts = window.__codexPlusRpcRejectionPorts ||= new WeakMap();
   const codexPlusRpcCreationFailures = window.__codexPlusRpcCreationFailures ||= new WeakMap();
+  const codexPlusRpcResumeGates = window.__codexPlusRpcResumeGates ||= new WeakMap();
   const codexPlusRpcTurnCache = new Map();
   const codexPlusRpcTurnCacheLimit = 64;
   const codexPlusRpcHostReceivers = window.__codexPlusRpcHostReceivers
     ||= new WeakMap();
+  const codexPlusRpcTurnPreparations = window.__codexPlusRpcTurnPreparations ||= new Map();
+
+  async function codexPlusRpcSerializeTurn(threadId, prepare) {
+    if (typeof threadId !== "string" || !threadId) return prepare();
+    const previous = codexPlusRpcTurnPreparations.get(threadId);
+    let release;
+    const tail = new Promise((resolve) => { release = resolve; });
+    codexPlusRpcTurnPreparations.set(threadId, tail);
+    await previous;
+    try {
+      return await prepare();
+    } finally {
+      if (codexPlusRpcTurnPreparations.get(threadId) === tail) codexPlusRpcTurnPreparations.delete(threadId);
+      release();
+    }
+  }
 
   function codexPlusRpcContextEnabled() {
     return typeof codexPerModelContextEnabled === "function" && codexPerModelContextEnabled();
@@ -21264,14 +22203,98 @@
     return plan;
   }
 
+  function codexPlusRpcPlanResume(frame, hostId, plan) {
+    const expr = frame[1];
+    const method = expr[2][0];
+    const index = method === "sendRequest" ? 1 : 0;
+    const isResumeRequest = expr[3][0] === "thread/resume"
+      || (expr[3][0] === "send-cli-request-for-host" && expr[3][1]?.method === "thread/resume");
+    const options = method === "sendRequest" && isResumeRequest ? expr[3][2] : null;
+    const internalResume = options?.__codexPlusProviderResume;
+    if (internalResume !== undefined) {
+      const inner = plan;
+      plan = async (signal) => {
+        expr[3][2] = { ...options };
+        delete expr[3][2].__codexPlusProviderResume;
+        return inner ? inner(signal) : null;
+      };
+    }
+    if (hostId !== "local" || typeof prepareCodexThreadProviderResume !== "function"
+        || (method === "sendRequest" && expr[3][0] !== "thread/resume")
+        || !codexPlusRpcIsPlainObject(expr[3][index])) return plan;
+    if ([expr[3][index].hostId, expr[3][index].host_id]
+        .some((host) => typeof host === "string" && host !== "local")) return plan;
+    // 在中间件改写前识别内部恢复；它已持有会话准备锁，不能再次排队等待自己。
+    const original = expr[3][index];
+    const preparation = typeof codexThreadProviderPreparations !== "undefined"
+      ? codexThreadProviderPreparations.get(original.threadId || original.conversationId) : null;
+    const resuming = preparation?.resuming;
+    if (method === "sendRequest" && resuming && internalResume === resuming) return plan;
+    if (method === "sendRequest" && typeof codexGatewayPreparations !== "undefined"
+        && internalResume !== undefined && internalResume === codexGatewayPreparations.get(original.threadId)?.resuming) return plan;
+    const managed = typeof codexManagedSessionConnection === "function" && codexManagedSessionConnection();
+    const previousManaged = (original.modelProvider ?? original.model_provider
+      ?? original.config?.model_provider) === "codex_plus_managed";
+    const inspectManaged = typeof codexRemoteSessionActiveProfile === "function" && !!codexRemoteSessionActiveProfile();
+    if (!codexPlusBackendSettings.providerSyncEnabled && !preparation?.tail
+        && !managed && !previousManaged && !inspectManaged) return plan;
+    plan ||= async () => null;
+    plan.resumeIndex = index;
+    plan.before = async (wireParams, dataOnly, _candidate, signal) => {
+      signal?.throwIfAborted();
+      const params = codexPlusRpcDecode(wireParams);
+      if (!codexPlusBackendSettings.providerSyncEnabled && !managed && !previousManaged && !inspectManaged) {
+        await preparation.tail;
+        signal?.throwIfAborted();
+        return wireParams;
+      }
+      const client = await codexPlusAppServerClient(hostId);
+      signal?.throwIfAborted();
+      const prepared = await prepareCodexThreadProviderResume(params, hostId,
+        (method, params, options) => client.sendRequest(method, params, options), client, null, signal,
+        false, previousManaged || inspectManaged);
+      signal?.throwIfAborted();
+      if (prepared && dataOnly && method === "resumeConversation") {
+        const cached = await client.getConversation(params.conversationId);
+        signal?.throwIfAborted();
+        const error = cached?.providerBlock?.error;
+        if (error?.type === "modelProviderMismatch" && error.modelProvider === prepared.sourceProvider
+            && error.currentModelProvider === prepared.targetProvider) {
+          return { ...wireParams, intent: "open" };
+        }
+      }
+      return wireParams;
+    };
+    return plan;
+  }
+
+  function codexPlusRpcDataOnly(value) {
+    if (Array.isArray(value)) {
+      return value.length === 1 && Array.isArray(value[0]) && value[0].every(codexPlusRpcDataOnly);
+    }
+    return !codexPlusRpcIsPlainObject(value) || Object.values(value).every(codexPlusRpcDataOnly);
+  }
+
   function codexPlusRpcPlanResolve(frame) {
     const value = frame[2];
     if (!codexPlusRpcIsPlainObject(value)) return null;
     const hasStart = codexPlusRpcIsPlainObject(value.start?.request) && Array.isArray(value.start.request.input);
     const hasSteer = codexPlusRpcIsPlainObject(value.steer) && Array.isArray(value.steer.input);
     const refreshContext = hasStart && value.executionHostId === "local" && codexPlusRpcContextEnabled();
-    if ((!hasStart && !hasSteer) || (!codexPlusRpcWantsTurnHooks() && !refreshContext)) return null;
+    if (!hasStart && !hasSteer) return null;
+    const localResume = value.executionHostId === "local"
+      && codexPlusRpcIsPlainObject(value.resume)
+      && typeof value.conversationId === "string" && value.conversationId === value.resume.conversationId
+      && (value.start?.request?.threadId === undefined || value.start.request.threadId === value.conversationId);
+    const prepareGateway = hasStart && localResume
+      && typeof codexGatewayRecoveryEnabled === "function" && codexGatewayRecoveryEnabled();
+    const prepareProvider = localResume && typeof prepareCodexThreadProviderResume === "function"
+      && (codexPlusBackendSettings.providerSyncEnabled
+        || (typeof codexRemoteSessionActiveProfile === "function" && codexRemoteSessionActiveProfile()));
+    const wantsHooks = codexPlusRpcWantsTurnHooks();
+    if (!wantsHooks && !prepareProvider && !prepareGateway && !refreshContext) return null;
     const plan = async (signal) => {
+      if (!wantsHooks) return null;
       const decoded = codexPlusRpcDecode(value);
       const conversationId = decoded.conversationId;
       const carriers = [];
@@ -21306,25 +22329,117 @@
       }
       return ["resolve", frame[1], codexPlusRpcEncode(decoded), ...frame.slice(3)];
     };
-    if (refreshContext) {
-      plan.context = async (nextFrame) => {
+    if (refreshContext || prepareGateway) {
+      plan.context = async (nextFrame, signal) => {
+        signal?.throwIfAborted();
         if (nextFrame[0] !== "resolve") return nextFrame;
         const decoded = codexPlusRpcDecode(nextFrame[2]);
-        const client = await codexPlusAppServerClient("local");
+        let client;
+        try {
+          client = await codexPlusAppServerClient("local");
+          if (!client) throw new Error("app-server client unavailable");
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (refreshContext) throw error;
+          codexPlusMarkExtensionFailure("", `网关连接检查不可用：${String(error?.message || error)}`);
+          return nextFrame;
+        }
+        signal?.throwIfAborted();
+        if (prepareGateway) {
+          await prepareCodexGatewayReconnect("turn/start",
+            { ...decoded.start.request, threadId: decoded.conversationId }, "local",
+            (method, params, options) => client.sendRequest(method, params, options), client, signal);
+        }
+        if (!refreshContext) return nextFrame;
         const sendRequest = async (method, params, options) => {
+          signal?.throwIfAborted();
           if (method === "thread/unsubscribe") {
             await client.unsubscribeInactiveConversation(params.threadId);
+            signal?.throwIfAborted();
             // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误传回当前发送。
-            return client.sendRequest(method, params, options);
           }
-          if (method === "thread/resume" && params.config) return client.resumeThread(params);
-          return client.sendRequest(method, params, options);
+          const result = method === "thread/resume" && params.config
+            ? await client.resumeThread(params) : await client.sendRequest(method, params, options);
+          signal?.throwIfAborted();
+          return result;
         };
         await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, sendRequest,
           "turn/start", decoded.start.request);
+        signal?.throwIfAborted();
         return nextFrame;
       };
       plan.contextFailure = (reason) => ["reject", frame[1], ["error", "Error", reason]];
+    }
+    if (prepareProvider) {
+      // 暂存纯数据字段，其余候选/export 先交原生导入，失败时照常释放。
+      plan.resumeIndex = "conversationId";
+      plan.before = async (conversationId, _dataOnly, candidate, signal) => {
+        signal?.throwIfAborted();
+        if (candidate.executionHostId !== "local" || conversationId !== candidate.resume?.conversationId
+            || (candidate.start?.request?.threadId !== undefined
+              && candidate.start.request.threadId !== conversationId)) return conversationId;
+        const decoded = codexPlusRpcDecode(candidate);
+        const params = { ...decoded.resume };
+        if (prepareGateway) {
+          const start = decoded.start.request;
+          params.model = start.model ?? params.model;
+          params.effort = start.effort ?? params.effort;
+          params.collaborationMode = start.collaborationMode ?? params.collaborationMode;
+        }
+        const provider = decoded.resume.modelProvider
+          ?? decoded.resume.model_provider ?? decoded.resume.config?.model_provider
+          ?? decoded.steer?.restoreMessage?.submissionOptions?.modelProvider;
+        if (provider !== undefined) params.modelProvider = provider;
+        let inspectManaged = provider === "codex_plus_managed"
+          || !!window.__codexPlusManagedSessionStarts?.has(conversationId)
+          || (typeof codexManagedSessionConnection === "function" && !!codexManagedSessionConnection())
+          || (typeof codexThreadProviderPreparations !== "undefined"
+            && (!!codexThreadProviderPreparations.get(conversationId)?.tail
+              || codexThreadProviderPreparations.get(conversationId)?.preparedProvider === "codex_plus_managed"));
+        let client;
+        const sendRequest = async (method, requestParams, options) => {
+          signal?.throwIfAborted();
+          client ||= await codexPlusAppServerClient("local");
+          signal?.throwIfAborted();
+          return client.sendRequest(method, requestParams, options);
+        };
+        if (!codexPlusBackendSettings.providerSyncEnabled && !inspectManaged) {
+          let cacheTimer;
+          try {
+            const result = await Promise.race([
+              (async () => {
+                const found = await codexPlusAppServerClient("local");
+                return { client: found, cached: await found.getConversation(conversationId) };
+              })(),
+              new Promise((_, reject) => {
+                cacheTimer = setTimeout(() => reject(new Error("读取会话缓存超时")), codexAppServerPreparationTimeoutMs);
+              }),
+            ]);
+            signal?.throwIfAborted();
+            client = result.client;
+            const cached = result.cached;
+            inspectManaged = cached?.modelProvider === "codex_plus_managed";
+            if (!inspectManaged && cached?.threadRuntimeStatus?.type === "active") {
+              const prepared = codexThreadProviderPreparations.get(conversationId);
+              const connected = prepared?.client === client && prepared.preparedProvider
+                ? prepared.preparedProvider : cached.modelProvider;
+              const target = codexRemoteSessionTargetProvider();
+              if (connected && target && connected !== target) warnCodexActiveOldProvider();
+            }
+          } catch (error) {
+            signal?.throwIfAborted();
+            sendCodexPlusDiagnostic("thread_provider_cache_read_failed", { errorMessage: String(error?.message || error) });
+          } finally {
+            clearTimeout(cacheTimer);
+          }
+        }
+        if (!codexPlusBackendSettings.providerSyncEnabled && !inspectManaged) return conversationId;
+        client ||= await codexPlusAppServerClient("local");
+        signal?.throwIfAborted();
+        await prepareCodexThreadProviderResume(params, "local", sendRequest, client, null, signal, hasStart, inspectManaged);
+        signal?.throwIfAborted();
+        return conversationId;
+      };
     }
     return plan;
   }
@@ -21338,7 +22453,12 @@
         return null;
       }
       const hostId = codexPlusRpcReceiverHost(port, expr);
-      if (expr[2][0] === "sendRequest") return codexPlusRpcPlanSendRequest(frame, hostId);
+      if (expr[2][0] === "sendRequest") {
+        return codexPlusRpcPlanResume(frame, hostId, codexPlusRpcPlanSendRequest(frame, hostId));
+      }
+      if (["resumeConversation", "resumeThread"].includes(expr[2][0])) {
+        return codexPlusRpcPlanResume(frame, hostId, null);
+      }
       if (expr[2][0] === "startConversation") return codexPlusRpcPlanStartConversation(frame, hostId);
       return null;
     }
@@ -21347,7 +22467,7 @@
   }
 
   /** 带超时地跑一个改写计划；超时或出错返回 null（原样发出），同时 abort 交给拓展的 signal。 */
-  async function codexPlusRpcRunPlan(plan, frame) {
+  async function codexPlusRpcRunPlan(plan, frame, deferContext = false) {
     const controller = new AbortController();
     let timer = null;
     let replaced = null;
@@ -21366,27 +22486,60 @@
     } finally {
       clearTimeout(timer);
     }
-    if (!plan.context || replaced?.[codexPlusRpcPushFailure]) return replaced;
+    if (!plan.context || deferContext || replaced?.[codexPlusRpcPushFailure]) return replaced;
+    // plan.context 里会等 app-server 往返（网关预检、模型刷新）；一旦挂住，
+    // 端口队列会卡死后续所有帧，渲染层首批请求就永远停在 fetching（issue #3098）。
+    // 所以 context 也必须限时：超时不显式拒绝本轮（那是我们自己的刷新失败，
+    // 不该拦用户的消息），而是原样转发当前帧，让本轮按宿主参数照常走。
+    let contextTimedOut = false;
+    let contextTimer = null;
     try {
-      return await plan.context(replaced || frame);
-    } catch (error) {
-      const reason = String(error?.message || error);
-      codexPlusRpcRejectNotice(reason);
-      return plan.contextFailure(reason);
+      return await Promise.race([
+        (async () => {
+          try {
+            return await plan.context(replaced || frame);
+          } catch (error) {
+            if (contextTimedOut) return undefined;
+            const reason = String(error?.message || error);
+            codexPlusRpcRejectNotice(reason);
+            try { return plan.contextFailure(reason); } catch { return undefined; }
+          }
+        })(),
+        new Promise((resolve) => {
+          contextTimer = setTimeout(() => {
+            contextTimedOut = true;
+            resolve(undefined);
+          }, codexPlusRpcMiddlewareTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(contextTimer);
+      if (contextTimedOut) codexPlusMarkExtensionFailure("", "rpc 上下文改写超时，已原样发出本轮消息");
     }
   }
 
   function codexPlusRpcIncomingFrame(port, incoming) {
     const creation = codexPlusRpcCreationFailures.get(port);
     const rejections = codexPlusRpcRejectionPorts.get(port);
-    if (!creation && !rejections) return incoming;
+    const gates = codexPlusRpcResumeGates.get(port);
+    if (!creation && !rejections && !gates) return incoming;
     if (incoming === null) {
       creation?.callbacks.clear();
+      gates?.pending.clear();
+      for (const controller of gates?.controllers?.values() || []) {
+        controller.abort(new Error("会话准备已取消"));
+      }
+      gates?.controllers?.clear();
       return incoming;
     }
     if (incoming?.[0] === "release") {
       creation?.callbacks.delete(incoming[1]);
-      if (rejections?.pending.delete(incoming[1])) {
+      const releasedGate = gates?.pending.delete(incoming[1]);
+      if (releasedGate) {
+        gates.controllers?.get(incoming[1])?.abort(new Error("会话准备已取消"));
+        gates.controllers?.delete(incoming[1]);
+      }
+      if (rejections?.pending.delete(incoming[1]) || releasedGate) {
         // 未知 import 的 resolve 是协议空操作；正半整数不属于任何原生或本层编号。
         return ["resolve", 0.5, ["undefined"]];
       }
@@ -21418,7 +22571,8 @@
       let entry = first;
       while (entry) {
         const [message, rest, plan] = entry;
-        const replaced = plan ? await codexPlusRpcRunPlan(plan, message) : null;
+        const deferContext = message[0] === "resolve" && plan?.before && plan.context;
+        const replaced = plan ? await codexPlusRpcRunPlan(plan, message, deferContext) : null;
         try {
           const failure = replaced?.[codexPlusRpcPushFailure];
           const readInputs = failure && replaced[1][2][0] === "startConversation"
@@ -21447,6 +22601,68 @@
             original.call(port, ["push", [...expr.slice(0, 3), [...expr[3], ["promise", id]],
               ...expr.slice(4)], ...replaced.slice(2)], ...rest);
             original.call(port, ["reject", id, failure]);
+          } else if (plan?.before && replaced?.[0] !== "reject") {
+            let gates = codexPlusRpcResumeGates.get(port);
+            if (!gates) {
+              gates = { nextId: -0.25, pending: new Set() };
+              codexPlusRpcResumeGates.set(port, gates);
+            }
+            const id = gates.nextId--;
+            gates.pending.add(id);
+            const controller = new AbortController();
+            (gates.controllers ||= new Map()).set(id, controller);
+            const next = replaced || message;
+            const resolving = next[0] === "resolve";
+            const expr = next[1];
+            const args = resolving ? { ...next[2] } : [...expr[3]];
+            const params = args[plan.resumeIndex];
+            const dataOnly = codexPlusRpcDataOnly(params);
+            // 含 export 的参数留在原 push 导入，失败时由 Capnweb 正常释放。
+            if (resolving || dataOnly) args[plan.resumeIndex] = ["promise", id];
+            else args.push(["promise", id]);
+            original.call(port, resolving
+              ? ["resolve", next[1], args, ...next.slice(3)]
+              : ["push", [...expr.slice(0, 3), args, ...expr.slice(4)], ...next.slice(2)], ...rest);
+            // 先释放整个发送队列，再让预检经同一端口发出。
+            void state.done.then(async () => {
+              let timer;
+              try {
+                controller.signal.throwIfAborted();
+                if (!gates.pending.has(id)) return params;
+                const timeout = new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    const error = new Error("会话准备超时，请重试");
+                    controller.abort(error);
+                    reject(error);
+                  }, codexPlusRpcPreparationTimeoutMs);
+                });
+                const prepare = async () => {
+                  controller.signal.throwIfAborted();
+                  if (!gates.pending.has(id)) return params;
+                  const prepared = await plan.before(params, dataOnly, resolving ? next[2] : args, controller.signal);
+                  controller.signal.throwIfAborted();
+                  if (deferContext && gates.pending.has(id)) await plan.context(next, controller.signal);
+                  controller.signal.throwIfAborted();
+                  return prepared;
+                };
+                const work = resolving ? codexPlusRpcSerializeTurn(next[2].conversationId, prepare) : prepare();
+                return await Promise.race([work, timeout]);
+              } finally {
+                clearTimeout(timer);
+                gates.controllers.delete(id);
+              }
+            }).then(
+              (prepared) => {
+                if (gates.pending.has(id)) original.call(port, ["resolve", id, dataOnly ? prepared : ["undefined"]]);
+              },
+              (error) => {
+                if (gates.pending.has(id)) {
+                  const reason = String(error?.message || error);
+                  codexPlusRpcRejectNotice(reason);
+                  original.call(port, ["reject", id, ["error", error?.name || "Error", reason]]);
+                }
+              },
+            ).catch((error) => codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`));
           } else {
             original.call(port, replaced || message, ...rest);
           }
@@ -21504,7 +22720,7 @@
         plan = codexPlusRpcPlanFrame(message, this);
       } catch {}
       // resolve 不分配隐式 RPC 序号。单独等待它，预检发出的请求才能通过同一端口。
-      if (message?.[0] === "resolve" && plan?.context) {
+      if (message?.[0] === "resolve" && plan?.context && !plan.before) {
         const port = this;
         void (async () => {
           if (state) await state.done;
@@ -24985,7 +26201,8 @@
       installThreadScrollNavigationCapture();
       installThreadScrollUserIntentCapture();
       installThreadScrollRouteHooks();
-      scheduleThreadScrollSync(true);
+      // 可见性恢复和普通 DOM 补扫不是导航，不能重新锁住旧的阅读位置。
+      scheduleThreadScrollSync();
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
     let enabled = threadScrollRestoreEnabled();
