@@ -126,7 +126,7 @@ fn cached_competitors_persisted_rejections_and_changed_signatures_are_not_hidden
     let (other, mut other_cache, _) = fixture();
     other_cache.capture_proxy(&[a.clone()]).unwrap();
     let mut changed = a.clone();
-    changed.relay_name = "Changed".into();
+    changed.relay_id = "different-supplier".into();
     assert!(!positive(&check(other.path(), &[changed], &saved)));
     let db = Connection::open(provider_cache::database_path(other.path()).unwrap()).unwrap();
     assert_eq!(
@@ -139,6 +139,81 @@ fn cached_competitors_persisted_rejections_and_changed_signatures_are_not_hidden
     db.execute("INSERT INTO rejected_proxy_ids VALUES('a',?1)", [at])
         .unwrap();
     assert!(!positive(&check(other.path(), &[a], &input)));
+}
+
+#[test]
+fn display_name_changes_do_not_invalidate_current_receipts_or_cached_requests() {
+    let (root, mut cache, at) = fixture();
+    let mut record = request("a", at, -10, 10, 2, 3);
+    record.relay_name.clear();
+    cache.capture_proxy(&[record.clone()]).unwrap();
+    let input = json!([receipt("live", at, 10, 2, 3)]);
+    let first = check(root.path(), &[record.clone()], &input);
+    assert!(positive(&first), "{first}");
+    assert_eq!(first[0]["providerName"], "supplier");
+    let mut saved = input;
+    for key in ["model", "provider", "requestIds", "requestSignatures"] {
+        saved[0][key] = first[0][key].clone();
+    }
+
+    record.relay_name = "Renamed supplier".into();
+    cache.capture_proxy(&[record.clone()]).unwrap();
+    drop(cache);
+    let renamed = check(root.path(), &[record.clone()], &saved);
+    assert!(positive(&renamed), "{renamed}");
+    assert_eq!(renamed[0]["providerName"], "Renamed supplier");
+    assert_eq!(renamed[0]["input"], 10);
+    assert_eq!(renamed[0]["output"], 2);
+    assert_eq!(renamed[0]["cached"], 3);
+    assert!(!positive(&check(
+        root.path(),
+        &[record.clone(), record],
+        &saved
+    )));
+}
+
+#[test]
+fn legacy_signature_after_rename_requires_the_original_cached_record() {
+    let (root, mut cache, at) = fixture();
+    let record = request("legacy", at, -10, 10, 2, 3);
+    cache.capture_proxy(&[record.clone()]).unwrap();
+    let mut saved = json!([receipt("live", at, 10, 2, 3)]);
+    let proof = check(root.path(), &[record.clone()], &saved);
+    for key in ["model", "provider", "requestIds"] {
+        saved[0][key] = proof[0][key].clone();
+    }
+    saved[0]["requestSignatures"] = json!({
+        "legacy": format!("{:x}", Sha256::digest(serde_json::to_vec(&record).unwrap()))
+    });
+    let mut renamed = record.clone();
+    renamed.relay_name = "Renamed supplier".into();
+    assert!(!positive(&match_receipts(
+        &[renamed.clone()],
+        &BTreeMap::new(),
+        &saved,
+    )));
+    assert!(positive(&check(root.path(), &[renamed.clone()], &saved)));
+
+    let mut conflict = renamed;
+    conflict.usage.as_mut().unwrap().output_tokens = Some(4);
+    assert!(!positive(&check(root.path(), &[conflict], &saved)));
+}
+
+#[test]
+fn cached_extra_evidence_is_still_a_conflict_after_name_normalization() {
+    let (root, mut cache, at) = fixture();
+    let record = request("a", at, -10, 10, 2, 3);
+    cache.capture_proxy(&[record.clone()]).unwrap();
+    let mut stored = serde_json::to_value(&record).unwrap();
+    stored["additionalEvidence"] = json!("different");
+    let db = Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    db.execute(
+        "UPDATE completed_proxy_requests SET data=?1 WHERE id='a'",
+        [stored.to_string()],
+    )
+    .unwrap();
+    let input = json!([receipt("live", at, 10, 2, 3)]);
+    assert!(!positive(&check(root.path(), &[record], &input)));
 }
 
 #[test]
