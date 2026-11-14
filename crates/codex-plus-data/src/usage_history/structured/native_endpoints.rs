@@ -649,18 +649,19 @@ impl Cache {
                 .verified
                 .get(&event.id)
                 .map_or(0, |saved| saved.count_conflict);
-            let observed = if event.count_uncertain {
+            let observed = if event.count_uncertain && !event.count_incomplete {
                 if event.inherited { 1 } else { 2 }
             } else {
                 0
             };
-            let retained = if previous == 1 && !event.inherited && scan_complete {
-                0
-            } else {
-                previous
-            };
+            let retained =
+                if previous == 1 && !event.inherited && !event.count_incomplete && scan_complete {
+                    0
+                } else {
+                    previous
+                };
             let conflict = retained.max(observed);
-            event.count_uncertain = conflict > 0;
+            event.count_uncertain |= conflict > 0;
             if conflict == previous {
                 continue;
             }
@@ -1646,6 +1647,82 @@ mod tests {
             &HashSet::new(),
         );
         assert_eq!(complete[0].provider, "supplier-a");
+    }
+
+    #[test]
+    fn incomplete_original_does_not_clear_an_inherited_count_conflict() {
+        let at = Local::now().timestamp_millis();
+        let mut event = UsageEvent {
+            id: [254; 32],
+            session: "session".into(),
+            turn: "turn".into(),
+            model: "model-a".into(),
+            timestamp: DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+            date: Local::now().date_naive(),
+            total: Tokens::new(100, 20, 10),
+            delta: Tokens::new(100, 20, 10),
+            has_file_baseline: false,
+            last: None,
+            count_uncertain: true,
+            count_incomplete: false,
+            provider: String::new(),
+            provider_source: None,
+            role: "main".into(),
+            inherited: true,
+            legacy_identity: None,
+            context_conflicts: ContextConflicts::default(),
+        };
+        let mut cache = Cache::default();
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut event), true));
+        assert_eq!(cache.verified[&event.id].count_conflict, 1);
+
+        event.inherited = false;
+        event.count_uncertain = false;
+        event.count_incomplete = true;
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut event), true));
+        assert!(event.count_uncertain);
+        assert_eq!(cache.verified[&event.id].count_conflict, 1);
+
+        event.count_uncertain = false;
+        event.count_incomplete = false;
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut event), true));
+        assert!(!event.count_uncertain);
+        assert_eq!(cache.verified[&event.id].count_conflict, 0);
+    }
+
+    #[test]
+    fn incomplete_observation_does_not_persist_a_new_count_conflict() {
+        let at = Local::now().timestamp_millis();
+        let mut event = UsageEvent {
+            id: [253; 32],
+            session: "session".into(),
+            turn: "turn".into(),
+            model: "model-a".into(),
+            timestamp: DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+            date: Local::now().date_naive(),
+            total: Tokens::new(100, 20, 10),
+            delta: Tokens::new(100, 20, 10),
+            has_file_baseline: false,
+            last: None,
+            count_uncertain: true,
+            count_incomplete: true,
+            provider: String::new(),
+            provider_source: None,
+            role: "main".into(),
+            inherited: false,
+            legacy_identity: None,
+            context_conflicts: ContextConflicts::default(),
+        };
+        let mut cache = Cache::default();
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut event), true));
+        assert!(event.count_uncertain);
+        assert!(!cache.verified.contains_key(&event.id));
+
+        event.count_uncertain = false;
+        event.count_incomplete = false;
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut event), true));
+        assert!(!event.count_uncertain);
+        assert!(!cache.verified.contains_key(&event.id));
     }
 
     #[test]

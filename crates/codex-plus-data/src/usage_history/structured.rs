@@ -2266,21 +2266,53 @@ impl Index {
             .cloned()
             .collect();
         for event in &mut snapshot.events {
-            event.count_incomplete =
-                !collision_identity_available || incomplete_sessions.contains(&event.session);
+            event.count_incomplete = incomplete_sessions.contains(&event.session);
         }
-        let (streams, contradictory_order) =
+        let (components, mut predecessors, contradictory_order) =
             segments::causal_order(&mut snapshot.events, &self.files);
         snapshot.issues += usize::from(contradictory_order);
-        let mut baselines: HashMap<usize, Tokens> = HashMap::new();
-        let continuation_starts: HashSet<_> = self
+        let unresolved = segments::prune_transitive_predecessors(&mut predecessors, 1_000_000);
+        let ordered_totals: Vec<_> = snapshot.events.iter().map(|event| event.total).collect();
+        seen.clear();
+        seen.extend(
+            snapshot
+                .events
+                .iter()
+                .enumerate()
+                .map(|(position, event)| (event.id, position)),
+        );
+        let mut continuation_starts: HashSet<_> = self
             .files
             .values()
-            .filter(|state| state.continuation)
+            .filter(|state| {
+                state.continuation
+                    && !state.identity_conflict
+                    && !(state.session.is_empty() && state.stamp.is_some())
+            })
             .flat_map(|state| state.events.iter().filter(|event| !event.has_file_baseline))
+            .filter(|event| {
+                seen.get(&event.id)
+                    .is_some_and(|&position| snapshot.events[position].inherited == event.inherited)
+            })
             .map(|event| event.id)
             .collect();
-        let mut session_watermarks: HashMap<String, Tokens> = HashMap::new();
+        for event in self
+            .files
+            .values()
+            .filter(|state| {
+                !state.continuation
+                    && !state.identity_conflict
+                    && !(state.session.is_empty() && state.stamp.is_some())
+            })
+            .flat_map(|state| &state.events)
+        {
+            if seen
+                .get(&event.id)
+                .is_some_and(|&position| snapshot.events[position].inherited == event.inherited)
+            {
+                continuation_starts.remove(&event.id);
+            }
+        }
         let mut count_evidence = HashMap::new();
         let mut conflicting_evidence = Vec::new();
         let mut alternate_totals = HashMap::<_, Vec<Tokens>>::new();
@@ -2296,9 +2328,32 @@ impl Index {
                 .or_default()
                 .push(event.total);
         }
-        let mut preceding_totals = HashMap::<usize, Vec<Tokens>>::new();
+        let mut preceding_totals = Vec::with_capacity(snapshot.events.len());
         let mut previous_baselines = Vec::with_capacity(snapshot.events.len());
-        let mut corrected_components = HashMap::<String, (bool, bool)>::new();
+        let merge_delta = |event: &mut UsageEvent, other: Tokens, temporary: bool| {
+            if event.delta.same_counts(other) && event.delta.cached_known == other.cached_known {
+                return;
+            }
+            if event.delta.input_tokens != other.input_tokens
+                || event.delta.output_tokens != other.output_tokens
+            {
+                if temporary || event.count_incomplete {
+                    event.count_incomplete = true;
+                } else {
+                    event.count_uncertain = true;
+                }
+            }
+            if !event.delta.cached_known
+                || !other.cached_known
+                || event.delta.cached_input_tokens != other.cached_input_tokens
+            {
+                event.delta.cached_input_tokens = 0;
+                event.delta.cached_known = false;
+            }
+            if event.delta.reasoning_output_tokens != other.reasoning_output_tokens {
+                event.delta.reasoning_output_tokens = None;
+            }
+        };
         seen.clear();
         // 模型仅取解析时已有的上下文或精确补证；会话摘要及其他事件不能证明连续性。
         for (position, event) in snapshot.events.iter_mut().enumerate() {
@@ -2307,44 +2362,33 @@ impl Index {
             if event.context_conflicts.provider {
                 event.provider.clear();
             }
-            let previous = baselines
-                .insert(streams[position], event.total)
-                .or_else(|| {
-                    continuation_starts
-                        .contains(&event.id)
-                        .then(|| session_watermarks.get(&event.session).copied())
-                        .flatten()
-                });
-            session_watermarks.insert(event.session.clone(), event.total);
+            let previous_position = predecessors[position]
+                .iter()
+                .copied()
+                .filter(|&before| before < position)
+                .max();
+            let previous = previous_position.map(|before| ordered_totals[before]);
             previous_baselines.push(previous);
-            event.count_incomplete |=
-                previous.is_none() && !event.has_file_baseline && event.last.is_none();
-            if let Some(before) = previous.filter(|before| {
-                before.input_tokens == event.total.input_tokens
-                    && before.output_tokens == event.total.output_tokens
-            }) {
-                let corrected = corrected_components
-                    .entry(event.session.clone())
-                    .or_default();
-                corrected.0 |= before.cached_known
-                    && (!event.total.cached_known
-                        || before.cached_input_tokens != event.total.cached_input_tokens);
-                corrected.1 |= before.reasoning_output_tokens.is_some()
-                    && before.reasoning_output_tokens != event.total.reasoning_output_tokens;
+            let unanchored = previous.is_none() && continuation_starts.contains(&event.id);
+            event.count_incomplete |= unresolved[position]
+                || unanchored
+                || previous.is_none() && !event.has_file_baseline && event.last.is_none();
+            if unresolved[position] {
+                event.delta = Tokens::default();
+            } else {
+                event.count_uncertain |= event.last.is_none()
+                    && previous.is_some_and(|before| event.total.requires_last_after(before));
+                event.delta = event.session_delta(previous);
             }
-            event.count_uncertain |= event.last.is_none()
-                && previous.is_some_and(|before| event.total.requires_last_after(before));
-            event.delta = event.session_delta(previous);
             // 竞争基线会影响本流下一次增量；其他分段插入不能解除这种不确定性。
-            if preceding_totals
-                .get(&streams[position])
-                .is_some_and(|totals| {
-                    totals
-                        .iter()
-                        .any(|total| event.session_delta(Some(*total)) != event.delta)
-                })
-            {
-                event.count_uncertain = true;
+            if !unresolved[position] {
+                for &before in &predecessors[position] {
+                    if let Some(Some(totals)) = preceding_totals.get(before) {
+                        for &total in *totals {
+                            merge_delta(event, event.session_delta(Some(total)), false);
+                        }
+                    }
+                }
             }
             // 缓存/推理分量也可能被补全或修正，不能让它们掩盖相同累计输入输出的竞争记录。
             let evidence_key = (
@@ -2354,13 +2398,7 @@ impl Index {
                 event.total.input_tokens,
                 event.total.output_tokens,
             );
-            preceding_totals.insert(
-                streams[position],
-                alternate_totals
-                    .get(&evidence_key)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
+            preceding_totals.push(alternate_totals.get(&evidence_key));
             if let Some(first) = count_evidence.insert(evidence_key, position) {
                 conflicting_evidence.push(first);
                 conflicting_evidence.push(position);
@@ -2372,23 +2410,84 @@ impl Index {
         }
         // 使用同一个会话基线比较所有同优先级副本，不能用首次出现的文件决定计数。
         for state in self.files.values().filter(|state| !state.identity_conflict) {
+            let mut source_previous = HashMap::new();
             for candidate in &state.events {
                 let Some(&position) = seen.get(&candidate.id) else {
                     continue;
                 };
                 let selected = &mut snapshot.events[position];
-                if candidate.inherited == selected.inherited
-                    && !candidate
-                        .session_delta(previous_baselines[position])
-                        .same_counts(selected.delta)
-                {
-                    selected.count_uncertain = true;
+                if candidate.inherited != selected.inherited {
+                    continue;
+                }
+                let previous = source_previous
+                    .insert(candidate.session.as_str(), position)
+                    .filter(|&before| {
+                        before != position && predecessors[position].binary_search(&before).is_ok()
+                    })
+                    .map(|before| ordered_totals[before])
+                    .or(previous_baselines[position]);
+                if !unresolved[position] {
+                    merge_delta(
+                        selected,
+                        candidate.session_delta(previous),
+                        predecessors[position].len() > 1,
+                    );
                 }
             }
         }
-        // 只有分量修正而没有新消费时，不能把修正额任意分配给既有事件。
-        for event in &mut snapshot.events {
-            if let Some(&(cached, reasoning)) = corrected_components.get(&event.session) {
+        let component_correction = |before: Tokens, after: Tokens| {
+            if before.input_tokens != after.input_tokens
+                || before.output_tokens != after.output_tokens
+            {
+                return (false, false);
+            }
+            (
+                before.cached_known
+                    && after.cached_known
+                    && before.cached_input_tokens != after.cached_input_tokens,
+                before.reasoning_output_tokens.is_some()
+                    && after.reasoning_output_tokens.is_some()
+                    && before.reasoning_output_tokens != after.reasoning_output_tokens,
+            )
+        };
+        let mut corrections = Vec::new();
+        for (after, before_positions) in predecessors.iter().enumerate() {
+            if unresolved[after] {
+                continue;
+            }
+            for &before in before_positions {
+                let flags = component_correction(ordered_totals[before], ordered_totals[after]);
+                if flags.0 || flags.1 {
+                    corrections.push((before, flags));
+                }
+            }
+        }
+        if !corrections.is_empty() {
+            // 修正只影响同一累计链中此前的事件，不传播到兄弟分支或修正后的增量。
+            let mut affected = vec![(false, false); snapshot.events.len()];
+            while let Some((position, (cached, reasoning))) = corrections.pop() {
+                let flags = (
+                    cached && !affected[position].0,
+                    reasoning && !affected[position].1,
+                );
+                if !flags.0 && !flags.1 {
+                    continue;
+                }
+                affected[position].0 |= flags.0;
+                affected[position].1 |= flags.1;
+                if unresolved[position] {
+                    continue;
+                }
+                for &before in &predecessors[position] {
+                    if ordered_totals[position].is_monotonic_after(ordered_totals[before]) {
+                        let boundary =
+                            component_correction(ordered_totals[before], ordered_totals[position]);
+                        corrections
+                            .push((before, (flags.0 && !boundary.0, flags.1 && !boundary.1)));
+                    }
+                }
+            }
+            for (event, (cached, reasoning)) in snapshot.events.iter_mut().zip(affected) {
                 if cached {
                     event.delta.cached_input_tokens = 0;
                     event.delta.cached_known = false;
@@ -2398,15 +2497,35 @@ impl Index {
                 }
             }
         }
+        let unresolved_components: HashSet<_> = components
+            .iter()
+            .zip(&unresolved)
+            .filter_map(|(&component, &unresolved)| unresolved.then_some(component))
+            .collect();
+        for (event, component) in snapshot.events.iter_mut().zip(components) {
+            if unresolved_components.contains(&component) {
+                event.delta.cached_input_tokens = 0;
+                event.delta.cached_known = false;
+                event.delta.reasoning_output_tokens = None;
+            }
+        }
         let scan_complete = snapshot.errors == 0 && snapshot.issues == 0;
         let count_cache_has_room = self
             .native_evidence
             .observe_count_conflicts(&mut snapshot.events, scan_complete);
+        if !collision_identity_available {
+            for event in &mut snapshot.events {
+                event.count_incomplete = true;
+            }
+        }
         snapshot.count_cache_available = cache_available && count_cache_has_room;
         snapshot.unobserved_count_conflicts =
             self.native_evidence.unobserved_count_conflicts(&seen);
         snapshot.events.retain(|event| {
-            event.delta.total_tokens > 0 || event.count_uncertain || event.context_conflicts.any()
+            event.delta.total_tokens > 0
+                || event.count_uncertain
+                || event.count_incomplete
+                || event.context_conflicts.any()
         });
         self.request_evidence.refresh(request_log);
         let captured = self.request_evidence.supplement_captured(
