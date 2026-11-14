@@ -1363,7 +1363,8 @@ async fn handle_models(
                     let has_effort = binding.is_some_and(|binding| {
                         !route::model_entry_reasoning_levels(gateway, binding, model).is_empty()
                     });
-                    let id = route::claude_desktop_alias(model, has_effort);
+                    let id =
+                        route::claude_desktop_model_id(gateway, binding.as_deref(), model, has_effort);
                     let mut row = json!({
                         "id": id,
                         "object": "model",

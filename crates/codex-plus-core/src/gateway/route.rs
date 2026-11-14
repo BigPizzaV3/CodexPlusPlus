@@ -772,12 +772,32 @@ pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
     format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
 }
 
+/// 同 [`claude_desktop_alias`]，但供应商池里配置的窗口超过 Desktop 自带的 200k 硬编码时，
+/// 给 id 追加 `[1m]` 后缀：Desktop 会按 1M 注册这个模型（cc-switch 同款做法）。
+/// 请求回来时后缀在 [`effective_model_detailed`] → [`claude_alias_target`] 里剥掉，路由不受影响。
+pub fn claude_desktop_model_id(
+    gateway: &GatewaySettings,
+    binding: Option<&AgentBinding>,
+    model: &str,
+    has_effort: bool,
+) -> String {
+    let mut id = claude_desktop_alias(model, has_effort);
+    if binding.is_some_and(|binding| {
+        model_entry_window(gateway, binding, model).is_some_and(|window| window > 200_000)
+    }) {
+        id.push_str("[1m]");
+    }
+    id
+}
+
 /// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
 fn claude_alias_target(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
     requested: &str,
 ) -> Option<String> {
+    // Desktop 看到的 id 可能带 `[1m]` 这类窗口后缀（见 [`claude_desktop_model_id`]）：先剥掉再对别名。
+    let (requested, _) = crate::model_suffix::parse_model_suffix(requested);
     let digits = [CLAUDE_ALIAS_PREFIX, CLAUDE_EFFORT_ALIAS_PREFIX]
         .iter()
         .find_map(|prefix| {
@@ -2143,6 +2163,40 @@ mod tests {
         assert_eq!(
             routed(&gateway, "claude-gw-0000000000")[0].1,
             "deepseek-v4-pro"
+        );
+    }
+
+    /// #3107：池里配置了超过 Desktop 自带 200k 硬编码的窗口时，Desktop 模型列表的 id 追加
+    /// `[1m]` 后缀（Desktop 按 1M 注册该模型）；带后缀的 id 请求回来仍能路由到原模型。
+    #[test]
+    fn desktop_model_id_appends_1m_suffix_when_window_exceeds_200k() {
+        let mut gateway = gateway("kimi-k3");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        let alias = claude_desktop_alias("kimi-k3", false);
+        assert_eq!(
+            claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false),
+            alias
+        );
+
+        gateway.providers[1]
+            .model_windows
+            .insert("kimi-k3".into(), 1_000_000);
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        let id = claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false);
+        assert_eq!(id, format!("{alias}[1m]"));
+        assert_eq!(
+            effective_model(&gateway, &binding, "kimi-k3", &id),
+            "kimi-k3"
+        );
+
+        // 不超过 200k 的窗口不加后缀。
+        gateway.providers[1]
+            .model_windows
+            .insert("kimi-k3".into(), 200_000);
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        assert_eq!(
+            claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false),
+            alias
         );
     }
 
