@@ -400,6 +400,10 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     claude_local::private_dir(&root.join("claude-code-3p"))?;
     let window = context_tokens(&gateway, binding, &binding.model);
     let capabilities = crate::gateway::agents::catalog_apps::desktop_capabilities(&wiring);
+    let no_proxy = merged_no_proxy([
+        std::env::var("NO_PROXY").ok(),
+        std::env::var("no_proxy").ok(),
+    ]);
     claude_local::launch_claude(source, |command| {
         if let Some(window) = window {
             command.env("CLAUDE_CODE_MAX_CONTEXT_TOKENS", window.to_string());
@@ -409,12 +413,34 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
             .env("ANTHROPIC_BASE_URL", &wiring.root)
             .env("ANTHROPIC_API_KEY", &wiring.token)
             .env("ANTHROPIC_AUTH_TOKEN", &wiring.token)
-            .env("NO_PROXY", "localhost,127.0.0.1")
-            .env("no_proxy", "localhost,127.0.0.1");
+            .env("NO_PROXY", &no_proxy)
+            .env("no_proxy", &no_proxy);
         if let Some(capabilities) = capabilities {
             command.env("CLAUDE_CODE_MODEL_CAPABILITIES", capabilities);
         }
     })
+}
+
+/// 网关地址在回环上，必须绕过代理；但不能把用户自己配的排除项（内网网段、内部域名）
+/// 覆盖掉，否则 Claude 访问内网也被送进代理，报 403（#3102）。
+/// 这里在继承的 NO_PROXY / no_proxy 之后补上回环地址，按出现顺序去重。
+fn merged_no_proxy(inherited: [Option<String>; 2]) -> String {
+    let mut entries: Vec<String> = Vec::new();
+    let values = inherited.into_iter().flatten();
+    for entry in values
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(|entry| entry.trim().to_string())
+                .collect::<Vec<_>>()
+        })
+        .chain(["localhost".to_string(), "127.0.0.1".to_string()])
+    {
+        if !entry.is_empty() && !entries.iter().any(|seen| seen.eq_ignore_ascii_case(&entry)) {
+            entries.push(entry);
+        }
+    }
+    entries.join(",")
 }
 
 #[cfg(test)]
@@ -431,6 +457,23 @@ mod tests {
             },
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn three_p_launch_keeps_user_no_proxy_entries() {
+        // #3102：用户配的内网排除项要保留，回环地址补在后面且不重复。
+        assert_eq!(
+            merged_no_proxy([
+                Some("10.0.0.0/8, *.internal,localhost".into()),
+                Some("10.0.0.0/8,intranet.example".into()),
+            ]),
+            "10.0.0.0/8,*.internal,localhost,intranet.example,127.0.0.1"
+        );
+        assert_eq!(merged_no_proxy([None, None]), "localhost,127.0.0.1");
+        assert_eq!(
+            merged_no_proxy([Some(" , ".into()), None]),
+            "localhost,127.0.0.1"
+        );
     }
 
     #[test]

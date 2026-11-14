@@ -297,6 +297,9 @@ pub trait BridgeDataService: Send + Sync {
     async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
         anyhow::bail!("Remote Control session recovery is unavailable")
     }
+    async fn prepare_thread_provider(&self, _request: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "changed": false, "message": "Thread provider preparation is unavailable"}))
+    }
 }
 
 /// 拓展脚本在独立 Codex 页面（例如宠物 overlay）执行表达式。
@@ -524,6 +527,7 @@ pub async fn handle_bridge_request(
         "/backend/status" => backend_status_value(
             ctx.runtime.backend_status().await,
             ctx.settings.get_settings().await,
+            &ctx.settings.codex_home_dir(),
         ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         // 开放给拓展的模型目录：只给模型列表与每模型元数据（含上下文窗口），去掉来源地址、config 路径。
@@ -699,6 +703,15 @@ pub async fn handle_bridge_request(
                 .unwrap_or_default()
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
+        }
+        "/thread-provider/prepare" => {
+            if payload.get("host_id").and_then(Value::as_str) != Some("local")
+                || !payload.get("hostId").is_none_or(|host| host.as_str() == Some("local"))
+            {
+                Err(anyhow::anyhow!("Thread provider preparation is local-only"))
+            } else {
+                ctx.data.prepare_thread_provider(payload.clone()).await
+            }
         }
         "/thread-resume-model-metadata" => {
             let request = payload.clone();
@@ -1270,6 +1283,10 @@ fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
     };
     settings.relay_profiles_enabled.hash(&mut hasher);
     hash_profile(&profile, &mut hasher);
+    if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+        crate::model_catalog::gateway_catalog_revision(&crate::codex_home::default_codex_home_dir())
+            .hash(&mut hasher);
+    }
     aggregate
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok())
@@ -1470,6 +1487,30 @@ mod dictation_privacy_tests {
     }
 
     #[test]
+    fn gateway_catalog_change_advances_heartbeat_without_a_settings_save() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("model-catalogs/codex-plus-gateway.json");
+        std::fs::create_dir(path.parent().unwrap()).unwrap();
+        std::fs::write(home.path().join("config.toml"),
+            "model_catalog_json = 'model-catalogs/codex-plus-gateway.json'\n").unwrap();
+        let mut settings = BackendSettings::default();
+        settings.active_relay_id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+        settings.settings_revision = "worker-snapshot".into();
+        let status = || backend_status_value(Ok(json!({"status":"ok"})), Ok(settings.clone()), home.path()).unwrap();
+        std::fs::write(&path, r#"{"models":[{"slug":"old"}]}"#).unwrap();
+        let before = status();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let modified = metadata.modified().unwrap();
+        assert_eq!(status(), before);
+        std::fs::write(&path, r#"{"models":[{"slug":"new"}]}"#).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+        let updated = std::fs::metadata(&path).unwrap();
+        assert_eq!(updated.modified().unwrap(), modified);
+        assert_eq!(updated.len(), metadata.len());
+        assert_ne!(status()["settingsRevision"], before["settingsRevision"]);
+    }
+
+    #[test]
     fn dictation_settings_bridge_applies_enhancement_switch_without_mutating_settings() {
         let mut settings = BackendSettings::default();
         settings.enhancements_enabled = false;
@@ -1499,6 +1540,7 @@ async fn settings_value(
 fn backend_status_value(
     status: anyhow::Result<Value>,
     settings: anyhow::Result<BackendSettings>,
+    home: &std::path::Path,
 ) -> anyhow::Result<Value> {
     let mut status = status?;
     if let Some(object) = status.as_object_mut() {
@@ -1512,7 +1554,15 @@ fn backend_status_value(
         // /settings/get（166 KB 的 JSON，编解码开销全落在渲染进程主线程上）。
         let revision = settings
             .as_ref()
-            .map(|settings| settings.settings_revision.clone())
+            .map(|settings| {
+                // 多开实例的设置独立保存，但 Agent 发布的网关目录仍可更新。
+                if settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+                    && let Some(catalog_revision) = crate::model_catalog::gateway_catalog_revision(home)
+                {
+                    return format!("{}:{catalog_revision:016x}", settings.settings_revision);
+                }
+                settings.settings_revision.clone()
+            })
             .unwrap_or_default();
         object.insert("settingsRevision".to_string(), Value::from(revision));
     }
@@ -1821,6 +1871,41 @@ fn empty_user_script_inventory() -> Value {
         "enabled": true,
         "scripts": []
     })
+}
+
+#[cfg(test)]
+mod thread_provider_prepare_route_tests {
+    use super::*;
+
+    fn context() -> BridgeContext {
+        BridgeContext::core(Arc::new(CoreRuntimeService::new(
+            0,
+            StatusStore::new(PathBuf::from("unused-thread-provider-status.json")),
+        )))
+    }
+
+    #[tokio::test]
+    async fn thread_provider_prepare_route_defaults_to_explicit_unavailable() {
+        let response = handle_bridge_request(context(), "/thread-provider/prepare", json!({
+            "host_id": "local", "thread_id": "thread-1",
+            "source_provider": "openai", "target_provider": "custom",
+        })).await;
+        assert_eq!(response["status"], "unavailable");
+        assert_eq!(response["changed"], false);
+    }
+
+    #[tokio::test]
+    async fn thread_provider_prepare_route_rejects_unknown_or_conflicting_hosts() {
+        for payload in [
+            json!({}),
+            json!({"host_id": "ssh"}),
+            json!({"host_id": "local", "hostId": "ssh"}),
+        ] {
+            let response = handle_bridge_request(context(), "/thread-provider/prepare", payload).await;
+            assert_eq!(response["status"], "failed");
+            assert!(response["message"].as_str().unwrap().contains("local-only"));
+        }
+    }
 }
 
 #[cfg(test)]

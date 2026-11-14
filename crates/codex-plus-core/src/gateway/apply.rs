@@ -251,7 +251,7 @@ fn agent_gateway_model_list(
 fn write_agent_config(
     ctx: &ApplyContext,
     agent: &ToolId,
-    binding: &AgentBinding,
+    binding: &mut AgentBinding,
     reapply: bool,
 ) -> anyhow::Result<(Option<String>, bool)> {
     // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
@@ -321,7 +321,16 @@ fn write_agent_config(
                 stash::save_stash(&grok_stash_path(ctx), file_stash)?;
             }
         }
-        ToolId::Codex => return Ok((None, write_codex(ctx, &gateway, binding, reapply)?)),
+        ToolId::Codex => {
+            let changed = write_codex(ctx, &gateway, binding, reapply)?;
+            let models = route::codex_binding_models(&gateway, binding)
+                .into_iter()
+                .filter(|model| route::codex_model_available(&gateway, binding, model))
+                .map(|model| model.to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            binding.known_models.extend(models);
+            return Ok((None, changed));
+        }
         other => match agents::spec(other.as_str()) {
             Some(spec) => agents::connect::write(ctx, spec, &gateway, binding)?,
             None => bail!("{} 不支持网关模式", other.as_str()),
@@ -1762,6 +1771,7 @@ fn enable_binding_inner(
         .as_ref()
         .map(|previous| previous.model_selections.clone())
         .unwrap_or_default();
+    binding.known_models = previous.as_ref().map(|binding| binding.known_models.clone()).unwrap_or_default();
     if let Some(selection) = &mut binding.default_model_selection {
         selection.upstream_model = selection.upstream_model_name();
     }
@@ -1827,7 +1837,7 @@ fn enable_binding_inner(
             Ok(previous.clone())
         }
     })?;
-    let (snapshot, changed) = write_agent_config(ctx, agent, &binding, false)?;
+    let (snapshot, changed) = write_agent_config(ctx, agent, &mut binding, false)?;
     if let Some(snapshot) = snapshot
         && binding.restore.claude_previous_provider_id.is_empty()
     {
@@ -2594,11 +2604,12 @@ pub fn reapply_if_port_changed(ctx: &ApplyContext) -> anyhow::Result<usize> {
         };
         let mut binding = binding.clone();
         binding.restore.applied_port = Some(ctx.port);
-        let result = write_agent_config(ctx, &agent, &binding, false).and_then(|(_, changed)| {
+        let result = write_agent_config(ctx, &agent, &mut binding, false).and_then(|(_, changed)| {
             // 写配置时可能改过 gateway.json：只更新本次成功项，不回写旧快照。
             ctx.gateway.update(|latest| {
                 if let Some(target) = latest.bindings.get_mut(agent.as_str()) {
                     target.restore.applied_port = Some(ctx.port);
+                    target.known_models.extend(binding.known_models.clone());
                 }
                 Ok(())
             })?;
@@ -2693,7 +2704,18 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
         if taken_over(ctx, &agent).is_some() {
             continue;
         }
-        let result = write_agent_config(ctx, &agent, binding, false).and_then(|(_, changed)| {
+        let mut published = binding.clone();
+        let result = write_agent_config(ctx, &agent, &mut published, false).and_then(|(_, changed)| {
+            if published.known_models != binding.known_models {
+                ctx.gateway.update(|latest| {
+                    if let Some(current) = latest.bindings.get_mut(agent.as_str())
+                        && current.enabled && current.token == binding.token
+                    {
+                        current.known_models.extend(published.known_models);
+                    }
+                    Ok(())
+                })?;
+            }
             if changed {
                 crate::gateway::connection_generation::publish(&ctx.codex_home)?;
             }
@@ -2788,7 +2810,7 @@ fn reapply_binding(
             binding.restore.codex_previous_relay_id = current;
         }
     }
-    let (snapshot, changed) = write_agent_config(ctx, agent, &binding, true)?;
+    let (snapshot, changed) = write_agent_config(ctx, agent, &mut binding, true)?;
     if let Some(snapshot) = snapshot
         && binding.restore.claude_previous_provider_id.is_empty()
     {

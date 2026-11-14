@@ -1668,6 +1668,19 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("archived lookup task failed: {error}"))
     }
 
+    async fn prepare_thread_provider(&self, request: Value) -> anyhow::Result<Value> {
+        tokio::task::spawn_blocking(move || {
+            let settings = codex_plus_core::settings::SettingsStore::default().load()?;
+            codex_plus_data::prepare_thread_provider(
+                &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+                settings.provider_sync_enabled,
+                &request,
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("Thread provider preparation task failed: {error}"))?
+    }
+
     async fn recover_remote_control_session(&self, thread_id: String) -> anyhow::Result<Value> {
         let settings = codex_plus_core::settings::SettingsStore::default()
             .load()

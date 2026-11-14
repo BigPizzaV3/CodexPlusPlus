@@ -812,6 +812,8 @@
     }
     const active = activeRewriters();
     if (!active.length) return { ok: false, modules: [], diagnostics: { reason: "disabled", rewriters: {} } };
+    // Rspack 的 runtime 排在所有入口脚本最后：26.1111 起入口从 4 个变成 5 个，
+    // 只取前 4 个会漏掉 runtime 而退回 Vite 发现（missing-app-initial，issue #3103）。上限只防异常页面。
     const entries = [...(document?.scripts ?? [])].map((script) => script.src).filter((src) => {
       try {
         const parsed = new URL(src);
@@ -821,7 +823,7 @@
       } catch {
         return false;
       }
-    }).slice(0, 4);
+    }).slice(0, 12);
     const rspack = root.__codexPlusNativeFastRspack;
     if (runtime.status().enabled && rspack) {
       const candidates = [];

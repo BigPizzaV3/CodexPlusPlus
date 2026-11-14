@@ -432,7 +432,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "42";
+  const codexAppServerModelRequestPatchVersion = "48";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -481,3 +481,73 @@
     conversationViewContentAnchor: "[data-thread-user-message-navigation-content]",
     conversationViewFooter: "[data-thread-scroll-footer]",
   };
+
+  // #3036 / #3078：经 Codex++ 启动后新建对话报「Maximum call stack size exceeded」。页面里的异常不进日志，
+  // 定位不到是哪一段在递归。这里只做记录：发往 app-server 的几处包装捕获到栈溢出时，把栈的前几十行写进
+  // codex-plus.log（renderer stack_overflow），然后原样抛出；返回值、this 和原函数上的标记属性都不变。
+  const codexPlusStackOverflowSeen = window.__codexPlusStackOverflowSeen || (window.__codexPlusStackOverflowSeen = new Set());
+
+  function codexPlusIsStackOverflow(error) {
+    return error?.name === "RangeError" && /maximum call stack/i.test(String(error?.message || ""));
+  }
+
+  function codexPlusNoteStackOverflow(where, method, error) {
+    try {
+      if (!codexPlusIsStackOverflow(error)) return;
+      const key = `${where}|${method || ""}`;
+      // 每个入口只记一次，同一页面最多 16 条，避免反复重试刷屏。
+      if (codexPlusStackOverflowSeen.has(key) || codexPlusStackOverflowSeen.size >= 16) return;
+      codexPlusStackOverflowSeen.add(key);
+      sendCodexPlusDiagnostic("stack_overflow", {
+        where,
+        method: String(method || "").slice(0, 120),
+        stack: String(error?.stack || "").split("\n").slice(0, 40).join("\n").slice(0, 6000),
+      });
+    } catch (_) {}
+  }
+
+  /** 给 target[key] 上已经装好的函数套一层只记录栈溢出的外壳；已经套过就不再套。 */
+  function codexPlusTraceStackOverflow(target, key, where) {
+    try {
+      const fn = target?.[key];
+      if (typeof fn !== "function" || fn.__codexPlusStackOverflowTraced) return false;
+      const traced = function codexPlusStackOverflowTraced(...args) {
+        const method = typeof args[0] === "string" ? args[0] : "";
+        let result;
+        try {
+          result = fn.apply(this, args);
+        } catch (error) {
+          codexPlusNoteStackOverflow(where, method, error);
+          throw error;
+        }
+        // 只旁听失败，不替换返回的 Promise（调用方可能依赖它本身）。
+        if (result && typeof result.then === "function") {
+          try {
+            result.then(undefined, (error) => codexPlusNoteStackOverflow(where, method, error));
+          } catch (_) {}
+        }
+        return result;
+      };
+      Object.assign(traced, fn);
+      traced.__codexPlusStackOverflowTraced = fn;
+      target[key] = traced;
+      // 不可写的对象在非严格模式下赋值会静默失败，回读确认。
+      return target[key] === traced;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 没被 Codex 自己接住的栈溢出（事件回调、未处理的 Promise）也记一笔。
+  try {
+    if (window.__codexPlusStackOverflowListeners) {
+      window.removeEventListener("error", window.__codexPlusStackOverflowListeners.error, true);
+      window.removeEventListener("unhandledrejection", window.__codexPlusStackOverflowListeners.rejection, true);
+    }
+    window.__codexPlusStackOverflowListeners = {
+      error: (event) => codexPlusNoteStackOverflow("window.error", "", event?.error),
+      rejection: (event) => codexPlusNoteStackOverflow("unhandledrejection", "", event?.reason),
+    };
+    window.addEventListener("error", window.__codexPlusStackOverflowListeners.error, true);
+    window.addEventListener("unhandledrejection", window.__codexPlusStackOverflowListeners.rejection, true);
+  } catch (_) {}

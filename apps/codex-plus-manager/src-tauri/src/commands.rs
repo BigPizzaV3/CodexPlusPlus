@@ -2977,6 +2977,16 @@ fn write_multi_instance_codex_home(
         helper_port,
         preserve_nonprovider,
     )?;
+    if profile.id == codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        && let Some(catalog) = codex_plus_core::model_catalog::gateway_catalog_path(default_home)
+        && catalog == default_home.join("model-catalogs/codex-plus-gateway.json")
+        && catalog.is_file()
+    {
+        let config_path = codex_home.join("config.toml");
+        let mut doc = std::fs::read_to_string(&config_path)?.parse::<toml_edit::DocumentMut>()?;
+        doc["model_catalog_json"] = toml_edit::value(catalog.to_string_lossy().to_string());
+        codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    }
     Ok(profile)
 }
 
@@ -13919,6 +13929,37 @@ model_reasoning_effort = "high"
             std::fs::read_to_string(main_home.join("auth.json")).unwrap(),
             MAIN_CHATGPT_AUTH
         );
+    }
+
+    #[test]
+    fn multi_instance_gateway_uses_the_manager_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let main_home = temp.path().join("main-codex");
+        let instance_home = temp.path().join("instance/codex-home");
+        let catalog = main_home.join("model-catalogs/codex-plus-gateway.json");
+        std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&instance_home).unwrap();
+        std::fs::write(&catalog, r#"{"models":[{"slug":"old"}]}"#).unwrap();
+        std::fs::write(main_home.join("config.toml"),
+            "model_catalog_json = 'model-catalogs/codex-plus-gateway.json'\n").unwrap();
+        let profile = RelayProfile {
+            id: codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID.into(),
+            name: "gateway".into(),
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            model: "old".into(),
+            model_list: "old\nother".into(),
+            config_contents: "model_provider = 'custom'\nmodel = 'old'\n[model_providers.custom]\nname = 'gateway'\nwire_api = 'responses'\nbase_url = 'http://127.0.0.1:61234/gw/codex/v1'\n".into(),
+            auth_contents: r#"{"OPENAI_API_KEY":"test"}"#.into(),
+            api_key: "test".into(),
+            ..RelayProfile::default()
+        };
+
+        write_multi_instance_codex_home(&instance_home, &main_home, &profile, "", 61235, false).unwrap();
+        assert_eq!(codex_plus_core::model_catalog::gateway_catalog_path(&instance_home), Some(catalog.clone()));
+        std::fs::write(&catalog, r#"{"models":[{"slug":"new"}]}"#).unwrap();
+        let shared = codex_plus_core::model_catalog::gateway_catalog_path(&instance_home).unwrap();
+        assert!(std::fs::read_to_string(shared).unwrap().contains(r#""new""#));
     }
 
     #[test]
