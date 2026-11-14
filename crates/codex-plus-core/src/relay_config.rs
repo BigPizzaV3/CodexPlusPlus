@@ -5674,7 +5674,18 @@ fn merge_toml_item(target: &mut Item, source: &Item) {
             return;
         }
     }
-
+    // 数组表（[[table]]）重复出现时必须按条目追加，不能整棵替换：
+    // 每个独立的 [[skills.config]] 块只含一个条目，逐块合并阶段整棵覆盖会把
+    // N 条用户规则塌缩成最后出现的那 1 条（issue #3115：切换供应商后
+    // config.toml 里 260 条 [[skills.config]] 只剩最后写的 1 条）。
+    if let (Some(target_array), Some(source_array)) =
+        (target.as_array_of_tables_mut(), source.as_array_of_tables())
+    {
+        for entry in source_array.iter() {
+            target_array.push(entry.clone());
+        }
+        return;
+    }
     *target = source.clone();
 }
 
