@@ -2978,6 +2978,16 @@ fn write_multi_instance_codex_home(
         helper_port,
         preserve_nonprovider,
     )?;
+    if profile.id == codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        && let Some(catalog) = codex_plus_core::model_catalog::gateway_catalog_path(default_home)
+        && catalog == default_home.join("model-catalogs/codex-plus-gateway.json")
+        && catalog.is_file()
+    {
+        let config_path = codex_home.join("config.toml");
+        let mut doc = std::fs::read_to_string(&config_path)?.parse::<toml_edit::DocumentMut>()?;
+        doc["model_catalog_json"] = toml_edit::value(catalog.to_string_lossy().to_string());
+        codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    }
     Ok(profile)
 }
 
@@ -4384,12 +4394,6 @@ pub async fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::W
 #[tauri::command]
 pub async fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
     let _control = weixin_control().lock().await;
-    if let Err(error) = SettingsStore::default().update(json!({"weixinConnectEnabled": false})) {
-        return failed(
-            &format!("保存微信连接设置失败：{error}"),
-            current_weixin_status(),
-        );
-    }
     let stopping = weixin_runtime()
         .lock()
         .ok()
@@ -4409,6 +4413,12 @@ pub async fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::We
             status.state = "stopped".to_string();
             status.message = "微信连接已停止。".to_string();
         }
+    }
+    if let Err(error) = SettingsStore::default().update(json!({"weixinConnectEnabled": false})) {
+        let message = format!("已请求停止微信连接，但保存设置失败，下次启动时可能自动连接：{error}");
+        let mut status = current_weixin_status();
+        status.message = message.clone();
+        return failed(&message, status);
     }
     ok(
         if stopping {
@@ -4749,7 +4759,7 @@ pub fn save_settings(
     if let Some(revision) = expected_revision {
         settings.settings_revision = revision;
     }
-    let settings = normalize_settings_before_save(settings);
+    let mut settings = normalize_settings_before_save(settings);
     // 保存诊断：供应商模型列表被改小/改大时能直接看出「提交上来的到底是什么」。
     // 用户反馈过「删掉一行保存后又变回三行」，只有把每次保存的行数记下来才能区分
     // 「界面没提交改动」和「提交了又被别处覆盖」。
@@ -4779,6 +4789,8 @@ pub fn save_settings(
     };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
+    // 原生登录仅由独立选择命令更新，普通偏好表单不能覆盖刚发布的身份。
+    settings.native_auth_selection = previous.native_auth_selection.clone();
     if let Err(error) = codex_plus_core::connect::outbound::validate_settings_change(&previous, &settings) {
         return failed(
             &error.to_string(),
@@ -8478,23 +8490,8 @@ pub fn skip_update_version(version: String) -> CommandResult<SettingsPayload> {
     }
 }
 
-/// ClaudeMom 还没有自己的发布渠道：Codex++ 的更新包装上去会把它换成 Codex++，所以检查、下载、安装都拦住。
-const CLAUDE_MOM_UPDATE_UNSUPPORTED: &str = "ClaudeMom 暂不支持自动更新，请重新构建。";
-
 #[tauri::command]
 pub async fn check_update() -> CommandResult<Value> {
-    if crate::flavor::is_claude_mom() {
-        return CommandResult {
-            status: "not_checked".to_string(),
-            message: CLAUDE_MOM_UPDATE_UNSUPPORTED.to_string(),
-            payload: json!({
-                "currentVersion": codex_plus_core::version::VERSION,
-                "updateAvailable": false,
-                "downloaded": false,
-                "progress": 0
-            }),
-        };
-    }
     match codex_plus_core::update::check_for_update(codex_plus_core::version::VERSION).await {
         Ok(update) => {
             let status = if update.update_available {
@@ -8559,9 +8556,6 @@ pub async fn download_update(
     app: tauri::AppHandle,
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
-    if crate::flavor::is_claude_mom() {
-        return failed(CLAUDE_MOM_UPDATE_UNSUPPORTED, json!({ "downloaded": false }));
-    }
     let Some(release) = release else {
         return failed(
             "请先检查更新并选择可下载的 Release asset。",
@@ -8642,12 +8636,6 @@ async fn perform_update_inner<F>(
 where
     F: FnMut(codex_plus_core::update::UpdateProgress) + Send,
 {
-    if crate::flavor::is_claude_mom() {
-        return failed(
-            CLAUDE_MOM_UPDATE_UNSUPPORTED,
-            json!({ "currentVersion": codex_plus_core::version::VERSION, "progress": 0 }),
-        );
-    }
     let Some(release) = release else {
         return failed(
             "请先检查更新并选择可下载的 Release asset。",
@@ -9468,14 +9456,34 @@ pub fn switch_relay_profile(
                 }),
             );
             // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 网关」等于重新接入。
-            let _ = codex_plus_core::gateway::apply::note_codex_switched(
+            let binding_update = codex_plus_core::gateway::apply::note_codex_switched(
                 &codex_plus_core::gateway::store::GatewayStore::default(),
                 &result.settings.active_relay_id,
                 &previous_active_relay_id,
             );
             // 新配置已经写进 config.toml：需要本地代理时立即让它常驻，
             // 这样不经过 Codex++ 启动的客户端也能直接用。
-            sync_resident_helper();
+            let helper = sync_resident_helper();
+            if result.settings.active_relay_id == codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+                if let Err(error) = binding_update {
+                    return failed(
+                        &format!("供应商已切换，但网关绑定更新失败：{error:#}"),
+                        relay_switch_payload(result.settings, status, result.backup_path),
+                    );
+                }
+                if helper.is_none() {
+                    return failed(
+                        "供应商已切换，但本地网关没能启动，请查看诊断日志",
+                        relay_switch_payload(result.settings, status, result.backup_path),
+                    );
+                }
+                if let Err(error) = codex_plus_core::gateway::connection_generation::publish(&home) {
+                    return failed(
+                        &format!("供应商已切换，但通知网关重新连接失败：{error:#}"),
+                        relay_switch_payload(result.settings, status, result.backup_path),
+                    );
+                }
+            }
             let imported_name = outcome.imported_profile_id.as_ref().and_then(|id| {
                 result
                     .settings
@@ -12073,6 +12081,39 @@ cwd = \"/tmp\"
     }
 
     #[test]
+    fn manager_preferences_save_preserves_the_latest_explicit_native_login() {
+        let _guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(
+            Some(temp.path().join("settings.json")),
+        );
+        let store = SettingsStore::default();
+        store.save(&BackendSettings {
+            enhancements_enabled: false,
+            codex_app_auto_takeover: false,
+            ..BackendSettings::default()
+        }).unwrap();
+        let stale = store.load().unwrap();
+        let mut outcomes = Vec::new();
+        for selection in [
+            Some(codex_plus_core::settings::NativeAuthSelection::Account { account_ref: "fixture-a".into() }),
+            Some(codex_plus_core::settings::NativeAuthSelection::None),
+        ] {
+            let mut current = store.load().unwrap();
+            current.native_auth_selection = selection.clone();
+            store.save(&current).unwrap();
+            let revision = store.revision().unwrap();
+            let result = save_settings(stale.clone(), Some(revision));
+            outcomes.push((result.status, store.load().unwrap().native_auth_selection, selection));
+        }
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
+        for (status, actual, expected) in outcomes {
+            assert_eq!(status, "ok");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn provider_sync_success_reports_backup_directory_when_something_changed() {
         let mut sync = provider_sync_result_for_test(
             codex_plus_data::ProviderSyncStatus::Synced,
@@ -14109,6 +14150,37 @@ model_reasoning_effort = "high"
             std::fs::read_to_string(main_home.join("auth.json")).unwrap(),
             MAIN_CHATGPT_AUTH
         );
+    }
+
+    #[test]
+    fn multi_instance_gateway_uses_the_manager_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let main_home = temp.path().join("main-codex");
+        let instance_home = temp.path().join("instance/codex-home");
+        let catalog = main_home.join("model-catalogs/codex-plus-gateway.json");
+        std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&instance_home).unwrap();
+        std::fs::write(&catalog, r#"{"models":[{"slug":"old"}]}"#).unwrap();
+        std::fs::write(main_home.join("config.toml"),
+            "model_catalog_json = 'model-catalogs/codex-plus-gateway.json'\n").unwrap();
+        let profile = RelayProfile {
+            id: codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID.into(),
+            name: "gateway".into(),
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            model: "old".into(),
+            model_list: "old\nother".into(),
+            config_contents: "model_provider = 'custom'\nmodel = 'old'\n[model_providers.custom]\nname = 'gateway'\nwire_api = 'responses'\nbase_url = 'http://127.0.0.1:61234/gw/codex/v1'\n".into(),
+            auth_contents: r#"{"OPENAI_API_KEY":"test"}"#.into(),
+            api_key: "test".into(),
+            ..RelayProfile::default()
+        };
+
+        write_multi_instance_codex_home(&instance_home, &main_home, &profile, "", 61235, false).unwrap();
+        assert_eq!(codex_plus_core::model_catalog::gateway_catalog_path(&instance_home), Some(catalog.clone()));
+        std::fs::write(&catalog, r#"{"models":[{"slug":"new"}]}"#).unwrap();
+        let shared = codex_plus_core::model_catalog::gateway_catalog_path(&instance_home).unwrap();
+        assert!(std::fs::read_to_string(shared).unwrap().contains(r#""new""#));
     }
 
     #[test]

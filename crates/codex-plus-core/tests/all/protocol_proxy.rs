@@ -668,8 +668,10 @@ fn assert_local_compaction_summary(item: &Value, summary: &str) {
     );
 }
 
+/// 读不懂的压缩项（原生密文、旧格式、损坏的本地摘要）原先整条拒绝，#3106 起改为占位说明：
+/// 不把原文当摘要发出去，也不再让重放这段历史的每轮请求都失败。
 #[test]
-fn chat_conversion_rejects_unmarked_or_invalid_compaction_history() {
+fn chat_conversion_degrades_unmarked_or_invalid_compaction_history() {
     for content in [
         "OPAQUE_NATIVE",
         "unmarked legacy summary",
@@ -682,7 +684,13 @@ fn chat_conversion_rejects_unmarked_or_invalid_compaction_history() {
             json!({"type": "compaction", "encrypted_content": content}),
             json!([{"type": "compaction", "encrypted_content": content}]),
         ] {
-            assert!(responses_to_chat_completions(json!({"input": input})).is_err());
+            let converted = responses_to_chat_completions(json!({"input": input})).unwrap();
+            let messages = converted["messages"].as_array().unwrap();
+            assert_eq!(messages.len(), 1, "{content}");
+            assert_eq!(messages[0]["role"], "user");
+            let text = messages[0]["content"].as_str().unwrap();
+            assert!(text.contains("compacted by a different provider"), "{content}");
+            assert!(!text.contains(content), "原文不能当摘要发出: {content}");
         }
     }
 }
@@ -1633,27 +1641,130 @@ async fn native_compaction_history_returns_responses_error_without_fallback() {
     assert!(body.contains("compaction_incompatible"));
 }
 
-#[tokio::test]
-async fn native_compaction_history_on_chat_upstream_returns_responses_error() {
-    let mut result = open_responses_proxy_request_with_settings(
-        &json!({
-            "model": "model",
-            "stream": false,
-            "input": [
-                { "type": "compaction", "encrypted_content": "OPAQUE_NATIVE" },
-                { "type": "compaction_trigger" }
-            ]
-        })
-        .to_string(),
-        remote_compaction_settings("http://127.0.0.1:9/v1", RelayProtocol::ChatCompletions),
-    )
-    .await
-    .expect("chat conversion refusal is a Responses error, not a proxy failure");
+/// 原生上游（官方账号）签发的加密压缩项样例：Fernet 密文 + 透传元数据（#3106）。
+fn native_fernet_compaction() -> Value {
+    json!({
+        "type": "compaction",
+        "id": "cmp_07348027",
+        "encrypted_content": "gAAAAABq9sH8Pd9Ajo0WqM8JpkiAX3_OPAQUE_NATIVE",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "turn_1" }
+    })
+}
 
-    assert_eq!(result.status_code, 400);
-    let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
-    assert!(body.contains("native_compaction_unsupported"));
-    assert!(body.contains("compaction_incompatible"));
+/// #3106：Chat 桥接上游没有其他候选可切时，历史里的原生加密压缩项换成占位说明继续发送，
+/// 普通对话和压缩请求本身都不再 400。原先这里断言「必须拒绝」（native_compaction_unsupported），
+/// 那会让每轮重放这段历史的请求都失败、会话永久锁死。
+#[tokio::test]
+async fn native_compaction_history_on_chat_upstream_degrades_to_placeholder() {
+    for trigger in [false, true] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            json!({
+                "id": "chatcmpl_degraded",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "CHAT_REPLY" },
+                    "finish_reason": "stop"
+                }]
+            })
+            .to_string(),
+        ));
+        let mut input = vec![
+            native_fernet_compaction(),
+            json!({ "type": "message", "role": "user", "content": "继续" }),
+        ];
+        if trigger {
+            input.push(json!({ "type": "compaction_trigger" }));
+        }
+        let mut result = open_responses_proxy_request_with_settings(
+            &json!({ "model": "model", "stream": false, "input": input }).to_string(),
+            remote_compaction_settings(
+                &format!("http://{address}/v1"),
+                RelayProtocol::ChatCompletions,
+            ),
+        )
+        .await
+        .unwrap();
+        let (headers, sent) = server.await.unwrap();
+
+        assert_eq!(result.status_code, 200, "trigger={trigger}");
+        assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        let sent_text = sent.to_string();
+        assert!(!sent_text.contains("OPAQUE_NATIVE"), "密文不能发给桥接上游");
+        assert!(!sent_text.contains("internal_chat_message_metadata_passthrough"));
+        let messages = sent["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "user");
+        assert!(
+            messages[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("compacted by a different provider"),
+            "占位说明留在原压缩项的位置: {sent}"
+        );
+        assert!(sent_text.contains("继续"), "其余历史照常转换");
+        assert_eq!(result.compaction, trigger);
+        let body = String::from_utf8(result.read_body().await.unwrap()).unwrap();
+        assert!(body.contains("CHAT_REPLY"), "trigger={trigger}: {body}");
+        assert!(!body.contains("native_compaction_unsupported"));
+    }
+}
+
+/// #3106：转换函数本身（Chat 与 Anthropic 桥接共用的第一跳）遇到原生加密压缩项不再报错，
+/// 换成占位说明；本地摘要（codexplusplus:summary:v1:）仍展开成原文，工具调用配对不受影响。
+#[test]
+fn responses_to_chat_replaces_native_compaction_with_placeholder() {
+    let body = json!({
+        "model": "deepseek-v4-pro",
+        "input": [
+            native_fernet_compaction(),
+            {
+                "type": "compaction",
+                "encrypted_content": "codexplusplus:summary:v1:\"LOCAL_SUMMARY\""
+            },
+            { "type": "message", "role": "user", "content": "看一下目录" },
+            { "type": "function_call", "call_id": "call_1", "name": "ls", "arguments": "{}" },
+            { "type": "function_call_output", "call_id": "call_1", "output": "a.txt" }
+        ]
+    });
+    let converted = responses_to_chat_completions(body.clone()).unwrap();
+    let messages = converted["messages"].as_array().unwrap();
+    let text = converted.to_string();
+    assert!(!text.contains("OPAQUE_NATIVE"));
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be read under the current protocol")
+    );
+    assert!(messages[1]["content"].as_str().unwrap().contains("LOCAL_SUMMARY"));
+    assert!(text.contains("看一下目录"));
+    assert_eq!(messages.last().unwrap()["role"], "tool");
+    assert_eq!(messages.last().unwrap()["tool_call_id"], "call_1");
+
+    // 单个 item 形式的 input 同样降级。
+    let single = responses_to_chat_completions(json!({
+        "model": "deepseek-v4-pro",
+        "input": native_fernet_compaction()
+    }))
+    .unwrap();
+    assert_eq!(single["messages"].as_array().unwrap().len(), 1);
+    assert!(!single.to_string().contains("OPAQUE_NATIVE"));
+
+    // Anthropic 桥接复用同一份第一跳转换，也不再整条拒绝。
+    let anthropic = codex_plus_core::anthropic_bridge::responses_to_anthropic_messages(
+        body,
+        &codex_plus_core::anthropic_bridge::AnthropicRequestOptions::default(),
+    )
+    .unwrap();
+    let anthropic_text = anthropic.to_string();
+    assert!(!anthropic_text.contains("OPAQUE_NATIVE"));
+    assert!(anthropic_text.contains("compacted by a different provider"));
 }
 
 #[test]
@@ -4435,6 +4546,45 @@ data: [DONE]
     assert!(error.contains("bad request"));
     assert!(error.contains("invalid_request_error"));
     assert!(!error.contains("event: response.completed"));
+}
+
+#[test]
+fn chat_sse_ignores_empty_tool_call_id_delta_after_valid_id() {
+    let converted = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_qwen_auto","model":"qwentokenplan/auto","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_qwen","type":"function","function":{"name":"exec","arguments":""}}]}}]}
+
+data: {"id":"chatcmpl_qwen_auto","model":"qwentokenplan/auto","choices":[{"delta":{"tool_calls":[{"index":0,"id":"","function":{"arguments":"{\"cmd\":"}}]}}]}
+
+data: {"id":"chatcmpl_qwen_auto","model":"qwentokenplan/auto","choices":[{"delta":{"tool_calls":[{"index":0,"id":"","function":{"arguments":"\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#,
+    );
+
+    let events = converted
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .collect::<Vec<_>>();
+    let tool_items = events
+        .iter()
+        .filter_map(|event| {
+            let item = event
+                .get("item")
+                .or_else(|| event.pointer("/response/output/0"))?;
+            (item["type"] == "function_call").then(|| item.clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(tool_items.len(), 3, "应产出 added、done 和 completed 三个工具项");
+    for item in &tool_items {
+        assert_eq!(item["id"], "fc_call_qwen", "工具项 id 被空 id 增量污染：{item}");
+        assert_eq!(
+            item["call_id"], "call_qwen",
+            "工具项 call_id 被空 id 增量污染：{item}"
+        );
+    }
 }
 
 #[test]

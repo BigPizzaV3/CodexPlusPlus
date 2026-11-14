@@ -16,7 +16,11 @@ function runtime() {
     enabled: true,
     startFailure: "",
     refreshFailure: "",
+    gatewayEnabled: false,
+    gatewayFailure: "",
+    clientFailure: "",
     chain: async (value: any) => value,
+    hangRequests: new Set<string>(),
   };
   const acknowledgements = new Map<string, () => void>();
   class PortMessageEvent extends MessageEvent<any> {
@@ -44,6 +48,7 @@ function runtime() {
   const port = new MessagePort();
   const client = {
     async sendRequest(method: string, params: any, options: any) {
+      if (state.hangRequests.has(method)) return new Promise(() => {});
       calls.push({ method, params, options });
       await new Promise<void>((resolve) => {
         acknowledgements.set(method, resolve);
@@ -61,7 +66,8 @@ function runtime() {
   const create = new Function("window", "codexPlusExtensionListeners", "codexPlusExtensionInterceptors",
     "codexPlusRunWaterfall", "codexPlusMarkExtensionFailure", "showToast", "codexPerModelContextEnabled",
     "prepareCodexThreadContextStart", "codexPlusAppServerClient", "refreshCodexThreadModelBeforeTurn",
-    "runCodexPlusExtensionCallback",
+    "codexGatewayRecoveryEnabled", "prepareCodexGatewayReconnect",
+    "runCodexPlusExtensionCallback", "codexPlusRpcMiddlewareTimeoutMsOverride",
     `${source}\nreturn { decode: codexPlusRpcDecode, install: installCodexPlusRpcFrameInterceptor };`);
   const listeners = new Map();
   const api = create(window, listeners, interceptors, (_name: string, value: any) => state.chain(value),
@@ -75,6 +81,7 @@ function runtime() {
     },
     async (hostId: string) => {
       assert.equal(hostId, "local");
+      if (state.clientFailure) throw new Error(state.clientFailure);
       return client;
     },
     async (host: any, sendRequest: any, method: string, params: any) => {
@@ -84,7 +91,15 @@ function runtime() {
       await sendRequest("thread/resume", { threadId: params.threadId, excludeTurns: true }, { timeoutMs: 5000 });
       await sendRequest("thread/unsubscribe", { threadId: params.threadId }, { timeoutMs: 5000 });
       await sendRequest("thread/resume", { threadId: params.threadId, config: { model_context_window: 262144 } });
-    }, (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }));
+    },
+    () => state.gatewayEnabled,
+    async (_method: string, params: any, _host: string, sendRequest: any) => {
+      calls.push({ method: "gateway", params });
+      if (state.gatewayFailure) throw new Error(state.gatewayFailure);
+      await sendRequest("gateway/check", { threadId: params.threadId }, { timeoutMs: 5000 });
+    },
+    (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }),
+    40);
   const settle = async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -115,6 +130,43 @@ function turnFrame(hostId: string | undefined = "local"): Frame {
 }
 
 describe("runtime context through host RPC", () => {
+  it("passes the original frame through when the gateway client cannot be found", async () => {
+    const env = runtime();
+    env.state.enabled = false;
+    env.state.gatewayEnabled = true;
+    env.state.clientFailure = "client unavailable";
+    const frame = turnFrame();
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.equal(env.sent.at(-1), frame);
+    assert.equal(env.calls.length, 0);
+  });
+
+  it("prepares the gateway before context refresh and sends the original turn", async () => {
+    const env = runtime();
+    env.state.gatewayEnabled = true;
+    const frame = turnFrame();
+    env.port.postMessage(frame);
+    await env.settle();
+    assert.deepEqual(env.calls.slice(0, 3).map((call) => call.method), ["gateway", "gateway/check", "refresh"]);
+    assert.equal(env.calls[0].params.threadId, "thread");
+    assert.equal(env.sent.at(-1)?.[0], "resolve");
+  });
+
+  it("rejects a failed gateway preparation and leaves remote turns untouched", async () => {
+    const env = runtime();
+    env.state.enabled = false;
+    env.state.gatewayEnabled = true;
+    env.state.gatewayFailure = "gateway unavailable";
+    env.port.postMessage(turnFrame());
+    await env.settle();
+    assert.deepEqual(env.sent.at(-1), ["reject", 7, ["error", "Error", "gateway unavailable"]]);
+    assert.equal(env.calls.some((call) => call.method === "refresh"), false);
+    const remote = turnFrame("remote");
+    env.port.postMessage(remote);
+    assert.equal(env.sent.at(-1), remote);
+  });
+
   it("adds fresh settings before creating a proven local conversation and preserves callbacks", async () => {
     const env = runtime();
     env.subscribe("local");
@@ -329,9 +381,9 @@ describe("runtime context through host RPC", () => {
   it("upgrades an older interceptor without wrapping it", () => {
     const env = runtime();
     const original = env.window.__codexPlusRpcFrameInterceptor.original;
-    env.window.__codexPlusRpcFrameInterceptor.version = 6;
+    env.window.__codexPlusRpcFrameInterceptor.version = 18;
     env.api.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 7);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 19);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
   });
 
@@ -358,5 +410,16 @@ describe("runtime context through host RPC", () => {
     assert.equal(env.sent.at(-1)![0], "resolve");
     assert.ok(env.failures.some((failure) => failure.includes("extension broken")));
     assert.equal(env.calls.at(-1).method, "resumeThread");
+  });
+
+  it("forwards a hung context frame unchanged after the middleware timeout (issue #3098)", async () => {
+    const env = runtime();
+    env.state.gatewayEnabled = true;
+    env.state.hangRequests.add("gateway/check");
+    const frame = turnFrame();
+    env.port.postMessage(frame);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(env.sent.at(-1), frame, "超时后原帧必须原样发出，不能让端口队列卡死");
+    assert.ok(env.failures.some((failure) => failure.includes("超时")));
   });
 });

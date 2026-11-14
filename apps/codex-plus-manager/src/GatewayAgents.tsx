@@ -309,7 +309,7 @@ function AgentRow({
   const modelCount = agentModels(payload, draft.poolExclude).length;
   const reconnectAllowed = canReconnectAgent(agent, payload?.relayProfilesEnabled);
   const reconnect = () =>
-    run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(draft, binding) }, t("重新接入"));
+    run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(draft, binding), reconnect: true }, t("重新接入"));
   const note = diagnostic.reconnect
     ? drift?.by ? tf("配置被 {0} 改了", [drift.by]) : t("当前文件与接入配置不一致")
     : connected && isClaude

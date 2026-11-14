@@ -94,19 +94,18 @@
 
 不要在只跑完测试就交付；构建启动属于交付的一部分。
 
-### ClaudeMom（同一份代码的第二个程序）
+## Claude Desktop 完整功能模式（claude-local，与 ClaudeMom 共用）
 
-ClaudeMom 是只做 Claude Desktop 完整功能模式的独立小工具：manager 里的第二个二进制 `claude-mom`
-（`src-tauri/src/claude_mom.rs`），和 Codex++ 共用库与子命令入口，但界面是自己的一页：
+完整功能模式的核心不在本仓库：在 [ClaudeMom](https://github.com/BigPizzaV3/ClaudeMom) 仓库的
+`crates/claude-local`（本地兼容服务 Node 脚本、证书、真实 profile 切换、启动 / 停止、会话同步、Desktop 探测），
+`codex-plus-core` 以 git 依赖按 `rev` 钉住引用它。ClaudeMom 是只做这件事的独立程序，两边只维护这一份。
 
-- 后端变体 `src-tauri/src/flavor.rs`：状态目录默认 `~/.claude-mom`，锁端口、协议代理端口在 Codex++ 基础上 +100，可与 Codex++ 同时运行；
-  主窗口加载 `claude-mom.html`；不做 Codex 接管 / 启动、皮肤、钩子同步、微信、网关、托盘快捷面板；自动更新整体拦住。
-- 不经网关，直连上游：`core::claude_mom` 管多组 Base URL + Key（`<state>/claude-mom/upstreams.json`），可从 cc-switch、
-  Magpie（当上游网关）、Codex++（当上游网关）导入；选中的那组经 `claude_local_backend::set_direct_upstream` 交给本地服务。
-  Codex++ 从不设置直连，行为不变。命令在 `src-tauri/src/claude_mom_commands.rs`。
-- 前端 `src/claude-mom/`（入口 `claude-mom.html`，`vite.config.ts` 两个 input），不引用 Codex++ 的 App。
-- 改到 Claude 相关或共用代码时，ClaudeMom 也要构建启动：`node scripts/relaunch-local.mjs --claude-mom`
-  （固定 bundle `dist/local-build/ClaudeMom.app`，state 在 `dist/local-build/claude-mom-state`，首次从 Codex++.app 复制生成）。
+- Codex++ 这边只有宿主实现 `crates/codex-plus-core/src/claude_local_backend.rs`：设置（`claudeDesktopLocal`）、
+  经网关的上游（`claude-desktop-local` 绑定）、常驻 helper 听写、3p 模式。对外函数名不变，管理器不用关心拆分。
+- 改完整功能模式的行为（代理脚本、证书、profile、启动流程）去 ClaudeMom 仓库改、测、推，再把这里的 `rev` 升上去。
+  本地联调可在根 `Cargo.toml` 临时加
+  `[patch."https://github.com/BigPizzaV3/ClaudeMom"] claude-local = { path = "../ClaudeMom/crates/claude-local" }`，**不要提交**。
+- 补丁 Desktop（汉化副本，`claude_localization.rs` + `assets/claude-localization/`）仍在本仓库，Desktop 探测调 claude-local。
 
 ## 提交与合入
 
