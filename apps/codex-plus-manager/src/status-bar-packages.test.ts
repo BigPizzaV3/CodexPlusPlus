@@ -48,6 +48,8 @@ function harness(dir: string, files: string[], exportNames: string[], callImpl: 
   const slots: Array<{ slot: string; render: (args: { container: unknown }) => (() => void) | void }> = [];
   const services = new Map<string, any>();
   const disposers: Array<() => void> = [];
+  const listeners = new Map<string, Array<(...args: any[]) => void>>();
+  const scans: Array<() => void> = [];
   const ctx = {
     call: (route: string, payload: unknown, options?: unknown) => {
       calls.push({ route, payload, options });
@@ -56,6 +58,22 @@ function harness(dir: string, files: string[], exportNames: string[], callImpl: 
     registerSlot: (definition: any) => { slots.push(definition); },
     effect: (fn: () => (() => void) | void) => { const dispose = fn(); if (typeof dispose === "function") disposers.push(dispose); },
     provide: (name: string, value: unknown) => { services.set(name, value); disposers.push(() => services.delete(name)); },
+    on: (event: string, handler: (...args: any[]) => void) => {
+      const handlers = listeners.get(event) || [];
+      handlers.push(handler);
+      listeners.set(event, handlers);
+      return () => {
+        const current = listeners.get(event) || [];
+        listeners.set(event, current.filter((item) => item !== handler));
+      };
+    },
+    onScan: (handler: () => void) => {
+      scans.push(handler);
+      return () => {
+        const index = scans.indexOf(handler);
+        if (index >= 0) scans.splice(index, 1);
+      };
+    },
   };
   const codexPlus = {
     extension: (apply: (value: typeof ctx) => void) => apply(ctx),
@@ -67,15 +85,17 @@ function harness(dir: string, files: string[], exportNames: string[], callImpl: 
     `${packageSource(dir, files)}\nreturn { ${exportNames.join(", ")} };`,
   )(codexPlus, env.document, env.window, { language: "zh-CN" }, env.FakeMutationObserver, env.clear, class {});
   const dispose = () => disposers.splice(0).reverse().forEach((fn) => fn());
-  return { ...env, calls, slots, services, scope, dispose };
+  return { ...env, calls, slots, services, listeners, scans, scope, dispose };
 }
 
-test("用量状态栏：经 composer.below 插槽挂载、提供 codexpp.usage，取数只走清单里的 /thread-usage-live", async () => {
+test("用量状态栏：经 composer.below 插槽挂载、提供 codexpp.usage，取数只走清单里的只读路由", async () => {
   const live = { status: "ok", events: [] };
   const h = harness("usage-statusline", ["statusline.js", "main.js"], ["codexPlusUsageState", "codexPlusUsageHost"], async () => live);
   assert.deepEqual(h.slots.map((slot) => slot.slot), ["composer.below"]);
   assert.equal(h.scope.codexPlusUsageState.running, true, "拓展装上即开始");
   assert.deepEqual(h.legacyDisposed, ["usage"], "先停掉旧版注入里的内置用量状态栏");
+  assert.deepEqual([...h.listeners.keys()].sort(), ["agent/status", "codex/turn/completed"]);
+  assert.equal(h.scans.length, 1, "消息节点重建时只走公开的轻量扫描");
   assert.ok(h.styles.has("codex-plus-usage-statusline-style"));
   assert.equal(h.styles.get("codex-plus-usage-statusline-style")!.dataset.codexPlusExt, "usage-statusline", "插入的节点带归属标记");
 
@@ -106,6 +126,8 @@ test("用量状态栏：经 composer.below 插槽挂载、提供 codexpp.usage�
   assert.equal(h.scope.codexPlusUsageState.timer, 0);
   assert.equal(h.styles.size, 0);
   assert.equal(h.services.has("codexpp.usage"), false);
+  assert.equal([...h.listeners.values()].reduce((sum, list) => sum + list.length, 0), 0);
+  assert.equal(h.scans.length, 0);
 });
 
 test("请求状态条：经 composer.above 插槽挂载、提供 codexpp.proxyStatus，轮询 /proxy-status 带超时，停用即停", async () => {

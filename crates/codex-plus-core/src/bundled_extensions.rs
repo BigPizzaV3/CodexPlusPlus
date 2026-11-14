@@ -7,7 +7,9 @@
 //! - 「Agent 桌宠」（`agent-pet`）：图片桌宠 + 大肥鱼；Codex++ 核心只留数据服务（图片 / 音效下载、大肥鱼的余额、用量与图库）。
 //! - 「打字特效」（`typing-effects`）：纯页面功能，不用任何后端路由。
 //! - 「背景图」（`image-overlay`）：核心只留读图路由 `/image-overlay/image`（只读本拓展配置里的那张本机图片）。
-//! - 「用量状态栏」（`usage-statusline`）：取数走拓展白名单里的只读路由 `/thread-usage-live`。
+//! - 「用量状态栏」（`usage-statusline`）：缓存/上下文走 `/thread-usage-live`，
+//!   解码速度走 `/request-log/recent`，完成消息角标在进入会话时读
+//!   `/thread-usage-history`；这些路由都走拓展白名单且只读。
 //! - 「请求状态条」（`proxy-request-status`）：取数走拓展白名单里的只读路由 `/proxy-status`。
 use std::path::Path;
 
