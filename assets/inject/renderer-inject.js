@@ -4462,6 +4462,12 @@
 
   const codexThreadProviderPreparations = new Map();
   const codexThreadProviderPreparationTimeoutMs = 120000;
+  // 卸载确认的轮询上限：供应商切换后旧连接的卸载是异步落地的，给单次回读留出等待窗口。
+  // 顶层不读 window：分片在 Node 测试沙盒里直接求值，window 在调用时才存在。
+  const unloadWaitOptions = () => ({
+    timeoutMs: window.__codexPlusUnloadWaitTimeoutMs ?? 15000,
+    pollMs: window.__codexPlusUnloadWaitPollMs ?? 400,
+  });
   let codexThreadProviderResumeSequence = 0;
 
   function codexThreadProviderResumeParams(threadId, provider, params, thread) {
@@ -4670,16 +4676,22 @@
             await sendRequest("thread/unsubscribe", { threadId }, options);
             signal?.throwIfAborted();
           }
-          const after = await client.getConversation(threadId);
-          signal?.throwIfAborted();
-          if (after?.resumeState !== "needs_resume") throw new Error("旧供应商会话尚未卸载，请稍后重试");
         } else {
           await sendRequest("thread/unsubscribe", { threadId }, options);
           signal?.throwIfAborted();
         }
-        const after = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
-        signal?.throwIfAborted();
-        if (after.thread.status.type !== "notLoaded") throw new Error("旧供应商会话尚未卸载，请稍后重试");
+        // 卸载异步落地：有界轮询确认后再继续，避免单次回读竞态把正常卸载误判为失败。
+        const unloadDeadline = Date.now() + unloadWaitOptions().timeoutMs;
+        for (;;) {
+          const after = client
+            ? await client.getConversation(threadId)
+            : await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+          signal?.throwIfAborted();
+          if (client ? after?.resumeState === "needs_resume" : after.thread.status.type === "notLoaded") break;
+          if (Date.now() >= unloadDeadline) throw new Error("旧供应商会话尚未卸载，请稍后重试");
+          await new Promise((resolve) => setTimeout(resolve, unloadWaitOptions().pollMs));
+          signal?.throwIfAborted();
+        }
       }
       if (client ? loaded || managed || sourceProvider === "codex_plus_managed" : resumeBeforeTurn) {
         const current = client ? read : await sendRequest("thread/read", { threadId, includeTurns: false }, options);
