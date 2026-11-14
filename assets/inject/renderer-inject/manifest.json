@@ -78,7 +78,7 @@
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 456
+      "lines": 482
     },
     {
       "name": "70-model-catalog.js",
@@ -148,7 +148,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 888
+      "lines": 912
     },
     {
       "name": "92-extension-host.js",
