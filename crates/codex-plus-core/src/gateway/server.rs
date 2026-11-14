@@ -1001,14 +1001,13 @@ async fn handle_claude_messages(
             let upstream_json = response.content_type.to_ascii_lowercase().contains("json");
             if wants_stream && upstream_json {
                 // 上游没理会 stream:true、回了整段 JSON：转成完整消息后再拆成事件流。
-                let responses_json = match read_pipeline_json(&mut response, &responses_body).await {
+                let (responses_json, usage) = match read_pipeline_json(&mut response, &responses_body).await {
                     Ok(json) => json,
                     Err(error) => {
                         return write_bad_upstream(stream, &dialect, &mut request_log, &error).await;
                     }
                 };
-                request_log.record_usage_json(&serde_json::to_vec(&responses_json)?);
-                request_log.record_stream(None, None, None);
+                request_log.record_stream(None, usage, None);
                 let message = dialect.json_reply(&responses_json, &client_model);
                 write_stream_headers(stream).await?;
                 stream.write_all(&dialect.reply_to_sse(&message)).await?;
@@ -1021,6 +1020,7 @@ async fn handle_claude_messages(
                     inner: stream,
                     converter: dialect.converter(&client_model, input_estimate),
                 };
+                let mut explicit_chat_zero = false;
                 {
                     // 拓展的网关响应流中间件看到的是 Responses 事件，转换成客户端格式之前生效。
                     let mut filtered = crate::launcher::ExtensionResponseSink::new(&mut sink, "/responses", Some(&responses_body)).await;
@@ -1029,7 +1029,7 @@ async fn handle_claude_messages(
                     } else {
                         let prefix = std::mem::take(&mut response.stream_prefix);
                         let wire_api = response.wire_api;
-                        let (_failure, _usage, _detail, first_output_at_ms) =
+                        let (_failure, upstream_usage, _detail, first_output_at_ms) =
                             forward_protocol_proxy_stream(
                                 &mut filtered,
                                 &prefix,
@@ -1039,6 +1039,9 @@ async fn handle_claude_messages(
                                 session.as_deref(),
                             )
                             .await?;
+                        explicit_chat_zero = filtered.is_unmodified()
+                            && wire_api == UpstreamWireApi::ChatCompletions
+                            && upstream_usage.is_some_and(|usage| usage.cached_tokens_known && usage.cached_tokens == 0);
                         if let Some(first_output_at_ms) = first_output_at_ms {
                             request_log.mark_first_token_at(first_output_at_ms);
                         }
@@ -1050,22 +1053,27 @@ async fn handle_claude_messages(
                     sink.inner.write_all(&tail).await?;
                 }
                 let failure = sink.converter.failure().map(str::to_string);
+                let mut usage = sink.converter.usage();
+                if let Some(usage) = usage.as_mut()
+                    && explicit_chat_zero && usage.cached_tokens == 0
+                {
+                    usage.cached_tokens_known = true;
+                }
                 request_log.record_stream(
                     failure.as_deref(),
-                    sink.converter.usage(),
+                    usage,
                     failure.clone(),
                 );
                 stream.shutdown().await?;
                 return Ok(());
             }
-            let responses_json = match read_pipeline_json(&mut response, &responses_body).await {
+            let (responses_json, usage) = match read_pipeline_json(&mut response, &responses_body).await {
                 Ok(json) => json,
                 Err(error) => {
                     return write_bad_upstream(stream, &dialect, &mut request_log, &error).await;
                 }
             };
-            request_log.record_usage_json(&serde_json::to_vec(&responses_json)?);
-            request_log.record_stream(None, None, None);
+            request_log.record_stream(None, usage, None);
             let message = dialect.json_reply(&responses_json, &client_model);
             write_http_response(stream, "200 OK", JSON, &serde_json::to_vec(&message)?).await?;
             stream.shutdown().await?;
@@ -1078,7 +1086,7 @@ async fn handle_claude_messages(
 async fn read_pipeline_json(
     response: &mut crate::protocol_proxy::UpstreamProxyResponse,
     responses_body: &Value,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<(Value, Option<crate::request_log::RequestUsage>)> {
     let body = response.read_body().await?;
     non_stream_body_to_responses(response.wire_api, &body, Some(responses_body))
 }
@@ -1205,6 +1213,10 @@ fn anthropic_usage(body: &[u8]) -> Option<crate::request_log::RequestUsage> {
         input_tokens: number("input_tokens") + cached + number("cache_creation_input_tokens"),
         output_tokens: number("output_tokens"),
         cached_tokens: cached,
+        cached_tokens_known: usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .is_some(),
         reasoning_tokens: 0,
     })
 }
@@ -1217,6 +1229,7 @@ struct AnthropicSseObserver {
     stopped: bool,
     input_tokens: u64,
     cached_tokens: u64,
+    cached_tokens_known: bool,
     output_tokens: u64,
 }
 
@@ -1254,6 +1267,7 @@ impl AnthropicSseObserver {
                 }
                 if let Some(cached) = number("cache_read_input_tokens") {
                     self.cached_tokens = cached;
+                    self.cached_tokens_known = true;
                 }
                 if let Some(output) = number("output_tokens") {
                     self.output_tokens = output;
@@ -1268,6 +1282,7 @@ impl AnthropicSseObserver {
                 input_tokens: self.input_tokens,
                 output_tokens: self.output_tokens,
                 cached_tokens: self.cached_tokens,
+                cached_tokens_known: self.cached_tokens_known,
                 reasoning_tokens: 0,
             }
         })
@@ -1584,7 +1599,27 @@ mod tests {
         let usage = observer.usage().unwrap();
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.cached_tokens, 90);
+        assert!(usage.cached_tokens_known);
         assert_eq!(usage.output_tokens, 7);
         assert!(observer.stopped);
+    }
+
+    #[test]
+    fn anthropic_request_usage_preserves_cache_presence() {
+        for (cached, known) in [
+            (None, false),
+            (Some(0), true),
+        ] {
+            let mut usage = json!({"input_tokens": 10, "output_tokens": 2});
+            if let Some(cached) = cached {
+                usage["cache_read_input_tokens"] = json!(cached);
+            }
+            let body = serde_json::to_vec(&json!({"usage":usage})).unwrap();
+            assert_eq!(anthropic_usage(&body).unwrap().cached_tokens_known, known);
+            let mut observer = AnthropicSseObserver::default();
+            let event = json!({"type":"message_start","message":{"usage":usage}});
+            observer.push(format!("data: {event}\n\n").as_bytes());
+            assert_eq!(observer.usage().unwrap().cached_tokens_known, known);
+        }
     }
 }

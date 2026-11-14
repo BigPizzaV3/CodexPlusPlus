@@ -314,7 +314,7 @@ async fn read_reply(
     if !text.saw_event {
         let raw = std::mem::take(&mut text.raw);
         match crate::launcher::non_stream_body_to_responses(response.wire_api, &raw, None) {
-            Ok(value) => {
+            Ok((value, _usage)) => {
                 if let Some(message) = error_message(&value) {
                     text.error = Some(message);
                 } else {
