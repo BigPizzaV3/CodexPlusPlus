@@ -1044,8 +1044,18 @@
   function codexPlusUsageRemember(threadId, update) {
     const bundle = Array.isArray(update) ? { events: update } : update;
     if (!bundle?.events?.length) return;
+    const previous = codexPlusUsageState.cache.get(threadId);
+    const incomingRequests = Array.isArray(bundle.requests)
+      ? bundle.requests.filter((request) => String(request?.threadId || "") === threadId)
+      : [];
+    // 请求完成事件和 request-log 落盘不是同一时刻。临时空结果或读取失败时保留
+    // 本会话最近一组可计算的速度样本，避免轮次刚结束时 TPS 跳成 `--`。
+    const requests = codexPlusUsageDecodeRate(incomingRequests, threadId) == null
+      && Array.isArray(previous?.requests)
+      ? previous.requests
+      : incomingRequests;
     codexPlusUsageState.cache.delete(threadId);
-    codexPlusUsageState.cache.set(threadId, { ...bundle, events: bundle.events.slice(-24) });
+    codexPlusUsageState.cache.set(threadId, { ...bundle, requests, events: bundle.events.slice(-24) });
     if (codexPlusUsageState.cache.size > 32) {
       codexPlusUsageState.cache.delete(codexPlusUsageState.cache.keys().next().value);
     }

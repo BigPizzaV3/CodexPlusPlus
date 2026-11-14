@@ -742,6 +742,7 @@ function lifecycle() {
   const renders: any[] = [];
   let resolveRequest: (value: unknown) => void = () => {};
   let rejectRequest: (error: Error) => void = () => {};
+  let nextRequestLog: unknown = { status: "ok", entries: [] };
   const source = [
     ...["codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageIdleIntervalMs",
       "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs", "codexPlusUsageFailureLimit",
@@ -770,7 +771,9 @@ function lifecycle() {
     (card: unknown) => { node.previousElementSibling = card; return node; },
     (value: unknown) => renders.push(value), () => {}, () => {}, () => Promise.resolve(null),
     (route: string) => route === "/request-log/recent"
-      ? Promise.resolve({ status: "ok", entries: [] })
+      ? nextRequestLog instanceof Error
+        ? Promise.reject(nextRequestLog)
+        : Promise.resolve(nextRequestLog)
       : new Promise((resolve, reject) => { resolveRequest = resolve; rejectRequest = reject; }),
     (event: string, detail: unknown) => diagnostics.push({ event, detail }),
   );
@@ -781,6 +784,7 @@ function lifecycle() {
     respond(events: unknown[]) { resolveRequest({ status: "ok", events }); },
     respondStatus(status: string, message: string) { resolveRequest({ status, message, events: [] }); },
     fail() { rejectRequest(new Error("bridge unavailable")); },
+    setRequestLog(value: unknown) { nextRequestLog = value; },
   };
 }
 
@@ -836,6 +840,56 @@ test("空数据及连续失败仍保留已有会话栏位，缓存有界", async
   for (let i = 0; i < 40; i++) ui.remember(`thread-${i}`, [event(0, i)]);
   assert.equal(ui.state.cache.size, 32);
   assert.equal(ui.state.cache.has("thread-0"), false);
+});
+
+test("TPS 按会话隔离，并在请求日志失败或暂时为空时保留最近有效值", async () => {
+  const ui = lifecycle();
+  const request = (threadId: string, outputTokens: number) => ({
+    threadId,
+    success: true,
+    firstTokenMs: 1000,
+    durationMs: 3000,
+    usage: { outputTokens },
+  });
+
+  ui.setRequestLog({ status: "ok", entries: [request("thread-a-123", 400)] });
+  const threadA = ui.tick();
+  ui.respond([event(0, 500, { total_tokens: 27000 })]);
+  await threadA;
+  assert.equal(ui.renders.at(-1).decodeSpeed, 200);
+
+  // 轮次完成时 request-log 可能还没落盘；空结果和失败都不能把上一拍的有效 TPS 抹掉。
+  ui.setRequestLog({ status: "ok", entries: [] });
+  const completedEmpty = ui.tick();
+  ui.respond([event(5, 700, { total_tokens: 27500 })]);
+  await completedEmpty;
+  assert.equal(ui.renders.at(-1).decodeSpeed, 200);
+
+  ui.setRequestLog(new Error("temporary request-log failure"));
+  const completedFailed = ui.tick();
+  ui.respond([event(10, 900, { total_tokens: 28000 })]);
+  await completedFailed;
+  assert.equal(ui.renders.at(-1).decodeSpeed, 200);
+
+  // 新请求落盘后必须替换旧样本，不能把保留值永久冻住。
+  ui.setRequestLog({ status: "ok", entries: [request("thread-a-123", 800)] });
+  const refreshed = ui.tick();
+  ui.respond([event(15, 1300, { total_tokens: 28500 })]);
+  await refreshed;
+  assert.equal(ui.renders.at(-1).decodeSpeed, 400);
+
+  ui.switchTo("thread-b-123");
+  ui.sync();
+  assert.equal(ui.renders.at(-1), null, "新会话不能继承线程 A 的 TPS");
+  ui.setRequestLog({ status: "ok", entries: [request("thread-b-123", 100)] });
+  const threadB = ui.tick();
+  ui.respond([event(0, 300, { total_tokens: 12000 })]);
+  await threadB;
+  assert.equal(ui.renders.at(-1).decodeSpeed, 50);
+
+  ui.switchTo("thread-a-123");
+  ui.sync();
+  assert.equal(ui.renders.at(-1).decodeSpeed, 400, "切回线程 A 恢复它自己的 TPS");
 });
 
 test("宿主没有数据或记录缺字段时照样显示，只各记一次诊断（#2753）", async () => {
