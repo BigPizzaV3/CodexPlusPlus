@@ -1,7 +1,15 @@
-export type GroupableSkill = { id: string; repoKey: string; bundled: boolean };
+export type GroupableSkill = { id: string; repoKey: string; bundled: boolean; instanceKey?: string; conflict?: string | null; conflictKind?: string | null; displayGroupRepoKey?: string | null };
 export type GroupableRepository = { owner: string; name: string };
 export type SkillGroup<T> = { key: string; label: string; kind: "builtin" | "user" | "repo" | "custom"; items: T[] };
 export type SkillGroupSortDirection = "asc" | "desc";
+type DisplayableSkill = GroupableSkill & {
+  installed: boolean;
+  enabled: boolean;
+  agents?: string[];
+  repoPath?: string;
+  locations?: Array<{ rootKind: string }>;
+  safeDisableAgents?: string[];
+};
 type SkillGroupStorage = Record<string, unknown> & {
   names: string[];
   assignments: Record<string, string>;
@@ -15,7 +23,127 @@ export const BUILTIN_SKILL_GROUP = "builtin";
 export const USER_SKILL_GROUP = "user";
 export const customSkillGroupKey = (name: string) => `custom:${name}`;
 export const repositorySkillGroupKey = (name: string) => `repo:${name}`;
-export const skillIdentityKey = (skill: Pick<GroupableSkill, "repoKey" | "id">) => JSON.stringify([skill.repoKey, skill.id]);
+export const skillIdentityKey = (skill: Pick<GroupableSkill, "repoKey" | "id" | "instanceKey" | "conflict">) =>
+  JSON.stringify(skill.instanceKey && skill.instanceKey !== skill.id
+    ? ["instance", skill.id, skill.instanceKey] : [skill.repoKey, skill.id]);
+export const skillGroupIdentityKey = (skill: GroupableSkill) => skill.conflictKind === "equal-independent"
+  ? JSON.stringify(["aggregate", skill.id]) : skillIdentityKey(skill);
+
+/** 同组内不同 Agent 的安装共用一行，仍保留每个物理安装的身份。 */
+export function aggregateSkillGroupItems<T extends DisplayableSkill>(skills: T[]): Array<T & { displayInstances?: T[] }> {
+  const candidates = new Map<string, T[]>();
+  for (const skill of skills) {
+    if (!skill.installed || skill.bundled) continue;
+    candidates.set(skill.id, [...(candidates.get(skill.id) || []), skill]);
+  }
+  const merged = new Map<string, T & { displayInstances: T[] }>();
+  for (const [id, instances] of candidates) {
+    if (instances.length < 2 || instances.some((item) => !item.locations?.length)) continue;
+    const owners = new Set<string>();
+    let overlaps = false;
+    for (const item of instances) {
+      const agents = new Set(item.locations!.map((location) => location.rootKind === "shared" ? "codex" : location.rootKind));
+      if ([...agents].some((agent) => owners.has(agent))) overlaps = true;
+      for (const agent of agents) owners.add(agent);
+    }
+    const sources = new Set(instances.filter((item) => skillRepositoryName(item.repoKey))
+      .map((item) => item.repoKey));
+    if (overlaps || sources.size > 1) continue;
+    const agents = [...new Set(instances.flatMap((item) => item.agents ?? (item.enabled ? ["codex"] : [])))];
+    merged.set(id, {
+      ...instances[0], repoKey: "", repoPath: "", originalDir: null, updateOwner: "", updateAvailable: false,
+      agents, enabled: agents.includes("codex"), locations: instances.flatMap((item) => item.locations || []),
+      safeDisableAgents: [...new Set(instances.flatMap((item) => item.safeDisableAgents || []))],
+      displayInstances: instances,
+    } as T & { displayInstances: T[] });
+  }
+  const emitted = new Set<string>();
+  return skills.flatMap((skill) => {
+    const item = skill.installed && !skill.bundled ? merged.get(skill.id) : undefined;
+    if (!item) return [skill];
+    if (emitted.has(skill.id)) return [];
+    emitted.add(skill.id);
+    return [item];
+  });
+}
+
+function aggregateLegacyAssignment(
+  skill: GroupableSkill,
+  assignmentsByIdentity: Record<string, string>,
+): string | null | undefined {
+  const existing = skillIdentityKey(skill);
+  if (Object.prototype.hasOwnProperty.call(assignmentsByIdentity, existing)) return assignmentsByIdentity[existing];
+  const values = Object.entries(assignmentsByIdentity).filter(([key]) => {
+    try {
+      const tuple: unknown = JSON.parse(key);
+      return Array.isArray(tuple) && tuple.length === 2 && tuple[1] === skill.id && tuple[0] !== "aggregate";
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return false;
+    }
+  }).map(([, value]) => value);
+  if (!values.length) return undefined;
+  return values.every((value) => value === values[0]) ? values[0] : null;
+}
+
+export function migrateSkillInstanceAssignments(
+  assignmentsByIdentity: Record<string, string>,
+  assignments: Record<string, string>,
+  skills: GroupableSkill[],
+  customNames: string[],
+): Record<string, string> {
+  let migrated = assignmentsByIdentity;
+  for (const skill of skills) {
+    if (skill.bundled || !skill.instanceKey || skill.instanceKey === skill.id) continue;
+    const key = skillGroupIdentityKey(skill);
+    if (Object.prototype.hasOwnProperty.call(migrated, key)) continue;
+    if (skill.conflictKind === "equal-independent") {
+      const value = aggregateLegacyAssignment(skill, migrated);
+      if (typeof value === "string") {
+        if (migrated === assignmentsByIdentity) migrated = { ...assignmentsByIdentity };
+        migrated[key] = value;
+      } else if (value === undefined && Object.prototype.hasOwnProperty.call(assignments, skill.id)) {
+        const legacy = assignments[skill.id];
+        const name = legacySkillCustomGroupName(legacy, customNames);
+        if (migrated === assignmentsByIdentity) migrated = { ...assignmentsByIdentity };
+        migrated[key] = name === null ? legacy : customSkillGroupKey(name);
+      }
+      continue;
+    }
+    const previousKeys = [
+      JSON.stringify([skill.repoKey, skill.id, skill.instanceKey]),
+      JSON.stringify(["", skill.id, skill.instanceKey]),
+      ...(!skill.conflict ? [JSON.stringify([skill.repoKey, skill.id])] : []),
+    ];
+    const previousKey = previousKeys.find((previous) => Object.prototype.hasOwnProperty.call(migrated, previous));
+    let value: string;
+    if (previousKey !== undefined) value = migrated[previousKey];
+    else if (!skill.conflict && Object.prototype.hasOwnProperty.call(assignments, skill.id)) {
+      const legacy = assignments[skill.id];
+      const name = legacySkillCustomGroupName(legacy, customNames);
+      value = name === null ? legacy : customSkillGroupKey(name);
+    } else continue;
+    if (migrated === assignmentsByIdentity) migrated = { ...assignmentsByIdentity };
+    migrated[key] = value;
+  }
+  return migrated;
+}
+
+export function migrateSkillGroupAssignments(
+  assignments: Record<string, string>,
+  changes: Array<{ id: string; fromRepoKey: string; toRepoKey: string }>,
+): Record<string, string> {
+  const migrated = { ...assignments };
+  for (const change of changes) {
+    const from = skillIdentityKey({ id: change.id, repoKey: change.fromRepoKey });
+    const to = skillIdentityKey({ id: change.id, repoKey: change.toRepoKey });
+    if (from === to || !Object.prototype.hasOwnProperty.call(migrated, from)) continue;
+    // 目标身份可能已有用户设置，保留它，避免覆盖另一项的分组。
+    if (!Object.prototype.hasOwnProperty.call(migrated, to)) migrated[to] = migrated[from];
+    delete migrated[from];
+  }
+  return migrated;
+}
 
 /** 导入渠道不是仓库；只有明确的 owner/repo@branch 来源才创建仓库分组。 */
 export function skillRepositoryName(repoKey: string): string | null {
@@ -25,7 +153,7 @@ export function skillRepositoryName(repoKey: string): string | null {
 
 export function defaultSkillGroupKey(skill: GroupableSkill): string {
   if (skill.bundled) return BUILTIN_SKILL_GROUP;
-  const repository = skillRepositoryName(skill.repoKey);
+  const repository = skillRepositoryName(skill.repoKey) || skillRepositoryName(skill.displayGroupRepoKey || "");
   return repository ? repositorySkillGroupKey(repository) : USER_SKILL_GROUP;
 }
 
@@ -41,9 +169,17 @@ export function skillGroupAssignment(
   assignments: Record<string, string>,
   assignmentsByIdentity: Record<string, string>,
 ): string {
-  const key = skillIdentityKey(skill);
+  const key = skillGroupIdentityKey(skill);
   // 空字符串表示主动选择按来源，不能再回退到旧的 ID 分配。
   if (Object.prototype.hasOwnProperty.call(assignmentsByIdentity, key)) return assignmentsByIdentity[key];
+  if (skill.conflictKind === "equal-independent") {
+    const legacy = aggregateLegacyAssignment(skill, assignmentsByIdentity);
+    if (legacy !== undefined) return legacy ?? "";
+  }
+  // 旧设置不能证明属于哪一份冲突内容。
+  if (skill.conflict && skill.conflictKind !== "equal-independent") return "";
+  const previousKey = JSON.stringify([skill.repoKey, skill.id]);
+  if (Object.prototype.hasOwnProperty.call(assignmentsByIdentity, previousKey)) return assignmentsByIdentity[previousKey];
   const legacy = Object.prototype.hasOwnProperty.call(assignments, skill.id) ? assignments[skill.id] : "";
   const customName = legacySkillCustomGroupName(legacy, customNames);
   return customName === null ? legacy : customSkillGroupKey(customName);
@@ -82,7 +218,9 @@ export function groupSkills<T extends GroupableSkill>(
   knownRepositories: GroupableRepository[] = [],
 ): SkillGroup<T>[] {
   const groups = new Map<string, SkillGroup<T>>();
-  const sourceLabels = new Map(known.map((skill) => [defaultSkillGroupKey(skill), labels.source(skill)]));
+  const sourceLabels = new Map(known.map((skill) => [defaultSkillGroupKey(skill),
+    skillRepositoryName(skill.repoKey) ? labels.source(skill)
+      : skillRepositoryName(skill.displayGroupRepoKey || "") || labels.source(skill)]));
   const add = (key: string, label: string, kind: SkillGroup<T>["kind"]) => {
     if (!groups.has(key)) groups.set(key, { key, label, kind, items: [] });
   };
@@ -91,10 +229,10 @@ export function groupSkills<T extends GroupableSkill>(
     add(USER_SKILL_GROUP, labels.user, "user");
     for (const name of customNames) add(customSkillGroupKey(name), name, "custom");
     for (const skill of known) {
-      const name = !skill.bundled && skillRepositoryName(skill.repoKey);
+      const name = !skill.bundled && (skillRepositoryName(skill.repoKey) || skillRepositoryName(skill.displayGroupRepoKey || ""));
       if (name) {
         const key = repositorySkillGroupKey(name);
-        add(key, aliases[key] || labels.source(skill) || name, "repo");
+        add(key, aliases[key] || (skillRepositoryName(skill.repoKey) ? labels.source(skill) : name) || name, "repo");
       }
     }
     // 与后端仓库配置的 owner/name 规则一致，导入渠道本身不创建仓库组。
