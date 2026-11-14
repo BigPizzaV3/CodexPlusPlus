@@ -83,6 +83,53 @@ describe("runtime context refresh", () => {
     }
   });
 
+  it("keeps equal-context account aliases on the native turn path even after a quota failure", async () => {
+    const env = runtime();
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    env.state.runtime.models.alias = {
+      model_auto_compact_token_limit: 117964, model_context_window: 131072,
+    };
+    env.state.status = "active";
+    for (const model of ["alias", "selected", "alias"]) {
+      env.turn.collaborationMode.settings.model = model;
+      assert.equal(await env.refresh(), null);
+      assert.equal(env.turn.collaborationMode.settings.model, model);
+    }
+    assert.equal(env.calls.length, 0, "equal limits must not unsubscribe or resume the native thread");
+  });
+
+  it("recognizes an equal-context cache left by the previous injection version", async () => {
+    const env = runtime();
+    env.context.window.__codexPlusThreadContexts = new Map([["thread", JSON.stringify([
+      "old-account-alias",
+      { model_auto_compact_token_limit: 117964, model_context_window: 131072 },
+    ])]]);
+    env.state.status = "active";
+    assert.equal(await env.refresh(), null);
+    assert.equal(env.calls.length, 0);
+  });
+
+  it("still checks thread safety when an account alias changes the actual context limits", async () => {
+    const env = runtime();
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    env.turn.collaborationMode.settings.model = "other";
+    env.state.status = "active";
+    await assert.rejects(env.refresh(), /当前回复/);
+    assert.deepEqual(env.calls.map(call => call.method), ["thread/read"]);
+  });
+
+  it("refreshes context after a finished turn leaves a system error status", async () => {
+    const env = runtime();
+    env.state.status = "systemError";
+    env.snapshot.thread.status.type = "systemError";
+    assert.equal(await env.refresh(), true);
+    assert.deepEqual(env.calls.map(call => call.method),
+      ["thread/read", "thread/turns/list", "thread/resume", "thread/unsubscribe", "thread/resume"]);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 131072);
+  });
+
   it("uses collaboration-mode model selection and preserves permissions and workspace settings", async () => {
     const env = runtime();
     env.turn.collaborationMode.settings.model = "other";
@@ -110,10 +157,14 @@ describe("runtime context refresh", () => {
     env.state.status = "idle";
     env.state.turns = 0;
     env.calls.length = 0;
-    await assert.rejects(env.refresh(), /尚无历史/);
-    assert.equal(env.calls.some(call => call.method === "thread/unsubscribe"), false);
+    // #3062：没有历史的新线程（26.1106 的 attachToSource 侧聊）放行原生首轮，不卸载、不记签名。
+    assert.equal(await env.refresh(), null);
+    assert.deepEqual(env.calls.map(call => call.method), ["thread/read", "thread/turns/list"]);
+    assert.equal(env.context.window.__codexPlusThreadContexts?.size ?? 0, 0);
     env.state.turns = 1;
-    await env.refresh();
+    env.calls.length = 0;
+    assert.equal(await env.refresh(), true, "the next submission applies the context once history exists");
+    assert.equal(env.calls.some(call => call.method === "thread/unsubscribe"), true);
   });
 
   // #3041：侧边聊天是 ephemeral 分叉，没有历史也不能卸载恢复；不报「尚无历史」，也不重建。

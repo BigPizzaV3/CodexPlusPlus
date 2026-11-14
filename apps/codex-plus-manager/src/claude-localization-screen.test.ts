@@ -663,8 +663,8 @@ test("默认模型不在这一页选：只留一句说明，不放下拉也不�
   assert.equal(screen.calls.length, 0, "页面不写配置");
 });
 
-test("完整功能模式的四项能力分别保存，不修改补丁版开关或代点系统权限", async () => {
-  const saved = { ...localReady, config: { ...localReady.config, enabled: true } };
+test("完整功能模式的五项能力分别保存，不修改补丁版开关或代点系统权限", async () => {
+  const saved = { ...localReady, config: { ...localReady.config, enabled: true, forceBackgroundMode: false } };
   const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
   let config = saved.config;
   for (const [index, label, key] of [
@@ -672,6 +672,7 @@ test("完整功能模式的四项能力分别保存，不修改补丁版开关�
     [1, "本地原生听写", "voiceInput"],
     [2, "本地电脑控制", "computerUse"],
     [3, "本地后台模式", "backgroundMode"],
+    [4, "本地后台模式不限系统版本", "forceBackgroundMode"],
   ] as const) {
     const toggle = inputs(screen.render()).find((item) => item.props["aria-label"] === label)!;
     toggle.props.onChange({ currentTarget: { checked: !config[key] } });
@@ -682,7 +683,7 @@ test("完整功能模式的四项能力分别保存，不修改补丁版开关�
     screen.calls[index].resolve({ ...saved, config });
     await tick();
   }
-  assert.equal(screen.calls.length, 4);
+  assert.equal(screen.calls.length, 5);
   assert.equal(screen.calls.some((call) => /permission|computer_use|claude_localization/.test(call.command)), false);
 });
 

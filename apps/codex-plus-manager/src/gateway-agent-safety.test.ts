@@ -44,6 +44,8 @@ test("供应商配置总开关关闭时只阻止 Codex 重新接入，旧 payloa
 
   const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   assert.match(agents, /reconnectAllowed \? \([\s\S]*?重新接入[\s\S]*?: \([\s\S]*?供应商配置切换已关闭[\s\S]*?onOpenCodexProviderSettings/);
+  assert.match(agents, /const reconnect = \(\) =>\s*run\(`save:\$\{agent\.agent\}`, "save_gateway_binding", \{ agent: agent\.agent, binding: bindingFromDraft\(draft, binding\), reconnect: true \}/);
+  assert.match(agents, /run\(`save:\$\{agent\.agent\}`, "save_gateway_binding", \{ agent: agent\.agent, binding: bindingFromDraft\(next, binding, item\) \}/);
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   assert.match(app, /onOpenCodexProviderSettings=\{\(\) => \{ void switchTool\("codex", "relay"\); \}\}/);
   assert.match(app, /takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(/);

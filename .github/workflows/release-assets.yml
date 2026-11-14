@@ -482,6 +482,28 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
+      # sherpa-onnx-sys 的构建脚本见到 target/sherpa-onnx-prebuilt/<包>/lib 目录就直接用，不再下载。
+      # v2.6.8 缓存键变化后恢复出的预编译目录缺静态库，链接时报找不到 sherpa-onnx-c-api。
+      # 构建前检查，缺库就清掉这个包的目录和压缩包，让构建脚本重新下载。
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=target/sherpa-onnx-prebuilt
+          [ -d "$root" ] || { echo "没有预编译缓存，构建时会下载"; exit 0; }
+          ls -la "$root"
+          for extracted in "$root"/*/; do
+            extracted="${extracted%/}"
+            [ -d "$extracted" ] || continue
+            echo "== $extracted/lib"
+            ls -la "$extracted/lib" 2>/dev/null || echo "(lib 目录不存在)"
+            if [ ! -f "$extracted/lib/libsherpa-onnx-c-api.a" ]; then
+              echo "缺 libsherpa-onnx-c-api.a，清掉 $extracted 和对应压缩包，构建时重新下载"
+              rm -r -- "$extracted"
+              rm -f -- "$extracted.tar.bz2"
+            fi
+          done
+
       - name: Build application
         run: cargo build --release -p codex-plus-manager
 

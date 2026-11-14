@@ -480,6 +480,116 @@ fn codex_enable_switches_to_managed_gateway_profile_and_disable_switches_back() 
 }
 
 #[test]
+fn codex_connection_generation_tracks_connection_writes_without_catalog_noise() {
+    use codex_plus_core::gateway::connection_generation;
+
+    let fixture = fixture(57395);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), "");
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let first = connection_generation::read(&ctx.codex_home).unwrap();
+    uuid::Uuid::parse_str(&first).unwrap();
+
+    refresh_enabled(ctx).unwrap();
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), first);
+    let mut changed_model = binding();
+    changed_model.model = "deepseek-v4-flash".into();
+    enable_binding(ctx, &ToolId::Codex, changed_model.clone()).unwrap();
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), first);
+
+    let mut moved = ctx.clone();
+    moved.port += 1;
+    assert_eq!(reapply_if_port_changed(&moved).unwrap(), 1);
+    let port_generation = connection_generation::read(&ctx.codex_home).unwrap();
+    assert_ne!(port_generation, first);
+
+    let path = ctx.codex_home.join("config.toml");
+    let live = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, live.replace("/gw/codex/v1", "/external/v1")).unwrap();
+    enable_binding(&moved, &ToolId::Codex, changed_model).unwrap();
+    let restored = connection_generation::read(&ctx.codex_home).unwrap();
+    assert_ne!(restored, port_generation);
+
+    assert_eq!(codex_plus_core::gateway::apply::reapply_enabled(&moved).unwrap(), 1);
+    let reapply = connection_generation::read(&ctx.codex_home).unwrap();
+    assert_ne!(reapply, restored);
+    assert_eq!(connection_generation::read(&fixture._temp.path().join("other-home")).unwrap(), "");
+}
+
+#[test]
+fn codex_connection_generation_serializes_concurrent_publications() {
+    use codex_plus_core::gateway::connection_generation;
+
+    let temp = tempfile::tempdir().unwrap();
+    let threads: Vec<_> = (0..8).map(|_| {
+        let home = temp.path().to_path_buf();
+        std::thread::spawn(move || connection_generation::publish(&home).unwrap())
+    }).collect();
+    let generations: std::collections::HashSet<_> =
+        threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+    assert_eq!(generations.len(), 8);
+    assert!(generations.contains(&connection_generation::read(temp.path()).unwrap()));
+}
+
+#[test]
+fn codex_connection_generation_allows_reconnect_from_invalid_external_config() {
+    use codex_plus_core::gateway::connection_generation;
+
+    let fixture = fixture(57395);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let first = connection_generation::read(&ctx.codex_home).unwrap();
+    std::fs::write(ctx.codex_home.join("config.toml"), "model_provider = [").unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    assert_ne!(connection_generation::read(&ctx.codex_home).unwrap(), first);
+    assert!(codex_config(ctx).contains("/gw/codex/v1"));
+}
+
+#[test]
+fn codex_connection_generation_waits_for_explicit_reconnect_publication() {
+    use codex_plus_core::gateway::connection_generation;
+
+    let fixture = fixture(57395);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let first = connection_generation::read(&ctx.codex_home).unwrap();
+    std::fs::write(ctx.codex_home.join("config.toml"), "model_provider = [").unwrap();
+    let (_, changed) = codex_plus_core::gateway::apply::enable_binding_deferred(ctx, &ToolId::Codex, binding()).unwrap();
+    assert!(changed);
+    assert!(codex_config(ctx).contains("/gw/codex/v1"));
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), first);
+    let second = connection_generation::publish(&ctx.codex_home).unwrap();
+    assert_ne!(second, first);
+    let (_, changed) = codex_plus_core::gateway::apply::enable_binding_deferred(ctx, &ToolId::Codex, binding()).unwrap();
+    assert!(!changed);
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), second);
+    assert_ne!(connection_generation::publish(&ctx.codex_home).unwrap(), second);
+}
+
+#[test]
+fn codex_token_rotation_defers_generation_until_helper_is_ready() {
+    use codex_plus_core::gateway::connection_generation;
+
+    let fixture = fixture(57395);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    let before = enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let old_token = &before.binding(&ToolId::Codex).unwrap().token;
+    let generation = connection_generation::read(&ctx.codex_home).unwrap();
+
+    let (saved, changed) = codex_plus_core::gateway::apply::rotate_binding_token(ctx, &ToolId::Codex).unwrap();
+    let new_token = &saved.binding(&ToolId::Codex).unwrap().token;
+    assert_ne!(new_token, old_token);
+    assert!(changed);
+    assert!(codex_config(ctx).contains(new_token));
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), generation);
+    assert_ne!(connection_generation::publish(&ctx.codex_home).unwrap(), generation);
+}
+
+#[test]
 fn codex_catalog_keeps_single_provider_qualified_default_grouped_once() {
     let fixture = fixture(57394);
     let ctx = &fixture.ctx;
@@ -1889,6 +1999,8 @@ fn codex_gateway_endpoint_returns_to_loopback_outside_wsl() {
     seeded.relay_profiles_enabled = true;
     ctx.settings.save(&seeded).unwrap();
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let initial_generation =
+        codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap();
     let loopback = "127.0.0.1:57398/gw/codex/v1";
     let config_path = ctx.codex_home.join("config.toml");
     assert!(
@@ -1919,6 +2031,10 @@ fn codex_gateway_endpoint_returns_to_loopback_outside_wsl() {
     );
 
     assert!(sync_codex_wsl_endpoint(ctx).unwrap());
+    assert_ne!(
+        codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap(),
+        initial_generation
+    );
     let config = std::fs::read_to_string(&config_path).unwrap();
     assert!(config.contains(loopback), "{config}");
     assert!(!config.contains("172.29.16.1"), "{config}");
@@ -1971,6 +2087,8 @@ fn signed_in_codex_keeps_its_chatgpt_identity_through_the_gateway() {
     .unwrap();
 
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let initial_generation =
+        codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap();
     let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
     assert!(config.contains("model_provider = \"openai\""), "{config}");
     assert!(config.contains("openai_base_url"), "{config}");
@@ -2001,6 +2119,10 @@ fn signed_in_codex_keeps_its_chatgpt_identity_through_the_gateway() {
     )
     .unwrap();
     assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    assert_ne!(
+        codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap(),
+        initial_generation
+    );
     assert_eq!(
         ctx.settings.load().unwrap().active_relay_session_provider(),
         codex_plus_core::settings::RelaySessionProvider::Custom
@@ -2011,6 +2133,292 @@ fn signed_in_codex_keeps_its_chatgpt_identity_through_the_gateway() {
     let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
     assert!(!config.contains("/gw/codex"), "{config}");
     assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
+}
+
+fn seed_unsigned_managed_codex(ctx: &ApplyContext) {
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: "direct".into(),
+        relay_profiles: vec![direct_relay("direct", "fixture-model")],
+        ..Default::default()
+    };
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings, &ctx.codex_home, settings, "",
+    ).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    assert_eq!(
+        ctx.settings.load().unwrap().active_relay_session_provider(),
+        codex_plus_core::settings::RelaySessionProvider::Custom,
+    );
+}
+
+fn selected_login(account: &str) -> String {
+    use base64::Engine;
+    let id_token = format!("e30.{}.fixture", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        json!({"sub": format!("fixture-user-{account}"),
+            "https://api.openai.com/auth": {"chatgpt_account_id": account}}).to_string(),
+    ));
+    json!({
+        "auth_mode":"chatgpt", "codex_plus_gateway":true,
+        "tokens":{"id_token":id_token, "access_token":format!("fixture-{account}"),
+            "refresh_token":format!("fixture-refresh-{account}"), "account_id":account}
+    }).to_string()
+}
+
+#[test]
+fn explicit_native_selection_updates_managed_session_identity_without_changing_gateway_route() {
+    use codex_plus_core::gateway::apply::sync_codex_identity_after_selection;
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29557);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    for account in ["account-a", "account-b"] {
+        let mut settings = ctx.settings.load().unwrap();
+        settings.native_auth_selection = Some(NativeAuthSelection::Account { account_ref: account.into() });
+        ctx.settings.save(&settings).unwrap();
+        std::fs::write(ctx.codex_home.join("auth.json"), selected_login(account)).unwrap();
+        let previous_generation = codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap();
+        sync_codex_identity_after_selection(ctx).unwrap();
+        assert_ne!(codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap(), previous_generation);
+        let settings = ctx.settings.load().unwrap();
+        assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Openai);
+        let config = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+        assert!(config.contains("model_provider = \"openai\""));
+        assert!(config.contains("http://127.0.0.1:29557/gw/codex/v1"));
+        assert_eq!(codex_plus_core::gateway::drift::check(ctx, &ToolId::Codex), None);
+        let auth: Value = serde_json::from_str(
+            &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["tokens"]["account_id"], account);
+    }
+}
+
+#[test]
+fn explicitly_selected_disabled_subscription_is_not_stripped_as_a_stale_lent_login() {
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29558);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let auth = selected_login("saved-disabled");
+    let (_, id) = add_provider(&ctx.gateway, RelayProfile {
+        name: "Saved disabled account".into(), relay_mode: RelayMode::Official,
+        auth_contents: auth.clone(), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    set_provider_enabled(&ctx.gateway, &id, false).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::Account { account_ref: id });
+    ctx.settings.save(&settings).unwrap();
+    std::fs::write(ctx.codex_home.join("auth.json"), auth).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    assert_eq!(ctx.settings.load().unwrap().active_relay_session_provider(), RelaySessionProvider::Openai);
+    let auth: Value = serde_json::from_str(
+        &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"]["account_id"], "saved-disabled");
+}
+
+#[test]
+fn native_selection_does_not_reconnect_a_disabled_or_taken_over_gateway() {
+    use codex_plus_core::gateway::{apply::sync_codex_identity_after_selection, connection_generation};
+    let fixture = fixture(29560);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let initial = connection_generation::read(&ctx.codex_home).unwrap();
+    ctx.gateway.update(|gateway| {
+        gateway.bindings.get_mut("codex").unwrap().enabled = false;
+        Ok(())
+    }).unwrap();
+    sync_codex_identity_after_selection(ctx).unwrap();
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), initial);
+    ctx.gateway.update(|gateway| {
+        gateway.bindings.get_mut("codex").unwrap().enabled = true;
+        Ok(())
+    }).unwrap();
+    std::fs::write(ctx.codex_home.join("config.toml"),
+        "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://other.example/v1\"\n").unwrap();
+    sync_codex_identity_after_selection(ctx).unwrap();
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), initial);
+}
+
+#[test]
+fn native_login_after_explicit_sign_out_is_kept_when_synchronizing_gateway_identity() {
+    use codex_plus_core::gateway::apply::sync_codex_identity;
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29559);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let mut login: Value = serde_json::from_str(&selected_login("new-native-account")).unwrap();
+    login["OPENAI_API_KEY"] = json!("fixture-api-key");
+    login["last_refresh"] = json!("2026-11-14T00:00:00Z");
+    login["external-field"] = json!({"preserved": true});
+    std::fs::write(ctx.codex_home.join("auth.json"), login.to_string()).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    let settings = ctx.settings.load().unwrap();
+    assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Openai);
+    assert!(settings.native_auth_selection.is_none());
+    let auth: Value = serde_json::from_str(
+        &std::fs::read_to_string(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"], login["tokens"]);
+    assert_eq!(auth["auth_mode"], "chatgpt");
+    assert_eq!(auth["last_refresh"], login["last_refresh"]);
+    assert_eq!(auth["external-field"], login["external-field"]);
+    assert!(auth["OPENAI_API_KEY"].as_str().is_some_and(|key| key.starts_with("cpx-gw-codex-")));
+    let applied_auth = std::fs::read(ctx.codex_home.join("auth.json")).unwrap();
+    assert!(!sync_codex_identity(ctx).unwrap());
+    assert_eq!(std::fs::read(ctx.codex_home.join("auth.json")).unwrap(), applied_auth);
+}
+
+#[test]
+fn native_login_clears_old_sign_out_choice_even_when_the_connection_already_matches() {
+    use codex_plus_core::gateway::{apply::sync_codex_identity, connection_generation};
+    use codex_plus_core::settings::NativeAuthSelection;
+    let fixture = fixture(29561);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let login = selected_login("new-native-account");
+    std::fs::write(ctx.codex_home.join("auth.json"), &login).unwrap();
+    assert!(sync_codex_identity(ctx).unwrap());
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let config = std::fs::read(ctx.codex_home.join("config.toml")).unwrap();
+    let auth = std::fs::read(ctx.codex_home.join("auth.json")).unwrap();
+    let generation = connection_generation::read(&ctx.codex_home).unwrap();
+    assert!(!sync_codex_identity(ctx).unwrap());
+    assert!(ctx.settings.load().unwrap().native_auth_selection.is_none());
+    assert_eq!(std::fs::read(ctx.codex_home.join("auth.json")).unwrap(), auth);
+    assert_eq!(std::fs::read(ctx.codex_home.join("config.toml")).unwrap(), config);
+    assert_eq!(connection_generation::read(&ctx.codex_home).unwrap(), generation);
+}
+
+#[test]
+fn gateway_reapplication_respects_a_native_login_after_explicit_sign_out() {
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29562);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let login = selected_login("native-reapplication");
+    std::fs::write(ctx.codex_home.join("auth.json"), &login).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let settings = ctx.settings.load().unwrap();
+    assert!(settings.native_auth_selection.is_none());
+    assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Openai);
+    let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"], serde_json::from_str::<Value>(&login).unwrap()["tokens"]);
+}
+
+#[test]
+fn explicit_sign_out_without_live_login_does_not_borrow_an_available_pool_account() {
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::{NativeAuthSelection, RelaySessionProvider};
+    let fixture = fixture(29563);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    add_provider(&ctx.gateway, RelayProfile {
+        name: "Available saved login".into(), relay_mode: RelayMode::Official,
+        auth_contents: selected_login("saved-pool-account"), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    for live in [r#"{"OPENAI_API_KEY":"fixture-key"}"#,
+        r#"{"OPENAI_API_KEY":"fixture-key","tokens":{"access_token":"  "}}"#] {
+        std::fs::write(ctx.codex_home.join("auth.json"), live).unwrap();
+        sync_codex_identity(ctx).unwrap();
+        enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+        let settings = ctx.settings.load().unwrap();
+        assert_eq!(settings.native_auth_selection, Some(NativeAuthSelection::None));
+        assert_eq!(settings.active_relay_session_provider(), RelaySessionProvider::Custom);
+        let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+        assert!(auth.get("tokens").is_none());
+    }
+}
+
+#[test]
+fn native_relogin_to_a_disabled_pool_account_survives_refresh_and_new_loans_still_return() {
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::NativeAuthSelection;
+    let fixture = fixture(29564);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let stored = selected_login("shared-account");
+    let (_, id) = add_provider(&ctx.gateway, RelayProfile {
+        name: "Saved login".into(), relay_mode: RelayMode::Official,
+        auth_contents: stored.clone(), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    ctx.gateway.update(|gateway| {
+        let provider = gateway.providers.iter_mut().find(|p| p.relay.id == id).unwrap();
+        let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
+        auth[codex_plus_core::official_login::LENT_TO_CODEX_MARKER] = json!(true);
+        provider.relay.auth_contents = auth.to_string();
+        provider.enabled = false;
+        Ok(())
+    }).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let mut native: Value = serde_json::from_str(&stored).unwrap();
+    native["tokens"]["access_token"] = json!("new-native-access");
+    native["tokens"]["refresh_token"] = json!("new-native-refresh");
+    std::fs::write(ctx.codex_home.join("auth.json"), native.to_string()).unwrap();
+    sync_codex_identity(ctx).unwrap();
+    assert!(ctx.settings.load().unwrap().native_auth_selection.is_none());
+    let gateway = ctx.gateway.load().unwrap();
+    assert!(!codex_plus_core::official_login::is_lent_to_codex(&gateway.provider(&id).unwrap().relay));
+    let pool_auth: Value = serde_json::from_str(&gateway.provider(&id).unwrap().relay.auth_contents).unwrap();
+    assert_eq!(pool_auth["tokens"], serde_json::from_str::<Value>(&stored).unwrap()["tokens"]);
+    for _ in 0..2 {
+        refresh_enabled(ctx).unwrap();
+        enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+        let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["tokens"], native["tokens"]);
+    }
+    // 用户再退出后，下一次真正借出的登录仍由原有借用生命周期管理。
+    std::fs::write(ctx.codex_home.join("auth.json"), r#"{"OPENAI_API_KEY":"fixture"}"#).unwrap();
+    set_provider_enabled(&ctx.gateway, &id, true).unwrap();
+    refresh_enabled(ctx).unwrap();
+    assert!(codex_plus_core::official_login::is_lent_to_codex(&ctx.gateway.load().unwrap().provider(&id).unwrap().relay));
+    set_provider_enabled(&ctx.gateway, &id, false).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert!(auth.get("tokens").is_none());
+}
+
+#[test]
+fn a_disabled_loan_in_the_same_workspace_does_not_own_another_users_native_login() {
+    use base64::Engine;
+    use codex_plus_core::gateway::apply::{add_provider, sync_codex_identity};
+    use codex_plus_core::settings::NativeAuthSelection;
+    let fixture = fixture(29565);
+    let ctx = &fixture.ctx;
+    seed_unsigned_managed_codex(ctx);
+    let mut stored: Value = serde_json::from_str(&selected_login("team-workspace")).unwrap();
+    stored[codex_plus_core::official_login::LENT_TO_CODEX_MARKER] = json!(true);
+    let (_, id) = add_provider(&ctx.gateway, RelayProfile {
+        name: "Other member".into(), relay_mode: RelayMode::Official,
+        auth_contents: stored.to_string(), ..Default::default()
+    }, "login:chatgpt", None).unwrap();
+    set_provider_enabled(&ctx.gateway, &id, false).unwrap();
+    let mut settings = ctx.settings.load().unwrap();
+    settings.native_auth_selection = Some(NativeAuthSelection::None);
+    ctx.settings.save(&settings).unwrap();
+    let mut native = stored;
+    native["tokens"]["id_token"] = json!(format!("e30.{}.fixture",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            json!({"sub":"different-native-user"}).to_string())));
+    native["tokens"]["access_token"] = json!("different-user-access");
+    native["tokens"]["refresh_token"] = json!("different-user-refresh");
+    std::fs::write(ctx.codex_home.join("auth.json"), native.to_string()).unwrap();
+    sync_codex_identity(ctx).unwrap();
+    refresh_enabled(ctx).unwrap();
+    let auth: Value = serde_json::from_slice(&std::fs::read(ctx.codex_home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["tokens"], native["tokens"]);
+    assert!(codex_plus_core::official_login::is_lent_to_codex(&ctx.gateway.load().unwrap().provider(&id).unwrap().relay));
 }
 
 /// Codex 自己没登录、池里有网关登录的 ChatGPT 账号：接入时借给 Codex 登录（官方身份），
@@ -3973,6 +4381,8 @@ fn codex_startup_upgrades_image_registration_without_a_port_change_or_resave() {
     seeded.relay_profiles_enabled = true;
     ctx.settings.save(&seeded).unwrap();
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let initial_generation =
+        codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap();
     let original = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();
     let (_, image_id) = create_provider(
         &ctx.gateway,
@@ -3999,6 +4409,10 @@ fn codex_startup_upgrades_image_registration_without_a_port_change_or_resave() {
     assert_eq!(reapply_if_port_changed(ctx).unwrap(), 0);
 
     assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    assert_eq!(
+        codex_plus_core::gateway::connection_generation::read(&ctx.codex_home).unwrap(),
+        initial_generation
+    );
     assert!(codex_config(ctx).contains("codex-plus-gateway-image-generation"));
     assert!(codex_config(ctx).contains("http://127.0.0.1:57377/gw/codex/v1"));
     let refreshed = ctx.gateway.load().unwrap().binding(&ToolId::Codex).unwrap().clone();

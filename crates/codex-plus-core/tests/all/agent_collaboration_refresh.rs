@@ -9,7 +9,7 @@ const vm = require('node:vm');
 const source = process.argv[1];
 const mode = process.argv[2];
 const uuid = '01a14973-0aa5-72a1-850f-79e8462acfc1';
-const names = ['list_agents','delegate_task','delegate_to_deepseek','delegate_to_claude_code','delegate_to_codex','send_task','get_task','wait_task','list_tasks','cancel_task'];
+const names = ['list_agents','delegate_task','delegate_to_deepseek','delegate_to_claude_code','delegate_to_codex','delegate_to_antigravity','send_task','get_task','wait_task','list_tasks','cancel_task'];
 const tools = Object.fromEntries(names.map(name => [name,{name,inputSchema:{type:'object'}}]));
 const item = runtimeStatus => ({name:'codex_plus_collaboration',runtimeStatus,tools,toolsError:null});
 const key = ['mcp','servers','status','local','full'];
@@ -92,7 +92,7 @@ const context = {window,document,Map,Set,Promise,JSON,Object,Array,Error,setTime
    assert.deepEqual(calls.map(call=>call[0]),['mcpServerStatus/list','config/mcpServer/reload','mcpServerStatus/list']);
    assert.equal(calls[0][1].threadId,undefined);
    assert.equal(calls[2][1].threadId,['no-thread','temporary-thread'].includes(mode)?undefined:uuid);
-   assert.equal(report.toolCount,10);
+   assert.equal(report.toolCount,11);
    if (mode==='missing-query-client') {
      assert.equal(report.status,'partial'); assert.equal(report.cacheRefreshed,false); assert.equal(report.toolsReady,true); assert.equal(cacheCalls.length,0);
      assert.equal(report.message,'本机 MCP 配置已整体重读，工具已就绪；未找到 QueryClient，无法刷新 MCP 列表缓存。');
