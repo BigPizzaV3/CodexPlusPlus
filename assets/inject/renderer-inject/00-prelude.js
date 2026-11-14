@@ -438,13 +438,14 @@
   const codexRemoteSessionRecoveryVersion = "8";
   const codexPluginMarketplaceUnlockVersion = "17";
   const codexThreadScrollMaxEntries = 120;
+  const codexThreadScrollAnchorBlocks = "p, pre, li, h1, h2, h3, h4, h5, h6, table, blockquote";
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
   const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
   const codexThreadScrollUserIntentWindowMs = 1200;
   const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
-  const codexThreadScrollRouteHooksVersion = "dispatcher:2";
-  const codexThreadScrollListenerVersion = "4";
+  const codexThreadScrollRouteHooksVersion = "dispatcher:3";
+  const codexThreadScrollListenerVersion = "5";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");

@@ -482,6 +482,7 @@ type BackendSettings = WhaleBalanceSettings & {
   threadModelFollowSwitchEnabled?: boolean;
   /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
   keepProjectsWithoutAccount?: boolean;
+  nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
   /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
@@ -2074,6 +2075,7 @@ export function App() {
           "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout", "claudeDesktopLocal",
           // 使用模式也要带上：表单留着旧值，下一次整份保存会把刚记下的模式写回去。
           "managerAgentFocus",
+          "nativeAuthSelection",
         ]) merged[key] = fresh[key];
         return merged as BackendSettings;
       });
@@ -8240,7 +8242,7 @@ function RelayScreen({
         )}
       />
       {connection}
-      <NativeAuthControl />
+      <NativeAuthControl onRestart={() => actions.restart()} />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
       {!normalized.relayProfilesEnabled ? (

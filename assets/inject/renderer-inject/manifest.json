@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 553
+      "lines": 554
     },
     {
       "name": "01-registry.js",
@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1658
+      "lines": 1670
     },
     {
       "name": "31-config-read-deadline.js",
@@ -68,7 +68,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1947
+      "lines": 2023
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -78,12 +78,12 @@
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 456
+      "lines": 482
     },
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1661
+      "lines": 1668
     },
     {
       "name": "71-model-picker-groups.js",
@@ -148,7 +148,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 888
+      "lines": 912
     },
     {
       "name": "92-extension-host.js",
@@ -183,7 +183,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 438
+      "lines": 439
     },
     {
       "name": "96-paste-fix.js",

@@ -40,7 +40,8 @@ function runtime() {
       return true;
     }
   }
-  const window = { MessagePort, MessageEvent: PortMessageEvent } as any;
+  const window = { MessagePort, MessageEvent: PortMessageEvent,
+    __codexPlusUnloadWaitTimeoutMs: 1500, __codexPlusUnloadWaitPollMs: 100 } as any;
   const port = new MessagePort();
   const postJson = async (route: string, payload: any) => {
     assert.equal(route, "/thread-provider/prepare");
@@ -386,6 +387,52 @@ describe("provider preparation", () => {
     assert.equal(env.calls.filter((call) => call.method === "unsubscribeInactiveConversation").length, 2);
     assert.equal(env.calls.some((call) => call.method === "thread/unsubscribe"), false);
     assert.deepEqual(params, { conversationId: "thread", model: null, reasoningEffort: null });
+  });
+
+  it("waits for the host unload to land instead of failing the first confirmation", async () => {
+    const env = runtime();
+    env.subscribe();
+    env.state.status = "idle";
+    env.state.cached = { modelProvider: "openai", resumeState: "resumed", threadRuntimeStatus: { type: "idle" } };
+    let unloadAttempts = 0;
+    const host = {
+      getConversation: env.client.getConversation,
+      async unsubscribeInactiveConversation(threadId: string) {
+        env.calls.push({ method: "unsubscribeInactiveConversation", threadId });
+        unloadAttempts++;
+        // 卸载在调用返回后才异步生效，紧随其后的单次回读必然仍读到旧状态。
+        setTimeout(() => {
+          env.state.cached.resumeState = "needs_resume";
+          env.state.status = "notLoaded";
+        }, 200);
+      },
+    };
+    const params = { conversationId: "thread", model: null, reasoningEffort: null };
+    assert.deepEqual(await env.api.align(params, "local", env.client.sendRequest, host), {
+      sourceProvider: "openai", targetProvider: "custom",
+    });
+    assert.equal(unloadAttempts, 1);
+  });
+
+  it("polls thread/read until the old provider connection reports unloaded", async () => {
+    const env = runtime();
+    env.subscribe();
+    env.state.status = "idle";
+    let unloads = 0;
+    const send = async (method: string, params: any, options: any) => {
+      if (method === "thread/unsubscribe") {
+        unloads++;
+        // 服务端卸载异步落地： unsubscribe 返回后的首次 read 仍是 idle。
+        setTimeout(() => { env.state.status = "notLoaded"; }, 200);
+        return { status: "ok" };
+      }
+      return env.client.sendRequest(method, params, options);
+    };
+    const params = { conversationId: "thread", model: null, reasoningEffort: null };
+    assert.deepEqual(await env.api.align(params, "local", send), {
+      sourceProvider: "openai", targetProvider: "custom",
+    });
+    assert.equal(unloads, 1);
   });
 
   it("confirms the actual connection once despite stale host labels and switches back after index sync", async () => {

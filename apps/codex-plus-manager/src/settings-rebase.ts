@@ -12,7 +12,7 @@ export function rebaseSettingsEdits<T extends object>(form: T, previous: T, late
   const local = form as Record<string, unknown>;
   const base = previous as Record<string, unknown>;
   for (const key of Object.keys(local)) {
-    if (key === "revision") continue;
+    if (key === "revision" || key === "nativeAuthSelection") continue;
     if (JSON.stringify(local[key]) !== JSON.stringify(base[key])) merged[key] = local[key];
   }
   return merged as T;

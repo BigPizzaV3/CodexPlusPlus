@@ -438,13 +438,14 @@
   const codexRemoteSessionRecoveryVersion = "8";
   const codexPluginMarketplaceUnlockVersion = "17";
   const codexThreadScrollMaxEntries = 120;
+  const codexThreadScrollAnchorBlocks = "p, pre, li, h1, h2, h3, h4, h5, h6, table, blockquote";
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
   const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
   const codexThreadScrollUserIntentWindowMs = 1200;
   const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
-  const codexThreadScrollRouteHooksVersion = "dispatcher:2";
-  const codexThreadScrollListenerVersion = "4";
+  const codexThreadScrollRouteHooksVersion = "dispatcher:3";
+  const codexThreadScrollListenerVersion = "5";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
@@ -4462,6 +4463,12 @@
 
   const codexThreadProviderPreparations = new Map();
   const codexThreadProviderPreparationTimeoutMs = 120000;
+  // 卸载确认的轮询上限：供应商切换后旧连接的卸载是异步落地的，给单次回读留出等待窗口。
+  // 顶层不读 window：分片在 Node 测试沙盒里直接求值，window 在调用时才存在。
+  const unloadWaitOptions = () => ({
+    timeoutMs: window.__codexPlusUnloadWaitTimeoutMs ?? 15000,
+    pollMs: window.__codexPlusUnloadWaitPollMs ?? 400,
+  });
   let codexThreadProviderResumeSequence = 0;
 
   function codexThreadProviderResumeParams(threadId, provider, params, thread) {
@@ -4670,16 +4677,22 @@
             await sendRequest("thread/unsubscribe", { threadId }, options);
             signal?.throwIfAborted();
           }
-          const after = await client.getConversation(threadId);
-          signal?.throwIfAborted();
-          if (after?.resumeState !== "needs_resume") throw new Error("旧供应商会话尚未卸载，请稍后重试");
         } else {
           await sendRequest("thread/unsubscribe", { threadId }, options);
           signal?.throwIfAborted();
         }
-        const after = await sendRequest("thread/read", { threadId, includeTurns: false }, options);
-        signal?.throwIfAborted();
-        if (after.thread.status.type !== "notLoaded") throw new Error("旧供应商会话尚未卸载，请稍后重试");
+        // 卸载异步落地：有界轮询确认后再继续，避免单次回读竞态把正常卸载误判为失败。
+        const unloadDeadline = Date.now() + unloadWaitOptions().timeoutMs;
+        for (;;) {
+          const after = client
+            ? await client.getConversation(threadId)
+            : await sendRequest("thread/read", { threadId, includeTurns: false }, options);
+          signal?.throwIfAborted();
+          if (client ? after?.resumeState === "needs_resume" : after.thread.status.type === "notLoaded") break;
+          if (Date.now() >= unloadDeadline) throw new Error("旧供应商会话尚未卸载，请稍后重试");
+          await new Promise((resolve) => setTimeout(resolve, unloadWaitOptions().pollMs));
+          signal?.throwIfAborted();
+        }
       }
       if (client ? loaded || managed || sourceProvider === "codex_plus_managed" : resumeBeforeTurn) {
         const current = client ? read : await sendRequest("thread/read", { threadId, includeTurns: false }, options);
@@ -10567,6 +10580,11 @@
           at: finiteNonNegativeNumber(value.at),
         };
         if (typeof value.atBottom === "boolean") entries[safeKey].atBottom = value.atBottom;
+        const anchor = value.anchor;
+        if (anchor && typeof anchor.key === "string" && anchor.key.length > 0 && anchor.key.length <= 512
+            && Number.isInteger(anchor.block) && anchor.block >= -1 && Number.isFinite(anchor.offset)) {
+          entries[safeKey].anchor = { key: anchor.key, block: anchor.block, offset: anchor.offset };
+        }
       });
       window.__codexThreadScrollEntries = entries;
       return { ...entries };
@@ -10629,6 +10647,7 @@
         restoreLock: null,
         applyingRestore: false,
         pendingNavigation: null,
+        resumeSessionId: "",
         userScrollIntentUntil: 0,
         userCancelledRestoreSessionId: "",
       };
@@ -10659,6 +10678,7 @@
     runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
     runtime.userCancelledRestoreSessionId = cancelledSessionId;
     runtime.pendingNavigation = null;
+    runtime.resumeSessionId = "";
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
     window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
     clearThreadScrollRestoreTimers();
@@ -10716,6 +10736,7 @@
       scrollHeight: entry.scrollHeight,
       clientHeight: entry.clientHeight,
       atBottom: entry.atBottom,
+      anchor: entry.anchor,
       expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
     };
     return runtime.restoreLock;
@@ -10729,10 +10750,44 @@
 
   function threadScrollTargetTop(scroller, entry) {
     const range = threadScrollRange(scroller);
-    const targetTop = finiteScrollNumber(entry.targetTop ?? entry.top);
+    let targetTop = finiteScrollNumber(entry.targetTop ?? entry.top);
     const savedBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
     const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom : Math.abs(targetTop - savedBottom) <= 2;
-    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, targetTop));
+    if (atBottom) return range.bottom;
+    if (entry.anchor) {
+      const unit = scroller.querySelector(`[data-content-search-unit-key="${CSS.escape(entry.anchor.key)}"]`);
+      const block = entry.anchor.block === -1 ? unit : unit?.querySelectorAll(codexThreadScrollAnchorBlocks)[entry.anchor.block];
+      if (block) {
+        const rect = scroller.getBoundingClientRect();
+        const blockRect = block.getBoundingClientRect();
+        // rect 使用缩放后的坐标，scrollTop 使用布局坐标。
+        if (rect.height > 0 && blockRect.height > 0) {
+          targetTop = scroller.scrollTop + (blockRect.top - rect.top) * scroller.offsetHeight / rect.height - entry.anchor.offset;
+        }
+      }
+    }
+    return Math.max(range.min, Math.min(range.max, targetTop));
+  }
+
+  function captureThreadScrollAnchor(scroller) {
+    const rect = scroller.getBoundingClientRect();
+    if (rect.height <= 0 || rect.width <= 0) return null;
+    // 只命中视口内的消息，避免逐个测量长会话中的历史节点。
+    for (const y of [0.1, 0.3, 0.5]) {
+      for (const x of [0.5, 0.25, 0.75]) {
+        const hit = document.elementFromPoint(rect.left + rect.width * x, rect.top + rect.height * y);
+        const unit = hit?.closest("[data-content-search-unit-key]");
+        if (!unit || !scroller.contains(unit)) continue;
+        const candidate = hit.closest(codexThreadScrollAnchorBlocks);
+        const block = candidate && unit.contains(candidate) ? candidate : unit;
+        return {
+          key: unit.getAttribute("data-content-search-unit-key"),
+          block: block === unit ? -1 : [...unit.querySelectorAll(codexThreadScrollAnchorBlocks)].indexOf(block),
+          offset: (block.getBoundingClientRect().top - rect.top) * scroller.offsetHeight / rect.height,
+        };
+      }
+    }
+    return null;
   }
 
   function threadScrollNearBottom(scroller, top) {
@@ -10890,6 +10945,7 @@
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
     if (!key || !scroller) return;
+    if (runtime.resumeSessionId || scroller.clientWidth === 0) return;
     if (activeThreadScrollRestoreLock(key)) return;
     const snapshot = {
       top: finiteScrollNumber(scroller.scrollTop),
@@ -10901,8 +10957,11 @@
     // 会话加载时的空容器不能覆盖之前的阅读位置。
     if (snapshot.scrollHeight <= snapshot.clientHeight && !scroller.querySelector("[data-turn-key]")) return;
     snapshot.atBottom = Math.abs(threadScrollRange(scroller).bottom - snapshot.top) <= 2;
-    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
     const entries = readThreadScrollEntries();
+    const anchor = snapshot.atBottom ? null : captureThreadScrollAnchor(scroller);
+    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight
+        && (!anchor || JSON.stringify(entries[key]?.anchor) === JSON.stringify(anchor))) return;
+    if (anchor) snapshot.anchor = anchor;
     entries[key] = snapshot;
     writeThreadScrollEntries(entries);
     runtime.lastSavedTop = snapshot.top;
@@ -10969,15 +11028,26 @@
     const nextSessionId = currentThreadScrollSessionId();
     if (!nextSessionId) return;
     if (!threadScrollRestoreEnabled()) {
+      runtime.resumeSessionId = "";
       bindThreadScrollListener(null);
       clearThreadScrollRestoreTimers();
       clearThreadScrollRestoreLock();
       runtime.activeSessionId = nextSessionId;
       return;
     }
-    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
+    if (document.visibilityState === "hidden") return;
+    if (runtime.resumeSessionId && runtime.resumeSessionId !== nextSessionId) runtime.resumeSessionId = "";
     const nextScroller = currentThreadScroller();
     bindThreadScrollListener(nextScroller);
+    // 页面仍在挂载时保留导航待处理状态，容器出现后的补扫再恢复一次。
+    if (!nextScroller) return;
+    if (runtime.resumeSessionId === nextSessionId) {
+      runtime.resumeSessionId = "";
+      // 先建立恢复锁，再允许后续 scroll 事件保存重新展开后的布局。
+      scheduleThreadScrollRestore(nextSessionId);
+      restoreThreadScrollPosition(nextSessionId);
+    }
+    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
     if (runtime.activeSessionId !== nextSessionId) {
       runtime.lastSavedTop = -1;
       runtime.lastSavedHeight = -1;
@@ -11077,6 +11147,7 @@
       saveNow: saveThreadScrollPositionNow,
       prepareRestoreLock: prepareThreadScrollRestoreLock,
       scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
+      visibilityChanged: handleThreadScrollVisibilityChange,
     };
   }
 
@@ -11167,11 +11238,29 @@
       window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
     };
     window.__codexThreadScrollVisibilityHandler = () => {
-      if (document.visibilityState === "hidden") window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.visibilityChanged?.();
     };
     window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
     window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
     document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+  }
+
+  function handleThreadScrollVisibilityChange() {
+    if (!threadScrollRestoreEnabled()) return;
+    const runtime = threadScrollRuntime();
+    if (document.visibilityState === "hidden") {
+      saveThreadScrollPositionNow();
+      runtime.resumeSessionId = runtime.activeSessionId;
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollSyncTimers();
+      return;
+    }
+    if (!runtime.resumeSessionId) return;
+    // 隐藏前的手动滚动取消的是旧导航，不应阻止恢复刚保存的当前位置。
+    runtime.userScrollIntentUntil = 0;
+    runtime.userCancelledRestoreSessionId = "";
+    syncThreadScrollState();
+    scheduleThreadScrollSyncAttempts(false);
   }
 
   async function postJson(path, payload) {
@@ -12045,41 +12134,67 @@
     const envelope = codexPlusPluginNativeRequests.get(key);
     if (!envelope) return false;
     codexPlusPluginNativeRequests.delete(key);
+    // 返回 true 意味着这个回包已被我们从原生路径摘下：后续处理必须限时，
+    // 超时或出错都要把原始回包原样投回渲染层，绝不能让宿主请求永久 pending
+    // （issue #3098：首批 vscode 查询全部停在 fetching 就是这条链挂死的表现）。
+    let delivered = false;
+    const deliverOriginal = () => {
+      if (delivered) return;
+      delivered = true;
+      codexPlusPluginNativeDeliver(data);
+    };
     void (async () => {
-      let payload;
-      let nativeError;
-      let wrapped = false;
-      if (fetchResponse) {
-        if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
-        try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
-          codexPlusPluginNativeDeliver(data);
-          return;
-        }
-        if (payload?.error) nativeError = payload.error;
-        wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
-      } else {
-        payload = data.message?.result;
-        nativeError = data.message?.error;
+      try {
+        await Promise.race([
+          (async () => {
+            let payload;
+            let nativeError;
+            let wrapped = false;
+            if (fetchResponse) {
+              if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
+              try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
+                deliverOriginal();
+                return;
+              }
+              if (payload?.error) nativeError = payload.error;
+              wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
+            } else {
+              payload = data.message?.result;
+              nativeError = data.message?.error;
+            }
+            if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
+              deliverOriginal();
+              return;
+            }
+            const original = nativeError ? {} : wrapped ? payload.result : payload;
+            const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
+            let next;
+            if (fetchResponse) {
+              const response = wrapped ? { ...payload, result: merged } : merged;
+              if (wrapped) delete response.error;
+              next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
+              delete next.body;
+              delete next.error;
+            } else {
+              const message = { ...data.message, result: merged };
+              delete message.error;
+              next = { ...data, message };
+            }
+            if (!delivered) {
+              delivered = true;
+              codexPlusPluginNativeDeliver(next);
+            }
+          })(),
+          new Promise((_resolve, reject) => {
+            setTimeout(() => reject(new Error("插件市场回包处理超时")), 15_000);
+          }),
+        ]);
+      } catch (error) {
+        try { codexPlusMarkExtensionFailure("", `插件市场回包处理失败，已原样转发：${String(error?.message || error)}`); } catch {}
+      } finally {
+        deliverOriginal();
       }
-      if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
-        codexPlusPluginNativeDeliver(data);
-        return;
-      }
-      const original = nativeError ? {} : wrapped ? payload.result : payload;
-      const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
-      if (fetchResponse) {
-        const response = wrapped ? { ...payload, result: merged } : merged;
-        if (wrapped) delete response.error;
-        const next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
-        delete next.body;
-        delete next.error;
-        codexPlusPluginNativeDeliver(next);
-      } else {
-        const message = { ...data.message, result: merged };
-        delete message.error;
-        codexPlusPluginNativeDeliver({ ...data, message });
-      }
-    })().catch((error) => codexPlusPluginNativeReply(envelope, null, error));
+    })();
     return true;
   }
 
@@ -12655,11 +12770,17 @@
       .find((name) => typeof name === "string" && allowed.has(name));
     // 选择器「重置为默认」读的是 defaultModelSlug 和 versionOptions 里 id=latest 的版本，
     // 只补 defaultModel/default_model 会让重置落到网关目录之外的模型（#3058）。
+    // 网关目录可能同时保留原生默认模型（#3122）：它虽在允许集合内，重置仍应回到
+    // 当前有效配置的默认模型，而不是 Statsig 下发的原生默认。
+    const configuredDefault = [codexModelCatalog.default_model, codexModelCatalog.model]
+      .find((name) => typeof name === "string" && allowed.has(name)) || fallback;
+    const replaced = new Set();
     for (const key of ["defaultModel", "default_model", "defaultModelSlug", "default_model_slug"]) {
       const original = value[key];
       const name = typeof original === "string" ? original : original?.model || original?.id || original?.slug;
-      if (!name || allowed.has(name)) continue;
-      const patched = typeof original === "string" ? fallback : codexPlusModelDescriptor(fallback);
+      if (!name || name === configuredDefault) continue;
+      replaced.add(name);
+      const patched = typeof original === "string" ? configuredDefault : codexPlusModelDescriptor(configuredDefault);
       if (!snapshot.fields[key] || original !== snapshot.fields[key].patched) {
         snapshot.fields[key] = { original, patched };
       }
@@ -12673,23 +12794,24 @@
         let next = version;
         const versionName = (key) => {
           const current = next[key];
-          return typeof current === "string" && current && !allowed.has(current) ? current : "";
+          return typeof current === "string" && current && current !== configuredDefault ? current : "";
         };
         for (const key of ["defaultModelSlug", "default_model_slug"]) {
           if (versionName(key)) {
             if (next === version) next = { ...version };
-            next[key] = fallback;
+            next[key] = configuredDefault;
           }
         }
         const options = next.options;
         if (Array.isArray(options) && options.some((option) => {
           const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
-          return typeof name === "string" && name && !allowed.has(name);
+          return typeof name === "string" && name && (!allowed.has(name) || replaced.has(name));
         })) {
           if (next === version) next = { ...version };
           next.options = options.map((option) => {
             const name = option && typeof option === "object" ? option.model || option.id || option.slug : "";
-            return typeof name === "string" && name && !allowed.has(name) ? codexPlusModelDescriptor(fallback) : option;
+            return typeof name === "string" && name && (!allowed.has(name) || replaced.has(name))
+              ? codexPlusModelDescriptor(configuredDefault) : option;
           });
         }
         return next;
@@ -21737,7 +21859,9 @@
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
   const codexPlusRpcInterceptorVersion = 19;
-  const codexPlusRpcMiddlewareTimeoutMs = 5000;
+  const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
+    && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
+    ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
   const codexPlusRpcPreparationTimeoutMs = 120000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
@@ -22363,12 +22487,34 @@
       clearTimeout(timer);
     }
     if (!plan.context || deferContext || replaced?.[codexPlusRpcPushFailure]) return replaced;
+    // plan.context 里会等 app-server 往返（网关预检、模型刷新）；一旦挂住，
+    // 端口队列会卡死后续所有帧，渲染层首批请求就永远停在 fetching（issue #3098）。
+    // 所以 context 也必须限时：超时不显式拒绝本轮（那是我们自己的刷新失败，
+    // 不该拦用户的消息），而是原样转发当前帧，让本轮按宿主参数照常走。
+    let contextTimedOut = false;
+    let contextTimer = null;
     try {
-      return await plan.context(replaced || frame);
-    } catch (error) {
-      const reason = String(error?.message || error);
-      codexPlusRpcRejectNotice(reason);
-      return plan.contextFailure(reason);
+      return await Promise.race([
+        (async () => {
+          try {
+            return await plan.context(replaced || frame);
+          } catch (error) {
+            if (contextTimedOut) return undefined;
+            const reason = String(error?.message || error);
+            codexPlusRpcRejectNotice(reason);
+            try { return plan.contextFailure(reason); } catch { return undefined; }
+          }
+        })(),
+        new Promise((resolve) => {
+          contextTimer = setTimeout(() => {
+            contextTimedOut = true;
+            resolve(undefined);
+          }, codexPlusRpcMiddlewareTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(contextTimer);
+      if (contextTimedOut) codexPlusMarkExtensionFailure("", "rpc 上下文改写超时，已原样发出本轮消息");
     }
   }
 
@@ -26055,7 +26201,8 @@
       installThreadScrollNavigationCapture();
       installThreadScrollUserIntentCapture();
       installThreadScrollRouteHooks();
-      scheduleThreadScrollSync(true);
+      // 可见性恢复和普通 DOM 补扫不是导航，不能重新锁住旧的阅读位置。
+      scheduleThreadScrollSync();
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
     let enabled = threadScrollRestoreEnabled();
