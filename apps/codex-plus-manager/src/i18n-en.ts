@@ -2334,7 +2334,7 @@ export const EN_PLAIN: Record<string, string> = {
   "历史轮次补载（实验）": "Historical turn recovery (experimental)",
   "索引检查后补齐当前会话的历史消息和用时，默认关闭。": "Recover historical messages and timing in the current conversation after an index check. Off by default.",
   "用量状态栏": "Usage status line",
-  "在输入框下方显示输出吞吐、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。": "Show output throughput, cache hit rate, and context usage below the composer. Read from local Codex session logs; requests are not modified.",
+  "在输入框下方显示解码速度、首 token 延迟、缓存命中率和上下文占用，并在已完成消息旁显示该轮最后一次模型调用的 token 用量。数据来自本机 Codex 会话与请求记录，不改变请求内容。": "Show decode speed, first-token latency, cache hit rate, and context usage below the composer, plus the token usage of each completed message's final model call. Read from local Codex session and request logs; requests are not modified.",
   "请求经 Codex++ 网关或本地代理时，在输入框上方显示正在请求、等待返回、重试和生成进度。关闭后不再显示，也不再查询请求状态。": "When requests go through the Codex++ gateway or local proxy, show requesting, waiting, retrying, and generating progress above the composer. Turning it off hides the bar and stops polling request status.",
   "点击建议后自动发送；关闭时只填入输入框。": "Automatically sends after clicking a suggestion. When off, it only fills the composer.",
   "刚刚启动": "Just launched",
