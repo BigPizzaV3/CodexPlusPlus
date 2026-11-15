@@ -104,7 +104,8 @@ test("Fast-only UI metadata leaves an existing native descriptor's name and reas
     codexPlusModelMetadata: () => metadata,
     modelReasoningEfforts: () => { throw new Error("Fast does not configure reasoning choices"); },
   });
-  vm.runInContext(extract(fragment("70-model-catalog.js"), "applyCodexPlusModelMetadata"), context);
+  vm.runInContext(["applyCodexPlusModelMetadata", "codexPlusModelInputModalities", "codexPlusModelImageDetailOriginal"]
+    .map((name) => extract(fragment("70-model-catalog.js"), name)).join("\n"), context);
   const descriptor = { displayName: "Native Grok", description: "Native details", defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] };
   const original = structuredClone(descriptor);
   assert.equal(context.applyCodexPlusModelMetadata(descriptor, "grok-custom"), false);

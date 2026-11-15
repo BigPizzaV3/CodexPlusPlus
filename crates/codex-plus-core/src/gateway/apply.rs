@@ -595,6 +595,8 @@ fn codex_model_metadata(
                 fields.insert("service_tiers".into(), json!([]));
                 fields.insert("additional_speed_tiers".into(), json!([]));
             }
+            // 组里轮到不收图的那家就会失败：图片能力取各成员的交集。
+            narrow_image_capability(&mut fields, &member_fields);
             fields.insert("display_name".into(), json!(group.name));
             fields.insert(
                 "description".into(),
@@ -647,17 +649,9 @@ fn codex_model_metadata(
             {
                 fields.insert("supports_search_tool".into(), json!(false));
             }
-            if let Some(mut modalities) = member_entries
-                .first()
-                .and_then(|entry| entry["input_modalities"].as_array().cloned())
-            {
-                for entry in member_entries.iter().skip(1) {
-                    if let Some(other) = entry["input_modalities"].as_array() {
-                        modalities.retain(|modality| other.contains(modality));
-                    }
-                }
-                fields.insert("input_modalities".into(), json!(modalities));
-            }
+            let member_fields: Vec<Map<String, Value>> =
+                member_entries.iter().map(catalog_ui_fields).collect();
+            narrow_image_capability(&mut fields, &member_fields);
             let all_support_fast = !members.is_empty()
                 && members.iter().all(|(relay, _)| {
                     relays
@@ -724,6 +718,22 @@ fn codex_model_metadata(
                 );
                 fields.insert("codex_plus_group".into(), json!("自动组"));
                 fields.insert("codex_plus_group_id".into(), json!(CODEX_AUTO_GROUP_ID));
+                // 按顺序切到的每一家都可能接这次请求：图片能力取各家的交集。
+                let member_fields: Vec<Map<String, Value>> =
+                    route::codex_model_members(gateway, binding, &model)
+                        .iter()
+                        .filter_map(|(member, member_upstream)| {
+                            let index = relays.iter().position(|relay| relay.id == member.id)?;
+                            member_catalog_entry(
+                                &mut member_catalogs,
+                                &relays,
+                                index,
+                                member_upstream,
+                            )
+                        })
+                        .map(|entry| catalog_ui_fields(&entry))
+                        .collect();
+                narrow_image_capability(&mut fields, &member_fields);
             } else {
                 fields.insert("display_name".into(), json!(display));
                 fields.insert("codex_plus_group_id".into(), Value::Null);
@@ -897,12 +907,45 @@ fn catalog_ui_fields(entry: &Value) -> Map<String, Value> {
         // Fast（优先处理）按这两个字段判断能不能开；不带过去 Codex 里的 Fast 按钮就一直是灰的。
         "service_tiers",
         "additional_speed_tiers",
+        // 图片输入能力（#3042）：不带过去，原生目录的 `<供应商>/<模型>` 条目会退回通用模板，
+        // 纯文本模型也宣称收图，供应商里声明了收图的模型反而丢掉声明。
+        "input_modalities",
+        "supports_image_detail_original",
     ] {
         if let Some(value) = entry.get(key).filter(|value| !value.is_null()) {
             fields.insert(key.to_string(), value.clone());
         }
     }
     fields
+}
+
+/// 一项会发给几家（模型组、多家自动切换、未知声明按默认模型兜底）时，图片能力取各家的交集：
+/// `input_modalities` 只留每家都声明了的，`supports_image_detail_original` 有一家为 false 就是 false。
+/// 没写这个字段的那家不参与收窄；第一家都没写时不凭空补。
+fn narrow_image_capability(fields: &mut Map<String, Value>, members: &[Map<String, Value>]) {
+    fn modalities_of(member: &Map<String, Value>) -> Option<&Vec<Value>> {
+        member.get("input_modalities").and_then(Value::as_array)
+    }
+    if let Some(mut modalities) = members.first().and_then(modalities_of).cloned() {
+        for other in members.iter().skip(1).filter_map(modalities_of) {
+            modalities.retain(|modality| other.contains(modality));
+        }
+        fields.insert("input_modalities".into(), json!(modalities));
+    }
+    let originals: Vec<bool> = members
+        .iter()
+        .filter_map(|member| {
+            member
+                .get("supports_image_detail_original")
+                .and_then(Value::as_bool)
+        })
+        .collect();
+    if !originals.is_empty() {
+        fields.insert(
+            "supports_image_detail_original".into(),
+            json!(originals.iter().all(|original| *original)),
+        );
+    }
 }
 
 /// 模型 ID 的显示写法，和管理器界面一致：品牌词按正式写法（GPT、DeepSeek、GLM），
