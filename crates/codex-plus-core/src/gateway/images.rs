@@ -338,6 +338,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             model_windows: Default::default(),
             context_window: None,
             relay: RelayProfile {

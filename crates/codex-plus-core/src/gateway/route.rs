@@ -469,6 +469,23 @@ pub fn model_entry_window(
         .min()
 }
 
+/// Agent 模型列表里一项的自动压缩百分比（#3100）：它会发给的各家里单独设过的取最小值
+/// （与窗口取最小一致，宁早勿晚）；都没设返回 None，交给 Agent 默认。
+pub fn model_entry_auto_compact(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<f64> {
+    model_entry_members(gateway, binding, model)
+        .into_iter()
+        .filter_map(|(relay, upstream)| {
+            gateway
+                .provider(&relay.id)
+                .and_then(|provider| provider.auto_compact_for(&upstream))
+        })
+        .reduce(f64::min)
+}
+
 /// 某家某个模型支持的思考档位（由低到高）：用户在模型资料里写的优先，其次内置模型资料。
 /// 没有资料时为空。与 Codex 模型目录、管理器的「思考等级」读同一份资料。
 pub fn model_reasoning_levels(relay: &RelayProfile, model: &str) -> Vec<String> {
@@ -1722,6 +1739,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             subscription_policy: None,
             relay: RelayProfile {
                 id: id.to_string(),
