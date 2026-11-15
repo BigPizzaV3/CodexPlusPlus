@@ -188,6 +188,28 @@ pub(crate) fn managed_protocol_proxy_base_urls() -> Vec<String> {
     ports.into_iter().map(local_responses_proxy_base_url).collect()
 }
 
+/// The local WebSocket endpoint can only forward response.create to native
+/// Responses upstreams. Accepting an upgrade for a mixed pool would fail after
+/// the 101 response, when Codex can no longer fall back to HTTP.
+pub(crate) fn websocket_upgrade_serves_all_routes(
+    settings: &crate::settings::BackendSettings,
+) -> bool {
+    let native_responses = |relay: &crate::settings::RelayProfile| {
+        relay.protocol == crate::settings::RelayProtocol::Responses
+    };
+    if !settings.relay_profiles.iter().all(native_responses) {
+        return false;
+    }
+    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
+        return false;
+    };
+    gateway
+        .providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .all(|provider| native_responses(&provider.relay))
+}
+
 pub(crate) fn is_managed_protocol_proxy_base_url(value: &str) -> bool {
     let Ok(mut parsed) = reqwest::Url::parse(value.trim()) else {
         return false;

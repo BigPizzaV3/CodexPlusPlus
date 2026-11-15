@@ -726,6 +726,30 @@ pub(crate) async fn handle(
         .await?;
         return Ok(());
     };
+    // Reject mixed-protocol pools before the 101 response. After an upgrade,
+    // a downstream routing failure is terminal for the Codex turn.
+    let settings = crate::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
+    if !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+        crate::launcher::write_http_response(
+            stream,
+            "426 Upgrade Required",
+            "application/json; charset=utf-8",
+            br#"{"status":"upgrade_required","message":"WebSocket transport requires native Responses upstreams; retry with HTTP."}"#,
+        )
+        .await?;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.responses_websocket_upgrade_required",
+            json!({
+                "method": "GET",
+                "path": path,
+                "status": "426 Upgrade Required",
+                "reason": "mixed_protocol_relays",
+            }),
+        );
+        return Ok(());
+    }
     use tokio::io::AsyncWriteExt;
     let mut wire = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
     for (name, value) in response.headers() {
