@@ -276,7 +276,7 @@ flowchart LR
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P0 协议验证 ✅ | 用隔离的 Codex 实例打开一个会话，确认快照字段、`requests` 结构、审批 / 插话 / 中断请求的参数与返回 | `tools/remote-control-p0/run-p0.mjs` 12/12 通过（第 10 节） |
-| P1 远程桥 | Rust：IPC 客户端（含版本表抽取）、follower 状态机、侧车 app-server、注入脚本的打开会话入口、会话 / 审批 API、WebSocket 推送、配对与设备管理 | 本机浏览器能完成：看会话 → 打开 → 发消息 → 实时输出 → 审批 |
+| P1 远程桥 ✅ | Rust：IPC 客户端（含版本表抽取）、follower 状态机、侧车 app-server、经 CDP 打开会话、会话 / 审批 API、WebSocket 推送、令牌鉴权；管理器「工具 → 远程控制」页 | 本机浏览器能完成：看会话 → 打开 → 发消息 → 实时输出 → 审批（`run-p1.mjs` 18/18，真实浏览器手动走通，第 11 节） |
 | P2 手机 PWA + 局域网 | 前端；局域网 / Tailscale 监听；证书指纹配对；审计日志 | 手机在同一 Wi-Fi 下完成整套操作；吊销设备立即断开 |
 | P3 中继 | 中继服务、端到端加密、推送通知 | 手机在 4G 下能用；中继日志里看不到明文 |
 | P4 打磨 | 多设备、权限分级、附件、目标 / 队列面板、Windows 验证 | Windows / macOS 双平台通过 |
@@ -385,3 +385,48 @@ flowchart LR
 - 跨进程队列：落盘后可互相看到，无推送通知。
 - 调研阶段的一次性探测脚本放在本机 `/tmp/codexapp-tools/`，未进仓库；P0 的参考实现与回归在 `tools/remote-control-p0/`。
 - 期间本机已安装的 Codex 由 Sparkle 自动升级到 26.1111；两个版本的 IPC 方法表只差 `thread-stream-state-changed`（11 → 13）。
+
+---
+
+## 11. P1 实现（2026-11-15）
+
+代码：`crates/codex-plus-core/src/remote_control/`
+
+| 文件 | 内容 |
+|---|---|
+| `ipc.rs` | IPC 客户端：Unix socket / Windows 命名管道、帧、握手、请求 / 回复配对、广播订阅、discovery 一律回 `canHandle:false` |
+| `versions.rs` | 从已安装 Codex 的 `app.asar` 读 IPC 方法版本表，读不到用内置的 26.1111 表 |
+| `patch.rs` | immer 补丁应用（含数组 `length` 截断） |
+| `follower.rs` | 跟随状态机（快照 + 补丁、断档重新要快照、Lagged 重同步）、follower 操作、给网页的精简视图 |
+| `sidecar.rs` | 侧车 app-server（`thread_unload_delay_secs=0`，建会话后放锁），找桌面版自带的 CLI |
+| `service.rs` | 连接 / 侧车 / 跟随的生命周期；经 CDP 发 `navigate-to-route` 打开会话；运行中发消息自动变插话 |
+| `server.rs` | HTTP + WebSocket（手写握手）；令牌、Host、Origin 检查；推送 80 ms 合并 |
+| `mod.rs` | 开关 / 端口 / 令牌持久化（`<state>/remote-control.json`，0600），独立线程运行时启停 |
+
+管理器：侧栏「工具 → 远程控制」（`RemoteControlPage.tsx`），一条命令 `remote_control_request` 按 action 分发；
+管理器启动时按保存的开关拉起，退出时停掉（连同侧车进程）。默认关闭。
+
+接口（都要 `Authorization: Bearer <令牌>`，WebSocket 用 `?token=`）：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/status` | IPC 是否连上、版本表来源、CLI、调试端口 |
+| GET | `/api/threads` | 会话列表（侧车） |
+| POST | `/api/threads` | 新建会话 `{ cwd, name?, text? }`：侧车建 → 放锁 → 桌面打开 |
+| GET | `/api/threads/{id}` | 已在桌面打开时给实时视图，否则给侧车读到的历史 |
+| POST | `/api/threads/{id}/open` | 让桌面打开并跟随 |
+| POST | `/api/threads/{id}/messages` | `{ text }`，没打开先打开；运行中自动改插话 |
+| POST | `/api/threads/{id}/interrupt` | 停止当前一轮 |
+| POST | `/api/threads/{id}/requests/{requestId}` | 审批 `{ decision }` / 提问 `{ answers }` / 权限与 MCP `{ response }` |
+| WS | `/api/threads/{id}/stream` | 推送 `{ type: "view", view }`，会话失去 owner 时推 `{ type: "closed" }` |
+
+安全：只监听 127.0.0.1；Host 只认回环（防 DNS 重绑定）；带 Origin 必须同源；令牌 64 位十六进制、常量时间比较；
+网页本身不含数据，令牌放在 URL 片段里不随请求发出；CSP 禁止外部资源与被嵌入；所有 POST 记入诊断日志
+`remote_control.action`。
+
+验证：`cargo test -p codex-plus-core --test all remote_control::`（14 项，含假 IPC 路由器与服务启停）、
+`node --test src/remote-control-page.test.ts`（4 项）、`run-p1.mjs` 18/18、`run-p0.mjs` 12/12，
+以及在隔离 Codex 上用真实浏览器走通「选未打开的会话 → 发需要审批的消息 → 桌面自动打开 → 网页弹审批卡 → 同意 → 命令执行」。
+
+P2 待做：局域网 / Tailscale 监听与证书指纹配对、设备管理与吊销、手机布局细化、推送通知；Windows 实测。
+

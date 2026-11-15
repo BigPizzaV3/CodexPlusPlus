@@ -10,7 +10,11 @@
 | `sidecar.mjs` | 侧车 app-server：读会话、建会话（建完立刻放掉写锁） |
 | `ipc-versions.mjs` | 从已安装 Codex 的 `app.asar` 里读出 IPC 方法版本表 |
 | `mock-responses.mjs` | 假的 Responses 上游，用标记触发审批 / 提问 / 慢速输出 |
-| `run-p0.mjs` | 端到端回归，12 项 |
+| `run-p0.mjs` | 端到端回归，12 项（直接走 IPC，验证协议本身） |
+| `run-p1.mjs` | 端到端回归，18 项（走 Rust 远程桥的 HTTP / WebSocket 接口，验证 P1 实现与安全检查） |
+
+P1 的正式实现在 `crates/codex-plus-core/src/remote_control/`，网页在
+`crates/codex-plus-core/assets/remote-control/index.html`，管理器入口是侧栏「工具 → 远程控制」。
 
 ## 只在隔离实例上跑
 
@@ -79,6 +83,18 @@ node run-p0.mjs
 ```
 
 Codex 每次升级后跑一遍：任何一项失败说明 IPC 协议或页面消息变了。
+
+### P1：Rust 远程桥
+
+```bash
+TOKEN=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')
+# 4. 在隔离实例上单独起远程桥（不经管理器，端口与令牌自定）
+P1_HOME=$P0/home P1_APP="$APP" P1_CDP_PORT=9333 P1_PORT=57399 P1_TOKEN=$TOKEN \
+  cargo run -p codex-plus-core --example remote_control_serve &
+# 5. 回归
+P1_PORT=57399 P1_TOKEN=$TOKEN P1_WORK=$P0/work node run-p1.mjs
+# 浏览器手动验证：http://127.0.0.1:57399/#token=$TOKEN
+```
 另外用 `node ipc-versions.mjs <app.asar>` 看方法版本有没有变。
 
 ## 已知限制

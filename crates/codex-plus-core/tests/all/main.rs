@@ -131,6 +131,7 @@ mod relay_config;
 mod relay_config_safety;
 mod relay_rotation;
 mod relay_switch;
+mod remote_control;
 mod responses_catalog_identity;
 mod responses_exec_compatibility;
 mod retired_layout;

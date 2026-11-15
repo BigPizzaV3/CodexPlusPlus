@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Codex++ 远程控制</title>
+<style>
+  :root {
+    --bg: light-dark(#f6f7f9, #111316);
+    --panel: light-dark(#ffffff, #1a1d21);
+    --line: light-dark(#e3e6ea, #2a2e34);
+    --text: light-dark(#1d2025, #e6e8eb);
+    --muted: light-dark(#6b7280, #8b929b);
+    --accent: #3b6ef5;
+    --danger: #d93f3f;
+    --ok: #1f9d55;
+    --code: light-dark(#f1f3f5, #14171a);
+    color-scheme: light dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; background: var(--bg); color: var(--text); }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: inherit; border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  input, textarea { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; }
+  textarea { resize: none; }
+  .app { display: grid; grid-template-columns: 300px 1fr; height: 100%; }
+  aside { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+  aside header { padding: 12px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+  aside header h1 { font-size: 15px; margin: 0; flex: 1; }
+  .threads { overflow: auto; flex: 1; }
+  .thread { padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .thread:hover { background: var(--bg); }
+  .thread.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .thread .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thread .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .new-thread { padding: 10px 12px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  main header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; background: var(--panel); }
+  main header .title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .badge.live { color: var(--ok); border-color: var(--ok); }
+  .badge.running { color: var(--accent); border-color: var(--accent); }
+  .log { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .empty { color: var(--muted); margin: auto; text-align: center; }
+  .turn { display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 820px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 7px 12px; }
+  .msg.agent { align-self: flex-start; }
+  .msg.steer { align-self: flex-end; color: var(--muted); font-size: 13px; }
+  .cmd { align-self: stretch; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
+  .cmd summary { cursor: pointer; }
+  .cmd pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto; }
+  .note { color: var(--muted); font-size: 12px; }
+  .requests { display: flex; flex-direction: column; gap: 8px; padding: 0 16px; }
+  .request { border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--panel); display: grid; gap: 8px; }
+  .request code { display: block; white-space: pre-wrap; word-break: break-all; background: var(--code); padding: 6px 8px; border-radius: 6px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
+  .request .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  footer { padding: 10px 16px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; background: var(--panel); }
+  footer textarea { flex: 1; min-height: 40px; max-height: 160px; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .toast.show { opacity: .92; }
+  .back { display: none; }
+  @media (max-width: 720px) {
+    .app { grid-template-columns: 1fr; }
+    .app.viewing aside { display: none; }
+    .app:not(.viewing) main { display: none; }
+    .back { display: inline-block; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside>
+    <header>
+      <h1>Codex++ 远程控制</h1>
+      <button id="refresh" title="刷新会话列表">刷新</button>
+    </header>
+    <div class="threads" id="threads"><div class="empty">加载中…</div></div>
+    <div class="new-thread">
+      <input id="newCwd" placeholder="工作目录（绝对路径）">
+      <input id="newName" placeholder="会话名称（可选）">
+      <button id="create">新建会话</button>
+    </div>
+  </aside>
+  <main>
+    <header>
+      <button class="back" id="back">‹ 返回</button>
+      <span class="title" id="title">选择一个会话</span>
+      <span class="badge" id="state"></span>
+      <button id="open" hidden>在桌面打开</button>
+      <button id="interrupt" class="danger" hidden>停止</button>
+    </header>
+    <div class="log" id="log"><div class="empty">在左侧选择会话。没在桌面打开的会话可以先查看历史，发消息时会自动在桌面打开。</div></div>
+    <div class="requests" id="requests"></div>
+    <footer>
+      <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+      <button id="send" class="primary" disabled>发送</button>
+    </footer>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+(() => {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const token = params.get("token") || sessionStorage.getItem("codexPlusRemoteToken") || "";
+  if (params.get("token")) {
+    sessionStorage.setItem("codexPlusRemoteToken", params.get("token"));
+    history.replaceState(null, "", location.pathname);
+  }
+  const $ = (id) => document.getElementById(id);
+  const state = { threads: [], current: null, view: null, socket: null, busy: false, stickNext: false };
+
+  function toast(text) {
+    const node = $("toast");
+    node.textContent = text;
+    node.classList.add("show");
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => node.classList.remove("show"), 3200);
+  }
+
+  async function api(method, path, body) {
+    const response = await fetch(`/api${path}`, {
+      method,
+      headers: { "Authorization": `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const payload = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+    if (!payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    return payload.data;
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function relative(seconds) {
+    if (!seconds) return "";
+    const diff = Date.now() / 1000 - seconds;
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    return new Date(seconds * 1000).toLocaleDateString();
+  }
+
+  async function loadThreads() {
+    try {
+      const data = await api("GET", "/threads");
+      state.threads = data.threads || [];
+      if (!$("newCwd").value && state.threads[0]?.cwd) $("newCwd").value = state.threads[0].cwd;
+      renderThreads();
+    } catch (error) {
+      $("threads").replaceChildren(el("div", "empty", `读取会话失败：${error.message}`));
+    }
+  }
+
+  function renderThreads() {
+    const list = $("threads");
+    if (!state.threads.length) return list.replaceChildren(el("div", "empty", "还没有会话"));
+    list.replaceChildren(...state.threads.map((thread) => {
+      const row = el("div", `thread${thread.id === state.current ? " active" : ""}`);
+      row.append(el("div", "title", thread.title || "（未命名）"));
+      row.append(el("div", "meta", `${relative(thread.updatedAt)} · ${thread.cwd || ""}`));
+      row.onclick = () => selectThread(thread.id);
+      return row;
+    }));
+  }
+
+  async function selectThread(id) {
+    state.current = id;
+    state.view = null;
+    closeSocket();
+    renderThreads();
+    $("app").classList.add("viewing");
+    state.stickNext = true;
+    $("log").replaceChildren(el("div", "empty", "加载中…"));
+    $("requests").replaceChildren();
+    try {
+      const view = await api("GET", `/threads/${id}`);
+      if (state.current !== id) return;
+      applyView(view);
+      if (view.live) connectSocket(id);
+    } catch (error) {
+      $("log").replaceChildren(el("div", "empty", `读取失败：${error.message}`));
+    }
+  }
+
+  function closeSocket() {
+    if (state.socket) {
+      state.socket.onclose = null;
+      state.socket.close();
+      state.socket = null;
+    }
+  }
+
+  function connectSocket(id) {
+    closeSocket();
+    const socket = new WebSocket(`ws://${location.host}/api/threads/${id}/stream?token=${encodeURIComponent(token)}`);
+    state.socket = socket;
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (state.current !== id) return;
+      if (message.type === "view") applyView(message.view);
+      else if (message.type === "closed" || message.type === "error") {
+        toast(message.reason || message.error || "实时连接已断开");
+        if (state.view) applyView({ ...state.view, live: false, requests: [] });
+      }
+    };
+    socket.onclose = () => {
+      if (state.socket !== socket) return;
+      state.socket = null;
+      if (state.current === id && state.view?.live) setTimeout(() => state.current === id && connectSocket(id), 1500);
+    };
+  }
+
+  function nearBottom(node) {
+    return node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+  }
+
+  function applyView(view) {
+    state.view = view;
+    $("title").textContent = view.title || "（未命名）";
+    const running = view.runtime === "active";
+    const badge = $("state");
+    badge.className = `badge${running ? " running" : view.live ? " live" : ""}`;
+    badge.textContent = running ? "运行中" : view.live ? "已在桌面打开" : "未打开";
+    $("open").hidden = !!view.live;
+    $("interrupt").hidden = !running;
+    $("input").disabled = false;
+    $("send").disabled = false;
+    $("send").textContent = running ? "插话" : "发送";
+    const log = $("log");
+    const stick = nearBottom(log) || state.stickNext;
+    state.stickNext = false;
+    const nodes = [];
+    if (view.truncatedTurns) nodes.push(el("div", "note", `更早的 ${view.truncatedTurns} 轮未显示`));
+    for (const turn of view.turns || []) nodes.push(renderTurn(turn));
+    if (!nodes.length) nodes.push(el("div", "empty", "还没有消息"));
+    log.replaceChildren(...nodes);
+    if (stick) log.scrollTop = log.scrollHeight;
+    renderRequests(view.requests || []);
+  }
+
+  function renderTurn(turn) {
+    const box = el("div", "turn");
+    for (const item of turn.items || []) {
+      switch (item.type) {
+        case "userMessage": box.append(el("div", "msg user", item.text || "")); break;
+        case "steeringUserMessage": box.append(el("div", "msg steer", `插话：${item.text || ""}`)); break;
+        case "agentMessage": if (item.text) box.append(el("div", "msg agent", item.text)); break;
+        case "commandExecution": {
+          const details = el("details", "cmd");
+          const status = { completed: "✓", failed: "✗", declined: "已拒绝", inProgress: "…" }[item.status] || item.status || "";
+          details.append(el("summary", "", `${status} ${item.command || ""}`));
+          if (item.aggregatedOutput) details.append(el("pre", "", item.aggregatedOutput));
+          box.append(details);
+          break;
+        }
+        case "fileChange": {
+          const files = (item.changes || []).map((change) => change.path).filter(Boolean).join("\n");
+          box.append(el("div", "cmd", `改动文件 ${item.status || ""}\n${files}`));
+          break;
+        }
+        case "userInputResponse": box.append(el("div", "note", "已回答提问")); break;
+        case "reasoning": case "steered": case "hookRun": break;
+        default: if (item.type) box.append(el("div", "note", `[${item.type}]`));
+      }
+    }
+    if (turn.status === "interrupted") box.append(el("div", "note", "已中断"));
+    if (turn.status === "failed") box.append(el("div", "note", "这一轮失败了"));
+    return box;
+  }
+
+  function renderRequests(requests) {
+    const box = $("requests");
+    box.replaceChildren(...requests.map(renderRequest));
+  }
+
+  function renderRequest(request) {
+    const card = el("div", "request");
+    const params = request.params || {};
+    const actions = el("div", "actions");
+    const respond = async (body, button) => {
+      for (const b of actions.querySelectorAll("button")) b.disabled = true;
+      state.stickNext = true;
+      try {
+        await api("POST", `/threads/${state.current}/requests/${encodeURIComponent(JSON.stringify(request.id))}`, body);
+      } catch (error) {
+        toast(error.message);
+        for (const b of actions.querySelectorAll("button")) b.disabled = false;
+      }
+    };
+    if (request.method === "item/commandExecution/requestApproval" || request.method === "item/fileChange/requestApproval") {
+      const isCommand = request.method.includes("commandExecution");
+      card.append(el("strong", "", isCommand ? "请求执行命令" : "请求修改文件"));
+      if (params.reason) card.append(el("div", "", params.reason));
+      if (isCommand) card.append(el("code", "", `${params.command || ""}\n# ${params.cwd || ""}`));
+      const decisions = params.availableDecisions || ["accept", "decline"];
+      const labels = { accept: "同意", acceptForSession: "本会话都同意", decline: "拒绝", cancel: "取消这一轮" };
+      for (const decision of decisions) {
+        if (typeof decision !== "string") continue;
+        const button = el("button", decision === "accept" ? "primary" : decision === "decline" || decision === "cancel" ? "danger" : "", labels[decision] || decision);
+        button.onclick = () => respond({ decision }, button);
+        actions.append(button);
+      }
+      if (!decisions.includes("decline")) {
+        const button = el("button", "danger", "拒绝");
+        button.onclick = () => respond({ decision: "decline" }, button);
+        actions.append(button);
+      }
+    } else if (request.method === "item/tool/requestUserInput") {
+      card.append(el("strong", "", "模型在提问"));
+      const answers = {};
+      for (const question of params.questions || []) {
+        card.append(el("div", "", question.question || question.header || ""));
+        const row = el("div", "actions");
+        for (const option of question.options || []) {
+          const button = el("button", "", option.label);
+          if (option.description) button.title = option.description;
+          button.onclick = () => {
+            answers[question.id] = { answers: [option.label] };
+            for (const b of row.querySelectorAll("button")) b.classList.toggle("primary", b === button);
+          };
+          row.append(button);
+        }
+        if (question.isOther !== false) {
+          const other = el("input");
+          other.placeholder = "其他答案";
+          other.oninput = () => { answers[question.id] = { answers: [other.value] }; };
+          row.append(other);
+        }
+        card.append(row);
+      }
+      const submit = el("button", "primary", "提交回答");
+      submit.onclick = () => respond({ answers }, submit);
+      actions.append(submit);
+    } else {
+      card.append(el("strong", "", "需要在桌面处理的请求"));
+      card.append(el("code", "", request.method));
+    }
+    card.append(actions);
+    return card;
+  }
+
+  async function send() {
+    const text = $("input").value.trim();
+    if (!text || !state.current || state.busy) return;
+    state.busy = true;
+    state.stickNext = true;
+    $("send").disabled = true;
+    try {
+      if (!state.view?.live) toast("正在桌面打开会话…");
+      await api("POST", `/threads/${state.current}/messages`, { text });
+      $("input").value = "";
+      if (!state.socket) {
+        const view = await api("GET", `/threads/${state.current}`);
+        applyView(view);
+        if (view.live) connectSocket(state.current);
+      }
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      state.busy = false;
+      $("send").disabled = false;
+    }
+  }
+
+  $("send").onclick = send;
+  $("input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      send();
+    }
+  });
+  $("refresh").onclick = loadThreads;
+  $("back").onclick = () => { $("app").classList.remove("viewing"); closeSocket(); state.current = null; renderThreads(); };
+  $("open").onclick = async () => {
+    try {
+      toast("正在桌面打开会话…");
+      const view = await api("POST", `/threads/${state.current}/open`);
+      applyView(view);
+      connectSocket(state.current);
+    } catch (error) { toast(error.message); }
+  };
+  $("interrupt").onclick = async () => {
+    try { await api("POST", `/threads/${state.current}/interrupt`); } catch (error) { toast(error.message); }
+  };
+  $("create").onclick = async () => {
+    const cwd = $("newCwd").value.trim();
+    if (!cwd) return toast("先填工作目录");
+    $("create").disabled = true;
+    try {
+      toast("正在新建会话…");
+      const data = await api("POST", "/threads", { cwd, name: $("newName").value.trim() || undefined });
+      $("newName").value = "";
+      await loadThreads();
+      await selectThread(data.threadId);
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      $("create").disabled = false;
+    }
+  };
+
+  if (!token) {
+    $("threads").replaceChildren(el("div", "empty", "缺少令牌：请从 Codex++「远程控制」页面打开本页"));
+  } else {
+    loadThreads();
+  }
+})();
+</script>
+</body>
+</html>

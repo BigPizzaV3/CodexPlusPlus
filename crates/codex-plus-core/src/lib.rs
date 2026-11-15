@@ -92,6 +92,7 @@ pub mod relay_proxy;
 pub mod relay_headers;
 pub mod relay_rotation;
 pub mod relay_switch;
+pub mod remote_control;
 pub mod remote_control_recovery;
 pub mod request_log;
 pub mod resident_helper;

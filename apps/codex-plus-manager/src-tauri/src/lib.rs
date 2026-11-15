@@ -16,6 +16,7 @@ mod global_dictation;
 pub mod install;
 mod lightweight;
 mod provider_lookup_commands;
+mod remote_control_commands;
 mod runtime_health;
 mod skill_backup_usage;
 mod tray_panel;
@@ -341,6 +342,8 @@ pub fn run() {
             // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
             cu_pip::start(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
+            // 远程控制（默认关闭）：打开过就随管理器启动。
+            remote_control_commands::start_from_saved_state_in_background();
             commands::resume_existing_codex_background(
                 app.handle().clone(),
                 start_codex_at_login || start_codex_on_open,
@@ -380,6 +383,7 @@ pub fn run() {
             commands::stop_codex_plus,
             commands::load_settings,
             config_doctor_commands::config_doctor_request,
+            remote_control_commands::remote_control_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,
@@ -718,6 +722,8 @@ pub fn run() {
                         gateway_commands::restore_for_exit();
                         codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
+                        // 远程控制服务停掉侧车 app-server，别留孤儿进程。
+                        codex_plus_core::remote_control::stop();
                         SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                         app.exit(0);
                     });
