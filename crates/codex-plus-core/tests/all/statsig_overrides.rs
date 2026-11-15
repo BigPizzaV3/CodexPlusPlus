@@ -34,6 +34,15 @@ fn statsig_overrides_config_only_carries_client_side_switches() {
     let value = statsig_overrides_config(&settings_with(true));
     assert_eq!(value["enabled"], json!(true));
     assert_eq!(value["gates"]["1174206456"], json!(true));
+    // 原生已支持但默认灰度不到的界面功能：消息队列、时间线、侧聊 attach、权限刷新
+    assert_eq!(value["gates"]["2120612410"], json!(true));
+    assert_eq!(value["gates"]["1189013788"], json!(true));
+    assert_eq!(value["gates"]["1079089693"], json!(true));
+    assert_eq!(value["gates"]["1450837220"], json!(true));
+    assert_eq!(value["gates"]["4226282475"], json!(true));
+    // 实验 / Layer 覆盖机制默认不启用具体条目，但配置节必须存在，注入脚本才不会读空
+    assert_eq!(value["experiments"], json!({}));
+    assert_eq!(value["layers"], json!({}));
 
     let retry = &value["dynamicConfigs"]["3165814200"];
     assert_eq!(retry["MAX_RETRY_COUNT"], json!(15));
@@ -60,6 +69,9 @@ fn injection_script_embeds_statsig_override_config() {
     assert!(script.contains("window.__CODEX_PLUS_STATSIG_OVERRIDES__ = "));
     assert!(script.contains("\"enabled\":true"));
     assert!(script.contains("1174206456"));
+    assert!(script.contains("2120612410"));
+    assert!(script.contains("\"experiments\":{}"));
+    assert!(script.contains("\"layers\":{}"));
 
     let off = injection_script_with_settings(1234, &settings_with(false));
     let marker = "window.__CODEX_PLUS_STATSIG_OVERRIDES__ = ";

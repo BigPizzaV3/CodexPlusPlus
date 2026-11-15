@@ -5,45 +5,125 @@ import { readFile } from "node:fs/promises";
 /**
  * 「Statsig 界面增强」。
  *
- * 这层只覆盖纯客户端的远程开关：升级推销、网络/流式超时、记忆开关。
- * 这里钉死四条约束：
+ * 这层只覆盖纯客户端的远程开关：升级推销、网络/流式超时、记忆开关、消息队列、时间线、侧聊 attach。
+ * 这里钉死五条约束：
  *   1. 开关关着（或后端设置没读到）时原样透传，不做任何覆盖；
- *   2. 只覆盖配置里列出的闸门与动态配置，其余保持远端值；
- *   3. 动态配置只合并列出的键，其余键原样保留；
- *   4. 设置项、内置拓展与页面清单三处登记一致。
+ *   2. 只覆盖配置里列出的闸门 / 实验 / 层 / 动态配置，其余保持远端值；
+ *   3. 对象型配置只合并列出的键，其余键原样保留；
+ *   4. getFeatureGate 是 memoized 的共享对象，覆盖时不能就地改；
+ *   5. 设置项、内置拓展与页面清单三处登记一致。
  */
 
 const SHARD_URL = new URL("../../../assets/inject/renderer-inject/34-statsig-overrides.js", import.meta.url);
 
-type DynamicConfig = { value: Record<string, unknown>; get(key: string, fallback?: unknown): unknown };
+type ValueObject = {
+  name: string;
+  value: Record<string, unknown>;
+  __value?: Record<string, unknown>;
+  __evaluation?: Record<string, unknown>;
+  get(key: string, fallback?: unknown): unknown;
+};
 
-function fakeClient(gates: Record<string, boolean> = {}, configs: Record<string, Record<string, unknown>> = {}) {
-  const configObjects = new Map<string, DynamicConfig>();
-  for (const [name, value] of Object.entries(configs)) {
-    const config: DynamicConfig = {
-      value: { ...value },
-      get(key, fallback) {
-        return key in this.value ? this.value[key] : fallback;
-      },
-    };
-    configObjects.set(name, config);
+type GateObject = {
+  name: string;
+  value: boolean;
+  details: { reason: string };
+  ruleID: string;
+  __evaluation: { value: boolean };
+};
+
+function valueObject(name: string, value: Record<string, unknown>, extra: Partial<ValueObject> = {}): ValueObject {
+  return {
+    name,
+    value: { ...value },
+    get(key, fallback) {
+      return key in this.value ? this.value[key] : fallback;
+    },
+    ...extra,
+  };
+}
+
+function fakeClient(
+  gates: Record<string, boolean> = {},
+  configs: Record<string, Record<string, unknown>> = {},
+  experiments: Record<string, Record<string, unknown>> = {},
+  layers: Record<string, Record<string, unknown>> = {},
+) {
+  const gateObjects = new Map<string, GateObject>();
+  for (const [name, value] of Object.entries(gates)) {
+    gateObjects.set(name, { name, value, details: { reason: "Network" }, ruleID: "rule", __evaluation: { value } });
   }
+  const configObjects = new Map<string, ValueObject>();
+  for (const [name, value] of Object.entries(configs)) configObjects.set(name, valueObject(name, value));
+  const experimentObjects = new Map<string, ValueObject>();
+  for (const [name, value] of Object.entries(experiments)) {
+    experimentObjects.set(name, valueObject(name, value, {
+      __evaluation: { value, is_user_in_experiment: false, is_experiment_active: false },
+    }));
+  }
+  const layerObjects = new Map<string, ValueObject>();
+  for (const [name, value] of Object.entries(layers)) {
+    layerObjects.set(name, {
+      name,
+      value: undefined as unknown as Record<string, unknown>,
+      __value: { ...value },
+      get(key, fallback) {
+        const source = this.__value ?? {};
+        return key in source ? source[key] : fallback;
+      },
+    });
+  }
+
   const gateCalls: string[] = [];
   const client = {
     gateCalls,
-    checkGate(name: string) {
+    getFeatureGate(name: string) {
       gateCalls.push(name);
-      return gates[name] === true;
+      return gateObjects.get(name) ?? { name, value: false, details: { reason: "Unrecognized" }, ruleID: "", __evaluation: { value: false } };
+    },
+    checkGate(name: string) {
+      return this.getFeatureGate(name).value;
     },
     getDynamicConfig(name: string) {
       const existing = configObjects.get(name);
       if (existing) return existing;
-      const created: DynamicConfig = { value: {}, get(key, fallback) { return key in this.value ? this.value[key] : fallback; } };
+      const created = valueObject(name, {});
       configObjects.set(name, created);
       return created;
     },
+    getExperiment(name: string) {
+      const existing = experimentObjects.get(name);
+      if (existing) return existing;
+      const created = valueObject(name, {}, { __evaluation: { value: {}, is_user_in_experiment: false, is_experiment_active: false } });
+      experimentObjects.set(name, created);
+      return created;
+    },
+    getLayer(name: string) {
+      const existing = layerObjects.get(name);
+      if (existing) return existing;
+      const created: ValueObject = {
+        name,
+        value: undefined as unknown as Record<string, unknown>,
+        __value: {},
+        get(key, fallback) {
+          const source = this.__value ?? {};
+          return key in source ? source[key] : fallback;
+        },
+      };
+      layerObjects.set(name, created);
+      return created;
+    },
+    gate(name: string) {
+      return gateObjects.get(name);
+    },
     config(name: string) {
       return configObjects.get(name);
+    },
+    experiment(name: string) {
+      return experimentObjects.get(name);
+    },
+    layer(name: string) {
+      return layerObjects.get(name);
     },
   };
   return client;
@@ -52,7 +132,9 @@ function fakeClient(gates: Record<string, boolean> = {}, configs: Record<string,
 function overridesConfig(enabled: boolean) {
   return {
     enabled,
-    gates: { "1174206456": true },
+    gates: { "1174206456": true, "2120612410": true },
+    experiments: { "3359351081": { enabled: true } },
+    layers: { "1574672957": { desktop_context_section: "x" } },
     dynamicConfigs: {
       "3165814200": { MIN_RETRY_INTERVAL: 400, MAX_RETRY_COUNT: 15 },
       "3608673692": { sse_initial_open_timeout_ms: 90000 },
@@ -82,12 +164,23 @@ async function runtime(
   return api;
 }
 
-it("开关打开时强制升级推销闸门，其余闸门保持远端值", async () => {
-  const client = fakeClient({ "1174206456": false, "999": false });
+it("开关打开时强制列出的闸门，checkGate 与 getFeatureGate 都能读到", async () => {
+  const client = fakeClient({ "1174206456": false, "2120612410": false, "999": false });
   const app = await runtime(client, { loaded: true, enabled: true });
   app.tick();
-  assert.equal(client.checkGate("1174206456"), true, "覆盖为 true");
+  assert.equal(client.checkGate("1174206456"), true, "checkGate 覆盖为 true");
+  assert.equal(client.getFeatureGate("1174206456").value, true, "getFeatureGate 覆盖为 true");
+  assert.equal(client.getFeatureGate("2120612410").value, true, "消息队列闸门");
   assert.equal(client.checkGate("999"), false, "未列出的闸门原样透传");
+  assert.equal(client.getFeatureGate("999").value, false);
+});
+
+it("覆盖 getFeatureGate 时不就地改 memoized 的共享对象", async () => {
+  const client = fakeClient({ "1174206456": false });
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  client.getFeatureGate("1174206456");
+  assert.equal(client.gate("1174206456")!.value, false, "SDK 缓存的对象保持远端值");
 });
 
 it("开关关着或后端设置没读到时完全透传", async () => {
@@ -96,11 +189,35 @@ it("开关关着或后端设置没读到时完全透传", async () => {
     { loaded: false, enabled: true },
     { loaded: true, enabled: true, configEnabled: false },
   ]) {
-    const client = fakeClient({ "1174206456": false });
+    const client = fakeClient({ "1174206456": false }, {}, { "3359351081": { enabled: false } }, { "1574672957": { desktop_context_section: "远端" } });
     const app = await runtime(client, settings);
     app.tick();
     assert.equal(client.checkGate("1174206456"), false, JSON.stringify(settings));
+    assert.equal(client.getFeatureGate("1174206456").value, false, JSON.stringify(settings));
+    assert.equal(client.getExperiment("3359351081").get("enabled", false), false, JSON.stringify(settings));
+    assert.equal(client.getLayer("1574672957").get("desktop_context_section"), "远端", JSON.stringify(settings));
   }
+});
+
+it("实验只合并列出的键，并让 __evaluation 认为实验生效", async () => {
+  const client = fakeClient({}, {}, { "3359351081": { enabled: false, other: 7 } });
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  const experiment = client.experiment("3359351081")!;
+  assert.equal(experiment.get("enabled", false), true, "覆盖值生效");
+  assert.equal(experiment.get("other"), 7, "未列出的键保留");
+  assert.equal(experiment.value.enabled, true);
+  assert.equal(experiment.__evaluation!.is_user_in_experiment, true);
+});
+
+it("Layer 合并到 __value 与 get()", async () => {
+  const client = fakeClient({}, {}, {}, { "1574672957": { desktop_context_section: "远端", keep: 1 } });
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  const layer = client.layer("1574672957")!;
+  assert.equal(layer.get("desktop_context_section"), "x");
+  assert.equal(layer.get("keep"), 1);
+  assert.equal(layer.__value!.desktop_context_section, "x");
 });
 
 it("动态配置只合并列出的键，其余键原样保留", async () => {
@@ -117,9 +234,15 @@ it("重复 tick 不会重复包装", async () => {
   const client = fakeClient({ "1174206456": false });
   const app = await runtime(client, { loaded: true, enabled: true });
   app.tick();
-  const patched = client.checkGate;
+  const patchedGate = client.checkGate;
+  const patchedFeatureGate = client.getFeatureGate;
+  const patchedExperiment = client.getExperiment;
+  const patchedLayer = client.getLayer;
   app.tick();
-  assert.equal(client.checkGate, patched, "同一客户端只包一层");
+  assert.equal(client.checkGate, patchedGate, "checkGate 只包一层");
+  assert.equal(client.getFeatureGate, patchedFeatureGate, "getFeatureGate 只包一层");
+  assert.equal(client.getExperiment, patchedExperiment, "getExperiment 只包一层");
+  assert.equal(client.getLayer, patchedLayer, "getLayer 只包一层");
   assert.equal(client.checkGate("1174206456"), true);
 });
 

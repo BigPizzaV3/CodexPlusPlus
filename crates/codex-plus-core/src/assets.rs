@@ -566,7 +566,8 @@ pub fn force_chinese_locale_config(settings: &BackendSettings) -> Value {
 
 /// Statsig 界面增强的注入配置。
 ///
-/// 只包含「纯客户端」的远程开关：隐藏升级/额度推销、放宽网络与流式超时、补开记忆。
+/// 只包含「纯客户端」的远程开关：隐藏升级/额度推销、放宽网络与流式超时、补开记忆，
+/// 以及原生界面里已经存在但默认灰度不到的功能（消息队列、时间线、侧聊 attach）。
 /// 服务端校验的能力（云端任务、真实配额）不在这里，也改不动。
 pub fn statsig_overrides_config(settings: &BackendSettings) -> Value {
     json!({
@@ -574,8 +575,22 @@ pub fn statsig_overrides_config(settings: &BackendSettings) -> Value {
         // 布尔闸门：值为 true 时强制打开。
         "gates": {
             // 抑制升级 / 额度推销提示（ChatGPT 界面侧）
-            "1174206456": true
+            "1174206456": true,
+            // 会话忙时把下一条消息排队（threadQueue，app-server 0.148+）
+            "2120612410": true,
+            // 云端会话的排队追问
+            "1189013788": true,
+            // 会话时间线历史（thread/timeline/list，app-server 0.150+）
+            "1079089693": true,
+            // 侧聊分叉时 attach 到源会话（persistentSideChats，app-server 0.166+）
+            "1450837220": true,
+            // 会话内权限刷新（permissionProfile 变更后不用重开会话）
+            "4226282475": true
         },
+        // 实验按 key 覆盖，未列出的 key 保持远端下发值。
+        "experiments": {},
+        // Layer 按 key 覆盖（例如 1574672957 的自定义指令层）。
+        "layers": {},
         // 动态配置：按 key 覆盖，未列出的 key 保持远端下发值。
         "dynamicConfigs": {
             // 网络重试：更耐心的退避，弱网下少断流

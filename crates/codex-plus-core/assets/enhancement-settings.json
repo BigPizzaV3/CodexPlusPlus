@@ -175,7 +175,7 @@
       "group": "chat",
       "control": "bool",
       "title": "Statsig 界面增强",
-      "description": "强制打开几项界面侧的远程开关：隐藏升级与额度推销提示、放宽网络重试与流式超时、补开记忆的 Statsig 开关。只影响本机界面与超时参数，云端能力与配额不受影响；关闭后重新启动 Codex 生效。",
+      "description": "强制打开几项界面侧的远程开关：隐藏升级与额度推销提示、放宽网络重试与流式超时、补开记忆、消息队列、会话时间线、侧聊 attach 与会话内权限刷新。只影响本机界面与超时参数，云端能力与配额不受影响；关闭后重新启动 Codex 生效。",
       "surfaces": [
         "manager",
         "codex"
@@ -453,6 +453,12 @@
     }
   ],
   "builtins": [
+    {
+      "id": "feature-lab",
+      "title": "Feature Lab",
+      "description": "在 Codex 设置页列出原生实验开关（阶段 / 默认值 / 说明），可直接启停",
+      "group": "plugins"
+    },
     {
       "id": "dictation",
       "title": "语音听写",

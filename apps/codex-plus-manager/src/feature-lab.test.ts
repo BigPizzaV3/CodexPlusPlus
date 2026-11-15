@@ -1,0 +1,171 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import { readFile } from "node:fs/promises";
+
+/**
+ * 内置拓展「Feature Lab」。
+ *
+ * 钉死：
+ *   1. experimentalFeature/list 的分页、去重、排序；
+ *   2. 开关写入走 config/batchWrite 的 features.<name>，不碰别的键；
+ *   3. 非法 feature 名（会写坏 config 键路径）直接拒绝；
+ *   4. 内置拓展清单、设置清单与分片清单三处登记一致。
+ */
+
+const SHARD_URL = new URL("../../../assets/inject/renderer-inject/96-feature-lab.js", import.meta.url);
+
+type Feature = {
+  name: string;
+  title: string;
+  stage: string;
+  description: string;
+  enabled: boolean;
+  defaultEnabled: boolean;
+  risky: boolean;
+  locked: boolean;
+};
+
+async function runtime() {
+  const source = await readFile(SHARD_URL, "utf8");
+  return new Function(
+    `${source}\nreturn {
+      normalize: codexPlusFeatureLabNormalizeFeature,
+      fetch: codexPlusFeatureLabFetch,
+      write: codexPlusFeatureLabWrite,
+      extension: codexPlusFeatureLabExtension,
+      stage: codexPlusFeatureLabStage,
+    };`,
+  )() as {
+    normalize(raw: unknown): Feature | null;
+    fetch(client: unknown): Promise<Feature[]>;
+    write(client: unknown, feature: Feature, enabled: boolean): Promise<unknown>;
+    extension(ctx: unknown): void;
+    stage(raw: unknown): string;
+  };
+}
+
+it("归一化 feature：缺字段给空值，未知 stage 按开发中处理", async () => {
+  const api = await runtime();
+  const feature = api.normalize({
+    name: "some_feature",
+    stage: "beta",
+    displayName: "Some Feature",
+    description: "说明",
+    enabled: true,
+    defaultEnabled: false,
+  });
+  assert.ok(feature);
+  assert.equal(feature.name, "some_feature");
+  assert.equal(feature.title, "Some Feature");
+  assert.equal(feature.stage, "beta");
+  assert.equal(feature.enabled, true);
+  assert.equal(feature.defaultEnabled, false);
+  assert.equal(feature.risky, false);
+  assert.equal(feature.locked, false);
+
+  const unknown = api.normalize({ name: "mystery", stage: "future-stage" });
+  assert.ok(unknown);
+  assert.equal(unknown.stage, "underDevelopment");
+  assert.equal(unknown.risky, true);
+  assert.equal(unknown.title, "mystery");
+
+  assert.equal(api.normalize({ name: "removed_one", stage: "removed" })?.locked, true);
+});
+
+it("拒绝会写坏 config 键路径的 feature 名", async () => {
+  const api = await runtime();
+  for (const name of ["", "1st", "foo-bar", "foo.bar", "foo bar", "中文"]) {
+    assert.equal(api.normalize({ name }), null, name);
+  }
+});
+
+it("分页拉全量、按名称去重、按 stage 和标题排序", async () => {
+  const api = await runtime();
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = {
+    async sendRequest(method: string, params: Record<string, unknown>) {
+      calls.push({ method, params });
+      if (params.cursor == null) {
+        return {
+          data: [
+            { name: "dev_b", stage: "underDevelopment" },
+            { name: "stable_z", stage: "stable" },
+          ],
+          nextCursor: "page-2",
+        };
+      }
+      return {
+        data: [
+          { name: "beta_a", stage: "beta" },
+          { name: "stable_z", stage: "stable" },
+          { name: "stable_a", stage: "stable" },
+        ],
+        nextCursor: null,
+      };
+    },
+  };
+  const features = await api.fetch(client);
+  assert.deepEqual(calls.map((call) => call.method), ["experimentalFeature/list", "experimentalFeature/list"]);
+  assert.equal(calls[0].params.cursor, null);
+  assert.equal(calls[1].params.cursor, "page-2");
+  assert.deepEqual(features.map((feature) => feature.name), ["stable_a", "stable_z", "beta_a", "dev_b"]);
+});
+
+it("写入只动 features.<name> 并按 upsert 合并", async () => {
+  const api = await runtime();
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = {
+    async sendRequest(method: string, params: Record<string, unknown>) {
+      calls.push({ method, params });
+      return { ok: true };
+    },
+  };
+  const feature = api.normalize({ name: "some_feature", stage: "beta" })!;
+  await api.write(client, feature, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "config/batchWrite");
+  assert.deepEqual(calls[0].params.edits, [
+    { keyPath: "features.some_feature", value: true, mergeStrategy: "upsert" },
+  ]);
+  assert.equal(calls[0].params.filePath, null);
+  assert.equal(calls[0].params.expectedVersion, null);
+  assert.equal(calls[0].params.reloadUserConfig, true);
+
+  await assert.rejects(() => api.write(client, { name: "bad.name" } as Feature, true), /名称不合法/);
+});
+
+it("注册为 Codex 设置页分区", async () => {
+  const api = await runtime();
+  const captured: { definition?: { id?: string; title?: string; render?: unknown } } = {};
+  api.extension({
+    registerSettingsSection(value: { id?: string; title?: string; render?: unknown }) {
+      captured.definition = value;
+      return () => {};
+    },
+  });
+  assert.ok(captured.definition);
+  assert.equal(captured.definition.id, "feature-lab");
+  assert.equal(captured.definition.title, "Feature Lab");
+  assert.equal(typeof captured.definition.render, "function");
+});
+
+it("内置拓展清单、设置清单与分片清单三处登记一致", async () => {
+  const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
+
+  const registry = JSON.parse(await read("../../../crates/codex-plus-core/assets/enhancement-settings.json")) as {
+    builtins: Array<{ id: string }>;
+  };
+  assert.ok(registry.builtins.some((item) => item.id === "feature-lab"), "设置清单应有 feature-lab");
+
+  const builtins = await read("../../../assets/inject/renderer-inject/96-builtin-extensions.js");
+  assert.match(builtins, /id: "feature-lab"/);
+  assert.match(builtins, /codexPlusFeatureLabExtension/);
+
+  const manifest = JSON.parse(await read("../../../assets/inject/renderer-inject/manifest.json")) as {
+    fragments: Array<{ name: string }>;
+  };
+  const names = manifest.fragments.map((fragment) => fragment.name);
+  const lab = names.indexOf("96-feature-lab.js");
+  assert.ok(lab >= 0, "manifest 应登记 96-feature-lab.js");
+  assert.ok(lab < names.indexOf("96-builtin-extensions.js"), "Feature Lab 分片应在内置拓展清单之前");
+});
