@@ -9611,6 +9611,7 @@ pub fn provider_page_host() -> codex_plus_core::provider_page::ProviderPageHost 
                 }),
             }
         }),
+        gateway: std::sync::Arc::new(crate::gateway_commands::provider_page_gateway_call),
     }
 }
 

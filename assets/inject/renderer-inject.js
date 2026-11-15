@@ -396,7 +396,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "39";
+  const codexDeleteStyleVersion = "40";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1149,8 +1149,24 @@
       /* 「供应商」页（43-provider-page.js）：左侧列表 + 右侧详情，13px 紧凑，沿用 --codex-plus-* 变量。 */
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="provider"] { background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="provider"] .codex-plus-modal-body { box-sizing: border-box; padding: 0; height: 100%; overflow: hidden; }
-      .codex-plus-provider-panel { height: 100%; font-size: 13px; line-height: 18px; color: var(--codex-plus-text); }
-      .codex-plus-provider-layout { display: flex; height: 100%; min-height: 0; }
+      .codex-plus-provider-panel { height: 100%; font-size: 13px; line-height: 18px; color: var(--codex-plus-text); position: relative; }
+      .codex-plus-provider-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+      .codex-plus-provider-tabs { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); flex: 0 0 auto; }
+      .codex-plus-provider-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; cursor: pointer; }
+      .codex-plus-provider-tabs button[aria-selected="true"] { color: var(--codex-plus-text); border-bottom-color: var(--codex-plus-text); font-weight: 600; }
+      .codex-plus-provider-layout { display: flex; flex: 1; min-height: 0; }
+      .codex-plus-provider-item[data-disabled="true"] .codex-plus-provider-item-name { color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); text-decoration: line-through; }
+      .codex-plus-provider-badge[data-tone="off"] { color: var(--codex-plus-danger, #dc2626); }
+      .codex-plus-provider-detail > .codex-plus-provider-note { margin-bottom: 12px; }
+      .codex-plus-gateway-modal { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.35); }
+      .codex-plus-gateway-modal-box { box-sizing: border-box; width: min(720px, calc(100% - 48px)); max-height: calc(100% - 48px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; border-radius: 10px; border: 1px solid var(--codex-plus-border); background: var(--codex-plus-bg-primary); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+      .codex-plus-gateway-modal-box .codex-plus-provider-actions { margin-top: 4px; }
+      .codex-plus-gateway-warnings { margin: 0; padding-left: 18px; color: var(--codex-plus-warning, #d97706); font-size: 12px; }
+      .codex-plus-gateway-diffs { display: flex; flex-direction: column; gap: 8px; }
+      .codex-plus-gateway-diff-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-gateway-diff pre { margin: 4px 0 0; max-height: 220px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--codex-plus-bg-secondary); font: 12px/17px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+      .codex-plus-gateway-diff pre span[data-kind="add"] { color: var(--codex-plus-success, #10a37f); }
+      .codex-plus-gateway-diff pre span[data-kind="remove"] { color: var(--codex-plus-danger, #dc2626); }
       .codex-plus-provider-sidebar { box-sizing: border-box; width: 260px; flex: 0 0 260px; overflow-y: auto; padding: 12px 8px; border-right: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary)); }
       .codex-plus-provider-sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 10px; font-weight: 600; }
       .codex-plus-provider-list { display: flex; flex-direction: column; gap: 2px; }
@@ -1194,7 +1210,8 @@
       select.codex-plus-provider-input { appearance: auto !important; -webkit-appearance: menulist !important; cursor: pointer; }
       .codex-plus-provider-key button, .codex-plus-provider-link { border: 0; padding: 0; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; align-self: flex-start; }
       .codex-plus-provider-key-add { display: flex; gap: 6px; }
-      .codex-plus-provider-key-add input:first-child { flex: 0 0 120px; }
+      .codex-plus-provider-key-add input { flex: 1; min-width: 0; }
+      .codex-plus-provider-key-add input[data-codex-provider-new-key-name] { flex: 0 0 120px; }
       .codex-plus-provider-status { margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); white-space: pre-wrap; }
       .codex-plus-provider-status[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); background: var(--codex-plus-danger-bg, rgba(220,38,38,.08)); }
       .codex-plus-provider-status[data-tone="ok"] { color: var(--codex-plus-success, #10a37f); }
@@ -9436,9 +9453,9 @@ var codexPlusProviderEditing = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // apps/codex-plus-manager/src/relay-profile-editing.ts
-  var relay_profile_editing_exports = {};
-  __export(relay_profile_editing_exports, {
+  // apps/codex-plus-manager/src/provider-editing-entry.ts
+  var provider_editing_entry_exports = {};
+  __export(provider_editing_entry_exports, {
     CHAT_UPSTREAM_BASE_URL_KEY: () => CHAT_UPSTREAM_BASE_URL_KEY,
     activeRelayProfile: () => activeRelayProfile,
     addRelayProfile: () => addRelayProfile,
@@ -9469,6 +9486,8 @@ var codexPlusProviderEditing = (() => {
     emptyContextSelection: () => emptyContextSelection,
     ensureCodexProviderDefaults: () => ensureCodexProviderDefaults,
     ensureTrailingNewline: () => ensureTrailingNewline,
+    gateway: () => gateway_model_exports,
+    gatewaySafety: () => gateway_agent_safety_exports,
     hydrateAggregateRelayProfile: () => hydrateAggregateRelayProfile,
     isAggregateRelayProfile: () => isAggregateRelayProfile,
     joinTomlSections: () => joinTomlSections,
@@ -11040,7 +11059,1471 @@ ${key} = ${value}`]);
     const derived = relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
     return derived.noAuth || derived.relayMode === "official" && !derived.officialMixApiKey ? derived : relayProfileWithNormalizedApiKeys(derived);
   }
-  return __toCommonJS(relay_profile_editing_exports);
+
+  // apps/codex-plus-manager/src/gateway-model.ts
+  var gateway_model_exports = {};
+  __export(gateway_model_exports, {
+    BUILTIN_GATEWAY_AGENTS: () => BUILTIN_GATEWAY_AGENTS,
+    DIRECT_PROXY: () => DIRECT_PROXY,
+    FOREIGN_COMPACTION_DROPPED_REASON: () => FOREIGN_COMPACTION_DROPPED_REASON,
+    GATEWAY_AGENT_NAMES: () => GATEWAY_AGENT_NAMES,
+    GATEWAY_CLAUDE_PROVIDER_ID: () => GATEWAY_CLAUDE_PROVIDER_ID,
+    GROUP_MODEL_PREFIX: () => GROUP_MODEL_PREFIX,
+    QUEUE_REASON_PREFIX: () => QUEUE_REASON_PREFIX,
+    RECENT_USE_MS: () => RECENT_USE_MS,
+    SPONSORS: () => SPONSORS,
+    activeAutoGroup: () => activeAutoGroup,
+    activeSponsorIds: () => activeSponsorIds,
+    agentModels: () => agentModels,
+    agentName: () => agentName,
+    agentPoolProviders: () => agentPoolProviders,
+    averageDuration: () => averageDuration,
+    axisLabelIndexes: () => axisLabelIndexes,
+    bindingFromDraft: () => bindingFromDraft,
+    blankBinding: () => blankBinding,
+    cacheHitRate: () => cacheHitRate,
+    connectedAgents: () => connectedAgents,
+    costText: () => costText,
+    currencySymbol: () => currencySymbol,
+    defaultProviderAgents: () => defaultProviderAgents,
+    disabledGroup: () => disabledGroup,
+    dispatchStatus: () => dispatchStatus,
+    draftFromBinding: () => draftFromBinding,
+    failureLabel: () => failureLabel,
+    filterSessions: () => filterSessions,
+    foreignCompactionDropped: () => foreignCompactionDropped,
+    formatElapsed: () => formatElapsed,
+    formatMoney: () => formatMoney,
+    formatQueueWait: () => formatQueueWait,
+    formatRemaining: () => formatRemaining,
+    formatRequestCost: () => formatRequestCost,
+    formatTokens: () => formatTokens,
+    gatewayPresets: () => gatewayPresets,
+    glanceAgents: () => glanceAgents,
+    globMatches: () => globMatches,
+    groupDisplayName: () => groupDisplayName,
+    groupModeDescription: () => groupModeDescription,
+    groupModeLabel: () => groupModeLabel,
+    groupModelId: () => groupModelId,
+    groupStickyDescription: () => groupStickyDescription,
+    groupStickyLabel: () => groupStickyLabel,
+    imageModelLabel: () => imageModelLabel,
+    importCandidates: () => importCandidates,
+    isDirectProxy: () => isDirectProxy,
+    isFavoriteModel: () => isFavoriteModel,
+    isPattern: () => isPattern,
+    keyLabel: () => keyLabel,
+    maskAccountName: () => maskAccountName,
+    maskAccountText: () => maskAccountText,
+    memberLabel: () => memberLabel,
+    memberStatus: () => memberStatus,
+    memberTarget: () => memberTarget,
+    modelDispatch: () => modelDispatch,
+    modelDisplay: () => modelDisplay,
+    modelRoutable: () => modelRoutable,
+    niceCeiling: () => niceCeiling,
+    ownPickerSection: () => ownPickerSection,
+    parseContextWindow: () => parseContextWindow,
+    parseKeyLimit: () => parseKeyLimit,
+    parseWeight: () => parseWeight,
+    patternMatches: () => patternMatches,
+    pendingImportCount: () => pendingImportCount,
+    pickerSections: () => pickerSections,
+    poolExcludeToggle: () => poolExcludeToggle,
+    presetAdded: () => presetAdded,
+    presetHost: () => presetHost,
+    prettyModelName: () => prettyModelName,
+    priceFromDraft: () => priceFromDraft,
+    protocolLabel: () => protocolLabel,
+    providerDraftFromEntry: () => providerDraftFromEntry,
+    providerDraftFromPreset: () => providerDraftFromPreset,
+    providerEnabled: () => providerEnabled,
+    providerInput: () => providerInput,
+    proxyAddressError: () => proxyAddressError,
+    qualifiedProvider: () => qualifiedProvider,
+    queueWaitMs: () => queueWaitMs,
+    quotaRemaining: () => quotaRemaining,
+    quotaWindowFresh: () => quotaWindowFresh,
+    quotaWindowLabel: () => quotaWindowLabel,
+    relativeTime: () => relativeTime,
+    rememberAgentNames: () => rememberAgentNames,
+    routeNarrative: () => routeNarrative,
+    servingProviders: () => servingProviders,
+    shortDate: () => shortDate,
+    shortPath: () => shortPath,
+    skippedAgents: () => skippedAgents,
+    slugify: () => slugify,
+    speedOf: () => speedOf,
+    splitModels: () => splitModels,
+    subscriptionBlockReason: () => subscriptionBlockReason,
+    toggleFavoriteModel: () => toggleFavoriteModel,
+    unlistedModels: () => unlistedModels,
+    usageDayStats: () => usageDayStats,
+    usageRangeStart: () => usageRangeStart,
+    validateDraft: () => validateDraft,
+    validateProviderDraft: () => validateProviderDraft,
+    visibleOwnModels: () => visibleOwnModels
+  });
+
+  // apps/codex-plus-manager/src/presets.ts
+  var PRESETS = [
+    // ── 官方 ──
+    {
+      id: "openai",
+      name: "OpenAI Official",
+      category: "official",
+      baseUrl: "https://api.openai.com/v1",
+      protocol: "responses",
+      model: "gpt-5.5",
+      websiteUrl: "https://chatgpt.com/codex"
+    },
+    // ── 中国官方 ──
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      websiteUrl: "https://platform.deepseek.com",
+      apiKeyUrl: "https://platform.deepseek.com/api_keys",
+      category: "cn_official",
+      baseUrl: "https://api.deepseek.com/",
+      protocol: "responses",
+      model: "deepseek-v4-flash",
+      modelList: ["deepseek-v4-flash", "deepseek-v4-pro"]
+    },
+    {
+      id: "zhipu-glm",
+      name: "Zhipu GLM",
+      websiteUrl: "https://open.bigmodel.cn",
+      apiKeyUrl: "https://www.bigmodel.cn/claude-code?ic=RRVJPB5SII",
+      category: "cn_official",
+      baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+      protocol: "chatCompletions",
+      model: "glm-5.1",
+      modelList: ["glm-5.1"]
+    },
+    {
+      id: "kimi",
+      name: "Kimi",
+      websiteUrl: "https://platform.moonshot.cn",
+      apiKeyUrl: "https://platform.moonshot.cn/console/api-keys",
+      category: "cn_official",
+      baseUrl: "https://api.moonshot.cn/v1",
+      protocol: "chatCompletions",
+      model: "kimi-k2.6",
+      modelList: ["kimi-k2.6"]
+    },
+    {
+      id: "bailian",
+      name: "Bailian (Qwen)",
+      websiteUrl: "https://bailian.console.aliyun.com",
+      apiKeyUrl: "https://bailian.console.aliyun.com/#/api-key",
+      category: "cn_official",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      protocol: "chatCompletions",
+      model: "qwen3-coder-plus",
+      modelList: ["qwen3-coder-plus", "qwen3-max"]
+    },
+    {
+      id: "stepfun",
+      name: "StepFun",
+      websiteUrl: "https://platform.stepfun.com/step-plan",
+      apiKeyUrl: "https://platform.stepfun.com/interface-key",
+      category: "cn_official",
+      baseUrl: "https://api.stepfun.com/step_plan/v1",
+      protocol: "chatCompletions",
+      model: "step-3.5-flash-2603",
+      modelList: ["step-3.5-flash-2603", "step-3.5-flash"]
+    },
+    {
+      id: "minimax",
+      name: "MiniMax (China)",
+      websiteUrl: "https://platform.minimaxi.com",
+      apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+      category: "cn_official",
+      baseUrl: "https://api.minimaxi.com/v1",
+      protocol: "chatCompletions",
+      model: "MiniMax-M3",
+      modelList: ["MiniMax-M3", "MiniMax-M2.7"]
+    },
+    {
+      id: "minimax-global",
+      name: "MiniMax (Global)",
+      websiteUrl: "https://platform.minimax.io",
+      apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
+      category: "official",
+      baseUrl: "https://api.minimax.io/v1",
+      protocol: "chatCompletions",
+      model: "MiniMax-M3",
+      modelList: ["MiniMax-M3", "MiniMax-M2.7"]
+    },
+    {
+      id: "volcano-ark",
+      name: "火山引擎 Ark",
+      websiteUrl: "https://www.volcengine.com/product/ark",
+      apiKeyUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+      category: "cn_official",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3",
+      protocol: "chatCompletions",
+      model: "ark-code-latest",
+      modelList: ["ark-code-latest"]
+    },
+    {
+      id: "baidu-qianfan",
+      name: "百度千帆 Coding Plan",
+      category: "cn_official",
+      baseUrl: "https://qianfan.baidubce.com/v2/coding",
+      protocol: "chatCompletions",
+      model: "qianfan-code-latest",
+      websiteUrl: "https://cloud.baidu.com/product/qianfan_modelbuilder"
+    },
+    {
+      id: "xiaomi-mimo",
+      name: "小米 MiMo",
+      category: "cn_official",
+      baseUrl: "https://api.xiaomimimo.com/v1",
+      protocol: "chatCompletions",
+      model: "mimo-v2.5-pro",
+      modelList: ["mimo-v2.5-pro"],
+      websiteUrl: "https://platform.xiaomimimo.com"
+    },
+    {
+      id: "modelscope",
+      name: "ModelScope",
+      category: "cn_official",
+      baseUrl: "https://api-inference.modelscope.cn/v1",
+      protocol: "chatCompletions",
+      model: "ZhipuAI/GLM-5.1",
+      modelList: ["ZhipuAI/GLM-5.1"],
+      websiteUrl: "https://modelscope.cn"
+    },
+    {
+      id: "longcat",
+      name: "Longcat",
+      category: "cn_official",
+      baseUrl: "https://api.longcat.chat/openai/v1",
+      protocol: "chatCompletions",
+      model: "LongCat-Flash-Chat",
+      modelList: ["LongCat-Flash-Chat"],
+      websiteUrl: "https://longcat.chat/platform"
+    },
+    // ── 聚合/中转 ──
+    {
+      id: "jojocode-max",
+      name: "JOJO Code",
+      websiteUrl: "https://max2.jojocode.com/",
+      apiKeyUrl: "https://max2.jojocode.com/",
+      category: "aggregator",
+      baseUrl: "https://max2.jojocode.com/v1",
+      protocol: "responses",
+      // 模型留空：添加时「从上游获取」或手填。
+      model: ""
+    },
+    {
+      id: "runapi",
+      name: "RunAPI",
+      websiteUrl: "https://runapi.host",
+      apiKeyUrl: "https://runapi.host",
+      category: "aggregator",
+      baseUrl: "https://runapi.host/v1",
+      protocol: "responses",
+      model: "gpt-5.5"
+    },
+    {
+      id: "siliconflow",
+      name: "SiliconFlow",
+      websiteUrl: "https://siliconflow.cn",
+      apiKeyUrl: "https://cloud.siliconflow.cn/i/drGuwc9k",
+      category: "aggregator",
+      baseUrl: "https://api.siliconflow.cn/v1",
+      protocol: "chatCompletions",
+      model: "Pro/MiniMaxAI/MiniMax-M2.7",
+      modelList: ["Pro/MiniMaxAI/MiniMax-M2.7"]
+    },
+    {
+      id: "openrouter",
+      name: "OpenRouter",
+      websiteUrl: "https://openrouter.ai",
+      apiKeyUrl: "https://openrouter.ai/keys",
+      category: "aggregator",
+      baseUrl: "https://openrouter.ai/api/v1",
+      protocol: "chatCompletions",
+      model: "gpt-5.5"
+    },
+    {
+      id: "aihubmix",
+      name: "AiHubMix",
+      category: "aggregator",
+      baseUrl: "https://aihubmix.com/v1",
+      protocol: "responses",
+      model: "gpt-5.5",
+      websiteUrl: "https://aihubmix.com"
+    },
+    {
+      id: "apikeyfun",
+      name: "APIKEY.FUN",
+      category: "aggregator",
+      baseUrl: "https://api.apikey.fun/v1",
+      protocol: "responses",
+      model: "gpt-5.5",
+      modelList: ["gpt-5.5"],
+      websiteUrl: "https://apikey.fun"
+    },
+    {
+      id: "cccccc-api",
+      name: "ccccccAPI",
+      websiteUrl: "https://dzhsmartai.com",
+      apiKeyUrl: "https://dzhsmartai.com/register?promo=CODEXPLUSPLUS",
+      category: "aggregator",
+      baseUrl: "https://dzhsmartai.com/v1",
+      protocol: "responses",
+      // 模型留空：添加时「从上游获取」或手填。
+      model: ""
+    },
+    {
+      id: "tokenmy",
+      name: "TokenMy",
+      websiteUrl: "https://agent.tokenmy.ai",
+      apiKeyUrl: "https://agent.tokenmy.ai",
+      category: "aggregator",
+      baseUrl: "https://agent.tokenmy.ai/v1",
+      protocol: "responses",
+      // 模型留空：添加时「从上游获取」或手填。
+      model: ""
+    },
+    {
+      id: "novita",
+      name: "Novita AI",
+      category: "aggregator",
+      baseUrl: "https://api.novita.ai/openai/v1",
+      protocol: "chatCompletions",
+      model: "zai-org/glm-5.1",
+      modelList: ["zai-org/glm-5.1"],
+      websiteUrl: "https://novita.ai"
+    },
+    // ── 第三方 ──
+    {
+      id: "azure",
+      name: "Azure OpenAI",
+      category: "third_party",
+      baseUrl: "https://YOUR_RESOURCE_NAME.openai.azure.com/openai",
+      protocol: "responses",
+      model: "gpt-5.5",
+      websiteUrl: "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/codex"
+    }
+  ];
+
+  // apps/codex-plus-manager/src/subscription-policy.ts
+  function defaultSubscriptionPolicy() {
+    return {
+      defaultUsedPercentLimit: null,
+      windowUsedPercentLimits: {},
+      onLimit: "stop",
+      unknownUsage: "allow",
+      maxAgeSeconds: 600
+    };
+  }
+  function normalizeSubscriptionPolicy(value) {
+    const defaults = defaultSubscriptionPolicy();
+    return {
+      defaultUsedPercentLimit: value?.defaultUsedPercentLimit ?? defaults.defaultUsedPercentLimit,
+      windowUsedPercentLimits: { ...value?.windowUsedPercentLimits },
+      onLimit: value?.onLimit ?? defaults.onLimit,
+      unknownUsage: value?.unknownUsage ?? defaults.unknownUsage,
+      maxAgeSeconds: value?.maxAgeSeconds ?? defaults.maxAgeSeconds
+    };
+  }
+
+  // apps/codex-plus-manager/src/gateway-model.ts
+  function keyLabel(keys, keyId) {
+    const list = keys ?? [];
+    const found = list.find((key) => key.id === keyId) ?? (keyId === "primary" && list.length === 1 ? list[0] : void 0);
+    return found ? found.masked : keyId;
+  }
+  function imageModelLabel(model, vendorPicks) {
+    return vendorPicks ? "GPT Image" : model;
+  }
+  function blankBinding() {
+    return {
+      enabled: false,
+      model: "",
+      extraModels: [],
+      claudeRoles: { opus: "", sonnet: "", haiku: "", subagent: "" },
+      unknownModel: "mapToDefault",
+      contextWindow: null,
+      claudeEnableEffort: false,
+      token: ""
+    };
+  }
+  function draftFromBinding(binding) {
+    const source = binding ?? blankBinding();
+    return {
+      model: source.model,
+      extraModels: source.extraModels.join("\n"),
+      opus: source.claudeRoles.opus,
+      sonnet: source.claudeRoles.sonnet,
+      haiku: source.claudeRoles.haiku,
+      subagent: source.claudeRoles.subagent,
+      unknownModel: source.unknownModel,
+      autoReviewModel: source.autoReviewModel ?? "",
+      titleModel: source.titleModel ?? "",
+      contextWindow: source.contextWindow ? String(source.contextWindow) : "",
+      claudeEnableEffort: source.claudeEnableEffort,
+      poolExclude: [...source.poolExclude ?? []],
+      autoJoinProviders: source.autoJoinProviders !== false
+    };
+  }
+  function defaultProviderAgents(payload) {
+    return glanceAgents(payload?.agents).map((agent) => agent.agent).filter((agent) => payload?.gateway.bindings[agent]?.autoJoinProviders !== false);
+  }
+  function skippedAgents(payload, picked) {
+    return glanceAgents(payload?.agents).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
+  }
+  function poolExcludeToggle(previous, providerId, on) {
+    const exclude = previous ?? [];
+    if (on) return exclude.filter((id) => id !== providerId);
+    return exclude.includes(providerId) ? exclude : [...exclude, providerId];
+  }
+  function parseContextWindow(value) {
+    const text = value.trim().toLowerCase();
+    if (!text) return null;
+    const match = /^(\d+(?:\.\d+)?)\s*([km]?)$/.exec(text);
+    if (!match) return Number.NaN;
+    const base = Number(match[1]);
+    const scale = match[2] === "m" ? 1e6 : match[2] === "k" ? 1e3 : 1;
+    return Math.round(base * scale);
+  }
+  function parseKeyLimit(value) {
+    const text = value.trim();
+    if (!text) return null;
+    if (!/^\d+$/.test(text)) return Number.NaN;
+    const limit = Number(text);
+    return limit > 0 && limit <= 1e6 ? limit : Number.NaN;
+  }
+  var QUEUE_REASON_PREFIX = "local_rate_limit_wait_ms:";
+  var FOREIGN_COMPACTION_DROPPED_REASON = "foreign_compaction_dropped";
+  function foreignCompactionDropped(reasons) {
+    return (reasons ?? []).includes(FOREIGN_COMPACTION_DROPPED_REASON);
+  }
+  function queueWaitMs(reasons) {
+    const reason = (reasons ?? []).find((item) => item.startsWith(QUEUE_REASON_PREFIX));
+    if (reason === void 0) return null;
+    const ms = Number(reason.slice(QUEUE_REASON_PREFIX.length));
+    return Number.isFinite(ms) && ms >= 0 ? ms : null;
+  }
+  function formatQueueWait(ms) {
+    return ms < 1e4 ? `${(ms / 1e3).toFixed(1)}s` : `${Math.round(ms / 1e3)}s`;
+  }
+  function splitModels(text) {
+    const seen = /* @__PURE__ */ new Set();
+    return text.split(/[\n,]/).map((line) => line.trim()).filter((line) => {
+      if (!line || seen.has(line)) return false;
+      seen.add(line);
+      return true;
+    });
+  }
+  function bindingFromDraft(draft, previous, item) {
+    const base = previous ?? blankBinding();
+    const window = parseContextWindow(draft.contextWindow);
+    const model = draft.model.trim();
+    return {
+      ...base,
+      model,
+      defaultModelSelection: item ? item.defaultModelSelection ?? null : model.toLowerCase() === base.model.trim().toLowerCase() ? base.defaultModelSelection ?? null : null,
+      extraModels: splitModels(draft.extraModels),
+      claudeRoles: {
+        opus: draft.opus.trim(),
+        sonnet: draft.sonnet.trim(),
+        haiku: draft.haiku.trim(),
+        subagent: draft.subagent.trim()
+      },
+      unknownModel: draft.unknownModel,
+      autoReviewModel: draft.autoReviewModel.trim(),
+      titleModel: draft.titleModel.trim(),
+      contextWindow: window && Number.isFinite(window) ? window : null,
+      claudeEnableEffort: draft.claudeEnableEffort,
+      poolExclude: [...draft.poolExclude],
+      autoJoinProviders: draft.autoJoinProviders
+    };
+  }
+  var GROUP_MODEL_PREFIX = "group/";
+  function groupModelId(id) {
+    return `${GROUP_MODEL_PREFIX}${id}`;
+  }
+  function disabledGroup(payload, model, selection) {
+    const key = modelSlugFromRowName(model).toLowerCase();
+    if (selection && key === `${selection.providerId}/${modelSlugFromRowName(selection.upstreamModel)}`.toLowerCase()) return void 0;
+    return payload?.groups.find((group) => group.disabled && groupModelId(group.id).toLowerCase() === key);
+  }
+  function slugify(name) {
+    const slug = name.trim().toLowerCase().replace(/[\s_/]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug || "unnamed";
+  }
+  function providerEnabled(entry) {
+    return entry.enabled !== false;
+  }
+  function agentPoolProviders(payload, exclude = []) {
+    return (payload?.pool ?? []).filter((entry) => providerEnabled(entry) && !exclude.includes(entry.id));
+  }
+  function agentModels(payload, exclude = []) {
+    const models = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const entry of agentPoolProviders(payload, exclude)) {
+      for (const listed of entry.models) {
+        const model = disabledGroup(payload, listed) ? `${entry.id}/${listed}` : listed;
+        const key = model.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        models.push(model);
+      }
+    }
+    for (const group of payload?.groups ?? []) {
+      if (!group.disabled && group.members.length) models.push(groupModelId(group.id));
+    }
+    return models;
+  }
+  function qualifiedProvider(payload, model, exclude = []) {
+    if (model.startsWith(GROUP_MODEL_PREFIX)) return null;
+    if (servingProviders(payload, model, exclude).length) return null;
+    const index = model.indexOf("/");
+    if (index <= 0 || !model.slice(index + 1).trim()) return null;
+    const prefix = model.slice(0, index).toLowerCase();
+    const entry = agentPoolProviders(payload, exclude).find((item) => item.id.toLowerCase() === prefix);
+    return entry ? { entry, model: model.slice(index + 1).trim() } : null;
+  }
+  function modelRoutable(payload, model, exclude = []) {
+    if (disabledGroup(payload, model)) return false;
+    const lower = model.trim().toLowerCase();
+    return agentModels(payload, exclude).some((known) => known.toLowerCase() === lower) || qualifiedProvider(payload, model.trim(), exclude) !== null;
+  }
+  function validateDraft(draft, payload, retainedModel, retainedSelection) {
+    if (payload) {
+      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
+      const model = draft.model.trim();
+      const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
+      const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
+      const retainedUnavailableModel = draft.model === retainedModel && retainedSelection && modelSlugFromRowName(model).toLowerCase() === `${retainedSelection.providerId}/${modelSlugFromRowName(retainedSelection.upstreamModel)}`.toLowerCase() && (retainedSelection.providerRemoved || !retainedProvider || !providerEnabled(retainedProvider) || draft.poolExclude.includes(retainedProvider.id));
+      if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+    }
+    const window = parseContextWindow(draft.contextWindow);
+    if (window !== null && (!Number.isFinite(window) || window < 1e3)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
+    return null;
+  }
+  function protocolLabel(protocol) {
+    switch (protocol) {
+      case "chatCompletions":
+        return "Chat";
+      case "anthropicMessages":
+        return "Anthropic";
+      default:
+        return "Responses";
+    }
+  }
+  function failureLabel(value) {
+    switch (value) {
+      case "rate_limited":
+        return "被限流";
+      case "quota_exhausted":
+        return "额度耗尽";
+      case "auth_invalid":
+        return "Key 无效";
+      case "server_error":
+        return "上游出错";
+      case "failover":
+        return "已切换";
+      case "client_error":
+        return "请求被拒";
+      default:
+        return "";
+    }
+  }
+  function formatRemaining(ms) {
+    if (!ms || ms <= 0) return "";
+    const seconds = Math.ceil(ms / 1e3);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.ceil(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours >= 24) return `${Math.floor(hours / 24)}d${hours % 24 ? `${hours % 24}h` : ""}`;
+    return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ""}`;
+  }
+  var GATEWAY_CLAUDE_PROVIDER_ID = "codex-plus-gateway";
+  var GATEWAY_AGENT_NAMES = { claude: "Claude Code", grok: "Grok", codex: "Codex" };
+  var BUILTIN_GATEWAY_AGENTS = ["codex", "claude", "grok"];
+  function glanceAgents(agents) {
+    return (agents ?? []).filter((agent) => agent.enabled || BUILTIN_GATEWAY_AGENTS.includes(agent.agent));
+  }
+  function agentName(agent) {
+    return GATEWAY_AGENT_NAMES[agent] ?? agent;
+  }
+  function rememberAgentNames(agents) {
+    for (const item of agents ?? []) {
+      if (item.name && !GATEWAY_AGENT_NAMES[item.agent]) GATEWAY_AGENT_NAMES[item.agent] = item.name;
+    }
+  }
+  function matches(query, ...values) {
+    if (!query) return true;
+    return values.some((value) => value.toLowerCase().includes(query));
+  }
+  function pickerSections(payload, rawQuery, avatar, exclude = [], skipGroup, sectionOnly = null, hasOwnMatch = false) {
+    if (!payload) return [];
+    const query = rawQuery.trim().toLowerCase();
+    const sections = [];
+    const providers = agentPoolProviders(payload, exclude);
+    const unlisted = unlistedModels(payload);
+    const shared = [];
+    for (const entry of providers) {
+      const providerHit = matches(query, entry.name, entry.id);
+      const items = entry.models.filter((model) => providerHit || matches(query, model, `${entry.id}/${model}`)).flatMap((model) => {
+        const groupDisabled = Boolean(disabledGroup(payload, model));
+        const multi = servingProviders(payload, model, exclude).length > 1;
+        if (multi && !groupDisabled && !shared.some((known) => known.toLowerCase() === model.toLowerCase())) shared.push(model);
+        const value = multi || groupDisabled ? `${entry.id}/${model}` : model;
+        if (unlisted.has(value.toLowerCase())) return [];
+        return [{
+          model: value,
+          providerModel: `${entry.id}/${model}`,
+          defaultModelSelection: { providerId: entry.id, upstreamModel: model, providerSource: entry.source ?? "" },
+          label: prettyModelName(model),
+          sub: maskAccountName(entry.name),
+          avatar: avatar(entry.name)
+        }];
+      });
+      if (items.length) sections.push({ key: `provider:${entry.id}`, title: maskAccountName(entry.name), avatar: avatar(entry.name), items });
+    }
+    const autoItems = shared.filter((model) => activeAutoGroup(payload, model)).map((model) => ({
+      model,
+      label: prettyModelName(model),
+      sub: servingProviders(payload, model, exclude).map((entry) => maskAccountName(entry.name)).join(" → "),
+      avatar: ""
+    }));
+    if (autoItems.length) sections.push({ key: "auto", title: "自动组", avatar: "", items: autoItems });
+    const groups = payload.groups.filter((group) => !group.disabled && group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id))).map((group) => ({ model: groupModelId(group.id), label: group.name, sub: `${GROUP_MODEL_PREFIX}${group.name}`, avatar: avatar(group.name) }));
+    if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
+    const typed = rawQuery.trim();
+    const visible = sectionOnly ? sections.filter((section) => section.key === sectionOnly) : sections;
+    const qualified = qualifiedProvider(payload, typed, exclude);
+    const canOfferCustom = !sectionOnly || sectionOnly.startsWith("provider:");
+    if (typed && !/\s/.test(typed) && canOfferCustom && !disabledGroup(payload, typed) && !visible.length && !hasOwnMatch && (!modelRoutable(payload, typed, exclude) || qualified)) {
+      const targets = providers.filter((entry) => (!sectionOnly || sectionOnly === `provider:${entry.id}`) && (!qualified || entry.id === qualified.entry.id)).slice(0, 6);
+      if (!targets.length) return sections;
+      sections.push({
+        key: "custom",
+        title: "自定义模型",
+        avatar: "",
+        items: targets.map((entry) => ({
+          model: qualified ? typed : `${entry.id}/${typed}`,
+          defaultModelSelection: { providerId: entry.id, upstreamModel: modelSlugFromRowName(qualified ? qualified.model : typed), providerSource: entry.source ?? "" },
+          label: typed,
+          sub: maskAccountName(entry.name),
+          avatar: avatar(entry.name),
+          custom: true
+        }))
+      });
+    }
+    return sections;
+  }
+  function visibleOwnModels(agent, payload) {
+    const own = agent.ownModels;
+    if (!own) return null;
+    if (!(payload?.gateway.hideOwnModels ?? []).includes(agent.agent)) return own;
+    const current = own.current.trim().toLowerCase();
+    const models = current ? own.models.filter((model) => model.id.toLowerCase() === current) : [];
+    return models.length ? { ...own, models } : null;
+  }
+  function ownPickerSection(own, rawQuery, avatar) {
+    if (!own || !own.models.length) return null;
+    const query = rawQuery.trim().toLowerCase();
+    const vendorHit = matches(query, own.vendor);
+    const items = own.models.filter((model) => vendorHit || matches(query, model.id, model.label)).map((model) => ({ model: model.id, label: model.label, sub: model.label === model.id ? "" : model.id, avatar: avatar(own.vendor), direct: own.vendor }));
+    return items.length ? { key: "own", title: own.vendor, avatar: avatar(own.vendor), items } : null;
+  }
+  function servingProviders(payload, model, exclude = []) {
+    const name = model.trim().toLowerCase();
+    return agentPoolProviders(payload, exclude).filter((entry) => entry.models.some((known) => known.toLowerCase() === name));
+  }
+  function groupDisplayName(payload, model) {
+    const key = model.trim().toLowerCase();
+    return payload?.groups.find((group) => groupModelId(group.id).toLowerCase() === key)?.name;
+  }
+  function modelDisplay(payload, model, exclude = [], selection) {
+    const title = model.trim() || agentModels(payload, exclude)[0] || "";
+    const selectedModel = modelSlugFromRowName(title);
+    if (selection && selectedModel.toLowerCase() === `${selection.providerId}/${modelSlugFromRowName(selection.upstreamModel)}`.toLowerCase()) {
+      const provider = payload?.pool.find((entry2) => entry2.id === selection.providerId);
+      const unavailable = selection.providerRemoved || !provider || !providerEnabled(provider) || exclude.includes(provider.id) || (provider.source ?? "") !== selection.providerSource;
+      const conflict = selectedModel.toLowerCase().startsWith(GROUP_MODEL_PREFIX) || selectedModel.includes("*") || servingProviders(payload, selectedModel, exclude).length > 0;
+      if (unavailable || conflict) {
+        return {
+          title: prettyModelName(selection.upstreamModel),
+          sub: provider ? maskAccountName(provider.name) : selection.providerId,
+          group: false,
+          issue: unavailable ? "unavailable" : "conflict"
+        };
+      }
+    }
+    if (title.startsWith(GROUP_MODEL_PREFIX)) {
+      const name = groupDisplayName(payload, title);
+      return { title: name ?? title, sub: name === void 0 ? title : `${GROUP_MODEL_PREFIX}${name}`, group: true };
+    }
+    const qualified = qualifiedProvider(payload, title, exclude);
+    if (qualified) return { title: prettyModelName(qualified.model), sub: maskAccountName(qualified.entry.name), group: false };
+    const serving = servingProviders(payload, title, exclude);
+    if (serving.length > 1) {
+      return { title: prettyModelName(title), sub: serving.map((entry2) => maskAccountName(entry2.name)).join(" → "), group: false, auto: true };
+    }
+    const entry = serving[0];
+    return { title: prettyModelName(title), sub: entry ? maskAccountName(entry.name) : "", group: false };
+  }
+  var MODEL_WORDS = {
+    gpt: "GPT",
+    glm: "GLM",
+    deepseek: "DeepSeek",
+    minimax: "MiniMax",
+    qwen: "Qwen",
+    qwq: "QwQ",
+    kimi: "Kimi",
+    grok: "Grok",
+    claude: "Claude",
+    gemini: "Gemini",
+    gemma: "Gemma",
+    llama: "Llama",
+    mistral: "Mistral",
+    codestral: "Codestral",
+    doubao: "Doubao",
+    ernie: "ERNIE",
+    hunyuan: "Hunyuan",
+    step: "Step",
+    mimo: "MiMo",
+    longcat: "LongCat"
+  };
+  function prettyModelToken(token) {
+    const lower = token.toLowerCase();
+    if (MODEL_WORDS[lower]) return MODEL_WORDS[lower];
+    if (/^o\d/.test(lower)) return lower;
+    if (/^[a-z]\d+(\.\d+)?[a-z]?$/.test(lower)) return lower.toUpperCase();
+    if (/^\d+(\.\d+)?[bkm]$/.test(lower)) return lower.toUpperCase();
+    if (/^\d/.test(lower)) return lower;
+    const word = /^([a-z]+)(.*)$/.exec(lower);
+    if (!word) return token;
+    const head = MODEL_WORDS[word[1]] ?? word[1].charAt(0).toUpperCase() + word[1].slice(1);
+    return head + word[2];
+  }
+  function prettyModelName(model) {
+    const match = /^(.*\/)?([^/[]+)(\[.*\])?$/.exec(model.trim());
+    if (!match) return model;
+    const [, prefix = "", name, suffix = ""] = match;
+    if (/[A-Z]/.test(name)) return model.trim();
+    return prefix + name.split(/([-_])/).map((part) => part === "-" || part === "_" ? part : prettyModelToken(part)).join("") + suffix;
+  }
+  function groupModeLabel(mode) {
+    switch (mode) {
+      case "rotate":
+        return "轮换";
+      case "weighted":
+        return "按权重";
+      case "usage":
+        return "额度优先";
+      case "fast":
+        return "速度优先";
+      case "manual":
+        return "手动";
+      default:
+        return "依次";
+    }
+  }
+  function groupModeDescription(mode) {
+    switch (mode) {
+      case "rotate":
+        return "轮换：每个新会话从下一个成员开始；成员答不了时换下一个，每个成员再按自己的 Key 轮换。";
+      case "weighted":
+        return "按权重：按成员权重决定先试谁；成员答不了时换下一个，每个成员再按自己的 Key 轮换。";
+      case "usage":
+        return "额度优先：订阅账号里剩余额度最多的先试；没有额度数据的排在后面，额度用完的排最后。";
+      case "fast":
+        return "速度优先：最近响应最快的先试；还没测过的先试一次，之后按实测速度排。";
+      case "manual":
+        return "手动：只发给选中的那个成员，它答不了也不换；在成员列表里点一下就换成它。";
+      default:
+        return "依次：按成员顺序，前一个答不了才换下一个，每个成员再按自己的 Key 轮换。";
+    }
+  }
+  function groupStickyLabel(sticky) {
+    switch (sticky) {
+      case "session":
+        return "整个会话固定";
+      case "off":
+        return "不固定";
+      default:
+        return "缓存期内固定";
+    }
+  }
+  function groupStickyDescription(sticky) {
+    switch (sticky) {
+      case "session":
+        return "同一会话一直先试上次回答的成员，它答不了才换，最省缓存。";
+      case "off":
+        return "每个请求都按模式重新排，会话中途可能换成员，上游的提示词缓存会失效。";
+      default:
+        return "同一会话 10 分钟内继续先试上次回答的成员，保住上游的提示词缓存；空闲超过 10 分钟再按模式重新排。";
+    }
+  }
+  function parseWeight(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    const value = Number(trimmed);
+    if (!Number.isFinite(value)) return null;
+    return Math.max(1, Math.floor(value));
+  }
+  function isPattern(model) {
+    return model.includes("*");
+  }
+  function globMatches(pattern, text) {
+    const escaped = pattern.toLowerCase().split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(`^${escaped.join(".*")}$`, "s").test(text.toLowerCase());
+  }
+  function patternMatches(payload, pattern) {
+    const matches2 = [];
+    for (const entry of agentPoolProviders(payload)) {
+      for (const model of entry.models) {
+        const qualified = `${entry.id}/${model}`;
+        if (globMatches(pattern, qualified) || globMatches(pattern, model)) matches2.push(qualified);
+      }
+    }
+    return matches2;
+  }
+  function speedOf(payload, relayId, model) {
+    const found = payload?.speeds?.find((item) => item.relayId === relayId && item.model === model.toLowerCase());
+    return found ? found.ms : null;
+  }
+  function quotaWindowLabel(window) {
+    const minutes = window.windowMinutes;
+    if (minutes === null) return { text: "本月", args: [] };
+    if (minutes === 300) return { text: "5 小时", args: [] };
+    if (minutes === 10080) return { text: "每周", args: [] };
+    if (minutes % 1440 === 0) return { text: "{0} 天", args: [minutes / 1440] };
+    if (minutes % 60 === 0) return { text: "{0} 小时", args: [minutes / 60] };
+    return { text: "{0} 分钟", args: [minutes] };
+  }
+  function quotaRemaining(quota, nowMs) {
+    if (quota.officialAllowed === false) return 0;
+    return quota.windows.reduce((least, window) => {
+      const left = window.resetsAtMs !== null && window.resetsAtMs <= nowMs ? 0 : Math.min(1, Math.max(0, 1 - window.usedPercent / 100));
+      return Math.min(least, left);
+    }, 1);
+  }
+  function quotaWindowFresh(quota, window, nowMs, maxAgeSeconds = 600) {
+    const observed = window.observedAtMs ?? quota.updatedAtMs;
+    return observed <= nowMs && nowMs - observed <= maxAgeSeconds * 1e3 && Number.isFinite(window.usedPercent) && window.usedPercent >= 0 && window.usedPercent <= 100 && (window.resetsAtMs === null || window.resetsAtMs > nowMs);
+  }
+  function subscriptionBlockReason(entry, nowMs = Date.now()) {
+    if (entry.account !== "chatgpt" || !entry.subscriptionPolicy) return null;
+    const policy = normalizeSubscriptionPolicy(entry.subscriptionPolicy);
+    if (policy.defaultUsedPercentLimit === 0) return "订阅额度已用上限设为 0%，已停止新请求";
+    const unknown = (text) => policy.unknownUsage === "allow" ? null : text;
+    const quota = entry.quota;
+    if (!quota) return entry.subscriptionBlockReason || unknown("官方额度未知，请刷新额度");
+    const fresh = quota.updatedAtMs <= nowMs && nowMs - quota.updatedAtMs <= policy.maxAgeSeconds * 1e3;
+    if (fresh && (quota.officialAllowed === false || quota.officialLimitReached === true && quota.officialAllowed !== true)) return "官方订阅额度受限，请等待重置或刷新额度";
+    let uncertain = !fresh || !quota.windowsComplete && Object.keys(policy.windowUsedPercentLimits).some((key) => !quota.windows.some((window) => String(window.windowMinutes) === key)) || !quota.windows.length && !(quota.windowsComplete && quota.officialAllowed === true);
+    for (const window of quota.windows) {
+      if (!quotaWindowFresh(quota, window, nowMs, policy.maxAgeSeconds)) {
+        uncertain = true;
+        continue;
+      }
+      const cap = policy.windowUsedPercentLimits[String(window.windowMinutes)] ?? policy.defaultUsedPercentLimit ?? 100;
+      if (window.usedPercent >= cap) {
+        const label = window.windowMinutes === 300 ? "5h" : window.windowMinutes === 10080 ? "7d" : `${window.windowMinutes ?? ""} 分钟`;
+        return `${label} 已用 ${window.usedPercent}%，达到 ${cap}% 上限`;
+      }
+    }
+    return entry.subscriptionBlockReason || (uncertain ? unknown("官方额度待刷新，请先刷新额度") : null);
+  }
+  function memberLabel(payload, model) {
+    if (isPattern(model)) return model;
+    const view = modelDisplay(payload, model);
+    if (view.group) return view.title;
+    if (view.auto) return `${view.title} · ${view.sub}`;
+    return view.sub ? `${view.sub} · ${view.title}` : view.title;
+  }
+  var RECENT_USE_MS = 10 * 60 * 1e3;
+  function memberStatus(payload, relayId, nowMs = Date.now()) {
+    const activity = payload?.activity?.agents ?? [];
+    if (activity.some((agent) => agent.inFlight.includes(relayId))) {
+      return { state: "busy", text: "正在回答…", args: [] };
+    }
+    const breaker = payload?.health.providers.find((item) => item.relayId === relayId && item.breakerOpen);
+    if (breaker) {
+      const left = formatRemaining(breaker.remainingMs);
+      return left ? { state: "cooling", text: "连续出错 · {0} 后恢复", args: [left] } : { state: "cooling", text: "连续出错", args: [] };
+    }
+    const entry = payload?.pool.find((item) => item.id === relayId);
+    const keyCount = entry?.keyCount ?? 1;
+    const unhealthy = (payload?.health.keys ?? []).filter((key) => key.relayId === relayId && key.state !== "ok");
+    if (unhealthy.length >= keyCount && unhealthy.length > 0) {
+      const cooling = unhealthy.filter((key) => key.state === "cooling");
+      if (!cooling.length) return { state: "cooling", text: "Key 都已停用", args: [] };
+      const waits = cooling.map((key) => key.remainingMs ?? 0).filter((ms) => ms > 0);
+      const left = waits.length ? formatRemaining(Math.min(...waits)) : "";
+      const quota = cooling.some((key) => key.lastFailure === "quota_exhausted");
+      if (!left) return { state: "cooling", text: quota ? "额度耗尽" : "被限流", args: [] };
+      return { state: "cooling", text: quota ? "额度耗尽 · {0} 后恢复" : "被限流 · {0} 后恢复", args: [left] };
+    }
+    const answered = activity.filter((agent) => agent.last?.result === "answered" && agent.last.steps.at(-1)?.relayId === relayId && nowMs - agent.last.finishedAtMs < RECENT_USE_MS).sort((left, right) => (right.last?.finishedAtMs ?? 0) - (left.last?.finishedAtMs ?? 0))[0];
+    if (answered) return { state: "answered", text: "{0} 刚用过", args: [agentName(answered.agent)] };
+    if (unhealthy.length) return { state: "idle", text: "{0} 个 Key · {1} 个冷却中", args: [keyCount, unhealthy.length] };
+    return { state: "idle", text: "{0} 个 Key", args: [Math.max(keyCount, 1)] };
+  }
+  function dispatchStatus(payload, relayId, model, nowMs = Date.now()) {
+    const status = memberStatus(payload, relayId, nowMs);
+    if (status.state === "cooling") return status;
+    const used = (payload?.activity?.agents ?? []).filter((agent) => {
+      const step = agent.last?.result === "answered" ? agent.last.steps.at(-1) : void 0;
+      return step?.relayId === relayId && step.model.toLowerCase() === model.toLowerCase() && nowMs - (agent.last?.finishedAtMs ?? 0) < RECENT_USE_MS;
+    }).sort((left, right) => (right.last?.finishedAtMs ?? 0) - (left.last?.finishedAtMs ?? 0))[0];
+    return used ? { state: "answered", text: "{0} 刚用过", args: [agentName(used.agent)] } : null;
+  }
+  function formatElapsed(ms) {
+    if (ms < 1e4) return `${(ms / 1e3).toFixed(1)} s`;
+    return `${Math.round(ms / 1e3)} s`;
+  }
+  function routeNarrative(agent, record, payload) {
+    const lines = [];
+    const who = agentName(agent);
+    const requested = groupDisplayName(payload, record.requestedModel || record.model) ?? (record.requestedModel || record.model);
+    const plan = record.planned.map((member) => `${maskAccountName(member.relayName)}/${groupDisplayName(payload, member.model) ?? member.model}`).join(", ");
+    if (record.groupId) {
+      const group = payload?.groups.find((item) => item.id === record.groupId);
+      lines.push({ tone: "muted", text: "{0} 请求 {1}，交给模型组「{2}」：{3}", args: [who, requested, group?.name ?? record.groupId, plan] });
+      if (record.planned[0]) lines.push({ tone: "step", text: "{0} 排在第一个。", args: [maskAccountName(record.planned[0].relayName)] });
+    } else {
+      lines.push({ tone: "muted", text: "{0} 请求 {1}，转发到 {2}", args: [who, requested, plan] });
+    }
+    record.steps.forEach((step, index) => {
+      const last = index === record.steps.length - 1;
+      if (step.outcome === "answered") {
+        lines.push({ tone: "ok", text: "{0}（{1}）回答，用时 {2}。", args: [maskAccountName(step.relayName), groupDisplayName(payload, step.model) ?? step.model, formatElapsed(record.elapsedMs)] });
+        return;
+      }
+      const reason = { zh: step.outcome === "transport" ? "连不上" : failureLabel(step.failure) || "出错" };
+      const status = step.status ? ` · HTTP ${step.status}` : "";
+      lines.push({
+        tone: last ? "fail" : "step",
+        text: last ? "{0} 的 Key {1} {2}{3}，错误交回给 {4}。" : "{0} 的 Key {1} {2}{3}，换下一个。",
+        args: last ? [maskAccountName(step.relayName), step.keyId, reason, status, who] : [maskAccountName(step.relayName), step.keyId, reason, status]
+      });
+    });
+    if (record.result === "cooling") {
+      lines.push({ tone: "fail", text: "所有 Key 都在冷却，约 {0} 后恢复。", args: [formatRemaining(record.coolingMs ?? 0) || "1s"] });
+    }
+    return lines;
+  }
+  function connectedAgents(payload) {
+    return (payload?.agents ?? []).filter((view) => view.enabled).map((view) => view.agent);
+  }
+  function modelDispatch(payload) {
+    const connected = connectedAgents(payload);
+    const rows = [];
+    const byModel = /* @__PURE__ */ new Map();
+    for (const entry of agentPoolProviders(payload)) {
+      const excludedBy = connected.filter((agent) => payload?.gateway.bindings[agent]?.poolExclude?.includes(entry.id));
+      for (const model of entry.models) {
+        const key = model.toLowerCase();
+        let slot = byModel.get(key);
+        if (!slot) {
+          slot = { row: { model, providers: [] }, ids: /* @__PURE__ */ new Set() };
+          byModel.set(key, slot);
+          rows.push(slot.row);
+        }
+        if (!slot.ids.has(entry.id)) {
+          slot.ids.add(entry.id);
+          slot.row.providers.push({ id: entry.id, name: maskAccountName(entry.name), baseUrl: entry.baseUrl, excludedBy });
+        }
+      }
+    }
+    return rows.sort((left, right) => Number(right.providers.length > 1) - Number(left.providers.length > 1));
+  }
+  var GATEWAY_EXTRA_PRESETS = [
+    {
+      key: "anthropic",
+      name: "Anthropic",
+      baseUrl: "https://api.anthropic.com",
+      protocol: "anthropicMessages",
+      model: "claude-sonnet-5-5",
+      modelList: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+      section: "vendor",
+      apiKeyUrl: "https://console.anthropic.com/settings/keys"
+    },
+    {
+      key: "xai",
+      name: "xAI",
+      baseUrl: "https://api.x.ai/v1",
+      protocol: "chatCompletions",
+      model: "",
+      modelList: [],
+      section: "vendor",
+      apiKeyUrl: "https://console.x.ai"
+    },
+    // OpenCode 的模型网关：Go 是按月订阅的开源编码模型，Zen 按量计费。每个模型只在一种协议上提供，
+    // 网关按 models.dev 目录逐个模型选协议，这里的协议只是占位。
+    {
+      key: "opencode-go",
+      name: "OpenCode Go",
+      baseUrl: "https://opencode.ai/zen/go/v1",
+      protocol: "chatCompletions",
+      model: "",
+      modelList: [],
+      section: "relay",
+      apiKeyUrl: "https://opencode.ai/auth"
+    },
+    {
+      key: "opencode-zen",
+      name: "OpenCode Zen",
+      baseUrl: "https://opencode.ai/zen/v1",
+      protocol: "chatCompletions",
+      model: "",
+      modelList: [],
+      section: "relay",
+      apiKeyUrl: "https://opencode.ai/auth"
+    },
+    {
+      key: "ollama",
+      name: "Ollama",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      protocol: "chatCompletions",
+      model: "",
+      modelList: [],
+      section: "local",
+      defaultKey: "ollama"
+    },
+    {
+      key: "lm-studio",
+      name: "LM Studio",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      protocol: "chatCompletions",
+      model: "",
+      modelList: [],
+      section: "local",
+      defaultKey: "lm-studio"
+    }
+  ];
+  var SPONSORS = [
+    { id: "jojocode-max", expiresAt: "2029-06-15" },
+    { id: "runapi", expiresAt: "2026-12-07" },
+    { id: "apikeyfun", expiresAt: "2026-11-22" },
+    { id: "cccccc-api", expiresAt: "2026-12-01" },
+    { id: "tokenmy", expiresAt: "2026-11-20" }
+  ];
+  function localDay(now) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  }
+  function activeSponsorIds(now = /* @__PURE__ */ new Date()) {
+    const today = localDay(now);
+    return SPONSORS.filter((sponsor) => sponsor.expiresAt >= today).map((sponsor) => sponsor.id);
+  }
+  function gatewayPresets(now = /* @__PURE__ */ new Date()) {
+    const sponsorIds = activeSponsorIds(now);
+    const expired = new Set(SPONSORS.map((sponsor) => sponsor.id).filter((id) => !sponsorIds.includes(id)));
+    const shared = PRESETS.filter((preset) => !expired.has(preset.id)).map((preset) => ({
+      key: preset.id,
+      name: preset.name,
+      baseUrl: preset.baseUrl,
+      protocol: preset.protocol,
+      model: preset.model,
+      modelList: preset.modelList ?? (preset.model ? [preset.model] : []),
+      section: sponsorIds.includes(preset.id) ? "sponsor" : preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay",
+      apiKeyUrl: preset.apiKeyUrl
+    }));
+    const vendors = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "vendor"), ...shared.filter((preset) => preset.section === "vendor")];
+    const relays = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "relay"), ...shared.filter((preset) => preset.section === "relay")];
+    const sponsors = sponsorIds.flatMap((id) => shared.filter((preset) => preset.key === id));
+    return [...sponsors, ...vendors, ...relays, ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local")];
+  }
+  function normalizeUrl(url) {
+    return url.trim().replace(/\/+$/, "").toLowerCase();
+  }
+  function presetHost(baseUrl) {
+    try {
+      const url = new URL(baseUrl);
+      return url.hostname === "127.0.0.1" || url.hostname === "localhost" ? `localhost:${url.port}` : url.hostname;
+    } catch {
+      return baseUrl;
+    }
+  }
+  function presetAdded(payload, preset) {
+    const target = normalizeUrl(preset.baseUrl);
+    return Boolean(payload?.pool.some((entry) => entry.source === `preset:${preset.key}` || normalizeUrl(entry.baseUrl) === target));
+  }
+  var NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false, stripResponsesImageDetail: false, disableToolSearch: false };
+  function providerDraftFromPreset(preset) {
+    if (!preset) return { name: "", baseUrl: "", keys: "", protocol: "chatCompletions", model: "", modelList: "", ...NO_PRICE };
+    return {
+      name: preset.name,
+      baseUrl: preset.baseUrl,
+      keys: preset.defaultKey ?? "",
+      protocol: preset.protocol,
+      model: preset.model,
+      modelList: preset.modelList.join("\n"),
+      ...NO_PRICE
+    };
+  }
+  function providerDraftFromEntry(entry) {
+    return {
+      name: entry.name,
+      baseUrl: entry.baseUrl,
+      keys: "",
+      protocol: entry.protocol,
+      model: entry.models[0] ?? "",
+      modelList: entry.models.join("\n"),
+      priceCurrency: entry.price?.currency || "CNY",
+      priceInput: entry.price ? String(entry.price.input) : "",
+      priceCached: entry.price ? String(entry.price.cachedInput) : "",
+      priceOutput: entry.price ? String(entry.price.output) : "",
+      proxy: entry.proxy ?? "",
+      stripImageGenerationTool: entry.stripImageGenerationTool === true,
+      subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
+      stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
+      disableToolSearch: entry.disableToolSearch === true
+    };
+  }
+  function providerInput(draft) {
+    return {
+      name: draft.name.trim(),
+      baseUrl: draft.baseUrl.trim(),
+      protocol: draft.protocol,
+      keys: draft.keys.split(/\n/).map((line) => line.trim()).filter(Boolean),
+      model: draft.model.trim(),
+      modelList: splitModels(draft.modelList).join("\n"),
+      price: priceFromDraft(draft),
+      modelPrices: draft.modelPrices ?? null,
+      proxy: draft.proxy.trim(),
+      stripImageGenerationTool: draft.stripImageGenerationTool === true,
+      ...draft.subscriptionPolicy !== void 0 ? { subscriptionPolicy: draft.subscriptionPolicy } : {},
+      stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
+      disableToolSearch: draft.disableToolSearch === true
+    };
+  }
+  function priceNumber(text) {
+    const value = Number(text.trim());
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+  function priceFromDraft(draft) {
+    const price = { currency: draft.priceCurrency || "CNY", input: priceNumber(draft.priceInput), cachedInput: priceNumber(draft.priceCached), output: priceNumber(draft.priceOutput) };
+    return price.input || price.cachedInput || price.output ? price : null;
+  }
+  var DIRECT_PROXY = "direct";
+  function isDirectProxy(proxy) {
+    return (proxy ?? "").trim().toLowerCase() === DIRECT_PROXY;
+  }
+  function proxyAddressError(proxy) {
+    const value = proxy.trim();
+    if (!value || isDirectProxy(value)) return null;
+    return /^(https?|socks5h?):\/\/\S+$/i.test(value) ? null : "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）";
+  }
+  function validateProviderDraft(draft, editing = false) {
+    if (!draft.name.trim()) return "请填写名称";
+    if (!/^https?:\/\/\S+$/i.test(draft.baseUrl.trim())) return "地址要以 http:// 或 https:// 开头";
+    if (!editing && !draft.keys.trim()) return "请填写 API Key";
+    if (!draft.model.trim() && splitModels(draft.modelList).length === 0) return "至少填一个模型";
+    return proxyAddressError(draft.proxy);
+  }
+  function usageRangeStart(range, now = /* @__PURE__ */ new Date()) {
+    const days = range === "today" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 0;
+    if (!days) return void 0;
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    start.setDate(start.getDate() - (days - 1));
+    return start.getTime();
+  }
+  function formatRequestCost(cost) {
+    if (cost.amount <= 0) return "—";
+    if (cost.amount >= 0.01) return formatMoney(cost.amount, cost.currency);
+    return `${currencySymbol(cost.currency)}${cost.amount.toPrecision(2)}`;
+  }
+  function formatTokens(value) {
+    if (value >= 1e9) return `${trimNumber(value / 1e9)}B`;
+    if (value >= 1e6) return `${trimNumber(value / 1e6)}M`;
+    if (value >= 1e3) return `${trimNumber(value / 1e3)}K`;
+    return String(value);
+  }
+  function trimNumber(value) {
+    return value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "");
+  }
+  function currencySymbol(currency) {
+    switch (currency.toUpperCase()) {
+      case "CNY":
+        return "¥";
+      case "USD":
+        return "$";
+      case "EUR":
+        return "€";
+      default:
+        return `${currency.toUpperCase()} `;
+    }
+  }
+  function formatMoney(amount, currency) {
+    return `${currencySymbol(currency)}${amount.toFixed(2)}`;
+  }
+  function cacheHitRate(counts) {
+    return counts.inputTokens > 0 ? counts.cachedTokens / counts.inputTokens : null;
+  }
+  function averageDuration(counts) {
+    return counts.timedCalls ? (counts.durationMs ?? 0) / counts.timedCalls : null;
+  }
+  function costText(costs) {
+    return (costs ?? []).filter((cost) => cost.amount > 0).map((cost) => formatMoney(cost.amount, cost.currency)).join(" + ");
+  }
+  function niceCeiling(value) {
+    if (value <= 0) return 1;
+    const power = 10 ** Math.floor(Math.log10(value));
+    for (const step of [1, 2, 5, 10]) {
+      if (step * power >= value) return step * power;
+    }
+    return 10 * power;
+  }
+  function usageDayStats(days) {
+    const active = days.filter((day) => day.calls > 0);
+    const total = (day) => day.inputTokens + day.outputTokens;
+    const peak = active.reduce((best, day) => !best || total(day) > total(best) ? day : best, null);
+    const sum = active.reduce((acc, day) => acc + total(day), 0);
+    return { activeDays: active.length, peak, dailyAverage: active.length ? sum / active.length : 0 };
+  }
+  function axisLabelIndexes(length, count = 7) {
+    if (length <= 0) return [];
+    if (length <= count) return Array.from({ length }, (_, index) => index);
+    const step = (length - 1) / (count - 1);
+    return Array.from(new Set(Array.from({ length: count }, (_, index) => Math.round(index * step))));
+  }
+  function shortDate(date, english = false) {
+    const [, month, day] = date.split("-").map(Number);
+    if (!month || !day) return date;
+    if (english) return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][month - 1]} ${day}`;
+    return `${month}月${day}日`;
+  }
+  function filterSessions(sessions, agent, query) {
+    const needle = query.trim().toLowerCase();
+    return sessions.filter((session) => agent === "all" || session.agent === agent).filter((session) => !needle || [session.title, session.cwd, session.id].some((value) => value.toLowerCase().includes(needle))).sort((left, right) => right.updatedAtMs - left.updatedAtMs);
+  }
+  function shortPath(path, home = "") {
+    let text = path.trim().replace(/^\\\\\?\\UNC\\/, "\\\\").replace(/^\\\\\?\\(?=[A-Za-z]:)/, "");
+    if (home && text.startsWith(home)) text = `~${text.slice(home.length)}`;
+    else text = text.replace(/^\/Users\/[^/]+/, "~").replace(/^\/home\/[^/]+/, "~");
+    const separator = !text.includes("/") && text.includes("\\") ? "\\" : "/";
+    const parts = text.split(/[\\/]/).filter(Boolean);
+    return parts.length > 4 ? `…${separator}${parts.slice(-2).join(separator)}` : text;
+  }
+  function relativeTime(ms, now) {
+    const diff = Math.max(0, now - ms);
+    const minute = 6e4;
+    if (diff < minute) return { text: "刚刚", args: [] };
+    if (diff < 60 * minute) return { text: "{0} 分钟前", args: [Math.floor(diff / minute)] };
+    if (diff < 24 * 60 * minute) return { text: "{0} 小时前", args: [Math.floor(diff / (60 * minute))] };
+    if (diff < 30 * 24 * 60 * minute) return { text: "{0} 天前", args: [Math.floor(diff / (24 * 60 * minute))] };
+    const date = new Date(ms);
+    return { text: "{0}", args: [`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`] };
+  }
+  var EMAIL_PATTERN = /(^|[^A-Za-z0-9._%+*-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
+  function maskEmailsIn(text) {
+    return text.replace(EMAIL_PATTERN, (_match, lead, email) => lead + maskEmail(email));
+  }
+  function maskAccountName(name) {
+    const masked = maskEmailsIn(name);
+    const match = /^((?:ChatGPT|Copilot|SuperGrok|GitHub Copilot)[^·]*·\s*)(.+)$/.exec(masked);
+    if (!match || match[2].includes("@") || match[2].includes("*")) return masked;
+    return match[1] + maskToken(match[2].trim());
+  }
+  function maskAccountText(text) {
+    return text.split(/(「[^」]+」)/).map((part) => part.startsWith("「") && part.endsWith("」") ? `「${maskAccountName(part.slice(1, -1))}」` : maskEmailsIn(part)).join("");
+  }
+  function maskEmail(email) {
+    const at = email.indexOf("@");
+    return `${maskToken(email.slice(0, at))}${email.slice(at)}`;
+  }
+  function maskToken(value) {
+    const chars = [...value];
+    if (chars.length <= 4) return `${chars[0] ?? ""}***`;
+    return `${chars.slice(0, 2).join("")}****${chars.slice(-2).join("")}`;
+  }
+  function importCandidates(payload) {
+    const pooled = (source, id) => Boolean(payload?.pool.some((entry) => entry.source === `${source}:${id}`));
+    const plain = (source, items) => (items ?? []).map((item) => ({ source, id: item.id, name: item.name, imported: pooled(source, item.id) }));
+    return [
+      ...plain("codex", payload?.codexProviders),
+      ...(payload?.codexAggregates ?? []).map((item) => ({ source: "aggregate", id: item.id, name: item.name, imported: item.imported })),
+      ...plain("claude", payload?.claudeProviders),
+      ...plain("grok", payload?.grokProfiles),
+      ...plain("opencode", payload?.opencodeKeys)
+    ];
+  }
+  function pendingImportCount(payload) {
+    return importCandidates(payload).filter((item) => !item.imported).length;
+  }
+  function pinnedBare(payload, model) {
+    const slash = model.indexOf("/");
+    if (slash <= 0) return null;
+    const id = model.slice(0, slash).toLowerCase();
+    const rest = model.slice(slash + 1);
+    const entry = agentPoolProviders(payload).find((item) => item.id.toLowerCase() === id);
+    return entry && entry.models.some((known) => known.toLowerCase() === rest.toLowerCase()) ? rest : null;
+  }
+  function pinnedCopies(payload, bare) {
+    const serving = servingProviders(payload, bare);
+    return serving.length > 1 ? serving.map((entry) => `${entry.id}/${bare}`) : [];
+  }
+  function isFavoriteModel(favorites, model, payload) {
+    if (favorites.includes(model)) return true;
+    const bare = pinnedBare(payload, model);
+    if (!bare || !favorites.some((item) => item.toLowerCase() === bare.toLowerCase())) return false;
+    return !pinnedCopies(payload, bare).some((copy) => favorites.includes(copy));
+  }
+  function toggleFavoriteModel(favorites, model, payload) {
+    if (!isFavoriteModel(favorites, model, payload)) return [...favorites, model];
+    const bare = pinnedBare(payload, model);
+    if (bare && !favorites.includes(model)) {
+      const others = pinnedCopies(payload, bare).filter((copy) => copy !== model && !favorites.includes(copy));
+      return [...favorites, ...others];
+    }
+    const next = favorites.filter((item) => item !== model);
+    const copies = pinnedCopies(payload, model);
+    if (copies.length && !copies.some((copy) => favorites.includes(copy))) return [...next, ...copies];
+    return next;
+  }
+  function activeAutoGroup(payload, model) {
+    if (!payload || payload.gateway.autoModels === false) return null;
+    const found = payload.autoGroups?.find((group) => group.name.toLowerCase() === model.toLowerCase());
+    return found && !found.hidden ? found : null;
+  }
+  function unlistedModels(payload) {
+    const hidden = /* @__PURE__ */ new Set();
+    const add = (group) => {
+      for (const member of group.members) {
+        const model = member.model.trim();
+        if (model && !model.includes("*") && !model.startsWith(GROUP_MODEL_PREFIX)) hidden.add(model.toLowerCase());
+      }
+    };
+    for (const group of payload?.groups ?? []) if (!group.disabled && group.hideMembers) add(group);
+    if (payload?.gateway.autoModels !== false) {
+      for (const group of payload?.autoGroups ?? []) if (group.hideMembers && !group.hidden) add(group);
+    }
+    return hidden;
+  }
+  function memberTarget(payload, model) {
+    const qualified = qualifiedProvider(payload, model.trim());
+    if (qualified) return qualified;
+    const serving = servingProviders(payload, model);
+    return serving.length === 1 ? { entry: serving[0], model: model.trim() } : null;
+  }
+
+  // apps/codex-plus-manager/src/gateway-agent-safety.ts
+  var gateway_agent_safety_exports = {};
+  __export(gateway_agent_safety_exports, {
+    agentDiagnosticPresentation: () => agentDiagnosticPresentation,
+    canReconnectAgent: () => canReconnectAgent,
+    diagnosticErrorLabel: () => diagnosticErrorLabel,
+    diagnosticEvidenceLabel: () => diagnosticEvidenceLabel,
+    disconnectFileLabel: () => disconnectFileLabel,
+    disconnectPreviewReady: () => disconnectPreviewReady,
+    fullSwitchReady: () => fullSwitchReady
+  });
+  function canReconnectAgent(agent, relayProfilesEnabled) {
+    return agent.agent !== "codex" || relayProfilesEnabled !== false;
+  }
+  function agentDiagnosticPresentation(agent, helperRunning) {
+    if (!agent.enabled) return { badge: "未接入", tone: "off", reconnect: false };
+    const state = agent.diagnostics?.state;
+    if (state === "configUnreadable") return { badge: "配置无法读取", tone: "error", reconnect: false };
+    if (state === "configUnverified") return { badge: "配置无法验证", tone: "error", reconnect: false };
+    if (state === "configMissing") return { badge: "配置缺失", tone: "error", reconnect: true };
+    if (state === "configChanged" || !state && agent.drift) return { badge: "配置被改动", tone: "error", reconnect: true };
+    if (!helperRunning || state === "gatewayStopped") return { badge: "网关未运行", tone: "error", reconnect: false };
+    if (state === "upstreamError") return { badge: "上游请求失败", tone: "error", reconnect: false };
+    if (state === "active") return { badge: "请求已到达", tone: "on", reconnect: false };
+    if (state === "disabled") return { badge: "未接入", tone: "off", reconnect: false };
+    if (state && state !== "awaitingTraffic") return { badge: "状态待确认", tone: "pending", reconnect: false };
+    return { badge: "等待请求验证", tone: "pending", reconnect: false };
+  }
+  function disconnectPreviewReady(preview, agent) {
+    return Boolean(preview?.canDisconnect && preview.agent === agent && preview.previewToken.trim());
+  }
+  function fullSwitchReady(preview, agent) {
+    return Boolean(preview && !preview.canDisconnect && preview.fullSwitch && preview.agent === agent && preview.previewToken.trim());
+  }
+  function disconnectFileLabel(kind) {
+    switch (kind) {
+      case "create":
+        return "将创建";
+      case "remove":
+        return "将移除";
+      case "modify":
+        return "将修改";
+    }
+  }
+  function diagnosticEvidenceLabel(code) {
+    const labels = {
+      matches: "与网关配置一致",
+      matched: "与网关配置一致",
+      missing: "配置项缺失",
+      missingFile: "文件不存在",
+      missing_file: "文件不存在",
+      changed: "配置项已改变",
+      mismatch: "与网关配置不符",
+      endpointChanged: "地址已改变",
+      endpoint_changed: "地址已改变",
+      unreadable: "无法读取",
+      parseError: "无法解析",
+      parse_error: "无法解析",
+      credentialChanged: "本地凭据已改变",
+      credential_changed: "本地凭据已改变",
+      credentialMissing: "本地凭据缺失",
+      credential_missing: "本地凭据缺失",
+      endpointMatched: "与网关配置一致",
+      endpointPortMismatch: "端口与网关配置不符",
+      endpointHostMismatch: "主机与网关配置不符",
+      endpointPathMismatch: "路径与网关配置不符",
+      endpointMissing: "地址缺失",
+      selectionChanged: "当前供应商或模型已改变",
+      fileMissing: "文件不存在",
+      fileUnreadable: "无法读取",
+      invalidConfig: "配置格式无效",
+      unsupportedConfig: "此配置暂无法验证",
+      endpoint_match: "与网关配置一致",
+      credential_match: "与网关配置一致",
+      credential_sealed: "凭据已由系统安全存储加密保存",
+      selection_match: "与网关配置一致",
+      managed_config_match: "与网关配置一致",
+      config_missing: "配置缺失",
+      config_unreadable: "无法读取",
+      config_invalid: "配置格式无效",
+      config_unverified: "此配置暂无法验证",
+      unsupported_agent: "此 Agent 暂无法验证",
+      endpoint_missing: "地址缺失",
+      endpoint_invalid: "地址格式无效",
+      endpoint_host_mismatch: "主机与网关配置不符",
+      endpoint_port_mismatch: "端口与网关配置不符",
+      endpoint_path_mismatch: "路径与网关配置不符",
+      selection_changed: "当前供应商或模型已改变",
+      managed_config_changed: "托管配置已改变"
+    };
+    return labels[code] ?? "诊断信息待确认";
+  }
+  function diagnosticErrorLabel(kind) {
+    const labels = {
+      authInvalid: "认证已失效",
+      rateLimited: "请求频率受限",
+      quotaExhausted: "可用额度不足",
+      serverError: "上游服务异常",
+      clientError: "上游拒绝请求",
+      transport: "上游连接失败",
+      cooling: "上游暂时冷却",
+      upstreamError: "上游请求失败",
+      auth_invalid: "认证已失效",
+      rate_limited: "请求频率受限",
+      quota_exhausted: "可用额度不足",
+      server_error: "上游服务异常",
+      client_error: "上游拒绝请求",
+      upstream_error: "上游请求失败"
+    };
+    return labels[kind] ?? "错误原因待确认";
+  }
+  return __toCommonJS(provider_editing_entry_exports);
 })(); // 结束 codexPlusProviderEditing
   /**
    * Codex 左侧图标栏的「供应商」页：不离开 Codex 就能增删改切 Codex 的供应商。
@@ -11073,6 +12556,8 @@ ${key} = ${value}`]);
     keySources: {},
     pollTimer: null,
     fetchedModels: [],
+    // "gateway" | "direct"；打开页面时按 Codex 当前的接入方式选。
+    tab: "",
   };
 
   codexPlusProviderEditingApi.configureRelayProfileEditing({
@@ -11185,7 +12670,9 @@ ${key} = ${value}`]);
       return false;
     }
     codexPlusProviderApplyList(result, { keepSelection });
+    if (!state.tab) state.tab = result.gatewayMode === true ? "gateway" : "direct";
     renderCodexPlusProviderPage();
+    if (state.tab === "gateway" && !codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
     return true;
   }
 
@@ -11304,6 +12791,11 @@ ${key} = ${value}`]);
 
   async function codexPlusProviderUse(id) {
     const state = codexPlusProviderPageState;
+    if (state.data?.gatewayMode === true) {
+      // 管理器在网关接管时会拒绝直接切换：先给出还原预览，确认断开后再切到这个供应商。
+      await codexPlusGatewayOpenDisconnect(() => codexPlusProviderUse(id));
+      return;
+    }
     let next = codexPlusProviderClone(state.settings);
     if (state.dirty && state.draft?.id === id) {
       next = codexPlusProviderSettingsWithDraft();
@@ -11603,7 +13095,18 @@ ${key} = ${value}`]);
       return;
     }
     const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
-    panel.innerHTML = `<div class="codex-plus-provider-layout">
+    const gatewayMode = state.data?.gatewayMode === true;
+    const tabs = `<div class="codex-plus-provider-tabs" role="tablist" aria-label="供应商类型">
+      <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">网关供应商池${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
+      <button type="button" role="tab" data-codex-provider-tab="direct" aria-selected="${state.tab !== "gateway"}">直连供应商${gatewayMode ? "" : '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>'}</button>
+    </div>`;
+    if (state.tab === "gateway") {
+      panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}${renderCodexPlusGatewayPane()}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
+      const gatewayDetail = panel.querySelector(".codex-plus-provider-detail");
+      if (gatewayDetail) gatewayDetail.scrollTop = scroll;
+      return;
+    }
+    panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
           <button type="button" class="codex-plus-action-button" data-codex-provider-action="new" ${state.busy ? "disabled" : ""}>新建</button></div>
@@ -11612,8 +13115,9 @@ ${key} = ${value}`]);
       </aside>
       <section class="codex-plus-provider-detail">
         <div class="codex-plus-provider-status" data-codex-provider-status data-tone="${state.statusTone}" role="status" aria-live="polite" ${state.status ? "" : "hidden"}>${escapeHtml(state.status)}</div>
+        ${gatewayMode ? '<div class="codex-plus-provider-note">Codex 正经网关接入，直连供应商暂时不起作用；在这里点「使用」会先断开网关并还原。</div>' : ""}
         ${renderCodexPlusProviderDetail()}
-      </section></div>`;
+      </section></div></div>${renderCodexPlusGatewayDisconnectDialog()}`;
     const detail = panel.querySelector(".codex-plus-provider-detail");
     if (detail) detail.scrollTop = scroll;
   }
@@ -11626,6 +13130,7 @@ ${key} = ${value}`]);
   }
 
   function codexPlusProviderHandleInput(event) {
+    if (codexPlusGatewayHandleInput(event)) return;
     const target = event.target;
     const state = codexPlusProviderPageState;
     if (!state.draft || !(target instanceof HTMLElement)) return;
@@ -11671,6 +13176,19 @@ ${key} = ${value}`]);
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const state = codexPlusProviderPageState;
     if (!target) return;
+    const tab = target.closest("[data-codex-provider-tab]");
+    if (tab) {
+      const next = tab.dataset.codexProviderTab === "gateway" ? "gateway" : "direct";
+      if (next === state.tab) return;
+      state.tab = next;
+      renderCodexPlusProviderPage();
+      if (next === "gateway" && !codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
+      return;
+    }
+    if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
+      await codexPlusGatewayHandleClick(target);
+      return;
+    }
     const move = target.closest("[data-codex-provider-move]");
     if (move && !move.disabled) {
       event.stopPropagation();
@@ -11730,6 +13248,7 @@ ${key} = ${value}`]);
   function codexPlusProviderPoll() {
     const state = codexPlusProviderPageState;
     if (!document.querySelector("[data-codex-provider-panel]")) return;
+    if (state.tab === "gateway") codexPlusGatewayPoll();
     if (state.dirty || state.busy || document.hidden) return;
     void postJson("/providers/list", {}).then((result) => {
       if (result?.status !== "ok" || result.revision === state.data?.revision) return;
@@ -11777,9 +13296,528 @@ ${key} = ${value}`]);
     };
     state.dirty = false;
     state.isNew = false;
+    state.tab = "";
+    Object.assign(codexPlusGatewayPageState, { payload: null, isNew: false, dirty: false, busy: "", status: "", disconnect: null, fetchedModels: [] });
     codexPlusProviderSetStatus("");
     renderCodexPlusProviderPage();
     void codexPlusProviderLoad({ keepSelection: Boolean(state.selectedId) });
+  }
+  /**
+   * 「供应商」页的网关页签：在 Codex 里管理 Codex++ 网关的供应商池，并在网关 / 直连之间切换。
+   *
+   * - 全部操作经 /providers/gateway 转给管理器自己的网关命令（core provider_page 做白名单与脱敏），
+   *   所以生效方式与管理器完全一致：路由每次请求重读 gateway.json，模型变化由 refresh_agents 重写
+   *   Codex 的网关目录、心跳指纹变化后页面自动重载 model/list；已打开的对话下一条请求就用新的池。
+   * - 表单逻辑用与管理器共用的 gateway-model.ts（42 分片的 codexPlusProviderEditing.gateway）。
+   * - Key 只有打码视图：编辑时 Key 留空表示不改，新增 / 替换 / 删除各走单独命令。
+   * - 账号 / 订阅类、Codex 原生登录、拓展提供的条目只读（管理器同样不给编辑），去 Codex++ 里管。
+   */
+  const codexPlusGatewayModel = codexPlusProviderEditing.gateway;
+  const codexPlusGatewaySafety = codexPlusProviderEditing.gatewaySafety;
+  const codexPlusGatewayPageState = {
+    payload: null,
+    selectedId: "",
+    draft: null,
+    isNew: false,
+    dirty: false,
+    busy: "",
+    status: "",
+    statusTone: "",
+    fetchedModels: [],
+    disconnect: null,
+    signature: "",
+  };
+
+  function codexPlusGatewayCall(command, args = {}) {
+    return postJson("/providers/gateway", { command, args });
+  }
+
+  function codexPlusGatewayEntries() {
+    return codexPlusGatewayPageState.payload?.pool || [];
+  }
+
+  function codexPlusGatewaySelected() {
+    return codexPlusGatewayEntries().find((entry) => entry.id === codexPlusGatewayPageState.selectedId) || null;
+  }
+
+  /** 与管理器一致：账号 / 订阅（ChatGPT 只能改额度策略）、官方登录、原生登录与拓展条目不在页面里编辑。 */
+  function codexPlusGatewayEditable(entry) {
+    if (!entry) return false;
+    const source = String(entry.source || "");
+    return !entry.account && !entry.official && !source.startsWith("native:") && !source.startsWith("extension:");
+  }
+
+  function codexPlusGatewaySetStatus(message, tone = "") {
+    codexPlusGatewayPageState.status = String(message || "");
+    codexPlusGatewayPageState.statusTone = tone;
+  }
+
+  function codexPlusGatewaySelect(id) {
+    const state = codexPlusGatewayPageState;
+    const entry = codexPlusGatewayEntries().find((item) => item.id === id) || null;
+    state.selectedId = entry?.id || "";
+    state.isNew = false;
+    state.dirty = false;
+    state.fetchedModels = [];
+    state.draft = entry && codexPlusGatewayEditable(entry) ? codexPlusGatewayModel.providerDraftFromEntry(entry) : null;
+  }
+
+  /** 网关命令的返回（CommandResult 里平铺了 GatewayPayload）。没带 payload 的结果不覆盖现有列表。 */
+  function codexPlusGatewayApplyResult(result, { keepSelection = true } = {}) {
+    const state = codexPlusGatewayPageState;
+    if (result?.gateway && Array.isArray(result.pool)) {
+      state.payload = result;
+      state.signature = codexPlusGatewaySignature(result);
+      const ids = result.pool.map((entry) => entry.id);
+      const keep = keepSelection && ids.includes(state.selectedId) ? state.selectedId : ids[0] || "";
+      if (!state.isNew) codexPlusGatewaySelect(keep);
+    }
+  }
+
+  function codexPlusGatewaySignature(payload) {
+    return JSON.stringify([
+      (payload?.pool || []).map((entry) => [entry.id, entry.name, entry.baseUrl, entry.protocol, entry.enabled, entry.models, entry.keys]),
+      payload?.gateway?.bindings?.codex?.enabled,
+    ]);
+  }
+
+  async function codexPlusGatewayLoad({ quiet = false } = {}) {
+    const state = codexPlusGatewayPageState;
+    if (!quiet) {
+      state.busy = "load";
+      renderCodexPlusProviderPage();
+    }
+    const result = await codexPlusGatewayCall("load_gateway");
+    state.busy = "";
+    if (result?.status !== "ok" || !result.gateway) {
+      codexPlusGatewaySetStatus(result?.message || "读取网关供应商池失败", "error");
+    } else {
+      codexPlusGatewayApplyResult(result);
+    }
+    renderCodexPlusProviderPage();
+  }
+
+  /** 执行一条会改动池子的命令：成功后用返回的最新池子刷新，并提示生效方式。 */
+  async function codexPlusGatewayMutate(command, args, { busy = "save", success = "" } = {}) {
+    const state = codexPlusGatewayPageState;
+    state.busy = busy;
+    renderCodexPlusProviderPage();
+    const result = await codexPlusGatewayCall(command, args);
+    state.busy = "";
+    const ok = result?.status === "ok" || result?.status === "warning";
+    if (ok) {
+      state.isNew = false;
+      codexPlusGatewayApplyResult(result);
+      codexPlusGatewaySetStatus(`${success || result.message || "已保存。"} 已打开的对话下一条请求就用新的供应商池。`, "ok");
+      showToast(success || "网关供应商池已更新", { type: "success" });
+    } else {
+      codexPlusGatewaySetStatus(result?.message || "操作失败", "error");
+    }
+    renderCodexPlusProviderPage();
+    return ok ? result : null;
+  }
+
+  function codexPlusGatewayStartNew() {
+    const state = codexPlusGatewayPageState;
+    state.draft = codexPlusGatewayModel.providerDraftFromPreset(null);
+    state.selectedId = "";
+    state.isNew = true;
+    state.dirty = true;
+    state.fetchedModels = [];
+    codexPlusGatewaySetStatus("");
+    renderCodexPlusProviderPage();
+  }
+
+  async function codexPlusGatewaySave() {
+    const state = codexPlusGatewayPageState;
+    const draft = state.draft;
+    if (!draft) return;
+    const issue = codexPlusGatewayModel.validateProviderDraft(draft, !state.isNew);
+    if (issue) {
+      codexPlusGatewaySetStatus(issue, "error");
+      return renderCodexPlusProviderPage();
+    }
+    // providerDraftFromEntry 带着原价格、代理与开关：update_provider_in 会无条件写价格，必须原样回传。
+    const input = codexPlusGatewayModel.providerInput(draft);
+    if (state.isNew) {
+      const before = new Set(codexPlusGatewayEntries().map((entry) => entry.id));
+      const result = await codexPlusGatewayMutate("create_gateway_provider", { input, source: "custom", skipAgents: null }, { success: `已添加「${input.name}」。` });
+      const created = result?.pool?.find((entry) => !before.has(entry.id));
+      if (created) {
+        codexPlusGatewaySelect(created.id);
+        renderCodexPlusProviderPage();
+      }
+      return;
+    }
+    await codexPlusGatewayMutate("update_gateway_provider", { id: state.selectedId, input }, { success: `已保存「${input.name}」。` });
+  }
+
+  async function codexPlusGatewayDelete(entry) {
+    const answer = await codexPlusAsk({
+      title: "从网关删除供应商",
+      message: `确定从网关供应商池删除「${entry.name}」？它的 Key、模型和用量设置一起删除，模型组和各 Agent 里对它的引用也会清掉。`,
+      options: [{ value: "delete", label: "删除" }],
+    });
+    if (!answer) return;
+    await codexPlusGatewayMutate("delete_gateway_provider", { id: entry.id }, { busy: "delete", success: `已删除「${entry.name}」。` });
+  }
+
+  async function codexPlusGatewayMove(id, offset) {
+    const ids = codexPlusGatewayEntries().map((entry) => entry.id);
+    const index = ids.indexOf(id);
+    const target = index + offset;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    await codexPlusGatewayMutate("reorder_gateway_providers", { ids }, { busy: "reorder", success: "顺序已更新（排在前面的先用）。" });
+  }
+
+  async function codexPlusGatewayReplaceKey(entry, keyId) {
+    const answer = await codexPlusAsk({
+      title: "替换 Key",
+      message: `为「${entry.name}」填入新的 Key，替换掉打码显示的这一把。`,
+      input: { placeholder: "sk-..." },
+      options: [{ value: "replace", label: "替换" }],
+    });
+    const key = String(answer?.text || "").trim();
+    if (!key) return;
+    await codexPlusGatewayMutate("replace_gateway_provider_key", { id: entry.id, keyId, key }, { success: "Key 已替换。" });
+  }
+
+  async function codexPlusGatewayDeleteKey(entry, keyId) {
+    const answer = await codexPlusAsk({ title: "删除 Key", message: `从「${entry.name}」删除这把 Key？`, options: [{ value: "delete", label: "删除" }] });
+    if (!answer) return;
+    await codexPlusGatewayMutate("delete_gateway_provider_key", { id: entry.id, keyId }, { success: "Key 已删除。" });
+  }
+
+  async function codexPlusGatewayProbe(kind) {
+    const state = codexPlusGatewayPageState;
+    const entry = codexPlusGatewaySelected();
+    state.busy = kind;
+    renderCodexPlusProviderPage();
+    let result;
+    if (kind === "test") {
+      const model = String(document.querySelector("[data-codex-gateway-test-model]")?.value || "").trim();
+      result = await codexPlusGatewayCall("test_gateway_provider", { id: entry?.id, model: model || null, keyId: null });
+    } else {
+      const draft = state.draft;
+      const firstKey = String(draft?.keys || "").split(/\n/).map((line) => line.trim()).find(Boolean) || "";
+      result = await codexPlusGatewayCall("fetch_provider_models", {
+        baseUrl: String(draft?.baseUrl || "").trim(),
+        protocol: draft?.protocol || "chatCompletions",
+        apiKey: firstKey,
+        providerId: state.isNew ? null : entry?.id || null,
+      });
+      if (result?.status === "ok") state.fetchedModels = Array.isArray(result.models) ? result.models : [];
+    }
+    state.busy = "";
+    codexPlusGatewaySetStatus(result?.message || "请求失败", result?.status === "ok" ? "ok" : "error");
+    renderCodexPlusProviderPage();
+  }
+
+  /** 让 Codex 经网关接入：与管理器「连接与供应商 → 经网关」同一条命令，沿用上次的接入设置。 */
+  async function codexPlusGatewayConnect() {
+    const state = codexPlusGatewayPageState;
+    const payload = state.payload;
+    const previous = payload?.gateway?.bindings?.codex;
+    const draft = codexPlusGatewayModel.draftFromBinding(previous);
+    const issue = codexPlusGatewayModel.validateDraft(draft, payload);
+    if (issue) {
+      codexPlusGatewaySetStatus(`${issue}（请先在供应商池里添加可用的供应商，或在 Codex++「Agent 接入」里调整默认模型）`, "error");
+      return renderCodexPlusProviderPage();
+    }
+    const binding = { ...codexPlusGatewayModel.bindingFromDraft(draft, previous), enabled: true };
+    const result = await codexPlusGatewayMutate("save_gateway_binding", { agent: "codex", binding, reconnect: true }, { busy: "connect", success: "Codex 已经由网关接入。" });
+    if (result) await codexPlusProviderLoad({ quiet: true });
+  }
+
+  /** 断开并还原：先拿预览（token 只在管理器里，5 分钟有效），把要改回的文件列给用户确认。 */
+  async function codexPlusGatewayOpenDisconnect(then = null) {
+    const state = codexPlusGatewayPageState;
+    state.disconnect = { loading: true, preview: null, error: "", then };
+    renderCodexPlusProviderPage();
+    const result = await codexPlusGatewayCall("preview_gateway_disconnect", { agent: "codex" });
+    if (!state.disconnect) return;
+    if (result?.status !== "ok" || !result.preview || result.preview.agent !== "codex") {
+      state.disconnect = { loading: false, preview: null, error: result?.message || "无法获取还原预览", then };
+    } else {
+      state.disconnect = { loading: false, preview: result.preview, error: "", then };
+    }
+    renderCodexPlusProviderPage();
+  }
+
+  async function codexPlusGatewayApplyDisconnect() {
+    const state = codexPlusGatewayPageState;
+    const preview = state.disconnect?.preview;
+    if (!preview) return;
+    const fullSwitch = codexPlusGatewaySafety.fullSwitchReady(preview, "codex");
+    if (!codexPlusGatewaySafety.disconnectPreviewReady(preview, "codex") && !fullSwitch) return;
+    const then = state.disconnect.then;
+    state.disconnect = { ...state.disconnect, applying: true };
+    renderCodexPlusProviderPage();
+    const command = fullSwitch ? "disable_gateway_binding_full_switch" : "disable_gateway_binding";
+    const result = await codexPlusGatewayMutate(command, { agent: "codex", previewToken: preview.previewToken }, { busy: "disconnect", success: "已断开网关，Codex 改回直连。" });
+    state.disconnect = null;
+    await codexPlusProviderLoad({ quiet: true });
+    if (result && typeof then === "function") await then();
+    renderCodexPlusProviderPage();
+  }
+
+  function renderCodexPlusGatewayDisconnectDialog() {
+    const dialog = codexPlusGatewayPageState.disconnect;
+    if (!dialog) return "";
+    const preview = dialog.preview;
+    const fullSwitch = preview && codexPlusGatewaySafety.fullSwitchReady(preview, "codex") ? preview.fullSwitch : null;
+    const ready = preview && (codexPlusGatewaySafety.disconnectPreviewReady(preview, "codex") || fullSwitch);
+    const files = (preview?.files || []).map((file) => `<section class="codex-plus-gateway-diff">
+        <div class="codex-plus-gateway-diff-head"><code>${escapeHtml(file.path)}</code><span>${escapeHtml(codexPlusGatewaySafety.disconnectFileLabel(file.kind))}</span></div>
+        <pre>${file.diff ? file.diff.split("\n").map((line) => `<span data-kind="${line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : "context"}">${escapeHtml(line)}\n</span>`).join("") : "文件内容无需修改"}</pre>
+      </section>`).join("");
+    return `<div class="codex-plus-gateway-modal" data-codex-plus-ext="builtin-provider" role="dialog" aria-modal="true" aria-label="断开网关并还原">
+      <div class="codex-plus-gateway-modal-box">
+        <div class="codex-plus-provider-title">断开网关并还原为直连</div>
+        <div class="codex-plus-provider-help">Codex 会恢复接入网关之前的设置，下面是要改回的内容。</div>
+        ${dialog.loading ? '<div class="codex-plus-provider-note">正在检查文件与还原差异…</div>' : ""}
+        ${dialog.error ? `<div class="codex-plus-provider-status" data-tone="error">${escapeHtml(dialog.error)}</div>` : ""}
+        ${preview?.warnings?.length ? `<ul class="codex-plus-gateway-warnings">${preview.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : ""}
+        <div class="codex-plus-gateway-diffs">${files}${preview?.canDisconnect && !preview.files.length ? '<div class="codex-plus-provider-help">没有需要改写的配置文件。</div>' : ""}</div>
+        ${fullSwitch ? `<div class="codex-plus-provider-note">确认后 Codex 会完整切换到直连供应商「${escapeHtml(fullSwitch.name)}」：先备份当前配置、收回借给 Codex 的登录，再写入。</div>`
+          : preview && !preview.canDisconnect ? '<div class="codex-plus-provider-status" data-tone="error">当前无法安全还原，请先处理上面的文件问题。</div>' : ""}
+        <div class="codex-plus-provider-actions">
+          <button type="button" class="codex-plus-action-button" data-codex-gateway-action="disconnect-cancel" ${dialog.applying ? "disabled" : ""}>取消</button>
+          <button type="button" class="codex-plus-action-button" data-primary="true" data-codex-gateway-action="disconnect-apply" ${ready && !dialog.applying ? "" : "disabled"}>${dialog.applying ? "正在还原…" : fullSwitch ? "完整切换并断开" : "断开并还原"}</button>
+        </div>
+      </div></div>`;
+  }
+
+  function renderCodexPlusGatewayModeBar() {
+    const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
+    const busy = Boolean(codexPlusGatewayPageState.busy);
+    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    return gatewayMode
+      ? `<div class="codex-plus-provider-note" data-codex-gateway-mode="gateway">Codex 正经 Codex++ 网关接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。改动供应商池后，已打开的对话下一条请求就生效。
+          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button></div>`
+      : `<div class="codex-plus-provider-note" data-codex-gateway-mode="direct">Codex 现在是直连，这里的供应商池暂时不起作用。
+          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="connect" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在接入…" : "让 Codex 经网关接入"}</button></div>`;
+  }
+
+  function renderCodexPlusGatewayList() {
+    const state = codexPlusGatewayPageState;
+    const entries = codexPlusGatewayEntries();
+    const rows = entries.map((entry, index) => {
+      const selected = entry.id === state.selectedId && !state.isNew;
+      const enabled = entry.enabled !== false;
+      const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
+      return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-disabled="${!enabled}" data-codex-gateway-select="${escapeHtml(entry.id)}">
+        <div class="codex-plus-provider-item-main">
+          <div class="codex-plus-provider-item-name">${escapeHtml(entry.name || entry.id)}</div>
+          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(tag)}</span><span class="codex-plus-provider-badge">${entry.models?.length || 0} 个模型</span>${enabled ? "" : '<span class="codex-plus-provider-badge" data-tone="off">已停用</span>'}</div>
+        </div>
+        <div class="codex-plus-provider-item-actions">
+          <button type="button" title="上移" aria-label="上移" data-codex-gateway-move="-1" data-id="${escapeHtml(entry.id)}" ${index === 0 ? "disabled" : ""}>↑</button>
+          <button type="button" title="下移" aria-label="下移" data-codex-gateway-move="1" data-id="${escapeHtml(entry.id)}" ${index === entries.length - 1 ? "disabled" : ""}>↓</button>
+        </div>
+      </div>`;
+    }).join("");
+    const draftRow = state.isNew
+      ? `<div class="codex-plus-provider-item" role="listitem" data-selected="true"><div class="codex-plus-provider-item-main"><div class="codex-plus-provider-item-name">${escapeHtml(state.draft?.name || "新供应商")}</div><div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge" data-tone="new">未保存</span></div></div></div>`
+      : "";
+    return `<div class="codex-plus-provider-list" role="list" aria-label="网关供应商池">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">供应商池是空的。</div>'}</div>`;
+  }
+
+  function codexPlusGatewayField(label, control, help = "") {
+    return codexPlusProviderField(label, control, help);
+  }
+
+  function renderCodexPlusGatewayDetail() {
+    const state = codexPlusGatewayPageState;
+    const entry = state.isNew ? null : codexPlusGatewaySelected();
+    if (!state.isNew && !entry) return '<div class="codex-plus-provider-empty">选择左侧的供应商，或新建一个。</div>';
+    const busy = Boolean(state.busy);
+    const editable = state.isNew || codexPlusGatewayEditable(entry);
+    const enabled = entry ? entry.enabled !== false : true;
+    const header = `<div class="codex-plus-provider-detail-header">
+      <div><div class="codex-plus-provider-title">${escapeHtml(state.isNew ? (state.draft?.name || "新供应商") : entry.name)}</div>
+        <div class="codex-plus-provider-subtitle">网关供应商${entry && !enabled ? " · 已停用" : ""}${state.dirty ? " · 有未保存的修改" : ""}</div></div>
+      <div class="codex-plus-provider-actions">
+        ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="toggle" ${busy ? "disabled" : ""}>${enabled ? "停用" : "启用"}</button>` : ""}
+        ${editable ? `<button type="button" class="codex-plus-action-button" data-primary="true" data-codex-gateway-action="save" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : "保存"}</button>` : ""}
+        ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
+        ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>'
+          : `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`}
+      </div></div>`;
+    const testRow = entry
+      ? `<div class="codex-plus-provider-row">${codexPlusGatewayField("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`)}</div>`
+      : "";
+    if (!editable) {
+      return `${header}<div class="codex-plus-provider-section"><div class="codex-plus-provider-note">${entry.account
+        ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
+        : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。"}</div>
+        <div class="codex-plus-provider-help">模型：${escapeHtml((entry.models || []).join("、") || "（无）")}</div>${testRow}
+        <button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button></div>`;
+    }
+    const draft = state.draft;
+    const keys = entry?.keys || [];
+    const keyRows = keys.map((key) => `<div class="codex-plus-provider-key"><label>${escapeHtml(key.id)}</label><code>${escapeHtml(key.masked)}</code>
+        <button type="button" data-codex-gateway-key-replace="${escapeHtml(key.id)}">替换</button>
+        ${keys.length > 1 ? `<button type="button" data-codex-gateway-key-delete="${escapeHtml(key.id)}">删除</button>` : ""}</div>`).join("");
+    const fetched = state.fetchedModels.length
+      ? `<div class="codex-plus-provider-help">上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button></div>`
+      : "";
+    return `${header}
+      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">连接</div>
+        ${codexPlusGatewayField("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`)}
+        ${codexPlusGatewayField("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
+          <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
+          <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
+          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`)}
+        ${codexPlusGatewayField("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`)}
+      </div>
+      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">API Key</div>
+        ${state.isNew
+          ? codexPlusGatewayField("Key", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="2" data-codex-gateway-field="keys" placeholder="一行一个，多个 Key 自动轮换" spellcheck="false" autocomplete="off">${escapeHtml(draft.keys)}</textarea>`)
+          : `${keyRows || '<div class="codex-plus-provider-help">没有已保存的 Key。</div>'}
+            <div class="codex-plus-provider-key-add"><input type="password" class="codex-plus-provider-input" data-codex-gateway-new-key="true" placeholder="sk-..." autocomplete="off" spellcheck="false">
+            <button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-key" ${busy ? "disabled" : ""}>添加 Key</button></div>
+            <div class="codex-plus-provider-help">Key 只显示首尾几位；多个 Key 会自动轮换。</div>`}
+      </div>
+      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">模型</div>
+        ${codexPlusGatewayField("默认模型", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="model" value="${escapeHtml(draft.model)}" spellcheck="false">`)}
+        ${codexPlusGatewayField("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-gateway-field="modelList" spellcheck="false" placeholder="一行一个">${escapeHtml(draft.modelList)}</textarea>`)}
+        ${fetched}
+        <button type="button" class="codex-plus-action-button" data-codex-gateway-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "从上游获取模型"}</button>
+        ${testRow}
+      </div>
+      <div class="codex-plus-provider-section">
+        <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="open-manager">价格、代理、限速、窗口、模型组与订阅登录在 Codex++ 中设置</button>
+      </div>`;
+  }
+
+  function renderCodexPlusGatewayPane() {
+    const state = codexPlusGatewayPageState;
+    if (!state.payload) {
+      return `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取网关供应商池…" : escapeHtml(state.status || "还没有读取网关供应商池")}
+        <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
+    }
+    return `<div class="codex-plus-provider-layout">
+      <aside class="codex-plus-provider-sidebar">
+        <div class="codex-plus-provider-sidebar-header"><span>网关供应商池</span>
+          <button type="button" class="codex-plus-action-button" data-codex-gateway-action="new" ${state.busy ? "disabled" : ""}>新建</button></div>
+        ${renderCodexPlusGatewayList()}
+      </aside>
+      <section class="codex-plus-provider-detail">
+        ${renderCodexPlusGatewayModeBar()}
+        <div class="codex-plus-provider-status" data-tone="${state.statusTone}" role="status" aria-live="polite" ${state.status ? "" : "hidden"}>${escapeHtml(state.status)}</div>
+        ${renderCodexPlusGatewayDetail()}
+      </section></div>${renderCodexPlusGatewayDisconnectDialog()}`;
+  }
+
+  async function codexPlusGatewayConfirmDiscard() {
+    if (!codexPlusGatewayPageState.dirty) return true;
+    const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前网关供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
+    return Boolean(answer);
+  }
+
+  /** 网关页签的输入：只改草稿，不重绘（保持焦点）。 */
+  function codexPlusGatewayHandleInput(event) {
+    const target = event.target;
+    const field = target?.dataset?.codexGatewayField;
+    const state = codexPlusGatewayPageState;
+    if (!field || !state.draft) return false;
+    state.draft = { ...state.draft, [field]: target.value };
+    state.dirty = true;
+    const saveButton = document.querySelector('[data-codex-gateway-action="save"]');
+    if (saveButton && !state.busy) saveButton.disabled = false;
+    return true;
+  }
+
+  /** 网关页签的点击；处理了返回 true。 */
+  async function codexPlusGatewayHandleClick(target) {
+    const state = codexPlusGatewayPageState;
+    const move = target.closest("[data-codex-gateway-move]");
+    if (move) {
+      if (move.disabled || !(await codexPlusGatewayConfirmDiscard())) return true;
+      await codexPlusGatewayMove(move.dataset.id, Number(move.dataset.codexGatewayMove));
+      return true;
+    }
+    const select = target.closest("[data-codex-gateway-select]");
+    if (select) {
+      const id = select.dataset.codexGatewaySelect;
+      if ((id !== state.selectedId || state.isNew) && (await codexPlusGatewayConfirmDiscard())) {
+        codexPlusGatewaySelect(id);
+        codexPlusGatewaySetStatus("");
+        renderCodexPlusProviderPage();
+      }
+      return true;
+    }
+    const entry = codexPlusGatewaySelected();
+    const replaceKey = target.closest("[data-codex-gateway-key-replace]");
+    if (replaceKey && entry) {
+      await codexPlusGatewayReplaceKey(entry, replaceKey.dataset.codexGatewayKeyReplace);
+      return true;
+    }
+    const deleteKey = target.closest("[data-codex-gateway-key-delete]");
+    if (deleteKey && entry) {
+      await codexPlusGatewayDeleteKey(entry, deleteKey.dataset.codexGatewayKeyDelete);
+      return true;
+    }
+    const actionNode = target.closest("[data-codex-gateway-action]");
+    if (!actionNode) return false;
+    if (actionNode.disabled) return true;
+    switch (actionNode.dataset.codexGatewayAction) {
+      case "reload": await codexPlusGatewayLoad(); break;
+      case "new":
+        if (await codexPlusGatewayConfirmDiscard()) codexPlusGatewayStartNew();
+        break;
+      case "cancel-new":
+        state.isNew = false;
+        codexPlusGatewaySelect(codexPlusGatewayEntries()[0]?.id || "");
+        renderCodexPlusProviderPage();
+        break;
+      case "save": await codexPlusGatewaySave(); break;
+      case "toggle":
+        if (entry) await codexPlusGatewayMutate("set_gateway_provider_enabled", { id: entry.id, enabled: entry.enabled === false }, { success: entry.enabled === false ? `已启用「${entry.name}」。` : `已停用「${entry.name}」。` });
+        break;
+      case "delete": if (entry) await codexPlusGatewayDelete(entry); break;
+      case "test": await codexPlusGatewayProbe("test"); break;
+      case "models": await codexPlusGatewayProbe("models"); break;
+      case "fill-models": {
+        const lines = String(state.draft?.modelList || "").split(/\n/).map((line) => line.trim()).filter(Boolean);
+        state.fetchedModels.forEach((model) => { if (!lines.includes(model)) lines.push(model); });
+        state.draft = { ...state.draft, modelList: lines.join("\n"), model: state.draft.model || lines[0] || "" };
+        state.fetchedModels = [];
+        state.dirty = true;
+        renderCodexPlusProviderPage();
+        break;
+      }
+      case "add-key": {
+        const key = String(document.querySelector("[data-codex-gateway-new-key]")?.value || "").trim();
+        if (entry && key) await codexPlusGatewayMutate("add_gateway_provider_key", { id: entry.id, key }, { success: "Key 已添加。" });
+        break;
+      }
+      case "connect": await codexPlusGatewayConnect(); break;
+      case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
+      case "disconnect-cancel":
+        state.disconnect = null;
+        renderCodexPlusProviderPage();
+        break;
+      case "disconnect-apply": await codexPlusGatewayApplyDisconnect(); break;
+      case "open-manager": void postJson("/manager/open", { page: "gatewayProviders" }); break;
+      default: return false;
+    }
+    return true;
+  }
+
+  /** 别处改了池子：没有未保存修改、也没有弹窗时静默刷新。 */
+  function codexPlusGatewayPoll() {
+    const state = codexPlusGatewayPageState;
+    if (state.dirty || state.busy || state.disconnect || document.hidden) return;
+    void codexPlusGatewayCall("load_gateway").then((result) => {
+      if (result?.status !== "ok" || !result.gateway) return;
+      if (state.dirty || state.busy || state.disconnect) return;
+      if (codexPlusGatewaySignature(result) === state.signature) return;
+      codexPlusGatewayApplyResult(result);
+      renderCodexPlusProviderPage();
+    });
   }
   function installCodexPlusNavigationEntries() {
     // 插件入口沿用原生按钮，清理旧注入留下的重复商店入口。

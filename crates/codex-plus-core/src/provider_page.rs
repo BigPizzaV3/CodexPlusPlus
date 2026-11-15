@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
 use crate::relay_switch::LiveConflictResolution;
 use crate::settings::{BackendSettings, RelayMode, RelayProfile, SettingsStore};
+use crate::tools::ToolId;
 
 /// 宿主切换的结果。`live_conflict` 有值时页面弹三选一，再带着选择重新提交。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -48,6 +49,83 @@ pub type ProviderSwitchHook = Arc<
 pub struct ProviderPageHost {
     pub save: ProviderSaveHook,
     pub switch: ProviderSwitchHook,
+    /// 网关供应商池：`(命令名, 参数) -> 命令返回的 JSON`。管理器按名字分发到它自己的
+    /// `gateway_commands::*`（生效、价格填充、断开预览 token 都在那边），这里只做白名单与脱敏。
+    pub gateway: ProviderGatewayHook,
+}
+
+/// 网关命令分发：`(command, args) -> {status, message, ...payload}`。
+pub type ProviderGatewayHook = Arc<dyn Fn(&str, Value) -> Value + Send + Sync>;
+
+/// 页面可以调的网关命令。按 Agent 生效的几项只允许作用在 Codex 上（见 [`gateway_command_allowed`]）。
+pub const GATEWAY_PAGE_COMMANDS: &[&str] = &[
+    "load_gateway",
+    "create_gateway_provider",
+    "update_gateway_provider",
+    "delete_gateway_provider",
+    "set_gateway_provider_enabled",
+    "reorder_gateway_providers",
+    "add_gateway_provider_key",
+    "replace_gateway_provider_key",
+    "delete_gateway_provider_key",
+    "test_gateway_provider",
+    "cancel_gateway_provider_test",
+    "fetch_provider_models",
+    "save_gateway_binding",
+    "preview_gateway_disconnect",
+    "disable_gateway_binding",
+    "disable_gateway_binding_full_switch",
+];
+
+const GATEWAY_AGENT_COMMANDS: &[&str] = &[
+    "save_gateway_binding",
+    "preview_gateway_disconnect",
+    "disable_gateway_binding",
+    "disable_gateway_binding_full_switch",
+];
+
+/// 白名单内、且按 Agent 生效的命令只作用在 Codex 上（页面挂在 Codex 里，不该替别的 Agent 接入或断开）。
+pub fn gateway_command_allowed(command: &str, args: &Value) -> Result<(), String> {
+    if !GATEWAY_PAGE_COMMANDS.contains(&command) {
+        return Err(format!("Codex 页面不支持网关命令 {command}"));
+    }
+    if GATEWAY_AGENT_COMMANDS.contains(&command)
+        && args.get("agent").and_then(Value::as_str) != Some(ToolId::Codex.as_str())
+    {
+        return Err("Codex 页面只能接入或断开 Codex 自己的网关连接".to_string());
+    }
+    Ok(())
+}
+
+/// 网关命令的返回给页面前去掉本地网关令牌（`gateway.bindings.*.token`）。池条目本身已是打码视图。
+pub fn redact_gateway_result(mut value: Value) -> Value {
+    fn strip_binding_tokens(value: &mut Value) {
+        if let Some(bindings) = value.get_mut("bindings").and_then(Value::as_object_mut) {
+            for binding in bindings.values_mut() {
+                if let Some(binding) = binding.as_object_mut() {
+                    binding.remove("token");
+                }
+            }
+        }
+    }
+    if let Some(gateway) = value.get_mut("gateway") {
+        strip_binding_tokens(gateway);
+    }
+    strip_binding_tokens(&mut value);
+    value
+}
+
+/// Codex 当前是否经网关接入：与 `gateway::apply::codex_switch_blocked_by_gateway` 同一判定。
+pub fn codex_gateway_mode(settings: &BackendSettings, codex_binding_enabled: bool) -> bool {
+    settings.active_relay_id == CODEX_GATEWAY_RELAY_ID && settings.relay_profiles_enabled && codex_binding_enabled
+}
+
+fn codex_binding_enabled() -> bool {
+    crate::gateway::store::GatewayStore::default()
+        .load()
+        .ok()
+        .and_then(|gateway| gateway.binding(&ToolId::Codex).map(|binding| binding.enabled))
+        .unwrap_or(false)
 }
 
 static PROVIDER_PAGE_HOST: Mutex<Option<ProviderPageHost>> = Mutex::new(None);
@@ -372,7 +450,27 @@ fn conflict_value(conflict: &Option<ProviderLiveConflict>) -> Value {
 
 pub fn route_list() -> anyhow::Result<Value> {
     let settings = SettingsStore::default().load().context("读取供应商设置失败")?;
-    provider_list_value(&settings)
+    let mut value = provider_list_value(&settings)?;
+    insert_gateway_mode(&mut value, &settings);
+    Ok(value)
+}
+
+fn insert_gateway_mode(value: &mut Value, settings: &BackendSettings) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "gatewayMode".to_string(),
+            Value::Bool(codex_gateway_mode(settings, codex_binding_enabled())),
+        );
+    }
+}
+
+/// `/providers/gateway`：`{command, args}` → 管理器的网关命令，白名单 + 脱敏。
+pub fn route_gateway(payload: &Value) -> anyhow::Result<Value> {
+    let command = payload.get("command").and_then(Value::as_str).unwrap_or_default().to_string();
+    let args = payload.get("args").cloned().unwrap_or_else(|| json!({}));
+    gateway_command_allowed(&command, &args).map_err(|message| anyhow::anyhow!(message))?;
+    let host = registered_host()?;
+    Ok(redact_gateway_result((host.gateway)(&command, args)))
 }
 
 pub fn route_commit(payload: &Value) -> anyhow::Result<Value> {
@@ -383,6 +481,7 @@ pub fn route_commit(payload: &Value) -> anyhow::Result<Value> {
     let outcome = commit_providers(&store, &host, &request)?;
     let settings = store.load().context("保存后读取供应商设置失败")?;
     let mut value = provider_list_value(&settings)?;
+    insert_gateway_mode(&mut value, &settings);
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "status".to_string(),

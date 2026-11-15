@@ -429,6 +429,14 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
+        // 网关供应商池：分发到管理器的网关命令（同步命令里有文件锁、可能联网），放到阻塞线程池。
+        "/providers/gateway" => {
+            let payload = payload.clone();
+            tokio::task::spawn_blocking(move || crate::provider_page::route_gateway(&payload))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+        }
         "/providers/test" => crate::provider_page::route_test(&payload).await,
         "/providers/models" => crate::provider_page::route_models(&payload).await,
         // 开放给拓展的设置只读子集：当前供应商的名称、模式、模型与上下文窗口。整份设置（/settings/get）仍不开放。

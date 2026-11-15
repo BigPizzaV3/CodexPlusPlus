@@ -3258,3 +3258,72 @@ mod disconnect_preview_tests {
         assert!(value.get("preview").is_some());
     }
 }
+
+/// Codex 页面「供应商」页的网关命令分发（core `provider_page::route_gateway` 已做白名单与脱敏）。
+///
+/// 参数名与前端 `invoke` 一致（camelCase）。直接调用上面的命令函数，所以生效（`refresh_agents`）、
+/// 价格填充、额度预取、断开预览 token、`notify_settings_changed` 都与管理器自己的界面完全相同。
+/// 调用方在阻塞线程里（bridge 路由用 `spawn_blocking`），异步命令用 `block_on` 等结果。
+pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> serde_json::Value {
+    fn arg<T: serde::de::DeserializeOwned>(args: &serde_json::Value, key: &str) -> Result<T, String> {
+        serde_json::from_value(args.get(key).cloned().unwrap_or(serde_json::Value::Null))
+            .map_err(|error| format!("参数 {key} 不正确：{error}"))
+    }
+    fn to_value<T: Serialize>(result: CommandResult<T>) -> serde_json::Value {
+        serde_json::to_value(result).unwrap_or_else(|error| {
+            serde_json::json!({ "status": "failed", "message": format!("返回结果无法序列化：{error}") })
+        })
+    }
+    let run = || -> Result<serde_json::Value, String> {
+        Ok(match command {
+            "load_gateway" => to_value(tauri::async_runtime::block_on(load_gateway())),
+            "create_gateway_provider" => to_value(create_gateway_provider(
+                arg(&args, "input")?,
+                arg::<Option<String>>(&args, "source")?.unwrap_or_else(|| "custom".to_string()),
+                arg(&args, "skipAgents")?,
+            )),
+            "update_gateway_provider" => to_value(update_gateway_provider(arg(&args, "id")?, arg(&args, "input")?)),
+            "delete_gateway_provider" => to_value(delete_gateway_provider(arg(&args, "id")?)),
+            "set_gateway_provider_enabled" => {
+                to_value(set_gateway_provider_enabled(arg(&args, "id")?, arg(&args, "enabled")?))
+            }
+            "reorder_gateway_providers" => to_value(reorder_gateway_providers(arg(&args, "ids")?)),
+            "add_gateway_provider_key" => to_value(add_gateway_provider_key(arg(&args, "id")?, arg(&args, "key")?)),
+            "replace_gateway_provider_key" => to_value(replace_gateway_provider_key(
+                arg(&args, "id")?,
+                arg(&args, "keyId")?,
+                arg(&args, "key")?,
+            )),
+            "delete_gateway_provider_key" => {
+                to_value(delete_gateway_provider_key(arg(&args, "id")?, arg(&args, "keyId")?))
+            }
+            "test_gateway_provider" => to_value(tauri::async_runtime::block_on(test_gateway_provider(
+                arg(&args, "id")?,
+                arg(&args, "model")?,
+                arg(&args, "keyId")?,
+            ))),
+            "cancel_gateway_provider_test" => to_value(cancel_gateway_provider_test()),
+            "fetch_provider_models" => to_value(tauri::async_runtime::block_on(crate::provider_lookup_commands::fetch_provider_models(
+                arg(&args, "baseUrl")?,
+                arg(&args, "protocol")?,
+                arg::<Option<String>>(&args, "apiKey")?.unwrap_or_default(),
+                arg(&args, "providerId")?,
+            ))),
+            "save_gateway_binding" => to_value(save_gateway_binding(
+                arg(&args, "agent")?,
+                arg(&args, "binding")?,
+                arg(&args, "reconnect")?,
+            )),
+            "preview_gateway_disconnect" => to_value(tauri::async_runtime::block_on(preview_gateway_disconnect(arg(&args, "agent")?))),
+            "disable_gateway_binding" => {
+                to_value(disable_gateway_binding(arg(&args, "agent")?, arg(&args, "previewToken")?))
+            }
+            "disable_gateway_binding_full_switch" => to_value(disable_gateway_binding_full_switch(
+                arg(&args, "agent")?,
+                arg(&args, "previewToken")?,
+            )),
+            other => return Err(format!("不支持的网关命令 {other}")),
+        })
+    };
+    run().unwrap_or_else(|message| serde_json::json!({ "status": "failed", "message": message }))
+}

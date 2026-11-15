@@ -29,6 +29,8 @@
     keySources: {},
     pollTimer: null,
     fetchedModels: [],
+    // "gateway" | "direct"；打开页面时按 Codex 当前的接入方式选。
+    tab: "",
   };
 
   codexPlusProviderEditingApi.configureRelayProfileEditing({
@@ -141,7 +143,9 @@
       return false;
     }
     codexPlusProviderApplyList(result, { keepSelection });
+    if (!state.tab) state.tab = result.gatewayMode === true ? "gateway" : "direct";
     renderCodexPlusProviderPage();
+    if (state.tab === "gateway" && !codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
     return true;
   }
 
@@ -260,6 +264,11 @@
 
   async function codexPlusProviderUse(id) {
     const state = codexPlusProviderPageState;
+    if (state.data?.gatewayMode === true) {
+      // 管理器在网关接管时会拒绝直接切换：先给出还原预览，确认断开后再切到这个供应商。
+      await codexPlusGatewayOpenDisconnect(() => codexPlusProviderUse(id));
+      return;
+    }
     let next = codexPlusProviderClone(state.settings);
     if (state.dirty && state.draft?.id === id) {
       next = codexPlusProviderSettingsWithDraft();
@@ -559,7 +568,18 @@
       return;
     }
     const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
-    panel.innerHTML = `<div class="codex-plus-provider-layout">
+    const gatewayMode = state.data?.gatewayMode === true;
+    const tabs = `<div class="codex-plus-provider-tabs" role="tablist" aria-label="供应商类型">
+      <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">网关供应商池${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
+      <button type="button" role="tab" data-codex-provider-tab="direct" aria-selected="${state.tab !== "gateway"}">直连供应商${gatewayMode ? "" : '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>'}</button>
+    </div>`;
+    if (state.tab === "gateway") {
+      panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}${renderCodexPlusGatewayPane()}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
+      const gatewayDetail = panel.querySelector(".codex-plus-provider-detail");
+      if (gatewayDetail) gatewayDetail.scrollTop = scroll;
+      return;
+    }
+    panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
           <button type="button" class="codex-plus-action-button" data-codex-provider-action="new" ${state.busy ? "disabled" : ""}>新建</button></div>
@@ -568,8 +588,9 @@
       </aside>
       <section class="codex-plus-provider-detail">
         <div class="codex-plus-provider-status" data-codex-provider-status data-tone="${state.statusTone}" role="status" aria-live="polite" ${state.status ? "" : "hidden"}>${escapeHtml(state.status)}</div>
+        ${gatewayMode ? '<div class="codex-plus-provider-note">Codex 正经网关接入，直连供应商暂时不起作用；在这里点「使用」会先断开网关并还原。</div>' : ""}
         ${renderCodexPlusProviderDetail()}
-      </section></div>`;
+      </section></div></div>${renderCodexPlusGatewayDisconnectDialog()}`;
     const detail = panel.querySelector(".codex-plus-provider-detail");
     if (detail) detail.scrollTop = scroll;
   }
@@ -582,6 +603,7 @@
   }
 
   function codexPlusProviderHandleInput(event) {
+    if (codexPlusGatewayHandleInput(event)) return;
     const target = event.target;
     const state = codexPlusProviderPageState;
     if (!state.draft || !(target instanceof HTMLElement)) return;
@@ -627,6 +649,19 @@
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const state = codexPlusProviderPageState;
     if (!target) return;
+    const tab = target.closest("[data-codex-provider-tab]");
+    if (tab) {
+      const next = tab.dataset.codexProviderTab === "gateway" ? "gateway" : "direct";
+      if (next === state.tab) return;
+      state.tab = next;
+      renderCodexPlusProviderPage();
+      if (next === "gateway" && !codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
+      return;
+    }
+    if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
+      await codexPlusGatewayHandleClick(target);
+      return;
+    }
     const move = target.closest("[data-codex-provider-move]");
     if (move && !move.disabled) {
       event.stopPropagation();
@@ -686,6 +721,7 @@
   function codexPlusProviderPoll() {
     const state = codexPlusProviderPageState;
     if (!document.querySelector("[data-codex-provider-panel]")) return;
+    if (state.tab === "gateway") codexPlusGatewayPoll();
     if (state.dirty || state.busy || document.hidden) return;
     void postJson("/providers/list", {}).then((result) => {
       if (result?.status !== "ok" || result.revision === state.data?.revision) return;
@@ -733,6 +769,8 @@
     };
     state.dirty = false;
     state.isNew = false;
+    state.tab = "";
+    Object.assign(codexPlusGatewayPageState, { payload: null, isNew: false, dirty: false, busy: "", status: "", disconnect: null, fetchedModels: [] });
     codexPlusProviderSetStatus("");
     renderCodexPlusProviderPage();
     void codexPlusProviderLoad({ keepSelection: Boolean(state.selectedId) });

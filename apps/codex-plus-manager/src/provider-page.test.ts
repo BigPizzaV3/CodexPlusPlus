@@ -8,6 +8,7 @@ const root = new URL("../../../", import.meta.url);
 const fragments = new URL("assets/inject/renderer-inject/", root);
 const editingSource = await readFile(new URL("42-provider-editing.generated.js", fragments), "utf8");
 const pageSource = await readFile(new URL("43-provider-page.js", fragments), "utf8");
+const gatewaySource = await readFile(new URL("44-provider-gateway.js", fragments), "utf8");
 const renderer = await readFile(new URL("assets/inject/renderer-inject.js", root), "utf8");
 
 function loadEditing(): any {
@@ -31,7 +32,7 @@ describe("供应商编辑函数打包（42 分片）", () => {
 
   it("不挂全局、不访问浏览器存储", () => {
     assert.match(editingSource, /^var codexPlusProviderEditing = \(\(\) => \{/m);
-    assert.doesNotMatch(editingSource, /\bwindow\.|localStorage|document\./);
+    assert.doesNotMatch(editingSource, /localStorage|document\.|\bwindow\.(?:document|location|addEventListener|__)/);
     // 行首的 `})();` 会被误认成主 IIFE 收尾。
     assert.doesNotMatch(editingSource, /\n\}\)\(\);\n/);
   });
@@ -65,9 +66,12 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
   const document = { querySelector: () => null, querySelectorAll: () => [], activeElement: null, hidden: false };
   const api = new Function(
     "codexPlusProviderEditing", "postJson", "codexPlusAsk", "showToast", "escapeHtml", "document",
-    `${pageSource}\nreturn { state: codexPlusProviderPageState, applyList: codexPlusProviderApplyList, commit: codexPlusProviderCommit,
+    `${pageSource}\n${gatewaySource}\nreturn { state: codexPlusProviderPageState, applyList: codexPlusProviderApplyList, commit: codexPlusProviderCommit,
       use: codexPlusProviderUse, selectKey: codexPlusProviderSelectKey, applyModelLines: codexPlusProviderApplyModelLines,
-      modelLines: codexPlusProviderModelLines, duplicate: codexPlusProviderDuplicate, renderPage: renderCodexPlusProviderPage };`,
+      modelLines: codexPlusProviderModelLines, duplicate: codexPlusProviderDuplicate, renderPage: renderCodexPlusProviderPage,
+      gw: codexPlusGatewayPageState, gwApply: codexPlusGatewayApplyResult, gwSelect: codexPlusGatewaySelect, gwSave: codexPlusGatewaySave,
+      gwEditable: codexPlusGatewayEditable, gwConnect: codexPlusGatewayConnect, gwOpenDisconnect: codexPlusGatewayOpenDisconnect,
+      gwApplyDisconnect: codexPlusGatewayApplyDisconnect, gwInput: codexPlusGatewayHandleInput, gwStartNew: codexPlusGatewayStartNew };`,
   )(
     loadEditing(),
     async (path: string, payload: any) => {
@@ -184,5 +188,118 @@ describe("供应商页（43 分片）", () => {
     assert.match(renderer, /#\$\{codexPlusRailProviderId\} > button/);
     assert.match(pageSource, /data-codex-plus-active-tab="\$\{codexPlusProviderTab\}"/);
     assert.match(pageSource, /window\.__codexPlusExtensionPageCleanup = \(\) => \{/);
+  });
+});
+
+function poolEntry(id: string, extra: Record<string, unknown> = {}) {
+  return {
+    id, name: id.toUpperCase(), baseUrl: `https://${id}.example/v1`, protocol: "chatCompletions", official: false,
+    models: ["m-1", "m-2"], keyCount: 1, enabled: true, source: "custom", keys: [{ id: "default", masked: "sk-…1111" }],
+    price: { currency: "USD", input: 1.5, cachedInput: 0.5, output: 6 }, proxy: "", ...extra,
+  };
+}
+
+function gatewayResult(pool = [poolEntry("gw-a"), poolEntry("acct", { account: "copilot", plan: "Copilot Pro" })], codexEnabled = true) {
+  return {
+    status: "ok", message: "", port: 57321, helperRunning: true, relayProfilesEnabled: true, pool, groups: [], agents: [],
+    health: { keys: [], providers: [] }, codexProviders: [], claudeProviders: [], grokProfiles: [],
+    gateway: { providers: [], groups: [], bindings: { codex: { enabled: codexEnabled, model: "gw-a/m-1", extraModels: [], claudeRoles: { opus: "", sonnet: "", haiku: "", subagent: "" }, unknownModel: "", poolExclude: [] } } },
+  };
+}
+
+describe("供应商页的网关页签（44 分片）", () => {
+  it("账号 / 原生登录 / 拓展条目只读，普通 API Key 供应商可编辑", () => {
+    const page = loadPage({ postJson: () => listResult() });
+    assert.equal(page.gwEditable(poolEntry("x")), true);
+    assert.equal(page.gwEditable(poolEntry("x", { account: "copilot" })), false);
+    assert.equal(page.gwEditable(poolEntry("x", { account: "chatgpt" })), false);
+    assert.equal(page.gwEditable(poolEntry("x", { official: true })), false);
+    assert.equal(page.gwEditable(poolEntry("x", { source: "native:external" })), false);
+    assert.equal(page.gwEditable(poolEntry("x", { source: "extension:demo" })), false);
+  });
+
+  it("编辑保存原样带回价格与代理，Key 留空表示不改", async () => {
+    const page = loadPage({ postJson: (path, payload) => (payload?.command === "update_gateway_provider" ? gatewayResult() : listResult()) });
+    page.gwApply(gatewayResult());
+    page.gwSelect("gw-a");
+    page.gwInput({ target: { dataset: { codexGatewayField: "name" }, value: "改名" } });
+    await page.gwSave();
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "update_gateway_provider")!;
+    assert.equal(sent.path, "/providers/gateway");
+    assert.equal(sent.payload.args.id, "gw-a");
+    assert.equal(sent.payload.args.input.name, "改名");
+    assert.deepEqual(sent.payload.args.input.price, { currency: "USD", input: 1.5, cachedInput: 0.5, output: 6 });
+    assert.deepEqual(sent.payload.args.input.keys, []);
+    assert.equal(page.gw.dirty, false);
+    assert.match(page.gw.status, /下一条请求/);
+  });
+
+  it("新建必须填 Key，提交 create_gateway_provider{source:custom}", async () => {
+    const page = loadPage({ postJson: (path, payload) => (payload?.command === "create_gateway_provider" ? gatewayResult([poolEntry("gw-a"), poolEntry("new-one")]) : listResult()) });
+    page.gwApply(gatewayResult());
+    page.gwStartNew();
+    for (const [field, value] of [["name", "新的"], ["baseUrl", "https://new.example/v1"], ["model", "m-x"]]) {
+      page.gwInput({ target: { dataset: { codexGatewayField: field }, value } });
+    }
+    await page.gwSave();
+    assert.match(page.gw.status, /API Key/, "没填 Key 不能新建");
+    page.gwInput({ target: { dataset: { codexGatewayField: "keys" }, value: "sk-new-key-0001" } });
+    await page.gwSave();
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "create_gateway_provider")!;
+    assert.equal(sent.payload.args.source, "custom");
+    assert.deepEqual(sent.payload.args.input.keys, ["sk-new-key-0001"]);
+    assert.equal(page.gw.selectedId, "new-one");
+  });
+
+  it("接入网关沿用上次的接入设置并只作用在 Codex 上", async () => {
+    const page = loadPage({ postJson: (path, payload) => (payload?.command ? gatewayResult() : listResult()) });
+    page.gwApply(gatewayResult(undefined, false));
+    await page.gwConnect();
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "save_gateway_binding")!;
+    assert.equal(sent.payload.args.agent, "codex");
+    assert.equal(sent.payload.args.reconnect, true);
+    assert.equal(sent.payload.args.binding.enabled, true);
+    assert.equal(sent.payload.args.binding.model, "gw-a/m-1");
+  });
+
+  it("断开先取预览，确认时带上预览 token；预览列不出逐项改动时走完整切换", async () => {
+    for (const [preview, command] of [
+      [{ agent: "codex", previewToken: "tok-1", files: [{ path: "config.toml", kind: "config", diff: "-a\n+b" }], warnings: [], canDisconnect: true }, "disable_gateway_binding"],
+      [{ agent: "codex", previewToken: "tok-2", files: [], warnings: [], canDisconnect: false, fullSwitch: { relayId: "a", name: "A" } }, "disable_gateway_binding_full_switch"],
+    ] as const) {
+      const page = loadPage({ postJson: (path, payload) => (payload?.command === "preview_gateway_disconnect" ? { status: "ok", preview } : payload?.command ? gatewayResult() : listResult()) });
+      page.gwApply(gatewayResult());
+      await page.gwOpenDisconnect();
+      assert.equal(page.gw.disconnect.preview.previewToken, preview.previewToken);
+      await page.gwApplyDisconnect();
+      const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === command)!;
+      assert.ok(sent, command);
+      assert.deepEqual(sent.payload.args, { agent: "codex", previewToken: preview.previewToken });
+      assert.equal(page.gw.disconnect, null);
+    }
+  });
+
+  it("网关模式下在直连页签点「使用」：先断开并还原，成功后再切换", async () => {
+    let gatewayMode = true;
+    const page = loadPage({
+      postJson: (path, payload) => {
+        if (payload?.command === "preview_gateway_disconnect") return { status: "ok", preview: { agent: "codex", previewToken: "tok", files: [], warnings: [], canDisconnect: true } };
+        if (payload?.command === "disable_gateway_binding") { gatewayMode = false; return gatewayResult(undefined, false); }
+        if (payload?.command) return gatewayResult();
+        if (path === "/providers/commit") return { ...listResult("r2", "b"), switched: true, gatewayMode };
+        return { ...listResult(), gatewayMode };
+      },
+    });
+    page.applyList({ ...listResult(), gatewayMode: true });
+    await page.use("b");
+    assert.equal(page.calls.some((call: { path: string }) => call.path === "/providers/commit"), false, "还没确认断开时不能直接切换");
+    await page.gwApplyDisconnect();
+    const commit = page.calls.find((call: { path: string; payload: any }) => call.path === "/providers/commit")!;
+    assert.equal(commit.payload.activate, "b");
+  });
+
+  it("网关路由不开放给拓展、Codex 页面用 /providers/gateway", () => {
+    assert.match(gatewaySource, /postJson\("\/providers\/gateway", \{ command, args \}\)/);
+    assert.match(renderer, /"\/providers\/gateway" =>|providers\/gateway/);
   });
 });

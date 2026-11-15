@@ -21,12 +21,17 @@ const require = createRequire(path.join(managerDir, "package.json"));
 // 锁定版本的 esbuild（见 apps/codex-plus-manager/package.json），产物可复现。
 const { build } = require("esbuild");
 
-const entry = path.join(managerDir, "src/relay-profile-editing.ts");
+// 直连供应商的编辑函数挂在顶层；网关供应商池的纯函数（gateway-model.ts）挂在 `.gateway` 下。
+const entryContents = [
+  "export * from \"./relay-profile-editing.ts\";",
+  "export * as gateway from \"./gateway-model.ts\";",
+  "export * as gatewaySafety from \"./gateway-agent-safety.ts\";",
+].join("\n");
 const shim = path.join(root, "scripts/provider-editing-i18n-shim.mjs");
 const output = path.join(root, "assets/inject/renderer-inject/42-provider-editing.generated.js");
 
 const result = await build({
-  entryPoints: [entry],
+  stdin: { contents: entryContents, resolveDir: path.join(managerDir, "src"), sourcefile: "provider-editing-entry.ts", loader: "ts" },
   // 产物里的来源注释是相对工作目录的路径：固定到仓库根，从哪个目录运行结果都一样。
   absWorkingDir: root,
   bundle: true,

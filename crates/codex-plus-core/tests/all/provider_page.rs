@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID;
 use codex_plus_core::provider_page::{
     ProviderCommitRequest, ProviderPageHost, ProviderSwitchResult, api_key_preview,
-    commit_providers, provider_list_value, route_commit,
+    codex_gateway_mode, commit_providers, gateway_command_allowed, provider_list_value,
+    redact_gateway_result, route_commit, route_gateway,
 };
 use codex_plus_core::relay_switch::switch_relay_profile_in_home_resolving_conflict;
 use codex_plus_core::settings::{BackendSettings, RelayApiKey, RelayMode, RelayProfile, SettingsStore};
@@ -95,6 +96,7 @@ impl Fixture {
                     Err(error) => ProviderSwitchResult { ok: false, message: format!("{error:#}"), live_conflict: None },
                 }
             }),
+            gateway: Arc::new(|command: &str, args: Value| json!({ "status": "ok", "command": command, "args": args })),
         }
     }
 
@@ -312,3 +314,46 @@ fn commit_route_requires_registered_host() {
     assert!(error.to_string().contains("管理器未运行"), "{error}");
 }
 
+#[test]
+fn gateway_commands_are_whitelisted_and_codex_only() {
+    assert!(gateway_command_allowed("load_gateway", &json!({})).is_ok());
+    assert!(gateway_command_allowed("update_gateway_provider", &json!({ "id": "x" })).is_ok());
+    // 白名单外：池以外的写能力（模型组、订阅登录、价格）不给页面。
+    for command in ["save_gateway_group", "login_gateway_chatgpt", "save_gateway_provider_extras", "load_settings"] {
+        assert!(gateway_command_allowed(command, &json!({})).is_err(), "{command}");
+    }
+    // 按 Agent 生效的命令只能作用在 Codex 上。
+    for command in ["save_gateway_binding", "preview_gateway_disconnect", "disable_gateway_binding", "disable_gateway_binding_full_switch"] {
+        assert!(gateway_command_allowed(command, &json!({ "agent": "codex" })).is_ok(), "{command}");
+        assert!(gateway_command_allowed(command, &json!({ "agent": "claude" })).is_err(), "{command}");
+        assert!(gateway_command_allowed(command, &json!({})).is_err(), "{command}");
+    }
+    // 拒绝发生在找宿主之前：未注册宿主时白名单外命令也报「不支持」，不会碰管理器。
+    let error = route_gateway(&json!({ "command": "save_gateway_group", "args": {} })).unwrap_err();
+    assert!(error.to_string().contains("不支持"), "{error}");
+}
+
+#[test]
+fn gateway_results_drop_local_gateway_tokens() {
+    let redacted = redact_gateway_result(json!({
+        "status": "ok",
+        "gateway": { "bindings": { "codex": { "enabled": true, "token": "local-secret" }, "claude": { "token": "x" } }, "providers": [] },
+        "providers": [{ "id": "p", "keys": [{ "id": "k", "masked": "sk-…abcd" }] }],
+    }));
+    let text = redacted.to_string();
+    assert!(!text.contains("local-secret") && !text.contains("\"token\""), "{text}");
+    assert_eq!(redacted["gateway"]["bindings"]["codex"]["enabled"], true);
+    assert_eq!(redacted["providers"][0]["keys"][0]["masked"], "sk-…abcd");
+}
+
+#[test]
+fn gateway_mode_requires_gateway_profile_master_switch_and_binding() {
+    let mut settings = BackendSettings { active_relay_id: CODEX_GATEWAY_RELAY_ID.to_string(), relay_profiles_enabled: true, ..BackendSettings::default() };
+    assert!(codex_gateway_mode(&settings, true));
+    assert!(!codex_gateway_mode(&settings, false), "绑定关了不算网关模式");
+    settings.relay_profiles_enabled = false;
+    assert!(!codex_gateway_mode(&settings, true), "总开关关了不算");
+    settings.relay_profiles_enabled = true;
+    settings.active_relay_id = "a".to_string();
+    assert!(!codex_gateway_mode(&settings, true), "当前不是网关条目不算");
+}
