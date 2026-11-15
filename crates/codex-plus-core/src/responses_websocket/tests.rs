@@ -375,12 +375,18 @@ async fn helper_ws_http_200_is_rejected_and_never_posts_a_generation() {
 
 async fn upgrade_status(url: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let authority = url.trim_start_matches("ws://");
-    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    let parsed = reqwest::Url::parse(url).unwrap();
+    let host = parsed.host_str().unwrap();
+    let port = parsed.port_or_known_default().unwrap();
+    let authority = format!("{host}:{port}");
+    let path = parsed.path();
+    let mut stream = tokio::net::TcpStream::connect((host, port))
+        .await
+        .unwrap();
     stream
         .write_all(
             format!(
-                "GET /v1/responses HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\n\
+                "GET {path} HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\n\
                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
                  Sec-WebSocket-Version: 13\r\n\r\n"
             )
