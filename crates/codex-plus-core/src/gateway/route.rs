@@ -1617,6 +1617,7 @@ fn resolve_plan_with(
     let cooldown_off = crate::extension_gateway::builtin_replaced("builtin:key-cooldown");
     let breaker_off = crate::extension_gateway::builtin_replaced("builtin:key-breaker");
     let rate_limit_off = crate::extension_gateway::builtin_replaced("builtin:local-rate-limit");
+    let pinned_key = crate::responses_websocket::pinned_key();
     for (relay, upstream_model) in permitted {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
@@ -1643,9 +1644,15 @@ fn resolve_plan_with(
             limits,
         };
         for key in order.available {
+            if pinned_key.as_ref().is_some_and(|pinned| pinned != &key.key) {
+                continue;
+            }
             candidates.push(candidate(key));
         }
         for key in order.waiting {
+            if pinned_key.as_ref().is_some_and(|pinned| pinned != &key.candidate.key) {
+                continue;
+            }
             let bypass = match key.reason {
                 // 自己在冷却的 Key 可能同时赶上供应商熔断：熔断没关掉时仍按熔断拦着。
                 key_pool::WaitReason::Cooling => {
