@@ -20,6 +20,7 @@ use super::follower::{Follower, PERMISSION_PRESETS, SettingsChange, build_offlin
 use super::headless::{HeadlessSession, Hub, headless_supports};
 use super::ipc::{IpcConnection, IpcEndpoint, resolve_endpoint};
 use super::sidecar::{Sidecar, resolve_codex_cli};
+use super::uploads::{Attachment, user_inputs};
 use super::versions::{IpcVersions, app_asar_path, default_versions, read_versions_from_asar};
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -268,19 +269,25 @@ impl RemoteService {
     ///
     /// 已由桌面持有的会话跟随桌面；否则在后台执行（桌面窗口不切换）。
     pub async fn send(&self, thread_id: &str, text: &str) -> anyhow::Result<Value> {
+        self.send_with(thread_id, text, &[]).await
+    }
+
+    /// 发消息（可带图片 / 文件附件）。
+    pub async fn send_with(&self, thread_id: &str, text: &str, attachments: &[Attachment]) -> anyhow::Result<Value> {
+        let input = user_inputs(text, attachments);
         if let Some(follower) = self.follower(thread_id).await? {
             let value = if follower.is_running() {
-                json!({ "kind": "steer", "result": follower.steer(text).await? })
+                json!({ "kind": "steer", "result": follower.steer(text, input).await? })
             } else {
-                json!({ "kind": "start", "result": follower.start_turn(text).await? })
+                json!({ "kind": "start", "result": follower.start_turn(input).await? })
             };
             return Ok(value);
         }
         let session = self.ensure_headless(thread_id).await?;
         let value = if session.is_running().await {
-            json!({ "kind": "steer", "result": session.steer(text).await? })
+            json!({ "kind": "steer", "result": session.steer(input).await? })
         } else {
-            json!({ "kind": "start", "background": true, "result": session.start_turn(text).await? })
+            json!({ "kind": "start", "background": true, "result": session.start_turn(input).await? })
         };
         Ok(value)
     }

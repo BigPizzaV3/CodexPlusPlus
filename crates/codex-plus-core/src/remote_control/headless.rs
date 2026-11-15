@@ -186,11 +186,11 @@ impl HeadlessSession {
     }
 
     /// 开一轮。网页改过的设置随这一轮发出。
-    pub async fn start_turn(&self, text: &str) -> anyhow::Result<Value> {
+    pub async fn start_turn(&self, input: Vec<Value>) -> anyhow::Result<Value> {
         let sidecar = self.sidecar()?;
         let _lifecycle = self.lifecycle.lock().await;
         self.ensure_loaded(&sidecar).await?;
-        let mut params = json!({ "threadId": self.thread_id, "input": [{ "type": "text", "text": text }] });
+        let mut params = json!({ "threadId": self.thread_id, "input": input });
         let pending = std::mem::take(&mut self.state.lock().await.pending);
         if let Some(model) = &pending.model {
             params["model"] = json!(model);
@@ -231,13 +231,10 @@ impl HeadlessSession {
         Ok(json!({ "turn": result.get("turn").cloned().unwrap_or(Value::Null) }))
     }
 
-    pub async fn steer(&self, text: &str) -> anyhow::Result<Value> {
+    pub async fn steer(&self, input: Vec<Value>) -> anyhow::Result<Value> {
         let turn_id = self.state.lock().await.turn_id.clone().context("这一轮已经结束")?;
         self.sidecar()?
-            .call(
-                "turn/steer",
-                json!({ "threadId": self.thread_id, "expectedTurnId": turn_id, "input": [{ "type": "text", "text": text }] }),
-            )
+            .call("turn/steer", json!({ "threadId": self.thread_id, "expectedTurnId": turn_id, "input": input }))
             .await
     }
 

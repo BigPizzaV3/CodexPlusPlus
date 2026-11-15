@@ -152,11 +152,11 @@ impl Follower {
 
     /// 开新一轮。总是带上会话当前的协作模式（计划 / 默认）：桌面自己发送时也是这样带的，
     /// 不带的话 owner 会按它界面上的模式发，远程切的计划模式就丢了。
-    pub async fn start_turn(&self, text: &str) -> anyhow::Result<Value> {
+    pub async fn start_turn(&self, input: Vec<Value>) -> anyhow::Result<Value> {
         let client_user_message_id = uuid::Uuid::new_v4().to_string();
         let mut request = json!({
             "threadId": self.thread_id,
-            "input": [{ "type": "text", "text": text, "text_elements": [] }],
+            "input": input,
             "clientUserMessageId": client_user_message_id,
         });
         if let Some(mode) = self.state().as_ref().and_then(collaboration_mode_of) {
@@ -210,7 +210,7 @@ impl Follower {
     }
 
     /// 运行中插话。`restoreMessage` 不能为 null：owner 会读它的 cwd 与 context.commentAttachments。
-    pub async fn steer(&self, text: &str) -> anyhow::Result<Value> {
+    pub async fn steer(&self, text: &str, input: Vec<Value>) -> anyhow::Result<Value> {
         let cwd = self
             .state()
             .and_then(|state| state.get("cwd").and_then(Value::as_str).map(str::to_string))
@@ -219,7 +219,7 @@ impl Follower {
         self.call(
             "thread-follower-steer-turn",
             json!({
-                "input": [{ "type": "text", "text": text, "text_elements": [] }],
+                "input": input,
                 "clientUserMessageId": id,
                 "restoreMessage": {
                     "id": id,
@@ -520,6 +520,13 @@ pub fn token_usage(info: Option<&Value>) -> Value {
 }
 
 /// 条目原样透传，只给用户消息补一个 `text`，并截断过长的命令输出。
+fn file_name(path: Option<&Value>) -> Value {
+    path.and_then(Value::as_str)
+        .and_then(|path| std::path::Path::new(path).file_name())
+        .map(|name| json!(name.to_string_lossy()))
+        .unwrap_or(Value::Null)
+}
+
 pub(super) fn view_item(item: &Value) -> Value {
     let mut item = item.clone();
     let kind = item.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -530,6 +537,33 @@ pub(super) fn view_item(item: &Value) -> Value {
             .map(|parts| parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"))
             .unwrap_or_default();
         item["text"] = json!(text);
+    }
+    if matches!(kind.as_str(), "userMessage" | "steeringUserMessage") && item.get("attachments").is_none() {
+        // 图片 / 文件附件单独列出来，网页显示缩略图或文件卡片（`path` 在上传目录里时网页能取到原图）。
+        let source = item.get("content").or_else(|| item.get("input"));
+        let attachments: Vec<Value> = source
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| match part.get("type").and_then(Value::as_str)? {
+                        "localImage" => Some(json!({ "kind": "image", "path": part.get("path"), "name": file_name(part.get("path")) })),
+                        "image" => Some(json!({ "kind": "image", "url": part.get("url").or_else(|| part.get("imageUrl")) })),
+                        "mention" => Some(json!({ "kind": "file", "path": part.get("path"), "name": part.get("name") })),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut attachments = attachments;
+        // 文件附件写在文字里（见 uploads::message_text）：拆出来，文字只留用户原话。
+        if let Some((files, request)) = item.get("text").and_then(Value::as_str).and_then(super::uploads::split_message_text) {
+            attachments.splice(0..0, files);
+            item["text"] = json!(request);
+        }
+        if !attachments.is_empty() {
+            item["attachments"] = json!(attachments);
+        }
     }
     if let Some(output) = item.get("aggregatedOutput").and_then(Value::as_str) {
         const LIMIT: usize = 8 * 1024;

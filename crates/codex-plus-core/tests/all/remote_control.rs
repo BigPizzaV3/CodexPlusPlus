@@ -645,6 +645,13 @@ fn web_page_offers_both_conversation_styles() {
     assert!(page.contains("state.view.tokenUsage"), "上下文用量圈");
     // 安卓返回键 / iOS 侧滑：进项目、进对话都压一层历史
     assert!(page.contains(r#"history.pushState({ m: "chat" }, "")"#) && page.contains(r#"window.addEventListener("popstate", popped)"#));
+    // 加号：照片 / 拍照 / 文件；上传后在输入框上方显示，发消息时带上
+    assert!(page.contains("function openAttachSheet()") && page.contains(r#"pickFiles("image/*", "environment")"#));
+    assert!(page.contains(r#"$("mPlus").onclick = openAttachSheet;"#));
+    assert!(page.contains(r#"await api("POST", `/threads/${state.current}/messages`, { text, attachments });"#));
+    // 新建会话：列表上可浏览文件夹；项目里的 ⊕ 直接用该项目目录
+    assert!(page.contains("function openFolderSheet(start, onPick)") && page.contains(r#"api("GET", `/fs/dirs"#));
+    assert!(page.contains(r#"$("mProjectNew").onclick = () => openNewSheet(ui.project);"#));
 }
 
 /// 网页会话列表分两级：先按工作目录列项目，点进项目再看会话。
@@ -718,7 +725,8 @@ fn background_permission_presets_map_to_sandbox_policies() {
 #[test]
 fn sending_to_unopened_thread_runs_in_background() {
     let service = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/remote_control/service.rs")).unwrap();
-    let send = &service[service.find("pub async fn send(").unwrap()..];
+    // send() 转给 send_with()（带附件的那个），检查真正干活的那个。
+    let send = &service[service.find("pub async fn send_with(").unwrap()..];
     let send = &send[..send.find("\n    }\n").unwrap()];
     assert!(!send.contains("open_thread"), "发消息不能让桌面打开会话");
     assert!(send.contains("ensure_headless"), "没在桌面打开的会话走后台");
@@ -729,4 +737,87 @@ fn sending_to_unopened_thread_runs_in_background() {
     assert!(!page.contains("正在桌面打开会话…\");\n      await api(\"POST\", `/threads/${state.current}/messages`"), "发消息时不再提示打开桌面");
     assert!(page.contains("后台运行中"), "后台会话有自己的状态");
     assert!(page.contains("message.type === \"closed\" && message.reconnect"), "推送来源换了要重连");
+}
+
+/// 附件：图片作为 localImage，文件照桌面的「# Files mentioned by the user:」写法列路径；视图里再拆回来。
+#[test]
+fn attachments_become_codex_inputs_and_round_trip_in_views() {
+    use codex_plus_core::remote_control::uploads::{Attachment, AttachmentKind, sanitize_name, split_message_text, user_inputs};
+    use std::path::PathBuf;
+    let image = Attachment { kind: AttachmentKind::Image, name: "截图.png".into(), path: PathBuf::from("/u/remote-uploads/a-截图.png") };
+    let file = Attachment { kind: AttachmentKind::File, name: "error.log".into(), path: PathBuf::from("/u/remote-uploads/b-error.log") };
+
+    assert_eq!(user_inputs("你好", &[]), vec![json!({ "type": "text", "text": "你好", "text_elements": [] })]);
+    let input = user_inputs("看看", &[image.clone(), file.clone()]);
+    assert_eq!(input.len(), 2, "文字一条 + 图片一条；文件写进文字里");
+    let text = input[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("# Files mentioned by the user:"));
+    assert!(text.contains("## error.log: /u/remote-uploads/b-error.log"));
+    assert!(text.ends_with("## My request for Codex:\n看看"));
+    assert_eq!(input[1], json!({ "type": "localImage", "path": "/u/remote-uploads/a-截图.png" }));
+    let only_image = user_inputs("", &[image]);
+    assert_eq!(only_image.len(), 1, "只发图不带空文字");
+    assert!(user_inputs("", &[file])[0]["text"].as_str().unwrap().contains("看看这个文件"), "只发文件时补一句请求");
+
+    let (files, request) = split_message_text(text).unwrap();
+    assert_eq!(files, vec![json!({ "kind": "file", "name": "error.log", "path": "/u/remote-uploads/b-error.log" })]);
+    assert_eq!(request, "看看");
+    assert!(split_message_text("普通消息").is_none());
+
+    assert_eq!(sanitize_name("../../etc/passwd"), "passwd");
+    assert_eq!(sanitize_name("C:\\a\\b.txt"), "b.txt");
+    assert_eq!(sanitize_name(".hidden"), "hidden");
+    assert_eq!(sanitize_name("   "), "file");
+}
+
+/// 上传只认上传目录；目录浏览只列文件夹。用临时状态目录，进程级状态先拿全局锁。
+#[test]
+fn uploads_stay_inside_upload_dir_and_dir_listing_shows_folders() {
+    use codex_plus_core::remote_control::uploads::{attachments_from, list_dirs, resolve, save};
+    let _guard = crate::common::global_state_lock();
+    let _temp = TempState::new();
+
+    let saved = save("IMG_0001", "image/jpeg", b"\xff\xd8\xff").unwrap();
+    assert_eq!(saved["kind"], "image");
+    assert!(saved["name"].as_str().unwrap().ends_with(".jpg"), "没扩展名按类型补");
+    let path = saved["path"].as_str().unwrap();
+    assert!(resolve(path).is_ok());
+    assert!(save("x.txt", "text/plain", b"").is_err(), "空文件被拒");
+
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    assert!(resolve(&outside.path().to_string_lossy()).is_err(), "上传目录外的文件不认");
+    assert!(resolve("relative/path.png").is_err());
+    assert!(attachments_from(&json!({ "attachments": [{ "path": outside.path().to_string_lossy() }] })).is_err());
+    let parsed = attachments_from(&json!({ "attachments": [{ "path": path }] })).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert!(attachments_from(&json!({ "attachments": vec![json!({ "path": path }); 10] })).is_err(), "最多 9 个");
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("repo/.git")).unwrap();
+    std::fs::create_dir_all(root.path().join("plain")).unwrap();
+    std::fs::create_dir_all(root.path().join(".hidden")).unwrap();
+    std::fs::write(root.path().join("file.txt"), b"x").unwrap();
+    let listed = list_dirs(Some(&root.path().to_string_lossy())).unwrap();
+    let names: Vec<&str> = listed["entries"].as_array().unwrap().iter().map(|entry| entry["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["plain", "repo"], "只列文件夹、不列隐藏的、按名字排");
+    assert_eq!(listed["entries"][1]["git"], true);
+    assert!(listed["parent"].is_string());
+    assert!(list_dirs(Some("relative")).is_err());
+    assert!(list_dirs(Some(&format!("{}/../x", root.path().display()))).is_err(), "不认 ..");
+    assert!(list_dirs(None).unwrap()["path"].is_string(), "不给路径从主目录开始");
+}
+
+/// 上传和目录浏览的接口：读请求体前先认证；文件夹浏览要「可发消息」。
+#[test]
+fn upload_and_folder_routes_require_auth_and_role() {
+    use codex_plus_core::remote_control::devices::Role;
+    use codex_plus_core::remote_control::server::{MAX_UPLOAD_BYTES, required_role};
+    assert_eq!(required_role("POST", &["uploads"]), Role::Message);
+    assert_eq!(required_role("GET", &["fs", "dirs"]), Role::Message, "只读设备不能浏览电脑上的文件夹");
+    assert_eq!(required_role("GET", &["uploads", "raw"]), Role::View);
+    assert!(MAX_UPLOAD_BYTES >= 20 * 1024 * 1024);
+    let server = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/remote_control/server.rs")).unwrap();
+    let auth = server.find("let Some(principal) = authenticate(").unwrap();
+    let body = server.find("read_body(&mut stream, &mut request, limit)").unwrap();
+    assert!(auth < body, "认证通过后才读请求体，没配对的人不能让我们收大文件");
 }

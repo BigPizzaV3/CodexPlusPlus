@@ -28,6 +28,8 @@ use super::service::{RemoteService, StreamSource};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// 上传图片 / 文件的大小上限（手机原图常见 3–10 MB，网页端会先把大图压缩）。
+pub const MAX_UPLOAD_BYTES: usize = 30 * 1024 * 1024;
 const PAGE: &str = include_str!("../../assets/remote-control/index.html");
 const MANIFEST: &str = r##"{"name":"Codex++ 远程控制","short_name":"Codex++","start_url":"/","display":"standalone","background_color":"#0f1115","theme_color":"#0f1115"}"##;
 /// 推送合并窗口：流式输出时状态每秒变几十次，合并后再推。
@@ -83,6 +85,8 @@ pub struct HttpRequest {
     pub query: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    /// 请求头里声明的长度；请求体在认证通过后才读完（见 `read_body`）。
+    pub content_length: usize,
 }
 
 impl HttpRequest {
@@ -91,6 +95,7 @@ impl HttpRequest {
     }
 }
 
+/// 只读请求头（以及顺带读到的那一点请求体）。请求体等认证通过再读，免得没配对的人也能让我们收大文件。
 async fn read_request<S: Connection>(stream: &mut S) -> anyhow::Result<HttpRequest> {
     let mut buffer = Vec::with_capacity(2048);
     let header_end = loop {
@@ -108,28 +113,33 @@ async fn read_request<S: Connection>(stream: &mut S) -> anyhow::Result<HttpReque
         }
     };
     let head = String::from_utf8_lossy(&buffer[..header_end]).to_string();
-    let mut body = buffer[header_end + 4..].to_vec();
     let request = parse_head(&head)?;
-    let length = request
+    let content_length = request
         .headers
         .get("content-length")
         .map(|value| value.parse::<usize>())
         .transpose()
         .context("Content-Length 无效")?
         .unwrap_or(0);
-    if length > MAX_BODY_BYTES {
-        bail!("请求体过大");
+    Ok(HttpRequest { body: buffer[header_end + 4..].to_vec(), content_length, ..request })
+}
+
+/// 读完请求体（不超过 `limit`）。
+async fn read_body<S: Connection>(stream: &mut S, request: &mut HttpRequest, limit: usize) -> anyhow::Result<()> {
+    let length = request.content_length;
+    if length > limit {
+        bail!("请求体过大（上限 {} MB）", limit / 1024 / 1024);
     }
-    while body.len() < length {
-        let mut chunk = vec![0u8; (length - body.len()).min(64 * 1024)];
+    while request.body.len() < length {
+        let mut chunk = vec![0u8; (length - request.body.len()).min(64 * 1024)];
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
             bail!("请求体不完整");
         }
-        body.extend_from_slice(&chunk[..read]);
+        request.body.extend_from_slice(&chunk[..read]);
     }
-    body.truncate(length);
-    Ok(HttpRequest { body, ..request })
+    request.body.truncate(length);
+    Ok(())
 }
 
 pub fn parse_head(head: &str) -> anyhow::Result<HttpRequest> {
@@ -151,7 +161,11 @@ pub fn parse_head(head: &str) -> anyhow::Result<HttpRequest> {
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
         .collect();
-    Ok(HttpRequest { method, path: path.to_string(), query, headers, body: Vec::new() })
+    Ok(HttpRequest { method, path: path.to_string(), query, headers, body: Vec::new(), content_length: 0 })
+}
+
+fn percent_decode_lossy(text: &str) -> String {
+    percent_decode(text).unwrap_or_else(|| text.to_string())
 }
 
 fn percent_decode(text: &str) -> Option<String> {
@@ -235,6 +249,8 @@ fn authenticate(request: &HttpRequest, context: &ServerContext, peer: &SocketAdd
 /// 每个接口需要的最低权限。
 pub fn required_role(method: &str, segments: &[&str]) -> Role {
     match (method, segments) {
+        // 浏览电脑上的文件夹：新建会话选目录用，和新建会话同一档。
+        ("GET", ["fs", ..]) => Role::Message,
         ("GET", _) => Role::View,
         ("POST", ["threads", _, "settings"] | ["threads", _, "requests", _]) => Role::Full,
         _ => Role::Message,
@@ -242,7 +258,7 @@ pub fn required_role(method: &str, segments: &[&str]) -> Role {
 }
 
 async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, context: Arc<ServerContext>) -> anyhow::Result<()> {
-    let request = match read_request(&mut stream).await {
+    let mut request = match read_request(&mut stream).await {
         Ok(request) => request,
         Err(error) => return write_json(&mut stream, 400, &json!({ "ok": false, "error": error.to_string() })).await,
     };
@@ -268,6 +284,9 @@ async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, conte
         return write_json(&mut stream, 403, &json!({ "ok": false, "error": "Origin 不被允许" })).await;
     }
     if request.method == "POST" && request.path == "/api/pair" {
+        if let Err(error) = read_body(&mut stream, &mut request, MAX_BODY_BYTES).await {
+            return write_json(&mut stream, 400, &json!({ "ok": false, "error": error.to_string() })).await;
+        }
         return pair(&mut stream, &request, &peer).await;
     }
     let Some(principal) = authenticate(&request, &context, &peer) else {
@@ -280,6 +299,21 @@ async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, conte
     let segments: Vec<&str> = request.path.trim_start_matches("/api/").split('/').filter(|s| !s.is_empty()).collect();
     if principal.role() < required_role(&request.method, &segments) {
         return write_json(&mut stream, 403, &json!({ "ok": false, "error": "这台设备的权限不够，可在 Codex++ 的设备列表里调整" })).await;
+    }
+    let limit = if request.method == "POST" && segments.as_slice() == ["uploads"] { MAX_UPLOAD_BYTES } else { MAX_BODY_BYTES };
+    if let Err(error) = read_body(&mut stream, &mut request, limit).await {
+        return write_json(&mut stream, 400, &json!({ "ok": false, "error": error.to_string() })).await;
+    }
+    let segments: Vec<&str> = request.path.trim_start_matches("/api/").split('/').filter(|s| !s.is_empty()).collect();
+    // 上传的图片原样回给网页显示（只认上传目录里的文件）。
+    if request.method == "GET" && segments.as_slice() == ["uploads", "raw"] {
+        return match super::uploads::resolve(request.query.get("path").map(String::as_str).unwrap_or_default()) {
+            Ok(path) => match tokio::fs::read(&path).await {
+                Ok(bytes) => write_body(&mut stream, 200, super::uploads::content_type(&path), &bytes).await,
+                Err(_) => write_json(&mut stream, 404, &json!({ "ok": false, "error": "文件不存在" })).await,
+            },
+            Err(error) => write_json(&mut stream, 400, &json!({ "ok": false, "error": error.to_string() })).await,
+        };
     }
     if let ["threads", thread_id, "stream"] = segments.as_slice() {
         if request.header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
@@ -351,22 +385,34 @@ async fn route(request: &HttpRequest, segments: &[&str], context: &ServerContext
             Ok(me)
         }
         ("GET", ["status"]) => Ok(service.status().await),
+        ("GET", ["fs", "dirs"]) => super::uploads::list_dirs(request.query.get("path").map(String::as_str)),
+        ("POST", ["uploads"]) => {
+            let name = request.header("x-file-name").map(percent_decode_lossy).unwrap_or_default();
+            super::uploads::save(&name, request.header("content-type").unwrap_or_default(), &request.body)
+        }
         ("GET", ["threads"]) => service.list_threads(request.query.get("cursor").map(String::as_str)).await,
         ("POST", ["threads"]) => {
             let body = json_body(request)?;
             let cwd = text_field(&body, "cwd")?;
             let name = body.get("name").and_then(Value::as_str).filter(|name| !name.trim().is_empty()).unwrap_or("远程会话");
             let thread_id = service.create_thread(&cwd, name).await?;
-            if let Some(text) = body.get("text").and_then(Value::as_str).filter(|text| !text.trim().is_empty()) {
-                service.send(&thread_id, text).await?;
+            let text = body.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            let attachments = super::uploads::attachments_from(&body)?;
+            if !text.is_empty() || !attachments.is_empty() {
+                service.send_with(&thread_id, &text, &attachments).await?;
             }
             Ok(json!({ "threadId": thread_id }))
         }
         ("GET", ["threads", id]) => service.thread_view(&valid_thread_id(id)?).await,
         ("POST", ["threads", id, "open"]) => Ok(service.open_thread(&valid_thread_id(id)?).await?.view()),
         ("POST", ["threads", id, "messages"]) => {
-            let text = text_field(&json_body(request)?, "text")?;
-            service.send(&valid_thread_id(id)?, &text).await
+            let body = json_body(request)?;
+            let text = body.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            let attachments = super::uploads::attachments_from(&body)?;
+            if text.is_empty() && attachments.is_empty() {
+                bail!("缺少 text");
+            }
+            service.send_with(&valid_thread_id(id)?, &text, &attachments).await
         }
         ("POST", ["threads", id, "interrupt"]) => service.interrupt(&valid_thread_id(id)?).await,
         ("GET", ["threads", id, "options"]) => service.options(&valid_thread_id(id)?).await,
@@ -503,7 +549,7 @@ async fn write_json<S: Connection>(stream: &mut S, status: u16, body: &Value) ->
 
 async fn write_page<S: Connection>(stream: &mut S, host: &str) -> anyhow::Result<()> {
     let csp = format!(
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; manifest-src 'self'; connect-src 'self' ws://{host} wss://{host}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; manifest-src 'self'; connect-src 'self' ws://{host} wss://{host}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: {csp}\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n",

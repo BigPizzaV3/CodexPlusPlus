@@ -257,6 +257,37 @@
   .m-chips .ring { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
   .m-chips .ring svg { width: 18px; height: 18px; }
   .m-readonly { padding: 12px 4px; text-align: center; color: var(--m-sub); font-size: 13px; }
+  /* 待发送的附件 */
+  .m-attach { display: flex; gap: 8px; padding: 0 2px 8px; overflow-x: auto; scrollbar-width: none; }
+  .m-attach::-webkit-scrollbar { display: none; }
+  .m-attach .item { position: relative; flex: 0 0 auto; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; background: var(--m-pill);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 10px; color: var(--m-sub); }
+  .m-attach .item img { width: 100%; height: 100%; object-fit: cover; }
+  .m-attach .item svg { width: 22px; height: 22px; }
+  .m-attach .item .name { max-width: 58px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 3px; }
+  .m-attach .item .x { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; background: rgb(0 0 0 / .55); color: #fff;
+    font-size: 12px; line-height: 18px; text-align: center; }
+  .m-attach .item.uploading::after { content: attr(data-progress); position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgb(0 0 0 / .45); color: #fff; font-size: 13px; font-weight: 600; }
+  .m-attach .item.error { outline: 2px solid var(--m-red); }
+  /* 消息里的图片 / 文件 */
+  .m-photo { max-width: min(220px, calc(100% - 100px)); border-radius: 6px; overflow: hidden; background: var(--m-in); cursor: zoom-in; }
+  .m-photo img { display: block; max-width: 100%; max-height: 300px; object-fit: cover; }
+  .m-photo.missing { padding: 18px 22px; color: var(--m-sub); font-size: 13px; cursor: default; }
+  .m-file { display: flex; align-items: center; gap: 10px; width: 220px; max-width: calc(100% - 100px); padding: 12px; border-radius: 6px; background: var(--m-in); color: var(--m-text); box-sizing: border-box; }
+  .m-file svg { flex: 0 0 auto; width: 30px; height: 30px; color: var(--m-blue); }
+  .m-file span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+  .m-viewer { position: fixed; inset: 0; z-index: 40; background: #000; display: flex; align-items: center; justify-content: center; }
+  .m-viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  /* 文件夹浏览 */
+  .m-sheet .crumb { padding: 10px 18px; font-size: 13px; color: var(--m-sub); word-break: break-all; background: var(--m-bg); }
+  .m-sheet .opt .folder { flex: 0 0 auto; width: 24px; height: 24px; color: var(--m-blue); }
+  .m-sheet .opt .git { flex: 0 0 auto; font-size: 11px; padding: 1px 6px; border-radius: 4px; color: var(--m-green); border: 1px solid currentColor; }
+  .m-sheet .pick { position: sticky; bottom: 0; padding: 10px 18px; background: var(--m-row); border-top: 1px solid var(--m-line); display: grid; gap: 6px; }
+  .m-sheet .pick small { color: var(--m-sub); font-size: 12px; word-break: break-all; }
+  .m-sheet .chosen { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; background: var(--m-bg); }
+  .m-sheet .chosen span { flex: 1; min-width: 0; word-break: break-all; font-size: 14px; }
+  .m-sheet .chosen button { flex: 0 0 auto; color: var(--m-blue); font-size: 14px; }
   /* 设置 */
   .m-settings { background: var(--m-bg); }
   .m-group { margin: 12px 0 0; background: var(--m-row); }
@@ -398,8 +429,9 @@
     </header>
     <div class="m-log" id="mLog"></div>
     <footer class="m-composer" id="mComposer">
+      <div class="m-attach" id="mAttach" hidden></div>
       <div class="m-pill">
-        <button class="plus" id="mPlus" aria-label="更多操作"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="plus" id="mPlus" aria-label="发图片或文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
         <textarea id="mInput" rows="1" placeholder="发消息..." enterkeyhint="send"></textarea>
         <button class="go send" id="mGo" aria-label="发送" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
       </div>
@@ -1052,7 +1084,12 @@
       shield: svg('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v4M12 16h.01"/>'),
       spark: svg('<path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/>'),
       bot: svg('<path d="m7 9 3 3-3 3M13 15h4"/>', ' stroke-width="2.2"'),
+      file: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/>'),
+      folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'),
     };
+    // 附件：上传到这台电脑的上传目录，发消息时带上路径。
+    ui.pending = [];
+    const rawUrl = (path) => `/api/uploads/raw?path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`;
 
     // ---------- 未读：每个会话上次看到时的 updatedAt，存在本机 ----------
     let seen = null;
@@ -1237,6 +1274,152 @@
       return node;
     }
 
+    /** 消息里的图片 / 文件。上传目录里的图片能取原图；别处的（比如桌面上粘贴的）只显示占位。 */
+    function attachmentNode(attachment) {
+      if (attachment.kind === "image") {
+        const box = el("div", "m-photo");
+        const src = attachment.path ? rawUrl(attachment.path) : attachment.url && /^(data:image|https?:)/.test(attachment.url) ? attachment.url : null;
+        if (!src) {
+          box.classList.add("missing");
+          box.textContent = "[图片]";
+          return box;
+        }
+        const img = el("img");
+        img.alt = attachment.name || "图片";
+        img.loading = "lazy";
+        img.src = src;
+        img.onerror = () => { box.classList.add("missing"); box.replaceChildren(document.createTextNode("[图片]")); };
+        // 图片加载出来会把内容撑高：原本在底部就继续贴着底部。
+        img.onload = () => {
+          const log = $("mLog");
+          if (log.scrollHeight - log.scrollTop - log.clientHeight < img.clientHeight + 160) log.scrollTop = log.scrollHeight;
+        };
+        box.append(img);
+        box.onclick = () => openViewer(src);
+        return box;
+      }
+      const card = el("div", "m-file");
+      card.innerHTML = ICON.file;
+      card.append(el("span", "", attachment.name || "文件"));
+      return card;
+    }
+
+    function openViewer(src) {
+      const viewer = el("div", "m-viewer");
+      const img = el("img");
+      img.src = src;
+      viewer.append(img);
+      viewer.onclick = () => viewer.remove();
+      $("m").append(viewer);
+    }
+
+    // ---------- 附件：选择、压缩、上传 ----------
+    function pickFiles(accept, capture) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = !capture;
+      if (accept) input.accept = accept;
+      if (capture) input.setAttribute("capture", capture);
+      input.onchange = () => { for (const file of input.files || []) addPending(file); };
+      input.click();
+    }
+
+    /** 大图先在手机上缩到长边 2048、转 JPEG，上传快，也省模型的上下文。 */
+    async function shrinkImage(file) {
+      if (!file.type.startsWith("image/") || file.type === "image/gif" || file.size < 1.5 * 1024 * 1024) return file;
+      try {
+        const bitmap = await createImageBitmap(file);
+        const scale = Math.min(1, 2048 / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(bitmap.width * scale);
+        canvas.height = Math.round(bitmap.height * scale);
+        canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+        if (!blob || blob.size >= file.size) return file;
+        return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+      } catch {
+        return file;
+      }
+    }
+
+    function upload(file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open("POST", "/api/uploads");
+        request.setRequestHeader("Authorization", `Bearer ${token}`);
+        request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+        request.setRequestHeader("X-File-Name", encodeURIComponent(file.name || "file"));
+        request.upload.onprogress = (event) => event.lengthComputable && onProgress(event.loaded / event.total);
+        request.onload = () => {
+          let payload = {};
+          try { payload = JSON.parse(request.responseText); } catch {}
+          if (request.status === 401) unauthorized(payload.error);
+          if (payload.ok) resolve(payload.data);
+          else reject(new Error(payload.error || `HTTP ${request.status}`));
+        };
+        request.onerror = () => reject(new Error("上传失败，检查网络"));
+        request.send(file);
+      });
+    }
+
+    async function addPending(original) {
+      if (ui.pending.length >= 9) return toast("一次最多带 9 个附件");
+      const isImage = original.type.startsWith("image/");
+      const entry = { key: Math.random().toString(36).slice(2), name: original.name || "文件", kind: isImage ? "image" : "file", status: "uploading", progress: 0,
+        preview: isImage ? URL.createObjectURL(original) : null };
+      ui.pending.push(entry);
+      renderAttach();
+      try {
+        const file = await shrinkImage(original);
+        const data = await upload(file, (ratio) => { entry.progress = ratio; renderAttach(); });
+        Object.assign(entry, { status: "ready", path: data.path, name: data.name, kind: data.kind });
+      } catch (error) {
+        entry.status = "error";
+        toast(`${entry.name}：${error.message}`);
+      }
+      renderAttach();
+    }
+
+    function removePending(key) {
+      const entry = ui.pending.find((item) => item.key === key);
+      if (entry?.preview) URL.revokeObjectURL(entry.preview);
+      ui.pending = ui.pending.filter((item) => item.key !== key);
+      renderAttach();
+    }
+
+    function renderAttach() {
+      const tray = $("mAttach");
+      tray.hidden = !ui.pending.length;
+      tray.replaceChildren(...ui.pending.map((entry) => {
+        const item = el("div", `item ${entry.status}`);
+        item.dataset.progress = `${Math.round(entry.progress * 100)}%`;
+        if (entry.preview) {
+          const img = el("img");
+          img.src = entry.preview;
+          item.append(img);
+        } else {
+          item.innerHTML = ICON.file;
+          item.append(el("span", "name", entry.name));
+        }
+        const remove = el("button", "x", "×");
+        remove.setAttribute("aria-label", "移除");
+        remove.onclick = () => removePending(entry.key);
+        item.append(remove);
+        return item;
+      }));
+      renderComposer();
+    }
+
+    function openAttachSheet() {
+      openSheet("", (body) => {
+        body.append(
+          optionButton({ label: "照片", detail: "从相册选，可多选", onClick: () => pickFiles("image/*") }),
+          optionButton({ label: "拍照", onClick: () => pickFiles("image/*", "environment") }),
+          optionButton({ label: "文件", detail: "代码、文档、日志等，Codex 会去读它", onClick: () => pickFiles("") }),
+        );
+      });
+    }
+
     function typingBubble() {
       const node = el("div", "m-bubble typing");
       node.append(el("i"), el("i"), el("i"));
@@ -1280,7 +1463,10 @@
       const nodes = [];
       for (const item of turn.items || []) {
         switch (item.type) {
-          case "userMessage": nodes.push(msgNode("out", textBubble(item.text))); break;
+          case "userMessage":
+            for (const attachment of item.attachments || []) nodes.push(msgNode("out", attachmentNode(attachment)));
+            if (item.text || !(item.attachments || []).length) nodes.push(msgNode("out", textBubble(item.text)));
+            break;
           case "steeringUserMessage": nodes.push(msgNode("out", textBubble(item.text, "插话"))); break;
           case "agentMessage": if (item.text) nodes.push(msgNode("in", textBubble(item.text))); break;
           case "commandExecution": nodes.push(msgNode("in", commandCard(item))); break;
@@ -1414,7 +1600,10 @@
       $("mComposer").hidden = !allowed;
       $("mReadonly").hidden = allowed;
       const running = state.view?.runtime === "active";
-      const hasText = !!$("mInput").value.trim();
+      const ready = ui.pending.filter((entry) => entry.status === "ready");
+      const uploading = ui.pending.some((entry) => entry.status === "uploading");
+      const hasText = !!$("mInput").value.trim() || ready.length > 0;
+      $("mGo").disabled = uploading;
       const go = $("mGo");
       go.hidden = !hasText && !running;
       go.className = `go ${hasText ? "send" : "stop"}`;
@@ -1468,7 +1657,9 @@
 
     async function send() {
       const text = $("mInput").value.trim();
-      if (!text) {
+      if (ui.pending.some((entry) => entry.status === "uploading")) return toast("附件还在上传…");
+      const attachments = ui.pending.filter((entry) => entry.status === "ready").map(({ path, name, kind }) => ({ path, name, kind }));
+      if (!text && !attachments.length) {
         if (state.view?.runtime === "active") await interrupt();
         return;
       }
@@ -1477,8 +1668,11 @@
       ui.stick = true;
       $("mGo").disabled = true;
       try {
-        await api("POST", `/threads/${state.current}/messages`, { text });
+        await api("POST", `/threads/${state.current}/messages`, { text, attachments });
         $("mInput").value = "";
+        for (const entry of ui.pending) if (entry.preview) URL.revokeObjectURL(entry.preview);
+        ui.pending = [];
+        renderAttach();
         autosize();
         if (!state.socket && !state.poller) connectSocket(state.current);
       } catch (error) {
@@ -1597,6 +1791,7 @@
           body.append(optionButton({ label: "在桌面打开", detail: running ? "等这一轮跑完再打开" : "让桌面 Codex 切到这个会话", disabled: running, onClick: openInDesktop }));
         }
         if (running && can("message")) body.append(optionButton({ label: "停止这一轮", danger: true, onClick: interrupt }));
+        if (view.cwd && can("message")) body.append(optionButton({ label: "在这个项目新建会话", detail: view.cwd, onClick: () => openNewSheet(view.cwd) }));
         body.append(optionButton({ label: "刷新", onClick: () => selectThread(state.current) }));
       });
     }
@@ -1619,41 +1814,55 @@
       });
     }
 
-    function openNewSheet(presetCwd) {
+    /**
+     * 新建会话。在项目里点 ⊕（或对话里「在这个项目新建会话」）时 `presetCwd` 已定，不用选目录；
+     * 在列表上点 ⊕ 时从已有项目里挑，或「选择其他文件夹」浏览这台电脑上的目录。
+     */
+    function openNewSheet(presetCwd, chosenCwd) {
       if (!can("message")) return toast("这台设备只能查看");
       const projects = projectsOf(state.threads).filter((project) => project.cwd);
-      let cwd = presetCwd ?? projects[0]?.cwd ?? "";
-      openSheet("新建会话", (body) => {
-        if (presetCwd == null && projects.length) {
+      let cwd = presetCwd ?? chosenCwd ?? projects[0]?.cwd ?? "";
+      const draft = openNewSheet.draft || { name: "", text: "" };
+      openNewSheet.draft = null;
+      openSheet(presetCwd != null ? `在「${baseName(presetCwd)}」新建会话` : "新建会话", (body) => {
+        const name = el("input");
+        name.placeholder = "会话名称（可选）";
+        name.value = draft.name;
+        const text = el("textarea");
+        text.placeholder = "第一条消息（可选）";
+        text.value = draft.text;
+        const keepDraft = () => { openNewSheet.draft = { name: name.value, text: text.value }; };
+        if (presetCwd == null) {
           body.append(el("div", "section", "项目"));
           const row = el("div", "seg-row");
+          const chosenLine = el("div", "chosen");
+          const chosenText = el("span", "", cwd || "还没选文件夹");
+          const browse = el("button", "", "选择其他文件夹…");
+          browse.onclick = () => { keepDraft(); openFolderSheet(cwd || null, (picked) => openNewSheet(null, picked)); };
+          chosenLine.append(chosenText, browse);
           for (const project of projects.slice(0, 12)) {
-            const button = el("button", project.cwd === cwd ? "on" : "", project.name);
+            const button = el("button", project.cwd.replace(/\/+$/, "") === cwd.replace(/\/+$/, "") ? "on" : "", project.name);
             button.onclick = () => {
               cwd = project.cwd;
-              path.value = cwd;
+              chosenText.textContent = cwd;
               for (const other of row.querySelectorAll("button")) other.classList.toggle("on", other === button);
             };
             row.append(button);
           }
-          body.append(row);
+          if (projects.length) body.append(row);
+          const pick = el("div", "form");
+          pick.style.paddingTop = "0";
+          pick.style.paddingBottom = "0";
+          pick.append(chosenLine);
+          body.append(pick);
         }
         const form = el("div", "form");
-        const path = el("input");
-        path.placeholder = "工作目录（绝对路径）";
-        path.value = cwd;
-        path.hidden = presetCwd != null;
-        const name = el("input");
-        name.placeholder = "会话名称（可选）";
-        const text = el("textarea");
-        text.placeholder = "第一条消息（可选）";
         const create = el("button", "primary-btn", "创建");
         create.onclick = async () => {
-          const target = path.value.trim();
-          if (!target) return toast("先选项目或填工作目录");
+          if (!cwd) return toast("先选一个项目或文件夹");
           create.disabled = true;
           try {
-            const data = await api("POST", "/threads", { cwd: target, name: name.value.trim() || undefined, text: text.value.trim() || undefined });
+            const data = await api("POST", "/threads", { cwd, name: name.value.trim() || undefined, text: text.value.trim() || undefined });
             closeSheet();
             await loadThreads();
             openChat(data.threadId, ui.screen === "project" ? "project" : "list");
@@ -1662,8 +1871,64 @@
             create.disabled = false;
           }
         };
-        form.append(path, name, text, create);
+        form.append(name, text, create);
         body.append(form);
+      });
+    }
+
+    /** 浏览这台电脑上的文件夹：点进去、上一级、「用这个文件夹」。 */
+    function openFolderSheet(start, onPick) {
+      openSheet("选择文件夹", (body) => {
+        const crumb = el("div", "crumb", "读取中…");
+        const list = el("div");
+        const pick = el("div", "pick");
+        const use = el("button", "primary-btn", "用这个文件夹");
+        const hint = el("small");
+        pick.append(use, hint);
+        body.append(crumb, list, pick);
+        let current = null;
+        async function go(path) {
+          use.disabled = true;
+          try {
+            const data = await api("GET", `/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+            current = data.path;
+            const home = data.home;
+            crumb.textContent = current.startsWith(home) ? `~${current.slice(home.length)}` || "~" : current;
+            const rows = [];
+            if (data.parent) {
+              const up = el("button", "opt");
+              up.append(el("span", "label", "‹ 上一级"));
+              up.onclick = () => go(data.parent);
+              rows.push(up);
+            }
+            if (current !== home) {
+              const homeButton = el("button", "opt");
+              homeButton.append(el("span", "label", "⌂ 主目录"));
+              homeButton.onclick = () => go(home);
+              rows.push(homeButton);
+            }
+            for (const entry of data.entries) {
+              const row = el("button", "opt");
+              const icon = el("span");
+              icon.className = "folder";
+              icon.innerHTML = ICON.folder;
+              row.append(icon, el("span", "label", entry.name));
+              if (entry.git) row.append(el("span", "git", "git"));
+              row.onclick = () => go(entry.path);
+              rows.push(row);
+            }
+            if (!data.entries.length) rows.push(el("div", "m-empty", "这里没有子文件夹"));
+            list.replaceChildren(...rows);
+            body.scrollTop = 0;
+            hint.textContent = data.git ? "这是一个 git 仓库" : current;
+            use.disabled = false;
+          } catch (error) {
+            toast(error.message);
+            if (!current) crumb.textContent = error.message;
+          }
+        }
+        use.onclick = () => { if (!current) return; closeSheet(); onPick(current); };
+        go(start);
       });
     }
 
@@ -1741,6 +2006,9 @@
       selectThread(id);
     }
     function leaveChat() {
+      for (const entry of ui.pending) if (entry.preview) URL.revokeObjectURL(entry.preview);
+      ui.pending = [];
+      renderAttach();
       closeSocket();
       markSeen(state.current);
       state.current = null;
@@ -1786,7 +2054,7 @@
     $("mProjectBack").onclick = goBack;
     $("mChatBack").onclick = goBack;
     $("mChatMore").onclick = openMoreSheet;
-    $("mPlus").onclick = openMoreSheet;
+    $("mPlus").onclick = openAttachSheet;
     $("mGo").onclick = send;
     $("mSearch").oninput = () => { ui.query = $("mSearch").value; renderList(); };
     $("mInput").addEventListener("input", () => { autosize(); renderComposer(); });

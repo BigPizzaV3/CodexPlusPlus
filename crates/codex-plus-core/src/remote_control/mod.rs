@@ -21,6 +21,7 @@ pub mod server;
 pub mod service;
 pub mod sidecar;
 pub mod tls;
+pub mod uploads;
 pub mod versions;
 
 use std::path::PathBuf;

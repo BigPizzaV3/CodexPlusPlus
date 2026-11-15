@@ -73,7 +73,13 @@ http.createServer(async (req, res) => {
     const { appendFileSync } = await import("node:fs");
     const developers = input.filter((item) => item.role === "developer").map(textOf);
     const modes = developers.map((text) => (/# Plan Mode\b/.test(text) ? "Plan" : (text.match(/Collaboration Mode: (\w+)/) || [])[1])).filter(Boolean);
-    appendFileSync(process.env.MOCK_LOG, `${JSON.stringify({ id, model: json.model, effort: json.reasoning?.effort ?? null, mode: modes.at(-1)?.toLowerCase() ?? mode, modes, sandbox, user: userText.slice(0, 60) })}\n`);
+    // 附件核对：最后一条用户消息里有几张图（input_image），以及引用了哪些文件路径。
+    const lastUser = [...input].reverse().find((item) => item.role === "user");
+    const parts = Array.isArray(lastUser?.content) ? lastUser.content : [];
+    const images = parts.filter((part) => part.type === "input_image").length;
+    // 文件引用可能在文本里，也可能在别的结构里：直接扫整个请求体。
+    const files = [...new Set((body.match(/remote-uploads\/[^\s)\]"'<>\\]+/g) || []).map((file) => decodeURIComponent(file)))];
+    appendFileSync(process.env.MOCK_LOG, `${JSON.stringify({ id, model: json.model, effort: json.reasoning?.effort ?? null, mode: modes.at(-1)?.toLowerCase() ?? mode, modes, sandbox, user: userText.slice(0, 60), images, files })}\n`);
   }
 
   if (last?.type === "function_call_output") {
