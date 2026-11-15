@@ -80,6 +80,7 @@ mod gateway_rate_limit;
 mod gateway_restore;
 mod helper_body_limit_settings;
 mod history_turn_recovery;
+mod hooks_editor;
 mod installers;
 mod issue_20261018_compat;
 mod issue_renderer_regressions;

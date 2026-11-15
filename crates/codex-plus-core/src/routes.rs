@@ -446,6 +446,25 @@ pub async fn handle_bridge_request(
             "status": "ok",
             "prompts": crate::custom_prompts::list_custom_prompts(&crate::codex_home::default_codex_home_dir()),
         })),
+        // Codex 设置页「Hooks 编辑器」（96-hooks-editor.js）。不在拓展路由白名单里：能写 hooks.json、能执行命令。
+        "/hooks/files" => {
+            let payload = payload.clone();
+            let home = crate::codex_home::default_codex_home_dir();
+            tokio::task::spawn_blocking(move || crate::hooks_editor::list_files(&home, &payload))
+                .await
+                .map_err(anyhow::Error::from)
+        }
+        "/hooks/file/write" => {
+            let payload = payload.clone();
+            let home = crate::codex_home::default_codex_home_dir();
+            tokio::task::spawn_blocking(move || crate::hooks_editor::write_file(&home, &payload))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+        }
+        "/hooks/test-run" => {
+            crate::hooks_editor::test_run(&crate::codex_home::default_codex_home_dir(), &payload).await
+        }
         // Codex 页面里的「供应商」页（43-provider-page.js）。不在拓展路由白名单里：会改供应商、带 Key。
         "/providers/list" => crate::provider_page::route_list(),
         // 保存 / 切换走管理器的同步命令（文件锁、live 文件读写），放到阻塞线程池里跑。

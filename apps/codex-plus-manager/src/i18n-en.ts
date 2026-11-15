@@ -447,6 +447,8 @@ export const EN_PLAIN: Record<string, string> = {
   "提醒": "Alerts",
   "网页开着时，需要审批、模型提问或一轮跑完会用标题、振动和系统通知提醒。网页关掉后收不到：自签证书下浏览器不允许后台推送。": "While the page is open, approvals, model questions and finished turns are signalled through the tab title, vibration and system notifications. Nothing arrives once the page is closed: browsers do not allow background push with a self-signed certificate.",
   "在浏览器里查看和操控 Codex 桌面的会话：发消息、停止、审批命令、回答提问": "View and control Codex desktop sessions from a browser: send messages, stop runs, approve commands, answer questions",
+  "在 Codex 设置页按模板新建、编辑、启停 hooks.json 里的 hook，并能喂示例事件试运行": "Create hooks from templates, edit and toggle the hooks in hooks.json from Codex settings, and test-run them with a sample event",
+  "Hooks 编辑器": "Hooks editor",
   "在 Codex 设置页列出原生实验开关（阶段 / 默认值 / 说明），可直接启停": "Lists native experimental features in Codex settings, with stage, default value and description, and lets you toggle them",
   "输入框旁的麦克风按钮，录音转写成文字": "A microphone button next to the composer that transcribes speech",
   "轮次回退": "Turn rewind",

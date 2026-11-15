@@ -211,9 +211,14 @@
       "lines": 982
     },
     {
+      "name": "96-hooks-editor.js",
+      "description": "内置拓展 Hooks 编辑器：hooks.json 的模板新建、编辑、启停、信任与试运行",
+      "lines": 1188
+    },
+    {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 441
+      "lines": 442
     },
     {
       "name": "96-paste-fix.js",

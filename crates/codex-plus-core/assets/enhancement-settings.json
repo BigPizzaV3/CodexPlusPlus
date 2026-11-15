@@ -445,6 +445,12 @@
       "group": "plugins"
     },
     {
+      "id": "hooks-editor",
+      "title": "Hooks 编辑器",
+      "description": "在 Codex 设置页按模板新建、编辑、启停 hooks.json 里的 hook，并能喂示例事件试运行",
+      "group": "plugins"
+    },
+    {
       "id": "dictation",
       "title": "语音听写",
       "description": "输入框旁的麦克风按钮，录音转写成文字",

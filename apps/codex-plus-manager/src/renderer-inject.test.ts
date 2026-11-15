@@ -2777,7 +2777,7 @@ describe("拓展接口层", () => {
     assert.ok(routes.length > 0, "白名单不能为空");
     // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
     // 「供应商」页的路由会改供应商、带 Key（43-provider-page.js），只给内置页面用。
-    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create", "/providers/list", "/providers/commit", "/providers/test", "/providers/models", "/providers/gateway"]) {
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create", "/providers/list", "/providers/commit", "/providers/test", "/providers/models", "/providers/gateway", "/hooks/files", "/hooks/file/write", "/hooks/test-run"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");

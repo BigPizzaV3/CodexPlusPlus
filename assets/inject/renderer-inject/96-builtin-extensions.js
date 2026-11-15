@@ -33,6 +33,7 @@
       // bundled:usage-statusline、bundled:proxy-request-status），不再是内置拓展。
       { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
       { id: "feature-lab", name: "Feature Lab", apply: codexPlusFeatureLabExtension },
+      { id: "hooks-editor", name: "Hooks 编辑器", apply: codexPlusHooksEditorExtension },
       { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
       { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
       // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
