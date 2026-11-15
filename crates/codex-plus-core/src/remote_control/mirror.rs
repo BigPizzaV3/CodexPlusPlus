@@ -4,7 +4,8 @@
 //! - 调试端口不对外：网页只连我们已认证的 `/api/mirror`，这里替它连本机的 CDP，只转发画面和白名单内的输入。
 //! - 输入法用的是网页那一端设备的：网页把「已确定的文字」发来，这里用 `Input.insertText` 写进 Codex 当前聚焦处，
 //!   不经过 Mac 的输入法，中文 / 语音输入都能用；回车、退格、方向键等单独作为按键发。
-//! - 画面是 JPEG 二进制帧；尺寸等元数据变化时另发一条 JSON。每帧发完才回 `screencastFrameAck`，网络慢时自然降帧。
+//! - 画面是 JPEG 二进制帧；尺寸等元数据变化时另发一条 JSON。Chromium 出一帧就确认，往网页只发最新一帧：
+//!   网络慢时丢掉没来得及发的旧帧，画面不会越积越落后。
 //! - 它就是桌面上那个窗口：网页上的操作桌面同步可见。
 //! - 镜像期间打开 `Emulation.setFocusEmulationEnabled`：Codex 窗口失焦、被挡住、最小化时，页面仍当自己可见且有焦点，
 //!   照常出画面、收键盘（Chromium 会给页面加一个「正在被捕获」的计数，不再按隐藏处理）。连接断开后 Chromium 自动撤销。
@@ -18,14 +19,17 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 const MAX_TEXT_CHARS: usize = 20_000;
 const MAX_KEY_FIELD_CHARS: usize = 32;
 const MAX_FRAME_SIDE: u32 = 2560;
 const MIN_FRAME_SIDE: u32 = 200;
-const JPEG_QUALITY: u32 = 70;
+const JPEG_QUALITY: u32 = 60;
 const REVALIDATE_EVERY: Duration = Duration::from_secs(3);
+const REVOKED: &str = "revoked";
+/// 往网页发画面的最短间隔（约 30 帧/秒）：Chromium 能出 60–90 帧，全发 Wi-Fi 吃不消，看起来也没差别。
+const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// macOS 上 CDP 按键事件触发编辑命令要带 `commands`（Cmd+A 全选之类）；只放这些。
 const ALLOWED_COMMANDS: &[&str] = &[
@@ -184,82 +188,131 @@ where
     socket.send(send(json!({ "type": "ready", "title": target.title }))).await?;
     // 窗口失焦 / 最小化也照常出画面、接收输入。
     cdp.send(command("Emulation.setFocusEmulationEnabled", json!({ "enabled": true }))).await?;
-    let mut meta: Option<Value> = None;
-    let mut revalidate = tokio::time::interval(REVALIDATE_EVERY);
-    let reason = loop {
-        tokio::select! {
-            incoming = socket.next() => {
-                let text = match incoming {
-                    Some(Ok(Message::Text(text))) => text,
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break None,
-                    _ => continue,
-                };
-                let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
-                match message.get("type").and_then(Value::as_str) {
-                    Some("start") => {
-                        cdp.send(command("Page.stopScreencast", json!({}))).await?;
-                        cdp.send(command("Page.startScreencast", screencast_params(&message))).await?;
+    // 读写分开：画面只留最新一帧（watch 会盖掉还没发出去的旧帧），网络慢时丢帧而不是越积越多、越来越卡。
+    let (mut sink, mut stream) = socket.split();
+    let (text_tx, mut text_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let (frame_tx, mut frame_rx) = tokio::sync::watch::channel(Bytes::new());
+    let writer = async {
+        let mut next_frame_at = tokio::time::Instant::now();
+        loop {
+            let message = tokio::select! {
+                // 文字消息（尺寸、提示）先发，保证画面帧之前对端已拿到新尺寸。
+                biased;
+                text = text_rx.recv() => match text {
+                    Some(value) => send(value),
+                    None => break,
+                },
+                changed = frame_rx.changed() => match changed {
+                    Ok(()) => {
+                        // 没到间隔先等一下，等完取那时最新的一帧（期间来的旧帧直接跳过）。
+                        tokio::time::sleep_until(next_frame_at).await;
+                        // 按节拍排下一帧，而不是从现在起算：等新帧到来的那点时间不累加进去，平均才到得了 30 帧。
+                        next_frame_at = (next_frame_at + MIN_FRAME_INTERVAL).max(tokio::time::Instant::now());
+                        Message::Binary(frame_rx.borrow_and_update().clone())
                     }
-                    Some("stop") => {
-                        cdp.send(command("Page.stopScreencast", json!({}))).await?;
-                    }
-                    _ => match input_command(&message) {
-                        Ok((method, params)) => cdp.send(command(method, params)).await?,
-                        Err(error) => socket.send(send(json!({ "type": "warning", "error": error.to_string() }))).await?,
-                    },
-                }
+                    Err(_) => break,
+                },
+            };
+            if sink.send(message).await.is_err() {
+                break;
             }
-            event = cdp.next() => {
-                let text = match event {
-                    Some(Ok(Message::Text(text))) => text,
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break Some("Codex 页面关闭或刷新了"),
-                    _ => continue,
-                };
-                let Ok(event) = serde_json::from_str::<Value>(&text) else { continue };
-                match event.get("method").and_then(Value::as_str) {
-                    Some("Page.screencastFrame") => {
-                        let params = event.get("params").cloned().unwrap_or(Value::Null);
-                        let frame_meta = params.get("metadata").cloned().unwrap_or(Value::Null);
-                        let size = json!({
-                            "deviceWidth": frame_meta.get("deviceWidth"),
-                            "deviceHeight": frame_meta.get("deviceHeight"),
-                            "offsetTop": frame_meta.get("offsetTop"),
-                            "pageScaleFactor": frame_meta.get("pageScaleFactor"),
-                        });
-                        if meta.as_ref() != Some(&size) {
-                            socket.send(send(json!({ "type": "meta", "meta": size }))).await?;
-                            meta = Some(size);
+        }
+    };
+    let reader = async {
+        let mut meta: Option<Value> = None;
+        let mut revalidate = tokio::time::interval(REVALIDATE_EVERY);
+        loop {
+            tokio::select! {
+                incoming = stream.next() => {
+                    let text = match incoming {
+                        Some(Ok(Message::Text(text))) => text,
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break None,
+                        _ => continue,
+                    };
+                    let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+                    let sent = match message.get("type").and_then(Value::as_str) {
+                        Some("start") => {
+                            let stopped = cdp.send(command("Page.stopScreencast", json!({}))).await;
+                            stopped.and(cdp.send(command("Page.startScreencast", screencast_params(&message))).await)
                         }
-                        if let Some(data) = params.get("data").and_then(Value::as_str) {
-                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-                                socket.send(Message::Binary(bytes.into())).await?;
+                        Some("stop") => cdp.send(command("Page.stopScreencast", json!({}))).await,
+                        _ => match input_command(&message) {
+                            Ok((method, params)) => cdp.send(command(method, params)).await,
+                            Err(error) => {
+                                let _ = text_tx.send(json!({ "type": "warning", "error": error.to_string() }));
+                                Ok(())
+                            }
+                        },
+                    };
+                    if sent.is_err() {
+                        break Some("Codex 页面关闭或刷新了");
+                    }
+                }
+                event = cdp.next() => {
+                    let text = match event {
+                        Some(Ok(Message::Text(text))) => text,
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break Some("Codex 页面关闭或刷新了"),
+                        _ => continue,
+                    };
+                    let Ok(event) = serde_json::from_str::<Value>(&text) else { continue };
+                    match event.get("method").and_then(Value::as_str) {
+                        Some("Page.screencastFrame") => {
+                            let params = event.get("params").cloned().unwrap_or(Value::Null);
+                            // 收到就确认：节奏由 Chromium 出帧决定，发不过去的旧帧在 writer 那里被新帧盖掉。
+                            if let Some(session_id) = params.get("sessionId") {
+                                if cdp.send(command("Page.screencastFrameAck", json!({ "sessionId": session_id }))).await.is_err() {
+                                    break Some("Codex 页面关闭或刷新了");
+                                }
+                            }
+                            let frame_meta = params.get("metadata").cloned().unwrap_or(Value::Null);
+                            let size = json!({
+                                "deviceWidth": frame_meta.get("deviceWidth"),
+                                "deviceHeight": frame_meta.get("deviceHeight"),
+                                "offsetTop": frame_meta.get("offsetTop"),
+                                "pageScaleFactor": frame_meta.get("pageScaleFactor"),
+                            });
+                            if meta.as_ref() != Some(&size) {
+                                let _ = text_tx.send(json!({ "type": "meta", "meta": size }));
+                                meta = Some(size);
+                            }
+                            if let Some(data) = params.get("data").and_then(Value::as_str) {
+                                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                                    let _ = frame_tx.send(Bytes::from(bytes));
+                                }
                             }
                         }
-                        // 发完再确认：网络慢时 Chromium 就少出几帧。
-                        if let Some(session_id) = params.get("sessionId") {
-                            cdp.send(command("Page.screencastFrameAck", json!({ "sessionId": session_id }))).await?;
+                        Some("Page.screencastVisibilityChanged") => {
+                            let visible = event.pointer("/params/visible").and_then(Value::as_bool).unwrap_or(true);
+                            let _ = text_tx.send(json!({ "type": "visibility", "visible": visible }));
                         }
+                        _ => {}
                     }
-                    Some("Page.screencastVisibilityChanged") => {
-                        let visible = event.pointer("/params/visible").and_then(Value::as_bool).unwrap_or(true);
-                        socket.send(send(json!({ "type": "visibility", "visible": visible }))).await?;
-                    }
-                    _ => {}
                 }
-            }
-            _ = revalidate.tick() => {
-                if !still_authorized() {
-                    let _ = socket.send(send(json!({ "type": "revoked", "reason": "这台设备已被移除" }))).await;
-                    break None;
+                _ = revalidate.tick() => {
+                    if !still_authorized() {
+                        break Some(REVOKED);
+                    }
                 }
             }
         }
     };
+    // 任一边结束（网页断开、写不出去、Codex 页面没了、设备被吊销）就收尾。
+    let reason = tokio::select! {
+        reason = reader => reason,
+        _ = writer => None,
+    };
     let _ = cdp.send(command("Page.stopScreencast", json!({}))).await;
     let _ = cdp.send(command("Emulation.setFocusEmulationEnabled", json!({ "enabled": false }))).await;
     let _ = cdp.close(None).await;
-    if let Some(reason) = reason {
-        let _ = socket.send(send(json!({ "type": "closed", "reason": reason, "reconnect": true }))).await;
+    let mut socket = sink.reunite(stream).map_err(|_| anyhow::anyhow!("镜像连接收尾失败"))?;
+    match reason {
+        Some(REVOKED) => {
+            let _ = socket.send(send(json!({ "type": "revoked", "reason": "这台设备已被移除" }))).await;
+        }
+        Some(reason) => {
+            let _ = socket.send(send(json!({ "type": "closed", "reason": reason, "reconnect": true }))).await;
+        }
+        None => {}
     }
     let _ = socket.close(None).await;
     Ok(())

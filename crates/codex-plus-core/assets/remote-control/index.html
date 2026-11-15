@@ -1127,8 +1127,36 @@
 
     function requestFrames() {
       const stage = $("mirrorStage");
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      // 高分屏要的像素多、每帧大：长边最多 1920，够看清字，带宽少一半以上。
+      const ratio = Math.min(window.devicePixelRatio || 1, 2, 1920 / Math.max(stage.clientWidth, stage.clientHeight, 1));
       send({ type: "start", width: Math.round(stage.clientWidth * ratio), height: Math.round(stage.clientHeight * ratio) });
+    }
+
+    // 一帧画面（JPEG）：同时只解一帧，解码期间来的只留最新一帧，跟不上时丢旧帧，不会越画越落后。
+    let decoding = false;
+    let pendingFrame = null;
+    async function drawFrame(blob) {
+      if (decoding) {
+        pendingFrame = blob;
+        return;
+      }
+      decoding = true;
+      try {
+        const bitmap = await createImageBitmap(blob);
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
+        context.drawImage(bitmap, 0, 0);
+        bitmap.close?.();
+        tip("");
+      } catch {}
+      decoding = false;
+      if (pendingFrame) {
+        const next = pendingFrame;
+        pendingFrame = null;
+        drawFrame(next);
+      }
     }
 
     function connect() {
@@ -1143,17 +1171,7 @@
       socket.onmessage = async (event) => {
         if (s.socket !== socket) return;
         if (typeof event.data !== "string") {
-          // 一帧画面：JPEG
-          try {
-            const bitmap = await createImageBitmap(event.data);
-            if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-              canvas.width = bitmap.width;
-              canvas.height = bitmap.height;
-            }
-            context.drawImage(bitmap, 0, 0);
-            bitmap.close?.();
-            tip("");
-          } catch {}
+          drawFrame(event.data);
           return;
         }
         const message = JSON.parse(event.data);
