@@ -654,7 +654,7 @@ fn web_page_offers_both_conversation_styles() {
     assert!(page.contains(r#"$("mProjectNew").onclick = () => openNewSheet(ui.project);"#));
 }
 
-/// 网页会话列表分两级：先按工作目录列项目，点进项目再看会话。
+/// Codex 样式照 Codex 桌面版：图标栏 + 侧栏（新聊天 / 项目 / 最近）+ 居中对话 + 输入卡片；会话按工作目录归到项目。
 #[test]
 fn web_page_groups_sessions_by_project() {
     let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
@@ -662,23 +662,41 @@ fn web_page_groups_sessions_by_project() {
     assert!(page.contains(r#"const key = thread.cwd || "";"#), "没记目录的会话单独一组");
     assert!(page.contains("project.updatedAt = Math.max(project.updatedAt"), "项目按最近活动排序");
     assert!(page.contains("if (isRunning(thread)) project.running += 1;"), "项目上带运行中数量");
-    assert!(page.contains(r#"state.project = project.cwd; renderThreads();"#), "点项目进入会话列表");
-    assert!(page.contains(r#"$("projectBack").onclick"#), "能回到项目列表");
-    // 桌面样式下图标栏一直可见，会话开着时点「‹ 项目」也要能退出去，不能只在列表页才生效。
-    let back_start = page.find(r#"$("projectBack").onclick"#).expect("有返回按钮的处理函数");
-    let back_body = &page[back_start..(back_start + 400).min(page.len())];
-    for line in [
-        r#"$("app").classList.remove("viewing")"#,
-        "state.current = null",
-        "state.project = null",
-        "renderThreads();",
-    ] {
-        assert!(back_body.contains(line), "「‹ 项目」缺少 {line}");
+    // 侧栏三段，项目可展开看会话，悬停「新建」直接在该项目里开新聊天（不用选目录）
+    for id in [r#"id="cxNew""#, r#"id="cxProjects""#, r#"id="threads""#, r#"class="cx-rail""#] {
+        assert!(page.contains(id), "缺少 {id}");
     }
-    assert!(!back_body.contains("contains(\"viewing\")) renderThreads"), "会话开着时不能把点击挡掉");
+    assert!(page.contains("add.onclick = (event) => { event.stopPropagation(); newChat(project.cwd); };"));
+    // 新聊天：先停在空白页，第一句话发出去才建会话；项目从输入卡片下方选，也能浏览文件夹
+    assert!(page.contains("async function createAndSend(text, attachments)"));
+    assert!(page.contains(r#"const data = await api("POST", "/threads", { cwd, text: attachments.length ? undefined : text || undefined });"#));
+    assert!(page.contains("m.openFolderSheet(state.draftCwd || null"), "新聊天可浏览这台电脑的文件夹");
+    // 对话：助手回复按 Markdown 显示（只建 DOM），命令可展开，改文件卡片带 +N -M
+    assert!(page.contains("function markdown(text)") && !page.contains("innerHTML = item.text"), "Markdown 不能走 innerHTML");
+    assert!(page.contains("function diffStat(change)") && page.contains(r#"el("b", "", `${verb} ${changes.length} 个文件`)"#));
+    // 输入卡片下方：加号 / 权限 / 模式 … 上下文 / 模型 / 发送；粘贴截图当附件
+    for name in ["function attachMenu(anchor)", "function permissionMenu(anchor)", "function modeMenu(anchor)", "function modelMenu(anchor)"] {
+        assert!(page.contains(name), "缺少 {name}");
+    }
+    assert!(page.contains(r#"$("input").addEventListener("paste""#));
+    // 窄屏：会话页「‹」回侧栏
+    let back_start = page.find(r#"$("back").onclick"#).expect("有返回按钮的处理函数");
+    let back_body = &page[back_start..(back_start + 300).min(page.len())];
+    for line in [r#"$("app").classList.remove("viewing")"#, "state.current = null", "renderThreads();"] {
+        assert!(back_body.contains(line), "「‹」缺少 {line}");
+    }
+}
 
-    assert!(page.contains(r#"const cwd = state.project !== null ? state.project : $("newCwd").value.trim();"#), "项目里新建会话用该项目的目录");
-    assert!(page.contains(r#"el("span", "count", ` (${project.threads.length})`)"#), "项目后显示会话数");
+/// 聊天样式在宽屏（电脑浏览器）上照电脑版微信：图标栏 + 会话列表 + 对话三栏并排；窄屏还是手机界面。
+#[test]
+fn chat_style_uses_pc_wechat_layout_on_wide_screens() {
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(page.contains("@media (min-width: 900px)") && page.contains("grid-template-columns: 64px 300px minmax(0, 1fr)"));
+    assert!(page.contains(r#"window.matchMedia?.("(min-width: 900px)")"#), "脚本和样式用同一个断点");
+    assert!(page.contains(r#"$("mChat").hidden = wideNow ? false : screen !== "chat";"#), "宽屏对话区一直在");
+    assert!(page.contains(r#".m-tabs .m-rail-only, .m-placeholder { display: none; }"#), "图标栏多出的按钮在手机上不显示");
+    assert!(page.contains(r#"$("mTabStyle").onclick = () => setStyle("codex");"#) && page.contains(r#"$("style").onclick"#), "两种样式随时互切");
+    assert!(page.contains(r#"go.textContent = stop ? "停止" : "发送";"#), "宽屏右下角是「发送」按钮");
 }
 
 /// 后台执行：网页回答转成 app-server 的回包（和桌面 follower 协议的字段不同）。

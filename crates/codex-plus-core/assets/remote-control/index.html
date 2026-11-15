@@ -33,64 +33,216 @@
   button.danger { color: var(--danger); }
   input, textarea { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; }
   textarea { resize: none; }
-  .app { display: grid; grid-template-columns: 300px 1fr; height: 100%; }
-  aside { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
-  aside header { padding: 12px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
-  aside header h1 { font-size: 15px; margin: 0; flex: 1; }
-  .threads { overflow: auto; flex: 1; }
-  .thread { padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
-  .thread:hover { background: var(--bg); }
-  .thread.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-  .thread .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .thread .meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .new-thread { padding: 10px 12px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
-  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  main header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; background: var(--panel); }
-  main header .title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
-  .badge.live { color: var(--ok); border-color: var(--ok); }
-  .badge.running { color: var(--accent); border-color: var(--accent); }
-  .log { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-  .empty { color: var(--muted); margin: auto; text-align: center; }
-  .turn { display: flex; flex-direction: column; gap: 8px; }
-  .msg { display: flex; gap: 8px; align-items: flex-start; max-width: 820px; }
-  .msg .bubble { white-space: pre-wrap; word-break: break-word; min-width: 0; }
-  .msg .avatar { display: none; flex: 0 0 auto; align-items: center; justify-content: center; font-weight: 600; }
-  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
-  .msg.user .bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 7px 12px; }
-  .msg.agent { align-self: flex-start; }
-  .msg.steer { align-self: flex-end; color: var(--muted); font-size: 13px; }
-  .thread-avatar, .thread-time { display: none; }
-  .more { display: none; }
-  .project-back { border: none; background: transparent; color: var(--muted); padding: 2px 6px 2px 0; font-size: 13px; }
-  .thread.project .title { font-weight: 600; }
-  .thread .count { color: var(--muted); font-weight: 400; }
-  .thread .running { color: var(--ok); }
-  .cmd { align-self: stretch; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
-  .cmd summary { cursor: pointer; }
-  .cmd pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto; }
-  .note { color: var(--muted); font-size: 12px; }
-  .requests { display: flex; flex-direction: column; gap: 8px; padding: 0 16px; }
-  .request { border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--panel); display: grid; gap: 8px; }
-  .request code { display: block; white-space: pre-wrap; word-break: break-all; background: var(--code); padding: 6px 8px; border-radius: 6px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
-  .request .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-  footer { padding: 8px 16px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; background: var(--panel); }
-  footer .compose { display: flex; gap: 8px; }
-  footer textarea { flex: 1; min-height: 40px; max-height: 160px; }
-  .controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   [hidden] { display: none !important; }
-  .controls select { font: inherit; font-size: 12px; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; max-width: 200px; }
-  .controls select:disabled { opacity: .5; }
-  .controls .plan { font-size: 12px; border-radius: 999px; padding: 3px 10px; }
-  .controls .plan.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--accent); }
-  .controls select.danger { border-color: var(--danger); color: var(--danger); }
-  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; z-index: 50; }
   .toast.show { opacity: .92; }
-  .back { display: none; }
-  .whoami { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; }
-  .whoami span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .whoami button { font-size: 12px; padding: 2px 8px; }
-  .readonly { color: var(--muted); font-size: 12px; }
+  /* ================= Codex 样式：照 Codex 桌面版（图标栏 + 侧栏「新聊天 / 项目 / 最近」+ 居中对话 + 输入卡片）================= */
+  :root {
+    --cx-bg: light-dark(#ffffff, #181818);
+    --cx-side: light-dark(#f7f7f8, #1f1f1f);
+    --cx-hover: light-dark(rgb(0 0 0 / .05), rgb(255 255 255 / .06));
+    --cx-active: light-dark(rgb(0 0 0 / .08), rgb(255 255 255 / .1));
+    --cx-line: light-dark(#e6e6e8, #2e2e2e);
+    --cx-text: light-dark(#1f1f1f, #ececec);
+    --cx-sub: light-dark(#6e6e73, #9b9b9b);
+    --cx-faint: light-dark(#a1a1a6, #6b6b6b);
+    --cx-bubble: light-dark(#f1f1f3, #2a2a2a);
+    --cx-card: light-dark(#ffffff, #212121);
+    --cx-composer: light-dark(#ffffff, #262626);
+    --cx-code: light-dark(#f6f6f8, #1d1d1d);
+    --cx-orange: light-dark(#c4620a, #f0883e);
+    --cx-green: light-dark(#1a7f37, #3fb950);
+    --cx-red: light-dark(#cf222e, #f85149);
+    --cx-blue: light-dark(#0969da, #58a6ff);
+  }
+  .app { display: grid; grid-template-columns: 52px 280px minmax(0, 1fr); height: 100%; background: var(--cx-bg); color: var(--cx-text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif; }
+  .app button { font: inherit; color: inherit; background: none; border: none; padding: 0; border-radius: 8px; cursor: pointer; }
+  .app button:hover:not(:disabled) { border-color: transparent; }
+  .app svg { display: block; }
+  .cx-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; background: var(--cx-side); }
+  .cx-rail button { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: var(--cx-sub); }
+  .cx-rail button:hover:not(:disabled) { background: var(--cx-hover); color: var(--cx-text); }
+  .cx-rail button.on { background: var(--cx-active); color: var(--cx-text); }
+  .cx-rail svg { width: 18px; height: 18px; }
+  .cx-rail .grow { flex: 1; }
+  .cx-side { display: flex; flex-direction: column; min-height: 0; background: var(--cx-side); border-right: 1px solid var(--cx-line); }
+  .cx-side-head { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 12px 10px 6px 14px; }
+  .app .cx-host { min-width: 0; display: flex; align-items: center; gap: 4px; padding: 3px 6px; margin-left: -6px; font-size: 17px; font-weight: 600; }
+  .app .cx-host:hover { background: var(--cx-hover); }
+  .cx-host span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cx-host svg { flex: 0 0 auto; width: 14px; height: 14px; color: var(--cx-sub); }
+  .grow { flex: 1; }
+  .app .cx-icon { flex: 0 0 auto; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--cx-sub); }
+  .app .cx-icon:hover:not(:disabled) { background: var(--cx-hover); color: var(--cx-text); }
+  .app .cx-icon:disabled { opacity: .4; cursor: default; }
+  .cx-icon svg { width: 16px; height: 16px; }
+  .cx-side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 12px; }
+  .app .cx-nav { width: 100%; display: flex; align-items: center; gap: 10px; padding: 6px 10px; text-align: left; }
+  .app .cx-nav:hover { background: var(--cx-hover); }
+  .cx-nav svg { width: 16px; height: 16px; color: var(--cx-sub); }
+  .cx-section { display: flex; align-items: center; padding: 16px 10px 4px; font-size: 13px; color: var(--cx-sub); }
+  .cx-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 5px 8px 5px 10px; border-radius: 8px; cursor: pointer; }
+  .cx-row:hover { background: var(--cx-hover); }
+  .cx-row.active { background: var(--cx-active); }
+  .cx-row.child { padding-left: 34px; }
+  .cx-row > svg { flex: 0 0 auto; width: 16px; height: 16px; color: var(--cx-sub); }
+  .cx-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cx-row .count { flex: 0 0 auto; color: var(--cx-faint); font-size: 12px; }
+  .cx-row .aux { flex: 0 0 auto; color: var(--cx-faint); font-size: 12px; }
+  .cx-row .add { width: 22px; height: 22px; visibility: hidden; }
+  .cx-row:hover .add { visibility: visible; }
+  .cx-row .unread { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--cx-blue); }
+  .spin { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--cx-faint) 50%, transparent); border-top-color: var(--cx-blue); animation: cx-spin .8s linear infinite; }
+  @keyframes cx-spin { to { transform: rotate(360deg); } }
+  .cx-empty { padding: 6px 10px; color: var(--cx-faint); font-size: 13px; }
+  .whoami { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 8px 12px 10px 16px; border-top: 1px solid var(--cx-line); color: var(--cx-sub); font-size: 12px; }
+  .whoami span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app .whoami button { padding: 2px 8px; border-radius: 6px; font-size: 12px; color: var(--cx-sub); }
+  .app .whoami button:hover { background: var(--cx-hover); color: var(--cx-text); }
+  /* 主区 */
+  .app main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--cx-bg); }
+  .cx-top { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 14px 0 20px; }
+  .cx-top .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .app .cx-back { display: none; width: 32px; height: 32px; margin-left: -10px; align-items: center; justify-content: center; color: var(--cx-sub); }
+  .cx-back svg { width: 20px; height: 20px; }
+  .cx-badge { flex: 0 0 auto; font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--cx-hover); color: var(--cx-sub); white-space: nowrap; }
+  .cx-badge:empty { display: none; }
+  .cx-badge.running { color: var(--cx-blue); }
+  .cx-badge.live { color: var(--cx-green); }
+  .app .cx-btn { flex: 0 0 auto; height: 28px; padding: 0 11px; border: 1px solid var(--cx-line); border-radius: 8px; font-size: 13px; white-space: nowrap; }
+  .app .cx-btn:hover:not(:disabled) { background: var(--cx-hover); border-color: var(--cx-line); }
+  .app .cx-btn:disabled { opacity: .45; cursor: default; }
+  .app .cx-btn.primary { background: var(--cx-text); color: var(--cx-bg); border-color: transparent; }
+  .app .cx-btn.primary:hover:not(:disabled) { background: var(--cx-text); opacity: .88; }
+  .app .cx-btn.danger { color: var(--cx-red); }
+  .app .cx-btn.on { border-color: var(--cx-blue); color: var(--cx-blue); }
+  .log { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 28px 28px; }
+  .log > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+  .cx-turn { display: flex; flex-direction: column; gap: 14px; padding: 14px 0; }
+  .cx-user { align-self: flex-end; max-width: 80%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .cx-user .text { padding: 8px 14px; border-radius: 18px; background: var(--cx-bubble); white-space: pre-wrap; word-break: break-word; }
+  .cx-user.steer .text::before { content: "插话 · "; color: var(--cx-sub); }
+  .cx-user .files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .app .m-photo { max-width: 240px; border-radius: 12px; }
+  .app .m-file { width: auto; max-width: 280px; border-radius: 12px; border: 1px solid var(--cx-line); background: var(--cx-card); padding: 8px 12px; }
+  .app .m-file svg { width: 22px; height: 22px; color: var(--cx-sub); }
+  .app .m-file span { font-size: 13px; }
+  .cx-agent { line-height: 1.7; word-break: break-word; }
+  .cx-agent > :first-child { margin-top: 0; }
+  .cx-agent > :last-child { margin-bottom: 0; }
+  .cx-agent p { margin: 0 0 10px; white-space: pre-wrap; }
+  .cx-agent h3, .cx-agent h4, .cx-agent h5 { margin: 16px 0 6px; line-height: 1.4; }
+  .cx-agent h3 { font-size: 17px; } .cx-agent h4 { font-size: 15px; } .cx-agent h5 { font-size: 14px; }
+  .cx-agent ul, .cx-agent ol { margin: 0 0 10px; padding-left: 22px; }
+  .cx-agent li + li { margin-top: 2px; }
+  .cx-agent blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--cx-line); color: var(--cx-sub); }
+  .cx-agent hr { border: none; border-top: 1px solid var(--cx-line); margin: 14px 0; }
+  .cx-agent code, .cx-cmd summary code { font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; padding: 1px 5px; border-radius: 5px; background: var(--cx-code); border: 1px solid var(--cx-line); }
+  .cx-agent pre { margin: 0 0 10px; padding: 10px 12px; overflow-x: auto; border-radius: 10px; background: var(--cx-code); border: 1px solid var(--cx-line); font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; }
+  .cx-agent pre code { padding: 0; border: none; background: none; }
+  .cx-agent a { color: var(--cx-blue); }
+  .cx-cmd { color: var(--cx-sub); font-size: 13px; }
+  .cx-cmd summary { list-style: none; display: flex; align-items: center; gap: 6px; min-width: 0; cursor: pointer; }
+  .cx-cmd summary::-webkit-details-marker { display: none; }
+  .cx-cmd summary code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cx-text); }
+  .cx-cmd summary > span:first-child { flex: 0 0 auto; white-space: nowrap; }
+  .cx-cmd summary:hover > span { color: var(--cx-text); }
+  .cx-cmd .bad { color: var(--cx-red); }
+  .cx-cmd pre { margin: 6px 0 0; max-height: 280px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--cx-code); border: 1px solid var(--cx-line);
+    color: var(--cx-text); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+  .cx-files { border: 1px solid var(--cx-line); border-radius: 12px; overflow: hidden; background: var(--cx-card); }
+  .cx-files .head { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+  .cx-files .icon { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--cx-line); display: flex; align-items: center; justify-content: center; color: var(--cx-sub); }
+  .cx-files .icon svg { width: 16px; height: 16px; }
+  .cx-files .head b { font-weight: 500; }
+  .cx-files .head small { display: block; font-size: 12px; }
+  .cx-files .file { display: flex; align-items: baseline; gap: 0; padding: 8px 14px; border-top: 1px solid var(--cx-line); font-size: 13px; }
+  .cx-files .file .dir { color: var(--cx-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; direction: rtl; text-align: left; }
+  .cx-files .file .base { flex: 0 0 auto; white-space: nowrap; }
+  .cx-files .file .stat { margin-left: auto; padding-left: 12px; white-space: nowrap; font-size: 12px; }
+  .cx-files .more { color: var(--cx-sub); }
+  .plus-n { color: var(--cx-green); } .minus-n { color: var(--cx-red); }
+  .cx-note { color: var(--cx-faint); font-size: 12px; text-align: center; }
+  .cx-step { color: var(--cx-sub); font-size: 13px; }
+  .cx-thinking { align-self: flex-start; font-size: 14px; color: transparent; padding: 14px 0;
+    background: linear-gradient(90deg, var(--cx-faint) 30%, var(--cx-text) 50%, var(--cx-faint) 70%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; animation: cx-shine 1.6s linear infinite; }
+  @keyframes cx-shine { from { background-position: 100% 0; } to { background-position: 0 0; } }
+  .log.blank { display: flex; align-items: center; justify-content: center; }
+  .cx-hello { text-align: center; color: var(--cx-sub); display: grid; justify-items: center; gap: 10px; }
+  .cx-hello svg { width: 40px; height: 40px; color: var(--cx-faint); }
+  .cx-hello h2 { margin: 0; font-size: 22px; font-weight: 600; color: var(--cx-text); }
+  .cx-hello p { margin: 0; font-size: 13px; max-width: 420px; }
+  /* 审批 / 提问 */
+  .requests { flex: 0 0 auto; padding: 0 28px; max-height: 45vh; overflow-y: auto; }
+  .requests > * { max-width: 760px; margin: 0 auto 10px; }
+  .cx-request { display: grid; gap: 8px; padding: 12px 14px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--cx-orange) 55%, var(--cx-line)); background: var(--cx-card); }
+  .cx-request strong { font-weight: 600; }
+  .cx-request code { display: block; white-space: pre-wrap; word-break: break-all; padding: 8px 10px; border-radius: 8px; background: var(--cx-code); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .cx-request .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .cx-request input { flex: 1 1 160px; height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--cx-line); background: transparent; color: inherit; font: inherit; font-size: 13px; }
+  .cx-request .readonly { color: var(--cx-sub); font-size: 12px; }
+  /* 输入卡片 */
+  .app footer { flex: 0 0 auto; padding: 4px 28px 16px; }
+  .cx-composer { max-width: 760px; margin: 0 auto; padding: 12px 10px 8px 16px; border-radius: 20px; border: 1px solid var(--cx-line); background: var(--cx-composer);
+    box-shadow: 0 1px 3px rgb(0 0 0 / .05); transition: border-color .15s; }
+  .cx-composer:focus-within { border-color: color-mix(in srgb, var(--cx-text) 30%, var(--cx-line)); }
+  .cx-composer.drag { border-color: var(--cx-blue); }
+  .cx-composer textarea { display: block; width: 100%; min-height: 22px; max-height: 220px; padding: 0 6px 0 0; border: none; outline: none; resize: none; background: transparent;
+    color: inherit; font: inherit; line-height: 22px; }
+  .cx-composer textarea::placeholder { color: var(--cx-faint); }
+  .cx-attach { padding: 0 0 10px; flex-wrap: wrap; }
+  .cx-attach .item { background: var(--cx-bubble); }
+  .cx-bar { display: flex; align-items: center; gap: 2px; margin: 10px 0 0 -6px; min-width: 0; }
+  .app .cx-pill { flex: 0 1 auto; min-width: 0; height: 28px; padding: 0 8px; display: flex; align-items: center; gap: 5px; border-radius: 8px; color: var(--cx-sub); font-size: 13px; white-space: nowrap; }
+  .app .cx-pill:hover:not(:disabled) { background: var(--cx-hover); color: var(--cx-text); }
+  .app .cx-pill:disabled { opacity: .5; cursor: default; }
+  .cx-pill span { overflow: hidden; text-overflow: ellipsis; }
+  .cx-pill svg { flex: 0 0 auto; width: 15px; height: 15px; }
+  .cx-pill .chev { width: 12px; height: 12px; }
+  .app .cx-pill.warn { color: var(--cx-orange); }
+  .app .cx-pill.on { color: var(--cx-blue); }
+  .cx-ring { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; padding: 0 6px; color: var(--cx-faint); font-size: 12px; }
+  .cx-ring svg { width: 16px; height: 16px; }
+  .app .cx-send { flex: 0 0 auto; width: 30px; height: 30px; margin-left: 4px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--cx-text); color: var(--cx-bg); }
+  .app .cx-send:disabled { background: var(--cx-active); color: var(--cx-faint); cursor: default; }
+  .cx-send svg { width: 16px; height: 16px; }
+  .readonly { max-width: 760px; margin: 0 auto; padding: 10px; text-align: center; color: var(--cx-sub); font-size: 12px; }
+  /* 下拉菜单（权限、模型、主机）：贴着按钮弹出 */
+  .cx-menu { position: fixed; z-index: 30; min-width: 220px; max-width: min(360px, calc(100vw - 16px)); max-height: 62vh; overflow-y: auto; padding: 5px;
+    border-radius: 12px; border: 1px solid var(--cx-line); background: var(--cx-card); color: var(--cx-text); box-shadow: 0 10px 30px rgb(0 0 0 / .25);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif; }
+  .cx-menu .title { padding: 6px 10px 4px; font-size: 12px; color: var(--cx-sub); }
+  .cx-menu .sep { height: 1px; margin: 5px 4px; background: var(--cx-line); }
+  .cx-menu button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  .cx-menu .item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px; text-align: left; }
+  .cx-menu .item:hover:not(:disabled) { background: var(--cx-hover); }
+  .cx-menu .item:disabled { opacity: .55; cursor: default; }
+  .cx-menu .item .label { flex: 1; min-width: 0; display: grid; gap: 1px; }
+  .cx-menu .item small { color: var(--cx-sub); font-size: 12px; }
+  .cx-menu .item .check { flex: 0 0 auto; width: 14px; color: var(--cx-text); }
+  .cx-menu .item.danger { color: var(--cx-red); }
+  .cx-menu .segs { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px; }
+  .cx-menu .segs button { padding: 3px 10px; border-radius: 999px; border: 1px solid var(--cx-line); font-size: 12px; }
+  .cx-menu .segs button.on { border-color: var(--cx-text); font-weight: 600; }
+  .cx-search { flex: 0 0 auto; padding: 0 12px 6px; }
+  .cx-search input { width: 100%; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--cx-line); background: var(--cx-bg); color: inherit; font: inherit; font-size: 13px; outline: none; }
+  @media (max-width: 720px) {
+    .app { grid-template-columns: minmax(0, 1fr); }
+    .cx-rail { display: none; }
+    .app.viewing .cx-side { display: none; }
+    .app:not(.viewing) main { display: none; }
+    .app .cx-back { display: flex; }
+    /* iOS 输入框字号小于 16px 会自动放大页面 */
+    input, textarea, select { font-size: 16px; }
+    .cx-side { padding-bottom: env(safe-area-inset-bottom); }
+    .cx-side-head, .cx-top { padding-top: env(safe-area-inset-top); }
+    .cx-row { min-height: 40px; }
+    .log { padding: 8px 16px 20px; }
+    .requests { padding: 0 12px; }
+    .app footer { padding: 4px 10px calc(10px + env(safe-area-inset-bottom)); }
+    .cx-user { max-width: 92%; }
+  }
   .gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
   .gate .card { width: min(380px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: grid; gap: 12px; }
   .gate h2 { margin: 0; font-size: 17px; }
@@ -101,7 +253,7 @@
   html[data-style="chat"] .app { display: none !important; }
   html:not([data-style="chat"]) .m { display: none !important; }
   html[data-style="chat"] body { background: var(--m-bg); }
-  .m {
+  .m, .m-mask {
     --m-bg: light-dark(#ededed, #111111);
     --m-bar: light-dark(#ededed, #191919);
     --m-row: light-dark(#ffffff, #191919);
@@ -120,6 +272,8 @@
     --m-out-text: light-dark(#191919, #0e1a12);
     --m-composer: light-dark(#f7f7f7, #1c1c1c);
     --m-pill: light-dark(#ffffff, #2c2c2c);
+  }
+  .m {
     position: fixed; inset: 0; max-width: 640px; margin: 0 auto; display: flex; flex-direction: column;
     background: var(--m-row); color: var(--m-text); overflow: hidden;
     font: 16px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
@@ -349,70 +503,138 @@
   #mirrorInput { position: fixed; left: 0; bottom: 0; width: 2px; height: 2px; padding: 0; border: 0; opacity: 0; resize: none; font-size: 16px; caret-color: transparent; }
   html[data-style="chat"] .toast { bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 30; }
   html[data-style="chat"] .gate { background: var(--bg); }
-  @media (max-width: 720px) {
-    .app { grid-template-columns: 1fr; }
-    .app.viewing aside { display: none; }
-    .app:not(.viewing) main { display: none; }
-    .back { display: inline-block; }
-    /* iOS 输入框字号小于 16px 会自动放大页面 */
-    input, textarea, select, .controls select { font-size: 16px; }
-    button { padding: 7px 13px; }
-    .thread { padding: 12px 14px; }
-    footer { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
-    aside { padding-bottom: env(safe-area-inset-bottom); }
-    aside header, main header { padding-top: calc(10px + env(safe-area-inset-top)); }
-    .msg { max-width: 100%; }
+  /* ================= 聊天样式·宽屏：照电脑版微信（图标栏 + 会话列表 + 对话）================= */
+  .m-tabs .m-rail-only, .m-placeholder { display: none; }
+  @media (min-width: 900px) {
+    .m { max-width: none; display: grid; grid-template-columns: 64px 300px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); font-size: 14px;
+      --m-bg: light-dark(#f5f5f5, #1f1f1f); --m-bar: light-dark(#f7f7f7, #262626); --m-row: light-dark(#f7f7f7, #262626);
+      --m-row-active: light-dark(#dedede, #333333); --m-line: light-dark(#e6e6e6, #313131); --m-field: light-dark(#e3e3e3, #333333);
+      --m-composer: light-dark(#ffffff, #262626); --m-rail: light-dark(#ececec, #2e2e2e); }
+    .m > #mList, .m > #mProject, .m > #mSettings { grid-column: 2; grid-row: 1; border-right: 1px solid var(--m-line); }
+    .m > #mChat { grid-column: 3; grid-row: 1; }
+    /* 图标栏 */
+    .m-tabs { grid-column: 1; grid-row: 1; flex-direction: column; align-items: center; gap: 6px; padding: 28px 0 14px; border: none; background: var(--m-rail); }
+    .m-tabs .m-rail-only { display: flex; }
+    .m-tabs .grow { flex: 1; }
+    .m-tabs button { flex: 0 0 auto; width: 42px; height: 42px; padding: 0; justify-content: center; border-radius: 8px; color: var(--m-sub); }
+    .m-tabs button:hover { background: color-mix(in srgb, var(--m-text) 7%, transparent); }
+    .m-tabs button span { display: none; }
+    .m-tabs button svg { width: 25px; height: 25px; }
+    .m-tabs .badge { top: 2px; left: auto; right: -2px; }
+    .m-me { width: 38px; height: 38px; margin-bottom: 14px; border-radius: 6px; align-items: center; justify-content: center; color: #fff; font-size: 17px; font-weight: 600; background: #3f9a8c; }
+    /* 会话列表：搜索框 + ⊕ 一行，下面是会话 */
+    #mList { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr); }
+    #mList .m-top { grid-column: 2; grid-row: 1; display: flex; height: auto; padding: 18px 12px 12px 0; gap: 2px; }
+    #mList .m-top .m-title { display: none; }
+    #mList .m-top .m-icon { width: 30px; height: 30px; border-radius: 6px; color: var(--m-sub); }
+    #mList .m-top .m-icon:hover { background: var(--m-field); }
+    #mList .m-top .m-icon svg { width: 21px; height: 21px; }
+    #mList .m-search { grid-column: 1; grid-row: 1; padding: 18px 8px 12px 14px; }
+    #mList .m-search input { height: 30px; border-radius: 6px; font-size: 13px; text-align: left; padding-left: 30px; }
+    #mList .m-search svg { display: block; left: 9px; top: 7px; width: 16px; height: 16px; }
+    #mList .m-rows { grid-column: 1 / -1; grid-row: 2; }
+    .m-top { height: 60px; }
+    #mProject .m-top, #mSettings .m-top { display: flex; padding: 0 8px; border-bottom: 1px solid var(--m-line); }
+    #mProject .m-top .m-title, #mSettings .m-top .m-title { flex: 1; justify-content: flex-start; font-size: 15px; }
+    .m-rows { background: var(--m-row); }
+    .m-row { padding: 12px 14px; gap: 11px; }
+    .m-row::after { display: none; }
+    .m-row:hover { background: color-mix(in srgb, var(--m-text) 5%, transparent); }
+    .m-row.active, .m-row.active:hover { background: #07c160; color: #fff; }
+    .m-row.active .m-row-sub, .m-row.active .m-row-time, .m-row.active .m-row-sub .running { color: rgb(255 255 255 / .85); }
+    .m-row-title { font-size: 15px; }
+    .m-row-sub { font-size: 12.5px; }
+    .m-row-time { font-size: 11px; }
+    .m .m-item { font-size: 14px; min-height: 46px; }
+    /* 对话 */
+    .m-chat { background: var(--m-bg); }
+    .m-chat .m-top { display: flex; height: 60px; padding: 0 12px 0 24px; background: var(--m-bg); }
+    .m-chat .m-back { display: none; }
+    .m-chat .m-title { flex: 1; flex-direction: row; align-items: baseline; justify-content: flex-start; gap: 10px; font-size: 17px; font-weight: 500; }
+    .m-chat .m-title small { font-size: 12px; }
+    .m-chat .m-icon { width: 36px; height: 36px; border-radius: 6px; color: var(--m-sub); }
+    .m-chat .m-icon:hover { background: color-mix(in srgb, var(--m-text) 7%, transparent); }
+    .m-chat .m-icon svg { width: 22px; height: 22px; }
+    .m-log { padding: 16px 28px 24px; gap: 18px; }
+    .m-msg .who { flex-basis: 36px; width: 36px; height: 36px; border-radius: 4px; font-size: 15px; }
+    .m-bubble, .m-card, .m-file { font-size: 14px; max-width: min(620px, calc(100% - 100px)); }
+    .m-bubble { padding: 9px 12px; border-radius: 4px; }
+    .m-bubble::before { top: 12px; }
+    .m-card { width: 340px; }
+    .m-tip, .m-time-tip { font-size: 12px; }
+    /* 输入区：上面整块打字，下面一行工具 + 发送（照电脑版微信） */
+    .m-composer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr) auto; height: 190px;
+      margin: 0 16px 16px; padding: 10px 12px; border: 1px solid var(--m-line); border-radius: 10px; background: var(--m-composer); }
+    .m-composer:focus-within { border-color: color-mix(in srgb, var(--m-text) 22%, var(--m-line)); }
+    .m-composer .m-pill { display: contents; }
+    .m-composer .m-attach { grid-column: 1 / -1; grid-row: 1; }
+    .m-composer .m-pill textarea { grid-column: 1 / -1; grid-row: 2; height: 100% !important; max-height: none; padding: 2px 4px; font-size: 14px; line-height: 21px; }
+    .m-composer .m-pill .plus { grid-column: 1; grid-row: 3; width: 32px; height: 32px; border-radius: 6px; }
+    .m-composer .m-pill .plus:hover { background: var(--m-field); }
+    .m-composer .m-pill .plus svg { width: 21px; height: 21px; }
+    .m-composer .m-chips { grid-column: 2; grid-row: 3; padding: 0 8px; gap: 14px; font-size: 13px; }
+    .m-composer .m-pill .go { grid-column: 3; grid-row: 3; width: auto; height: 32px; padding: 0 20px; border-radius: 6px; font-size: 14px;
+      background: var(--m-field); color: var(--m-sub); }
+    .m-composer .m-pill .go.ready { background: #07c160; color: #fff; }
+    .m-composer .m-pill .go.stop { background: var(--m-red); color: #fff; }
+    .m-placeholder { display: flex; flex: 1; align-items: center; justify-content: center; color: color-mix(in srgb, var(--m-sub) 45%, transparent); }
+    .m-placeholder svg { width: 96px; height: 96px; }
+    .m.no-chat #mChat > :not(.m-placeholder) { display: none !important; }
+    .m:not(.no-chat) .m-placeholder { display: none; }
+    /* 弹出菜单：宽屏上居中成对话框 */
+    .m-mask { align-items: center; }
+    .m-sheet { max-width: 420px; border-radius: 12px; animation: m-fade .15s; }
+    .m-sheet .cancel { display: none; }
   }
 </style>
 </head>
 <body>
 <div class="app" id="app">
-  <aside>
-    <header>
-      <button class="project-back" id="projectBack" hidden title="回到项目列表">‹ 项目</button>
-      <h1 id="asideTitle">Codex++ 远程控制</h1>
-      <button id="style" title="切换对话样式：Codex 样式 / 聊天样式">样式</button>
-      <button id="mirrorOpen" title="直接看并操作桌面上的 Codex 窗口" hidden>桌面镜像</button>
-      <button id="refresh" title="刷新会话列表">刷新</button>
-    </header>
-    <div class="whoami" id="whoami" hidden>
-      <span id="whoamiText"></span>
-      <button id="notify" hidden title="会话需要审批或回答、或者跑完时提醒">开启提醒</button>
-      <button id="forget" hidden title="清除本机保存的设备令牌">退出</button>
+  <nav class="cx-rail">
+    <button class="on" id="railThreads" title="会话"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/></svg></button>
+    <button id="mirrorOpen" title="桌面镜像：直接看并操作桌面上的 Codex 窗口" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+    <span class="grow"></span>
+    <button id="notify" hidden title="开启提醒：需要审批、模型提问或一轮跑完时提醒"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg></button>
+    <button id="style" title="切换到聊天样式（照微信）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.9-.9L3 20l1.3-4.4a8 8 0 0 1-1.1-4.1A8.4 8.4 0 0 1 11.7 3.2h.8a8.4 8.4 0 0 1 8.5 8.3Z"/></svg></button>
+  </nav>
+  <aside class="cx-side">
+    <div class="cx-side-head">
+      <button class="cx-host" id="cxHost" title="这台电脑"><span id="cxHostName">Codex</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+      <span class="grow"></span>
+      <button class="cx-icon" id="refresh" title="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
+      <button class="cx-icon" id="cxSearchToggle" title="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
     </div>
-    <div class="threads" id="threads"><div class="empty">加载中…</div></div>
-    <div class="new-thread" id="newThread">
-      <input id="newCwd" placeholder="工作目录（绝对路径）">
-      <input id="newName" placeholder="会话名称（可选）">
-      <button id="create">新建会话</button>
+    <div class="cx-search" id="cxSearchBox" hidden><input id="cxSearch" type="search" placeholder="搜索会话" autocomplete="off"></div>
+    <div class="cx-side-scroll">
+      <button class="cx-nav" id="cxNew"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>新聊天</span></button>
+      <div class="cx-section">项目</div>
+      <div id="cxProjects"></div>
+      <div class="cx-section">最近</div>
+      <div id="threads"><div class="cx-empty">加载中…</div></div>
     </div>
+    <div class="whoami" id="whoami" hidden><span id="whoamiText"></span><button id="forget" hidden title="清除本机保存的设备令牌">退出</button></div>
   </aside>
   <main>
-    <header>
-      <button class="back" id="back">‹ 返回</button>
-      <span class="title" id="title">选择一个会话</span>
-      <span class="badge" id="state"></span>
-      <button id="open" hidden>在桌面打开</button>
-      <button id="interrupt" class="danger" hidden>停止</button>
-      <button class="more" id="more" title="模型、推理强度、权限">⋯</button>
+    <header class="cx-top">
+      <button class="cx-back" id="back" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+      <span class="title" id="title">新聊天</span>
+      <span class="cx-badge" id="state"></span>
+      <span class="grow"></span>
+      <button class="cx-btn" id="open" hidden title="让桌面 Codex 切到这个会话">在桌面打开</button>
     </header>
-    <div class="log" id="log"><div class="empty">在左侧选择会话。没在桌面打开的会话可以先查看历史，发消息时会自动在桌面打开。</div></div>
+    <div class="log blank" id="log"></div>
     <div class="requests" id="requests"></div>
     <footer>
-      <div class="controls" id="controls" hidden>
-        <select id="model" title="模型"></select>
-        <select id="effort" title="推理强度"></select>
-        <select id="permission" title="权限"></select>
-        <button id="plan" class="plan" title="计划模式：先和你讨论出完整方案，再动手">计划</button>
-      </div>
-      <div class="compose" id="compose">
-        <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
-        <button id="send" class="primary" disabled>发送</button>
+      <div class="cx-composer" id="compose">
+        <div class="m-attach cx-attach" id="cxAttach" hidden></div>
+        <textarea id="input" rows="1" placeholder="和 Codex 一起工作"></textarea>
+        <div class="cx-bar" id="controls"></div>
       </div>
       <div class="readonly" id="readonly" hidden>这台设备只能查看。需要发消息可在 Codex++ 的设备列表里调高权限。</div>
     </footer>
   </main>
 </div>
+
 <!-- 聊天样式：手机界面。和上面的 Codex 样式共用数据与接口，只是另一套呈现。 -->
 <div class="m" id="m">
   <section class="m-screen" id="mList">
@@ -437,10 +659,15 @@
     <div class="m-rows" id="mSettingsBody" style="background: var(--m-bg)"></div>
   </section>
   <nav class="m-tabs" id="mTabs">
+    <div class="m-rail-only m-me" id="mMe">C</div>
     <button id="mTabChats" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.9-.9L3 20l1.3-4.4a8 8 0 0 1-1.1-4.1A8.4 8.4 0 0 1 11.7 3.2h.8a8.4 8.4 0 0 1 8.5 8.3Z"/></svg><span>对话</span><b class="badge" id="mTabBadge" hidden></b></button>
+    <span class="m-rail-only grow"></span>
+    <button class="m-rail-only" id="mTabMirror" title="桌面镜像：直接看并操作桌面上的 Codex 窗口" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>镜像</span></button>
+    <button class="m-rail-only" id="mTabStyle" title="切换到 Codex 样式"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7Z"/><path d="m8.5 10 2.5 2-2.5 2M13 14.5h3"/></svg><span>Codex</span></button>
     <button id="mTabSettings" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.8v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button>
   </nav>
   <section class="m-screen m-chat" id="mChat" hidden>
+    <div class="m-placeholder" id="mPlaceholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.9-.9L3 20l1.3-4.4a8 8 0 0 1-1.1-4.1A8.4 8.4 0 0 1 11.7 3.2h.8a8.4 8.4 0 0 1 8.5 8.3Z"/></svg></div>
     <header class="m-top">
       <button class="m-back" id="mChatBack" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span class="count" id="mChatBackCount" hidden></span></button>
       <div class="m-title"><span id="mChatTitle"></span><small id="mChatState"></small></div>
@@ -500,7 +727,7 @@
   const style = localStorage.getItem(STYLE_KEY) || (narrow ? "chat" : "codex");
   document.documentElement.dataset.style = style;
   const $ = (id) => document.getElementById(id);
-  const state = { threads: [], project: null, current: null, view: null, socket: null, poller: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false, me: null, seenRequests: new Set(), wasRunning: false };
+  const state = { threads: [], query: "", expanded: new Set(), openDetails: new Set(), draftCwd: "", current: null, view: null, socket: null, poller: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false, me: null, seenRequests: new Set(), wasRunning: false };
   const rank = { view: 0, message: 1, full: 2 };
   const can = (role) => rank[state.me?.role ?? "view"] >= rank[role];
 
@@ -601,16 +828,19 @@
     state.wasRunning = running;
   }
 
+  const roleText = (role) => ({ view: "只能查看", message: "可发消息", full: "完全控制" }[role] || role || "");
+  const styleNow = () => document.documentElement.dataset.style || "codex";
+
   function applyRole() {
     const me = state.me;
-    $("whoami").hidden = !me || me.kind === "master";
+    $("whoami").hidden = me?.kind !== "device";
     if (me?.kind === "device") {
-      const roleText = { view: "只能查看", message: "可发消息", full: "完全控制" }[me.role] || me.role;
-      $("whoamiText").textContent = `${me.name} · ${roleText}`;
+      $("whoamiText").textContent = `${me.name} · ${roleText(me.role)}`;
       $("forget").hidden = false;
     }
+    $("cxHostName").textContent = me?.host || "Codex";
     $("notify").hidden = !("Notification" in window) || Notification.permission !== "default";
-    $("newThread").hidden = !can("message");
+    $("cxNew").hidden = !can("message");
     $("compose").hidden = !can("message");
     $("readonly").hidden = can("message");
     $("mirrorOpen").hidden = !can("full");
@@ -633,19 +863,32 @@
     return new Date(seconds * 1000).toLocaleDateString();
   }
 
+  /** 侧栏右侧的短时间：3 分、2 小时、5 天。 */
+  function shortTime(seconds) {
+    if (!seconds) return "";
+    const diff = Math.max(0, Date.now() / 1000 - seconds);
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时`;
+    if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天`;
+    return new Date(seconds * 1000).toLocaleDateString();
+  }
+
   async function loadThreads() {
     try {
       const data = await api("GET", "/threads");
       state.threads = data.threads || [];
       renderThreads();
     } catch (error) {
-      $("threads").replaceChildren(el("div", "empty", `读取会话失败：${error.message}`));
+      $("threads").replaceChildren(el("div", "cx-empty", `读取会话失败：${error.message}`));
       m.onThreadsError(error.message);
     }
   }
 
   const isRunning = (thread) => thread.status === "active" || thread.status === "running" || thread.status === "inProgress";
   const baseName = (path) => String(path || "").replace(/\/+$/, "").split("/").pop() || path || "未记录项目";
+  const byRecent = (a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
+  const threadTitle = (thread) => thread.title || thread.preview || "（未命名）";
 
   /** 会话按工作目录归到项目里，项目按最近活动排序。 */
   function projectsOf(threads) {
@@ -661,59 +904,102 @@
     return [...map.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  /** 一条列表行：头像 + 标题 / 摘要 + 右侧时间。聊天样式与 Codex 样式共用。 */
-  function listRow({ avatar, titleNode, meta, updatedAt, active, kind, onClick }) {
-    const row = el("div", `thread${active ? " active" : ""}${kind ? ` ${kind}` : ""}`);
-    row.append(el("div", "thread-avatar", avatar));
-    const body = el("div", "thread-body");
-    const title = el("div", "title");
-    title.append(...titleNode);
-    body.append(title);
-    if (meta) body.append(el("div", "meta", meta));
-    row.append(body);
-    row.append(el("div", "thread-time", relative(updatedAt)));
-    row.onclick = onClick;
-    return row;
-  }
-
   function renderThreads() {
-    renderThreadsCodex();
+    if (!state.draftCwd) state.draftCwd = projectsOf(state.threads).find((project) => project.cwd)?.cwd || "";
+    renderSide();
+    if (!state.current && styleNow() === "codex") renderBlank();
     m.onThreads();
   }
 
-  function renderThreadsCodex() {
-    const list = $("threads");
-    const insideProject = state.project !== null;
-    $("projectBack").hidden = !insideProject;
-    $("asideTitle").textContent = insideProject ? baseName(state.project) : "Codex++ 远程控制";
-    $("newCwd").hidden = insideProject;
-    $("newCwd").value = insideProject ? state.project : $("newCwd").value;
-    if (!state.threads.length) return list.replaceChildren(el("div", "empty", "还没有会话"));
-    if (!insideProject) {
-      const projects = projectsOf(state.threads);
-      $("newCwd").value = $("newCwd").value || projects.find((project) => project.cwd)?.cwd || "";
-      return list.replaceChildren(...projects.map((project) => listRow({
-        avatar: (project.name.trim()[0] || "#").toUpperCase(),
-        titleNode: [project.name, el("span", "count", ` (${project.threads.length})`)],
-        meta: [
-          project.running ? el("span", "running", `${project.running} 个运行中 · `) : null,
-          project.threads[0]?.title || "（未命名）",
-        ].filter(Boolean),
-        updatedAt: project.updatedAt,
-        kind: "project",
-        onClick: () => { state.project = project.cwd; renderThreads(); },
-      })));
-    }
-    const threads = state.threads.filter((thread) => (thread.cwd || "") === state.project);
-    if (!threads.length) return list.replaceChildren(el("div", "empty", "这个项目还没有会话"));
-    list.replaceChildren(...threads.map((thread) => listRow({
-      avatar: (thread.title || "#").trim()[0]?.toUpperCase() || "#",
-      titleNode: [isRunning(thread) ? el("span", "running", "● ") : null, thread.title || "（未命名）"].filter(Boolean),
-      meta: relative(thread.updatedAt),
-      updatedAt: thread.updatedAt,
-      active: thread.id === state.current,
-      onClick: () => selectThread(thread.id),
-    })));
+  // ---------- Codex 样式：图标 ----------
+  const icon = (d, width = 1.8) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const CX = {
+    folder: icon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'),
+    folderOpen: icon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v1"/><path d="M3 17V9h17.5a1 1 0 0 1 1 1.3l-2.2 7a2 2 0 0 1-1.9 1.4H5a2 2 0 0 1-2-2Z"/>'),
+    compose: icon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+    plus: icon('<path d="M12 5v14M5 12h14"/>', 2),
+    up: icon('<path d="M12 19V5M5 12l7-7 7 7"/>', 2.4),
+    stop: icon('<rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/>'),
+    chev: icon('<path d="m6 9 6 6 6-6"/>', 2),
+    shield: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>'),
+    alert: icon('<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/>', 2),
+    agent: icon('<path d="M6.5 15.5a3.5 3.5 0 1 1 0-7c3 0 8 7 11 7a3.5 3.5 0 1 0 0-7c-3 0-8 7-11 7Z"/>'),
+    plan: icon('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>', 2),
+    diff: icon('<path d="M12 3v8M8 7h8M8 17h8"/><rect x="3" y="3" width="18" height="18" rx="3"/>'),
+    logo: icon('<path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7Z"/><path d="m8.5 10 2.5 2-2.5 2M13 14.5h3"/>', 1.5),
+  };
+
+  // ---------- Codex 样式：侧栏（新聊天 / 项目 / 最近）----------
+  function renderSide() {
+    const query = state.query.trim().toLowerCase();
+    const threads = state.threads.filter((thread) => !query || [thread.title, thread.preview, thread.cwd].some((value) => String(value || "").toLowerCase().includes(query)));
+    const projects = projectsOf(threads).filter((project) => project.cwd);
+    const box = $("cxProjects");
+    if (!projects.length) box.replaceChildren(el("div", "cx-empty", query ? "没有匹配的项目" : "没有项目"));
+    else box.replaceChildren(...projects.flatMap((project) => {
+      const open = state.expanded.has(project.cwd) || !!query;
+      const row = el("div", `cx-row${!state.current && state.draftCwd === project.cwd ? " active" : ""}`);
+      row.innerHTML = open ? CX.folderOpen : CX.folder;
+      row.title = project.cwd;
+      row.append(el("span", "name", project.name));
+      row.append(project.running ? el("span", "spin") : el("span", "count", String(project.threads.length)));
+      if (can("message")) {
+        const add = el("button", "cx-icon add");
+        add.innerHTML = CX.compose;
+        add.title = "在这个项目新建会话";
+        add.onclick = (event) => { event.stopPropagation(); newChat(project.cwd); };
+        row.append(add);
+      }
+      row.onclick = () => {
+        if (state.expanded.has(project.cwd)) state.expanded.delete(project.cwd);
+        else state.expanded.add(project.cwd);
+        renderSide();
+      };
+      return open ? [row, ...[...project.threads].sort(byRecent).map((thread) => threadRow(thread, true))] : [row];
+    }));
+    const recent = [...threads].sort(byRecent).slice(0, 40);
+    $("threads").replaceChildren(...(recent.length ? recent.map((thread) => threadRow(thread, false)) : [el("div", "cx-empty", query ? "没有匹配的会话" : "还没有会话")]));
+  }
+
+  function threadRow(thread, child) {
+    const row = el("div", `cx-row${child ? " child" : ""}${thread.id === state.current ? " active" : ""}`);
+    row.append(el("span", "name", threadTitle(thread)));
+    if (isRunning(thread)) row.append(el("span", "spin"));
+    else if (m.unread(thread)) row.append(el("span", "unread"));
+    else row.append(el("span", "aux", shortTime(thread.updatedAt)));
+    row.title = thread.cwd ? `${threadTitle(thread)}\n${thread.cwd}` : threadTitle(thread);
+    row.onclick = () => selectThread(thread.id);
+    return row;
+  }
+
+  /** 新聊天：和 Codex 桌面一样先停在空白页，选好项目、打第一句话再建会话。 */
+  function newChat(cwd) {
+    closeSocket();
+    state.current = null;
+    state.view = null;
+    state.wasRunning = false;
+    if (cwd) state.draftCwd = cwd;
+    $("app").classList.add("viewing");
+    renderThreads();
+    $("input").focus();
+  }
+
+  function renderBlank() {
+    if (!state.draftCwd) state.draftCwd = projectsOf(state.threads).find((project) => project.cwd)?.cwd || "";
+    $("title").textContent = "新聊天";
+    $("state").textContent = "";
+    $("open").hidden = true;
+    const log = $("log");
+    log.classList.add("blank");
+    const hello = el("div", "cx-hello");
+    hello.innerHTML = CX.logo;
+    hello.append(
+      el("h2", "", state.draftCwd ? `在「${baseName(state.draftCwd)}」里开始` : "开始构建"),
+      el("p", "", state.draftCwd ? "新会话在这台电脑的后台运行，桌面上的 Codex 不会切过来，可以同时工作。" : "先在输入框下方选一个项目文件夹。"),
+    );
+    log.replaceChildren(hello);
+    $("requests").replaceChildren();
+    renderControls();
   }
 
   async function selectThread(id) {
@@ -721,11 +1007,17 @@
     state.view = null;
     state.wasRunning = false;
     closeSocket();
+    const thread = state.threads.find((item) => item.id === id);
+    if (thread?.cwd) state.expanded.add(thread.cwd);
     renderThreads();
     $("app").classList.add("viewing");
     state.stickNext = true;
-    $("log").replaceChildren(el("div", "empty", "加载中…"));
+    $("title").textContent = threadTitle(thread || {});
+    $("state").textContent = "";
+    $("log").classList.remove("blank");
+    $("log").replaceChildren(el("div", "cx-note", "加载中…"));
     $("requests").replaceChildren();
+    renderControls();
     try {
       const view = await api("GET", `/threads/${id}`);
       if (state.current !== id) return;
@@ -733,7 +1025,7 @@
       if (view.live) connectSocket(id);
       loadOptions(id);
     } catch (error) {
-      $("log").replaceChildren(el("div", "empty", `读取失败：${error.message}`));
+      $("log").replaceChildren(el("div", "cx-note", `读取失败：${error.message}`));
     }
   }
 
@@ -798,30 +1090,29 @@
 
   function applyView(view) {
     state.view = view;
+    if (styleNow() === "codex") m.markSeen(state.current);
     $("title").textContent = view.title || "（未命名）";
     const running = view.runtime === "active";
     const badge = $("state");
-    badge.className = `badge${running ? " running" : view.live ? " live" : ""}`;
+    badge.className = `cx-badge${running ? " running" : view.live ? " live" : ""}`;
     // 后台会话：在这台电脑后台跑，桌面窗口不切换；随时可以点「在桌面打开」接过去。
     const background = !!view.headless;
-    badge.textContent = running ? (background ? "后台运行中" : "运行中") : background ? "后台" : view.live ? "已在桌面打开" : "未打开";
+    badge.textContent = running ? (background ? "后台运行中" : "运行中") : background ? "后台" : view.live ? "已在桌面打开" : "";
     badge.title = background ? "在这台电脑的后台运行，桌面 Codex 不会切到这个会话" : "";
     $("open").hidden = (view.live && !background) || !can("message");
-    $("interrupt").hidden = !running || !can("message");
+    $("open").disabled = running && background;
     watchForAttention(view);
-    $("input").disabled = false;
-    $("send").disabled = false;
-    $("send").textContent = running ? "插话" : "发送";
     const log = $("log");
+    log.classList.remove("blank");
     const stick = nearBottom(log) || state.stickNext;
     state.stickNext = false;
     const nodes = [];
-    if (view.truncatedTurns) nodes.push(el("div", "note", `更早的 ${view.truncatedTurns} 轮未显示`));
-    for (const turn of view.turns || []) nodes.push(renderTurn(turn));
-    if (!nodes.length) nodes.push(el("div", "empty", "还没有消息"));
-    // 最后一条不是助手消息时才补「正在处理…」，免得和流式气泡重复。
+    if (view.truncatedTurns) nodes.push(el("div", "cx-note", `更早的 ${view.truncatedTurns} 轮未显示`));
+    for (const turn of view.turns || []) nodes.push(renderTurn(turn, view));
+    if (!nodes.length) nodes.push(el("div", "cx-note", "还没有消息"));
+    // 最后一条不是助手消息时才补「正在思考」，免得和流式输出重复。
     const lastItems = view.turns?.at(-1)?.items || [];
-    if (running && lastItems.at(-1)?.type !== "agentMessage") nodes.push(typingRow());
+    if (running && lastItems.at(-1)?.type !== "agentMessage" && !(view.requests || []).length) nodes.push(el("div", "cx-thinking", "正在思考"));
     log.replaceChildren(...nodes);
     if (stick) log.scrollTop = log.scrollHeight;
     renderRequests(view.requests || []);
@@ -844,43 +1135,6 @@
     }
   }
 
-  function option(value, label, selected) {
-    const node = el("option", "", label);
-    node.value = value;
-    if (selected) node.selected = true;
-    return node;
-  }
-
-  function renderControls() {
-    const box = $("controls");
-    const options = state.optionsFor === state.current ? state.options : null;
-    if (!options || !state.view) { box.hidden = true; return; }
-    box.hidden = false;
-    const current = state.view.controls || options.current || {};
-    const models = [...options.models];
-    if (current.model && !models.some((model) => model.id === current.model)) models.unshift({ id: current.model, label: current.model, efforts: [] });
-    $("model").replaceChildren(...models.map((model) => option(model.id, model.label || model.id, model.id === current.model)));
-    if (!current.model) $("model").prepend(option("", "模型", true));
-    const model = models.find((item) => item.id === current.model);
-    const efforts = model?.efforts?.length ? model.efforts : ["low", "medium", "high"];
-    $("effort").replaceChildren(
-      option("", `默认推理${model?.defaultEffort ? `（${effortLabels[model.defaultEffort] || model.defaultEffort}）` : ""}`, !current.effort),
-      ...efforts.map((effort) => option(effort, `推理：${effortLabels[effort] || effort}`, effort === current.effort)),
-    );
-    const permissions = options.permissionModes.map((mode) => option(mode.id, mode.label, mode.id === current.permissionMode));
-    if (!current.permissionMode || current.permissionMode === "custom") {
-      permissions.unshift(option("custom", current.permissionMode ? "自定义权限" : "沿用会话权限", true));
-    }
-    $("permission").replaceChildren(...permissions);
-    $("permission").title = options.permissionModes.find((mode) => mode.id === current.permissionMode)?.detail || "权限";
-    $("permission").classList.toggle("danger", current.permissionMode === "full-access");
-    const plan = current.collaborationMode === "plan";
-    $("plan").classList.toggle("on", plan);
-    $("plan").textContent = plan ? "计划模式：开" : "计划";
-    for (const id of ["model", "effort", "permission", "plan"]) $(id).disabled = state.applying || !can("full");
-    box.title = can("full") ? "" : "改模型与权限需要「完全控制」权限";
-  }
-
   async function changeSettings(change, confirmText) {
     if (!state.current || state.applying) return;
     if (confirmText && !confirm(confirmText)) { renderControls(); return; }
@@ -899,63 +1153,229 @@
     }
   }
 
-  /** 一条消息：头像 + 气泡（头像只在聊天样式里显示，Codex 样式里等同于整段文字）。 */
-  function bubble(role, text, extra = "") {
-    const node = el("div", `msg ${role}${extra ? ` ${extra}` : ""}`);
-    node.append(el("div", "avatar", role === "user" ? "我" : "C"));
-    node.append(el("div", "bubble", text));
+  // ---------- Codex 样式：消息 ----------
+  /** 助手回复按 Markdown 显示：代码块、标题、列表、引用、行内代码、粗体、链接。只建 DOM，不解析 HTML。 */
+  function markdown(text) {
+    const root = el("div", "cx-agent");
+    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+    const bulletPattern = /^\s*([-*+]|\d+[.)])\s+(.*)$/;
+    let para = [];
+    const flush = () => {
+      if (!para.length) return;
+      const p = el("p");
+      inline(p, para.join("\n"));
+      root.append(p);
+      para = [];
+    };
+    for (let i = 0; i < lines.length;) {
+      const line = lines[i];
+      const fence = line.match(/^\s*(```|~~~)/);
+      if (fence) {
+        flush();
+        const buffer = [];
+        i += 1;
+        while (i < lines.length && !lines[i].trim().startsWith(fence[1])) buffer.push(lines[i++]);
+        i += 1;
+        const pre = el("pre");
+        pre.append(el("code", "", buffer.join("\n")));
+        root.append(pre);
+        continue;
+      }
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        flush();
+        const node = el(`h${Math.min(heading[1].length + 2, 5)}`);
+        inline(node, heading[2]);
+        root.append(node);
+        i += 1;
+        continue;
+      }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); root.append(el("hr")); i += 1; continue; }
+      const bullet = line.match(bulletPattern);
+      if (bullet) {
+        flush();
+        const ordered = /\d/.test(bullet[1]);
+        const list = el(ordered ? "ol" : "ul");
+        if (ordered) list.start = Number.parseInt(bullet[1], 10) || 1;
+        while (i < lines.length) {
+          const item = lines[i].match(bulletPattern);
+          if (item && /\d/.test(item[1]) === ordered) {
+            const li = el("li");
+            inline(li, item[2]);
+            list.append(li);
+            i += 1;
+          } else if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && list.lastChild) {
+            list.lastChild.append(document.createElement("br"));
+            inline(list.lastChild, lines[i].trim());
+            i += 1;
+          } else break;
+        }
+        root.append(list);
+        continue;
+      }
+      if (line.startsWith(">")) {
+        flush();
+        const buffer = [];
+        while (i < lines.length && lines[i].startsWith(">")) buffer.push(lines[i++].replace(/^>\s?/, ""));
+        const quote = el("blockquote");
+        inline(quote, buffer.join("\n"));
+        root.append(quote);
+        continue;
+      }
+      if (!line.trim()) { flush(); i += 1; continue; }
+      para.push(line);
+      i += 1;
+    }
+    flush();
+    return root;
+  }
+
+  function inline(node, text) {
+    const pattern = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g;
+    let last = 0;
+    for (let match; (match = pattern.exec(text));) {
+      if (match.index > last) node.append(text.slice(last, match.index));
+      if (match[1]) node.append(el("code", "", match[1].slice(1, -1)));
+      else if (match[2]) node.append(el("strong", "", match[2].slice(2, -2)));
+      else {
+        const link = el("a", "", match[3]);
+        link.href = match[4];
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        node.append(link);
+      }
+      last = pattern.lastIndex;
+    }
+    if (last < text.length) node.append(text.slice(last));
+  }
+
+  /** 去掉外层的 `zsh -lc '…'`，和 Codex 一样只显示里面那条命令。 */
+  function shownCommand(command) {
+    const text = Array.isArray(command) ? command.join(" ") : String(command || "");
+    const inner = text.match(/^(?:\/bin\/|\/usr\/bin\/)?(?:ba|z)?sh -l?c (['"])([\s\S]*)\1$/);
+    return inner ? inner[2] : text;
+  }
+
+  function commandNode(item) {
+    const details = el("details", "cx-cmd");
+    const key = `cmd:${item.id}`;
+    details.open = state.openDetails.has(key);
+    details.ontoggle = () => (details.open ? state.openDetails.add(key) : state.openDetails.delete(key));
+    const summary = el("summary");
+    const verb = { inProgress: "正在运行", failed: "运行失败", declined: "已拒绝运行" }[item.status] || "已运行";
+    const command = shownCommand(item.command);
+    summary.append(el("span", item.status === "failed" || item.status === "declined" ? "bad" : "", verb), el("code", "", command.split("\n")[0]));
+    if (item.status === "inProgress") summary.append(el("span", "spin"));
+    details.append(summary);
+    const output = [command.includes("\n") ? `$ ${command}` : "", item.aggregatedOutput || ""].filter(Boolean).join("\n");
+    details.append(el("pre", "", output || "（没有输出）"));
+    return details;
+  }
+
+  /** 一个文件改动的 +N / −M：新增算全部行，删除算全部行，修改数 diff 里的 +/- 行。 */
+  function diffStat(change) {
+    const type = change.kind?.type || change.kind;
+    const lines = String(change.diff || "").split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    if (type === "add") return [lines.length, 0];
+    if (type === "delete") return [0, lines.length];
+    let plus = 0;
+    let minus = 0;
+    for (const line of lines) {
+      if (line.startsWith("+++") || line.startsWith("---")) continue;
+      if (line[0] === "+") plus += 1;
+      else if (line[0] === "-") minus += 1;
+    }
+    return [plus, minus];
+  }
+
+  function statNode(plus, minus) {
+    const node = el("span", "stat");
+    node.append(el("span", "plus-n", `+${plus}`), " ", el("span", "minus-n", `-${minus}`));
     return node;
   }
 
-  function renderTurn(turn) {
-    const box = el("div", "turn");
+  function fileChangeNode(item, view) {
+    const changes = item.changes || [];
+    const stats = changes.map(diffStat);
+    const total = stats.reduce((sum, [plus, minus]) => [sum[0] + plus, sum[1] + minus], [0, 0]);
+    const card = el("div", "cx-files");
+    const head = el("div", "head");
+    const badge = el("div", "icon");
+    badge.innerHTML = CX.diff;
+    const text = el("div");
+    const verb = { inProgress: "正在编辑", failed: "编辑失败", declined: "已拒绝编辑" }[item.status] || "已编辑";
+    const small = el("small");
+    small.append(statNode(total[0], total[1]));
+    text.append(el("b", "", `${verb} ${changes.length} 个文件`), small);
+    head.append(badge, text);
+    card.append(head);
+    const key = `files:${item.id}`;
+    const expanded = state.openDetails.has(key);
+    const root = String(view?.cwd || "").replace(/\/+$/, "");
+    changes.forEach((change, index) => {
+      if (!expanded && index >= 3) return;
+      const path = String(change.path || "");
+      const shown = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+      const cut = shown.lastIndexOf("/") + 1;
+      const row = el("div", "file");
+      row.title = path;
+      row.append(el("span", "dir", shown.slice(0, cut)), el("span", "base", shown.slice(cut)), statNode(...stats[index]));
+      card.append(row);
+    });
+    if (changes.length > 3) {
+      const more = el("div", "file more", expanded ? "收起" : `再显示 ${changes.length - 3} 个文件`);
+      more.style.cursor = "pointer";
+      more.onclick = () => {
+        if (expanded) state.openDetails.delete(key); else state.openDetails.add(key);
+        if (state.view) applyView(state.view);
+      };
+      card.append(more);
+    }
+    return card;
+  }
+
+  function renderTurn(turn, view) {
+    const box = el("div", "cx-turn");
     for (const item of turn.items || []) {
       switch (item.type) {
-        case "userMessage": box.append(bubble("user", item.text || "")); break;
-        case "steeringUserMessage": box.append(el("div", "msg steer", `插话：${item.text || ""}`)); break;
-        case "agentMessage": if (item.text) box.append(bubble("agent", item.text)); break;
-        case "commandExecution": {
-          const details = el("details", "cmd");
-          const status = { completed: "✓", failed: "✗", declined: "已拒绝", inProgress: "…" }[item.status] || item.status || "";
-          details.append(el("summary", "", `${status} ${item.command || ""}`));
-          if (item.aggregatedOutput) details.append(el("pre", "", item.aggregatedOutput));
-          box.append(details);
+        case "userMessage":
+        case "steeringUserMessage": {
+          const node = el("div", `cx-user${item.type === "steeringUserMessage" ? " steer" : ""}`);
+          const files = item.attachments || [];
+          if (files.length) {
+            const row = el("div", "files");
+            row.append(...files.map((attachment) => m.attachmentNode(attachment)));
+            node.append(row);
+          }
+          if (item.text || !files.length) node.append(el("div", "text", item.text || ""));
+          box.append(node);
           break;
         }
-        case "fileChange": {
-          const files = (item.changes || []).map((change) => change.path).filter(Boolean).join("\n");
-          box.append(el("div", "cmd", `改动文件 ${item.status || ""}\n${files}`));
-          break;
-        }
-        case "userInputResponse": box.append(el("div", "note", "已回答提问")); break;
-        case "modelChanged": box.append(el("div", "note", `模型已从 ${item.fromModel || "?"} 切换为 ${item.toModel || "?"}`)); break;
-        case "contextCompaction": box.append(el("div", "note", "已压缩上下文")); break;
-        case "webSearch": box.append(el("div", "note", `搜索：${item.query || ""}`)); break;
-        case "reasoning": case "steered": case "hookRun": break;
-        default: if (item.type) box.append(el("div", "note", `[${item.type}]`));
+        case "agentMessage": if (item.text) box.append(markdown(item.text)); break;
+        case "commandExecution": box.append(commandNode(item)); break;
+        case "fileChange": box.append(fileChangeNode(item, view)); break;
+        case "webSearch": box.append(el("div", "cx-step", `已搜索 ${item.query || ""}`)); break;
+        case "userInputResponse": box.append(el("div", "cx-step", "已回答提问")); break;
+        case "modelChanged": box.append(el("div", "cx-note", `模型已切换为 ${item.toModel || "?"}`)); break;
+        case "contextCompaction": box.append(el("div", "cx-note", "已压缩上下文")); break;
+        default: break;
       }
     }
-    if (turn.status === "interrupted") box.append(el("div", "note", "已中断"));
-    if (turn.status === "failed") box.append(el("div", "note", "这一轮失败了"));
+    if (turn.status === "interrupted") box.append(el("div", "cx-note", "已停止这一轮"));
+    if (turn.status === "failed") box.append(el("div", "cx-note", "这一轮失败了"));
     return box;
   }
 
-  /** 运行中的「正在处理…」气泡，放在最后一边流式输出一边提示。 */
-  function typingRow() {
-    const node = bubble("agent", "正在处理", "typing");
-    return node;
-  }
-
   function renderRequests(requests) {
-    const box = $("requests");
-    box.replaceChildren(...requests.map(renderRequest));
+    $("requests").replaceChildren(...requests.map(renderRequest));
   }
 
   function renderRequest(request) {
-    const card = el("div", "request");
+    const card = el("div", "cx-request");
     const params = request.params || {};
     const actions = el("div", "actions");
-    const respond = async (body, button) => {
+    const respond = async (body) => {
       for (const b of actions.querySelectorAll("button")) b.disabled = true;
       state.stickNext = true;
       try {
@@ -967,34 +1387,34 @@
     };
     if (request.method === "item/commandExecution/requestApproval" || request.method === "item/fileChange/requestApproval") {
       const isCommand = request.method.includes("commandExecution");
-      card.append(el("strong", "", isCommand ? "请求执行命令" : "请求修改文件"));
+      card.append(el("strong", "", isCommand ? "要运行这条命令吗？" : "要修改这些文件吗？"));
       if (params.reason) card.append(el("div", "", params.reason));
-      if (isCommand) card.append(el("code", "", `${params.command || ""}\n# ${params.cwd || ""}`));
+      if (isCommand) card.append(el("code", "", `${shownCommand(params.command)}\n# ${params.cwd || ""}`));
       const decisions = params.availableDecisions || ["accept", "decline"];
-      const labels = { accept: "同意", acceptForSession: "本会话都同意", decline: "拒绝", cancel: "取消这一轮" };
+      const labels = { accept: "同意", acceptForSession: "本会话都同意", decline: "拒绝", cancel: "拒绝并停止" };
       for (const decision of decisions) {
         if (typeof decision !== "string") continue;
-        const button = el("button", decision === "accept" ? "primary" : decision === "decline" || decision === "cancel" ? "danger" : "", labels[decision] || decision);
-        button.onclick = () => respond({ decision }, button);
+        const button = el("button", `cx-btn${decision === "accept" ? " primary" : decision === "decline" || decision === "cancel" ? " danger" : ""}`, labels[decision] || decision);
+        button.onclick = () => respond({ decision });
         actions.append(button);
       }
       if (!decisions.includes("decline")) {
-        const button = el("button", "danger", "拒绝");
-        button.onclick = () => respond({ decision: "decline" }, button);
+        const button = el("button", "cx-btn danger", "拒绝");
+        button.onclick = () => respond({ decision: "decline" });
         actions.append(button);
       }
     } else if (request.method === "item/tool/requestUserInput") {
-      card.append(el("strong", "", "模型在提问"));
+      card.append(el("strong", "", "Codex 在问你"));
       const answers = {};
       for (const question of params.questions || []) {
         card.append(el("div", "", question.question || question.header || ""));
         const row = el("div", "actions");
         for (const option of question.options || []) {
-          const button = el("button", "", option.label);
+          const button = el("button", "cx-btn", option.label);
           if (option.description) button.title = option.description;
           button.onclick = () => {
             answers[question.id] = { answers: [option.label] };
-            for (const b of row.querySelectorAll("button")) b.classList.toggle("primary", b === button);
+            for (const b of row.querySelectorAll("button")) b.classList.toggle("on", b === button);
           };
           row.append(button);
         }
@@ -1006,70 +1426,301 @@
         }
         card.append(row);
       }
-      const submit = el("button", "primary", "提交回答");
-      submit.onclick = () => respond({ answers }, submit);
+      const submit = el("button", "cx-btn primary", "提交回答");
+      submit.onclick = () => respond({ answers });
       actions.append(submit);
     } else {
       card.append(el("strong", "", "需要在桌面处理的请求"));
       card.append(el("code", "", request.method));
     }
-    if (!can("full")) {
-      actions.replaceChildren(el("span", "readonly", "审批与回答需要「完全控制」权限，可在 Codex++ 的设备列表里调整。"));
-    }
+    if (!can("full")) actions.replaceChildren(el("span", "readonly", "审批与回答需要「完全控制」权限，可在 Codex++ 的设备列表里调整。"));
     card.append(actions);
     return card;
   }
 
+  // ---------- Codex 样式：输入卡片下面那一排（加号 / 权限 / 模式 / 项目 … 上下文 / 模型 / 发送）----------
+  function pill(svg, label, tone, onClick, { chevron = true, disabled = false, title = "" } = {}) {
+    const button = el("button", `cx-pill${tone ? ` ${tone}` : ""}`);
+    button.innerHTML = svg;
+    if (label) button.append(el("span", "", label));
+    if (chevron && label) button.insertAdjacentHTML("beforeend", CX.chev.replace("<svg", '<svg class="chev"'));
+    button.disabled = disabled;
+    if (title) button.title = title;
+    button.onclick = onClick;
+    return button;
+  }
+
+  function renderControls() {
+    const bar = $("controls");
+    const isNew = !state.current;
+    const running = state.view?.runtime === "active";
+    const options = state.optionsFor === state.current ? state.options : null;
+    const current = state.view?.controls || options?.current || {};
+    const nodes = [pill(CX.plus, "", "", (event) => attachMenu(event.currentTarget), { title: "添加图片或文件" })];
+    if (isNew) {
+      nodes.push(pill(CX.folder, state.draftCwd ? baseName(state.draftCwd) : "选择项目", "", (event) => projectMenu(event.currentTarget), { title: state.draftCwd }));
+    } else {
+      const locked = state.applying || !can("full");
+      const mode = options?.permissionModes?.find((item) => item.id === current.permissionMode);
+      const full = current.permissionMode === "full-access";
+      nodes.push(pill(full ? CX.alert : CX.shield, mode?.label || (current.permissionMode === "custom" ? "自定义权限" : "沿用会话权限"), full ? "warn" : "",
+        (event) => permissionMenu(event.currentTarget), { disabled: locked || !options, title: mode?.detail || "权限" }));
+      const plan = current.collaborationMode === "plan";
+      nodes.push(pill(plan ? CX.plan : CX.agent, plan ? "计划模式" : "Agent", plan ? "on" : "", (event) => modeMenu(event.currentTarget), { disabled: locked || !state.view }));
+    }
+    nodes.push(el("span", "grow"));
+    if (!isNew) {
+      const usage = state.view?.tokenUsage;
+      if (usage?.window) {
+        const ratio = Math.max(0, Math.min(1, usage.used / usage.window));
+        const ring = el("span", "cx-ring");
+        const length = 2 * Math.PI * 6.5;
+        ring.innerHTML = `<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-opacity=".3" stroke-width="2"/><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="${(ratio * length).toFixed(1)} ${length.toFixed(1)}" transform="rotate(-90 8 8)"/></svg>`;
+        ring.append(`${Math.round(ratio * 100)}%`);
+        ring.title = `上下文已用 ${usage.used.toLocaleString()} / ${usage.window.toLocaleString()}`;
+        nodes.push(ring);
+      }
+      const models = options?.models || [];
+      const modelId = current.model || state.view?.model;
+      const modelLabel = models.find((item) => item.id === modelId)?.label || modelId || "模型";
+      const effort = current.effort ? ` ${effortLabels[current.effort] || current.effort}` : "";
+      nodes.push(pill("", `${modelLabel}${effort}`, "", (event) => modelMenu(event.currentTarget), { disabled: state.applying || !can("full") || !options, title: "模型与推理强度" }));
+    }
+    const pending = m.pending();
+    const uploading = pending.some((entry) => entry.status === "uploading");
+    const hasContent = !!$("input").value.trim() || pending.some((entry) => entry.status === "ready");
+    const stop = running && !hasContent;
+    const go = el("button", "cx-send");
+    go.innerHTML = stop ? CX.stop : CX.up;
+    go.title = stop ? "停止" : running ? "插话" : "发送";
+    go.disabled = state.busy || uploading || (!hasContent && !stop) || (stop && !can("message"));
+    go.onclick = stop ? interrupt : send;
+    nodes.push(go);
+    bar.replaceChildren(...nodes);
+    $("input").placeholder = isNew ? "和 Codex 一起工作" : running ? "运行中，发消息即插话…" : "要求后续变更";
+  }
+
+  // ---------- Codex 样式：贴着按钮弹出的菜单 ----------
+  function closeMenu() {
+    document.getElementById("cxMenu")?.remove();
+    document.removeEventListener("pointerdown", outsideMenu, true);
+  }
+  function outsideMenu(event) {
+    if (!event.target.closest?.("#cxMenu")) closeMenu();
+  }
+  function openMenu(anchor, build) {
+    closeMenu();
+    const menu = el("div", "cx-menu");
+    menu.id = "cxMenu";
+    const add = {
+      title: (text) => menu.append(el("div", "title", text)),
+      sep: () => menu.append(el("div", "sep")),
+      node: (node) => menu.append(node),
+      item: ({ label, detail, checked, danger, disabled, onClick }) => {
+        const button = el("button", `item${danger ? " danger" : ""}`);
+        button.append(el("span", "check", checked ? "✓" : ""));
+        const text = el("span", "label");
+        text.append(el("span", "", label));
+        if (detail) text.append(el("small", "", detail));
+        button.append(text);
+        button.disabled = !!disabled;
+        button.onclick = () => { closeMenu(); onClick?.(); };
+        menu.append(button);
+      },
+    };
+    build(add);
+    document.body.append(menu);
+    const rect = anchor.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const height = menu.offsetHeight;
+    const above = rect.top - height - 6 >= 8 && rect.top > window.innerHeight / 2;
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${above ? rect.top - height - 6 : Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - height - 8))}px`;
+    setTimeout(() => document.addEventListener("pointerdown", outsideMenu, true));
+  }
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMenu(); });
+
+  function attachMenu(anchor) {
+    openMenu(anchor, (menu) => {
+      menu.item({ label: "图片", detail: "截图、照片，Codex 能看到图", onClick: () => m.pickFiles("image/*") });
+      menu.item({ label: "文件", detail: "代码、文档、日志，Codex 会去读它", onClick: () => m.pickFiles("") });
+    });
+  }
+
+  function projectMenu(anchor) {
+    const projects = projectsOf(state.threads).filter((project) => project.cwd);
+    openMenu(anchor, (menu) => {
+      menu.title("项目");
+      for (const project of projects.slice(0, 20)) {
+        menu.item({ label: project.name, detail: project.cwd, checked: project.cwd === state.draftCwd, onClick: () => { state.draftCwd = project.cwd; renderThreads(); } });
+      }
+      if (projects.length) menu.sep();
+      menu.item({ label: "选择其他文件夹…", onClick: () => m.openFolderSheet(state.draftCwd || null, (picked) => { state.draftCwd = picked; renderThreads(); }) });
+    });
+  }
+
+  function permissionMenu(anchor) {
+    const options = state.optionsFor === state.current ? state.options : null;
+    if (!options) return;
+    const current = state.view?.controls || options.current || {};
+    openMenu(anchor, (menu) => {
+      menu.title("权限");
+      for (const mode of options.permissionModes) {
+        menu.item({
+          label: mode.label, detail: mode.detail, checked: mode.id === current.permissionMode, danger: mode.id === "full-access",
+          onClick: () => mode.id !== current.permissionMode && changeSettings({ permissionMode: mode.id },
+            mode.id === "full-access" ? "完全访问：命令不经沙箱、不再询问，直接在这台电脑上执行。确定切换吗？" : null),
+        });
+      }
+    });
+  }
+
+  function modeMenu(anchor) {
+    const plan = state.view?.controls?.collaborationMode === "plan";
+    openMenu(anchor, (menu) => {
+      menu.item({ label: "Agent", detail: "直接动手做", checked: !plan, onClick: () => plan && changeSettings({ collaborationMode: "default" }) });
+      menu.item({
+        label: "计划模式", detail: "先和你讨论出完整方案，再动手", checked: plan,
+        onClick: () => {
+          if (plan) return;
+          // 计划模式只能在桌面里用：没在桌面打开的会话切过去会让桌面打开它。
+          const desktopNeeded = !state.view?.live || state.view?.headless;
+          changeSettings({ collaborationMode: "plan" }, desktopNeeded ? "计划模式要在桌面里用，会让桌面 Codex 打开这个会话。继续吗？" : null);
+        },
+      });
+    });
+  }
+
+  function modelMenu(anchor) {
+    const options = state.optionsFor === state.current ? state.options : null;
+    if (!options) return;
+    const current = state.view?.controls || options.current || {};
+    const models = [...options.models];
+    if (current.model && !models.some((model) => model.id === current.model)) models.unshift({ id: current.model, label: current.model, efforts: [] });
+    const model = models.find((item) => item.id === current.model);
+    openMenu(anchor, (menu) => {
+      menu.title("推理强度");
+      const segs = el("div", "segs");
+      for (const effort of [null, ...(model?.efforts?.length ? model.efforts : ["low", "medium", "high"])]) {
+        const label = effort ? effortLabels[effort] || effort : `默认${model?.defaultEffort ? `（${effortLabels[model.defaultEffort] || model.defaultEffort}）` : ""}`;
+        const button = el("button", (current.effort || null) === effort ? "on" : "", label);
+        button.onclick = () => { closeMenu(); if ((current.effort || null) !== effort) changeSettings({ effort }); };
+        segs.append(button);
+      }
+      menu.node(segs);
+      menu.sep();
+      menu.title("模型");
+      for (const item of models) {
+        menu.item({ label: item.label || item.id, detail: item.description, checked: item.id === current.model, onClick: () => item.id !== current.model && changeSettings({ model: item.id }) });
+      }
+    });
+  }
+
+  function hostMenu(anchor) {
+    openMenu(anchor, (menu) => {
+      menu.item({ label: state.me?.host || "这台电脑", detail: `已连接 · ${location.host}`, disabled: true });
+      menu.item({ label: state.me?.kind === "device" ? state.me.name : "本机浏览器", detail: `这台设备 · ${roleText(state.me?.role)}`, disabled: true });
+      menu.sep();
+      menu.item({ label: "刷新会话列表", onClick: loadThreads });
+      menu.item({ label: "切换到聊天样式", detail: "照微信做的界面", onClick: () => m.setStyle("chat") });
+      if (can("full")) menu.item({ label: "桌面镜像", detail: "直接看并操作桌面上的 Codex 窗口", onClick: () => m.setStyle("mirror") });
+    });
+  }
+
+  // ---------- Codex 样式：发送 ----------
+  function autosize() {
+    const input = $("input");
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+  }
+
   async function send() {
     const text = $("input").value.trim();
-    if (!text || !state.current || state.busy) return;
+    const pending = m.pending();
+    if (pending.some((entry) => entry.status === "uploading")) return toast("附件还在上传…");
+    const attachments = pending.filter((entry) => entry.status === "ready").map(({ path, name, kind }) => ({ path, name, kind }));
+    if ((!text && !attachments.length) || state.busy) return;
+    if (!state.current) return createAndSend(text, attachments);
     state.busy = true;
     state.stickNext = true;
-    $("send").disabled = true;
+    renderControls();
     try {
-      await api("POST", `/threads/${state.current}/messages`, { text });
+      await api("POST", `/threads/${state.current}/messages`, { text, attachments });
       $("input").value = "";
-      if (!state.socket && !state.poller) {
-        // 后台会话的推送从发消息起就有，直接连。
-        connectSocket(state.current);
-      }
+      m.clearPending();
+      autosize();
+      // 后台会话的推送从发消息起就有，直接连。
+      if (!state.socket && !state.poller) connectSocket(state.current);
     } catch (error) {
       toast(error.message);
     } finally {
       state.busy = false;
-      $("send").disabled = false;
+      renderControls();
     }
   }
 
-  $("send").onclick = send;
-  $("model").onchange = () => changeSettings({ model: $("model").value });
-  $("effort").onchange = () => changeSettings({ effort: $("effort").value || null });
-  $("permission").onchange = () => {
-    const mode = $("permission").value;
-    if (mode === "custom") return;
-    changeSettings({ permissionMode: mode }, mode === "full-access" ? "完全访问：命令不经沙箱、不再询问，直接在这台电脑上执行。确定切换吗？" : null);
-  };
-  $("plan").onclick = () => {
-    const toPlan = state.view?.controls?.collaborationMode !== "plan";
-    // 计划模式只能在桌面里用：没在桌面打开的会话切过去会让桌面打开它。
-    const desktopNeeded = toPlan && (!state.view?.live || state.view?.headless);
-    changeSettings({ collaborationMode: toPlan ? "plan" : "default" }, desktopNeeded ? "计划模式要在桌面里用，会让桌面 Codex 打开这个会话。继续吗？" : null);
-  };
+  /** 新聊天的第一句话：先建会话再发（带附件时分两步，附件走发消息接口）。 */
+  async function createAndSend(text, attachments) {
+    const cwd = state.draftCwd;
+    if (!cwd) return toast("先选一个项目文件夹");
+    state.busy = true;
+    renderControls();
+    try {
+      const data = await api("POST", "/threads", { cwd, text: attachments.length ? undefined : text || undefined });
+      if (attachments.length) await api("POST", `/threads/${data.threadId}/messages`, { text, attachments });
+      $("input").value = "";
+      m.clearPending();
+      autosize();
+      await loadThreads();
+      await selectThread(data.threadId);
+      if (state.current === data.threadId && !state.socket && !state.poller) connectSocket(data.threadId);
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      state.busy = false;
+      renderControls();
+    }
+  }
+
+  async function interrupt() {
+    try { await api("POST", `/threads/${state.current}/interrupt`); } catch (error) { toast(error.message); }
+  }
+
   $("input").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !window.matchMedia?.("(pointer: coarse)").matches) {
       event.preventDefault();
       send();
     }
   });
+  $("input").addEventListener("input", () => { autosize(); renderControls(); });
+  // 粘贴截图、拖文件进输入框：直接当附件。
+  $("input").addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files || [])];
+    if (!files.length || !can("message")) return;
+    event.preventDefault();
+    for (const file of files) m.addPending(file);
+  });
+  $("compose").addEventListener("dragover", (event) => { event.preventDefault(); $("compose").classList.add("drag"); });
+  $("compose").addEventListener("dragleave", () => $("compose").classList.remove("drag"));
+  $("compose").addEventListener("drop", (event) => {
+    event.preventDefault();
+    $("compose").classList.remove("drag");
+    for (const file of event.dataTransfer?.files || []) m.addPending(file);
+  });
   $("refresh").onclick = loadThreads;
-  // 会话页「‹ 返回」回项目里的会话列表；项目列表的「‹ 项目」再退一级。
-  $("back").onclick = () => { $("app").classList.remove("viewing"); closeSocket(); state.current = null; renderThreads(); };
-  // 桌面样式下图标栏一直可见，会话开着时也能点：一并退出会话，回到项目列表。
-  $("projectBack").onclick = () => {
+  $("cxNew").onclick = () => newChat(null);
+  $("cxHost").onclick = (event) => hostMenu(event.currentTarget);
+  $("cxSearchToggle").onclick = () => {
+    $("cxSearchBox").hidden = !$("cxSearchBox").hidden;
+    if ($("cxSearchBox").hidden) { state.query = ""; $("cxSearch").value = ""; renderSide(); } else $("cxSearch").focus();
+  };
+  $("cxSearch").oninput = () => { state.query = $("cxSearch").value; renderSide(); };
+  // 窄屏：会话页「‹」回侧栏（项目 / 最近）。
+  $("back").onclick = () => {
     $("app").classList.remove("viewing");
     closeSocket();
     state.current = null;
-    state.project = null;
+    state.view = null;
     renderThreads();
   };
   $("open").onclick = async () => {
@@ -1080,26 +1731,10 @@
       connectSocket(state.current);
     } catch (error) { toast(error.message); }
   };
-  $("interrupt").onclick = async () => {
-    try { await api("POST", `/threads/${state.current}/interrupt`); } catch (error) { toast(error.message); }
-  };
-  $("create").onclick = async () => {
-    // 项目里的新建会话用该项目的目录；项目列表上新建要手填目录。
-    const cwd = state.project !== null ? state.project : $("newCwd").value.trim();
-    if (!cwd) return toast("先填工作目录");
-    $("create").disabled = true;
-    try {
-      toast("正在新建会话…");
-      const data = await api("POST", "/threads", { cwd, name: $("newName").value.trim() || undefined });
-      $("newName").value = "";
-      await loadThreads();
-      await selectThread(data.threadId);
-    } catch (error) {
-      toast(error.message);
-    } finally {
-      $("create").disabled = false;
-    }
-  };
+  // 侧栏定期刷新：别处（桌面、别的设备）开的会话、跑完的会话能及时出现。
+  setInterval(() => {
+    if (styleNow() === "codex" && state.me && !document.hidden) loadThreads();
+  }, 10000);
 
   // ================= 桌面镜像 =================
   // 把 Codex 桌面窗口的画面投过来（服务端经 CDP 投屏），鼠标 / 触摸 / 滚轮 / 按键发回去。
@@ -1411,6 +2046,9 @@
     const palette = ["#c8574d", "#3f9a8c", "#c98a3a", "#5677b8", "#8b62b3", "#55995a", "#b9567f", "#5f8ea6", "#a0784f"];
     const coarse = window.matchMedia?.("(pointer: coarse)").matches ?? false;
     const isChat = () => document.documentElement.dataset.style === "chat";
+    // 宽屏（电脑浏览器）：照电脑版微信三栏，会话列表和对话并排；窄屏还是手机一屏一屏地切。
+    const wideQuery = window.matchMedia?.("(min-width: 900px)");
+    const wide = () => !!wideQuery?.matches;
     const svg = (d, attrs = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"${attrs}>${d}</svg>`;
     const ICON = {
       send: svg('<path d="M12 19V5M5 12l7-7 7 7"/>', ' stroke-width="2.4"'),
@@ -1469,7 +2107,6 @@
       return withClock ? `${day} ${clock}` : day;
     }
     const formatTokens = (value) => (value >= 1e6 ? `${+(value / 1e6).toFixed(value % 1e6 ? 1 : 0)}M` : value >= 1e3 ? `${Math.round(value / 1e3)}K` : String(value));
-    const roleText = (role) => ({ view: "只能查看", message: "可发消息", full: "完全控制" }[role] || role || "");
 
     /** 头像：一个会话用单字方块；多个会话按微信群头像的排法拼九宫格，每格是会话标题的首字。 */
     function avatarNode(tiles, { badge = 0, dot = false } = {}) {
@@ -1555,6 +2192,7 @@
           title: single ? project.name : `${project.name}（${sessions.length}）`,
           sub,
           time: chatTime(project.updatedAt),
+          active: wide() && sessions.some((thread) => thread.id === state.current),
           // 只有一个会话的项目直接进对话（和微信单聊一样）。
           onClick: () => (single ? openChat(sessions[0].id, "list") : openProject(project.cwd)),
         });
@@ -1647,7 +2285,7 @@
       img.src = src;
       viewer.append(img);
       viewer.onclick = () => viewer.remove();
-      $("m").append(viewer);
+      document.body.append(viewer);
     }
 
     // ---------- 附件：选择、压缩、上传 ----------
@@ -1725,7 +2363,12 @@
     }
 
     function renderAttach() {
-      const tray = $("mAttach");
+      for (const tray of [$("mAttach"), $("cxAttach")]) fillTray(tray);
+      renderComposer();
+      if (document.documentElement.dataset.style === "codex") renderControls();
+    }
+
+    function fillTray(tray) {
       tray.hidden = !ui.pending.length;
       tray.replaceChildren(...ui.pending.map((entry) => {
         const item = el("div", `item ${entry.status}`);
@@ -1744,7 +2387,6 @@
         item.append(remove);
         return item;
       }));
-      renderComposer();
     }
 
     function openAttachSheet() {
@@ -1769,7 +2411,7 @@
       const head = el("div", "m-card-head");
       head.append(el("span", "", "⌘ 执行命令"), el("span", `state ${tone}`, label));
       const body = el("div", "m-card-body");
-      body.append(el("code", "m-cmd", item.command || ""));
+      body.append(el("code", "m-cmd", shownCommand(item.command)));
       if (item.aggregatedOutput) {
         const output = el("pre", "out", item.aggregatedOutput);
         const key = item.id || item.command;
@@ -1844,7 +2486,7 @@
         const isCommand = request.method.includes("commandExecution");
         head.append(el("span", "", isCommand ? "⌘ 请求执行命令" : "✎ 请求修改文件"));
         if (params.reason) body.append(el("div", "reason", params.reason));
-        if (isCommand) body.append(el("code", "m-cmd", params.command || ""));
+        if (isCommand) body.append(el("code", "m-cmd", shownCommand(params.command)));
         const decisions = (params.availableDecisions || ["accept", "decline"]).filter((decision) => typeof decision === "string");
         if (!decisions.includes("decline") && !decisions.includes("cancel")) decisions.push("decline");
         const labels = { accept: "同意", acceptForSession: "本会话都同意", decline: "拒绝", cancel: "拒绝并停止" };
@@ -1889,7 +2531,7 @@
     }
 
     function renderChat() {
-      if (ui.screen !== "chat") return;
+      if ($("mChat").hidden) return;
       const view = state.view;
       renderComposer();
       if (!view) return;
@@ -1928,6 +2570,7 @@
     // ---------- 输入区 ----------
     function autosize() {
       const input = $("mInput");
+      if (wide()) { input.style.height = ""; return; }
       input.style.height = "38px";
       input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
     }
@@ -1940,13 +2583,23 @@
       const ready = ui.pending.filter((entry) => entry.status === "ready");
       const uploading = ui.pending.some((entry) => entry.status === "uploading");
       const hasText = !!$("mInput").value.trim() || ready.length > 0;
-      $("mGo").disabled = uploading;
       const go = $("mGo");
-      go.hidden = !hasText && !running;
-      go.className = `go ${hasText ? "send" : "stop"}`;
-      go.innerHTML = hasText ? ICON.send : ICON.stop;
+      go.disabled = uploading;
       go.setAttribute("aria-label", hasText ? (running ? "插话" : "发送") : "停止");
-      $("mInput").placeholder = running ? "运行中，发消息即插话…" : "发消息...";
+      if (wide()) {
+        // 电脑版微信：右下角一直有「发送」，没字时变灰；运行中没字时是「停止」。
+        const stop = running && !hasText;
+        go.hidden = false;
+        go.className = `go ${stop ? "stop" : "send"}${hasText ? " ready" : ""}`;
+        go.textContent = stop ? "停止" : "发送";
+        go.disabled = uploading || (!hasText && !stop);
+        $("mInput").placeholder = running ? "运行中，发消息即插话（Enter 发送，Shift+Enter 换行）" : "";
+      } else {
+        go.hidden = !hasText && !running;
+        go.className = `go ${hasText ? "send" : "stop"}`;
+        go.innerHTML = hasText ? ICON.send : ICON.stop;
+        $("mInput").placeholder = running ? "运行中，发消息即插话…" : "发消息...";
+      }
       renderChips();
     }
 
@@ -2049,7 +2702,7 @@
       sheet.append(body, cancel);
       mask.append(sheet);
       mask.onclick = (event) => { if (event.target === mask) closeSheet(); };
-      $("m").append(mask);
+      document.body.append(mask);
     }
     function optionButton({ label, detail, checked, danger, center, disabled, onClick }) {
       const button = el("button", `opt${danger ? " danger" : ""}${center ? " center" : ""}`);
@@ -2316,13 +2969,17 @@
     // ---------- 导航 ----------
     function show(screen) {
       ui.screen = screen;
-      $("mList").hidden = screen !== "list";
-      $("mProject").hidden = screen !== "project";
-      $("mSettings").hidden = screen !== "settings";
-      $("mChat").hidden = screen !== "chat";
-      $("mTabs").hidden = screen !== "list" && screen !== "settings";
-      $("mTabChats").setAttribute("aria-selected", String(screen !== "settings"));
-      $("mTabSettings").setAttribute("aria-selected", String(screen === "settings"));
+      if (screen !== "chat") ui.side = screen;
+      const wideNow = wide();
+      const side = wideNow ? ui.side || "list" : screen;
+      $("mList").hidden = side !== "list";
+      $("mProject").hidden = side !== "project";
+      $("mSettings").hidden = side !== "settings";
+      $("mChat").hidden = wideNow ? false : screen !== "chat";
+      $("mTabs").hidden = wideNow ? false : screen !== "list" && screen !== "settings";
+      $("m").classList.toggle("no-chat", !state.current);
+      $("mTabChats").setAttribute("aria-selected", String(side !== "settings"));
+      $("mTabSettings").setAttribute("aria-selected", String(side === "settings"));
     }
     function openProject(cwd) {
       ui.project = cwd;
@@ -2331,10 +2988,13 @@
       renderProject();
     }
     function openChat(id, from) {
+      if (state.current && state.current !== id) clearPending();
       ui.from = from;
       ui.stick = true;
       ui.requestCards.clear();
-      history.pushState({ m: "chat" }, "");
+      // 宽屏是并排的，切会话不压历史（不然浏览器后退要一个个退）。
+      if (!wide() || ui.screen !== "chat") history.pushState({ m: "chat" }, "");
+      state.current = id;
       show("chat");
       $("mChatTitle").textContent = threadTitle(state.threads.find((thread) => thread.id === id) || {});
       $("mChatState").textContent = "";
@@ -2342,10 +3002,13 @@
       markSeen(id);
       selectThread(id);
     }
-    function leaveChat() {
+    function clearPending() {
       for (const entry of ui.pending) if (entry.preview) URL.revokeObjectURL(entry.preview);
       ui.pending = [];
       renderAttach();
+    }
+    function leaveChat() {
+      clearPending();
       closeSocket();
       markSeen(state.current);
       state.current = null;
@@ -2379,10 +3042,10 @@
         return;
       }
       mirror.stop();
-      $("style").textContent = next === "chat" ? "Codex 样式" : "聊天样式";
       renderThreads();
       if (state.view) applyView(state.view);
       if (next === "chat") {
+        ui.stick = true;
         show(state.current ? "chat" : "list");
         renderSettings();
       } else if (state.current) {
@@ -2393,6 +3056,9 @@
     // ---------- 事件 ----------
     $("mTabChats").onclick = () => { show("list"); renderList(); };
     $("mTabSettings").onclick = () => { show("settings"); renderSettings(); };
+    $("mTabMirror").onclick = () => setStyle("mirror");
+    $("mTabStyle").onclick = () => setStyle("codex");
+    wideQuery?.addEventListener?.("change", () => { show(ui.screen); autosize(); renderComposer(); renderChat(); });
     $("mFilter").onclick = openFilterSheet;
     $("mHost").onclick = openHostSheet;
     $("mNew").onclick = () => openNewSheet(null);
@@ -2427,6 +3093,9 @@
       onView() { renderChat(); },
       onRole() {
         $("mHostName").textContent = state.me?.host || "远程控制";
+        $("mMe").textContent = firstChar(state.me?.host || "C");
+        $("mMe").title = state.me?.host || "";
+        $("mTabMirror").hidden = !can("full");
         $("mHostDot").classList.toggle("off", !state.me);
         $("mNew").style.visibility = can("message") ? "" : "hidden";
         renderSettings();
@@ -2437,15 +3106,21 @@
         $("mRows").replaceChildren(el("div", "m-empty", `连接失败：${message}`));
       },
       setStyle,
+      // 下面这些 Codex 样式也在用：未读、附件、文件夹浏览。
+      unread,
+      markSeen,
+      attachmentNode,
+      pickFiles,
+      addPending,
+      pending: () => ui.pending,
+      clearPending,
+      openFolderSheet,
     };
   })();
 
   // 样式切换：按设备记在 localStorage；聊天样式下模型 / 权限收进「⋯」。
-  const styleLabel = () => (document.documentElement.dataset.style === "chat" ? "Codex 样式" : "聊天样式");
-  $("style").textContent = styleLabel();
   $("mirrorOpen").onclick = () => m.setStyle("mirror");
   $("style").onclick = () => m.setStyle(document.documentElement.dataset.style === "chat" ? "codex" : "chat");
-  $("more").onclick = () => $("controls").classList.toggle("chat-open");
 
   $("pairButton").onclick = pair;
   $("pairName").addEventListener("keydown", (event) => { if (event.key === "Enter") pair(); });
