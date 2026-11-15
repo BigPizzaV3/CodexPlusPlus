@@ -1701,6 +1701,8 @@ export const EN_PLAIN: Record<string, string> = {
   "主页": "Homepage",
   "主题和启动参数": "Theme and launch arguments",
   "从 GitHub 静态清单加载": "Loaded from the static GitHub manifest",
+  "发送「/prompts:名字 参数」时按 Codex CLI 的规则替换 $1…$9、$ARGUMENTS 和 $名字（名字=值），缺参数时提示不发送；新加的 prompt 文件不用重启就能用。Codex 应用原生只把参数接在正文后面。":
+    "When sending \"/prompts:name args\", replace $1…$9, $ARGUMENTS and $NAME (NAME=value) the way Codex CLI does, and refuse to send when an argument is missing; newly added prompt files work without a restart. The Codex app on its own only appends the arguments to the prompt.",
   "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。":
     "Keeps only plain text when pasting rich text (e.g. from Word) into the Codex composer, avoiding it being treated as an image/file attachment.",
   "从上游获取": "Fetch from upstream",
@@ -2847,6 +2849,7 @@ export const EN_PLAIN: Record<string, string> = {
   "管理控制台入口": "Management console entrypoint",
   "类型": "Type",
   "粘贴修复": "Paste fix",
+  "自定义 prompt 参数": "Custom prompt arguments",
   "强制中文界面": "Force Chinese UI",
   "Statsig 界面增强": "Statsig UI enhancements",
   "按上报用量判断压缩（实验）": "Use reported usage for compaction (experimental)",

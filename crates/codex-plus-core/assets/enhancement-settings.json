@@ -280,6 +280,18 @@
       ]
     },
     {
+      "key": "codexAppPromptArgs",
+      "builtin": "prompt-args",
+      "group": "chat",
+      "control": "bool",
+      "title": "自定义 prompt 参数",
+      "description": "发送「/prompts:名字 参数」时按 Codex CLI 的规则替换 $1…$9、$ARGUMENTS 和 $名字（名字=值），缺参数时提示不发送；新加的 prompt 文件不用重启就能用。Codex 应用原生只把参数接在正文后面。",
+      "surfaces": [
+        "manager",
+        "codex"
+      ]
+    },
+    {
       "key": "codexAppForceChineseLocale",
       "builtin": "force-chinese-locale",
       "group": "chat",

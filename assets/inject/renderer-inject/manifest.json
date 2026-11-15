@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2965
+      "lines": 2968
     },
     {
       "name": "20-menu.js",
@@ -208,12 +208,17 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 440
+      "lines": 441
     },
     {
       "name": "96-paste-fix.js",
       "description": "内置拓展「粘贴修复」：Word 粘贴降级为纯文本（监听随拓展装卸）",
       "lines": 41
+    },
+    {
+      "name": "96-prompt-args.js",
+      "description": "内置拓展「自定义 prompt 参数」：发送 /prompts:名字 参数 时按 CLI 规则展开占位符",
+      "lines": 219
     },
     {
       "name": "96-dsh-client.js",

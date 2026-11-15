@@ -419,6 +419,11 @@ pub async fn handle_bridge_request(
         }
         // 只读：设置项清单（标题、说明、分组等），注入页据此生成设置行。
         "/settings/catalog" => crate::settings_catalog::enhancement_settings_catalog(),
+        // 只读：Codex 自定义 prompt（<CODEX_HOME>/prompts/*.md），给「prompt 参数展开」发送前展开占位符。
+        "/custom-prompts/list" => Ok(json!({
+            "status": "ok",
+            "prompts": crate::custom_prompts::list_custom_prompts(&crate::codex_home::default_codex_home_dir()),
+        })),
         // Codex 页面里的「供应商」页（43-provider-page.js）。不在拓展路由白名单里：会改供应商、带 Key。
         "/providers/list" => crate::provider_page::route_list(),
         // 保存 / 切换走管理器的同步命令（文件锁、live 文件读写），放到阻塞线程池里跑。

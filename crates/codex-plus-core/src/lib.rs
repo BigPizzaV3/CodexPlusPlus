@@ -24,6 +24,7 @@ pub mod claude_localization;
 pub mod codex_app_state;
 pub mod config_doctor;
 pub mod codex_home;
+pub mod custom_prompts;
 pub mod codex_local_storage;
 pub mod codex_sqlite;
 pub mod browser_use;

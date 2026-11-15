@@ -1225,6 +1225,10 @@ pub struct BackendSettings {
     pub computer_use_pip: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
+    /// 发送 /prompts:<名字> 参数 时按 CLI 规则展开 $1…$9、$ARGUMENTS、$名字（Codex 应用原生只把参数拼在正文后）。
+    /// 只在带参数发送已有 prompt 时介入，默认开启。
+    #[serde(rename = "codexAppPromptArgs", default = "default_true")]
+    pub codex_app_prompt_args: bool,
     // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
     // 若默认开启等于替他们重新打开一个从没同意过的行为。要开请显式勾选。
     #[serde(rename = "codexAppForceChineseLocale", default)]
@@ -1575,6 +1579,7 @@ impl Default for BackendSettings {
             computer_use_mode: default_computer_use_mode(),
             computer_use_pip: true,
             codex_app_paste_fix: false,
+            codex_app_prompt_args: true,
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
@@ -3025,6 +3030,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "usageHistoryEnabled");
     merge_bool_setting(target, source, "codexAppProxyRequestStatus");
     merge_bool_setting(target, source, "codexAppPasteFix");
+    merge_bool_setting(target, source, "codexAppPromptArgs");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
         source.get("codexAppTypingEffect").and_then(Value::as_str)

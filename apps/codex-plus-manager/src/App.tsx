@@ -598,6 +598,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   usageHistoryEnabled: boolean;
   codexAppProxyRequestStatus: boolean;
   codexAppPasteFix: boolean;
+  codexAppPromptArgs: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
@@ -1689,6 +1690,7 @@ const defaultSettings: BackendSettings = {
   usageHistoryEnabled: false,
   codexAppProxyRequestStatus: true,
   codexAppPasteFix: false,
+  codexAppPromptArgs: true,
   codexAppForceChineseLocale: false,
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,

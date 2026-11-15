@@ -1990,7 +1990,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, offlineAutoReview: false, statsigOverrides: false, reportedUsageCompaction: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, promptArgs: true, offlineAutoReview: false, statsigOverrides: false, reportedUsageCompaction: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2013,6 +2013,7 @@
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
+    promptArgs: "codexAppPromptArgs",
     offlineAutoReview: "codexAppOfflineAutoReview",
     statsigOverrides: "codexAppStatsigOverrides",
     reportedUsageCompaction: "codexAppReportedUsageCompaction",
@@ -2051,6 +2052,7 @@
         conversationView: "conversation-view",
         activityOverlayRight: "activity-overlay-right",
         pasteFix: "paste-fix",
+        promptArgs: "prompt-args",
         offlineAutoReview: "offline-auto-review",
         statsigOverrides: "statsig-overrides",
         reportedUsageCompaction: "reported-usage-compaction",
@@ -2072,6 +2074,7 @@
         markdownExport: false,
         sideChatSave: false,
         pasteFix: false,
+        promptArgs: false,
         offlineAutoReview: false,
         statsigOverrides: false,
         reportedUsageCompaction: false,
