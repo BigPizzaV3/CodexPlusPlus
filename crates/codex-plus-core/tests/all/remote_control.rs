@@ -1009,3 +1009,26 @@ fn mirror_frames_wait_for_page_acks() {
     assert!(page.matches(r#"send({ type: "frameAck" });"#).count() >= 2, "画完、被顶掉的帧都要确认");
     assert!(page.contains("function queueWheel(") && !page.contains(r#"send({ type: "wheel", x, y, deltaX: event.deltaX"#), "滚轮合并后再发");
 }
+
+/// 远程控制开着时，从 Codex++ 启动 Codex 带上不降帧的开关（窗口在后台、被挡住时镜像照常出画面）；关着不加；不重复加。
+#[test]
+fn mirror_launch_args_follow_remote_control_switch() {
+    use codex_plus_core::remote_control::{MIRROR_LAUNCH_ARGS, append_mirror_launch_args, update_state, with_mirror_launch_args};
+    let _guard = crate::common::global_state_lock();
+    let _temp = TempState::new();
+    let user = vec!["--lang=zh-CN".to_string()];
+    update_state(|state| state.enabled = false).unwrap();
+    assert_eq!(with_mirror_launch_args(user.clone()), user, "关着不加");
+    update_state(|state| state.enabled = true).unwrap();
+    let args = with_mirror_launch_args(user.clone());
+    assert_eq!(args[0], "--lang=zh-CN", "用户自己的参数在前");
+    for flag in MIRROR_LAUNCH_ARGS {
+        assert_eq!(args.iter().filter(|arg| arg == flag).count(), 1, "{flag}");
+    }
+    assert!(MIRROR_LAUNCH_ARGS.contains(&"--disable-backgrounding-occluded-windows"));
+    let mut again = args.clone();
+    append_mirror_launch_args(&mut again);
+    assert_eq!(again, args, "已有的不重复加");
+    let launcher = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/launcher.rs")).unwrap();
+    assert!(launcher.contains("crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args))"), "启动 Codex 时接上");
+}

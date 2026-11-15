@@ -102,6 +102,32 @@ pub fn load_state_from(path: &std::path::Path) -> RemoteControlState {
         .unwrap_or_default()
 }
 
+/// 桌面镜像要 Codex 在后台、被别的窗口挡住时照常出画面。Chromium 默认会：
+/// 给被完全遮挡的窗口停帧 / 降帧、给后台渲染进程降优先级、节流后台计时器。焦点模拟（见 `mirror`）只骗过页面，
+/// 管不到窗口遮挡这一层，所以从 Codex++ 启动 Codex 时就带上这三个开关。
+pub const MIRROR_LAUNCH_ARGS: &[&str] = &[
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+];
+
+/// 已有的不重复加（用户可能自己在「Codex 额外启动参数」里写过）。
+pub fn append_mirror_launch_args(args: &mut Vec<String>) {
+    for flag in MIRROR_LAUNCH_ARGS {
+        if !args.iter().any(|arg| arg == flag) {
+            args.push((*flag).to_string());
+        }
+    }
+}
+
+/// 远程控制开着才加：这些开关让 Codex 在后台也照常耗电，没在用远程控制就不必。
+pub fn with_mirror_launch_args(mut args: Vec<String>) -> Vec<String> {
+    if load_state_from(&state_path()).enabled {
+        append_mirror_launch_args(&mut args);
+    }
+    args
+}
+
 pub fn save_state_to(path: &std::path::Path, state: &RemoteControlState) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

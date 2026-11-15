@@ -1452,7 +1452,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
         instance: &LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
-        let launch_extra_args = normalize_codex_extra_args(extra_args);
+        // 远程控制开着时补上桌面镜像要的开关：Codex 窗口在后台、被挡住时照常出画面，不降帧。
+        let launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
         // 打包版（MSIX/Store）上的多开必须另走一条路。
