@@ -538,12 +538,13 @@ async fn send_with_provider_key(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(relay.user_agent.as_str());
+    let apply_dashscope_async = should_send_dashscope_async(adapter, &method);
     let client = crate::http_client::proxied_client_for_relay(user_agent, &relay)
         .map_err(|error| format!("{error:#}"))?;
     let mut request = client
         .request(method, endpoint)
         .timeout(Duration::from_secs(120));
-    if adapter == VideoAdapter::DashScope {
+    if apply_dashscope_async {
         request = request.header("X-DashScope-Async", "enable");
     }
     if let Some(body) = body {
@@ -571,6 +572,10 @@ async fn send_with_provider_key(
         content_type,
         body,
     })
+}
+
+fn should_send_dashscope_async(adapter: VideoAdapter, method: &reqwest::Method) -> bool {
+    adapter == VideoAdapter::DashScope && method == reqwest::Method::POST
 }
 
 async fn download_content_url(
@@ -1148,6 +1153,34 @@ mod tests {
             status_endpoint(&dashscope, VideoAdapter::DashScope, "task-1"),
             "https://dashscope-intl.aliyuncs.com/api/v1/tasks/task-1"
         );
+    }
+
+    #[test]
+    fn china_token_plan_uses_dashscope_endpoints_and_only_enables_async_on_create() {
+        let relay = RelayProfile {
+            base_url: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1".to_string(),
+            ..provider("qwen", "wan3.0-video").relay
+        };
+        assert_eq!(
+            create_endpoint(&relay, VideoAdapter::DashScope, "wan3.0-video"),
+            "https://token-plan.maas.qianwenaiapi.com/api/v1/services/aigc/video-generation/video-synthesis"
+        );
+        assert_eq!(
+            status_endpoint(&relay, VideoAdapter::DashScope, "task-1"),
+            "https://token-plan.maas.qianwenaiapi.com/api/v1/tasks/task-1"
+        );
+        assert!(should_send_dashscope_async(
+            VideoAdapter::DashScope,
+            &reqwest::Method::POST
+        ));
+        assert!(!should_send_dashscope_async(
+            VideoAdapter::DashScope,
+            &reqwest::Method::GET
+        ));
+        assert!(!should_send_dashscope_async(
+            VideoAdapter::OpenAi,
+            &reqwest::Method::POST
+        ));
     }
 
     #[test]
