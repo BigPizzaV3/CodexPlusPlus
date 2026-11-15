@@ -772,22 +772,27 @@ pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
     format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
 }
 
-/// 同 [`claude_desktop_alias`]，但供应商池里配置的窗口超过 Desktop 自带的 200k 硬编码时，
-/// 给 id 追加 `[1m]` 后缀：Desktop 会按 1M 注册这个模型（cc-switch 同款做法）。
-/// 请求回来时后缀在 [`effective_model_detailed`] → [`claude_alias_target`] 里剥掉，路由不受影响。
-pub fn claude_desktop_model_id(
+/// Claude Desktop 把网关模型标成 1M 上下文的门槛（#3107）。
+///
+/// Desktop 网关模式的 `/v1/models` 发现逻辑（app.asar `[custom-3p] Gateway /v1/models`）只认一个布尔：
+/// 行里 `supports_1m` 是布尔就用它，否则看 `max_input_tokens >= 1e6`；数值本身不保留，
+/// 没有别的档位（256K / 400K 这类窗口无法告诉它）。所以不到 1M 的模型绝不能标 1M，
+/// 否则 Desktop 会把自动压缩推迟到超出上游真实窗口。
+pub const CLAUDE_DESKTOP_1M_WINDOW: u64 = 1_000_000;
+
+/// Claude Desktop `/v1/models` 一行里声明窗口的字段 `(max_input_tokens, supports_1m)`：
+/// 窗口取 [`model_entry_window`]（模型组按最短的那家），达到 [`CLAUDE_DESKTOP_1M_WINDOW`] 才算 1M。
+/// 池里没写窗口时 None，什么都不声明，Desktop 按它自带的 200k。
+///
+/// 标了 1M 的模型 Desktop 会多给一个 `<id>[1m]` 的 1M 选项，id 本身不用加后缀；
+/// 选中后发回来的 `<id>[1m]` 由 [`claude_alias_target`] 剥掉后缀再还原。
+pub fn claude_desktop_window(
     gateway: &GatewaySettings,
-    binding: Option<&AgentBinding>,
+    binding: &AgentBinding,
     model: &str,
-    has_effort: bool,
-) -> String {
-    let mut id = claude_desktop_alias(model, has_effort);
-    if binding.is_some_and(|binding| {
-        model_entry_window(gateway, binding, model).is_some_and(|window| window > 200_000)
-    }) {
-        id.push_str("[1m]");
-    }
-    id
+) -> Option<(u64, bool)> {
+    let window = model_entry_window(gateway, binding, model)?;
+    Some((window, window >= CLAUDE_DESKTOP_1M_WINDOW))
 }
 
 /// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
@@ -796,7 +801,7 @@ fn claude_alias_target(
     binding: &AgentBinding,
     requested: &str,
 ) -> Option<String> {
-    // Desktop 看到的 id 可能带 `[1m]` 这类窗口后缀（见 [`claude_desktop_model_id`]）：先剥掉再对别名。
+    // Desktop 的 1M 选项 id 是 `<别名>[1m]`（见 [`claude_desktop_window`]）：先剥掉窗口后缀再对别名。
     let (requested, _) = crate::model_suffix::parse_model_suffix(requested);
     let digits = [CLAUDE_ALIAS_PREFIX, CLAUDE_EFFORT_ALIAS_PREFIX]
         .iter()
@@ -2166,38 +2171,63 @@ mod tests {
         );
     }
 
-    /// #3107：池里配置了超过 Desktop 自带 200k 硬编码的窗口时，Desktop 模型列表的 id 追加
-    /// `[1m]` 后缀（Desktop 按 1M 注册该模型）；带后缀的 id 请求回来仍能路由到原模型。
+    /// #3107：Desktop 只认「是不是 1M」，所以窗口到 1M 才标 1M；256K / 400K 这类只报真实窗口、
+    /// 明确不标 1M。模型组按最短的那家算。
     #[test]
-    fn desktop_model_id_appends_1m_suffix_when_window_exceeds_200k() {
+    fn desktop_window_marks_1m_only_from_one_million() {
         let mut gateway = gateway("kimi-k3");
         let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
-        let alias = claude_desktop_alias("kimi-k3", false);
-        assert_eq!(
-            claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false),
-            alias
-        );
+        assert_eq!(claude_desktop_window(&gateway, &binding, "kimi-k3"), None);
 
+        for (window, expected) in [
+            (200_000, false),
+            (400_000, false),
+            (999_999, false),
+            (1_000_000, true),
+            (2_000_000, true),
+        ] {
+            gateway.providers[1]
+                .model_windows
+                .insert("kimi-k3".into(), window);
+            assert_eq!(
+                claude_desktop_window(&gateway, &binding, "kimi-k3"),
+                Some((window, expected)),
+                "{window}"
+            );
+        }
+
+        // 组里一家 1M、一家 400K：按 400K 报，不标 1M。
         gateway.providers[1]
             .model_windows
             .insert("kimi-k3".into(), 1_000_000);
-        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
-        let id = claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false);
-        assert_eq!(id, format!("{alias}[1m]"));
-        assert_eq!(
-            effective_model(&gateway, &binding, "kimi-k3", &id),
-            "kimi-k3"
-        );
-
-        // 不超过 200k 的窗口不加后缀。
-        gateway.providers[1]
+        gateway.providers[0]
             .model_windows
-            .insert("kimi-k3".into(), 200_000);
-        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+            .insert("deepseek-v4-flash".into(), 400_000);
         assert_eq!(
-            claude_desktop_model_id(&gateway, Some(&binding), "kimi-k3", false),
-            alias
+            claude_desktop_window(&gateway, &binding, "group/fast"),
+            Some((400_000, false))
         );
+    }
+
+    /// #3107：Desktop 给 1M 模型出的 1M 选项 id 是 `<别名>[1m]`，两种别名带后缀都能还原成原模型。
+    #[test]
+    fn desktop_1m_variant_ids_route_back_to_original_model() {
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        for has_effort in [false, true] {
+            let alias = claude_desktop_alias("kimi-k3", has_effort);
+            for id in [
+                alias.clone(),
+                format!("{alias}[1m]"),
+                format!("{alias}[1M]"),
+            ] {
+                assert_eq!(
+                    effective_model(&gateway, &binding, "deepseek-v4-pro", &id),
+                    "kimi-k3",
+                    "{id}"
+                );
+            }
+        }
     }
 
     /// 有思考档位的模型用 mythos-gw- 别名（Desktop 才出思考等级菜单），旧的 claude-gw- 别名仍能还原。

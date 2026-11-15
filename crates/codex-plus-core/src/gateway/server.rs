@@ -1385,8 +1385,7 @@ async fn handle_models(
                     let has_effort = binding.is_some_and(|binding| {
                         !route::model_entry_reasoning_levels(gateway, binding, model).is_empty()
                     });
-                    let id =
-                        route::claude_desktop_model_id(gateway, binding.as_deref(), model, has_effort);
+                    let id = route::claude_desktop_alias(model, has_effort);
                     let mut row = json!({
                         "id": id,
                         "object": "model",
@@ -1398,6 +1397,13 @@ async fn handle_models(
                     });
                     if id != *model {
                         row["description"] = json!("经 Codex++ 网关转发");
+                    }
+                    // #3107：报真实窗口；Desktop 只按 supports_1m 区分 200k / 1M，不到 1M 显式写 false。
+                    if let Some((window, supports_1m)) = binding
+                        .and_then(|binding| route::claude_desktop_window(gateway, binding, model))
+                    {
+                        row["max_input_tokens"] = json!(window);
+                        row["supports_1m"] = json!(supports_1m);
                     }
                     row
                 })
@@ -1548,6 +1554,67 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #3107：Claude Desktop 的模型列表按池里配置的窗口报 `max_input_tokens`，到 1M 才 `supports_1m: true`；
+    /// id 保持原别名不加 `[1m]` 后缀，没配窗口的模型两个字段都不写。
+    #[tokio::test]
+    async fn claude_desktop_models_declare_window_and_1m_only_from_one_million() {
+        let relay = crate::settings::RelayProfile {
+            id: "up".to_string(),
+            name: "up".to_string(),
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://up.test/v1".to_string(),
+            api_key: "sk-up".to_string(),
+            model_list: "kimi-k3\nglm-5.3\nplain-model".to_string(),
+            ..Default::default()
+        };
+        let mut provider: crate::gateway::store::GatewayProvider =
+            serde_json::from_value(json!({ "relay": relay })).unwrap();
+        provider.model_windows.insert("kimi-k3".into(), 1_000_000);
+        provider.model_windows.insert("glm-5.3".into(), 400_000);
+        let mut gateway = GatewaySettings {
+            providers: vec![provider],
+            ..GatewaySettings::default()
+        };
+        gateway.bindings.insert(
+            "claude-desktop".to_string(),
+            AgentBinding {
+                enabled: true,
+                model: "kimi-k3".to_string(),
+                ..AgentBinding::default()
+            },
+        );
+        let agent = ToolId::Unknown("claude-desktop".to_string());
+        let response = models_response(&gateway, &agent, false).await;
+        let rows = response["data"].as_array().unwrap();
+        let row = |model: &str| {
+            rows.iter()
+                .find(|row| row["display_name"] == model)
+                .unwrap_or_else(|| panic!("{model}: {rows:?}"))
+        };
+
+        let kimi = row("kimi-k3");
+        assert!(!kimi["id"].as_str().unwrap().contains('['), "{kimi}");
+        assert_eq!(kimi["max_input_tokens"], 1_000_000);
+        assert_eq!(kimi["supports_1m"], true);
+
+        let glm = row("glm-5.3");
+        assert!(!glm["id"].as_str().unwrap().contains('['), "{glm}");
+        assert_eq!(glm["max_input_tokens"], 400_000);
+        assert_eq!(glm["supports_1m"], false);
+
+        let plain = row("plain-model");
+        assert!(plain.get("max_input_tokens").is_none(), "{plain}");
+        assert!(plain.get("supports_1m").is_none(), "{plain}");
+
+        // 选了 1M 选项后发回来的 `<别名>[1m]` 仍还原成原模型。
+        let binding = gateway.binding(&agent).unwrap();
+        let id = format!("{}[1m]", kimi["id"].as_str().unwrap());
+        assert_eq!(
+            route::effective_model(&gateway, binding, "glm-5.3", &id),
+            "kimi-k3"
+        );
     }
 
     #[test]
