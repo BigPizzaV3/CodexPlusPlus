@@ -2190,29 +2190,35 @@ describe("relay pureApi provider resolution", () => {
   });
 });
 
-it("opens Stepwise configuration in the manager enhancement page", async () => {
+it("opens Stepwise service settings in the Codex++ settings page, not the manager", async () => {
   const source = await readFile(new URL("../../../assets/inject/floating-panel/core/views.js", import.meta.url), "utf8");
   const begin = source.indexOf("  async function openManager()");
   assert.ok(begin >= 0);
-  const state = { runtimeGeneration: 3, settingsStatus: "" };
-  const requests: Array<{ route: string; payload: unknown }> = [];
+  assert.doesNotMatch(source, /\/manager\/open-transient/);
+  const state = { runtimeGeneration: 3, settingsStatus: "pending" };
+  const opened: string[] = [];
   let renders = 0;
-  const openManager = new Function("isCurrentRuntime", "state", "renderFloat", "bridgeCall",
+  const fakeWindow: { __codexPlusOpenServiceSettings?: (section: string) => void } = {};
+  const openManager = new Function("isCurrentRuntime", "state", "renderFloat", "window",
     source.slice(begin) + "\nreturn openManager;",
   )(
     (generation?: number) => generation === undefined || generation === state.runtimeGeneration,
     state,
     () => { renders += 1; },
-    async (route: string, payload: unknown) => { requests.push({ route, payload }); return { status: "ok" }; },
+    fakeWindow,
   );
+  // 主注入脚本没加载：提示不可用，不打开任何东西。
   await openManager();
-  assert.deepEqual(requests, [{ route: "/manager/open-transient", payload: { page: "enhance", section: "stepwise" } }]);
-  assert.equal(state.settingsStatus, "已打开 Codex++");
+  assert.equal(state.settingsStatus, "Codex++ 设置页不可用");
+  fakeWindow.__codexPlusOpenServiceSettings = (section) => opened.push(section);
+  await openManager();
+  assert.deepEqual(opened, ["stepwise"]);
+  assert.equal(state.settingsStatus, "");
   assert.equal(renders, 2);
 });
 
 describe("Stepwise generation mode contracts", () => {
-  it("exposes automatic and manual generation in manager enhancements", async () => {
+  it("exposes automatic and manual generation in the Codex settings page", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const renderer = await readFile(
       new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
@@ -2225,11 +2231,13 @@ describe("Stepwise generation mode contracts", () => {
     assert.match(app, /codexAppStepwiseGenerationMode: "auto",/);
     assert.match(app, /codexAppAnswerOutlineEnabled: false,/);
     assert.match(renderer, /answerOutline: false,/);
-    assert.match(app, /<Field label=\{t\("模式"\)\}>/);
-    assert.match(app, /\{ value: "auto", label: t\("自动生成"\) \}/);
-    assert.match(app, /\{ value: "manual", label: t\("手动刷新"\) \}/);
-    assert.match(app, /\{ value: "auto", label: t\("自动兼容"\) \}/);
-    assert.match(app, /\{ value: "anthropic_messages", label: "Anthropic Messages" \}/);
+    // 服务配置只在 Codex 的 Codex++ 设置页里改（46-service-settings.js），管理器只保留类型与默认值。
+    const service = await readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
+    assert.match(service, /renderCodexPlusServiceRow\("生成方式", "", renderCodexPlusServiceSelect\('data-codex-plus-stepwise-select="codexAppStepwiseGenerationMode"'/);
+    assert.match(service, /\["auto", "自动生成"\],\n\s*\["manual", "手动刷新"\],/);
+    assert.match(service, /\["auto", "自动兼容"\],/);
+    assert.match(service, /\["anthropic_messages", "Anthropic Messages"\],/);
+    assert.ok(renderer.includes(service.trim().split("\n")[0]), "service settings are assembled into the bundle");
     assert.match(app, /function normalizeStepwiseProtocol\(/);
     assert.match(app, /return value === "manual" \? "manual" : "auto";/);
   });

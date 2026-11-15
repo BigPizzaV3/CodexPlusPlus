@@ -326,6 +326,8 @@ pub fn run() {
             );
             // Codex 页面里的「供应商」页经 bridge 调这里的保存 / 切换（core `provider_page`）。
             codex_plus_core::provider_page::set_provider_page_host(commands::provider_page_host());
+            // Codex 设置页里的「全局听写热键」经 bridge 调这里保存并重新注册（热键回调在管理器进程里）。
+            codex_plus_core::global_dictation::set_apply_host(global_dictation::save_and_apply_config);
             if start_minimized {
                 set_manager_activation_policy(app.handle(), false);
             }

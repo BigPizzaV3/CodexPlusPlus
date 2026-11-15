@@ -64,6 +64,25 @@ fn dictation_renderer_contract_harness() {
     );
 }
 
+/// Codex++ 设置页里的语音输入 / 下一步建议服务配置与原生浏览器状态（46-service-settings.js）。
+#[test]
+fn service_settings_renderer_harness() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let output = Command::new("node")
+        .arg(repo.join("assets/inject/service-settings.test.cjs"))
+        .output()
+        .expect("node should run the service settings harness");
+    assert!(
+        output.status.success(),
+        "service settings harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn screenshot_command_uses_png_from_surface() {
     assert_eq!(
@@ -1427,12 +1446,13 @@ fn stepwise_records_only_real_bridge_generation_requests() {
 }
 
 #[test]
-fn stepwise_opens_manager_as_transient_window() {
+fn stepwise_config_opens_codex_settings_page_not_manager() {
     let script = assets::stepwise_script();
 
-    assert!(script.contains("bridgeCall(\"/manager/open-transient\", {"));
-    assert!(script.contains("page: \"enhance\""));
-    assert!(script.contains("section: \"stepwise\""));
+    // 服务配置已搬进 Codex 里的 Codex++ 设置页，「配置」不再打开管理器。
+    assert!(script.contains("window.__codexPlusOpenServiceSettings"));
+    assert!(script.contains("open(\"stepwise\")"));
+    assert!(!script.contains("/manager/open-transient"));
 }
 
 #[test]

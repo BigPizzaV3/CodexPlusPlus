@@ -44,19 +44,28 @@ test("unrecognized extension is distinct from a disconnected one", () => {
   );
 });
 
-test("settings renders the unrecognized-extension suffix", async () => {
-  const component = await readFile(new URL("./native-browser-settings.tsx", import.meta.url), "utf8");
-  assert.match(component, /browserRecognizedSuffix\(browser\.recognized\)/);
+const codexSettingsSource = () => readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
+const codexCatalogPage = () => readFile(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
+
+test("Codex settings page renders the unrecognized-extension suffix", async () => {
+  // 状态只在 Codex 的 Codex++ 设置页里显示（管理器不再显示这个开关）。
+  const page = await codexSettingsSource();
+  assert.ok(page.includes('browser.recognized === false ? "（扩展版本未登记）" : ""'));
 });
 
-test("patch diagnostics are separate from live availability with bounded visible refresh", async () => {
-  const component = await readFile(new URL("./native-browser-settings.tsx", import.meta.url), "utf8");
-  assert.match(component, /browserConnectionLabel\(connection\)/);
-  assert.match(component, /<details[^>]*>[\s\S]*nativeBrowserStatusLabel\(compatibility.state\)/);
-  assert.match(component, /document.hidden/);
-  assert.match(component, /15_000/);
-  assert.match(component, /clearInterval/);
-  assert.match(component, /if \(inFlight.current\) return/);
+test("patch diagnostics are separate from live availability and refresh only on demand", async () => {
+  const page = await codexSettingsSource();
+  assert.ok(page.includes("codexPlusBrowserConnectionLabel(connection)"));
+  assert.ok(page.includes("codexPlusNativeBrowserPatchLabel(compatibility.state)"));
+  assert.ok(page.includes('postJson("/native-browser/status", {})'));
+  // 只在 Windows 上、第一次渲染时检测一次，之后靠「刷新」按钮；检测中不重复发请求。
+  assert.ok(page.includes('groupId === "plugins" && codexPlusIsWindowsPlatform'));
+  assert.ok(page.includes("if (state.nativeBrowserBusy) return;"));
+  assert.ok(!page.includes("setInterval("));
+  // 两边文案一致。
+  for (const state of ["disabled", "not_started", "prepared", "restored", "runtime_unverified", "blocked", "unsupported", "stale", "new-state"]) {
+    assert.ok(page.includes(`return "${nativeBrowserStatusLabel(state)}";`), state);
+  }
 });
 
 test("patch diagnostics describe only patch state, not browser availability", () => {
@@ -69,23 +78,27 @@ test("patch diagnostics describe only patch state, not browser availability", ()
   }
 });
 
-test("consent precedes enabling, default is off, and refresh is read-only", async () => {
+test("consent precedes enabling in Codex, default is off, and status is read-only", async () => {
   const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-  const component = await readFile(new URL("./native-browser-settings.tsx", import.meta.url), "utf8");
+  const page = await codexCatalogPage();
   assert.match(app, /codexAppNativeBrowserRequireIdentification: false/);
-  assert.match(app, /if \(value && !\(await appConfirm\(nativeBrowserConsent, /);
-  assert.match(component, /x-browser-agent/);
-  assert.match(component, /不会关闭扩展已保存的标识设置/);
-  assert.match(component, /Edge \/ Chrome 稳定版扩展/);
-  // 开关文案来自设置项清单，只在 Windows 的管理器里显示。
+  // 开启前在 Codex 设置页里确认，取消就不写。
+  assert.match(page, /if \(next && key === "codexAppNativeBrowserRequireIdentification"\) \{[\s\S]*?codexPlusAsk\(/);
+  assert.match(page, /x-browser-agent/);
+  assert.match(page, /不会关闭扩展已保存的标识设置/);
+  assert.match(page, /Edge \/ Chrome 稳定版扩展/);
+  // 开关文案来自设置项清单，只在 Windows 的 Codex 设置页里显示。
   const catalog = JSON.parse(await readFile(new URL("../../../crates/codex-plus-core/assets/enhancement-settings.json", import.meta.url), "utf8"));
   const item = catalog.items.find((candidate: { key: string }) => candidate.key === "codexAppNativeBrowserRequireIdentification");
   assert.match(item.title, /原生 Edge \/ Chrome 请求标识兼容（实验）/);
   assert.match(item.description, /此兼容补丁仅适配 Windows 上的 Edge \/ Chrome/);
   assert.deepEqual(item.platforms, ["windows"]);
-  assert.deepEqual(item.surfaces, ["manager"]);
-  assert.match(app, /item\.key === "codexAppNativeBrowserRequireIdentification"[\s\S]*?<NativeBrowserStatusView \/>/);
+  assert.deepEqual(item.surfaces, ["codex"]);
+  assert.doesNotMatch(app, /NativeBrowserStatusView/);
   assert.match(nativeBrowserStatusLabel("unsupported"), /Edge \/ Chrome/);
-  assert.match(component, /"native_browser_status"/);
-  assert.doesNotMatch(component, /"restart|"save_settings/);
+  // 状态那一节只读：不写设置、不重启。
+  const status = await codexSettingsSource();
+  const section = status.slice(status.indexOf("function renderCodexPlusNativeBrowserStatusSection"), status.indexOf("/** 清单分组后面要接的服务配置节"));
+  assert.ok(section.length > 100);
+  assert.doesNotMatch(section, /\/settings\/set|restart/);
 });

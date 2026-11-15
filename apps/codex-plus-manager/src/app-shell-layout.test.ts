@@ -309,7 +309,7 @@ test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里�
   assert.match(maintenance, /actions\.clearCodexAppPath\(\)/);
 });
 
-test("页内目录收成单列：增强页的页签横排成胶囊、分组锚点不再显示；设置模式内容限宽", () => {
+test("页内目录收成单列：分组锚点不再显示；增强页不再分页签；设置模式内容限宽", () => {
   for (const page of ["settings-page enhance-page sectioned-page cx-enhance-page", "settings-page codex-settings-page", "weixin-connect-page sectioned-page cx-page"]) {
     assert.ok(text.includes(`className="${page}"`), page);
   }
@@ -317,7 +317,8 @@ test("页内目录收成单列：增强页的页签横排成胶囊、分组锚�
   assert.match(layer, /:root \.shell \.sectioned-page \{\n  display: flex;\n  flex-direction: column;/);
   assert.match(layer, /:root \.shell \.page-section-nav-list \{\n  display: none;/);
   assert.match(layer, /:root \.shell \.screen\[data-settings-mode="true"\] > \* \{\n  width: min\(100%, var\(--cx-content-narrow\)\);/);
-  assert.match(text, /className="enhance-tabs tp-tabs cx-pills" role="tablist"/);
+  // 增强页只剩总开关和独立模式，内置拓展的页签随设置一起搬进 Codex。
+  assert.doesNotMatch(text, /className="enhance-tabs/);
   // 「（实验）」和「需重启」从文字里拿出来做成标题旁的小标签。
   const toggle = functionSource("FeatureToggle");
   assert.match(toggle, /EXPERIMENTAL_TITLE\.test\(title\)/);

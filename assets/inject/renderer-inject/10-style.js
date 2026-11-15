@@ -472,6 +472,13 @@
       /* Codex 的表单 reset 会把原生单选框 / 下拉箭头隐藏掉，这里只恢复本页自己的控件。 */
       .codex-plus-provider-key input[type="radio"] { appearance: auto !important; -webkit-appearance: radio !important; display: inline-block !important; position: static !important; width: 14px !important; height: 14px !important; margin: 0 !important; opacity: 1 !important; clip: auto !important; accent-color: var(--codex-plus-text); cursor: pointer; }
       select.codex-plus-provider-input { appearance: auto !important; -webkit-appearance: menulist !important; cursor: pointer; }
+      /* 设置页「语音输入服务」「下一步建议服务」两节的行内控件（46-service-settings.js） */
+      .codex-plus-service-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex-shrink: 0; max-width: 60%; }
+      .codex-plus-service-input { width: min(320px, 46vw); }
+      .codex-plus-service-input-short { width: 180px; }
+      .codex-plus-service-input:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-service-status { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-service-status[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); }
       .codex-plus-provider-key button, .codex-plus-provider-link { border: 0; padding: 0; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; align-self: flex-start; }
       .codex-plus-provider-key-add { display: flex; gap: 6px; }
       .codex-plus-provider-key-add input { flex: 1; min-width: 0; }

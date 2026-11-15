@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2968
+      "lines": 2975
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2429
+      "lines": 2446
     },
     {
       "name": "41-extension-detail.js",
@@ -79,6 +79,11 @@
       "name": "45-remote-control-page.js",
       "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
       "lines": 318
+    },
+    {
+      "name": "46-service-settings.js",
+      "description": "Codex++ 设置页的语音输入与下一步建议服务配置（地址、模型、Key、本地模型下载、全局热键、测试连接）与原生浏览器状态",
+      "lines": 625
     },
     {
       "name": "50-navigation.js",

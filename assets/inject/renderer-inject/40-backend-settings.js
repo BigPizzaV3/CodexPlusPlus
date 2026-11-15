@@ -1624,7 +1624,10 @@
       const rows = renderCodexPlusSettingsGroupRows(catalog, group);
       if (group.id === ambientGroupId) rows.push(renderCodexAmbientSuggestionsRow());
       if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
-      return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
+      const section = rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
+      // 听写与 stepwise 的服务配置（46-service-settings.js）紧跟在各自分组后面。
+      const service = typeof renderCodexPlusServiceSettingsAfterGroup === "function" ? renderCodexPlusServiceSettingsAfterGroup(group.id) : "";
+      return section + service;
     }).join("");
   }
 
@@ -1676,7 +1679,7 @@
               <h2 class="codex-plus-settings-section-title">工具与关于</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
+                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">增强总开关、供应商、网关与会话维护在管理工具里设置。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
                 </div>
                 <div class="codex-plus-row">
@@ -1758,6 +1761,7 @@
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
+      if (typeof handleCodexPlusServiceSettingsChange === "function" && handleCodexPlusServiceSettingsChange(target)) return;
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -1799,6 +1803,7 @@
         void loadCodexPlusSettingsCatalog();
         return;
       }
+      if (typeof handleCodexPlusServiceSettingsClick === "function" && handleCodexPlusServiceSettingsClick(target)) return;
       if (target?.closest("[data-codex-open-devtools]")) {
         postJson("/devtools/open", {});
         return;
@@ -1926,7 +1931,19 @@
       const backendToggle = target?.closest("[data-codex-backend-setting]");
       if (backendToggle) {
         const key = backendToggle.getAttribute("data-codex-backend-setting");
-        setBackendSetting(key, !codexPlusBackendSettings[key]);
+        const next = !codexPlusBackendSettings[key];
+        // 原生浏览器请求标识会把会话标识发给目标网站，开启前要用户明确同意（以前在管理器里确认）。
+        if (next && key === "codexAppNativeBrowserRequireIdentification") {
+          void Promise.resolve(codexPlusAsk({
+            title: "启用原生 Edge / Chrome 请求标识兼容？",
+            message: "受控标签页的目标网站可收到包含会话标识的 x-browser-agent 请求头。原生扩展会保留开启状态；关闭此兼容选项或恢复服务文件不会关闭扩展已保存的标识设置。\n\n此选项不代替站点授权、企业策略或浏览器操作审批。仅适配指定 Windows 原生运行时的 Edge / Chrome 稳定版扩展。\n\n保存后需由你关闭并重新启动 Codex / Codex++ 才能完成验收，不会自动重启。",
+            options: [{ value: "enable", label: "启用" }],
+          })).then((answer) => {
+            if (answer === "enable") setBackendSetting(key, true);
+          });
+          return;
+        }
+        setBackendSetting(key, next);
         return;
       }
     }, true);

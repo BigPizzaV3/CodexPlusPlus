@@ -404,6 +404,28 @@ pub async fn handle_bridge_request(
         "/dictation/cancel" => {
             crate::dictation::cancel_bridge(&payload).map_err(anyhow::Error::from)
         }
+        // Codex 设置页「语音输入」一节（46-service-settings.js）。都不在拓展路由白名单里。
+        // 本地模型状态只读缓存与下载任务，不触发下载。
+        "/dictation/local-model/status" => Ok(crate::dictation::local_model_status()),
+        // 下载约 229 MiB，桥接请求等不了这么久：放到后台跑，页面轮询上面的状态看进度。
+        "/dictation/local-model/download" => Ok(start_local_dictation_model_download()),
+        "/dictation/global-hotkey" => {
+            serde_json::to_value(crate::global_dictation::load_config()).map_err(anyhow::Error::from)
+        }
+        "/dictation/global-hotkey/set" => global_dictation_hotkey_set_value(&payload),
+        // Codex 设置页「原生 Edge / Chrome 请求标识兼容」下面的只读状态（以前在管理器里）。
+        // 补丁状态要读文件，放到阻塞线程池；连接检测本身是异步的。
+        "/native-browser/status" => {
+            let compatibility =
+                tokio::task::spawn_blocking(crate::native_browser::read_status)
+                    .await
+                    .unwrap_or_else(|_| crate::native_browser::BrowserStatus {
+                        state: "unavailable".into(),
+                        detail: String::new(),
+                    });
+            let connection = crate::native_browser_connection::check_connection().await;
+            Ok(json!({ "compatibility": compatibility, "connection": connection }))
+        }
         "/settings/set" => {
             let result = ctx.settings.set_settings(payload.clone()).await;
             if let Ok(settings) = &result
@@ -1232,7 +1254,15 @@ fn settings_payload_value(
             "weixinDesktopSync".to_string(),
             serde_json::to_value(crate::connect::desktop_sync::pending())?,
         );
-        object.remove("codexAppStepwiseApiKey");
+        // Key 本身不回给页面，只告诉它「已配置」，设置页据此显示「已配置（留空不改）」。
+        let stepwise_key_configured = object
+            .remove("codexAppStepwiseApiKey")
+            .and_then(|value| value.as_str().map(|value| !value.trim().is_empty()))
+            .unwrap_or(false);
+        object.insert(
+            "codexAppStepwiseApiKeyConfigured".to_string(),
+            json!(stepwise_key_configured),
+        );
         if let Some(dictation) = object.get_mut("dictation").and_then(Value::as_object_mut) {
             let configured = dictation
                 .remove("apiKey")
@@ -1497,6 +1527,28 @@ mod dictation_privacy_tests {
     }
 
     #[test]
+    fn stepwise_settings_bridge_reports_key_configured_without_the_key() {
+        // Codex 设置页的「下一步建议服务」只拿到「已配置」，Key 本身不回页面。
+        let mut settings = BackendSettings::default();
+        settings.codex_app_stepwise_api_key = "fake-stepwise-private-key".to_string();
+        let result = settings_payload_value(settings, String::new(), false).unwrap();
+        assert!(result.get("codexAppStepwiseApiKey").is_none());
+        assert_eq!(result["codexAppStepwiseApiKeyConfigured"], true);
+        assert!(!result.to_string().contains("fake-stepwise-private-key"));
+        let empty = settings_payload_value(BackendSettings::default(), String::new(), false).unwrap();
+        assert_eq!(empty["codexAppStepwiseApiKeyConfigured"], false);
+    }
+
+    #[test]
+    fn global_hotkey_route_rejects_invalid_hotkeys_before_reaching_the_manager() {
+        // 热键先在 core 里校验，非法值不会交给管理器去注册。
+        let error = global_dictation_hotkey_set_value(&json!({ "enabled": true, "hotkey": "" }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("更新全局听写热键失败"), "{error}");
+    }
+
+    #[test]
     fn settings_bridge_never_returns_named_key_lists() {
         let mut settings = BackendSettings::default();
         settings.relay_profiles[0].api_keys = vec![crate::settings::RelayApiKey {
@@ -1608,6 +1660,44 @@ where
     T: serde::Serialize,
 {
     Ok(serde_json::to_value(result?)?)
+}
+
+/// 在后台开始下载本地 SenseVoice 模型，立即返回当前状态（phase 记为 downloading）。
+/// 结果（ready / failed 与原因）写进 `local_model_status()`，由页面轮询读取；
+/// 已经在下载时后台那次会因为拿不到锁直接返回，不影响正在进行的下载。
+fn start_local_dictation_model_download() -> Value {
+    tokio::spawn(async {
+        let _ = crate::dictation::prepare_local_model().await;
+    });
+    let mut status = crate::dictation::local_model_status();
+    if status["phase"].as_str() != Some("downloading") {
+        status["phase"] = json!("downloading");
+        status["completedBytes"] = json!(0);
+        if let Some(object) = status.as_object_mut() {
+            object.remove("message");
+        }
+    }
+    status["status"] = json!("ok");
+    status
+}
+
+/// Codex 设置页保存全局听写热键：校验后交给管理器保存并重新注册。
+fn global_dictation_hotkey_set_value(payload: &Value) -> anyhow::Result<Value> {
+    let config = crate::global_dictation::GlobalDictationConfig {
+        enabled: payload.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+        hotkey: payload
+            .get("hotkey")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    };
+    crate::global_dictation::apply_config(&config)
+        .map_err(|error| anyhow::anyhow!("更新全局听写热键失败：{error:#}"))?;
+    let mut value = serde_json::to_value(&config)?;
+    value["status"] = json!("ok");
+    value["message"] = json!(if config.enabled { "全局听写热键已开启。" } else { "全局听写热键已关闭。" });
+    Ok(value)
 }
 
 fn stepwise_settings_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {

@@ -91,7 +91,7 @@
         "windows"
       ],
       "surfaces": [
-        "manager"
+        "codex"
       ],
       "restart": true
     },
@@ -103,7 +103,6 @@
       "title": "插件市场解锁",
       "description": "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -115,7 +114,6 @@
       "title": "模型白名单解锁",
       "description": "从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -127,7 +125,6 @@
       "title": "原生 Fast 强制解锁",
       "description": "纯 API Key 模式恢复原生 Fast 开关；重新启动 Codex 后生效，实际支持与计费由供应商决定。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "restart": true
@@ -140,7 +137,6 @@
       "title": "原生输入预测（实验）",
       "description": "实验功能，默认关闭。在 Codex 原生输入框显示下一句灰字预测，按 Tab 接受为可编辑草稿，不会自动发送。仅对使用 API Key / 自定义供应商的本机对话生效；每个回合结束都会用当前供应商额外请求一次，消耗该供应商额度。ChatGPT 登录与远程 / SSH / 云端对话保持原样。重新启动 Codex 后生效。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "restart": true
@@ -153,7 +149,6 @@
       "title": "第三方模型回答完自动折叠过程",
       "description": "给第三方模型的回复补上「最终回答 / 过程」标记，回答完后像官方模型一样把推理和命令过程收起来。只对经过 Codex++ 本地代理或网关的请求生效；个别上游不接受这个标记时请关闭。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -165,7 +160,6 @@
       "title": "拿不到远程开关时补开「替我审批」",
       "description": "国内网络下 Codex 拉不到 OpenAI 的远程功能开关，权限菜单里的「替我审批」会消失。开启后只在远程开关完全为空时补开这一项，审批请求走当前供应商；能正常拿到远程开关时不做任何改动。关闭后重新启动 Codex 生效。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -177,7 +171,6 @@
       "title": "Statsig 界面增强",
       "description": "强制打开几项界面侧的远程开关：隐藏升级与额度推销提示、放宽网络重试与流式超时、补开记忆、消息队列、会话时间线、侧聊 attach 与会话内权限刷新。每个开关都能在 Codex 设置的 Feature Lab →「Statsig 开关」里单独改，也能记录页面查询过的其他开关。只影响本机界面与超时参数，云端能力与配额不受影响；关闭后重新启动 Codex 生效。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "restart": true
@@ -190,7 +183,6 @@
       "title": "按上报用量判断压缩（实验）",
       "description": "仅对 Codex App 和 CLI 中已经经过本地代理的请求生效，按上报用量判断压缩，不改 usage，也不自动启用代理。开关变更在下一次响应后生效；旧会话首次响应前仍可能按原估算触发压缩。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -202,7 +194,6 @@
       "title": "会话删除",
       "description": "在会话列表悬停显示删除按钮，并支持撤销。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -214,7 +205,6 @@
       "title": "删除会话时不再确认",
       "description": "开启后删除本机会话不再弹出确认框，删除后仍可在提示里撤销。远端 / SSH 会话无法撤销，仍会要求确认。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -226,7 +216,6 @@
       "title": "旁支保存",
       "description": "在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -238,7 +227,6 @@
       "title": "轮次回退（实验性）",
       "description": "在回答菜单中撤销本轮及后续轮次的可恢复操作，AI 报告全部完成后才截断会话。仅支持本地聊天；恢复记录保存在本机，不是系统快照。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -250,7 +238,6 @@
       "title": "纯 API 模式禁用 Work 视图",
       "description": "Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "restart": true
@@ -263,7 +250,6 @@
       "title": "Markdown 导出",
       "description": "在会话列表显示导出按钮，导出带时间戳的 Markdown。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -275,7 +261,6 @@
       "title": "粘贴修复",
       "description": "从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -287,7 +272,6 @@
       "title": "自定义 prompt 参数",
       "description": "发送「/prompts:名字 参数」时按 Codex CLI 的规则替换 $1…$9、$ARGUMENTS 和 $名字（名字=值），缺参数时提示不发送；新加的 prompt 文件不用重启就能用。Codex 应用原生只把参数接在正文后面。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -299,7 +283,6 @@
       "title": "强制中文界面",
       "description": "强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "restart": true
@@ -312,7 +295,6 @@
       "title": "容量错误自动重试",
       "description": "模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "codexInputs": [
@@ -336,7 +318,6 @@
       "title": "会话 ID 标识",
       "description": "在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -348,7 +329,6 @@
       "title": "对话居中宽度",
       "description": "把主对话和输入框限制到固定最大宽度，适合大屏阅读。",
       "surfaces": [
-        "manager",
         "codex"
       ],
       "codexInputs": [
@@ -367,7 +347,6 @@
       "title": "切换对话保留位置",
       "description": "切换 thread 时恢复上一次浏览位置。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -379,7 +358,6 @@
       "title": "历史轮次补载（实验）",
       "description": "索引检查后补齐当前会话的历史消息和用时，默认关闭。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -391,7 +369,6 @@
       "title": "活动进度条右侧布局",
       "description": "把 Codex 原生活动进度条、状态波形和活动悬浮框移到右侧，并镜像波形方向。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -407,7 +384,6 @@
         "macos"
       ],
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -419,7 +395,6 @@
       "title": "下一步建议",
       "description": "根据当前回答生成下一步建议。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -431,7 +406,6 @@
       "title": "回答大纲",
       "description": "整理当前回答的结构。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
@@ -443,7 +417,6 @@
       "title": "建议直接发送",
       "description": "点击建议后直接发送到当前会话。",
       "surfaces": [
-        "manager",
         "codex"
       ]
     },
