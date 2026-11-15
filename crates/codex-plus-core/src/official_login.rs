@@ -42,6 +42,8 @@ pub struct OfficialLogin {
 pub struct OfficialCredential {
     pub access_token: String,
     pub account_id: String,
+    /// 本次实际凭据的稳定身份；信息不完整时不允许跨 token 代际复用 WS。
+    pub(crate) account_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,10 +305,11 @@ fn same_credential_generation(current: &str, expected: &str) -> bool {
     crate::native_auth::same_credential_generation(current, expected)
 }
 
-fn credential(login: OfficialLogin) -> OfficialCredential {
+fn credential(login: OfficialLogin, auth_contents: &str) -> OfficialCredential {
     OfficialCredential {
         access_token: login.access_token,
         account_id: login.account_id,
+        account_scope: crate::native_auth::account_scope(auth_contents),
     }
 }
 
@@ -629,7 +632,7 @@ async fn resolve_official_credential_mode(
     let login =
         official_login_from_auth_contents(&expected_auth).context("官方登录凭据格式无效")?;
     if !native_selected && !force_refresh && !token_needs_refresh(&login.access_token) {
-        return Ok(credential(login));
+        return Ok(credential(login, &expected_auth));
     }
 
     // 串行刷新：并发请求只发一次刷新，其余等锁后直接用新凭据。
@@ -692,7 +695,7 @@ async fn resolve_official_credential_mode(
     if (!force_refresh || !same_credential_generation(&initial_auth, &expected_auth))
         && !token_needs_refresh(&login.access_token)
     {
-        return Ok(credential(login));
+        return Ok(credential(login, &expected_auth));
     }
     if login.refresh_token.trim().is_empty() {
         anyhow::bail!(
@@ -823,6 +826,7 @@ async fn resolve_official_credential_mode(
     Ok(OfficialCredential {
         access_token: refreshed.access_token,
         account_id,
+        account_scope: crate::native_auth::account_scope(&updated_auth),
     })
 }
 
@@ -871,7 +875,7 @@ fn native_read_only_credential(
         if force_refresh || token_needs_refresh(&login.access_token) {
             anyhow::bail!("原生登录凭据需由 Codex 刷新或重新登录；额度查询不会轮换此凭据");
         }
-        Ok(credential(login))
+        Ok(credential(login, &auth))
     })())
 }
 

@@ -8326,6 +8326,37 @@ function RelayScreen({
           />
         </CxSection>
       ) : null}
+      {/* 「切换时保留」对直连和网关都生效（网关重写 Codex 配置也走同一条切换流程），
+          所以放在两种模式都看得到的地方；以前藏在直连供应商编辑的「通用配置文件」里，网关用户找不到（#3115）。 */}
+      {normalized.relayProfilesEnabled ? (
+        <CxSection>
+          <CxCard>
+            <CxRow
+              className="cx-preserve-row"
+              detail={<>
+                {t("打开后，切换供应商、接入或重写网关、重启 Codex 时：实时 config.toml 里改过的 MCP 服务器（命令、参数、env、超时）以实时文件为准，缺失的项目信任设置和通知命令从实时文件补回。直连和网关都适用。")}
+                <br />
+                {t("始终按目标重写的供应商设置：model_provider、model、供应商地址与凭据、模型目录。不论开关都保留：Codex++ 没有托管的 MCP / 插件条目、[[skills.config]] 技能启停；网关模式下 developer_instructions 等根级个人设置也会跟着走。")}
+              </>}
+              title={t("切换时保留实时配置里的改动")}
+            >
+              <label className="switch-row compact relay-master-switch relay-master-switch-compact">
+                <input
+                  aria-label={t("切换时保留实时配置里的改动")}
+                  checked={normalized.relayPreserveNonproviderSettings === true}
+                  onChange={(event) => {
+                    const next = { ...normalized, relayPreserveNonproviderSettings: event.currentTarget.checked };
+                    void saveRelaySettings(next);
+                  }}
+                  type="checkbox"
+                />
+                <span>{t("保留")}</span>
+                <ToggleVisual />
+              </label>
+            </CxRow>
+          </CxCard>
+        </CxSection>
+      ) : null}
       {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。
           都是直连专用：被网关接管时整块不显示；配置切换被关掉时仍显示，好把它重新打开。 */}
       {takenOverByGateway && normalized.relayProfilesEnabled ? null : (
@@ -15648,11 +15679,6 @@ function RelayFileEditors({
               <Download className="h-4 w-4" />
               {t("提取当前供应商配置")}
             </Button>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.relayPreserveNonproviderSettings === true}
-              onChange={(event) => onFormChange({ ...form, relayPreserveNonproviderSettings: event.currentTarget.checked })} />
-            {t("切换时保留缺失的项目信任设置、通知命令，以及实时配置里改过的 MCP 条目")}
-          </label>
           <SyncedTextarea
             className="relay-file-textarea"
             value={form.relayCommonConfigContents}
