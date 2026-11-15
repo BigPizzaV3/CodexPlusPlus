@@ -4801,6 +4801,7 @@ fn upstream_header_timeout_is_bounded_for_hung_providers() {
     assert!(upstream_header_timeout() >= Duration::from_secs(30));
     assert!(upstream_header_timeout() <= Duration::from_secs(60));
     assert!(upstream_stream_header_timeout() >= Duration::from_secs(120));
+    assert!(upstream_stream_header_timeout() <= Duration::from_secs(3600));
 }
 
 #[tokio::test]

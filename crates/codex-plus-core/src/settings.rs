@@ -1122,6 +1122,10 @@ pub struct BackendSettings {
     /// 打开后启动前把容器挪走、项目留在顶层，切回官方登录时再放回。默认关闭。
     #[serde(rename = "keepProjectsWithoutAccount", default)]
     pub keep_projects_without_account: bool,
+    /// 流式请求等上游响应头的上限（秒）。默认 120；首字时间经常超过 120s 的上游
+    /// （长推理模型、慢中转，#3130）可在 settings.json 调大，上限 3600，写小不生效。
+    #[serde(rename = "upstreamStreamHeaderTimeoutSecs", default)]
+    pub upstream_stream_header_timeout_secs: Option<u64>,
     /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。
     #[serde(rename = "nativeAuthSelection", default)]
     pub native_auth_selection: Option<NativeAuthSelection>,
@@ -1529,6 +1533,7 @@ impl Default for BackendSettings {
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
+            upstream_stream_header_timeout_secs: None,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),

@@ -2023,7 +2023,19 @@ pub fn upstream_header_timeout() -> Duration {
 }
 
 pub fn upstream_stream_header_timeout() -> Duration {
-    UPSTREAM_STREAM_HEADER_TIMEOUT
+    stream_header_timeout()
+}
+
+/// 流式请求等上游响应头的上限：默认 120s（[`UPSTREAM_STREAM_HEADER_TIMEOUT`]），
+/// 可在 settings.json 写 `upstreamStreamHeaderTimeoutSecs` 调大（#3130：长推理模型
+/// 首字超过 120s 会被判超时）。下限 120（兜底真正卡死的连接）、上限 3600。
+pub fn stream_header_timeout() -> Duration {
+    let configured = SettingsStore::default()
+        .load()
+        .ok()
+        .and_then(|settings| settings.upstream_stream_header_timeout_secs);
+    let secs = configured.unwrap_or(UPSTREAM_STREAM_HEADER_TIMEOUT.as_secs());
+    Duration::from_secs(secs.clamp(UPSTREAM_STREAM_HEADER_TIMEOUT.as_secs(), 3600))
 }
 
 pub fn upstream_http_client() -> anyhow::Result<reqwest::Client> {
@@ -5897,7 +5909,7 @@ async fn open_official_image_proxy_request(
 
 fn response_header_timeout(is_stream: bool) -> Duration {
     if is_stream {
-        UPSTREAM_STREAM_HEADER_TIMEOUT
+        stream_header_timeout()
     } else {
         UPSTREAM_HEADER_TIMEOUT
     }
