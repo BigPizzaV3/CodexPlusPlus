@@ -437,6 +437,15 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
+        // Codex 页面里的「远程控制」页（46-remote-control-page.js）。不在拓展路由白名单里：能开关服务、管理设备。
+        // 启停要等监听线程就绪，放到阻塞线程池里跑。
+        "/remote-control" => {
+            let payload = payload.clone();
+            tokio::task::spawn_blocking(move || crate::remote_control::bridge_route(&payload))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+        }
         "/providers/test" => crate::provider_page::route_test(&payload).await,
         "/providers/models" => crate::provider_page::route_models(&payload).await,
         // 开放给拓展的设置只读子集：当前供应商的名称、模式、模型与上下文窗口。整份设置（/settings/get）仍不开放。

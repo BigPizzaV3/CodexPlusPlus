@@ -445,6 +445,49 @@ pub fn revoke_device(id: &str) -> anyhow::Result<Value> {
     Ok(status())
 }
 
+/// 管理器与 Codex 页面共用的动作分发：`status`、`enable`、`disable`、`resetToken`、`enableLan`、`disableLan`、
+/// `startPairing {role}`、`cancelPairing`、`setDeviceRole {id, role}`、`revokeDevice {id}`。
+pub fn dispatch(action: &str, args: &Value) -> anyhow::Result<Value> {
+    let arg = |key: &str| -> anyhow::Result<&str> {
+        args.get(key).and_then(Value::as_str).with_context(|| format!("缺少参数 {key}"))
+    };
+    match action {
+        "status" => Ok(status()),
+        "enable" => set_enabled(true),
+        "disable" => set_enabled(false),
+        "resetToken" => reset_token(),
+        "enableLan" => set_lan_enabled(true),
+        "disableLan" => set_lan_enabled(false),
+        "startPairing" => start_pairing(arg("role")?),
+        "cancelPairing" => Ok(cancel_pairing()),
+        "setDeviceRole" => set_device_role(arg("id")?, arg("role")?),
+        "revokeDevice" => revoke_device(arg("id")?),
+        other => anyhow::bail!("未知操作：{other}"),
+    }
+}
+
+/// 服务由管理器进程托管：管理器启动时标记。Codex 页面经 bridge 调用时，若 bridge 跑在别的进程
+/// （没有管理器），就不能在那里起服务——否则和管理器抢端口、开关状态两边对不上。
+static HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_hosted_by_this_process() {
+    HOSTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Codex 页面（`46-remote-control-page.js`）的 bridge 路由 `/remote-control`：`{ action, ...args }`。
+/// 不在拓展路由白名单里：能开关服务、发配对码、移除设备。
+pub fn bridge_route(payload: &Value) -> anyhow::Result<Value> {
+    if !HOSTED.load(std::sync::atomic::Ordering::SeqCst) {
+        anyhow::bail!("Codex++ 管理器未运行，暂时不能在 Codex 里操作远程控制；请先打开 Codex++。");
+    }
+    let action = payload.get("action").and_then(Value::as_str).unwrap_or("status");
+    let mut value = dispatch(action, payload)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("status".into(), json!("ok"));
+    }
+    Ok(value)
+}
+
 fn render_qr_svg(content: &str) -> Option<String> {
     let code = qrcode::QrCode::new(content.as_bytes()).ok()?;
     Some(

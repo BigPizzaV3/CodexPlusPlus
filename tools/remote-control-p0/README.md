@@ -15,7 +15,11 @@
 | `run-p2.mjs` | 端到端回归，28 项（像手机一样走局域网 HTTPS：证书指纹、配对、权限分级、wss、吊销） |
 
 P1 的正式实现在 `crates/codex-plus-core/src/remote_control/`，网页在
-`crates/codex-plus-core/assets/remote-control/index.html`，管理器入口是侧栏「工具 → 远程控制」。
+`crates/codex-plus-core/assets/remote-control/index.html`。
+
+入口在 **Codex 左侧图标栏的「远程控制」**（`assets/inject/renderer-inject/45-remote-control-page.js`，
+经 bridge 路由 `/remote-control` 调管理器的同一份分发）；管理器侧栏「工具 → 远程控制」保留，两边状态一致。
+网页有两种对话样式（Codex 形态 / 按微信做的聊天形态），手机上默认聊天，样式按钮可切，按设备记住。
 
 ## 只在隔离实例上跑
 

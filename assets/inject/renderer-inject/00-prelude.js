@@ -409,6 +409,8 @@
   const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
   // 「供应商」：在 Codex 里直接增删改切 Codex 的供应商（43-provider-page.js）。
   const codexPlusRailProviderId = "codex-plus-rail-provider";
+  // 「远程控制」：在 Codex 里开关远程控制、给手机配对、管理设备（45-remote-control-page.js）。
+  const codexPlusRailRemoteId = "codex-plus-rail-remote";
   const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
   const codexPlusSidebarPluginMarketId = "codex-plus-sidebar-plugin-market";
   const codexPlusPluginMarketTab = "plugin-market";
@@ -417,6 +419,7 @@
   const codexPlusExtensionsTab = "extensions";
   const codexPlusSponsorTab = "sponsor";
   const codexPlusProviderTab = "provider";
+  const codexPlusRemoteControlTab = "remote-control";
   // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
   // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。
   const codexPlusWindowZoomVar = "--codex-window-zoom";

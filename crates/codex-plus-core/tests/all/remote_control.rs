@@ -587,3 +587,48 @@ fn current_controls_prefer_thread_settings() {
     assert_eq!(current_controls(&fresh)["model"], "mock-model");
     assert_eq!(current_controls(&fresh)["collaborationMode"], "default");
 }
+
+/// 管理器命令与 Codex 页面（bridge `/remote-control`）共用一份分发；bridge 只在管理器进程里放行。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_page_bridge_route_shares_the_manager_dispatch() {
+    use codex_plus_core::remote_control::{bridge_route, dispatch, mark_hosted_by_this_process};
+    let _guard = crate::common::global_state_lock();
+    let _temp = TempState::new();
+
+    // 管理器还没标记托管时（例如 bridge 跑在别的进程）不能在这里起服务。
+    // 托管标记是进程级的：同进程里别的用例先标记过就跳过这一步。
+    if let Err(error) = bridge_route(&json!({ "action": "status" })) {
+        assert!(error.to_string().contains("管理器未运行"), "{error}");
+    }
+    mark_hosted_by_this_process();
+
+    let status = bridge_route(&json!({ "action": "status" })).unwrap();
+    assert_eq!(status["status"], "ok", "bridge 回包带 status: ok");
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["lan"]["enabled"], false);
+    assert_eq!(status["devices"], json!([]));
+    assert_eq!(bridge_route(&json!({})).unwrap()["status"], "ok", "缺省动作是 status");
+
+    assert!(dispatch("nope", &json!({})).unwrap_err().to_string().contains("未知操作"));
+    assert!(dispatch("setDeviceRole", &json!({ "id": "x" })).unwrap_err().to_string().contains("role"), "缺参数要报出参数名");
+    assert!(dispatch("startPairing", &json!({ "role": "full" })).unwrap_err().to_string().contains("局域网"), "没开局域网不能配对");
+    assert!(dispatch("startPairing", &json!({ "role": "root" })).is_err(), "未知权限");
+    assert!(dispatch("revokeDevice", &json!({ "id": "missing" })).is_err());
+    let cancelled = bridge_route(&json!({ "action": "cancelPairing" })).unwrap();
+    assert_eq!(cancelled["pairing"], Value::Null);
+}
+
+/// 网页的两种对话样式：Codex 样式与按微信做的聊天样式，切换按设备记住。
+#[test]
+fn web_page_offers_both_conversation_styles() {
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(page.contains(r#"html[data-style="chat"] .msg .bubble"#), "聊天样式的气泡");
+    assert!(page.contains(r#"html[data-style="chat"] .thread-avatar"#), "聊天样式的会话列表头像");
+    assert!(page.contains(r#"id="style""#), "样式切换按钮");
+    assert!(page.contains("codexPlusRemoteStyle"), "按设备记住选择");
+    assert!(page.contains(r#"narrow ? "chat" : "codex""#), "手机默认聊天样式");
+    assert!(page.contains(r#"html[data-style="chat"] .controls { display: none; }"#), "聊天样式下模型与权限收进「⋯」");
+    assert!(page.contains(r#"id="more""#));
+    // 两种样式共用同一份 DOM，切换只改根上的 data-style，不重渲染数据。
+    assert!(page.contains(r#"document.documentElement.dataset.style = next"#));
+}

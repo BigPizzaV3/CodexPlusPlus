@@ -53,10 +53,15 @@
   .log { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .empty { color: var(--muted); margin: auto; text-align: center; }
   .turn { display: flex; flex-direction: column; gap: 8px; }
-  .msg { max-width: 820px; white-space: pre-wrap; word-break: break-word; }
-  .msg.user { align-self: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 7px 12px; }
+  .msg { display: flex; gap: 8px; align-items: flex-start; max-width: 820px; }
+  .msg .bubble { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+  .msg .avatar { display: none; flex: 0 0 auto; align-items: center; justify-content: center; font-weight: 600; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.user .bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 7px 12px; }
   .msg.agent { align-self: flex-start; }
   .msg.steer { align-self: flex-end; color: var(--muted); font-size: 13px; }
+  .thread-avatar, .thread-time { display: none; }
+  .more { display: none; }
   .cmd { align-self: stretch; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
   .cmd summary { cursor: pointer; }
   .cmd pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto; }
@@ -88,6 +93,55 @@
   .gate p { margin: 0; color: var(--muted); font-size: 13px; }
   .gate input { width: 100%; }
   .gate .code { font: 600 18px/1.4 ui-monospace, Menlo, monospace; letter-spacing: 3px; text-transform: uppercase; }
+  /* ---- 聊天样式：按微信的对话页做，手机默认用它；Codex 样式保持上面的桌面形态 ---- */
+  html[data-style="chat"] { --chat-bg: light-dark(#ededed, #0f1113); --chat-in: light-dark(#ffffff, #23262a); --chat-out: light-dark(#95ec69, #3f7f2e); --chat-out-text: light-dark(#111111, #eaf6e4); }
+  html[data-style="chat"] body { background: var(--chat-bg); }
+  html[data-style="chat"] aside { background: var(--panel); }
+  html[data-style="chat"] aside header h1 { font-size: 16px; }
+  html[data-style="chat"] .whoami { border-bottom: none; padding-top: 0; }
+  /* 会话列表：头像 + 标题 / 摘要 + 右侧时间 */
+  html[data-style="chat"] .thread { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: none; position: relative; }
+  html[data-style="chat"] .thread::after { content: ""; position: absolute; left: 66px; right: 0; bottom: 0; border-bottom: 1px solid var(--line); }
+  html[data-style="chat"] .thread:hover, html[data-style="chat"] .thread.active { background: var(--bg); }
+  html[data-style="chat"] .thread-avatar { display: flex; width: 44px; height: 44px; flex: 0 0 44px; border-radius: 6px; align-items: center; justify-content: center; font-size: 17px; font-weight: 600; background: light-dark(#111111, #e8e8e8); color: light-dark(#ffffff, #111111); }
+  html[data-style="chat"] .thread-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  html[data-style="chat"] .thread .title { font-weight: 500; font-size: 16px; }
+  html[data-style="chat"] .thread .meta { font-size: 13px; }
+  html[data-style="chat"] .thread-time { display: block; flex: 0 0 auto; align-self: flex-start; color: var(--muted); font-size: 12px; padding-top: 2px; }
+  /* 对话区：浅灰底、左白右绿气泡、方角头像 */
+  html[data-style="chat"] .log { background: var(--chat-bg); gap: 16px; padding: 14px 12px; }
+  html[data-style="chat"] .msg { max-width: 100%; }
+  html[data-style="chat"] .msg .avatar { display: flex; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 5px; font-size: 15px; background: light-dark(#d5d5d5, #2c3035); color: var(--text); }
+  html[data-style="chat"] .msg.agent .avatar { background: light-dark(#111111, #e8e8e8); color: light-dark(#ffffff, #111111); }
+  html[data-style="chat"] .msg .bubble { max-width: calc(100% - 52px); padding: 8px 11px; border-radius: 5px; font-size: 15px; line-height: 1.45; background: var(--chat-in); }
+  html[data-style="chat"] .msg.user .bubble { background: var(--chat-out); color: var(--chat-out-text); border: none; }
+  html[data-style="chat"] .msg.agent .bubble { border: none; }
+  html[data-style="chat"] .msg.typing .bubble { color: var(--muted); font-size: 14px; }
+  html[data-style="chat"] .msg.typing .bubble::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: chat-dots 1.2s steps(4, end) infinite; }
+  @keyframes chat-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+  html[data-style="chat"] .msg.steer { align-self: center; font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--text) 8%, transparent); padding: 2px 8px; border-radius: 4px; }
+  html[data-style="chat"] .note { align-self: center; text-align: center; font-size: 12px; }
+  html[data-style="chat"] .cmd { align-self: flex-start; max-width: calc(100% - 44px); margin-left: 44px; background: var(--chat-in); border: none; border-radius: 5px; }
+  html[data-style="chat"] .requests { background: var(--chat-bg); padding-bottom: 8px; }
+  html[data-style="chat"] .request { background: var(--chat-in); border: none; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); border-radius: 8px; }
+  html[data-style="chat"] .empty { background: transparent; }
+  /* 标题栏：返回 + 居中标题 + 停止 / 更多 */
+  html[data-style="chat"] main header { position: relative; justify-content: center; padding-left: 52px; padding-right: 12px; }
+  html[data-style="chat"] main header .title { flex: none; max-width: 55%; text-align: center; font-size: 16px; }
+  html[data-style="chat"] .badge { display: none; }
+  html[data-style="chat"] #open { display: none !important; }
+  html[data-style="chat"] .more { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 4px 0; font-size: 17px; line-height: 1; }
+  html[data-style="chat"] .back { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); border: none; background: transparent; font-size: 22px; padding: 0 8px; }
+  /* 模型 / 权限只在点「⋯」时出现 */
+  html[data-style="chat"] .controls { display: none; }
+  html[data-style="chat"] .controls.chat-open { display: flex; }
+  /* 输入条：微信的圆角输入框 + 绿色发送 */
+  html[data-style="chat"] footer { background: var(--panel); border-top-color: var(--line); }
+  html[data-style="chat"] #input { border-radius: 8px; background: light-dark(#ffffff, #2a2e33); min-height: 38px; }
+  html[data-style="chat"] #send { border-radius: 8px; background: #07c160; border-color: #07c160; color: #fff; }
+  html[data-style="chat"] #send:disabled { opacity: .45; }
+  html[data-style="chat"] #send.danger, html[data-style="chat"] #interrupt { color: var(--danger); }
+  html[data-style="chat"] .toast { bottom: calc(18px + env(safe-area-inset-bottom)); }
   @media (max-width: 720px) {
     .app { grid-template-columns: 1fr; }
     .app.viewing aside { display: none; }
@@ -109,6 +163,7 @@
   <aside>
     <header>
       <h1>Codex++ 远程控制</h1>
+      <button id="style" title="切换对话样式：Codex 样式 / 聊天样式">样式</button>
       <button id="refresh" title="刷新会话列表">刷新</button>
     </header>
     <div class="whoami" id="whoami" hidden>
@@ -130,6 +185,7 @@
       <span class="badge" id="state"></span>
       <button id="open" hidden>在桌面打开</button>
       <button id="interrupt" class="danger" hidden>停止</button>
+      <button class="more" id="more" title="模型、推理强度、权限">⋯</button>
     </header>
     <div class="log" id="log"><div class="empty">在左侧选择会话。没在桌面打开的会话可以先查看历史，发消息时会自动在桌面打开。</div></div>
     <div class="requests" id="requests"></div>
@@ -168,6 +224,11 @@
   if (params.get("token")) sessionStorage.setItem(MASTER_KEY, params.get("token"));
   if (params.get("token") || pairCode) history.replaceState(null, "", location.pathname);
   const token = sessionStorage.getItem(MASTER_KEY) || localStorage.getItem(DEVICE_KEY) || "";
+  // 对话样式：codex（桌面形态）或 chat（按微信做的聊天形态）。手机没选过时默认聊天。
+  const STYLE_KEY = "codexPlusRemoteStyle";
+  const narrow = window.matchMedia?.("(max-width: 720px)").matches ?? window.innerWidth <= 720;
+  const style = localStorage.getItem(STYLE_KEY) || (narrow ? "chat" : "codex");
+  document.documentElement.dataset.style = style;
   const $ = (id) => document.getElementById(id);
   const state = { threads: [], current: null, view: null, socket: null, poller: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false, me: null, seenRequests: new Set(), wasRunning: false };
   const rank = { view: 0, message: 1, full: 2 };
@@ -316,8 +377,13 @@
     if (!state.threads.length) return list.replaceChildren(el("div", "empty", "还没有会话"));
     list.replaceChildren(...state.threads.map((thread) => {
       const row = el("div", `thread${thread.id === state.current ? " active" : ""}`);
-      row.append(el("div", "title", thread.title || "（未命名）"));
-      row.append(el("div", "meta", `${relative(thread.updatedAt)} · ${thread.cwd || ""}`));
+      const title = thread.title || "（未命名）";
+      row.append(el("div", "thread-avatar", title.trim().slice(0, 1).toUpperCase() || "#"));
+      const body = el("div", "thread-body");
+      body.append(el("div", "title", title));
+      body.append(el("div", "meta", `${relative(thread.updatedAt)} · ${thread.cwd || ""}`));
+      row.append(body);
+      row.append(el("div", "thread-time", relative(thread.updatedAt)));
       row.onclick = () => selectThread(thread.id);
       return row;
     }));
@@ -418,6 +484,9 @@
     if (view.truncatedTurns) nodes.push(el("div", "note", `更早的 ${view.truncatedTurns} 轮未显示`));
     for (const turn of view.turns || []) nodes.push(renderTurn(turn));
     if (!nodes.length) nodes.push(el("div", "empty", "还没有消息"));
+    // 最后一条不是助手消息时才补「正在处理…」，免得和流式气泡重复。
+    const lastItems = view.turns?.at(-1)?.items || [];
+    if (running && lastItems.at(-1)?.type !== "agentMessage") nodes.push(typingRow());
     log.replaceChildren(...nodes);
     if (stick) log.scrollTop = log.scrollHeight;
     renderRequests(view.requests || []);
@@ -491,13 +560,21 @@
     }
   }
 
+  /** 一条消息：头像 + 气泡（头像只在聊天样式里显示，Codex 样式里等同于整段文字）。 */
+  function bubble(role, text, extra = "") {
+    const node = el("div", `msg ${role}${extra ? ` ${extra}` : ""}`);
+    node.append(el("div", "avatar", role === "user" ? "我" : "C"));
+    node.append(el("div", "bubble", text));
+    return node;
+  }
+
   function renderTurn(turn) {
     const box = el("div", "turn");
     for (const item of turn.items || []) {
       switch (item.type) {
-        case "userMessage": box.append(el("div", "msg user", item.text || "")); break;
+        case "userMessage": box.append(bubble("user", item.text || "")); break;
         case "steeringUserMessage": box.append(el("div", "msg steer", `插话：${item.text || ""}`)); break;
-        case "agentMessage": if (item.text) box.append(el("div", "msg agent", item.text)); break;
+        case "agentMessage": if (item.text) box.append(bubble("agent", item.text)); break;
         case "commandExecution": {
           const details = el("details", "cmd");
           const status = { completed: "✓", failed: "✗", declined: "已拒绝", inProgress: "…" }[item.status] || item.status || "";
@@ -522,6 +599,12 @@
     if (turn.status === "interrupted") box.append(el("div", "note", "已中断"));
     if (turn.status === "failed") box.append(el("div", "note", "这一轮失败了"));
     return box;
+  }
+
+  /** 运行中的「正在处理…」气泡，放在最后一边流式输出一边提示。 */
+  function typingRow() {
+    const node = bubble("agent", "正在处理", "typing");
+    return node;
   }
 
   function renderRequests(requests) {
@@ -665,6 +748,18 @@
       $("create").disabled = false;
     }
   };
+
+  // 样式切换：按设备记在 localStorage；聊天样式下模型 / 权限收进「⋯」。
+  const styleLabel = () => (document.documentElement.dataset.style === "chat" ? "Codex 样式" : "聊天样式");
+  $("style").textContent = styleLabel();
+  $("style").onclick = () => {
+    const next = document.documentElement.dataset.style === "chat" ? "codex" : "chat";
+    document.documentElement.dataset.style = next;
+    localStorage.setItem(STYLE_KEY, next);
+    $("style").textContent = styleLabel();
+    if (state.view) applyView(state.view);
+  };
+  $("more").onclick = () => $("controls").classList.toggle("chat-open");
 
   $("pairButton").onclick = pair;
   $("pairName").addEventListener("keydown", (event) => { if (event.key === "Enter") pair(); });

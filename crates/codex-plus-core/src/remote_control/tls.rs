@@ -88,7 +88,13 @@ fn local_hostname() -> Option<String> {
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| {
-            std::process::Command::new("hostname").output().ok().and_then(|out| String::from_utf8(out.stdout).ok())
+            let mut command = std::process::Command::new("hostname");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(crate::windows_create_no_window());
+            }
+            command.output().ok().and_then(|out| String::from_utf8(out.stdout).ok())
         })?;
     let name = name.trim().trim_end_matches(".local").to_ascii_lowercase();
     let valid = !name.is_empty() && name.len() <= 63 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
