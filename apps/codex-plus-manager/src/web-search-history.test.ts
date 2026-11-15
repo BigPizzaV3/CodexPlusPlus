@@ -17,13 +17,13 @@ import {
   webSearchHistoryCompatEnabled,
 } from "./model-routes.ts";
 
-const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+const source = (await readFile(new URL("./App.tsx", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("./relay-profile-editing.ts", import.meta.url), "utf8"));
 const app = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const names = ["applyRelayProfilePatchToFiles", "buildRelayConfigToml", "normalizeRelaySessionProvider", "tomlString"];
 const functions = names.map((name) => {
   const node = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
   assert.ok(node, `missing ${name}`);
-  return node.getText(app);
+  return node.getText(app).replace(/^export /, "");
 });
 const code = ts.transpileModule(functions.join("\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },

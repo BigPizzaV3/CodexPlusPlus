@@ -122,6 +122,7 @@ mod extension_hooks;
 mod plugin_navigation;
 mod protocol_proxy;
 mod protocol_safety;
+mod provider_page;
 mod provider_switch_isolation;
 mod proxy_auto_retry_settings;
 mod pure_api_provider_auth;

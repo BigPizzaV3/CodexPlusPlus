@@ -1,0 +1,188 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { describe, it } from "node:test";
+
+// Codex 页面「供应商」页：42 分片（与管理器共用的编辑函数打包）+ 43 分片（页面）。
+const root = new URL("../../../", import.meta.url);
+const fragments = new URL("assets/inject/renderer-inject/", root);
+const editingSource = await readFile(new URL("42-provider-editing.generated.js", fragments), "utf8");
+const pageSource = await readFile(new URL("43-provider-page.js", fragments), "utf8");
+const renderer = await readFile(new URL("assets/inject/renderer-inject.js", root), "utf8");
+
+function loadEditing(): any {
+  return new Function(`${editingSource}\nreturn codexPlusProviderEditing;`)();
+}
+
+function pureProfile(id: string, baseUrl: string, key: string) {
+  return {
+    id, name: id.toUpperCase(), relayMode: "pureApi", protocol: "responses", sessionProvider: "custom",
+    officialMixApiKey: false, noAuth: false, modelRoutes: [], customHeaders: [], apiKeys: [{ id: "k", name: "K", apiKey: "", stored: true, preview: "sk-…abcd" }],
+    activeApiKeyId: "k", modelList: "", modelWindows: "", useCommonConfig: true,
+    configContents: `model_provider = "custom"\n\n[model_providers.custom]\nname = "custom"\nwire_api = "responses"\nrequires_openai_auth = true\nbase_url = "${baseUrl}"\nexperimental_bearer_token = "${key}"\n`,
+    authContents: `{"OPENAI_API_KEY":"${key}"}`,
+  };
+}
+
+describe("供应商编辑函数打包（42 分片）", () => {
+  it("与 relay-profile-editing.ts 保持一致", () => {
+    execFileSync(process.execPath, [new URL("scripts/assemble-provider-editing.mjs", root).pathname, "--check"], { stdio: "pipe" });
+  });
+
+  it("不挂全局、不访问浏览器存储", () => {
+    assert.match(editingSource, /^var codexPlusProviderEditing = \(\(\) => \{/m);
+    assert.doesNotMatch(editingSource, /\bwindow\.|localStorage|document\./);
+    // 行首的 `})();` 会被误认成主 IIFE 收尾。
+    assert.doesNotMatch(editingSource, /\n\}\)\(\);\n/);
+  });
+
+  it("字段改动按管理器的规则同步进 config.toml", () => {
+    const api = loadEditing();
+    // 与管理器读取时一样先 normalizeRelayProfile（补齐服务端不序列化的派生字段）。
+    const draft = api.normalizeRelayProfile(pureProfile("a", "https://a.example/v1", "sk-live-aaaa1111"));
+    assert.equal(draft.baseUrl, "https://a.example/v1");
+    // 命名 Key 是打码的：派生出的 apiKey 为空，但改地址不能动文件里现有的 bearer（服务端保存时再按真值重写）。
+    assert.equal(draft.apiKey, "");
+    const next = api.applyRelayProfilePatchToFiles(draft, { baseUrl: "https://a2.example/v1" });
+    assert.match(next.configContents, /base_url = "https:\/\/a2\.example\/v1"/);
+    assert.match(next.configContents, /experimental_bearer_token = "sk-live-aaaa1111"/);
+    assert.deepEqual(api.parseModelSuffix("deepseek-v4-pro[1M]"), { slug: "deepseek-v4-pro", window: 1000000 });
+  });
+
+  it("删除守卫与中文文案（i18n 换成原文直出）", () => {
+    const api = loadEditing();
+    const settings = { activeRelayId: "a", relayProfiles: [pureProfile("a", "https://a", "sk-1"), pureProfile("b", "https://b", "sk-2")].map((profile) => api.normalizeRelayProfile(profile)), aggregateRelayProfiles: [], activeAggregateRelayId: "" };
+    assert.match(String(api.relayProfileDeleteIssue(settings, "a")), /当前|使用/);
+    assert.equal(api.relayProfileDeleteIssue(settings, "b"), null);
+    assert.deepEqual(api.removeRelayProfile(settings, "b").relayProfiles.map((profile: any) => profile.id), ["a"]);
+  });
+});
+
+/** 在桩环境里执行 43 分片，拿到内部函数。 */
+function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: (question: any) => any }) {
+  const calls: Array<{ path: string; payload: any }> = [];
+  const toasts: string[] = [];
+  const document = { querySelector: () => null, querySelectorAll: () => [], activeElement: null, hidden: false };
+  const api = new Function(
+    "codexPlusProviderEditing", "postJson", "codexPlusAsk", "showToast", "escapeHtml", "document",
+    `${pageSource}\nreturn { state: codexPlusProviderPageState, applyList: codexPlusProviderApplyList, commit: codexPlusProviderCommit,
+      use: codexPlusProviderUse, selectKey: codexPlusProviderSelectKey, applyModelLines: codexPlusProviderApplyModelLines,
+      modelLines: codexPlusProviderModelLines, duplicate: codexPlusProviderDuplicate, renderPage: renderCodexPlusProviderPage };`,
+  )(
+    loadEditing(),
+    async (path: string, payload: any) => {
+      calls.push({ path, payload: JSON.parse(JSON.stringify(payload)) });
+      return stubs.postJson(path, payload);
+    },
+    async (question: any) => stubs.ask?.(question) ?? null,
+    (message: string) => toasts.push(message),
+    (value: unknown) => String(value ?? ""),
+    document,
+  );
+  return { ...api, calls, toasts };
+}
+
+function listResult(revision = "r1", activeRelayId = "a") {
+  return {
+    status: "ok", revision, gatewayRelayId: "codex-plus-gateway",
+    settings: {
+      activeRelayId, relayProfilesEnabled: true, aggregateRelayProfiles: [], activeAggregateRelayId: "",
+      relayProfiles: [pureProfile("a", "https://a.example/v1", "sk-a-live-0000"), pureProfile("b", "https://b.example/v1", "sk-b-live-1111")],
+    },
+    defaults: { relayBaseUrl: "https://default.example/v1", relayProfiles: [] },
+  };
+}
+
+describe("供应商页（43 分片）", () => {
+  it("切换遇到 live 冲突时问用户，再带着选择重提", async () => {
+    let commits = 0;
+    const page = loadPage({
+      postJson: (path) => {
+        if (path !== "/providers/commit") return listResult();
+        commits += 1;
+        return commits === 1
+          ? { status: "conflict", liveConflict: { profileId: "a", profileName: "A" }, message: "冲突" }
+          : { ...listResult("r2", "b"), switched: true, message: "供应商已切换。" };
+      },
+      ask: () => ({ value: "discardLiveChanges" }),
+    });
+    page.applyList(listResult());
+    await page.use("b");
+    const sent = page.calls.filter((call: { path: string; payload: any }) => call.path === "/providers/commit");
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].payload.activate, "b");
+    assert.equal(sent[0].payload.revision, "r1");
+    assert.equal(sent[0].payload.conflictResolution, "stop");
+    assert.equal(sent[1].payload.conflictResolution, "discardLiveChanges");
+    assert.equal(page.state.settings.activeRelayId, "b");
+    assert.match(page.state.status, /新对话立即生效/);
+  });
+
+  it("用户取消冲突弹窗时不再提交", async () => {
+    const page = loadPage({
+      postJson: (path) => (path === "/providers/commit" ? { status: "conflict", liveConflict: { profileId: "a", profileName: "A" } } : listResult()),
+      ask: () => null,
+    });
+    page.applyList(listResult());
+    await page.use("b");
+    assert.equal(page.calls.filter((call: { path: string; payload: any }) => call.path === "/providers/commit").length, 1);
+    assert.equal(page.state.settings.activeRelayId, "a");
+    assert.match(page.state.status, /已取消切换/);
+  });
+
+  it("选中打码的已存 Key 不改文件，交给服务端按真值重写", () => {
+    const page = loadPage({ postJson: () => listResult() });
+    const result = listResult();
+    result.settings.relayProfiles[0].apiKeys.push({ id: "k2", name: "K2", apiKey: "", stored: true, preview: "sk-…2222" });
+    page.applyList(result);
+    const before = page.state.draft.configContents;
+    page.selectKey("k2");
+    assert.equal(page.state.draft.activeApiKeyId, "k2");
+    assert.equal(page.state.draft.configContents, before);
+    assert.equal(page.state.dirty, true);
+  });
+
+  it("模型列表按 [1M] 后缀拆出窗口，回显时拼回去", () => {
+    const page = loadPage({ postJson: () => listResult() });
+    page.applyList(listResult());
+    page.applyModelLines("deepseek-v4-pro[1M]\nqwen3\nqwen3\n");
+    assert.equal(page.state.draft.modelList, "deepseek-v4-pro\nqwen3");
+    assert.deepEqual(JSON.parse(page.state.draft.modelWindows), { "deepseek-v4-pro": "1000000" });
+    assert.equal(page.modelLines(page.state.draft), "deepseek-v4-pro[1000000]\nqwen3");
+  });
+
+  it("复制供应商时让服务端按来源还原 Key", async () => {
+    const page = loadPage({ postJson: (path) => (path === "/providers/commit" ? listResult("r2") : listResult()) });
+    page.applyList(listResult());
+    await page.duplicate("b");
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.path === "/providers/commit")!;
+    const copy = sent.payload.relayProfiles.find((profile: any) => !["a", "b"].includes(profile.id));
+    assert.ok(copy, "应提交复制出的新供应商");
+    assert.equal(sent.payload.keySources[copy.id], "b");
+  });
+
+  it("没改过的供应商原样回传服务端版本，改过的才提交归一化结果", async () => {
+    const page = loadPage({ postJson: (path) => (path === "/providers/commit" ? listResult("r2") : listResult()) });
+    const raw = listResult();
+    page.applyList(raw);
+    await page.duplicate("b");
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.path === "/providers/commit")!;
+    // a、b 都没改：必须与服务端下发的原始 JSON 完全一致，服务端才不会误判当前供应商变了。
+    assert.deepEqual(sent.payload.relayProfiles.find((profile: any) => profile.id === "a"), raw.settings.relayProfiles[0]);
+    assert.deepEqual(sent.payload.relayProfiles.find((profile: any) => profile.id === "b"), raw.settings.relayProfiles[1]);
+  });
+
+  it("新入口登记进所有写死内置 id 的地方", () => {
+    assert.match(renderer, /codexPlusRailProviderId = "codex-plus-rail-provider"/);
+    assert.match(renderer, /\{ id: codexPlusRailProviderId, label: "供应商", iconMarkup: icons\.provider, withStatus: false, onActivate: openCodexPlusProviderPage \}/);
+    assert.match(renderer, /\[codexPlusRailProviderId, "provider"\],/);
+    assert.match(renderer, /if \(tab === codexPlusProviderTab\) return "provider";/);
+    assert.match(renderer, /\[codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId\]\.forEach/);
+    // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
+    assert.equal(renderer.split("#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}").length - 1, 2);
+    assert.match(renderer, /\[codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailExtensionsId, codexPlusRailSponsorId\]\.forEach\(\(id\) => \{/);
+    assert.match(renderer, /#\$\{codexPlusRailProviderId\} > button/);
+    assert.match(pageSource, /data-codex-plus-active-tab="\$\{codexPlusProviderTab\}"/);
+    assert.match(pageSource, /window\.__codexPlusExtensionPageCleanup = \(\) => \{/);
+  });
+});

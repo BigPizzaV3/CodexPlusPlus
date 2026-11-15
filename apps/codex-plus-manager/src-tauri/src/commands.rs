@@ -9587,6 +9587,33 @@ pub fn switch_relay_profile(
     }
 }
 
+/// Codex 页面里「供应商」页的宿主实现（见 core `provider_page`）：直接复用管理器自己的
+/// 保存与切换命令，页面和管理器走同一条路径（归一化、切换锁、live 文件、网关绑定、常驻 helper）。
+pub fn provider_page_host() -> codex_plus_core::provider_page::ProviderPageHost {
+    use codex_plus_core::provider_page::{ProviderLiveConflict, ProviderPageHost, ProviderSwitchResult};
+    ProviderPageHost {
+        save: std::sync::Arc::new(|settings, revision| {
+            let result = save_settings(settings, revision);
+            if result.status == "failed" { Err(result.message) } else { Ok(result.message) }
+        }),
+        switch: std::sync::Arc::new(|settings, previous_active_relay_id, live_conflict_resolution| {
+            let result = switch_relay_profile(RelayProfileSwitchRequest {
+                settings,
+                previous_active_relay_id,
+                live_conflict_resolution,
+            });
+            ProviderSwitchResult {
+                ok: result.status != "failed",
+                message: result.message,
+                live_conflict: result.payload.live_conflict.map(|conflict| ProviderLiveConflict {
+                    profile_id: conflict.profile_id,
+                    profile_name: conflict.profile_name,
+                }),
+            }
+        }),
+    }
+}
+
 #[tauri::command]
 pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
     let event = sanitize_manager_event(&event);

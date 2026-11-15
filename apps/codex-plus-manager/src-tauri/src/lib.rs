@@ -323,6 +323,8 @@ pub fn run() {
             codex_plus_core::settings::set_external_settings_change_listener(
                 gateway_commands::notify_settings_changed,
             );
+            // Codex 页面里的「供应商」页经 bridge 调这里的保存 / 切换（core `provider_page`）。
+            codex_plus_core::provider_page::set_provider_page_host(commands::provider_page_host());
             if start_minimized {
                 set_manager_activation_policy(app.handle(), false);
             }

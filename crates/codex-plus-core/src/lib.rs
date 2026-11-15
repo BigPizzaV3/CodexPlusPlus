@@ -82,6 +82,7 @@ pub mod plugin_market;
 pub mod protocol_proxy;
 pub(crate) mod responses_websocket;
 pub mod provider_import;
+pub mod provider_page;
 pub mod proxy;
 pub mod relay_billing;
 pub mod relay_config;

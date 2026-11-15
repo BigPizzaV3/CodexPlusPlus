@@ -396,7 +396,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "38";
+  const codexDeleteStyleVersion = "39";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -407,6 +407,8 @@
   const codexPlusRailNavId = "codex-plus-rail-nav";
   const codexPlusRailExtensionsId = "codex-plus-rail-extensions";
   const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
+  // 「供应商」：在 Codex 里直接增删改切 Codex 的供应商（43-provider-page.js）。
+  const codexPlusRailProviderId = "codex-plus-rail-provider";
   const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
   const codexPlusSidebarPluginMarketId = "codex-plus-sidebar-plugin-market";
   const codexPlusPluginMarketTab = "plugin-market";
@@ -414,6 +416,7 @@
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
   const codexPlusSponsorTab = "sponsor";
+  const codexPlusProviderTab = "provider";
   // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
   // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。
   const codexPlusWindowZoomVar = "--codex-window-zoom";
@@ -1143,6 +1146,60 @@
       .codex-plus-plugin-tags span { border-radius: 5px; padding: 2px 6px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 10px; overflow-wrap: anywhere; }
       .codex-plus-plugin-install { flex: 0 0 auto; white-space: nowrap; }
       .codex-plus-plugin-market-page button:disabled { opacity: .55; cursor: default; }
+      /* 「供应商」页（43-provider-page.js）：左侧列表 + 右侧详情，13px 紧凑，沿用 --codex-plus-* 变量。 */
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="provider"] { background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="provider"] .codex-plus-modal-body { box-sizing: border-box; padding: 0; height: 100%; overflow: hidden; }
+      .codex-plus-provider-panel { height: 100%; font-size: 13px; line-height: 18px; color: var(--codex-plus-text); }
+      .codex-plus-provider-layout { display: flex; height: 100%; min-height: 0; }
+      .codex-plus-provider-sidebar { box-sizing: border-box; width: 260px; flex: 0 0 260px; overflow-y: auto; padding: 12px 8px; border-right: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary)); }
+      .codex-plus-provider-sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 10px; font-weight: 600; }
+      .codex-plus-provider-list { display: flex; flex-direction: column; gap: 2px; }
+      .codex-plus-provider-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+      .codex-plus-provider-item:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-provider-item[data-selected="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
+      .codex-plus-provider-item-main { flex: 1; min-width: 0; }
+      .codex-plus-provider-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-provider-item-meta { display: flex; gap: 4px; margin-top: 2px; }
+      .codex-plus-provider-item-actions { display: none; gap: 2px; }
+      .codex-plus-provider-item:hover .codex-plus-provider-item-actions { display: flex; }
+      .codex-plus-provider-item-actions button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }
+      .codex-plus-provider-item-actions button:hover:not(:disabled) { background: var(--codex-plus-bg-hover); }
+      .codex-plus-provider-item-actions button:disabled { opacity: .3; cursor: default; }
+      .codex-plus-provider-badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 16px; color: var(--codex-plus-text-secondary); background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); }
+      .codex-plus-provider-badge[data-tone="active"] { color: var(--codex-plus-success, #10a37f); }
+      .codex-plus-provider-badge[data-tone="new"] { color: var(--codex-plus-warning, #d97706); }
+      .codex-plus-provider-detail { flex: 1; min-width: 0; overflow-y: auto; box-sizing: border-box; padding: 16px 24px 40px; }
+      .codex-plus-provider-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-title { font-size: 15px; font-weight: 600; line-height: 22px; }
+      .codex-plus-provider-subtitle, .codex-plus-provider-help { color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; }
+      .codex-plus-provider-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+      .codex-plus-provider-actions .codex-plus-action-button[data-primary="true"]:not(:disabled) { background: var(--codex-plus-text); color: var(--codex-plus-bg-primary); }
+      .codex-plus-provider-actions .codex-plus-action-button[data-danger="true"]:not(:disabled) { color: var(--codex-plus-danger, #dc2626); }
+      .codex-plus-provider-page .codex-plus-action-button:disabled { opacity: .5; cursor: default; }
+      .codex-plus-provider-section { padding: 14px 0; border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); display: flex; flex-direction: column; gap: 10px; }
+      .codex-plus-provider-section > summary { cursor: pointer; }
+      details.codex-plus-provider-section:not([open]) { gap: 0; }
+      .codex-plus-provider-section-title { font-weight: 600; }
+      .codex-plus-provider-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+      .codex-plus-provider-label { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-provider-input { box-sizing: border-box; width: 100%; min-height: 28px; padding: 4px 8px; border: 1px solid var(--codex-plus-border); border-radius: 6px; background: var(--codex-plus-bg-primary); color: var(--codex-plus-text); font: inherit; }
+      .codex-plus-provider-input:focus { outline: none; border-color: var(--codex-plus-focus, #2563eb); }
+      .codex-plus-provider-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 17px; resize: vertical; }
+      .codex-plus-provider-row { display: flex; gap: 12px; }
+      .codex-plus-provider-key { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+      .codex-plus-provider-key label { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; cursor: pointer; }
+      .codex-plus-provider-key code { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      /* Codex 的表单 reset 会把原生单选框 / 下拉箭头隐藏掉，这里只恢复本页自己的控件。 */
+      .codex-plus-provider-key input[type="radio"] { appearance: auto !important; -webkit-appearance: radio !important; display: inline-block !important; position: static !important; width: 14px !important; height: 14px !important; margin: 0 !important; opacity: 1 !important; clip: auto !important; accent-color: var(--codex-plus-text); cursor: pointer; }
+      select.codex-plus-provider-input { appearance: auto !important; -webkit-appearance: menulist !important; cursor: pointer; }
+      .codex-plus-provider-key button, .codex-plus-provider-link { border: 0; padding: 0; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; align-self: flex-start; }
+      .codex-plus-provider-key-add { display: flex; gap: 6px; }
+      .codex-plus-provider-key-add input:first-child { flex: 0 0 120px; }
+      .codex-plus-provider-status { margin: 0 0 12px; padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); white-space: pre-wrap; }
+      .codex-plus-provider-status[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); background: var(--codex-plus-danger-bg, rgba(220,38,38,.08)); }
+      .codex-plus-provider-status[data-tone="ok"] { color: var(--codex-plus-success, #10a37f); }
+      .codex-plus-provider-note { padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-provider-empty { padding: 48px 24px; color: var(--codex-plus-text-secondary); }
       .codex-plus-plugin-job-message { font-size: 12px; color: var(--codex-plus-text-secondary); margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
       .codex-plus-plugin-job-message[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-plugin-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; font-size: 12px; color: var(--codex-plus-text-secondary); }
@@ -7405,6 +7462,7 @@
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
     if (tab === codexPlusPluginMarketTab) return "plugin-market";
+    if (tab === codexPlusProviderTab) return "provider";
     return "home";
   }
 
@@ -7421,6 +7479,7 @@
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
       [codexPlusRailSponsorId, "sponsor"],
+      [codexPlusRailProviderId, "provider"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -8506,7 +8565,7 @@
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
@@ -8560,7 +8619,7 @@
     const wrapper = document.createElement("div");
     wrapper.id = id;
     wrapper.__codexPlusGeneration = codexPlusBackendGeneration;
-    wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : "home";
+    wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : id === codexPlusRailProviderId ? "provider" : "home";
     // 模板拿不到时不回退到旧模式，而是自建一个按钮：rail 上 destination 可能在
     // 登录态/接口就绪前还是空的，那只是暂时状态，不该让入口整个消失。
     const button = template
@@ -8746,7 +8805,7 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
         // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
@@ -8760,11 +8819,14 @@
       // 和页面内部保持同一个符号，不再另画一个近似图形。
       extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
       // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
+      // Lucide 的 server：同一套 24 格线性风格。
+      provider: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>',
       sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
     };
 
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
+      { id: codexPlusRailProviderId, label: "供应商", iconMarkup: icons.provider, withStatus: false, onActivate: openCodexPlusProviderPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
@@ -9352,6 +9414,2372 @@
       return out.join("");
     };
     return blocks(text.split("\n"));
+  }
+  // 生成文件，勿手改：node scripts/assemble-provider-editing.mjs
+  // 来源：apps/codex-plus-manager/src/relay-profile-editing.ts（与管理器共用的供应商编辑纯函数）
+var codexPlusProviderEditing = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // apps/codex-plus-manager/src/relay-profile-editing.ts
+  var relay_profile_editing_exports = {};
+  __export(relay_profile_editing_exports, {
+    CHAT_UPSTREAM_BASE_URL_KEY: () => CHAT_UPSTREAM_BASE_URL_KEY,
+    activeRelayProfile: () => activeRelayProfile,
+    addRelayProfile: () => addRelayProfile,
+    aggregateProfileForMode: () => aggregateProfileForMode,
+    aggregateRelayProfileValidation: () => aggregateRelayProfileValidation,
+    aggregateStrategyHelp: () => aggregateStrategyHelp,
+    aggregateStrategyLabel: () => aggregateStrategyLabel,
+    aggregateStrategyOptions: () => aggregateStrategyOptions,
+    applyRelayProfilePatchToFiles: () => applyRelayProfilePatchToFiles,
+    authJsonHasOpenAiApiKey: () => authJsonHasOpenAiApiKey,
+    buildOfficialRelayAuthJson: () => buildOfficialRelayAuthJson,
+    buildRelayAuthJson: () => buildRelayAuthJson,
+    buildRelayConfigToml: () => buildRelayConfigToml,
+    clampAggregateWeight: () => clampAggregateWeight,
+    codexApiKeyFromAuth: () => codexApiKeyFromAuth,
+    codexBaseUrlFromConfig: () => codexBaseUrlFromConfig,
+    codexExperimentalBearerTokenFromConfig: () => codexExperimentalBearerTokenFromConfig,
+    codexModelFromConfig: () => codexModelFromConfig,
+    codexProviderSectionName: () => codexProviderSectionName,
+    codexProviderStringFromConfig: () => codexProviderStringFromConfig,
+    codexRequiresOpenAiAuthFromConfig: () => codexRequiresOpenAiAuthFromConfig,
+    codexTopLevelIntFromConfig: () => codexTopLevelIntFromConfig,
+    configureRelayProfileEditing: () => configureRelayProfileEditing,
+    createAggregateRelayProfile: () => createAggregateRelayProfile,
+    createRelayProfile: () => createRelayProfile,
+    deriveRelayProfileFromFiles: () => deriveRelayProfileFromFiles,
+    duplicateRelayProfile: () => duplicateRelayProfile,
+    emptyContextSelection: () => emptyContextSelection,
+    ensureCodexProviderDefaults: () => ensureCodexProviderDefaults,
+    ensureTrailingNewline: () => ensureTrailingNewline,
+    hydrateAggregateRelayProfile: () => hydrateAggregateRelayProfile,
+    isAggregateRelayProfile: () => isAggregateRelayProfile,
+    joinTomlSections: () => joinTomlSections,
+    normalizeAggregateConfig: () => normalizeAggregateConfig,
+    normalizeAggregateProfilesFromRelayProfiles: () => normalizeAggregateProfilesFromRelayProfiles,
+    normalizeAggregateRelayProfile: () => normalizeAggregateRelayProfile,
+    normalizeAnthropicAuthHeader: () => normalizeAnthropicAuthHeader,
+    normalizeAnthropicMaxTokens: () => normalizeAnthropicMaxTokens,
+    normalizeAnthropicThinkingMode: () => normalizeAnthropicThinkingMode,
+    normalizeContextSelection: () => normalizeContextSelection,
+    normalizeRelayMode: () => normalizeRelayMode,
+    normalizeRelayProfile: () => normalizeRelayProfile,
+    normalizeRelayProtocol: () => normalizeRelayProtocol,
+    normalizeRelaySessionProvider: () => normalizeRelaySessionProvider,
+    parseModelSuffix: () => parseModelSuffix,
+    relayModelRouteIssueMessage: () => relayModelRouteIssueMessage,
+    relayModelRoutesSettingsValidation: () => relayModelRoutesSettingsValidation,
+    relayModelRoutesValidation: () => relayModelRoutesValidation,
+    relayProfileDeleteIssue: () => relayProfileDeleteIssue,
+    relayProfileEditingHost: () => relayProfileEditingHost,
+    relayProfileSwitchValidation: () => relayProfileSwitchValidation,
+    relayProfileUsesLiveFiles: () => relayProfileUsesLiveFiles,
+    relayProviderView: () => relayProviderView,
+    relaySessionProvider: () => relaySessionProvider,
+    relaySessionProviderFromConfig: () => relaySessionProviderFromConfig,
+    relaySessionProviderValidation: () => relaySessionProviderValidation,
+    relaySettingsValidation: () => relaySettingsValidation,
+    relaySettingsWithDraft: () => relaySettingsWithDraft,
+    removeCodexExperimentalBearerToken: () => removeCodexExperimentalBearerToken,
+    removeRelayProfile: () => removeRelayProfile,
+    removeRootTomlKey: () => removeRootTomlKey,
+    removeTomlSectionKey: () => removeTomlSectionKey,
+    reorderRelayProfiles: () => reorderRelayProfiles,
+    rootTomlStringValue: () => rootTomlStringValue,
+    setAuthOpenAiApiKey: () => setAuthOpenAiApiKey,
+    setCodexExperimentalBearerToken: () => setCodexExperimentalBearerToken,
+    setCodexProviderStringKey: () => setCodexProviderStringKey,
+    setManagedOpenAiBaseUrl: () => setManagedOpenAiBaseUrl,
+    setRootTomlIntKey: () => setRootTomlIntKey,
+    setRootTomlLine: () => setRootTomlLine,
+    setRootTomlStringKey: () => setRootTomlStringKey,
+    setTomlSectionBoolKey: () => setTomlSectionBoolKey,
+    setTomlSectionRawKey: () => setTomlSectionRawKey,
+    setTomlSectionStringKey: () => setTomlSectionStringKey,
+    splitTomlRootAndTables: () => splitTomlRootAndTables,
+    syncLegacyRelayFields: () => syncLegacyRelayFields,
+    tomlDottedKeyPath: () => tomlDottedKeyPath,
+    tomlInlineComment: () => tomlInlineComment,
+    tomlKeyAssignment: () => tomlKeyAssignment,
+    tomlKeyPathName: () => tomlKeyPathName,
+    tomlQuotedValue: () => tomlQuotedValue,
+    tomlSectionName: () => tomlSectionName,
+    tomlString: () => tomlString,
+    tomlStringAssignmentValue: () => tomlStringAssignmentValue,
+    tomlStructureMask: () => tomlStructureMask,
+    updateRelayProfile: () => updateRelayProfile,
+    withGeneratedRelayFiles: () => withGeneratedRelayFiles
+  });
+
+  // scripts/provider-editing-i18n-shim.mjs
+  function t(zh) {
+    return zh;
+  }
+  function tf(key, args) {
+    return String(key).replace(/\{(\d+)\}/g, (match, index) => {
+      const value = args[Number(index)];
+      return value === void 0 || value === null ? match : String(value);
+    });
+  }
+
+  // apps/codex-plus-manager/src/aggregate-members.ts
+  function isAggregateProfile(profile) {
+    return profile.relayMode === "aggregate" || !!profile.aggregate;
+  }
+  function isApiMemberProfile(profile) {
+    return Boolean((profile.baseUrl ?? "").trim() && (profile.apiKey ?? "").trim());
+  }
+  function authContentsHaveChatgptTokens(contents) {
+    const trimmed = (contents ?? "").trim();
+    if (!trimmed) return false;
+    try {
+      const value = JSON.parse(trimmed);
+      const tokens = value && typeof value === "object" ? value.tokens : void 0;
+      if (!tokens || typeof tokens !== "object") return false;
+      return [tokens.access_token, tokens.refresh_token].some(
+        (token) => typeof token === "string" && token.trim().length > 0
+      );
+    } catch {
+      return /"tokens"\s*:/.test(trimmed) && /"(access_token|refresh_token)"\s*:/.test(trimmed);
+    }
+  }
+  function isOfficialLoginMemberProfile(profile) {
+    return profile.relayMode === "official" && !profile.officialMixApiKey && (profile.protocol ?? "responses") === "responses" && authContentsHaveChatgptTokens(profile.authContents);
+  }
+  function aggregateMemberCandidates(profiles, aggregateId) {
+    return profiles.filter(
+      (profile) => profile.id !== aggregateId && !isAggregateProfile(profile) && (isApiMemberProfile(profile) || isOfficialLoginMemberProfile(profile))
+    );
+  }
+  function normalizeAggregateDefaultRelayId(value, memberIds) {
+    const id = (value ?? "").trim();
+    return id && memberIds.has(id) ? id : "";
+  }
+  function normalizeAggregateMembers(members, profileIds) {
+    const seen = /* @__PURE__ */ new Set();
+    const normalized = [];
+    for (const member of members ?? []) {
+      const profileId = String(member?.profileId ?? "").trim();
+      if (!profileId || seen.has(profileId)) continue;
+      if (profileIds && !profileIds.has(profileId)) continue;
+      seen.add(profileId);
+      normalized.push({ ...member, profileId });
+    }
+    return normalized;
+  }
+
+  // apps/codex-plus-manager/src/aggregate-routes.ts
+  function clampAggregateRoutePriority(value) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(999, Math.round(value)));
+  }
+  function normalizeAggregateRoutes(routes, options = {}) {
+    const { dropEmptyPattern = false, memberIds, clampPriority = true } = options;
+    return routes.map((route) => ({
+      pattern: route.pattern.trim(),
+      profileId: "profileId" in route ? route.profileId : route.relayId,
+      priority: clampPriority ? clampAggregateRoutePriority(route.priority) : route.priority
+    })).filter((route) => {
+      if (dropEmptyPattern && !route.pattern) return false;
+      if (memberIds && !memberIds.has(route.profileId)) return false;
+      return true;
+    });
+  }
+  function validateAggregateRoutes(routes, memberIds) {
+    const issues = [];
+    for (const route of routes) {
+      const pattern = route.pattern.trim();
+      const profileId = "profileId" in route ? route.profileId : route.relayId;
+      if (!pattern && !profileId.trim()) continue;
+      if (!pattern) {
+        issues.push({ code: "emptyPattern", pattern: "" });
+        continue;
+      }
+      if (!Number.isInteger(route.priority) || route.priority < 0 || route.priority > 999) {
+        issues.push({ code: "invalidPriority", pattern });
+        continue;
+      }
+      if (!memberIds.has(profileId)) {
+        issues.push({ code: "notMember", pattern });
+      }
+    }
+    return issues.length ? issues : null;
+  }
+
+  // apps/codex-plus-manager/src/model-metadata.ts
+  var MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+  var PERCENT_SCALE = 1000000n;
+  var SCALED_PERCENT_DENOMINATOR = 100n * PERCENT_SCALE;
+  var MODEL_SUFFIX_PATTERN = /^(.*?)\[\s*(\d+(?:[KkMm])?)\s*\]$/;
+  function parseModelRowName(rowName) {
+    const rawName = rowName;
+    const trimmed = rowName.trim();
+    const match = MODEL_SUFFIX_PATTERN.exec(trimmed);
+    const suffixWindow = match?.[1].trim() ? suffixWindowTokens(match[2]) : null;
+    const canonicalSlug = match && suffixWindow !== null ? match[1].trim() : trimmed;
+    return {
+      rawName,
+      canonicalSlug,
+      suffixWindow: suffixWindow === null ? null : String(suffixWindow),
+      key: canonicalSlug.toLowerCase()
+    };
+  }
+  function modelSlugFromRowName(rowName) {
+    return parseModelRowName(rowName).canonicalSlug;
+  }
+  function suffixWindowTokens(suffix) {
+    const match = /^(\d+)([KkMm])?$/.exec(suffix.trim());
+    if (!match) return null;
+    const multiplier = match[2] ? match[2].toLowerCase() === "m" ? 1e6 : 1e3 : 1;
+    const tokens = Number(match[1]) * multiplier;
+    if (!Number.isSafeInteger(tokens) || tokens <= 0) return null;
+    return tokens;
+  }
+  function suffixWindowString(rowName) {
+    return parseModelRowName(rowName).suffixWindow;
+  }
+
+  // apps/codex-plus-manager/src/model-routes.ts
+  var PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
+  var independentProxyProfiles = /* @__PURE__ */ new Set();
+  function independentProxyEnabled(profile) {
+    return !!profile.id && independentProxyProfiles.has(profile.id) && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  }
+  function normalizeRelayModelRoutes(routes) {
+    if (!Array.isArray(routes)) return [];
+    return routes.map((route) => ({
+      model: typeof route?.model === "string" ? route.model : "",
+      targetRelayId: typeof route?.targetRelayId === "string" ? route.targetRelayId : "",
+      targetModel: typeof route?.targetModel === "string" ? route.targetModel : ""
+    }));
+  }
+  function findRelayModelRouteIssue(sources, allProfiles) {
+    for (const source of sources) {
+      if (source.relayMode === "aggregate") continue;
+      const seenModels = /* @__PURE__ */ new Set();
+      for (const route of normalizeRelayModelRoutes(source.modelRoutes)) {
+        const model = route.model.trim();
+        const targetRelayId = route.targetRelayId.trim();
+        if (!model || !targetRelayId) return { kind: "incomplete", model, sourceRelayId: source.id };
+        if (seenModels.has(model)) return { kind: "duplicate", model, sourceRelayId: source.id };
+        seenModels.add(model);
+        if (targetRelayId === source.id) return { kind: "self", model, sourceRelayId: source.id };
+        const target = allProfiles.find((candidate) => candidate.id === targetRelayId);
+        if (!target) return { kind: "missingTarget", model, sourceRelayId: source.id };
+        if (target.relayMode === "aggregate") return { kind: "aggregateTarget", model, sourceRelayId: source.id };
+        if (target.protocol !== "responses") return { kind: "targetProtocol", model, sourceRelayId: source.id };
+        const targetHasApiCredentials = !(target.relayMode === "official" && !target.officialMixApiKey) && Boolean(
+          target.baseUrl.trim() && (target.apiKey.trim() || target.relayMode === "pureApi" && target.noAuth)
+        );
+        if (!targetHasApiCredentials) return { kind: "targetCredentials", model, sourceRelayId: source.id };
+      }
+    }
+    return null;
+  }
+  function stripImageGenerationToolEnabled(profile) {
+    return profile.stripImageGenerationTool === true && profile.protocol === "responses" && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  }
+  function stripResponsesImageDetailEnabled(profile) {
+    return profile.stripResponsesImageDetail === true && profile.protocol === "responses" && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  }
+  function pureApiImageGenerationEnabled(profile) {
+    return profile.pureApiImageGeneration === true && profile.relayMode === "pureApi";
+  }
+  function requestCompatibilityEnabled(profile) {
+    if (profile.relayMode === "official" && !profile.officialMixApiKey) return false;
+    if (profile.protocol === "responses" && profile.strictResponsesReasoning === true) return true;
+    if (!profile.modelMetadata?.includes("codex_plus_reasoning_parameters")) return false;
+    try {
+      const map = JSON.parse(profile.modelMetadata);
+      return !!map && typeof map === "object" && !Array.isArray(map) && Object.values(map).some((entry) => entry && typeof entry === "object" && ["omit", "passthrough"].includes(entry.codex_plus_reasoning_parameters));
+    } catch {
+      return false;
+    }
+  }
+
+  // apps/codex-plus-manager/src/provider-api-keys.ts
+  var DEFAULT_KEY_ID = "default";
+  function uniqueKeyId(base, used) {
+    let id = base;
+    let suffix = 2;
+    while (used.has(id)) {
+      id = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    return id;
+  }
+  function normalizeRelayApiKeys(profile) {
+    const used = /* @__PURE__ */ new Set();
+    const apiKeys = (Array.isArray(profile.apiKeys) ? profile.apiKeys : []).map((entry, index) => {
+      const requestedId = String(entry?.id || "").trim() || `key-${index + 1}`;
+      const id = uniqueKeyId(requestedId, used);
+      used.add(id);
+      return {
+        id,
+        name: String(entry?.name || "").trim() || `Key ${index + 1}`,
+        apiKey: String(entry?.apiKey || "")
+      };
+    });
+    if (!apiKeys.length) {
+      apiKeys.push({ id: DEFAULT_KEY_ID, name: "默认", apiKey: profile.apiKey || "" });
+    }
+    const requestedActiveId = String(profile.activeApiKeyId || "").trim();
+    const activeApiKeyId = apiKeys.some((entry) => entry.id === requestedActiveId) ? requestedActiveId : apiKeys[0]?.id || "";
+    return { apiKeys, activeApiKeyId };
+  }
+  function relayProfileWithNormalizedApiKeys(profile) {
+    const normalized = normalizeRelayApiKeys(profile);
+    const selected = normalized.apiKeys.find((entry) => entry.id === normalized.activeApiKeyId);
+    return {
+      ...profile,
+      ...normalized,
+      apiKey: selected?.apiKey ?? profile.apiKey
+    };
+  }
+  function relayProfileWithUpdatedApiKey(profile, apiKey) {
+    if (profile.noAuth || profile.relayMode === "aggregate" || profile.relayMode === "official" && !profile.officialMixApiKey) return profile;
+    const normalized = normalizeRelayApiKeys(profile);
+    return {
+      ...profile,
+      ...normalized,
+      apiKey,
+      apiKeys: normalized.apiKeys.map((entry) => entry.id === normalized.activeApiKeyId ? { ...entry, apiKey } : entry)
+    };
+  }
+
+  // apps/codex-plus-manager/src/provider-name.ts
+  function tomlSectionStringValue(contents, sectionName, key) {
+    const lines = contents.split(/\r?\n/);
+    let inSection = false;
+    const keyPattern = new RegExp(`^\\s*${key}\\s*=\\s*(["'])(.*)\\1\\s*(?:#.*)?$`);
+    for (const line of lines) {
+      const section = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+      if (section) {
+        inSection = section[1].trim() === sectionName;
+        continue;
+      }
+      if (!inSection) continue;
+      const match = keyPattern.exec(line.trim());
+      if (match) return match[2].replace(/\\(["'\\])/g, "$1");
+    }
+    return "";
+  }
+  function resolveProviderName(contents, provider) {
+    const existing = tomlSectionStringValue(contents, `model_providers.${provider}`, "name").trim();
+    return existing || provider;
+  }
+
+  // apps/codex-plus-manager/src/relay-session.ts
+  function sessionProviderForProtocol(sessionProvider, protocol) {
+    if (protocol !== "responses" && sessionProvider === "openai") return "custom";
+    return sessionProvider;
+  }
+
+  // apps/codex-plus-manager/src/relay-profile-editing.ts
+  var relayProfileEditingHost = {
+    defaultRelayBaseUrl: () => "",
+    defaultRelayProfiles: () => [],
+    contextSelectionForAllEntries: () => ({ mcpServers: [], skills: [], plugins: [] })
+  };
+  function configureRelayProfileEditing(host) {
+    Object.assign(relayProfileEditingHost, host);
+  }
+  function withGeneratedRelayFiles(profile) {
+    if (isAggregateRelayProfile(profile)) {
+      return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
+    }
+    if (profile.relayMode === "official") {
+      return {
+        ...profile,
+        configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenAiAuth: true }) : "",
+        authContents: profile.authContents || ""
+      };
+    }
+    return {
+      ...profile,
+      configContents: buildRelayConfigToml(profile, { includeBearerToken: !profile.noAuth, requiresOpenAiAuth: false }),
+      authContents: buildRelayAuthJson(profile)
+    };
+  }
+  function buildRelayConfigToml(profile, options) {
+    const searchHistoryCompat = profile.webSearchHistoryCompat === true && profile.protocol === "responses" && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
+    const localCompaction = profile.localCompactionPromptAtEnd === true && (profile.protocol === "responses" || profile.protocol === "chatCompletions") && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
+    const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile) || stripResponsesImageDetailEnabled(profile) || pureApiImageGenerationEnabled(profile) ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+    const apiKey = profile.apiKey.trim();
+    const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
+    const rootLines = [
+      profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
+      `model_provider = "${sessionProvider}"`,
+      sessionProvider === "openai" ? `openai_base_url = "${PROTOCOL_PROXY_BASE_URL}"` : null,
+      ""
+    ].filter((line) => line !== null);
+    const requiresOpenAiAuthLine = options.requiresOpenAiAuth === void 0 ? null : `requires_openai_auth = ${options.requiresOpenAiAuth ? "true" : "false"}`;
+    return [
+      ...rootLines,
+      "[model_providers.custom]",
+      'name = "custom"',
+      'wire_api = "responses"',
+      requiresOpenAiAuthLine,
+      `base_url = "${tomlString(baseUrl)}"`,
+      options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
+      ""
+    ].filter((line) => line !== null).join("\n");
+  }
+  function buildRelayAuthJson(profile) {
+    return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}
+`;
+  }
+  function buildOfficialRelayAuthJson(contents) {
+    const trimmed = contents.trim();
+    if (!trimmed) return "";
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return contents;
+      const knownOAuth = String(parsed.auth_mode || "").toLowerCase() === "chatgpt" && parsed.tokens && typeof parsed.tokens === "object";
+      if (!knownOAuth && Object.keys(parsed).some((key) => key !== "OPENAI_API_KEY")) return contents;
+      delete parsed.OPENAI_API_KEY;
+      return `${JSON.stringify(parsed, null, 2)}
+`;
+    } catch {
+      return contents;
+    }
+  }
+  function deriveRelayProfileFromFiles(profile, editedFile) {
+    if (isAggregateRelayProfile(profile)) {
+      return normalizeAggregateRelayProfile(profile, null);
+    }
+    if (editedFile === "auth") {
+      try {
+        JSON.parse(profile.authContents || "{}");
+      } catch {
+        return profile;
+      }
+    }
+    let configContents = profile.configContents || "";
+    let authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
+    const configBaseUrl = codexBaseUrlFromConfig(configContents);
+    const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+    const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
+    const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
+    const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
+    const apiKey = editedFile === "config" ? configApiKey : editedFile === "auth" && profile.relayMode === "pureApi" ? codexApiKeyFromAuth(authContents) : profile.relayMode === "official" ? configApiKey || profile.apiKey || "" : codexApiKeyFromAuth(authContents) || configApiKey || "";
+    if (profile.relayMode === "pureApi") {
+      configContents = profile.noAuth ? removeCodexExperimentalBearerToken(configContents) : apiKey && configContents.trim() ? setCodexExperimentalBearerToken(configContents, apiKey, { requiresOpenAiAuth: false }) : configContents;
+      if (editedFile && !profile.noAuth) {
+        if (editedFile === "config") authContents = setAuthOpenAiApiKey(authContents, apiKey);
+        if (!apiKey) configContents = removeCodexExperimentalBearerToken(configContents);
+      }
+    }
+    const configModel = codexModelFromConfig(configContents);
+    const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
+    const derived = {
+      ...profile,
+      model,
+      sessionProvider: relaySessionProviderFromConfig(configContents),
+      baseUrl: upstreamBaseUrl,
+      upstreamBaseUrl,
+      apiKey,
+      contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
+      autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
+      configContents,
+      authContents
+    };
+    return editedFile ? relayProfileWithUpdatedApiKey(derived, apiKey) : derived;
+  }
+  function applyRelayProfilePatchToFiles(profile, patch, options = {}) {
+    const protocol = patch.protocol ?? profile.protocol;
+    const sessionProvider = "sessionProvider" in patch ? normalizeRelaySessionProvider(patch.sessionProvider) : relaySessionProvider(profile);
+    const compatibleSession = sessionProviderForProtocol(sessionProvider, protocol);
+    const normalizedPatch = compatibleSession === sessionProvider ? patch : { ...patch, sessionProvider: compatibleSession };
+    let next = { ...profile, ...normalizedPatch };
+    if (isAggregateRelayProfile(next)) {
+      return normalizeAggregateRelayProfile(next, null);
+    }
+    const shouldHaveFiles = next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
+    const needsAuthFile = next.relayMode === "pureApi";
+    if (options.allowGenerateFiles && shouldHaveFiles && (!next.configContents.trim() || needsAuthFile && !next.authContents.trim())) {
+      next = withGeneratedRelayFiles(next);
+    }
+    if ("sessionProvider" in patch) {
+      const sessionProvider2 = normalizeRelaySessionProvider(patch.sessionProvider);
+      next.sessionProvider = sessionProvider2;
+      next.configContents = setRootTomlStringKey(next.configContents, "model_provider", sessionProvider2);
+      next.configContents = setManagedOpenAiBaseUrl(next.configContents, sessionProvider2 === "openai");
+    }
+    if ("model" in patch) {
+      const { slug } = parseModelSuffix(patch.model || "");
+      next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
+    }
+    if ("apiKey" in patch) {
+      next = relayProfileWithUpdatedApiKey(next, patch.apiKey || "");
+      if (next.relayMode === "pureApi") {
+        next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
+        next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "", { requiresOpenAiAuth: false });
+      } else {
+        next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
+      }
+    }
+    if ("baseUrl" in patch) {
+      next.upstreamBaseUrl = patch.baseUrl || "";
+    }
+    if ("upstreamBaseUrl" in patch) {
+      next.baseUrl = patch.upstreamBaseUrl || "";
+    }
+    if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "stripResponsesImageDetail" in patch || "pureApiImageGeneration" in patch || "modelMetadata" in patch) {
+      const searchHistoryCompat = next.webSearchHistoryCompat === true && next.protocol === "responses" && next.relayMode !== "aggregate" && (next.relayMode !== "official" || next.officialMixApiKey);
+      const localCompaction = next.localCompactionPromptAtEnd === true && (next.protocol === "responses" || next.protocol === "chatCompletions") && next.relayMode !== "aggregate" && (next.relayMode !== "official" || next.officialMixApiKey);
+      const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next) || stripResponsesImageDetailEnabled(next) || pureApiImageGenerationEnabled(next) ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
+      next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
+        requiresOpenAiAuth: next.relayMode !== "pureApi"
+      });
+      next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+    }
+    if ("contextWindow" in patch) {
+      next.configContents = setRootTomlIntKey(next.configContents, "model_context_window", patch.contextWindow || "");
+    }
+    if ("autoCompactLimit" in patch) {
+      next.configContents = setRootTomlIntKey(
+        next.configContents,
+        "model_auto_compact_token_limit",
+        patch.autoCompactLimit || ""
+      );
+    }
+    if ("relayMode" in patch || "officialMixApiKey" in patch) {
+      if (next.relayMode === "official" && !next.officialMixApiKey) {
+        next.configContents = "";
+        next.authContents = buildOfficialRelayAuthJson(next.authContents);
+      } else if (options.allowGenerateFiles && (!next.configContents.trim() || next.relayMode === "pureApi" && !next.authContents.trim())) {
+        next = withGeneratedRelayFiles(next);
+      }
+    }
+    return deriveRelayProfileFromFiles(next);
+  }
+  function codexModelFromConfig(contents) {
+    const lines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    for (const [index, line] of lines.entries()) {
+      if (!structural[index]) continue;
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      if (trimmed.startsWith("[")) break;
+      const match = /^model\s*=\s*(["'])(.*)\1\s*$/.exec(trimmed);
+      if (match) return match[2].replace(/\\(["'\\])/g, "$1");
+    }
+    return "";
+  }
+  function parseModelSuffix(raw) {
+    const window = suffixWindowString(raw);
+    if (window === null) return { slug: raw.trim() };
+    return { slug: modelSlugFromRowName(raw), window: Number(window) };
+  }
+  function codexBaseUrlFromConfig(contents) {
+    return codexProviderStringFromConfig(contents, "base_url");
+  }
+  function codexExperimentalBearerTokenFromConfig(contents) {
+    return codexProviderStringFromConfig(contents, "experimental_bearer_token");
+  }
+  function codexProviderStringFromConfig(contents, key) {
+    const provider = rootTomlStringValue(contents, "model_provider");
+    const targetSection = codexProviderSectionName(provider || "custom");
+    const fallbackSection = provider === "openai" && rootTomlStringValue(contents, "openai_base_url") === PROTOCOL_PROXY_BASE_URL ? codexProviderSectionName("custom") : "";
+    const lines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    let currentSection = "";
+    let rootValue = "";
+    let fallbackValue = "";
+    for (const [index, line] of lines.entries()) {
+      if (!structural[index]) continue;
+      const section = tomlSectionName(line);
+      if (section !== null) {
+        currentSection = section;
+        continue;
+      }
+      const value = tomlStringAssignmentValue(line, key);
+      if (value === null) continue;
+      if (currentSection === targetSection) return value;
+      if (fallbackSection && currentSection === fallbackSection) fallbackValue = value;
+      if (!provider && currentSection === "") rootValue = value;
+    }
+    return fallbackValue || rootValue;
+  }
+  function codexApiKeyFromAuth(contents) {
+    try {
+      const parsed = JSON.parse(contents || "{}");
+      return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
+    } catch {
+      return "";
+    }
+  }
+  function codexTopLevelIntFromConfig(contents, key) {
+    const topLevel = splitTomlRootAndTables(contents).root;
+    const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
+    const lines = topLevel.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    for (const [index, line] of lines.entries()) {
+      if (!structural[index]) continue;
+      const match = pattern.exec(line);
+      if (match) return match[1];
+    }
+    return "";
+  }
+  function rootTomlStringValue(contents, key) {
+    const topLevel = splitTomlRootAndTables(contents).root;
+    const lines = topLevel.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    for (const [index, line] of lines.entries()) {
+      if (!structural[index]) continue;
+      const value = tomlStringAssignmentValue(line, key);
+      if (value !== null) return value;
+    }
+    return "";
+  }
+  function tomlStructureMask(lines) {
+    let multiline = null;
+    return lines.map((line) => {
+      const structural = multiline === null;
+      for (let index = 0; index < line.length; index += 1) {
+        if (multiline !== null) {
+          if (multiline === '"' && line[index] === "\\") {
+            index += 1;
+          } else if (line[index] === multiline) {
+            let end = index;
+            while (line[end] === multiline) end += 1;
+            if (end - index >= 3) multiline = null;
+            index = end - 1;
+          }
+        } else if (line[index] === "#") {
+          break;
+        } else if (line[index] === '"' || line[index] === "'") {
+          if (line[index + 1] === line[index] && line[index + 2] === line[index]) {
+            multiline = line[index];
+            index += 2;
+          } else {
+            const quoted = tomlQuotedValue(line, index);
+            if (!quoted) break;
+            index = quoted.end - 1;
+          }
+        }
+      }
+      return structural;
+    });
+  }
+  function tomlSectionName(line) {
+    const text = line.trim();
+    if (!text.startsWith("[")) return null;
+    const array = text.startsWith("[[");
+    const start = array ? 2 : 1;
+    for (let index = start; index < text.length; index += 1) {
+      if (text[index] === '"' || text[index] === "'") {
+        const quoted = tomlQuotedValue(text, index);
+        if (!quoted) return null;
+        index = quoted.end - 1;
+      } else if (text[index] === "]") {
+        const end = index + (array ? 2 : 1);
+        if (array && text[index + 1] !== "]") return null;
+        const rest = text.slice(end).trim();
+        if (rest && !rest.startsWith("#")) return null;
+        const path = tomlDottedKeyPath(text.slice(start, index));
+        return path ? (array ? "[]" : "") + tomlKeyPathName(path) : null;
+      }
+    }
+    return null;
+  }
+  function tomlQuotedValue(text, start) {
+    const quote = text[start];
+    if (quote !== '"' && quote !== "'") return null;
+    let value = "";
+    for (let index = start + 1; index < text.length; index += 1) {
+      const character = text[index];
+      if (character === quote) return { value, end: index + 1 };
+      if (character.charCodeAt(0) < 32 && character !== "	" || character.charCodeAt(0) === 127) return null;
+      if (quote === '"' && character === "\\") {
+        const escape = text[++index];
+        const escapes = { '"': '"', "\\": "\\", b: "\b", t: "	", n: "\n", f: "\f", r: "\r" };
+        if (Object.prototype.hasOwnProperty.call(escapes, escape)) value += escapes[escape];
+        else if (escape === "u" || escape === "U") {
+          const length = escape === "u" ? 4 : 8;
+          const digits = text.slice(index + 1, index + 1 + length);
+          if (digits.length !== length || !/^[0-9a-f]+$/i.test(digits)) return null;
+          const codepoint = Number.parseInt(digits, 16);
+          if (codepoint > 1114111 || codepoint >= 55296 && codepoint <= 57343) return null;
+          value += String.fromCodePoint(codepoint);
+          index += length;
+        } else return null;
+      } else value += character;
+    }
+    return null;
+  }
+  function tomlDottedKeyPath(text) {
+    const path = [];
+    let index = 0;
+    while (index < text.length) {
+      while (text[index] === " " || text[index] === "	") index += 1;
+      if (text[index] === '"' || text[index] === "'") {
+        const quoted = tomlQuotedValue(text, index);
+        if (!quoted) return null;
+        path.push(quoted.value);
+        index = quoted.end;
+      } else {
+        const bare = /^[A-Za-z0-9_-]+/.exec(text.slice(index));
+        if (!bare) return null;
+        path.push(bare[0]);
+        index += bare[0].length;
+      }
+      while (text[index] === " " || text[index] === "	") index += 1;
+      if (index === text.length) return path;
+      if (text[index] !== ".") return null;
+      index += 1;
+    }
+    return null;
+  }
+  function tomlKeyPathName(path) {
+    return path.map((part) => /^[A-Za-z0-9_-]+$/.test(part) ? part : JSON.stringify(part)).join(".");
+  }
+  function codexProviderSectionName(provider) {
+    return tomlKeyPathName(["model_providers", provider]);
+  }
+  function tomlKeyAssignment(line) {
+    for (let index = 0; index < line.length; index += 1) {
+      if (line[index] === '"' || line[index] === "'") {
+        const quoted = tomlQuotedValue(line, index);
+        if (!quoted) return null;
+        index = quoted.end - 1;
+      } else if (line[index] === "#") return null;
+      else if (line[index] === "=") {
+        const path = tomlDottedKeyPath(line.slice(0, index));
+        return path ? { path, valueStart: index + 1 } : null;
+      }
+    }
+    return null;
+  }
+  function tomlInlineComment(line, start) {
+    for (let index = start; index < line.length; index += 1) {
+      if (line[index] === '"' || line[index] === "'") {
+        const quoted = tomlQuotedValue(line, index);
+        if (!quoted) return "";
+        index = quoted.end - 1;
+      } else if (line[index] === "#") {
+        const spacing = /[ \t]*$/.exec(line.slice(start, index))?.[0] || "";
+        return spacing + line.slice(index);
+      }
+    }
+    return "";
+  }
+  function tomlStringAssignmentValue(line, key) {
+    const assignment = tomlKeyAssignment(line);
+    if (!assignment || assignment.path.length !== 1 || assignment.path[0] !== key) return null;
+    const text = line.slice(assignment.valueStart).trimStart();
+    const quoted = tomlQuotedValue(text, 0);
+    if (!quoted) return null;
+    const rest = text.slice(quoted.end).trimStart();
+    return !rest || rest.startsWith("#") ? quoted.value : null;
+  }
+  function setAuthOpenAiApiKey(contents, apiKey) {
+    let parsed = {};
+    try {
+      const value = JSON.parse(contents || "{}");
+      if (value && typeof value === "object" && !Array.isArray(value)) parsed = value;
+    } catch {
+      parsed = {};
+    }
+    parsed.OPENAI_API_KEY = apiKey.trim();
+    return `${JSON.stringify(parsed, null, 2)}
+`;
+  }
+  function setRootTomlStringKey(contents, key, value) {
+    const trimmed = value.trim();
+    if (!trimmed) return removeRootTomlKey(contents, key);
+    return setRootTomlLine(contents, key, `${key} = "${tomlString(trimmed)}"`);
+  }
+  function setManagedOpenAiBaseUrl(contents, enabled) {
+    const current = rootTomlStringValue(contents, "openai_base_url");
+    if (enabled) {
+      return !current || current === PROTOCOL_PROXY_BASE_URL ? setRootTomlStringKey(contents, "openai_base_url", PROTOCOL_PROXY_BASE_URL) : contents;
+    }
+    return current === PROTOCOL_PROXY_BASE_URL ? removeRootTomlKey(contents, "openai_base_url") : contents;
+  }
+  function setRootTomlIntKey(contents, key, value) {
+    const trimmed = value.replace(/[^\d]/g, "");
+    if (!trimmed) return removeRootTomlKey(contents, key);
+    return setRootTomlLine(contents, key, `${key} = ${trimmed}`);
+  }
+  function setRootTomlLine(contents, key, lineText) {
+    const lines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    const firstTable = lines.findIndex((line, index) => structural[index] && tomlSectionName(line) !== null);
+    const rootEnd = firstTable >= 0 ? firstTable : lines.length;
+    for (let index = 0; index < rootEnd; index += 1) {
+      if (!structural[index]) continue;
+      const assignment = tomlKeyAssignment(lines[index]);
+      if (assignment?.path.length === 1 && assignment.path[0] === key) {
+        const replacement = tomlKeyAssignment(lineText);
+        lines[index] = replacement ? lines[index].slice(0, assignment.valueStart) + " " + lineText.slice(replacement.valueStart).trimStart() + tomlInlineComment(lines[index], assignment.valueStart) : lineText;
+        return ensureTrailingNewline(lines.join("\n").trimEnd());
+      }
+    }
+    const insertAt = key === "model" ? 0 : rootEnd;
+    lines.splice(insertAt, 0, lineText);
+    return ensureTrailingNewline(lines.join("\n").trimEnd());
+  }
+  function codexRequiresOpenAiAuthFromConfig(contents) {
+    const provider = rootTomlStringValue(contents, "model_provider");
+    const targetSection = provider ? codexProviderSectionName(provider) : "";
+    const lines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    let currentSection = "";
+    let sawProviderSection = false;
+    let rootRequiresAuth = false;
+    for (const [index, line] of lines.entries()) {
+      if (!structural[index]) continue;
+      const section = tomlSectionName(line);
+      if (section !== null) {
+        currentSection = section;
+        if (section.startsWith("model_providers.")) sawProviderSection = true;
+        continue;
+      }
+      const match = /^\s*requires_openai_auth\s*=\s*(true|false)\s*(?:#.*)?$/i.exec(line);
+      if (match && currentSection === "") rootRequiresAuth = match[1].toLowerCase() === "true";
+      if (!match || !currentSection.startsWith("model_providers.")) continue;
+      if (targetSection) {
+        if (currentSection === targetSection) return match[1].toLowerCase() === "true";
+        continue;
+      }
+      if (match[1].toLowerCase() === "true") return true;
+    }
+    return !sawProviderSection && rootRequiresAuth;
+  }
+  function setCodexProviderStringKey(contents, key, value, options = {}) {
+    const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
+    const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
+    let next = contents;
+    if (!rootTomlStringValue(next, "model_provider")) {
+      next = setRootTomlStringKey(next, "model_provider", sessionProvider);
+    }
+    next = ensureCodexProviderDefaults(next, provider, { requiresOpenAiAuth: options.requiresOpenAiAuth !== false });
+    return setTomlSectionStringKey(next, codexProviderSectionName(provider), key, value);
+  }
+  function setCodexExperimentalBearerToken(contents, apiKey, options = {}) {
+    const trimmed = apiKey.trim();
+    if (trimmed && options.requiresOpenAiAuth === false) {
+      const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
+      const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
+      const next = rootTomlStringValue(contents, "model_provider") ? contents : setRootTomlStringKey(contents, "model_provider", sessionProvider);
+      return setTomlSectionStringKey(next, codexProviderSectionName(provider), "experimental_bearer_token", trimmed);
+    }
+    return trimmed ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed, options) : removeCodexExperimentalBearerToken(contents);
+  }
+  function removeCodexExperimentalBearerToken(contents) {
+    const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
+    const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
+    return removeTomlSectionKey(contents, codexProviderSectionName(provider), "experimental_bearer_token");
+  }
+  function ensureCodexProviderDefaults(contents, provider, options = {}) {
+    let next = contents;
+    const section = codexProviderSectionName(provider);
+    next = setTomlSectionStringKey(next, section, "name", resolveProviderName(contents, provider));
+    next = setTomlSectionStringKey(next, section, "wire_api", "responses");
+    return options.requiresOpenAiAuth === false ? next : setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
+  }
+  function setTomlSectionBoolKey(contents, sectionName, key, value) {
+    return setTomlSectionRawKey(contents, sectionName, key, value ? "true" : "false");
+  }
+  function setTomlSectionStringKey(contents, sectionName, key, value) {
+    return setTomlSectionRawKey(contents, sectionName, key, `"${tomlString(value.trim())}"`);
+  }
+  function setTomlSectionRawKey(contents, sectionName, key, value) {
+    const lines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    let sectionStart = -1;
+    let sectionEnd = lines.length;
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!structural[index]) continue;
+      const section = tomlSectionName(lines[index]);
+      if (section === null) continue;
+      if (sectionStart >= 0) {
+        sectionEnd = index;
+        break;
+      }
+      if (section === sectionName) sectionStart = index;
+    }
+    if (sectionStart < 0) {
+      const prefix = ensureTrailingNewline(lines.join("\n").trimEnd()).trimEnd();
+      return joinTomlSections([prefix, `[${sectionName}]
+${key} = ${value}`]);
+    }
+    const replacement = `${key} = ${value}`;
+    for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+      if (!structural[index]) continue;
+      const assignment = tomlKeyAssignment(lines[index]);
+      if (assignment?.path.length === 1 && assignment.path[0] === key) {
+        lines[index] = lines[index].slice(0, assignment.valueStart) + " " + value + tomlInlineComment(lines[index], assignment.valueStart);
+        return ensureTrailingNewline(lines.join("\n").trimEnd());
+      }
+    }
+    let insertAt = sectionEnd;
+    while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === "") insertAt -= 1;
+    lines.splice(insertAt, 0, replacement);
+    return ensureTrailingNewline(lines.join("\n").trimEnd());
+  }
+  function removeTomlSectionKey(contents, sectionName, key) {
+    const lines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    let sectionStart = -1;
+    let sectionEnd = lines.length;
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!structural[index]) continue;
+      const section = tomlSectionName(lines[index]);
+      if (section === null) continue;
+      if (sectionStart >= 0) {
+        sectionEnd = index;
+        break;
+      }
+      if (section === sectionName) sectionStart = index;
+    }
+    if (sectionStart < 0) return contents;
+    const next = lines.filter((line, index) => {
+      if (index <= sectionStart || index >= sectionEnd || !structural[index]) return true;
+      const assignment = tomlKeyAssignment(line);
+      return assignment?.path.length !== 1 || assignment.path[0] !== key;
+    });
+    return ensureTrailingNewline(next.join("\n").trimEnd());
+  }
+  function relayProfileSwitchValidation(profile, settings = null) {
+    const sessionProviderError = relaySessionProviderValidation(profile);
+    if (sessionProviderError) return sessionProviderError;
+    if (isAggregateRelayProfile(profile)) {
+      return aggregateRelayProfileValidation(profile);
+    }
+    const modelRouteError = relayModelRoutesValidation(profile, settings);
+    if (modelRouteError) return modelRouteError;
+    if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
+    if (!profile.configContents.trim()) {
+      return tf("供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。", [profile.name || profile.id]);
+    }
+    if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
+    return t("官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。");
+  }
+  function relayModelRoutesValidation(profile, settings) {
+    const issue = findRelayModelRouteIssue([profile], settings?.relayProfiles ?? [profile]);
+    return relayModelRouteIssueMessage(issue);
+  }
+  function relayModelRoutesSettingsValidation(settings) {
+    return relayModelRouteIssueMessage(
+      findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles)
+    );
+  }
+  function relaySettingsValidation(settings) {
+    for (const profile of settings.relayProfiles) {
+      const sessionProviderError = relaySessionProviderValidation(profile);
+      if (sessionProviderError) return sessionProviderError;
+    }
+    return relayModelRoutesSettingsValidation(settings);
+  }
+  function relaySessionProviderValidation(profile) {
+    if (relaySessionProvider(profile) === "openai" && profile.protocol !== "responses") {
+      return t("OpenAI 会话身份仅支持 Responses API；Chat Completions 不支持 ChatGPT Remote 的远程压缩。请切换协议或改回 Custom。");
+    }
+    return null;
+  }
+  function relayModelRouteIssueMessage(issue) {
+    if (!issue) return null;
+    switch (issue.kind) {
+      case "incomplete":
+        return t("单模型协议转换需要填写模型名称和目标供应商。");
+      case "duplicate":
+        return tf("模型「{0}」存在重复路由。", [issue.model]);
+      case "self":
+        return tf("模型「{0}」不能路由到当前供应商自身。", [issue.model]);
+      case "missingTarget":
+        return tf("模型「{0}」的目标供应商不存在。", [issue.model]);
+      case "aggregateTarget":
+        return tf("模型「{0}」不能路由到聚合供应商。", [issue.model]);
+      case "targetProtocol":
+        return tf("模型「{0}」的目标供应商必须使用 Responses API。", [issue.model]);
+      case "targetCredentials":
+        return tf("模型「{0}」的目标供应商缺少 Base URL 或 Key。", [issue.model]);
+    }
+  }
+  function relaySettingsWithDraft(settings, profileId, draft, isNew) {
+    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, settings) : deriveRelayProfileFromFiles(draft);
+    return isNew ? addRelayProfile(settings, normalizedDraft) : updateRelayProfile(settings, profileId, normalizedDraft);
+  }
+  function relayProfileUsesLiveFiles(profile) {
+    return profile.relayMode !== "official" || profile.officialMixApiKey || !!profile.configContents.trim();
+  }
+  function authJsonHasOpenAiApiKey(contents) {
+    const trimmed = contents.trim();
+    if (!trimmed) return false;
+    try {
+      const value = JSON.parse(trimmed);
+      return !!value && typeof value === "object" && typeof value.OPENAI_API_KEY === "string" && value.OPENAI_API_KEY.trim().length > 0;
+    } catch {
+      return /"OPENAI_API_KEY"\s*:/.test(trimmed);
+    }
+  }
+  function tomlString(value) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+  function syncLegacyRelayFields(settings) {
+    const nonAggregate = settings.relayProfiles.filter((profile) => !isAggregateRelayProfile(profile)).map((profile) => deriveRelayProfileFromFiles(profile));
+    const relayProfiles = settings.relayProfiles.map(
+      (profile) => isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: [...nonAggregate, ...settings.relayProfiles.filter(isAggregateRelayProfile)] }) : deriveRelayProfileFromFiles(profile)
+    );
+    const active = activeRelayProfile({ ...settings, relayProfiles });
+    const aggregateRelayProfiles = normalizeAggregateProfilesFromRelayProfiles(relayProfiles);
+    const activeAggregateRelayId = isAggregateRelayProfile(active) ? active.id : "";
+    return {
+      ...settings,
+      relayProfiles,
+      activeRelayId: active.id,
+      relayBaseUrl: isAggregateRelayProfile(active) ? PROTOCOL_PROXY_BASE_URL : active.baseUrl,
+      relayApiKey: active.apiKey,
+      aggregateRelayProfiles,
+      activeAggregateRelayId
+    };
+  }
+  function normalizeAggregateProfilesFromRelayProfiles(profiles) {
+    const candidates = profiles.filter((profile) => !isAggregateRelayProfile(profile));
+    return profiles.filter(isAggregateRelayProfile).map((profile) => {
+      const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
+      const memberIds = new Set(aggregate.members.map((member) => member.profileId));
+      return {
+        id: profile.id,
+        name: profile.name || t("聚合供应商"),
+        sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
+        modelAggregationEnabled: aggregate.modelAggregationEnabled === true,
+        strategy: aggregate.strategy,
+        members: aggregate.members.map((member) => ({
+          relayId: member.profileId,
+          weight: clampAggregateWeight(member.weight)
+        })),
+        routes: normalizeAggregateRoutes(aggregate.routes ?? [], { dropEmptyPattern: true, memberIds }).map((route) => ({
+          pattern: route.pattern,
+          relayId: route.profileId,
+          priority: route.priority
+        })),
+        defaultRelayId: aggregate.defaultRelayId ?? "",
+        syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
+        autoReviewRelayId: aggregate.autoReviewRelayId ?? ""
+      };
+    });
+  }
+  function updateRelayProfile(settings, id, patch) {
+    if (patch.relayMode === "aggregate" || patch.aggregate) {
+      return syncLegacyRelayFields({
+        ...settings,
+        relayProfiles: settings.relayProfiles.map(
+          (profile) => profile.id === id ? normalizeAggregateRelayProfile({ ...profile, ...patch }, settings) : profile
+        )
+      });
+    }
+    return syncLegacyRelayFields({
+      ...settings,
+      relayProfiles: settings.relayProfiles.map((profile) => {
+        if (profile.id !== id) return profile;
+        return deriveRelayProfileFromFiles({ ...profile, ...patch });
+      })
+    });
+  }
+  function createRelayProfile(settings) {
+    const id = `relay-${Date.now().toString(36)}`;
+    const contextSelection = relayProfileEditingHost.contextSelectionForAllEntries(settings);
+    const next = {
+      id,
+      name: tf("供应商 {0}", [settings.relayProfiles.length + 1]),
+      model: "",
+      baseUrl: relayProfileEditingHost.defaultRelayBaseUrl(),
+      upstreamBaseUrl: relayProfileEditingHost.defaultRelayBaseUrl(),
+      apiKey: "",
+      protocol: "responses",
+      relayMode: "official",
+      sessionProvider: "custom",
+      officialMixApiKey: false,
+      hideOfficialUsageAlert: false,
+      testModel: "",
+      configContents: "",
+      authContents: "",
+      useCommonConfig: true,
+      contextSelection,
+      contextSelectionInitialized: true,
+      contextWindow: "",
+      autoCompactLimit: "",
+      modelList: "",
+      modelWindows: "",
+      modelAutoCompact: "",
+      modelMetadata: "",
+      modelVlm: "",
+      vlmApiKey: "",
+      vlmModel: "",
+      vlmBaseUrl: "",
+      userAgent: "",
+      customHeaders: [],
+      sub2apiEnabled: false,
+      noAuth: false,
+      sub2apiMultiplier: "",
+      modelRoutes: [],
+      standardOpenaiProtocol: false,
+      webSearchHistoryCompat: false
+    };
+    return withGeneratedRelayFiles(next);
+  }
+  function createAggregateRelayProfile(settings) {
+    const id = `aggregate-${Date.now().toString(36)}`;
+    const contextSelection = relayProfileEditingHost.contextSelectionForAllEntries(settings);
+    const candidates = aggregateMemberCandidates(settings.relayProfiles, id);
+    return normalizeAggregateRelayProfile(
+      {
+        id,
+        name: tf("聚合供应商 {0}", [settings.relayProfiles.filter(isAggregateRelayProfile).length + 1]),
+        model: "",
+        baseUrl: "",
+        upstreamBaseUrl: "",
+        apiKey: "",
+        protocol: "responses",
+        relayMode: "aggregate",
+        sessionProvider: "custom",
+        officialMixApiKey: false,
+        hideOfficialUsageAlert: false,
+        testModel: "",
+        configContents: "",
+        authContents: "",
+        useCommonConfig: true,
+        contextSelection,
+        contextSelectionInitialized: true,
+        contextWindow: "",
+        autoCompactLimit: "",
+        modelList: "",
+        modelWindows: "",
+        modelAutoCompact: "",
+        modelMetadata: "",
+        modelVlm: "",
+        vlmApiKey: "",
+        vlmModel: "",
+        vlmBaseUrl: "",
+        userAgent: "",
+        customHeaders: [],
+        sub2apiEnabled: false,
+        noAuth: false,
+        sub2apiMultiplier: "",
+        modelRoutes: [],
+        standardOpenaiProtocol: false,
+        webSearchHistoryCompat: false,
+        aggregate: {
+          strategy: "failover",
+          modelAggregationEnabled: false,
+          members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
+          defaultRelayId: ""
+        }
+      },
+      settings
+    );
+  }
+  function addRelayProfile(settings, profile) {
+    const nextWithFiles = isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, settings) : deriveRelayProfileFromFiles(
+      profile.configContents.trim() || profile.authContents.trim() ? profile : withGeneratedRelayFiles(profile)
+    );
+    const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId) ? settings.activeRelayId : activeRelayProfile(settings).id;
+    return syncLegacyRelayFields({
+      ...settings,
+      relayProfiles: [...settings.relayProfiles, nextWithFiles],
+      activeRelayId: activeId
+    });
+  }
+  function duplicateRelayProfile(settings, id) {
+    const sourceIndex = settings.relayProfiles.findIndex((profile) => profile.id === id);
+    const source = settings.relayProfiles[sourceIndex] || activeRelayProfile(settings);
+    const nextId = `relay-${Date.now().toString(36)}`;
+    const next = {
+      ...source,
+      id: nextId,
+      name: tf("{0} 副本", [source.name || t("未命名供应商")])
+    };
+    const normalizedNext = isAggregateRelayProfile(next) ? normalizeAggregateRelayProfile(next, settings) : next;
+    const relayProfiles = [...settings.relayProfiles];
+    relayProfiles.splice(sourceIndex >= 0 ? sourceIndex + 1 : relayProfiles.length, 0, normalizedNext);
+    return syncLegacyRelayFields({
+      ...settings,
+      relayProfiles
+    });
+  }
+  function reorderRelayProfiles(settings, sourceId, targetId) {
+    if (sourceId === targetId) return settings;
+    const sourceIndex = settings.relayProfiles.findIndex((profile) => profile.id === sourceId);
+    const targetIndex = settings.relayProfiles.findIndex((profile) => profile.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return settings;
+    const relayProfiles = [...settings.relayProfiles];
+    const [moved] = relayProfiles.splice(sourceIndex, 1);
+    relayProfiles.splice(targetIndex, 0, moved);
+    return syncLegacyRelayFields({
+      ...settings,
+      relayProfiles
+    });
+  }
+  function removeRelayProfile(settings, id) {
+    if (relayProfileDeleteIssue(settings, id)) return settings;
+    const profiles = settings.relayProfiles.filter((profile) => profile.id !== id);
+    const scrubbedProfiles = profiles.map(
+      (profile) => isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(
+        {
+          ...profile,
+          aggregate: {
+            ...normalizeAggregateConfig(profile.aggregate, [], new Set(profiles.map((item) => item.id))),
+            // 用户显式删除的这家必须从成员/路由里移除：存在性判定会保留它
+            // （profiles 里已经没有了，其实也会被丢掉），这里再做一次明确的过滤。
+            members: normalizeAggregateConfig(profile.aggregate, [], new Set(profiles.map((item) => item.id))).members.filter((member) => member.profileId !== id),
+            routes: (normalizeAggregateConfig(profile.aggregate, [], new Set(profiles.map((item) => item.id))).routes ?? []).filter((route) => route.profileId !== id)
+          }
+        },
+        { ...settings, relayProfiles: profiles }
+      ) : {
+        ...profile,
+        modelRoutes: normalizeRelayModelRoutes(profile.modelRoutes).filter((route) => route.targetRelayId !== id)
+      }
+    );
+    return syncLegacyRelayFields({
+      ...settings,
+      relayProfiles: scrubbedProfiles.length ? scrubbedProfiles : relayProfileEditingHost.defaultRelayProfiles(),
+      activeRelayId: settings.activeRelayId === id ? scrubbedProfiles[0]?.id || "default" : settings.activeRelayId
+    });
+  }
+  function relayProfileDeleteIssue(settings, id) {
+    if (settings.activeRelayId === id) {
+      return t("当前正在使用该供应商，请先切换到其他供应商后再删除。");
+    }
+    const existingProfileIds = new Set(settings.relayProfiles.map((profile) => profile.id));
+    for (const aggregateProfile of settings.relayProfiles.filter(isAggregateRelayProfile)) {
+      const aggregate = normalizeAggregateConfig(aggregateProfile.aggregate, [], existingProfileIds);
+      if (!aggregate.members.some((member) => member.profileId === id)) continue;
+      if (aggregate.defaultRelayId === id) {
+        return tf("供应商「{0}」是聚合配置「{1}」的默认成员，请先调整聚合配置后再删除。", [
+          settings.relayProfiles.find((profile) => profile.id === id)?.name || id,
+          aggregateProfile.name || aggregateProfile.id
+        ]);
+      }
+      if (aggregate.members.length <= 1) {
+        return tf("供应商「{0}」是聚合配置「{1}」的最后成员，请先调整聚合配置后再删除。", [
+          settings.relayProfiles.find((profile) => profile.id === id)?.name || id,
+          aggregateProfile.name || aggregateProfile.id
+        ]);
+      }
+    }
+    return null;
+  }
+  var aggregateStrategyOptions = [
+    {
+      value: "failover",
+      get label() {
+        return t("失败切换");
+      },
+      get description() {
+        return t("按成员顺序请求，失败后切到下一个供应商。");
+      }
+    },
+    {
+      value: "conversationRoundRobin",
+      get label() {
+        return t("按对话轮转");
+      },
+      get description() {
+        return t("同一对话保持一个成员，不同对话依次分配。");
+      }
+    },
+    {
+      value: "requestRoundRobin",
+      get label() {
+        return t("按请求轮转");
+      },
+      get description() {
+        return t("每次请求按成员顺序切换，适合均匀摊请求量。");
+      }
+    },
+    {
+      value: "weightedRoundRobin",
+      get label() {
+        return t("权重轮转");
+      },
+      get description() {
+        return t("按成员权重分配请求，权重越高承担越多。");
+      }
+    }
+  ];
+  function isAggregateRelayProfile(profile) {
+    return isAggregateProfile(profile);
+  }
+  function relayProviderView(profile) {
+    if (isAggregateRelayProfile(profile)) {
+      return profile.aggregate?.modelAggregationEnabled === true ? "modelAggregation" : "failover";
+    }
+    return profile.protocol !== "responses" || normalizeRelayModelRoutes(profile.modelRoutes).length ? "routing" : "direct";
+  }
+  function normalizeAggregateRelayProfile(profile, settings) {
+    const candidates = settings ? aggregateMemberCandidates(settings.relayProfiles, profile.id) : [];
+    const existingProfileIds = settings ? new Set(settings.relayProfiles.map((item) => item.id)) : null;
+    const aggregate = normalizeAggregateConfig(profile.aggregate, candidates, existingProfileIds);
+    return {
+      ...profile,
+      baseUrl: "",
+      upstreamBaseUrl: "",
+      apiKey: "",
+      protocol: "responses",
+      relayMode: "aggregate",
+      sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
+      officialMixApiKey: false,
+      hideOfficialUsageAlert: false,
+      configContents: "",
+      authContents: "",
+      sub2apiEnabled: false,
+      noAuth: false,
+      sub2apiMultiplier: "",
+      standardOpenaiProtocol: false,
+      webSearchHistoryCompat: false,
+      aggregate
+    };
+  }
+  function aggregateProfileForMode(profile, settings, mode) {
+    const members = (profile.aggregate?.members ?? []).map((member) => ({ profileId: member.profileId, weight: 1 }));
+    const defaultRelayId = mode === "model" ? normalizeAggregateDefaultRelayId(
+      profile.aggregate?.defaultRelayId,
+      new Set(members.map((member) => member.profileId))
+    ) || members[0]?.profileId || "" : "";
+    return normalizeAggregateRelayProfile({
+      ...profile,
+      testModel: "",
+      aggregate: {
+        strategy: "failover",
+        modelAggregationEnabled: mode === "model",
+        members,
+        routes: [],
+        defaultRelayId
+      }
+    }, settings);
+  }
+  function normalizeAggregateConfig(aggregate, candidates, existingProfileIds = null) {
+    const candidateIds = new Set(candidates.map((profile) => profile.id));
+    const seen = /* @__PURE__ */ new Set();
+    const strategy = aggregate?.strategy && aggregateStrategyOptions.some((option) => option.value === aggregate.strategy) ? aggregate.strategy : "failover";
+    const modelAggregationEnabled = aggregate?.modelAggregationEnabled === true;
+    const members = normalizeAggregateMembers(aggregate?.members ?? [], existingProfileIds).map((member) => {
+      seen.add(member.profileId);
+      return { profileId: member.profileId, weight: modelAggregationEnabled ? 1 : clampAggregateWeight(member.weight) };
+    });
+    const routes = modelAggregationEnabled ? [] : (aggregate?.routes ?? []).filter((route) => route.pattern.trim() !== "" || route.profileId.trim() !== "").filter((route) => !existingProfileIds || !route.profileId.trim() || existingProfileIds.has(route.profileId.trim())).map((route) => ({
+      pattern: route.pattern.trim(),
+      profileId: route.profileId,
+      priority: clampAggregateRoutePriority(route.priority)
+    }));
+    const defaultRelayId = normalizeAggregateDefaultRelayId(
+      aggregate?.defaultRelayId,
+      new Set(members.map((member) => member.profileId))
+    );
+    const autoReviewRelayId = normalizeAggregateDefaultRelayId(
+      aggregate?.autoReviewRelayId,
+      new Set(members.map((member) => member.profileId))
+    );
+    return {
+      strategy: modelAggregationEnabled ? "failover" : strategy,
+      modelAggregationEnabled,
+      members,
+      routes,
+      defaultRelayId,
+      syncDefaultMemberLogin: aggregate?.syncDefaultMemberLogin === true,
+      autoReviewRelayId
+    };
+  }
+  function clampAggregateWeight(value) {
+    if (!Number.isFinite(value)) return 1;
+    return Math.max(1, Math.min(999, Math.round(value)));
+  }
+  function aggregateStrategyLabel(strategy) {
+    return aggregateStrategyOptions.find((option) => option.value === strategy)?.label ?? t("失败切换");
+  }
+  function aggregateStrategyHelp(strategy) {
+    if (strategy === "failover") return t("失败切换会保留成员顺序，优先使用第一个可用供应商。");
+    if (strategy === "conversationRoundRobin") return t("按对话轮转会让同一对话尽量保持固定成员，降低上下文漂移。");
+    if (strategy === "requestRoundRobin") return t("按请求轮转会逐请求切换成员，适合供应商能力接近的场景。");
+    return t("权重轮转会读取每个成员的权重值，权重越高的成员获得更多请求。");
+  }
+  function aggregateRelayProfileValidation(profile) {
+    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
+    if (aggregate.members.length < 1) {
+      return t("聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。");
+    }
+    if (aggregate.modelAggregationEnabled === true) {
+      const defaultRelayId = (aggregate.defaultRelayId ?? "").trim();
+      const defaultIsMember = !!defaultRelayId && aggregate.members.some((member) => member.profileId === defaultRelayId);
+      if (!defaultIsMember) {
+        return t("模型聚合必须指定「默认供应商」：在成员列表里点某一行的「设为默认」。不带 cpx- 前缀的请求会原样交给它，没设就报错。");
+      }
+    }
+    const issues = validateAggregateRoutes(
+      aggregate.routes ?? [],
+      new Set(aggregate.members.map((member) => member.profileId))
+    );
+    if (!issues) return null;
+    const first = issues[0];
+    if (first.code === "emptyPattern") {
+      return t("路由规则的模型匹配模式不能为空。");
+    }
+    if (first.code === "invalidPriority") {
+      return tf("路由规则「{0}」的优先级必须是大于等于 0 的整数。", [first.pattern]);
+    }
+    return tf("路由规则「{0}」的目标供应商必须是聚合成员，请先将其勾选为成员。", [first.pattern]);
+  }
+  function ensureTrailingNewline(value) {
+    return value.trim() ? `${value}
+` : "";
+  }
+  function removeRootTomlKey(contents, key) {
+    const lines = [];
+    let inRoot = true;
+    const sourceLines = contents.split(/\r?\n/);
+    const structural = tomlStructureMask(sourceLines);
+    for (const [index, line] of sourceLines.entries()) {
+      if (structural[index] && tomlSectionName(line) !== null) inRoot = false;
+      const assignment = tomlKeyAssignment(line);
+      if (structural[index] && inRoot && assignment?.path.length === 1 && assignment.path[0] === key) continue;
+      lines.push(line);
+    }
+    return ensureTrailingNewline(lines.join("\n").trimEnd());
+  }
+  function joinTomlSections(sections) {
+    return ensureTrailingNewline(
+      sections.map((section) => section.trim()).filter(Boolean).join("\n\n")
+    );
+  }
+  function splitTomlRootAndTables(section) {
+    const lines = section.trim().split(/\r?\n/);
+    const structural = tomlStructureMask(lines);
+    const firstTable = lines.findIndex((line, index) => structural[index] && tomlSectionName(line) !== null);
+    if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
+    return {
+      root: lines.slice(0, firstTable).join("\n"),
+      tables: lines.slice(firstTable).join("\n")
+    };
+  }
+  function normalizeRelaySessionProvider(value) {
+    return value === "openai" ? "openai" : "custom";
+  }
+  function relaySessionProviderFromConfig(contents) {
+    return normalizeRelaySessionProvider(rootTomlStringValue(contents, "model_provider"));
+  }
+  function relaySessionProvider(profile) {
+    const fromConfig = relaySessionProviderFromConfig(profile.configContents);
+    return fromConfig === "openai" || profile.sessionProvider === "openai" ? "openai" : "custom";
+  }
+  var CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
+  function activeRelayProfile(settings) {
+    return settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId) || settings.relayProfiles[0] || relayProfileEditingHost.defaultRelayProfiles()[0];
+  }
+  var emptyContextSelection = () => ({
+    mcpServers: [],
+    skills: [],
+    plugins: []
+  });
+  function normalizeContextSelection(selection, fallback = emptyContextSelection()) {
+    if (!selection) {
+      return {
+        mcpServers: [...fallback.mcpServers],
+        skills: [...fallback.skills],
+        plugins: [...fallback.plugins]
+      };
+    }
+    return {
+      mcpServers: Array.isArray(selection?.mcpServers) ? selection.mcpServers.map(String) : [],
+      skills: Array.isArray(selection?.skills) ? selection.skills.map(String) : [],
+      plugins: Array.isArray(selection?.plugins) ? selection.plugins.map(String) : []
+    };
+  }
+  function normalizeRelayMode(mode) {
+    if (mode === "aggregate") return mode;
+    if (mode === "pureApi") return mode;
+    return "official";
+  }
+  function normalizeRelayProtocol(value) {
+    if (value === "chatCompletions" || value === "anthropicMessages") return value;
+    return "responses";
+  }
+  function normalizeAnthropicAuthHeader(value) {
+    const normalized = (value ?? "").trim().toLowerCase();
+    if (normalized === "authorization" || normalized === "bearer") return "authorization";
+    if (normalized === "x-api-key" || normalized === "x_api_key" || normalized === "api_key") return "x-api-key";
+    return "";
+  }
+  function normalizeAnthropicThinkingMode(value) {
+    const normalized = (value ?? "").trim().toLowerCase();
+    if (normalized === "adaptive" || normalized === "budget" || normalized === "off") {
+      return normalized;
+    }
+    return "";
+  }
+  function normalizeAnthropicMaxTokens(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+    return Math.min(2e5, Math.round(value));
+  }
+  function hydrateAggregateRelayProfile(profile, aggregate) {
+    if (!aggregate) return profile;
+    return {
+      ...profile,
+      name: profile.name || aggregate.name,
+      relayMode: "aggregate",
+      sessionProvider: normalizeRelaySessionProvider(aggregate.sessionProvider),
+      aggregate: {
+        strategy: aggregate.strategy,
+        modelAggregationEnabled: aggregate.modelAggregationEnabled === true,
+        members: aggregate.members.map((member) => ({
+          profileId: member.relayId,
+          weight: clampAggregateWeight(member.weight)
+        })),
+        routes: normalizeAggregateRoutes(aggregate.routes ?? []),
+        defaultRelayId: aggregate.defaultRelayId ?? "",
+        syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
+        autoReviewRelayId: aggregate.autoReviewRelayId ?? ""
+      }
+    };
+  }
+  function normalizeRelayProfile(profile, defaultContextSelection = emptyContextSelection()) {
+    const legacyMixedApi = profile.relayMode === "mixedApi";
+    if (profile.relayMode === "aggregate" || profile.aggregate) {
+      return normalizeAggregateRelayProfile(
+        {
+          ...profile,
+          model: profile.model || "",
+          baseUrl: "",
+          upstreamBaseUrl: "",
+          apiKey: "",
+          protocol: "responses",
+          relayMode: "aggregate",
+          sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
+          officialMixApiKey: false,
+          hideOfficialUsageAlert: false,
+          testModel: profile.testModel || "",
+          configContents: "",
+          authContents: "",
+          useCommonConfig: profile.useCommonConfig !== false,
+          contextSelection: profile.contextSelectionInitialized ? normalizeContextSelection(profile.contextSelection) : normalizeContextSelection(void 0, defaultContextSelection),
+          contextSelectionInitialized: true,
+          contextWindow: "",
+          autoCompactLimit: "",
+          modelList: "",
+          modelWindows: "",
+          modelAutoCompact: "",
+          modelMetadata: "",
+          modelRoutes: [],
+          sub2apiEnabled: false,
+          noAuth: false,
+          sub2apiMultiplier: "",
+          standardOpenaiProtocol: false,
+          webSearchHistoryCompat: false
+        },
+        null
+      );
+    }
+    const relayMode = normalizeRelayMode(profile.relayMode);
+    const officialMixApiKey = profile.officialMixApiKey === true || legacyMixedApi;
+    let normalized = {
+      ...profile,
+      model: profile.model || "",
+      baseUrl: profile.baseUrl || relayProfileEditingHost.defaultRelayBaseUrl(),
+      upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
+      apiKey: profile.apiKey || "",
+      protocol: normalizeRelayProtocol(profile.protocol),
+      relayMode,
+      sessionProvider: relaySessionProvider(profile),
+      officialMixApiKey,
+      hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
+      testModel: profile.testModel || "",
+      configContents: profile.configContents || "",
+      authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
+      useCommonConfig: profile.useCommonConfig !== false,
+      contextSelection: profile.contextSelectionInitialized ? normalizeContextSelection(profile.contextSelection) : normalizeContextSelection(void 0, defaultContextSelection),
+      contextSelectionInitialized: true,
+      contextWindow: profile.contextWindow || "",
+      autoCompactLimit: profile.autoCompactLimit || "",
+      modelList: profile.modelList || "",
+      modelWindows: profile.modelWindows || "",
+      modelAutoCompact: profile.modelAutoCompact || "",
+      modelMetadata: profile.modelMetadata || "",
+      modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
+      userAgent: profile.userAgent || "",
+      autoReviewModel: profile.autoReviewModel?.trim() || "",
+      multiAgent: profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "",
+      customHeaders: profile.customHeaders || [],
+      sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
+      sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
+      standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
+      webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
+      localCompactionPromptAtEnd: profile.localCompactionPromptAtEnd === true,
+      trustUpstreamCatalogLite: profile.trustUpstreamCatalogLite === true,
+      strictResponsesReasoning: profile.strictResponsesReasoning === true,
+      stripImageGenerationTool: profile.stripImageGenerationTool === true,
+      stripResponsesImageDetail: profile.stripResponsesImageDetail === true,
+      disableToolSearch: profile.disableToolSearch === true,
+      pureApiImageGeneration: profile.pureApiImageGeneration === true,
+      anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
+      anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
+      anthropicPromptCache: profile.anthropicPromptCache !== false,
+      anthropicImpersonateClaudeCode: profile.anthropicImpersonateClaudeCode === true,
+      anthropicThinkingMode: normalizeAnthropicThinkingMode(profile.anthropicThinkingMode)
+    };
+    const derived = relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+    return derived.noAuth || derived.relayMode === "official" && !derived.officialMixApiKey ? derived : relayProfileWithNormalizedApiKeys(derived);
+  }
+  return __toCommonJS(relay_profile_editing_exports);
+})(); // 结束 codexPlusProviderEditing
+  /**
+   * Codex 左侧图标栏的「供应商」页：不离开 Codex 就能增删改切 Codex 的供应商。
+   *
+   * 分工：
+   *   - 字段 ↔ config.toml / auth.json 的联动用 42 分片里与管理器共用的纯函数
+   *     （codexPlusProviderEditing，来源 apps/codex-plus-manager/src/relay-profile-editing.ts），
+   *     行为与管理器的「连接与供应商」页一致；
+   *   - 保存 / 切换经 bridge 路由 /providers/*（core provider_page），最终跑的是管理器自己的
+   *     save_settings / switch_relay_profile：归一化、切换锁、live 文件、网关绑定都只有一份。
+   *   - 命名 Key 只下发打码预览，提交时由服务端按 id 还原；选中别的已存 Key 不改文件，
+   *     由服务端归一化时按选中的那把重写，所以页面里永远拿不到备用 Key 的明文。
+   *
+   * 本页只编辑直连供应商（官方 / 官方+API / 纯 API）；聚合与网关条目可以「使用」，
+   * 编辑请到管理器（「在 Codex++ 中打开」）。
+   *
+   * 页面 DOM 每次打开重建，状态只放在 codexPlusProviderPageState 里（见 01-registry 的生命周期约定）。
+   */
+  const codexPlusProviderEditingApi = codexPlusProviderEditing;
+  const codexPlusProviderPageState = {
+    data: null,
+    settings: null,
+    selectedId: "",
+    draft: null,
+    isNew: false,
+    dirty: false,
+    busy: "",
+    status: "",
+    statusTone: "",
+    keySources: {},
+    pollTimer: null,
+    fetchedModels: [],
+  };
+
+  codexPlusProviderEditingApi.configureRelayProfileEditing({
+    defaultRelayBaseUrl: () => String(codexPlusProviderPageState.data?.defaults?.relayBaseUrl || ""),
+    defaultRelayProfiles: () => codexPlusProviderPageState.data?.defaults?.relayProfiles || [],
+    // contextSelection 已是遗留字段（MCP / Skill 的启停由条目自己的开关决定），给空值即可。
+    contextSelectionForAllEntries: () => ({ mcpServers: [], skills: [], plugins: [] }),
+  });
+
+  function codexPlusProviderClone(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  function codexPlusProviderIsAggregate(profile) {
+    return codexPlusProviderEditingApi.isAggregateRelayProfile(profile || {});
+  }
+
+  function codexPlusProviderEditable(profile) {
+    return !!profile && !profile.gatewayManaged && !codexPlusProviderIsAggregate(profile);
+  }
+
+  function codexPlusProviderModeKey(profile) {
+    if (!profile) return "official";
+    if (profile.relayMode === "pureApi") return "pureApi";
+    if (profile.relayMode === "mixedApi" || profile.officialMixApiKey) return "mixedApi";
+    return profile.relayMode === "aggregate" ? "aggregate" : "official";
+  }
+
+  function codexPlusProviderModeLabel(profile) {
+    if (profile?.gatewayManaged) return "网关";
+    const mode = codexPlusProviderModeKey(profile);
+    if (mode === "aggregate") return profile.aggregate?.modelAggregationEnabled === true ? "模型聚合" : "故障转移";
+    return { pureApi: "纯 API", mixedApi: "官方 + API", official: "官方登录" }[mode];
+  }
+
+  /** 进入编辑：与管理器一致，先按文件回读出 baseUrl / model / apiKey 等派生字段。 */
+  function codexPlusProviderDraftFrom(profile) {
+    const copy = codexPlusProviderClone(profile);
+    return codexPlusProviderEditable(copy) ? codexPlusProviderEditingApi.deriveRelayProfileFromFiles(copy) : copy;
+  }
+
+  function codexPlusProviderSelected() {
+    const state = codexPlusProviderPageState;
+    return state.settings?.relayProfiles?.find((profile) => profile.id === state.selectedId) || null;
+  }
+
+  function codexPlusProviderSelect(id) {
+    const state = codexPlusProviderPageState;
+    state.selectedId = id;
+    state.isNew = false;
+    state.dirty = false;
+    state.fetchedModels = [];
+    state.draft = codexPlusProviderDraftFrom(codexPlusProviderSelected());
+  }
+
+  function codexPlusProviderSetStatus(message, tone = "") {
+    codexPlusProviderPageState.status = String(message || "");
+    codexPlusProviderPageState.statusTone = tone;
+    const node = document.querySelector("[data-codex-provider-status]");
+    if (node) {
+      node.textContent = codexPlusProviderPageState.status;
+      node.dataset.tone = tone;
+      node.hidden = !codexPlusProviderPageState.status;
+    }
+  }
+
+  /**
+   * 与管理器 normalizeSettings 读取时一致：聚合配置回填进供应商、补齐缺省字段并按文件回读派生字段
+   * （服务端不序列化 model / baseUrl / apiKey，共用函数假定它们总是字符串）。
+   */
+  function codexPlusProviderNormalizeSettings(raw) {
+    const settings = codexPlusProviderClone(raw);
+    const aggregates = new Map((settings.aggregateRelayProfiles || []).map((aggregate) => [aggregate.id, aggregate]));
+    settings.relayProfiles = (settings.relayProfiles || []).map((profile) => {
+      const gatewayManaged = profile.gatewayManaged === true;
+      const normalized = codexPlusProviderEditingApi.normalizeRelayProfile(
+        codexPlusProviderEditingApi.hydrateAggregateRelayProfile(profile, aggregates.get(profile.id)),
+      );
+      // 打码 Key 的标记要保留到提交，服务端靠它还原真值。
+      normalized.apiKeys = (normalized.apiKeys || []).map((entry) => {
+        const original = (profile.apiKeys || []).find((item) => item.id === entry.id);
+        return original ? { ...entry, stored: original.stored === true, preview: original.preview || "" } : entry;
+      });
+      return gatewayManaged ? { ...normalized, gatewayManaged } : normalized;
+    });
+    return settings;
+  }
+
+  function codexPlusProviderApplyList(result, { keepSelection = true } = {}) {
+    const state = codexPlusProviderPageState;
+    state.data = result;
+    state.settings = codexPlusProviderNormalizeSettings(result.settings);
+    state.keySources = {};
+    const ids = state.settings.relayProfiles.map((profile) => profile.id);
+    if (!keepSelection || !ids.includes(state.selectedId)) state.selectedId = state.settings.activeRelayId || ids[0] || "";
+    codexPlusProviderSelect(state.selectedId);
+  }
+
+  async function codexPlusProviderLoad({ keepSelection = true, quiet = false } = {}) {
+    const state = codexPlusProviderPageState;
+    if (!quiet) {
+      state.busy = "load";
+      renderCodexPlusProviderPage();
+    }
+    const result = await postJson("/providers/list", {});
+    state.busy = "";
+    if (result?.status !== "ok" || !result.settings) {
+      codexPlusProviderSetStatus(result?.message || "读取供应商失败", "error");
+      renderCodexPlusProviderPage();
+      return false;
+    }
+    codexPlusProviderApplyList(result, { keepSelection });
+    renderCodexPlusProviderPage();
+    return true;
+  }
+
+  /**
+   * 提交整份供应商列表。服务端：当前供应商没变只保存；切换或改了当前供应商时走管理器的切换流程。
+   * 切换遇到 live 配置被外部改过时返回 conflict，这里问用户三选一后带着选择重提。
+   */
+  async function codexPlusProviderCommit(settings, { activate = "", busy = "save", successMessage = "" } = {}) {
+    const state = codexPlusProviderPageState;
+    state.busy = busy;
+    renderCodexPlusProviderPage();
+    let conflictResolution = "stop";
+    let result;
+    const relayProfiles = codexPlusProviderProfilesForCommit(settings.relayProfiles);
+    for (;;) {
+      result = await postJson("/providers/commit", {
+        revision: state.data?.revision || "",
+        relayProfiles,
+        aggregateRelayProfiles: settings.aggregateRelayProfiles,
+        activeAggregateRelayId: settings.activeAggregateRelayId,
+        keySources: state.keySources,
+        ...(activate ? { activate } : {}),
+        conflictResolution,
+      });
+      if (result?.status !== "conflict" || conflictResolution !== "stop") break;
+      const name = result.liveConflict?.profileName || "当前供应商";
+      const answer = await codexPlusAsk({
+        title: "Codex 的实时配置被改过",
+        message: `「${name}」在 config.toml / auth.json 里的地址或 Key 和保存的不一致，可能是你或别的工具手动改过。要怎么处理？`,
+        options: [
+          { value: "discardLiveChanges", label: "放弃实时改动" },
+          { value: "importAsNewProfile", label: "导入为新供应商" },
+        ],
+      });
+      if (!answer) {
+        result = { status: "failed", message: "已取消切换，未改动任何文件。" };
+        break;
+      }
+      conflictResolution = answer.value;
+    }
+    state.busy = "";
+    if (result?.status !== "ok" || !result.settings) {
+      const conflict = String(result?.message || "").includes("settings_revision_conflict");
+      codexPlusProviderSetStatus(conflict ? "供应商配置已在别处被修改，已重新读取，请再改一次。" : (result?.message || "保存失败"), "error");
+      if (conflict) await codexPlusProviderLoad({ quiet: true });
+      else renderCodexPlusProviderPage();
+      return false;
+    }
+    const selectedId = state.selectedId;
+    codexPlusProviderApplyList(result);
+    if (result.settings.relayProfiles.some((profile) => profile.id === selectedId)) codexPlusProviderSelect(selectedId);
+    const switched = result.switched === true;
+    const message = successMessage || result.message || "已保存。";
+    codexPlusProviderSetStatus(switched ? `${message} 新对话立即生效，已打开的对话在下一次发送时切换。` : message, "ok");
+    showToast(switched ? "供应商已切换" : "供应商已保存", { type: "success" });
+    renderCodexPlusProviderPage();
+    return true;
+  }
+
+  /**
+   * 没改过的供应商原样提交服务端下发的版本：页面读取时做过与管理器相同的归一化，
+   * 原样回传归一化结果可能和库里有细微差别，服务端会误判「当前供应商变了」而去重写 live 文件
+   * （网关接管时那次切换还会被拒，连带改别的供应商也保存不了）。
+   */
+  function codexPlusProviderProfilesForCommit(profiles) {
+    const state = codexPlusProviderPageState;
+    // 共用函数（syncLegacyRelayFields 等）会把每个供应商按文件重新派生一遍，所以两边都先派生、再按键排序比较。
+    const fingerprint = (profile) => codexPlusProviderStableJson(codexPlusProviderEditable(profile)
+      ? codexPlusProviderEditingApi.deriveRelayProfileFromFiles(codexPlusProviderClone(profile))
+      : profile);
+    const loaded = new Map((state.settings?.relayProfiles || []).map((profile) => [profile.id, fingerprint(profile)]));
+    const raw = new Map((state.data?.settings?.relayProfiles || []).map((profile) => [profile.id, profile]));
+    return profiles.map((profile) => (raw.has(profile.id) && loaded.get(profile.id) === fingerprint(profile) ? raw.get(profile.id) : profile));
+  }
+
+  function codexPlusProviderStableJson(value) {
+    if (Array.isArray(value)) return `[${value.map(codexPlusProviderStableJson).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined)
+        .map((key) => `${JSON.stringify(key)}:${codexPlusProviderStableJson(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  /** 当前编辑结果放回列表；返回待提交的设置，校验不过时返回 null 并提示。 */
+  function codexPlusProviderSettingsWithDraft() {
+    const state = codexPlusProviderPageState;
+    const draft = state.draft;
+    if (!draft || !codexPlusProviderEditable(draft)) return codexPlusProviderClone(state.settings);
+    const issue = codexPlusProviderEditingApi.relaySessionProviderValidation(draft);
+    if (issue) {
+      codexPlusProviderSetStatus(issue, "error");
+      return null;
+    }
+    if (!String(draft.name || "").trim()) {
+      codexPlusProviderSetStatus("请填写供应商名称。", "error");
+      return null;
+    }
+    const normalized = codexPlusProviderEditingApi.deriveRelayProfileFromFiles(draft);
+    const next = state.isNew
+      ? codexPlusProviderEditingApi.addRelayProfile(state.settings, normalized)
+      : codexPlusProviderEditingApi.updateRelayProfile(state.settings, draft.id, normalized);
+    const settingsIssue = codexPlusProviderEditingApi.relaySettingsValidation(next);
+    if (settingsIssue) {
+      codexPlusProviderSetStatus(settingsIssue, "error");
+      return null;
+    }
+    return next;
+  }
+
+  async function codexPlusProviderSave() {
+    const next = codexPlusProviderSettingsWithDraft();
+    if (!next) return renderCodexPlusProviderPage();
+    await codexPlusProviderCommit(next);
+  }
+
+  async function codexPlusProviderUse(id) {
+    const state = codexPlusProviderPageState;
+    let next = codexPlusProviderClone(state.settings);
+    if (state.dirty && state.draft?.id === id) {
+      next = codexPlusProviderSettingsWithDraft();
+      if (!next) return renderCodexPlusProviderPage();
+    }
+    const target = next.relayProfiles.find((profile) => profile.id === id);
+    const issue = target ? codexPlusProviderEditingApi.relayProfileSwitchValidation(target, next) : "供应商不存在";
+    if (issue) {
+      codexPlusProviderSetStatus(issue, "error");
+      return renderCodexPlusProviderPage();
+    }
+    await codexPlusProviderCommit(next, { activate: id, busy: "switch" });
+  }
+
+  async function codexPlusProviderDelete(id) {
+    const state = codexPlusProviderPageState;
+    const profile = state.settings.relayProfiles.find((item) => item.id === id);
+    if (!profile) return;
+    const issue = codexPlusProviderEditingApi.relayProfileDeleteIssue(state.settings, id);
+    if (issue) {
+      codexPlusProviderSetStatus(issue, "error");
+      return renderCodexPlusProviderPage();
+    }
+    const answer = await codexPlusAsk({
+      title: "删除供应商",
+      message: `确定删除「${profile.name || id}」？它的 Key 和配置快照会一起删掉。`,
+      options: [{ value: "delete", label: "删除" }],
+    });
+    if (!answer) return;
+    const next = codexPlusProviderEditingApi.removeRelayProfile(state.settings, id);
+    if (state.selectedId === id) state.selectedId = state.settings.activeRelayId;
+    await codexPlusProviderCommit(next, { successMessage: `已删除「${profile.name || id}」。` });
+  }
+
+  async function codexPlusProviderDuplicate(id) {
+    const state = codexPlusProviderPageState;
+    const before = new Set(state.settings.relayProfiles.map((profile) => profile.id));
+    const next = codexPlusProviderEditingApi.duplicateRelayProfile(state.settings, id);
+    const copy = next.relayProfiles.find((profile) => !before.has(profile.id));
+    if (!copy) return;
+    // 打码的 Key 由服务端按来源供应商还原。
+    state.keySources[copy.id] = id;
+    state.selectedId = copy.id;
+    await codexPlusProviderCommit(next, { successMessage: `已复制为「${copy.name}」。` });
+  }
+
+  async function codexPlusProviderMove(id, offset) {
+    const state = codexPlusProviderPageState;
+    const ids = state.settings.relayProfiles.map((profile) => profile.id);
+    const index = ids.indexOf(id);
+    const target = ids[index + offset];
+    if (index < 0 || !target) return;
+    await codexPlusProviderCommit(codexPlusProviderEditingApi.reorderRelayProfiles(state.settings, id, target), { busy: "reorder", successMessage: "顺序已更新。" });
+  }
+
+  function codexPlusProviderStartNew() {
+    const state = codexPlusProviderPageState;
+    const draft = codexPlusProviderEditingApi.createRelayProfile(state.settings);
+    state.draft = codexPlusProviderEditingApi.applyRelayProfilePatchToFiles(draft, { name: "自定义供应商", relayMode: "pureApi", officialMixApiKey: false }, { allowGenerateFiles: true });
+    state.selectedId = state.draft.id;
+    state.isNew = true;
+    state.dirty = true;
+    state.fetchedModels = [];
+    codexPlusProviderSetStatus("");
+    renderCodexPlusProviderPage();
+  }
+
+  /** 与管理器 updateDraft 一致：字段改动按需同步进 config.toml / auth.json。 */
+  function codexPlusProviderPatch(patch) {
+    const state = codexPlusProviderPageState;
+    if (!state.draft) return;
+    state.draft = codexPlusProviderEditingApi.applyRelayProfilePatchToFiles(state.draft, patch, { allowGenerateFiles: state.isNew });
+    state.dirty = true;
+    codexPlusProviderSyncFileFields();
+  }
+
+  function codexPlusProviderSyncFileFields() {
+    const draft = codexPlusProviderPageState.draft;
+    const config = document.querySelector('[data-codex-provider-file="config"]');
+    const auth = document.querySelector('[data-codex-provider-file="auth"]');
+    if (config && document.activeElement !== config) config.value = draft?.configContents || "";
+    if (auth && document.activeElement !== auth) auth.value = draft?.authContents || "";
+    const dirty = document.querySelector("[data-codex-provider-dirty]");
+    if (dirty) dirty.hidden = !codexPlusProviderPageState.dirty;
+  }
+
+  /** 模型列表：一行一个，`slug[1M]` 后缀写窗口（与管理器的 model_list 语法相同）。 */
+  function codexPlusProviderModelLines(draft) {
+    let windows = {};
+    try {
+      windows = JSON.parse(draft?.modelWindows || "{}") || {};
+    } catch {}
+    return String(draft?.modelList || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((slug) => (windows[slug] && !slug.includes("[") ? `${slug}[${windows[slug]}]` : slug))
+      .join("\n");
+  }
+
+  function codexPlusProviderApplyModelLines(text) {
+    const state = codexPlusProviderPageState;
+    if (!state.draft) return;
+    const windows = {};
+    const slugs = [];
+    String(text || "").split("\n").map((line) => line.trim()).filter(Boolean).forEach((line) => {
+      const parsed = codexPlusProviderEditingApi.parseModelSuffix(line);
+      if (!parsed.slug || slugs.includes(parsed.slug)) return;
+      slugs.push(parsed.slug);
+      if (parsed.window) windows[parsed.slug] = String(parsed.window);
+    });
+    state.draft = { ...state.draft, modelList: slugs.join("\n"), modelWindows: JSON.stringify(windows) };
+    state.dirty = true;
+    codexPlusProviderSyncFileFields();
+  }
+
+  function codexPlusProviderAddKey(name, value) {
+    const state = codexPlusProviderPageState;
+    const key = String(value || "").trim();
+    if (!key) return;
+    const keys = Array.isArray(state.draft.apiKeys) ? state.draft.apiKeys.slice() : [];
+    const id = `key-${Date.now().toString(36)}`;
+    keys.push({ id, name: String(name || "").trim() || `Key ${keys.length + 1}`, apiKey: key });
+    // 新填的 Key 是明文，按管理器的 updateApiKeys 同步进文件并设为当前。
+    codexPlusProviderPatch({ apiKeys: keys, activeApiKeyId: id, apiKey: key });
+    renderCodexPlusProviderPage();
+  }
+
+  function codexPlusProviderSelectKey(id) {
+    const state = codexPlusProviderPageState;
+    const keys = state.draft.apiKeys || [];
+    const entry = keys.find((item) => item.id === id);
+    if (!entry) return;
+    if (entry.apiKey) {
+      codexPlusProviderPatch({ apiKeys: keys, activeApiKeyId: id, apiKey: entry.apiKey });
+    } else {
+      // 已存 Key 只有打码预览：只改选中项，文件由服务端按真值重写。
+      state.draft = { ...state.draft, activeApiKeyId: id };
+      state.dirty = true;
+    }
+    renderCodexPlusProviderPage();
+  }
+
+  function codexPlusProviderRemoveKey(id) {
+    const state = codexPlusProviderPageState;
+    const keys = (state.draft.apiKeys || []).filter((item) => item.id !== id);
+    if (state.draft.activeApiKeyId === id) {
+      const next = keys[0];
+      if (next?.apiKey) codexPlusProviderPatch({ apiKeys: keys, activeApiKeyId: next.id, apiKey: next.apiKey });
+      else state.draft = { ...state.draft, apiKeys: keys, activeApiKeyId: next?.id || "" };
+    } else {
+      state.draft = { ...state.draft, apiKeys: keys };
+    }
+    state.dirty = true;
+    renderCodexPlusProviderPage();
+  }
+
+  async function codexPlusProviderProbe(kind) {
+    const state = codexPlusProviderPageState;
+    if (!state.draft) return;
+    state.busy = kind;
+    renderCodexPlusProviderPage();
+    const profile = codexPlusProviderEditingApi.deriveRelayProfileFromFiles(state.draft);
+    const result = await postJson(kind === "test" ? "/providers/test" : "/providers/models", {
+      profile,
+      keySourceId: state.keySources[profile.id] || "",
+    });
+    state.busy = "";
+    if (kind === "models" && result?.status === "ok") state.fetchedModels = Array.isArray(result.models) ? result.models : [];
+    codexPlusProviderSetStatus(result?.message || "请求失败", result?.status === "ok" ? "ok" : result?.status === "warning" ? "warn" : "error");
+    renderCodexPlusProviderPage();
+  }
+
+  function renderCodexPlusProviderList() {
+    const state = codexPlusProviderPageState;
+    const profiles = state.settings?.relayProfiles || [];
+    const rows = profiles.map((profile, index) => {
+      const active = profile.id === state.settings.activeRelayId;
+      const selected = profile.id === state.selectedId && !state.isNew;
+      return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-codex-provider-select="${escapeHtml(profile.id)}">
+        <div class="codex-plus-provider-item-main">
+          <div class="codex-plus-provider-item-name">${escapeHtml(profile.name || profile.id)}</div>
+          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(codexPlusProviderModeLabel(profile))}</span>${active ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</div>
+        </div>
+        <div class="codex-plus-provider-item-actions">
+          <button type="button" title="上移" aria-label="上移" data-codex-provider-move="-1" data-id="${escapeHtml(profile.id)}" ${index === 0 ? "disabled" : ""}>↑</button>
+          <button type="button" title="下移" aria-label="下移" data-codex-provider-move="1" data-id="${escapeHtml(profile.id)}" ${index === profiles.length - 1 ? "disabled" : ""}>↓</button>
+        </div>
+      </div>`;
+    }).join("");
+    const draftRow = state.isNew && state.draft
+      ? `<div class="codex-plus-provider-item" role="listitem" data-selected="true"><div class="codex-plus-provider-item-main"><div class="codex-plus-provider-item-name">${escapeHtml(state.draft.name || "新供应商")}</div><div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge" data-tone="new">未保存</span></div></div></div>`
+      : "";
+    return `<div class="codex-plus-provider-list" role="list" aria-label="供应商">${rows}${draftRow}</div>`;
+  }
+
+  function codexPlusProviderField(label, control, help = "") {
+    return `<label class="codex-plus-provider-field"><span class="codex-plus-provider-label">${escapeHtml(label)}</span>${control}${help ? `<span class="codex-plus-provider-help">${escapeHtml(help)}</span>` : ""}</label>`;
+  }
+
+  function codexPlusProviderInput(key, value, attrs = "") {
+    return `<input type="text" class="codex-plus-provider-input" data-codex-provider-field="${key}" value="${escapeHtml(value ?? "")}" ${attrs}>`;
+  }
+
+  function renderCodexPlusProviderDetail() {
+    const state = codexPlusProviderPageState;
+    const draft = state.draft;
+    if (!draft) return '<div class="codex-plus-provider-empty">选择左侧的供应商，或新建一个。</div>';
+    const isActive = !state.isNew && draft.id === state.settings.activeRelayId;
+    const busy = Boolean(state.busy);
+    const editable = codexPlusProviderEditable(draft);
+    const header = `<div class="codex-plus-provider-detail-header">
+      <div><div class="codex-plus-provider-title">${escapeHtml(draft.name || "新供应商")}</div>
+        <div class="codex-plus-provider-subtitle">${escapeHtml(codexPlusProviderModeLabel(draft))}${isActive ? " · 使用中" : ""}<span data-codex-provider-dirty ${state.dirty ? "" : "hidden"}> · 有未保存的修改</span></div></div>
+      <div class="codex-plus-provider-actions">
+        ${isActive || state.isNew ? "" : `<button type="button" class="codex-plus-action-button" data-codex-provider-action="use" ${busy ? "disabled" : ""}>${state.busy === "switch" ? "切换中…" : "使用"}</button>`}
+        ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="save" data-primary="true" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : isActive ? "保存并应用" : "保存"}</button>` : ""}
+        ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
+        ${state.isNew ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="cancel-new">取消</button>` : `
+          ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="duplicate" ${busy ? "disabled" : ""}>复制</button>` : ""}
+          ${draft.gatewayManaged ? "" : `<button type="button" class="codex-plus-action-button" data-codex-provider-action="delete" data-danger="true" ${busy || isActive ? "disabled" : ""} title="${isActive ? "当前使用的供应商不能删除" : "删除"}">删除</button>`}`}
+      </div></div>`;
+    if (!editable) {
+      return `${header}<div class="codex-plus-provider-section"><div class="codex-plus-provider-note">${draft.gatewayManaged
+        ? "这是 Codex++ 网关接管 Codex 时生成的条目，由网关维护，这里只能切换。"
+        : "聚合供应商的成员、路由和策略请在 Codex++ 管理器里编辑；这里可以直接切换使用。"}</div>
+        <button type="button" class="codex-plus-action-button" data-codex-provider-action="open-manager">在 Codex++ 中打开</button></div>`;
+    }
+    const mode = codexPlusProviderModeKey(draft);
+    const showApi = mode !== "official";
+    const keys = Array.isArray(draft.apiKeys) ? draft.apiKeys : [];
+    const keyRows = keys.map((entry) => {
+      const selected = entry.id === draft.activeApiKeyId;
+      const preview = entry.apiKey ? codexPlusProviderPreviewKey(entry.apiKey) : (entry.preview || "（空）");
+      return `<div class="codex-plus-provider-key" data-selected="${selected}">
+        <label><input type="radio" name="codex-provider-key" data-codex-provider-key-select="${escapeHtml(entry.id)}" ${selected ? "checked" : ""}> ${escapeHtml(entry.name || entry.id)}</label>
+        <code>${escapeHtml(preview)}</code>${entry.apiKey ? '<span class="codex-plus-provider-badge" data-tone="new">新</span>' : ""}
+        <button type="button" data-codex-provider-key-remove="${escapeHtml(entry.id)}" aria-label="删除这把 Key">移除</button>
+      </div>`;
+    }).join("");
+    const fetched = state.fetchedModels.length
+      ? `<div class="codex-plus-provider-help">上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-provider-action="fill-models">全部填入</button></div>`
+      : "";
+    return `${header}
+      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">基本</div>
+        ${codexPlusProviderField("名称", codexPlusProviderInput("name", draft.name))}
+        ${codexPlusProviderField("模式", `<select class="codex-plus-provider-input" data-codex-provider-mode="true">
+          <option value="official" ${mode === "official" ? "selected" : ""}>官方登录</option>
+          <option value="mixedApi" ${mode === "mixedApi" ? "selected" : ""}>官方登录 + API</option>
+          <option value="pureApi" ${mode === "pureApi" ? "selected" : ""}>纯 API</option></select>`)}
+        ${showApi ? codexPlusProviderField("协议", `<select class="codex-plus-provider-input" data-codex-provider-field="protocol">
+          <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
+          <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
+          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`) : ""}
+        ${showApi ? codexPlusProviderField("接口地址", codexPlusProviderInput("baseUrl", draft.baseUrl, 'placeholder="https://example.com/v1" spellcheck="false"')) : ""}
+      </div>
+      ${showApi ? `<div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">API Key</div>
+        ${keyRows || '<div class="codex-plus-provider-help">还没有 Key。</div>'}
+        <div class="codex-plus-provider-key-add">
+          <input type="text" class="codex-plus-provider-input" data-codex-provider-new-key-name="true" placeholder="名称（可选）">
+          <input type="password" class="codex-plus-provider-input" data-codex-provider-new-key="true" placeholder="sk-..." autocomplete="off" spellcheck="false">
+          <button type="button" class="codex-plus-action-button" data-codex-provider-action="add-key">添加</button>
+        </div>
+        <div class="codex-plus-provider-help">已保存的 Key 只显示首尾几位；选中哪一把，保存后 Codex 就用哪一把。</div>
+      </div>` : ""}
+      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">模型</div>
+        ${codexPlusProviderField("默认模型", codexPlusProviderInput("model", draft.model, 'spellcheck="false"'))}
+        ${codexPlusProviderField("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-provider-models="true" spellcheck="false" placeholder="一行一个，例如 deepseek-v4-pro[1M]">${escapeHtml(codexPlusProviderModelLines(draft))}</textarea>`, "后缀 [1M] / [256K] 设置该模型的上下文窗口。")}
+        ${fetched}
+        ${showApi ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "从上游获取模型"}</button>` : ""}
+        <div class="codex-plus-provider-row">
+          ${codexPlusProviderField("上下文窗口", codexPlusProviderInput("contextWindow", draft.contextWindow, 'inputmode="numeric" placeholder="留空用模型默认值"'))}
+          ${codexPlusProviderField("自动压缩阈值", codexPlusProviderInput("autoCompactLimit", draft.autoCompactLimit, 'inputmode="numeric" placeholder="留空用默认值"'))}
+        </div>
+      </div>
+      <details class="codex-plus-provider-section"><summary class="codex-plus-provider-section-title">配置文件</summary>
+        <div class="codex-plus-provider-help">直接编辑这个供应商的 config.toml / auth.json 快照；上面的字段会同步回读。</div>
+        ${codexPlusProviderField("config.toml", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="10" data-codex-provider-file="config" spellcheck="false">${escapeHtml(draft.configContents || "")}</textarea>`)}
+        ${codexPlusProviderField("auth.json", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="4" data-codex-provider-file="auth" spellcheck="false">${escapeHtml(draft.authContents || "")}</textarea>`)}
+      </details>
+      <div class="codex-plus-provider-section">
+        <button type="button" class="codex-plus-provider-link" data-codex-provider-action="open-manager">更多设置（模型路由、请求头、兼容选项）在 Codex++ 中编辑</button>
+      </div>`;
+  }
+
+  function codexPlusProviderPreviewKey(key) {
+    const text = String(key || "").trim();
+    return text.length <= 8 ? "••••" : `${text.slice(0, 3)}…${text.slice(-4)}`;
+  }
+
+  function renderCodexPlusProviderPage() {
+    const panel = document.querySelector("[data-codex-provider-panel]");
+    if (!panel) return;
+    const state = codexPlusProviderPageState;
+    if (!state.settings) {
+      panel.innerHTML = `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取供应商…" : escapeHtml(state.status || "读取供应商失败")} <button type="button" class="codex-plus-provider-link" data-codex-provider-action="reload">重试</button></div>`;
+      return;
+    }
+    const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
+    panel.innerHTML = `<div class="codex-plus-provider-layout">
+      <aside class="codex-plus-provider-sidebar">
+        <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
+          <button type="button" class="codex-plus-action-button" data-codex-provider-action="new" ${state.busy ? "disabled" : ""}>新建</button></div>
+        ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
+        ${renderCodexPlusProviderList()}
+      </aside>
+      <section class="codex-plus-provider-detail">
+        <div class="codex-plus-provider-status" data-codex-provider-status data-tone="${state.statusTone}" role="status" aria-live="polite" ${state.status ? "" : "hidden"}>${escapeHtml(state.status)}</div>
+        ${renderCodexPlusProviderDetail()}
+      </section></div>`;
+    const detail = panel.querySelector(".codex-plus-provider-detail");
+    if (detail) detail.scrollTop = scroll;
+  }
+
+  async function codexPlusProviderConfirmDiscard() {
+    const state = codexPlusProviderPageState;
+    if (!state.dirty) return true;
+    const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
+    return Boolean(answer);
+  }
+
+  function codexPlusProviderHandleInput(event) {
+    const target = event.target;
+    const state = codexPlusProviderPageState;
+    if (!state.draft || !(target instanceof HTMLElement)) return;
+    const field = target.dataset.codexProviderField;
+    if (field && field !== "protocol") {
+      if (field === "name") {
+        state.draft = { ...state.draft, name: target.value };
+        state.dirty = true;
+        codexPlusProviderSyncFileFields();
+      } else {
+        codexPlusProviderPatch({ [field]: target.value });
+      }
+      return;
+    }
+    if (target.dataset.codexProviderModels) return codexPlusProviderApplyModelLines(target.value);
+    const file = target.dataset.codexProviderFile;
+    if (file) {
+      const key = file === "config" ? "configContents" : "authContents";
+      state.draft = codexPlusProviderEditingApi.deriveRelayProfileFromFiles({ ...state.draft, [key]: target.value }, file);
+      state.dirty = true;
+      codexPlusProviderSyncFileFields();
+    }
+  }
+
+  function codexPlusProviderHandleChange(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.codexProviderMode) {
+      const mode = target.value;
+      if (mode === "official") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: false });
+      else if (mode === "mixedApi") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: true });
+      else codexPlusProviderPatch({ relayMode: "pureApi", officialMixApiKey: false });
+      return renderCodexPlusProviderPage();
+    }
+    if (target.dataset.codexProviderField === "protocol") {
+      codexPlusProviderPatch({ protocol: target.value });
+      return renderCodexPlusProviderPage();
+    }
+    if (target.dataset.codexProviderKeySelect) codexPlusProviderSelectKey(target.dataset.codexProviderKeySelect);
+  }
+
+  async function codexPlusProviderHandleClick(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const state = codexPlusProviderPageState;
+    if (!target) return;
+    const move = target.closest("[data-codex-provider-move]");
+    if (move && !move.disabled) {
+      event.stopPropagation();
+      if (!(await codexPlusProviderConfirmDiscard())) return;
+      return codexPlusProviderMove(move.dataset.id, Number(move.dataset.codexProviderMove));
+    }
+    const select = target.closest("[data-codex-provider-select]");
+    if (select) {
+      const id = select.dataset.codexProviderSelect;
+      if (id === state.selectedId && !state.isNew) return;
+      if (!(await codexPlusProviderConfirmDiscard())) return;
+      codexPlusProviderSelect(id);
+      codexPlusProviderSetStatus("");
+      return renderCodexPlusProviderPage();
+    }
+    const removeKey = target.closest("[data-codex-provider-key-remove]");
+    if (removeKey) return codexPlusProviderRemoveKey(removeKey.dataset.codexProviderKeyRemove);
+    const action = target.closest("[data-codex-provider-action]")?.dataset.codexProviderAction;
+    if (!action || target.closest("button")?.disabled) return;
+    const id = state.draft?.id;
+    switch (action) {
+      case "reload": return codexPlusProviderLoad();
+      case "new":
+        if (!(await codexPlusProviderConfirmDiscard())) return;
+        return codexPlusProviderStartNew();
+      case "cancel-new":
+        codexPlusProviderSelect(state.settings.activeRelayId);
+        return renderCodexPlusProviderPage();
+      case "save": return codexPlusProviderSave();
+      case "use": return codexPlusProviderUse(id);
+      case "delete": return codexPlusProviderDelete(id);
+      case "duplicate":
+        if (!(await codexPlusProviderConfirmDiscard())) return;
+        return codexPlusProviderDuplicate(id);
+      case "test": return codexPlusProviderProbe("test");
+      case "models": return codexPlusProviderProbe("models");
+      case "fill-models":
+        codexPlusProviderApplyModelLines([codexPlusProviderModelLines(state.draft), ...state.fetchedModels].join("\n"));
+        state.fetchedModels = [];
+        return renderCodexPlusProviderPage();
+      case "add-key": {
+        const panel = target.closest("[data-codex-provider-panel]");
+        return codexPlusProviderAddKey(
+          panel?.querySelector("[data-codex-provider-new-key-name]")?.value,
+          panel?.querySelector("[data-codex-provider-new-key]")?.value,
+        );
+      }
+      case "open-manager":
+        void postJson("/manager/open", { page: "relay" });
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** 别处（管理器、另一个窗口）改了供应商：没有未保存修改时静默刷新。 */
+  function codexPlusProviderPoll() {
+    const state = codexPlusProviderPageState;
+    if (!document.querySelector("[data-codex-provider-panel]")) return;
+    if (state.dirty || state.busy || document.hidden) return;
+    void postJson("/providers/list", {}).then((result) => {
+      if (result?.status !== "ok" || result.revision === state.data?.revision) return;
+      if (state.dirty || state.busy) return;
+      codexPlusProviderApplyList(result);
+      renderCodexPlusProviderPage();
+    });
+  }
+
+  function openCodexPlusProviderPage() {
+    closeCodexPlusPage();
+    document.querySelectorAll('.codex-plus-modal-overlay, [data-codex-plus-dialog="true"]').forEach((node) => node.remove());
+    const overlay = document.createElement("div");
+    overlay.className = `${codexPlusPageClass} codex-plus-provider-page`;
+    overlay.dataset.codexPlusPage = "true";
+    markCodexPlusExtensionNode(overlay, "builtin-provider");
+    applyCodexPlusTheme(overlay);
+    applyCodexPlusZoom(overlay);
+    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="供应商" data-codex-plus-active-tab="${codexPlusProviderTab}">
+      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-provider-panel" data-codex-provider-panel="true"></div></div></div>`;
+    overlay.addEventListener("input", codexPlusProviderHandleInput);
+    overlay.addEventListener("change", codexPlusProviderHandleChange);
+    overlay.addEventListener("click", (event) => { void codexPlusProviderHandleClick(event); });
+    document.body.appendChild(overlay);
+    positionCodexPlusPage(overlay);
+    observeCodexPlusPageLayout(overlay);
+    document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
+      node.removeAttribute("data-codex-plus-ext-rail-active");
+      const button = node.querySelector("button") || node;
+      button.dataset.active = "false";
+      button.removeAttribute("data-selected");
+      button.removeAttribute("aria-current");
+    });
+    setCodexPlusSidebarNavActive(true, "provider");
+    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
+    window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
+    window.addEventListener("resize", window.__codexPlusPageResizeHandler);
+    const state = codexPlusProviderPageState;
+    clearInterval(state.pollTimer);
+    state.pollTimer = setInterval(codexPlusProviderPoll, 5000);
+    // 关页时由 closeCodexPlusPage 调用（92-extension-host.js）。
+    window.__codexPlusExtensionPageCleanup = () => {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    };
+    state.dirty = false;
+    state.isNew = false;
+    codexPlusProviderSetStatus("");
+    renderCodexPlusProviderPage();
+    void codexPlusProviderLoad({ keepSelection: Boolean(state.selectedId) });
   }
   function installCodexPlusNavigationEntries() {
     // 插件入口沿用原生按钮，清理旧注入留下的重复商店入口。
@@ -23004,7 +25432,7 @@
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
       if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
@@ -23108,7 +25536,7 @@
     const template = codexPlusRailTemplateButton(rail);
     let cursor = anchor;
     // 内置三项先占位，第三方从它们之后开始排。
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
+    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
       const node = document.getElementById(id);
       if (node) cursor = node;
     });
@@ -28026,7 +30454,7 @@
    */
   function isExtensionUiNode(node) {
     if (!node?.closest) return false;
-    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
+    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailProviderId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, #${codexPlusRailProviderId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
       return true;
     }
     return isCodexPlusExtensionNode(node);
