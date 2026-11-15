@@ -152,7 +152,10 @@ impl Follower {
 
     /// 开新一轮。总是带上会话当前的协作模式（计划 / 默认）：桌面自己发送时也是这样带的，
     /// 不带的话 owner 会按它界面上的模式发，远程切的计划模式就丢了。
-    pub async fn start_turn(&self, input: Vec<Value>) -> anyhow::Result<Value> {
+    ///
+    /// `attachments` 是桌面画文件卡片用的列表（`uploads::desktop_attachments`），桌面自己发消息时也放在
+    /// `turnStart.context.attachments`；不带的话桌面上这条消息只显示原话，看不到附的文件。
+    pub async fn start_turn(&self, input: Vec<Value>, attachments: Vec<Value>) -> anyhow::Result<Value> {
         let client_user_message_id = uuid::Uuid::new_v4().to_string();
         let mut request = json!({
             "threadId": self.thread_id,
@@ -162,7 +165,7 @@ impl Follower {
         if let Some(mode) = self.state().as_ref().and_then(collaboration_mode_of) {
             request["collaborationMode"] = mode;
         }
-        self.call("thread-follower-start-turn", json!({ "turnStart": { "request": request, "context": {} } }))
+        self.call("thread-follower-start-turn", json!({ "turnStart": { "request": request, "context": { "attachments": attachments } } }))
             .await
     }
 
@@ -210,7 +213,7 @@ impl Follower {
     }
 
     /// 运行中插话。`restoreMessage` 不能为 null：owner 会读它的 cwd 与 context.commentAttachments。
-    pub async fn steer(&self, text: &str, input: Vec<Value>) -> anyhow::Result<Value> {
+    pub async fn steer(&self, text: &str, input: Vec<Value>, attachments: Vec<Value>) -> anyhow::Result<Value> {
         let cwd = self
             .state()
             .and_then(|state| state.get("cwd").and_then(Value::as_str).map(str::to_string))
@@ -228,11 +231,11 @@ impl Follower {
                     "context": {
                         "workspaceRoots": [cwd],
                         "commentAttachments": [],
-                        "fileAttachments": [],
+                        "fileAttachments": attachments,
                         "collaborationMode": null,
                     },
                 },
-                "attachments": [],
+                "attachments": attachments,
                 "serviceTier": null,
             }),
         )

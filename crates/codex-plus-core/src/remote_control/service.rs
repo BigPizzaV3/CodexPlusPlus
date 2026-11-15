@@ -285,9 +285,9 @@ impl RemoteService {
         let input = user_inputs(text, attachments);
         if let Some(follower) = self.follower(thread_id).await? {
             let value = if follower.is_running() {
-                json!({ "kind": "steer", "result": follower.steer(text, input).await? })
+                json!({ "kind": "steer", "result": follower.steer(text, input, super::uploads::desktop_attachments(attachments)).await? })
             } else {
-                json!({ "kind": "start", "result": follower.start_turn(input).await? })
+                json!({ "kind": "start", "result": follower.start_turn(input, super::uploads::desktop_attachments(attachments)).await? })
             };
             return Ok(value);
         }
