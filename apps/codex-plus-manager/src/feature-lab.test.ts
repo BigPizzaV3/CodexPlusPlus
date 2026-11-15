@@ -9,7 +9,9 @@ import { readFile } from "node:fs/promises";
  *   1. experimentalFeature/list 的分页、去重、排序；
  *   2. 开关写入走 config/batchWrite 的 features.<name>，不碰别的键；
  *   3. 非法 feature 名（会写坏 config 键路径）直接拒绝；
- *   4. 内置拓展清单、设置清单与分片清单三处登记一致。
+ *   4. 内置拓展清单、设置清单与分片清单三处登记一致；
+ *   5. 服务端几乎不给说明（实测 215 项只有 5 项），用内置中文说明表补，服务端有说明时以服务端为准；
+ *   6. config/batchWrite 对任何 key 都回 ok，写完必须回读 enabled 才能判断是否真的生效。
  */
 
 const SHARD_URL = new URL("../../../assets/inject/renderer-inject/96-feature-lab.js", import.meta.url);
@@ -23,6 +25,7 @@ type Feature = {
   defaultEnabled: boolean;
   risky: boolean;
   locked: boolean;
+  known: boolean;
 };
 
 async function runtime() {
@@ -32,6 +35,8 @@ async function runtime() {
       normalize: codexPlusFeatureLabNormalizeFeature,
       fetch: codexPlusFeatureLabFetch,
       write: codexPlusFeatureLabWrite,
+      verify: codexPlusFeatureLabVerify,
+      catalog: codexPlusFeatureLabCatalog,
       extension: codexPlusFeatureLabExtension,
       stage: codexPlusFeatureLabStage,
     };`,
@@ -39,6 +44,8 @@ async function runtime() {
     normalize(raw: unknown): Feature | null;
     fetch(client: unknown): Promise<Feature[]>;
     write(client: unknown, feature: Feature, enabled: boolean): Promise<unknown>;
+    verify(client: unknown, name: string): Promise<boolean | null>;
+    catalog: Record<string, { title: string; description: string }>;
     extension(ctx: unknown): void;
     stage(raw: unknown): string;
   };
@@ -69,7 +76,58 @@ it("归一化 feature：缺字段给空值，未知 stage 按开发中处理", a
   assert.equal(unknown.risky, true);
   assert.equal(unknown.title, "mystery");
 
-  assert.equal(api.normalize({ name: "removed_one", stage: "removed" })?.locked, true);
+  // removed 阶段不静态锁：实测有的写了会生效（search_tool），有的不会，交给写后回读判断。
+  const removed = api.normalize({ name: "removed_one", stage: "removed" });
+  assert.equal(removed?.locked, false);
+  assert.equal(removed?.risky, true);
+});
+
+it("服务端没给说明时用内置中文说明，服务端给了以服务端为准", async () => {
+  const api = await runtime();
+  const fromCatalog = api.normalize({ name: "code_mode", stage: "underDevelopment", displayName: null, description: null });
+  assert.ok(fromCatalog);
+  assert.equal(fromCatalog.title, "Code mode");
+  assert.match(fromCatalog.description, /JS/);
+  assert.equal(fromCatalog.known, true);
+
+  const fromServer = api.normalize({ name: "code_mode", stage: "underDevelopment", displayName: "Server title", description: "Server desc" });
+  assert.equal(fromServer?.title, "Server title");
+  assert.equal(fromServer?.description, "Server desc");
+  assert.equal(fromServer?.known, true);
+
+  const unknown = api.normalize({ name: "brand_new_flag", stage: "beta" });
+  assert.equal(unknown?.title, "brand_new_flag");
+  assert.equal(unknown?.description, "");
+  assert.equal(unknown?.known, false);
+});
+
+it("内置说明表的 key 都是合法 feature 名，标题与说明都不为空", async () => {
+  const api = await runtime();
+  const entries = Object.entries(api.catalog);
+  assert.ok(entries.length >= 100, "说明表应覆盖主要 feature");
+  for (const [name, entry] of entries) {
+    assert.match(name, /^[A-Za-z][A-Za-z0-9_]*$/, name);
+    assert.ok(entry.title.trim(), `${name} 缺标题`);
+    assert.ok(entry.description.trim(), `${name} 缺说明`);
+  }
+});
+
+it("写入后回读：按列表里的 enabled 判断是否真的生效", async () => {
+  const api = await runtime();
+  const pages: Record<string, { data: Array<{ name: string; enabled: boolean }>; nextCursor: string | null }> = {
+    first: { data: [{ name: "a", enabled: false }], nextCursor: "p2" },
+    p2: { data: [{ name: "js_repl", enabled: false }, { name: "search_tool", enabled: true }], nextCursor: null },
+  };
+  const client = {
+    async sendRequest(method: string, params: { cursor?: string | null }) {
+      assert.equal(method, "experimentalFeature/list");
+      return pages[params.cursor ?? "first"];
+    },
+  };
+  assert.equal(await api.verify(client, "search_tool"), true);
+  assert.equal(await api.verify(client, "js_repl"), false);
+  assert.equal(await api.verify(client, "not_in_list"), null);
+  assert.equal(await api.verify(null, "anything"), null);
 });
 
 it("拒绝会写坏 config 键路径的 feature 名", async () => {

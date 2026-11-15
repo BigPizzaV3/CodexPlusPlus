@@ -203,7 +203,7 @@
     {
       "name": "96-feature-lab.js",
       "description": "内置拓展 Feature Lab：原生实验开关列表与启停",
-      "lines": 366
+      "lines": 609
     },
     {
       "name": "96-builtin-extensions.js",
