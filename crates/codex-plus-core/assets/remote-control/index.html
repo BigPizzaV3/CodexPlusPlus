@@ -329,6 +329,24 @@
   .m-sheet .cancel { margin-top: 8px; width: 100%; min-height: 54px; background: var(--m-row); }
   @keyframes m-up { from { transform: translateY(100%); } to { transform: none; } }
   @keyframes m-fade { from { opacity: 0; } to { opacity: 1; } }
+  /* ================= 桌面镜像 ================= */
+  html[data-style="mirror"] .app, html[data-style="mirror"] .m { display: none !important; }
+  html:not([data-style="mirror"]) .mirror { display: none !important; }
+  html[data-style="mirror"] body { background: #000; }
+  .mirror { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0b0b0b; color: #e8e8e8;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif; }
+  .mirror-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: env(safe-area-inset-top) 10px 0; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; }
+  .mirror-bar .status { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #bbb; font-size: 13px; }
+  .mirror-bar .dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: #777; }
+  .mirror-bar .dot.on { background: #07c160; } .mirror-bar .dot.off { background: #fa5151; }
+  .mirror-bar button { flex: 0 0 auto; font: inherit; font-size: 13px; color: #e8e8e8; background: #2c2c2c; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  .mirror-bar button.on { border-color: #07c160; color: #07c160; }
+  .mirror-stage { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .mirror-stage canvas { display: block; max-width: 100%; max-height: 100%; outline: none; }
+  .mirror-tip { position: absolute; left: 24px; right: 24px; top: 50%; transform: translateY(-50%); text-align: center; color: #999; font-size: 14px; pointer-events: none; }
+  .mirror-ime { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: 80vw; padding: 6px 14px; border-radius: 8px;
+    background: rgb(30 30 30 / .94); border: 1px solid #444; color: #fff; font-size: 17px; white-space: pre-wrap; z-index: 5; }
+  #mirrorInput { position: fixed; left: 0; bottom: 0; width: 2px; height: 2px; padding: 0; border: 0; opacity: 0; resize: none; font-size: 16px; caret-color: transparent; }
   html[data-style="chat"] .toast { bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 30; }
   html[data-style="chat"] .gate { background: var(--bg); }
   @media (max-width: 720px) {
@@ -354,6 +372,7 @@
       <button class="project-back" id="projectBack" hidden title="回到项目列表">‹ 项目</button>
       <h1 id="asideTitle">Codex++ 远程控制</h1>
       <button id="style" title="切换对话样式：Codex 样式 / 聊天样式">样式</button>
+      <button id="mirrorOpen" title="直接看并操作桌面上的 Codex 窗口" hidden>桌面镜像</button>
       <button id="refresh" title="刷新会话列表">刷新</button>
     </header>
     <div class="whoami" id="whoami" hidden>
@@ -439,6 +458,21 @@
     </footer>
     <div class="m-readonly" id="mReadonly" hidden>这台设备只能查看。需要发消息可在 Codex++ 的设备列表里调高权限。</div>
   </section>
+</div>
+<!-- 桌面镜像：Codex 桌面窗口的实时画面 -->
+<div class="mirror" id="mirror">
+  <div class="mirror-bar">
+    <button id="mirrorBack" title="回到我们自己画的界面">‹ 自绘界面</button>
+    <div class="status"><i class="dot" id="mirrorDot"></i><span id="mirrorStatus">桌面镜像</span></div>
+    <button id="mirrorRetry" title="重新连接">刷新</button>
+    <button id="mirrorKeyboard" title="弹出键盘：打的字会输入到 Codex 当前聚焦的地方">键盘</button>
+  </div>
+  <div class="mirror-stage" id="mirrorStage">
+    <canvas id="mirrorCanvas" tabindex="-1"></canvas>
+    <div class="mirror-tip" id="mirrorTip">桌面镜像</div>
+  </div>
+  <div class="mirror-ime" id="mirrorIme" hidden></div>
+  <textarea id="mirrorInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="输入到 Codex"></textarea>
 </div>
 <div class="gate" id="gate" hidden>
   <div class="card">
@@ -579,6 +613,7 @@
     $("newThread").hidden = !can("message");
     $("compose").hidden = !can("message");
     $("readonly").hidden = can("message");
+    $("mirrorOpen").hidden = !can("full");
     m.onRole();
   }
 
@@ -1065,6 +1100,290 @@
       $("create").disabled = false;
     }
   };
+
+  // ================= 桌面镜像 =================
+  // 把 Codex 桌面窗口的画面投过来（服务端经 CDP 投屏），鼠标 / 触摸 / 滚轮 / 按键发回去。
+  // 输入法用本机的：隐藏输入框收字，拼完的文字整段发过去（Input.insertText），回车退格等单独作为按键发。
+  const MIRROR_BACK_KEY = "codexPlusRemoteStyleBeforeMirror";
+  const mirror = (() => {
+    const SENTINEL = "​"; // 输入框里常驻一个零宽字符：手机键盘在空输入框上按退格不发事件
+    const SPECIAL = new Set(["Enter", "Backspace", "Delete", "Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+    const KEYCODES = { Enter: 13, Backspace: 8, Delete: 46, Tab: 9, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35, PageUp: 33, PageDown: 34 };
+    const s = { socket: null, active: false, meta: null, title: "", composing: false, touch: null, moveQueued: null, resizeTimer: null, retryTimer: null, keyboard: false };
+    const canvas = $("mirrorCanvas");
+    const context = canvas.getContext("2d");
+    const input = $("mirrorInput");
+
+    function status(text, tone = "") {
+      $("mirrorStatus").textContent = text;
+      $("mirrorDot").className = `dot ${tone}`;
+    }
+    function tip(text) {
+      $("mirrorTip").hidden = !text;
+      $("mirrorTip").textContent = text || "";
+    }
+    const send = (message) => s.socket?.readyState === 1 && s.socket.send(JSON.stringify(message));
+    const modifiersOf = (event) => (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+
+    function requestFrames() {
+      const stage = $("mirrorStage");
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      send({ type: "start", width: Math.round(stage.clientWidth * ratio), height: Math.round(stage.clientHeight * ratio) });
+    }
+
+    function connect() {
+      clearTimeout(s.retryTimer);
+      if (!s.active) return;
+      status("连接中…");
+      tip("正在连接 Codex 桌面…");
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${scheme}://${location.host}/api/mirror?token=${encodeURIComponent(token)}`);
+      socket.binaryType = "blob";
+      s.socket = socket;
+      socket.onmessage = async (event) => {
+        if (s.socket !== socket) return;
+        if (typeof event.data !== "string") {
+          // 一帧画面：JPEG
+          try {
+            const bitmap = await createImageBitmap(event.data);
+            if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+              canvas.width = bitmap.width;
+              canvas.height = bitmap.height;
+            }
+            context.drawImage(bitmap, 0, 0);
+            bitmap.close?.();
+            tip("");
+          } catch {}
+          return;
+        }
+        const message = JSON.parse(event.data);
+        if (message.type === "ready") {
+          s.title = message.title || "Codex";
+          status(`已连接 · ${s.title}`, "on");
+          requestFrames();
+        } else if (message.type === "meta") {
+          s.meta = message.meta;
+        } else if (message.type === "visibility") {
+          tip(message.visible ? "" : "Codex 窗口被最小化或完全挡住了，没有画面。把窗口放到前台就能看到。");
+        } else if (message.type === "warning") {
+          toast(message.error);
+        } else if (message.type === "revoked") {
+          stop();
+          unauthorized(message.reason);
+        } else if (message.type === "error") {
+          status("连接失败", "off");
+          tip(message.error);
+          s.socket = null;
+        } else if (message.type === "closed") {
+          status(message.reason || "已断开", "off");
+          if (message.reconnect) s.retryTimer = setTimeout(connect, 1500);
+        }
+      };
+      socket.onclose = () => {
+        if (s.socket !== socket) return;
+        s.socket = null;
+        if (s.active) {
+          status("连接断开，正在重连…", "off");
+          s.retryTimer = setTimeout(connect, 2000);
+        }
+      };
+    }
+
+    function start() {
+      if (s.active) return;
+      s.active = true;
+      input.value = SENTINEL;
+      connect();
+      // 电脑上直接把焦点放到隐藏输入框，打字就能进 Codex；手机上点「键盘」才弹出。
+      if (!matchMedia("(pointer: coarse)").matches) focusInput();
+    }
+
+    function stop() {
+      s.active = false;
+      clearTimeout(s.retryTimer);
+      const socket = s.socket;
+      s.socket = null;
+      if (socket) { socket.onclose = null; socket.close(); }
+      input.blur();
+      hideIme();
+    }
+
+    function focusInput() {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+
+    // ---------- 坐标：画布上的点 → Codex 页面里的点（CSS 像素）----------
+    function point(event) {
+      const rect = canvas.getBoundingClientRect();
+      const width = s.meta?.deviceWidth || canvas.width;
+      const height = s.meta?.deviceHeight || canvas.height;
+      const x = ((event.clientX - rect.left) / rect.width) * width;
+      const y = ((event.clientY - rect.top) / rect.height) * height + (s.meta?.offsetTop || 0);
+      return { x: Math.max(0, Math.min(width, x)), y: Math.max(0, y), scale: width / rect.width };
+    }
+    const buttonOf = (button) => ["left", "middle", "right"][button] || "none";
+
+    canvas.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      canvas.setPointerCapture(event.pointerId);
+      const { x, y } = point(event);
+      if (event.pointerType === "mouse") {
+        send({ type: "mouse", event: "mousePressed", x, y, button: buttonOf(event.button), buttons: event.buttons, clickCount: event.detail || 1, modifiers: modifiersOf(event) });
+        focusInput();
+      } else {
+        s.touch = { id: event.pointerId, startX: event.clientX, startY: event.clientY, lastX: event.clientX, lastY: event.clientY, moved: false };
+      }
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (event.pointerType === "mouse") {
+        // 一帧内只发一次移动
+        s.moveQueued = event;
+        if (s.moveQueued && !s.moveScheduled) {
+          s.moveScheduled = true;
+          requestAnimationFrame(() => {
+            s.moveScheduled = false;
+            const last = s.moveQueued;
+            if (!last) return;
+            const { x, y } = point(last);
+            send({ type: "mouse", event: "mouseMoved", x, y, button: last.buttons & 1 ? "left" : "none", buttons: last.buttons, modifiers: modifiersOf(last) });
+          });
+        }
+        return;
+      }
+      const touch = s.touch;
+      if (!touch || touch.id !== event.pointerId) return;
+      if (Math.hypot(event.clientX - touch.startX, event.clientY - touch.startY) > 8) touch.moved = true;
+      if (!touch.moved) return;
+      // 手指拖动 = 滚动
+      const { x, y, scale } = point(event);
+      send({ type: "wheel", x, y, deltaX: (touch.lastX - event.clientX) * scale, deltaY: (touch.lastY - event.clientY) * scale });
+      touch.lastX = event.clientX;
+      touch.lastY = event.clientY;
+    });
+    canvas.addEventListener("pointerup", (event) => {
+      const { x, y } = point(event);
+      if (event.pointerType === "mouse") {
+        send({ type: "mouse", event: "mouseReleased", x, y, button: buttonOf(event.button), buttons: event.buttons, clickCount: event.detail || 1, modifiers: modifiersOf(event) });
+        return;
+      }
+      const touch = s.touch;
+      s.touch = null;
+      if (!touch || touch.moved) return;
+      // 轻点 = 单击
+      send({ type: "mouse", event: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+      send({ type: "mouse", event: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+      if (s.keyboard) focusInput();
+    });
+    canvas.addEventListener("pointercancel", () => { s.touch = null; });
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const { x, y, scale } = point(event);
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.getBoundingClientRect().height : 1;
+      send({ type: "wheel", x, y, deltaX: event.deltaX * unit * scale, deltaY: event.deltaY * unit * scale, modifiers: modifiersOf(event) });
+    }, { passive: false });
+
+    // ---------- 键盘与输入法 ----------
+    /** macOS 上 Cmd / Option 组合键要带编辑命令，Codex 里才会执行（全选、撤销、按词移动……）。 */
+    function commandsFor(event) {
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      const shift = event.shiftKey;
+      if (event.metaKey && !event.altKey) {
+        const map = {
+          a: ["selectAll"], z: [shift ? "redo" : "undo"], c: ["copy"], x: ["cut"],
+          ArrowLeft: [shift ? "moveToBeginningOfLineAndModifySelection" : "moveToBeginningOfLine"],
+          ArrowRight: [shift ? "moveToEndOfLineAndModifySelection" : "moveToEndOfLine"],
+          ArrowUp: ["moveToBeginningOfDocument"], ArrowDown: ["moveToEndOfDocument"],
+          Backspace: ["deleteToBeginningOfLine"],
+        };
+        return map[key];
+      }
+      if (event.altKey && !event.metaKey) {
+        const map = {
+          ArrowLeft: [shift ? "moveWordLeftAndModifySelection" : "moveWordLeft"],
+          ArrowRight: [shift ? "moveWordRightAndModifySelection" : "moveWordRight"],
+          Backspace: ["deleteWordBackward"], Delete: ["deleteWordForward"],
+        };
+        return map[key];
+      }
+      return undefined;
+    }
+
+    function sendKey({ key, code, keyCode, modifiers = 0, commands }) {
+      const down = key === "Enter" ? { event: "keyDown", text: "\r" } : { event: "rawKeyDown" };
+      send({ type: "key", ...down, key, code, keyCode, modifiers, ...(commands ? { commands } : {}) });
+      send({ type: "key", event: "keyUp", key, code, keyCode, modifiers });
+    }
+    const pressKey = (key) => sendKey({ key, code: key, keyCode: KEYCODES[key] || 0 });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.keyCode === 229 || s.composing) return;
+      // Cmd/Ctrl+V 交给 paste 事件：粘贴的是本机剪贴板
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") return;
+      const combo = (event.metaKey || event.ctrlKey) && event.key.length === 1;
+      if (!SPECIAL.has(event.key) && !combo) return;
+      event.preventDefault();
+      sendKey({ key: event.key, code: event.code, keyCode: event.keyCode, modifiers: modifiersOf(event), commands: commandsFor(event) });
+    });
+
+    /** 把输入框里新打的字发出去；输入框清空到只剩零宽字符。 */
+    function flush() {
+      const value = input.value;
+      input.value = SENTINEL;
+      input.setSelectionRange(1, 1);
+      if (value === "") return pressKey("Backspace"); // 零宽字符被删了 = 按了退格
+      const text = value.split(SENTINEL).join("");
+      if (!text) return;
+      text.split(/\r?\n/).forEach((line, index) => {
+        if (index > 0) pressKey("Enter");
+        if (line) send({ type: "text", text: line });
+      });
+    }
+    input.addEventListener("input", (event) => {
+      if (s.composing || event.isComposing) {
+        showIme(input.value.split(SENTINEL).join(""));
+        return;
+      }
+      flush();
+    });
+    input.addEventListener("compositionstart", () => { s.composing = true; showIme(""); });
+    input.addEventListener("compositionupdate", (event) => showIme(event.data || ""));
+    input.addEventListener("compositionend", () => {
+      s.composing = false;
+      hideIme();
+      flush();
+    });
+    input.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const text = event.clipboardData?.getData("text/plain");
+      if (text) send({ type: "text", text });
+    });
+
+    function showIme(text) {
+      $("mirrorIme").hidden = !text;
+      $("mirrorIme").textContent = text;
+    }
+    function hideIme() { $("mirrorIme").hidden = true; }
+
+    // ---------- 工具栏 ----------
+    $("mirrorKeyboard").onclick = () => {
+      s.keyboard = !s.keyboard;
+      $("mirrorKeyboard").classList.toggle("on", s.keyboard);
+      if (s.keyboard) focusInput(); else input.blur();
+    };
+    $("mirrorBack").onclick = () => {
+      const back = localStorage.getItem(MIRROR_BACK_KEY);
+      m.setStyle(back === "chat" || back === "codex" ? back : (matchMedia("(max-width: 720px)").matches ? "chat" : "codex"));
+    };
+    $("mirrorRetry").onclick = () => { if (s.active) { s.socket?.close(); s.socket = null; connect(); } };
+    new ResizeObserver(() => {
+      clearTimeout(s.resizeTimer);
+      s.resizeTimer = setTimeout(() => s.active && requestFrames(), 300);
+    }).observe($("mirrorStage"));
+
+    return { start, stop, get active() { return s.active; } };
+  })();
 
   // ================= 手机界面（聊天样式）=================
   // 四屏：列表（项目）/ 项目（会话）/ 对话 / 设置。和 Codex 样式共用 state、接口和推送，只是另一套呈现。
@@ -1949,7 +2268,7 @@
       const display = el("div", "m-group");
       const styleRow = item("对话样式");
       const seg = el("div", "m-seg");
-      for (const [id, label] of [["chat", "聊天"], ["codex", "Codex"]]) {
+      for (const [id, label] of [["chat", "聊天"], ["codex", "Codex"], ...(can("full") ? [["mirror", "桌面镜像"]] : [])]) {
         const button = el("button", "", label);
         button.setAttribute("aria-pressed", String((document.documentElement.dataset.style || "chat") === id));
         button.onclick = () => setStyle(id);
@@ -2031,8 +2350,17 @@
     window.addEventListener("popstate", popped);
 
     function setStyle(next) {
+      if (next === "mirror" && !can("full")) return toast("桌面镜像需要「完全控制」权限");
+      const previous = document.documentElement.dataset.style;
+      if (next === "mirror" && previous !== "mirror") localStorage.setItem(MIRROR_BACK_KEY, previous || "codex");
       document.documentElement.dataset.style = next;
       localStorage.setItem(STYLE_KEY, next);
+      if (next === "mirror") {
+        closeSocket();
+        mirror.start();
+        return;
+      }
+      mirror.stop();
       $("style").textContent = next === "chat" ? "Codex 样式" : "聊天样式";
       renderThreads();
       if (state.view) applyView(state.view);
@@ -2097,6 +2425,7 @@
   // 样式切换：按设备记在 localStorage；聊天样式下模型 / 权限收进「⋯」。
   const styleLabel = () => (document.documentElement.dataset.style === "chat" ? "Codex 样式" : "聊天样式");
   $("style").textContent = styleLabel();
+  $("mirrorOpen").onclick = () => m.setStyle("mirror");
   $("style").onclick = () => m.setStyle(document.documentElement.dataset.style === "chat" ? "codex" : "chat");
   $("more").onclick = () => $("controls").classList.toggle("chat-open");
 
@@ -2124,6 +2453,11 @@
     }
     applyRole();
     loadThreads();
+    // 上次停在桌面镜像：有权限就接着连，否则退回自绘界面。
+    if (document.documentElement.dataset.style === "mirror") {
+      if (can("full")) mirror.start();
+      else m.setStyle(narrow ? "chat" : "codex");
+    }
   }
 
   if (pairCode && !token) {

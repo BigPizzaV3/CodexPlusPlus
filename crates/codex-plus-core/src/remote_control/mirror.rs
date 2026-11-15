@@ -1,0 +1,260 @@
+//! 桌面镜像：把 Codex 桌面窗口的画面经 CDP 投屏（`Page.startScreencast`）推给网页，
+//! 网页的鼠标 / 滚轮 / 按键 / 文字再经 `Input.*` 发回去。效果像只投 Codex 一个窗口的远程桌面。
+//!
+//! - 调试端口不对外：网页只连我们已认证的 `/api/mirror`，这里替它连本机的 CDP，只转发画面和白名单内的输入。
+//! - 输入法用的是网页那一端设备的：网页把「已确定的文字」发来，这里用 `Input.insertText` 写进 Codex 当前聚焦处，
+//!   不经过 Mac 的输入法，中文 / 语音输入都能用；回车、退格、方向键等单独作为按键发。
+//! - 画面是 JPEG 二进制帧；尺寸等元数据变化时另发一条 JSON。每帧发完才回 `screencastFrameAck`，网络慢时自然降帧。
+//! - 它就是桌面上那个窗口：网页上的操作桌面同步可见。最小化时 Chromium 不出画面（推 `visibility: false`）。
+
+use std::time::Duration;
+
+use anyhow::{Context, bail};
+use base64::Engine;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
+
+const MAX_TEXT_CHARS: usize = 20_000;
+const MAX_KEY_FIELD_CHARS: usize = 32;
+const MAX_FRAME_SIDE: u32 = 2560;
+const MIN_FRAME_SIDE: u32 = 200;
+const JPEG_QUALITY: u32 = 70;
+const REVALIDATE_EVERY: Duration = Duration::from_secs(3);
+
+/// macOS 上 CDP 按键事件触发编辑命令要带 `commands`（Cmd+A 全选之类）；只放这些。
+const ALLOWED_COMMANDS: &[&str] = &[
+    "selectAll",
+    "undo",
+    "redo",
+    "copy",
+    "cut",
+    "moveToBeginningOfLine",
+    "moveToEndOfLine",
+    "moveToBeginningOfLineAndModifySelection",
+    "moveToEndOfLineAndModifySelection",
+    "moveWordLeft",
+    "moveWordRight",
+    "moveWordLeftAndModifySelection",
+    "moveWordRightAndModifySelection",
+    "moveToBeginningOfDocument",
+    "moveToEndOfDocument",
+    "deleteWordBackward",
+    "deleteWordForward",
+    "deleteToBeginningOfLine",
+];
+
+/// 网页发来的一条输入，校验后转成 CDP 命令 `(method, params)`。不认识或越界的返回错误。
+pub fn input_command(message: &Value) -> anyhow::Result<(&'static str, Value)> {
+    let number = |key: &str| -> anyhow::Result<f64> {
+        let value = message.get(key).and_then(Value::as_f64).with_context(|| format!("缺少 {key}"))?;
+        if !value.is_finite() {
+            bail!("{key} 无效");
+        }
+        Ok(value)
+    };
+    let coordinate = |key: &str| -> anyhow::Result<f64> { Ok(number(key)?.clamp(0.0, 20_000.0)) };
+    let modifiers = message.get("modifiers").and_then(Value::as_u64).unwrap_or(0) & 0b1111;
+    let short = |key: &str| -> anyhow::Result<Option<String>> {
+        match message.get(key).and_then(Value::as_str) {
+            Some(text) if text.chars().count() > MAX_KEY_FIELD_CHARS => bail!("{key} 过长"),
+            Some(text) => Ok(Some(text.to_string())),
+            None => Ok(None),
+        }
+    };
+    match message.get("type").and_then(Value::as_str).unwrap_or_default() {
+        "mouse" => {
+            let event = match message.get("event").and_then(Value::as_str) {
+                Some(event @ ("mousePressed" | "mouseReleased" | "mouseMoved")) => event,
+                _ => bail!("鼠标事件类型无效"),
+            };
+            let button = match message.get("button").and_then(Value::as_str).unwrap_or("none") {
+                button @ ("none" | "left" | "middle" | "right") => button,
+                _ => bail!("鼠标按键无效"),
+            };
+            Ok((
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": event,
+                    "x": coordinate("x")?,
+                    "y": coordinate("y")?,
+                    "button": button,
+                    "buttons": message.get("buttons").and_then(Value::as_u64).unwrap_or(0) & 0b111,
+                    "clickCount": message.get("clickCount").and_then(Value::as_u64).unwrap_or(0).min(3),
+                    "modifiers": modifiers,
+                }),
+            ))
+        }
+        "wheel" => Ok((
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseWheel",
+                "x": coordinate("x")?,
+                "y": coordinate("y")?,
+                "deltaX": number("deltaX")?.clamp(-5000.0, 5000.0),
+                "deltaY": number("deltaY")?.clamp(-5000.0, 5000.0),
+                "modifiers": modifiers,
+            }),
+        )),
+        "text" => {
+            let text = message.get("text").and_then(Value::as_str).unwrap_or_default();
+            if text.is_empty() {
+                bail!("文字为空");
+            }
+            if text.chars().count() > MAX_TEXT_CHARS {
+                bail!("一次最多输入 {MAX_TEXT_CHARS} 个字");
+            }
+            Ok(("Input.insertText", json!({ "text": text })))
+        }
+        "key" => {
+            let event = match message.get("event").and_then(Value::as_str) {
+                Some(event @ ("keyDown" | "rawKeyDown" | "keyUp")) => event,
+                _ => bail!("按键事件类型无效"),
+            };
+            let mut params = json!({ "type": event, "modifiers": modifiers });
+            for field in ["key", "code", "text"] {
+                if let Some(value) = short(field)? {
+                    params[field] = json!(value);
+                }
+            }
+            if let Some(code) = message.get("keyCode").and_then(Value::as_u64) {
+                params["windowsVirtualKeyCode"] = json!(code.min(255));
+                params["nativeVirtualKeyCode"] = json!(code.min(255));
+            }
+            if let Some(commands) = message.get("commands").and_then(Value::as_array) {
+                let commands: Vec<&str> = commands.iter().filter_map(Value::as_str).collect();
+                if commands.iter().any(|command| !ALLOWED_COMMANDS.contains(command)) {
+                    bail!("不支持的编辑命令");
+                }
+                params["commands"] = json!(commands);
+            }
+            Ok(("Input.dispatchKeyEvent", params))
+        }
+        other => bail!("不支持的输入：{other}"),
+    }
+}
+
+/// 投屏参数：按网页画布大小要画面，限制在合理范围。
+pub fn screencast_params(message: &Value) -> Value {
+    let side = |key: &str, default: u32| {
+        message
+            .get(key)
+            .and_then(Value::as_u64)
+            .map(|value| (value as u32).clamp(MIN_FRAME_SIDE, MAX_FRAME_SIDE))
+            .unwrap_or(default)
+    };
+    json!({
+        "format": "jpeg",
+        "quality": JPEG_QUALITY,
+        "maxWidth": side("width", 1600),
+        "maxHeight": side("height", 1000),
+        "everyNthFrame": 1,
+    })
+}
+
+/// 跑一个镜像会话，直到网页断开、Codex 页面关闭或设备被吊销。
+pub async fn run<S, F>(mut socket: WebSocketStream<S>, debug_port: u16, still_authorized: F) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: Fn() -> bool,
+{
+    let send = |value: Value| Message::Text(value.to_string().into());
+    let target = match crate::cdp::list_targets(debug_port).await.and_then(|targets| crate::cdp::pick_injectable_codex_page_target(&targets)) {
+        Ok(target) => target,
+        Err(_) => {
+            let _ = socket
+                .send(send(json!({ "type": "error", "error": "连不上 Codex 桌面：请从 Codex++ 启动 Codex（需要它的调试端口），并保持窗口打开" })))
+                .await;
+            return Ok(());
+        }
+    };
+    let websocket_url = target.web_socket_debugger_url.context("Codex 页面没有调试地址")?;
+    let mut cdp = crate::bridge::connect_cdp_websocket(&websocket_url).await?;
+    let mut next_id: u64 = 1;
+    let mut command = |method: &str, params: Value| {
+        let id = next_id;
+        next_id += 1;
+        Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())
+    };
+    socket.send(send(json!({ "type": "ready", "title": target.title }))).await?;
+    let mut meta: Option<Value> = None;
+    let mut revalidate = tokio::time::interval(REVALIDATE_EVERY);
+    let reason = loop {
+        tokio::select! {
+            incoming = socket.next() => {
+                let text = match incoming {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break None,
+                    _ => continue,
+                };
+                let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+                match message.get("type").and_then(Value::as_str) {
+                    Some("start") => {
+                        cdp.send(command("Page.stopScreencast", json!({}))).await?;
+                        cdp.send(command("Page.startScreencast", screencast_params(&message))).await?;
+                    }
+                    Some("stop") => {
+                        cdp.send(command("Page.stopScreencast", json!({}))).await?;
+                    }
+                    _ => match input_command(&message) {
+                        Ok((method, params)) => cdp.send(command(method, params)).await?,
+                        Err(error) => socket.send(send(json!({ "type": "warning", "error": error.to_string() }))).await?,
+                    },
+                }
+            }
+            event = cdp.next() => {
+                let text = match event {
+                    Some(Ok(Message::Text(text))) => text,
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break Some("Codex 页面关闭或刷新了"),
+                    _ => continue,
+                };
+                let Ok(event) = serde_json::from_str::<Value>(&text) else { continue };
+                match event.get("method").and_then(Value::as_str) {
+                    Some("Page.screencastFrame") => {
+                        let params = event.get("params").cloned().unwrap_or(Value::Null);
+                        let frame_meta = params.get("metadata").cloned().unwrap_or(Value::Null);
+                        let size = json!({
+                            "deviceWidth": frame_meta.get("deviceWidth"),
+                            "deviceHeight": frame_meta.get("deviceHeight"),
+                            "offsetTop": frame_meta.get("offsetTop"),
+                            "pageScaleFactor": frame_meta.get("pageScaleFactor"),
+                        });
+                        if meta.as_ref() != Some(&size) {
+                            socket.send(send(json!({ "type": "meta", "meta": size }))).await?;
+                            meta = Some(size);
+                        }
+                        if let Some(data) = params.get("data").and_then(Value::as_str) {
+                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                                socket.send(Message::Binary(bytes.into())).await?;
+                            }
+                        }
+                        // 发完再确认：网络慢时 Chromium 就少出几帧。
+                        if let Some(session_id) = params.get("sessionId") {
+                            cdp.send(command("Page.screencastFrameAck", json!({ "sessionId": session_id }))).await?;
+                        }
+                    }
+                    Some("Page.screencastVisibilityChanged") => {
+                        let visible = event.pointer("/params/visible").and_then(Value::as_bool).unwrap_or(true);
+                        socket.send(send(json!({ "type": "visibility", "visible": visible }))).await?;
+                    }
+                    _ => {}
+                }
+            }
+            _ = revalidate.tick() => {
+                if !still_authorized() {
+                    let _ = socket.send(send(json!({ "type": "revoked", "reason": "这台设备已被移除" }))).await;
+                    break None;
+                }
+            }
+        }
+    };
+    let _ = cdp.send(command("Page.stopScreencast", json!({}))).await;
+    let _ = cdp.close(None).await;
+    if let Some(reason) = reason {
+        let _ = socket.send(send(json!({ "type": "closed", "reason": reason, "reconnect": true }))).await;
+    }
+    let _ = socket.close(None).await;
+    Ok(())
+}

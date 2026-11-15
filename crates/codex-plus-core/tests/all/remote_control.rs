@@ -821,3 +821,69 @@ fn upload_and_folder_routes_require_auth_and_role() {
     let body = server.find("read_body(&mut stream, &mut request, limit)").unwrap();
     assert!(auth < body, "认证通过后才读请求体，没配对的人不能让我们收大文件");
 }
+
+/// 桌面镜像：网页输入转成 CDP 命令，只放白名单内的事件、命令和合理范围的值。
+#[test]
+fn mirror_input_is_validated_before_reaching_cdp() {
+    use codex_plus_core::remote_control::mirror::{input_command, screencast_params};
+    let (method, params) = input_command(&json!({ "type": "text", "text": "中文输入 ✅" })).unwrap();
+    assert_eq!(method, "Input.insertText", "输入法拼好的文字整段写进去，不经过 Mac 的输入法");
+    assert_eq!(params["text"], "中文输入 ✅");
+    assert!(input_command(&json!({ "type": "text", "text": "" })).is_err());
+    assert!(input_command(&json!({ "type": "text", "text": "x".repeat(20_001) })).is_err());
+
+    let (method, params) = input_command(&json!({ "type": "mouse", "event": "mousePressed", "x": 10.5, "y": -3, "button": "left", "buttons": 255, "clickCount": 9 })).unwrap();
+    assert_eq!(method, "Input.dispatchMouseEvent");
+    assert_eq!(params["y"], 0.0, "坐标夹到范围内");
+    assert_eq!(params["buttons"], 7);
+    assert_eq!(params["clickCount"], 3);
+    assert!(input_command(&json!({ "type": "mouse", "event": "mouseWheel", "x": 1, "y": 1 })).is_err(), "滚轮走 wheel");
+    assert!(input_command(&json!({ "type": "mouse", "event": "mousePressed", "x": "a", "y": 1 })).is_err());
+    assert!(input_command(&json!({ "type": "mouse", "event": "mousePressed", "x": 1, "y": 1, "button": "back" })).is_err());
+
+    let (_, params) = input_command(&json!({ "type": "wheel", "x": 1, "y": 1, "deltaX": 0, "deltaY": 99_999 })).unwrap();
+    assert_eq!(params["type"], "mouseWheel");
+    assert_eq!(params["deltaY"], 5000.0);
+
+    let (method, params) = input_command(&json!({ "type": "key", "event": "rawKeyDown", "key": "a", "code": "KeyA", "keyCode": 65, "modifiers": 4, "commands": ["selectAll"] })).unwrap();
+    assert_eq!(method, "Input.dispatchKeyEvent");
+    assert_eq!(params["windowsVirtualKeyCode"], 65);
+    assert_eq!(params["commands"], json!(["selectAll"]));
+    assert_eq!(params["modifiers"], 4);
+    assert!(input_command(&json!({ "type": "key", "event": "keyPress", "key": "a" })).is_err());
+    assert!(input_command(&json!({ "type": "key", "event": "keyDown", "key": "a", "commands": ["deleteEverything"] })).is_err(), "编辑命令走白名单");
+    assert!(input_command(&json!({ "type": "key", "event": "keyDown", "key": "x".repeat(40) })).is_err());
+    assert!(input_command(&json!({ "type": "exec", "script": "alert(1)" })).is_err(), "不认识的输入一律拒绝");
+
+    let params = screencast_params(&json!({ "width": 99_999, "height": 10 }));
+    assert_eq!(params["format"], "jpeg");
+    assert_eq!(params["maxWidth"], 2560);
+    assert_eq!(params["maxHeight"], 200);
+    assert_eq!(screencast_params(&json!({}))["maxWidth"], 1600);
+}
+
+/// 桌面镜像能操作 Codex 的一切：只给完全控制；网页上也只有完全控制才看得到入口。
+#[test]
+fn mirror_requires_full_control() {
+    use codex_plus_core::remote_control::devices::Role;
+    use codex_plus_core::remote_control::server::required_role;
+    assert_eq!(required_role("GET", &["mirror"]), Role::Full);
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(page.contains(r#"$("mirrorOpen").hidden = !can("full");"#));
+    assert!(page.contains(r#"if (next === "mirror" && !can("full")) return toast("#));
+    // 输入法：隐藏输入框收字，拼完整段发；拼的过程显示浮条；零宽字符兜住手机键盘的退格
+    assert!(page.contains(r#"input.addEventListener("compositionend""#) && page.contains("function showIme(text)"));
+    assert!(page.contains(r#"if (value === "") return pressKey("Backspace");"#));
+    assert!(page.contains(r#"send({ type: "text", text: line })"#));
+    // 粘贴本机剪贴板
+    assert!(page.contains(r#"input.addEventListener("paste""#));
+}
+
+/// 桌面 Codex 没开（连不上 IPC）也能用：查看读历史，发消息走后台。
+#[test]
+fn desktop_not_running_falls_back_to_background() {
+    let service = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/remote_control/service.rs")).unwrap();
+    let follower = &service[service.find("pub async fn follower(").unwrap()..];
+    let follower = &follower[..follower.find("\n    }\n").unwrap()];
+    assert!(follower.contains("let Ok(conn) = self.ipc().await else"), "连不上 IPC 时当作没有桌面持有，而不是报错");
+}

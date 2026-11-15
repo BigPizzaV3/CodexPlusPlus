@@ -154,6 +154,11 @@ impl RemoteService {
         Ok(StreamSource::Background(self.ensure_headless(thread_id).await?))
     }
 
+    /// Codex 桌面的调试端口（桌面镜像用）。
+    pub fn debug_port(&self) -> u16 {
+        self.config.debug_port()
+    }
+
     pub async fn status(&self) -> Value {
         let (versions, version_source) = self.versions();
         let ipc = match self.ipc().await {
@@ -204,7 +209,10 @@ impl RemoteService {
         if let Some(follower) = self.followers.lock().await.get(thread_id).filter(|f| f.is_alive()) {
             return Ok(Some(follower.clone()));
         }
-        let conn = self.ipc().await?;
+        // 桌面 Codex 没开（连不上 IPC）就当没有桌面持有：查看读历史、发消息走后台执行。
+        let Ok(conn) = self.ipc().await else {
+            return Ok(None);
+        };
         let Some(follower) = Follower::start(conn, thread_id).await? else {
             return Ok(None);
         };

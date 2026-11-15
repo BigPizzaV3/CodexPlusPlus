@@ -251,6 +251,8 @@ pub fn required_role(method: &str, segments: &[&str]) -> Role {
     match (method, segments) {
         // 浏览电脑上的文件夹：新建会话选目录用，和新建会话同一档。
         ("GET", ["fs", ..]) => Role::Message,
+        // 桌面镜像能操作 Codex 的一切（设置、审批……），只给完全控制。
+        ("GET", ["mirror"]) => Role::Full,
         ("GET", _) => Role::View,
         ("POST", ["threads", _, "settings"] | ["threads", _, "requests", _]) => Role::Full,
         _ => Role::Message,
@@ -320,6 +322,19 @@ async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, conte
             let thread_id = valid_thread_id(thread_id)?;
             return stream_thread(stream, &request, context, principal, thread_id).await;
         }
+    }
+    if segments.as_slice() == ["mirror"] {
+        if !request.header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
+            return write_json(&mut stream, 400, &json!({ "ok": false, "error": "桌面镜像要用 WebSocket 连接" })).await;
+        }
+        let socket = upgrade_websocket(stream, &request).await?;
+        let _ = crate::diagnostic_log::append_diagnostic_log("remote_control.mirror_started", json!({ "by": principal.describe() }));
+        let result = super::mirror::run(socket, context.service.debug_port(), || still_authorized(&principal)).await;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "remote_control.mirror_stopped",
+            json!({ "by": principal.describe(), "error": result.as_ref().err().map(|error| error.to_string()) }),
+        );
+        return Ok(());
     }
     let (status, body) = match route(&request, &segments, &context, &principal).await {
         Ok(value) => (200, json!({ "ok": true, "data": value })),
@@ -439,20 +454,25 @@ fn still_authorized(principal: &Principal) -> bool {
     }
 }
 
-async fn stream_thread<S: Connection>(
-    mut stream: S,
-    request: &HttpRequest,
-    context: Arc<ServerContext>,
-    principal: Principal,
-    thread_id: String,
-) -> anyhow::Result<()> {
+/// 手写的 WebSocket 握手（请求头已经读过了，不能再交给 tungstenite 的 accept）。
+async fn upgrade_websocket<S: Connection>(mut stream: S, request: &HttpRequest) -> anyhow::Result<WebSocketStream<S>> {
     let key = request.header("sec-websocket-key").context("缺少 Sec-WebSocket-Key")?;
     let handshake = format!(
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
         websocket_accept(key)
     );
     stream.write_all(handshake.as_bytes()).await?;
-    let mut socket = WebSocketStream::from_raw_socket(stream, tokio_tungstenite::tungstenite::protocol::Role::Server, None).await;
+    Ok(WebSocketStream::from_raw_socket(stream, tokio_tungstenite::tungstenite::protocol::Role::Server, None).await)
+}
+
+async fn stream_thread<S: Connection>(
+    stream: S,
+    request: &HttpRequest,
+    context: Arc<ServerContext>,
+    principal: Principal,
+    thread_id: String,
+) -> anyhow::Result<()> {
+    let mut socket = upgrade_websocket(stream, request).await?;
     let send = |value: Value| Message::Text(value.to_string().into());
     // 桌面持有就跟随桌面；否则推后台会话（它跑的时候桌面窗口不动）。
     let source = match context.service.stream_source(&thread_id).await {
