@@ -1,54 +1,76 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { browserConnectionLabel, browserHeaderLabel, browserRecognizedSuffix, nativeBrowserStatusLabel } from "./native-browser-status.ts";
+import vm from "node:vm";
 
-test("adapter refusal is distinct from browser availability and header state", () => {
-  assert.match(nativeBrowserStatusLabel("runtime_unverified"), /未应用旧版兼容补丁/);
-  assert.doesNotMatch(nativeBrowserStatusLabel("blocked"), /未启用兼容/);
-  assert.match(nativeBrowserStatusLabel("blocked"), /文件/);
-});
-
-test("a connected Edge or Chrome is explicitly available regardless of patch or header state", () => {
-  for (const headerEnabled of [true, false, null]) {
-    assert.equal(browserConnectionLabel({ state: "available", failedChecks: 0,
-      browsers: [{ family: "edge", headerEnabled }] }), "Edge 浏览器可用");
-  }
-  assert.equal(browserConnectionLabel({ state: "available", failedChecks: 1,
-    browsers: [{ family: "chrome", headerEnabled: false }, { family: "edge", headerEnabled: true }] }),
-  "Chrome / Edge 浏览器可用");
-  assert.equal(browserConnectionLabel({ state: "available", failedChecks: 0, browsers: [] }), "浏览器状态检测失败");
-});
-
-test("disconnect, check failure, and header setting have distinct labels", () => {
-  assert.equal(browserConnectionLabel({ state: "disconnected", failedChecks: 0, browsers: [] }), "浏览器未连接");
-  assert.equal(browserConnectionLabel({ state: "check_failed", failedChecks: 1, browsers: [] }), "浏览器状态检测失败");
-  assert.match(browserHeaderLabel(true), /已开启.*扩展报告/);
-  assert.match(browserHeaderLabel(false), /已关闭.*扩展报告/);
-  assert.match(browserHeaderLabel(null), /未提供/);
-});
-
-test("unrecognized extension is distinct from a disconnected one", () => {
-  // issue #2209：同 family 但 ID 未登记 = 连上了但版本不认识，不该显示成「没连上」。
-  assert.equal(browserRecognizedSuffix(false), "（扩展版本未登记）");
-  assert.equal(browserRecognizedSuffix(true), "");
-  assert.equal(browserRecognizedSuffix(undefined), "");
-  // 已登记（true）与旧后端不带该字段（undefined）都必须保持原样。
-  assert.equal(
-    browserConnectionLabel({
-      state: "available",
-      failedChecks: 0,
-      browsers: [{ family: "edge", headerEnabled: true, recognized: false }],
-    }),
-    "Edge 浏览器可用"
-  );
-});
-
+// 原生浏览器状态只在 Codex 的 Codex++ 设置页里显示（46-service-settings.js），文案也只有那一份。
 const codexSettingsSource = () => readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
 const codexCatalogPage = () => readFile(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
 
-test("Codex settings page renders the unrecognized-extension suffix", async () => {
-  // 状态只在 Codex 的 Codex++ 设置页里显示（管理器不再显示这个开关）。
+type BrowserConnection = {
+  state: string;
+  browsers: { family: string; headerEnabled: boolean | null; recognized?: boolean }[];
+  failedChecks: number;
+};
+type Labels = {
+  codexPlusBrowserConnectionLabel: (connection: BrowserConnection) => string;
+  codexPlusBrowserHeaderLabel: (enabled: boolean | null) => string;
+  codexPlusNativeBrowserPatchLabel: (state: string) => string;
+};
+
+/** 在沙箱里跑一遍分片，取出三个文案函数（它们不碰 DOM，只要分片加载时用到的全局在就行）。 */
+async function shardLabels(): Promise<Labels> {
+  const context = vm.createContext({
+    window: {},
+    console,
+    URL,
+    CSS: { escape: (value: unknown) => String(value) },
+    document: { activeElement: null, querySelectorAll: () => [], querySelector: () => null },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    escapeHtml: (value: unknown) => String(value ?? ""),
+    codexPlusBackendSettings: {},
+    codexPlusBackendSettingsSeq: 0,
+    codexPlusIsWindowsPlatform: true,
+    codexPlusIsMacPlatform: false,
+  });
+  vm.runInContext(await codexSettingsSource(), context);
+  return context as unknown as Labels;
+}
+
+test("adapter refusal is distinct from browser availability and header state", async () => {
+  const { codexPlusNativeBrowserPatchLabel: patch } = await shardLabels();
+  assert.match(patch("runtime_unverified"), /未应用旧版兼容补丁/);
+  assert.doesNotMatch(patch("blocked"), /未启用兼容/);
+  assert.match(patch("blocked"), /文件/);
+});
+
+test("a connected Edge or Chrome is explicitly available regardless of patch or header state", async () => {
+  const { codexPlusBrowserConnectionLabel: connection } = await shardLabels();
+  for (const headerEnabled of [true, false, null]) {
+    assert.equal(connection({ state: "available", failedChecks: 0, browsers: [{ family: "edge", headerEnabled }] }), "Edge 浏览器可用");
+  }
+  assert.equal(connection({ state: "available", failedChecks: 1,
+    browsers: [{ family: "chrome", headerEnabled: false }, { family: "edge", headerEnabled: true }] }),
+  "Chrome / Edge 浏览器可用");
+  assert.equal(connection({ state: "available", failedChecks: 0, browsers: [] }), "浏览器状态检测失败");
+});
+
+test("disconnect, check failure, and header setting have distinct labels", async () => {
+  const { codexPlusBrowserConnectionLabel: connection, codexPlusBrowserHeaderLabel: header } = await shardLabels();
+  assert.equal(connection({ state: "disconnected", failedChecks: 0, browsers: [] }), "浏览器未连接");
+  assert.equal(connection({ state: "check_failed", failedChecks: 1, browsers: [] }), "浏览器状态检测失败");
+  assert.match(header(true), /已开启.*扩展报告/);
+  assert.match(header(false), /已关闭.*扩展报告/);
+  assert.match(header(null), /未提供/);
+});
+
+test("unrecognized extension is distinct from a disconnected one", async () => {
+  // issue #2209：同 family 但 ID 未登记 = 连上了但版本不认识，不该显示成「没连上」。
+  const { codexPlusBrowserConnectionLabel: connection } = await shardLabels();
+  assert.equal(connection({ state: "available", failedChecks: 0,
+    browsers: [{ family: "edge", headerEnabled: true, recognized: false }] }), "Edge 浏览器可用");
+  // 后缀只在明确未登记（false）时出现；已登记与旧后端不带该字段（undefined）都不加。
   const page = await codexSettingsSource();
   assert.ok(page.includes('browser.recognized === false ? "（扩展版本未登记）" : ""'));
 });
@@ -62,19 +84,16 @@ test("patch diagnostics are separate from live availability and refresh only on 
   assert.ok(page.includes('groupId === "plugins" && codexPlusIsWindowsPlatform'));
   assert.ok(page.includes("if (state.nativeBrowserBusy) return;"));
   assert.ok(!page.includes("setInterval("));
-  // 两边文案一致。
-  for (const state of ["disabled", "not_started", "prepared", "restored", "runtime_unverified", "blocked", "unsupported", "stale", "new-state"]) {
-    assert.ok(page.includes(`return "${nativeBrowserStatusLabel(state)}";`), state);
-  }
 });
 
-test("patch diagnostics describe only patch state, not browser availability", () => {
-  assert.match(nativeBrowserStatusLabel("prepared"), /兼容服务文件/);
-  assert.match(nativeBrowserStatusLabel("restored"), /扩展保留/);
-  assert.match(nativeBrowserStatusLabel("stale"), /过期/);
-  assert.equal(nativeBrowserStatusLabel("new-state"), "无法读取兼容补丁状态");
+test("patch diagnostics describe only patch state, not browser availability", async () => {
+  const { codexPlusNativeBrowserPatchLabel: patch } = await shardLabels();
+  assert.match(patch("prepared"), /兼容服务文件/);
+  assert.match(patch("restored"), /扩展保留/);
+  assert.match(patch("stale"), /过期/);
+  assert.equal(patch("new-state"), "无法读取兼容补丁状态");
   for (const state of ["prepared", "blocked", "runtime_unverified", "new-state"]) {
-    assert.doesNotMatch(nativeBrowserStatusLabel(state), /浏览器.*可用/);
+    assert.doesNotMatch(patch(state), /浏览器.*可用/);
   }
 });
 
@@ -94,8 +113,9 @@ test("consent precedes enabling in Codex, default is off, and status is read-onl
   assert.match(item.description, /此兼容补丁仅适配 Windows 上的 Edge \/ Chrome/);
   assert.deepEqual(item.platforms, ["windows"]);
   assert.deepEqual(item.surfaces, ["codex"]);
-  assert.doesNotMatch(app, /NativeBrowserStatusView/);
-  assert.match(nativeBrowserStatusLabel("unsupported"), /Edge \/ Chrome/);
+  assert.doesNotMatch(app, /NativeBrowserStatusView|native-browser-settings/);
+  const { codexPlusNativeBrowserPatchLabel: patch } = await shardLabels();
+  assert.match(patch("unsupported"), /Edge \/ Chrome/);
   // 状态那一节只读：不写设置、不重启。
   const status = await codexSettingsSource();
   const section = status.slice(status.indexOf("function renderCodexPlusNativeBrowserStatusSection"), status.indexOf("/** 清单分组后面要接的服务配置节"));

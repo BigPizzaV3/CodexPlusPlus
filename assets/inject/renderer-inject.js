@@ -14423,7 +14423,7 @@ ${key} = ${value}`]);
     nativeBrowserBusy: false,
   };
 
-  // 与管理器 dictation-settings.ts 的预设一致：预设只改端点、模型与 provider。
+  // 语音服务预设：只改端点、模型与 provider（默认端点与管理器 dictation-settings.ts 的默认值一致）。
   const codexPlusDictationPresets = {
     sensevoice: { provider: "sensevoice", baseUrl: "local://sensevoice", model: "SenseVoiceSmall (INT8)" },
     groq: { provider: "api", baseUrl: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo" },
@@ -14459,7 +14459,7 @@ ${key} = ${value}`]);
     return match ? match[0] : "custom";
   }
 
-  /** 与管理器 dictationSettingsIssue 同一套校验；只在开启语音输入时提示。 */
+  /** 语音服务配置校验（地址规则与后端 dictation.rs 发请求前的检查一致）；只在开启语音输入时提示。 */
   function codexPlusDictationIssue(dictation) {
     if (dictation.enabled !== true || dictation.provider === "sensevoice") return "";
     try {
@@ -14609,7 +14609,7 @@ ${key} = ${value}`]);
             </section>`;
   }
 
-  // 与管理器 native-browser-status.ts 同一套文案。
+  // 原生浏览器状态文案：连接是否可用、请求标识、兼容补丁状态三者分开说（issue #2209）。
   function codexPlusBrowserConnectionLabel(connection) {
     switch (connection?.state) {
       case "available": {

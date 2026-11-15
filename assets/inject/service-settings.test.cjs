@@ -166,6 +166,33 @@ async function runServiceSettingsTests() {
     assert.deepEqual(h.posts, [["/stepwise/test", {}]]);
     assert.match(h.context.renderCodexPlusStepwiseServiceSection(), /连接正常 · 2 条建议/);
   }
+
+  // 9. 预设按地址认出来；SenseVoice 认 provider；其余地址算自定义。
+  {
+    const { context } = harness();
+    const preset = (dictation) => context.codexPlusDictationPreset(dictation);
+    assert.equal(preset({ provider: "api", baseUrl: "https://api.groq.com/openai/v1/" }), "groq");
+    assert.equal(preset({ provider: "api", baseUrl: "https://api.openai.com/v1" }), "openai");
+    assert.equal(preset({ provider: "api", baseUrl: "http://127.0.0.1:8000/v1" }), "local");
+    assert.equal(preset({ provider: "sensevoice", baseUrl: "anything" }), "sensevoice");
+    assert.equal(preset({ provider: "api", baseUrl: "http://localhost:9090/asr/v1" }), "custom");
+  }
+
+  // 10. 校验只在开启时提示；SenseVoice 不要求地址；地址、模型、环境变量名各有各的提示。
+  {
+    const { context } = harness();
+    const issue = (dictation) => context.codexPlusDictationIssue(dictation);
+    const local = { enabled: true, provider: "api", baseUrl: "http://127.0.0.1:8000/v1", model: "whisper-1", apiKeyEnv: "" };
+    assert.equal(issue(local), "");
+    for (const baseUrl of ["", "file:///tmp/asr", "https://user:pass@example.com/v1", "https://example.com/v1?key=x", "https://example.com/v1#fragment"]) {
+      assert.match(issue({ ...local, baseUrl }), /Base URL/, baseUrl);
+    }
+    assert.match(issue({ ...local, model: " " }), /语音模型/);
+    assert.match(issue({ ...local, apiKeyEnv: "1INVALID" }), /环境变量名/);
+    assert.equal(issue({ ...local, apiKeyEnv: "ASR_API_KEY" }), "");
+    assert.equal(issue({ ...local, enabled: false, baseUrl: "" }), "");
+    assert.equal(issue({ enabled: true, provider: "sensevoice", baseUrl: "local://sensevoice", model: "SenseVoiceSmall (INT8)" }), "");
+  }
 }
 
 module.exports = runServiceSettingsTests;

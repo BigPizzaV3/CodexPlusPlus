@@ -713,19 +713,6 @@
   display: none;
 }
 
-/* 增强页的三个页签：横排胶囊。 */
-:root .shell .enhance-tabs {
-  flex-direction: row;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
-:root .shell .enhance-tabs button {
-  width: auto;
-  justify-content: center;
-}
-
 /* 万物皆拓展页头：一句理念 + 一排能力标签，宿主切换在右侧。 */
 :root .shell .extensions-hero {
   display: flex;
@@ -1435,14 +1422,6 @@
   gap: 10px;
 }
 
-:root .shell .cx-enhance-bar .enhance-tabs {
-  flex: none;
-}
-
-:root .shell .cx-enhance-search {
-  height: 32px;
-}
-
 :root .shell .cx-enhance-bar .cx-enhance-save {
   flex: none;
   color: hsl(var(--muted-foreground));
@@ -1485,26 +1464,6 @@
 
 :root .shell .cx-side-item.active.has-subnav:hover {
   background: hsl(var(--accent) / 0.55);
-}
-
-:root .shell .cx-enhance-bar .cx-enhance-search {
-  min-width: 160px;
-  flex: 1 1 auto;
-}
-
-/* 增强页的三个页签：胶囊选中态只换底色，不再画旧版的下划线（会把胶囊撑高）。 */
-:root .shell .enhance-tabs button[aria-selected="true"]::after {
-  display: none;
-}
-
-:root .shell .enhance-tabs button {
-  padding: 0 13px;
-  font-weight: 450;
-}
-
-:root .shell .enhance-tabs button:hover,
-:root .shell .enhance-tabs button[aria-selected="true"] {
-  color: hsl(var(--foreground));
 }
 
 /* ── 入门清单：侧栏底部的进度卡（参照 Cursor 的 Getting Started） ──
