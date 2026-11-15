@@ -11,15 +11,16 @@
 1. **官方 Remote Control 改不成走我们的服务器。** app-server 里写死了：必须 ChatGPT 登录（`API key auth is not supported`），
    中继地址只认 `chatgpt.com` / `chatgpt-staging.com` / `localhost`，并且要和 `account_id` 绑定的 enrollment。
    手机端是官方 ChatGPT App，我们也换不掉。纯 API / 网关用户用不了。
-2. **自己做一套是可行的，而且官方已经把最难的部分留好了接口：**
+2. **自己做一套是可行的，P0 已在隔离的 Codex 26.1111 上端到端跑通（12/12，见第 10 节）：**
    - 桌面主进程有一个本地 IPC 路由（`~/.codex/ipc/ipc.sock`，Windows 是 `\\.\pipe\codex-ipc`），
      提供完整的 **follower 协议**：跟随者可以订阅会话的实时状态，并让桌面代为发消息、插话、中断、
-     **审批命令 / 文件改动 / 权限**、回答提问、管理排队。这是官方给 VS Code 插件、CLI 和多窗口协同用的。
-   - 排队消息持久化在 `~/.codex/queue_1.sqlite`，多进程共享；`codex://threads/wake/<id>` 让桌面
-     在后台接手并执行排队消息，**不切换窗口**。
-3. **推荐架构：** Codex++ 起一个「远程桥」，对内接 Codex 的 IPC + 一个只做读和排队的侧车 app-server，
+     **审批命令**、回答提问。这是官方给 VS Code 插件、CLI 和多窗口协同用的。
+   - 没打开的会话：Codex++ 的注入脚本向页面发 `navigate-to-route`，桌面打开后即成为 owner，再走 follower。
+   - ~~`codex://threads/wake/<id>` 让桌面在后台接手~~：**实测不可用**——wake 在主进程里无头执行，
+     审批请求直接失败（`approval request failed`），命令被拒；会话也不出现在侧栏，无法跟随。
+3. **推荐架构：** Codex++ 起一个「远程桥」，对内接 Codex 的 IPC + 一个只读的侧车 app-server，
    对外给手机一个 PWA。网络上先做局域网 / Tailscale 直连，再做我们自己的中继（端到端加密）。
-   所有真正的执行都发生在桌面自己的 app-server 里，桌面界面实时同步，不会出现两个进程同时写一个会话。
+   所有真正的执行都发生在桌面窗口持有的会话里，桌面界面实时同步，审批可以在手机和桌面任一端完成。
 
 ---
 
@@ -92,7 +93,8 @@
 ### 2.4 前提：会话必须有 owner
 
 实测本机最近 25 个会话全部 `no-client-found`——当时 Codex 停在首页，没有任何会话被加载。
-**只有桌面已经加载的会话才有 owner**。没有 owner 时要先让桌面接手（见下一节）。
+**只有桌面已经加载的会话才有 owner**。没有 owner 时要先让桌面打开它（见 10.3 的 `navigate-to-route`）；
+P0 里打开过、又切到别的会话后，原会话仍保有 owner。
 
 ---
 
@@ -136,10 +138,13 @@ wakeQueuedThread: async (threadId) => {
 - 失败最多重试 3 次；
 - 桌面没开时，系统打开 URL 会先启动 Codex。
 
-**这就是官方给「外部进程投递消息」留的口子**：外部写队列 → 发 wake → 桌面在自己的 app-server 里恢复会话、
-按队列发出，界面同步显示，然后桌面成为 owner，手机即可经 IPC 跟随、审批。
+> **P0 实测推翻了这一节最初的设想（见 10.4）**：wake 由主进程直接 `resumeThread`，不经过任何窗口——
+> 会话不出现在侧栏、没有 owner、无法跟随；排队消息触发审批时没有人能批，app-server 直接返回
+> `approval request failed`，命令被拒。**远程控制不用 wake。**
 
 其他 deep link：`codex://threads/<id>`（打开会话）、`codex://threads/new?prompt=…`（新会话，会切窗口）。
+在 macOS 上 deep link 走系统 `open-url`，只会交给默认的 Codex；正式实现改由注入脚本向页面发
+`{ type: "navigate-to-route", path: "/local/<id>" }`（见 10.3）。
 
 ---
 
@@ -156,45 +161,48 @@ flowchart LR
   end
   subgraph Desktop["桌面"]
     Bridge["Codex++ 远程桥"]
-    Sidecar["侧车 app-server（只读 + 排队）"]
+    Sidecar["侧车 app-server（只读，建会话后放锁）"]
     IPC["Codex IPC 路由"]
-    Main["Codex 桌面（owner）"]
+    Inject["Codex++ 注入脚本"]
+    Main["Codex 桌面窗口（owner）"]
     AS["桌面 app-server"]
-    Store[("~/.codex：rollout / state / queue sqlite")]
+    Store[("~/.codex：rollout / state sqlite")]
   end
   PWA --> LAN --> Bridge
   PWA --> Relay --> Bridge
-  Bridge -->|"follower 订阅 / 审批 / 插话"| IPC --> Main --> AS
-  Bridge -->|"list / read / queue add"| Sidecar --> Store
-  Bridge -->|"codex://threads/wake/id"| Main
+  Bridge -->|"follower 订阅 / 发消息 / 审批 / 插话 / 中断"| IPC --> Main --> AS
+  Bridge -->|"list / read / 建会话"| Sidecar --> Store
+  Bridge -->|"打开会话：navigate-to-route"| Inject --> Main
   AS --> Store
 ```
 
-### 4.1 每个手机操作怎么落地
+### 4.1 每个手机操作怎么落地（P0 后修订）
 
-| 手机操作 | 会话已有 owner | 会话没有 owner |
+| 手机操作 | 实现 | P0 |
 |---|---|---|
-| 会话列表 / 搜索 | 侧车 `thread/list` / `thread/search` | 同左 |
-| 看历史 | IPC 快照 | 侧车 `thread/read` + `thread/turns/list` |
-| 实时输出 | IPC `thread-stream-state-changed` | 先唤醒，有 owner 后跟随 |
-| 发消息 | IPC `thread-follower-start-turn`（或统一走排队） | 侧车 `thread/queue/add` + `wake` |
-| 运行中插话 | IPC `thread-follower-steer-turn` | — |
-| 停止 | IPC `thread-follower-interrupt-turn` | — |
-| 审批 / 回答提问 | IPC `*-approval-decision` / `submit-user-input` | — （没 owner 就没有待审批） |
-| 排队管理 | IPC `set-queued-follow-ups-state` 等 | 侧车 `thread/queue/*` |
-| 目标 | 侧车 `thread/goal/*` | 同左 |
-| 新会话 | 侧车 `thread/start` + 落盘 + 排队 + `wake` | 同左 |
-| 切模型 / 档位 | IPC `update-thread-settings` | 写入下一轮参数 |
+| 会话列表 / 搜索 | 侧车 `thread/list` / `thread/search` | — |
+| 看历史（没打开的会话） | 侧车 `thread/read` + `thread/turns/list`（不占写锁） | ✓ |
+| 打开会话 | 注入脚本发 `navigate-to-route` → 桌面 resume → 成为 owner | ✓ |
+| 实时输出 | IPC 跟随：快照 + immer 补丁 | ✓ |
+| 发消息 | IPC `thread-follower-start-turn` | ✓ |
+| 运行中插话 | IPC `thread-follower-steer-turn` | ✓ |
+| 停止 | IPC `thread-follower-interrupt-turn` | ✓ |
+| 审批命令 | IPC `thread-follower-command-approval-decision` | ✓ 同意 / 拒绝 |
+| 回答模型提问 | IPC `thread-follower-submit-user-input` | ✓ |
+| 审批文件改动 / 权限、MCP 表单 | IPC 对应 follower 方法 | 协议已确认，未触发 |
+| 新会话 | 侧车 `thread/start` + `thread/name/set` + 放锁 → 打开 → 发消息 | ✓ |
+| 排队、目标 | 侧车 `thread/queue/*` / `thread/goal/*`，或 IPC 排队方法 | 侧车已验证，IPC 未验证 |
+| 切模型 / 档位 | IPC `thread-follower-update-thread-settings` | 未验证 |
 
-**原则：执行只发生在桌面 app-server。** 侧车只做读、排队、目标这类不发起推理的操作；
-它和桌面同时写一个会话的风险被限制在「排队」这一张官方本来就设计成多进程共享的表上。
+**原则：执行只发生在桌面窗口持有的会话里。** 侧车只读和建会话，建完立刻放掉写锁。
 
 ### 4.2 为什么不用其他路
 
 | 路线 | 问题 |
 |---|---|
 | 侧车 app-server 直接跑轮次（微信连接现在就这么做） | 桌面看不到实时输出；同一会话两个进程同时写 rollout 有损坏风险；审批落在侧车上，桌面不知道 |
-| CDP 驱动桌面页面 | 依赖页面结构与注入时机，脆；没开调试端口时不可用；每次 Codex 改版都要追 |
+| CDP / 注入脚本驱动桌面页面（点按钮、填输入框） | 依赖页面结构，脆；每次 Codex 改版都要追。只用注入发一条 `navigate-to-route` 页面消息，其余全走 IPC |
+| `codex://threads/wake/<id>` 排队唤醒 | 无头执行、无 owner、审批直接失败（P0 实测） |
 | `codex app-server --listen ws://` 单独起服务 | 同侧车，且等于把一个可执行任意命令的接口暴露到网络上 |
 | 官方 Remote Control | 见第 1 节 |
 
@@ -252,11 +260,11 @@ flowchart LR
 
 | 项 | 说明 | 应对 |
 |---|---|---|
-| 桌面必须在运行 | follower 和 wake 都依赖桌面；关闭时 `wake` 会拉起 Codex，但电脑休眠就无能为力 | 远程控制开启时提示保持唤醒；可选 `prevent_idle_sleep`；Codex++ 自身的启动器负责拉起 Codex |
-| 会话需要 owner | 没打开的会话只能读和排队 | 发消息统一走「排队 + wake」，执行后自然获得 owner |
-| 协议版本漂移 | IPC 方法版本、快照结构随 Codex 版本变 | 启动时从已装 app 抽版本表；快照字段做容错；不兼容时降级为只读 + 排队 |
-| `thread-follower-start-turn` 参数复杂 | `turnStart.request/context` 结构需要逐字段对齐 | 先统一走「排队 + wake」发消息，follower 只做插话、中断、审批 |
-| 侧车写入 | 侧车与桌面同时存在 | 侧车不跑推理，只读 / 排队 / 目标 |
+| 桌面必须在运行 | 所有执行都在桌面窗口里；电脑休眠就无能为力 | 远程控制开启时提示保持唤醒；可选 `prevent_idle_sleep`；Codex 没开时由 Codex++ 启动器拉起 |
+| 会话需要 owner | 没打开的会话只能读 | 注入脚本发 `navigate-to-route` 打开，0.5–3 秒成为 owner；桌面窗口会切到这个会话 |
+| 一个窗口同一时刻只显示一个会话 | 手机打开别的会话会切走桌面当前视图 | 已打开过的会话切走后仍保有 owner（P0 实测），可继续跟随；要不打扰桌面需研究多窗口 |
+| 协议版本漂移 | IPC 方法版本、快照结构随 Codex 版本变 | 启动时用 `ipc-versions.mjs` 的方法从已装 app 抽版本表；Codex 升级后跑 `run-p0.mjs` 回归；不兼容时降级为只读 |
+| 写锁 | 一个会话只能有一个 app-server 写；侧车占着时桌面打不开（`already has an active writer`） | 侧车 `thread_unload_delay_secs=0`，建完会话立刻 unsubscribe 并等它卸载；只读请求不占锁（P0 实测） |
 | iOS 后台 | PWA 切到后台 WebSocket 会断 | 依赖推送通知；回到前台时用 revision 增量补齐 |
 | Windows 多开 | 命名管道名固定，多个实例共用一个路由 | 按 owner 的 clientId 定位实例；按实例的 CODEX_HOME 区分侧车 |
 | 安全 | 远程审批等于远程执行 | 第 6 节 |
@@ -267,19 +275,105 @@ flowchart LR
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| P0 协议验证 | 用隔离的 Codex 实例打开一个会话，确认快照字段、`requests` 结构、审批 / 插话 / 中断请求的参数与返回 | 一个 Node 脚本能跟随会话、看到实时输出、在脚本里批准一条命令 |
-| P1 远程桥 | Rust：IPC 客户端（含版本表抽取）、侧车 app-server、wake、会话 / 排队 / 目标 / 审批 API、WebSocket 推送、配对与设备管理 | 本机浏览器能完成：看会话 → 发消息（排队 + wake）→ 实时输出 → 审批 |
+| P0 协议验证 ✅ | 用隔离的 Codex 实例打开一个会话，确认快照字段、`requests` 结构、审批 / 插话 / 中断请求的参数与返回 | `tools/remote-control-p0/run-p0.mjs` 12/12 通过（第 10 节） |
+| P1 远程桥 | Rust：IPC 客户端（含版本表抽取）、follower 状态机、侧车 app-server、注入脚本的打开会话入口、会话 / 审批 API、WebSocket 推送、配对与设备管理 | 本机浏览器能完成：看会话 → 打开 → 发消息 → 实时输出 → 审批 |
 | P2 手机 PWA + 局域网 | 前端；局域网 / Tailscale 监听；证书指纹配对；审计日志 | 手机在同一 Wi-Fi 下完成整套操作；吊销设备立即断开 |
 | P3 中继 | 中继服务、端到端加密、推送通知 | 手机在 4G 下能用；中继日志里看不到明文 |
 | P4 打磨 | 多设备、权限分级、附件、目标 / 队列面板、Windows 验证 | Windows / macOS 双平台通过 |
 
-### P0 需要补的实测
+### P0 之后仍待验证
 
-1. 打开会话后 `thread-stream-following-changed(following:true)` 是否立即收到 snapshot；`requests` 的完整字段。
-2. 三类审批请求的 `decision` / `response` 取值（与 app-server 的 `item/*/requestApproval` 对应）。
-3. owner 正在运行时，侧车 `thread/queue/add` + `wake` 的行为（是排队等待，还是立即插入）。
-4. `wake` 在 Codex 未启动时的冷启动表现（macOS `open -g`、Windows `start`）。
-5. Windows 命名管道的 uid 校验与多开下的路由行为。
+1. 文件改动审批、权限请求审批、MCP 表单回答：协议方法已确认，需要能触发它们的场景。
+2. `thread-follower-update-thread-settings`（手机切模型 / 推理档位）。
+3. IPC 排队方法（`thread-follower-set-queued-follow-ups-state` 等）的参数结构。
+4. Windows：命名管道 `\\.\pipe\codex-ipc`、多开时多个实例共用路由的行为。
+5. 用户在桌面上手动关掉 / 切走会话后，owner 何时失效（P0 里切走后仍保有 owner）。
+
+---
+
+## 10. P0 实测结果（2026-11-15）
+
+环境：从官方 zip 解包的 Codex 26.1111（build 27194，CLI 0.169.0-alpha.11.1），独立 `CODEX_HOME`、独立
+`--user-data-dir`；模型是本机的假 Responses 上游（`tools/remote-control-p0/mock-responses.mjs`），
+用标记触发命令审批、模型提问、慢速输出。全程没有连接用户自己的 `~/.codex` 和正在使用的 Codex。
+参考实现与回归脚本：[tools/remote-control-p0/](../../tools/remote-control-p0/README.md)，连续两次 12/12 通过。
+
+### 10.1 已跑通的链路
+
+| 链路 | 方法 | 结果 |
+|---|---|---|
+| 握手 | `initialize { clientType }` | 返回 `clientId` |
+| 找 owner | `thread-owner-discovery` | 返回 owner 的 `clientId` 与 `{ supportsUntrustedAppInput: true }` |
+| 跟随 | 广播 `thread-stream-following-changed { following: true }` + `thread-follower-load-complete-history` | 立即收到快照，之后持续收到补丁 |
+| 发消息 | `thread-follower-start-turn` | 桌面界面同步显示消息与流式回复 |
+| 同意命令 | `thread-follower-command-approval-decision { decision: "accept" }` | 命令在桌面执行，文件被创建 |
+| 拒绝命令 | 同上 `decision: "decline"` | 条目状态 `declined`，文件未创建 |
+| 插话 | `thread-follower-steer-turn` | 轮次里出现 `steeringUserMessage` / `steered`，模型收到插话 |
+| 中断 | `thread-follower-interrupt-turn { mode: "user-stop" }` | 轮次状态 `interrupted` |
+| 回答提问 | `thread-follower-submit-user-input` | 轮次里出现 `userInputResponse`，模型收到答案 |
+| 新建会话 | 侧车 `thread/start` + `thread/name/set` + 放锁 → 页面 `navigate-to-route` | 0.5–3.2 秒内成为 owner |
+
+### 10.2 参数要点
+
+```js
+// 发消息：context 给空对象即可
+{ conversationId, turnStart: {
+    request: { threadId, input: [{ type: "text", text, text_elements: [] }], clientUserMessageId },
+    context: {} } }
+
+// 插话：restoreMessage 不能为 null（owner 会读 cwd 和 context.commentAttachments）
+{ conversationId, input, clientUserMessageId, attachments: [], serviceTier: null,
+  restoreMessage: { id, text, cwd, context: { workspaceRoots: [cwd], commentAttachments: [], fileAttachments: [], collaborationMode: null } } }
+
+// 中断
+{ conversationId, mode: "user-stop", expectedTurnId }
+
+// 命令审批：decision 取自请求里的 availableDecisions
+//   "accept" | "decline" | "cancel" | { acceptWithExecpolicyAmendment: { execpolicy_amendment: [...] } }
+{ conversationId, requestId, decision }
+
+// 回答提问
+{ conversationId, requestId, response: { answers: { [questionId]: { answers: ["蓝色"] } } } }
+```
+
+待审批项在会话状态的 `requests` 数组里：
+
+```json
+{ "method": "item/commandExecution/requestApproval", "id": 0,
+  "params": { "threadId": "…", "turnId": "…", "itemId": "call_4", "reason": "…",
+              "command": "/bin/zsh -lc '…'", "cwd": "/tmp/codex-p0/work",
+              "commandActions": [{ "type": "unknown", "command": "…" }],
+              "proposedExecpolicyAmendment": ["touch", "…"],
+              "availableDecisions": ["accept", { "acceptWithExecpolicyAmendment": { "execpolicy_amendment": ["touch", "…"] } }, "cancel"] } }
+
+{ "method": "item/tool/requestUserInput", "id": 1,
+  "params": { "questions": [{ "id": "color", "header": "颜色", "question": "你喜欢哪个颜色？",
+              "isOther": true, "isSecret": false, "options": [{ "label": "红色", "description": "热情" }] }],
+              "isBlocking": false, "autoResolutionMs": null } }
+```
+
+### 10.3 状态同步
+
+- 快照：`{ type: "snapshot", revision, conversationState }`。历史在
+  `conversationState.turnHistory.history`（`islands[].entries[].value` → `entitiesByKey`），快照里的 `turns` 通常为空。
+- 补丁：`{ type: "patches", baseRevision, revision, patches }`，`patches` 是 immer 格式
+  `{ op: "add" | "replace" | "remove", path: [...], value }`，路径用数组。流式文字是对
+  `items[n].text` 的 `replace`。`baseRevision` 对不上时重新要一次快照。
+- 打开会话：页面接收 `window` 上的 `message` 事件
+  `{ type: "navigate-to-route", path: "/local/<threadId>" }`（主进程就是用它导航的）。
+
+### 10.4 踩到的坑
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 侧车新建的会话，桌面打开后一直没有 owner | 侧车 `thread/start` 后持有写锁，桌面 `thread/resume` 报 `thread … already has an active writer` | 侧车以 `-c thread_unload_delay_secs=0` 启动，建完会话 `thread/unsubscribe` 并等它卸载（约 200 ms）；默认延迟下 unsubscribe 3 秒内都不会卸载 |
+| 新会话别的进程读不到 | `thread/start` 后没有 rollout 文件 | `thread/name/set` 会落盘，且不往历史塞假消息 |
+| wake 后会话不在侧栏、没有 owner | 主进程直接 `resumeThread`，不经窗口 | 不用 wake |
+| wake 执行的轮次里命令被拒 | 无头执行时没有人接审批：`approval request failed` | 不用 wake |
+| 插话报 `Cannot read properties of null (reading 'cwd')` | `restoreMessage` 传了 null | 按 10.2 构造 |
+| 模型提问报 `request_user_input is unavailable in Default mode` | 默认模式下这个工具要开 `features.default_mode_request_user_input`（设置里的「Request user input」实验项）或用 Plan 模式 | 正式实现里提示用户 |
+| `thread-owner-discovery` 偶尔要等 5–10 秒才失败 | 路由器向所有客户端发 discovery，有客户端不回时等满 10 秒 | 本地超时设短；会话列表里优先查自己记录的 owner |
+| 用 `codex://` 测试 | macOS 交给默认的 Codex（用户正在用的那个） | 测试与正式实现都不用 deep link，改用页面消息 |
 
 ---
 
@@ -288,5 +382,6 @@ flowchart LR
 - IPC：`initialize` 成功，返回 `clientId`；对 25 个最近会话做 `thread-owner-discovery`，当时均为 `no-client-found`（Codex 停在首页）。
 - app-server 0.169：`thread/goal/set|get|clear`、`thread/queue/add|list|update|delete` 全部可用（需 `experimentalApi`）；
   `thread/goal/set` 支持 `tokenBudget`。
-- 跨进程队列：落盘后可互相看到，无推送通知，需 `wake`。
-- 探测脚本放在本机 `/tmp/codexapp-tools/`（`probe-ipc.mjs`、`probe-owners.mjs`、`probe-cross-queue.mjs`、`probe-goal-queue2.mjs`），未进仓库。
+- 跨进程队列：落盘后可互相看到，无推送通知。
+- 调研阶段的一次性探测脚本放在本机 `/tmp/codexapp-tools/`，未进仓库；P0 的参考实现与回归在 `tools/remote-control-p0/`。
+- 期间本机已安装的 Codex 由 Sparkle 自动升级到 26.1111；两个版本的 IPC 方法表只差 `thread-stream-state-changed`（11 → 13）。
