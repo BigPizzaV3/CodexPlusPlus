@@ -6,6 +6,8 @@
 //!   不经过 Mac 的输入法，中文 / 语音输入都能用；回车、退格、方向键等单独作为按键发。
 //! - 画面是 JPEG 二进制帧；尺寸等元数据变化时另发一条 JSON。Chromium 出一帧就确认，往网页只发最新一帧：
 //!   网络慢时丢掉没来得及发的旧帧，画面不会越积越落后。
+//! - 端到端流控：网页每画完一帧回 `frameAck`，路上最多 [`MAX_FRAMES_IN_FLIGHT`] 帧。光看「写进 socket」不够：
+//!   系统的发送缓冲能攒下好几帧，慢网下画面会落后零点几秒；等网页确认才发下一帧，网快就快、网慢就少发。
 //! - 它就是桌面上那个窗口：网页上的操作桌面同步可见。
 //! - 镜像期间打开 `Emulation.setFocusEmulationEnabled`：Codex 窗口失焦、被挡住、最小化时，页面仍当自己可见且有焦点，
 //!   照常出画面、收键盘（Chromium 会给页面加一个「正在被捕获」的计数，不再按隐藏处理）。连接断开后 Chromium 自动撤销。
@@ -28,8 +30,12 @@ const MIN_FRAME_SIDE: u32 = 200;
 const JPEG_QUALITY: u32 = 60;
 const REVALIDATE_EVERY: Duration = Duration::from_secs(3);
 const REVOKED: &str = "revoked";
-/// 往网页发画面的最短间隔（约 30 帧/秒）：Chromium 能出 60–90 帧，全发 Wi-Fi 吃不消，看起来也没差别。
-const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+/// 往网页发画面的最短间隔（约 60 帧/秒）：再快肉眼看不出，白占带宽；慢网由下面的流控自然降帧。
+const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// 网页还没确认的帧最多几帧：2 帧让传输和网页解码能重叠，又不会攒出延迟。
+pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+/// 等网页确认的最长时间：老页面不回确认、或者确认丢了，也不至于停住。
+const ACK_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// macOS 上 CDP 按键事件触发编辑命令要带 `commands`（Cmd+A 全选之类）；只放这些。
 const ALLOWED_COMMANDS: &[&str] = &[
@@ -161,6 +167,48 @@ pub fn screencast_params(message: &Value) -> Value {
     })
 }
 
+/// 端到端流控：记着网页还没确认的帧数。网页在 `start` 里声明 `acks: true` 才启用（老页面不回确认，照旧发）。
+#[derive(Default)]
+pub struct FrameFlow {
+    enabled: std::sync::atomic::AtomicBool,
+    in_flight: std::sync::atomic::AtomicUsize,
+    room: tokio::sync::Notify,
+}
+
+impl FrameFlow {
+    pub fn reset(&self, enabled: bool) {
+        use std::sync::atomic::Ordering;
+        self.enabled.store(enabled, Ordering::SeqCst);
+        self.in_flight.store(0, Ordering::SeqCst);
+        self.room.notify_waiters();
+    }
+
+    pub fn acked(&self) {
+        use std::sync::atomic::Ordering;
+        let _ = self.in_flight.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
+        self.room.notify_waiters();
+    }
+
+    /// 有空位就占一个返回；没有就等确认，最多等 [`ACK_TIMEOUT`]（超时也发，并把计数清零，免得一直卡住）。
+    pub async fn wait_for_room(&self) {
+        use std::sync::atomic::Ordering;
+        let deadline = tokio::time::Instant::now() + ACK_TIMEOUT;
+        loop {
+            let notified = self.room.notified();
+            if !self.enabled.load(Ordering::SeqCst) || self.in_flight.load(Ordering::SeqCst) < MAX_FRAMES_IN_FLIGHT {
+                break;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                self.in_flight.store(0, Ordering::SeqCst);
+                break;
+            }
+        }
+        if self.enabled.load(Ordering::SeqCst) {
+            self.in_flight.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
 /// 跑一个镜像会话，直到网页断开、Codex 页面关闭或设备被吊销。
 pub async fn run<S, F>(mut socket: WebSocketStream<S>, debug_port: u16, still_authorized: F) -> anyhow::Result<()>
 where
@@ -192,6 +240,7 @@ where
     let (mut sink, mut stream) = socket.split();
     let (text_tx, mut text_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let (frame_tx, mut frame_rx) = tokio::sync::watch::channel(Bytes::new());
+    let flow = FrameFlow::default();
     let writer = async {
         let mut next_frame_at = tokio::time::Instant::now();
         loop {
@@ -208,6 +257,8 @@ where
                         tokio::time::sleep_until(next_frame_at).await;
                         // 按节拍排下一帧，而不是从现在起算：等新帧到来的那点时间不累加进去，平均才到得了 30 帧。
                         next_frame_at = (next_frame_at + MIN_FRAME_INTERVAL).max(tokio::time::Instant::now());
+                        // 网页还有两帧没画完：等它确认（期间新来的帧继续覆盖，等完发的是最新那帧）。
+                        flow.wait_for_room().await;
                         Message::Binary(frame_rx.borrow_and_update().clone())
                     }
                     Err(_) => break,
@@ -231,7 +282,12 @@ where
                     };
                     let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
                     let sent = match message.get("type").and_then(Value::as_str) {
+                        Some("frameAck") => {
+                            flow.acked();
+                            Ok(())
+                        }
                         Some("start") => {
+                            flow.reset(message.get("acks").and_then(Value::as_bool).unwrap_or(false));
                             let stopped = cdp.send(command("Page.stopScreencast", json!({}))).await;
                             stopped.and(cdp.send(command("Page.startScreencast", screencast_params(&message))).await)
                         }

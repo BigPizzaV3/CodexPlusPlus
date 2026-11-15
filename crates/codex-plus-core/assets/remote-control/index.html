@@ -1786,7 +1786,8 @@
       const stage = $("mirrorStage");
       // 高分屏要的像素多、每帧大：长边最多 1920，够看清字，带宽少一半以上。
       const ratio = Math.min(window.devicePixelRatio || 1, 2, 1920 / Math.max(stage.clientWidth, stage.clientHeight, 1));
-      send({ type: "start", width: Math.round(stage.clientWidth * ratio), height: Math.round(stage.clientHeight * ratio) });
+      // acks：每画完一帧回 frameAck，服务端据此控制路上的帧数（网快就快、网慢就少发，不会攒出延迟）。
+      send({ type: "start", width: Math.round(stage.clientWidth * ratio), height: Math.round(stage.clientHeight * ratio), acks: true });
     }
 
     // 一帧画面（JPEG）：同时只解一帧，解码期间来的只留最新一帧，跟不上时丢旧帧，不会越画越落后。
@@ -1794,6 +1795,8 @@
     let pendingFrame = null;
     async function drawFrame(blob) {
       if (decoding) {
+        // 被新帧顶掉的旧帧也算处理完了，照样确认，不然服务端会一直等它。
+        if (pendingFrame) send({ type: "frameAck" });
         pendingFrame = blob;
         return;
       }
@@ -1808,6 +1811,7 @@
         bitmap.close?.();
         tip("");
       } catch {}
+      send({ type: "frameAck" });
       decoding = false;
       if (pendingFrame) {
         const next = pendingFrame;
@@ -1932,7 +1936,7 @@
       if (!touch.moved) return;
       // 手指拖动 = 滚动
       const { x, y, scale } = point(event);
-      send({ type: "wheel", x, y, deltaX: (touch.lastX - event.clientX) * scale, deltaY: (touch.lastY - event.clientY) * scale });
+      queueWheel(x, y, (touch.lastX - event.clientX) * scale, (touch.lastY - event.clientY) * scale, 0);
       touch.lastX = event.clientX;
       touch.lastY = event.clientY;
     });
@@ -1956,8 +1960,26 @@
       event.preventDefault();
       const { x, y, scale } = point(event);
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.getBoundingClientRect().height : 1;
-      send({ type: "wheel", x, y, deltaX: event.deltaX * unit * scale, deltaY: event.deltaY * unit * scale, modifiers: modifiersOf(event) });
+      queueWheel(x, y, event.deltaX * unit * scale, event.deltaY * unit * scale, modifiersOf(event));
     }, { passive: false });
+
+    // 触控板一秒上百个滚轮事件，逐个转给 Codex 它会排队、滚动发拖：一个刷新周期内的位移合并成一次发。
+    let wheel = null;
+    function queueWheel(x, y, deltaX, deltaY, modifiers) {
+      if (wheel && wheel.modifiers === modifiers) {
+        Object.assign(wheel, { x, y, deltaX: wheel.deltaX + deltaX, deltaY: wheel.deltaY + deltaY });
+        return;
+      }
+      if (wheel) flushWheel();
+      wheel = { x, y, deltaX, deltaY, modifiers };
+      requestAnimationFrame(flushWheel);
+    }
+    function flushWheel() {
+      if (!wheel) return;
+      const { x, y, deltaX, deltaY, modifiers } = wheel;
+      wheel = null;
+      if (deltaX || deltaY) send({ type: "wheel", x, y, deltaX, deltaY, modifiers });
+    }
 
     // ---------- 键盘与输入法 ----------
     /** macOS 上 Cmd / Option 组合键要带编辑命令，Codex 里才会执行（全选、撤销、按词移动……）。 */

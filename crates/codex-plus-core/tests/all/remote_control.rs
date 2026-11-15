@@ -949,3 +949,41 @@ fn both_styles_accept_pasted_and_dropped_files() {
         assert!(page.contains(area), "缺少 {area}");
     }
 }
+
+/// 桌面镜像端到端流控：网页声明 acks 后，路上最多两帧，确认一帧才放下一帧；老页面不声明就不等；
+/// 确认丢了也只卡一小会儿。网页端合并滚轮、画完一帧回确认。
+#[test]
+fn mirror_frames_wait_for_page_acks() {
+    use codex_plus_core::remote_control::mirror::{FrameFlow, MAX_FRAMES_IN_FLIGHT};
+    use std::sync::Arc;
+    use std::time::Duration;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    runtime.block_on(async {
+        let flow = Arc::new(FrameFlow::default());
+        // 没声明 acks：从不等
+        for _ in 0..5 {
+            tokio::time::timeout(Duration::from_millis(50), flow.wait_for_room()).await.expect("老页面不等确认");
+        }
+        flow.reset(true);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            tokio::time::timeout(Duration::from_millis(50), flow.wait_for_room()).await.expect("有空位直接发");
+        }
+        assert!(tokio::time::timeout(Duration::from_millis(100), flow.wait_for_room()).await.is_err(), "两帧没确认就要等");
+        let waiter = tokio::spawn({
+            let flow = flow.clone();
+            async move { flow.wait_for_room().await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        flow.acked();
+        tokio::time::timeout(Duration::from_millis(200), waiter).await.expect("确认一帧就放行").unwrap();
+        // 确认丢了：最多等一小会儿也会发，不会一直停住
+        let started = std::time::Instant::now();
+        flow.wait_for_room().await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+    });
+
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(page.contains("acks: true });"), "网页声明会回确认");
+    assert!(page.matches(r#"send({ type: "frameAck" });"#).count() >= 2, "画完、被顶掉的帧都要确认");
+    assert!(page.contains("function queueWheel(") && !page.contains(r#"send({ type: "wheel", x, y, deltaX: event.deltaX"#), "滚轮合并后再发");
+}
