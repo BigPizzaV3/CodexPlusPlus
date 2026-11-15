@@ -34,6 +34,7 @@ import {
   maskAccountName,
   relativeTime,
   type ImageOption,
+  type VideoOption,
   imageModelLabel,
   isFavoriteModel,
   toggleFavoriteModel,
@@ -621,6 +622,8 @@ function AgentDetail({
         {agent.ownModels ? <OwnModelsRow agent={agent} busy={busy} payload={payload} run={run} /> : null}
         {/* 目前只有 Codex 自己会发生图请求；别的 Agent 有了生图工具再显示。 */}
         {agent.agent === "codex" ? <ImageModelRow agent={agent.agent} busy={busy} payload={payload} run={run} /> : null}
+        {/* 视频路由对外是通用 OpenAI Videos；任何接入的 Agent 都可以调用。 */}
+        <VideoModelRow agent={agent.agent} busy={busy} payload={payload} run={run} />
         {/* Codex 给会话起名时另开临时线程（首次用内置轻量模型，重新起名用会话当前模型），默认照原模型路由，可单独指定。 */}
         {agent.agent === "codex" ? (
           <SetLine hint={t("给会话起名用；不指定时跟 Codex 自己选的一样")} title={t("起名模型")} tooltip={t("Codex 给会话起名、重新起名的请求发给这个模型；不指定时照 Codex 自己选的模型路由")}>
@@ -1136,6 +1139,45 @@ function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: 
         </SetLine>
       ) : null}
     </>
+  );
+}
+
+function videoOptionLabel(option: VideoOption): string {
+  return `${maskAccountName(shortProviderName(option.providerName))} · ${option.model}`;
+}
+
+/** Agent 详情里的「视频模型」：创建任务时经网关发给谁，任务创建后固定在这家轮询。 */
+function VideoModelRow({ agent, payload, busy, run }: { agent: string; payload: GatewayPayload | null; busy: string | null; run: Run }) {
+  const value = payload?.gateway.videoModels?.[agent] ?? "";
+  const options = payload?.videoOptions ?? [];
+  const auto = payload?.videoAuto ?? null;
+  const known = value === "" || value === "off" || options.some((option) => option.id === value);
+  const items = [
+    { value: "", label: auto ? tf("自动 · {0}", [videoOptionLabel(auto)]) : t("自动"), hint: t("按供应商池顺序每家试一次；创建成功后固定在这家轮询") },
+    ...options.map((option) => ({
+      value: option.id,
+      label: videoOptionLabel(option),
+      hint: tf("只发给这一家 · {0} 适配器", [option.adapter]),
+    })),
+    ...(known ? [] : [{ value, label: tf("{0}（已不可用）", [value]), hint: t("所在的供应商已删除或关闭") }]),
+    { value: "off", label: t("关闭"), hint: t("视频请求直接报错") },
+  ];
+  return (
+    <SetLine
+      hint={value === "" && !auto ? t("池里还没有视频模型：给供应商的模型列表加上视频模型名") : t("视频任务创建和轮询发给谁")}
+      title={t("视频模型")}
+      tooltip={t("网关对外使用 OpenAI 风格的异步 Videos 接口；创建任务时会按供应商适配器转换请求，任务 ID 固定到创建它的供应商。")}
+    >
+      <AppSelect
+        className="gw-image-select"
+        disabled={busy !== null}
+        label={t("视频模型")}
+        menuWidth={320}
+        onChange={(next) => void run(`video:${agent}`, "save_gateway_video_model", { agent, model: next }, t("保存视频模型"), true)}
+        options={items}
+        value={value}
+      />
+    </SetLine>
   );
 }
 

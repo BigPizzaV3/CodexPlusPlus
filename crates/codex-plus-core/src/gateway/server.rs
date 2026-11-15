@@ -9,6 +9,9 @@
 //! | `GET /gw/grok/v1/models` | Grok | 模型列表（OpenAI 格式） |
 //! | `POST /gw/codex/v1/responses` | Codex | Responses，同上（保留 ChatGPT 订阅后端的私有事件） |
 //! | `POST /gw/<agent>/v1/images/generations`、`/images/edits` | 任意 | 生图，发给这个 Agent 的「生图模型」（见 [`crate::gateway::images`]） |
+//! | `POST /gw/<agent>/v1/videos` | 任意 | 创建视频任务（OpenAI 风格异步 Videos，见 [`crate::gateway::video`]） |
+//! | `GET /gw/<agent>/v1/videos/{id}` | 任意 | 轮询固定供应商上的视频任务 |
+//! | `GET /gw/<agent>/v1/videos/{id}/content` | 任意 | 下载视频文件 |
 //!
 //! 身份靠路径，鉴权靠网关签发给该 Agent 的本地 token（`x-api-key` 或 `Authorization: Bearer`）。
 
@@ -176,6 +179,35 @@ pub(crate) async fn handle(
     }
     // 查询串（Gemini 的 `?alt=sse`、`?key=`）不参与路由。
     let tail = tail.split('?').next().unwrap_or_default().to_string();
+    if method == "POST" && tail == "/videos" {
+        let user_agent = header_value_from_headers(headers, "user-agent");
+        return handle_video_create(
+            stream,
+            &gateway,
+            &agent,
+            body,
+            user_agent.as_deref(),
+            path,
+            remote_addr_text,
+        )
+        .await;
+    }
+    if method == "GET"
+        && let Some((video_id, wants_content)) = parse_video_path(&tail)
+    {
+        let user_agent = header_value_from_headers(headers, "user-agent");
+        return handle_video_get(
+            stream,
+            &gateway,
+            &agent,
+            video_id,
+            wants_content,
+            user_agent.as_deref(),
+            path,
+            remote_addr_text,
+        )
+        .await;
+    }
     if matches!(agent, ToolId::Unknown(_))
         && let Some((model, action)) = crate::gateway::gemini_inbound::parse_gemini_path(&tail)
     {
@@ -479,6 +511,114 @@ async fn handle_images(
     let message = format!("生图失败：{last_error}");
     log.record_error("502", message.clone());
     write_error(stream, agent, 502, &message).await
+}
+
+/// `/videos/{id}` 或 `/videos/{id}/content`。
+fn parse_video_path(tail: &str) -> Option<(&str, bool)> {
+    let rest = tail.strip_prefix("/videos/")?;
+    let (id, wants_content) = match rest.strip_suffix("/content") {
+        Some(id) => (id, true),
+        None => (rest, false),
+    };
+    (!id.is_empty() && !id.contains('/')).then_some((id, wants_content))
+}
+
+async fn handle_video_create(
+    stream: &mut tokio::net::TcpStream,
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    body: &[u8],
+    user_agent: Option<&str>,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    match crate::gateway::video::create(gateway, agent, body, user_agent).await {
+        Ok(value) => {
+            let body = serde_json::to_vec(&value)?;
+            write_http_response(stream, "200 OK", JSON, &body).await?;
+            log_helper_response(
+                "gateway.video_created",
+                "POST",
+                path,
+                "200 OK",
+                remote_addr_text,
+            );
+        }
+        Err(error) => {
+            log_helper_response(
+                "gateway.video_create_error",
+                "POST",
+                path,
+                &crate::protocol_proxy::http_status_line(error.status),
+                remote_addr_text,
+            );
+            return write_error(stream, agent, error.status, &error.message).await;
+        }
+    }
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn handle_video_get(
+    stream: &mut tokio::net::TcpStream,
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    video_id: &str,
+    wants_content: bool,
+    user_agent: Option<&str>,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    if wants_content {
+        match crate::gateway::video::content(gateway, agent, video_id, user_agent).await {
+            Ok(content) => {
+                write_http_response(stream, "200 OK", &content.content_type, &content.body).await?;
+                log_helper_response(
+                    "gateway.video_content_ok",
+                    "GET",
+                    path,
+                    "200 OK",
+                    remote_addr_text,
+                );
+            }
+            Err(error) => {
+                log_helper_response(
+                    "gateway.video_content_error",
+                    "GET",
+                    path,
+                    &crate::protocol_proxy::http_status_line(error.status),
+                    remote_addr_text,
+                );
+                return write_error(stream, agent, error.status, &error.message).await;
+            }
+        }
+    } else {
+        match crate::gateway::video::status(gateway, agent, video_id, user_agent).await {
+            Ok(value) => {
+                let body = serde_json::to_vec(&value)?;
+                write_http_response(stream, "200 OK", JSON, &body).await?;
+                log_helper_response(
+                    "gateway.video_status_ok",
+                    "GET",
+                    path,
+                    "200 OK",
+                    remote_addr_text,
+                );
+            }
+            Err(error) => {
+                log_helper_response(
+                    "gateway.video_status_error",
+                    "GET",
+                    path,
+                    &crate::protocol_proxy::http_status_line(error.status),
+                    remote_addr_text,
+                );
+                return write_error(stream, agent, error.status, &error.message).await;
+            }
+        }
+    }
+    stream.shutdown().await?;
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1661,6 +1801,22 @@ mod tests {
             ))
         );
         assert_eq!(split_gateway_path("/v1/messages"), None);
+    }
+
+    #[test]
+    fn video_paths_allow_status_and_content_only() {
+        assert_eq!(
+            parse_video_path("/videos/video_123"),
+            Some(("video_123", false))
+        );
+        assert_eq!(
+            parse_video_path("/videos/video_123/content"),
+            Some(("video_123", true))
+        );
+        assert_eq!(parse_video_path("/videos"), None);
+        assert_eq!(parse_video_path("/videos/"), None);
+        assert_eq!(parse_video_path("/videos/a/b"), None);
+        assert_eq!(parse_video_path("/videos/a/content/extra"), None);
     }
 
     #[test]

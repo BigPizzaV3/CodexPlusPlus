@@ -11,6 +11,7 @@
 //! - [`quota`]：订阅账号的剩余额度；[`speed`]：各上游的响应速度（模型组「额度优先」「速度优先」用）；
 //! - [`activity`]：路由动态（最近一次请求怎么走的、计数），供界面实时展示；
 //! - [`images`]：生图请求（`/images/generations`、`/images/edits`）发给哪家；
+//! - [`video`]：视频任务（`/videos`、`/videos/{id}`、`/videos/{id}/content`）发给哪家；
 //! - [`model_sync`]：重新拉上游模型、补公开价格、定期检查新模型；
 //! - [`meta_sync`]：从上游 `/models` 的元数据同步上下文窗口和思考等级（先列差异，确认后写入）；
 //! - [`usage`]：按天汇总的用量统计；[`balance`]：供应商余额；[`sessions`]：各 Agent 的本地会话；
@@ -56,6 +57,7 @@ pub mod store;
 mod subagent_models;
 pub mod subscriptions;
 pub mod usage;
+pub mod video;
 
 /// helper 收到的路径是否归网关处理。
 pub fn is_gateway_path(path: &str) -> bool {

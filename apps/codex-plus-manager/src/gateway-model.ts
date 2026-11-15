@@ -57,6 +57,8 @@ export type GatewaySettings = {
   favoriteModels?: string[];
   /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
   imageModels?: Record<string, string>;
+  /** 各 Agent 的视频模型：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
+  videoModels?: Record<string, string>;
   /** 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转）。 */
   imageKeepUrls?: string[];
   /** 模型下拉里不列自带模型的 Agent（默认都列）。 */
@@ -82,6 +84,8 @@ export type GatewayPoolEntry = {
   modelPrices?: Record<string, ProviderPrice>;
   /** 能画图的模型（不进聊天模型列表）；ChatGPT 账号是内置的一项。旧版后端没有。 */
   imageModels?: string[];
+  /** 能生成视频的模型（不进聊天模型列表）。旧版后端没有。 */
+  videoModels?: string[];
   /** 按模型的模型资料（思考等级等）JSON，格式同直连模式的「模型配置」。 */
   modelMetadata?: string;
   /** 按模型的上下文窗口（上游模型名 → token）；没写的模型用 `contextWindow`。 */
@@ -316,6 +320,10 @@ export type GatewayPayload = {
   imageOptions?: ImageOption[];
   /** 生图选「自动」时先用的那一项。 */
   imageAuto?: ImageOption | null;
+  /** 「视频模型」能选的：各家的视频模型（旧版后端没有）。 */
+  videoOptions?: VideoOption[];
+  /** 视频选「自动」时先用的那一项。 */
+  videoAuto?: VideoOption | null;
 };
 
 export type ImageOption = {
@@ -326,6 +334,16 @@ export type ImageOption = {
   model: string;
   /** ChatGPT 订阅账号：后端自己选生图模型。 */
   vendorPicks: boolean;
+};
+
+export type VideoOption = {
+  /** 存进 `videoModels` 的值：`<供应商 id>/<模型>`。 */
+  id: string;
+  providerId: string;
+  providerName: string;
+  model: string;
+  /** 网关对外统一用 OpenAI 风格 Videos；这里是供应商侧的协议适配器。 */
+  adapter: "openAi" | "xai" | "dashScope";
 };
 
 /**

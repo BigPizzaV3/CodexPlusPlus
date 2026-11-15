@@ -43,7 +43,11 @@ export function ProviderTestDialog({
 }) {
   const subscriptionBlocked = subscriptionBlockReason(entry);
   const imageModels = (entry.imageModels ?? []).map((model) => model.toLowerCase());
-  const models = entry.models.filter((model) => !imageModels.includes(model.toLowerCase()));
+  const videoModels = (entry.videoModels ?? []).map((model) => model.toLowerCase());
+  const models = entry.models.filter((model) => {
+    const lower = model.toLowerCase();
+    return !imageModels.includes(lower) && !videoModels.includes(lower);
+  });
   if (initialModel && !models.includes(initialModel)) models.unshift(initialModel);
   const keys = entry.keys ?? [];
   const [model, setModel] = useState(initialModel ?? models[0] ?? "");

@@ -37,7 +37,8 @@ const IMAGE_MODEL_MARKS: &[&str] = &[
 pub fn is_image_model(model: &str) -> bool {
     let model = model.trim().to_ascii_lowercase();
     let name = model.rsplit('/').next().unwrap_or(&model);
-    IMAGE_MODEL_MARKS.iter().any(|mark| name.contains(mark))
+    !crate::gateway::video::is_video_model(name)
+        && IMAGE_MODEL_MARKS.iter().any(|mark| name.contains(mark))
 }
 
 /// ChatGPT 订阅账号：走 ChatGPT 后端的生图接口，模型由后端自己选。

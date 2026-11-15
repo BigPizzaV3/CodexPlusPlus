@@ -496,6 +496,7 @@ pub fn run() {
             gateway_commands::save_gateway_provider_metadata,
             gateway_commands::gateway_provider_reasoning,
             gateway_commands::save_gateway_image_model,
+            gateway_commands::save_gateway_video_model,
             gateway_commands::save_gateway_image_inline,
             tray_panel::tray_panel_action,
             tray_panel::tray_panel_enabled,

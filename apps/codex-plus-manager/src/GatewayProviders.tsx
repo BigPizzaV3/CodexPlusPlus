@@ -634,9 +634,11 @@ function PoolRow({
   const [limitsOpen, setLimitsOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [windowsOpen, setWindowsOpen] = useState(false);
-  // 生图模型单独一行，「模型」里只列能聊天的。
+  // 生图和视频模型单独列，「模型」里只列能聊天的。
   const imageModels = entry.imageModels ?? [];
-  const chatModels = entry.models.filter((model) => !imageModels.some((image) => image.toLowerCase() === model.toLowerCase()));
+  const videoModels = entry.videoModels ?? [];
+  const specializedModels = [...imageModels, ...videoModels].map((model) => model.toLowerCase());
+  const chatModels = entry.models.filter((model) => !specializedModels.includes(model.toLowerCase()));
   const [allModels, setAllModels] = useState(false);
   const modelsCollapsible = chatModels.length > MODEL_CHIP_COLLAPSE;
   const shownModels = modelsCollapsible && !allModels ? chatModels.slice(0, MODEL_CHIP_PREVIEW) : chatModels;
@@ -791,6 +793,17 @@ function PoolRow({
                 {imageModels.map((model) => <code className="gw-chip" key={model}>{imageModelLabel(model, entry.account === "chatgpt")}</code>)}
               </div>
               <span className="gw-detail-actions gw-detail-hint" title={entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}>
+                {t("在「Agent 接入」里选用")}
+              </span>
+            </div>
+          ) : null}
+          {videoModels.length ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("视频模型")}</span>
+              <div className="gw-detail-value gw-chip-row">
+                {videoModels.map((model) => <code className="gw-chip" key={model}>{model}</code>)}
+              </div>
+              <span className="gw-detail-actions gw-detail-hint" title={t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}>
                 {t("在「Agent 接入」里选用")}
               </span>
             </div>

@@ -75,7 +75,7 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | Subscriptions and relays · new | Sign in to ChatGPT, ChatGPT API, GitHub Copilot, and SuperGrok inside the gateway and see remaining quota; sub2api / new-api relays are detected with their multiplier and balance |
 | Usage and request log · new | Daily cost, tokens, cache hits, and calls broken down by agent, provider, or model; every request with status, retries, time to first token, tokens, cache, estimated cost, and the failure reason |
 | Direct mode | Official login, official login plus API, pure API, and aggregate providers (Failover / Model aggregation); Responses / Chat Completions; model tests, Provider Doctor, third-party and deep-link imports |
-| Models and context | Per-model context windows, prices, and reasoning levels; `model_catalog_json`; per-provider proxies; image generation models per agent |
+| Models and context | Per-model context windows, prices, and reasoning levels; `model_catalog_json`; per-provider proxies; image and video generation models per agent |
 | Computer Use sharing | Expose the Computer Use and Chrome browser control built into the Codex desktop app (ChatGPT.app) over MCP to Claude Code, Claude Desktop, Codex CLI, DeepSeek Harness, ZCode, and WorkBuddy, with a selectable approval policy (macOS) |
 | Claude Desktop | An enhanced Claude.app copy with Chinese UI, composer dictation, and Computer Use; the official app stays untouched |
 | Session management | Codex, Claude Code, Claude Desktop, and Grok sessions in one list; bulk deletion with undo, Markdown export, project move, thread IDs, opt-in [turn rewind](docs/turn-rewind.md), and side chats saved as ordinary conversations |

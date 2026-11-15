@@ -713,6 +713,10 @@ pub struct GatewaySettings {
     /// `off` 是关闭，其余是 `<供应商 id>/<模型>`。不放在 [`AgentBinding`] 里：界面保存绑定时整份替换。
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
     pub image_models: BTreeMap<String, String>,
+    /// 各 Agent 的视频模型（键是 Agent id）：没有或空串是自动（见 [`crate::gateway::video`]），
+    /// `off` 是关闭，其余是 `<供应商 id>/<模型>`。
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BTreeMap::is_empty")]
+    pub video_models: BTreeMap<String, String>,
     /// 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转，见 [`Self::inline_image_urls_for`]）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_keep_urls: Vec<String>,
@@ -757,6 +761,7 @@ impl Default for GatewaySettings {
             auto_groups: BTreeMap::new(),
             favorite_models: Vec::new(),
             image_models: BTreeMap::new(),
+            video_models: BTreeMap::new(),
             image_keep_urls: Vec::new(),
             hide_own_models: Vec::new(),
             subagent_model_follow_request: false,
@@ -777,6 +782,14 @@ impl GatewaySettings {
     /// 某个 Agent 的生图模型设置（空串是自动）。
     pub fn image_model_for(&self, agent: &ToolId) -> &str {
         self.image_models
+            .get(agent.as_str())
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+
+    /// 某个 Agent 的视频模型设置（空串是自动）。
+    pub fn video_model_for(&self, agent: &ToolId) -> &str {
+        self.video_models
             .get(agent.as_str())
             .map(String::as_str)
             .unwrap_or_default()
@@ -1352,6 +1365,50 @@ mod tests {
         store.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("[\"glm-5.3\""), "坏数组不应写回：{text}");
+    }
+
+    #[test]
+    fn video_models_default_to_empty_and_round_trip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("gateway.json");
+        fs::write(&path, r#"{ "version": 4 }"#).unwrap();
+        let store = GatewayStore::at(path.clone());
+        let mut settings = store.load().unwrap();
+        assert!(settings.video_models.is_empty());
+        assert_eq!(settings.video_model_for(&ToolId::Codex), "");
+
+        settings.video_models.insert(
+            ToolId::Codex.as_str().to_string(),
+            "qwen/wan2.7-video".to_string(),
+        );
+        store.save(&settings).unwrap();
+        let saved = store.load().unwrap();
+        assert_eq!(saved.video_model_for(&ToolId::Codex), "qwen/wan2.7-video");
+        assert_eq!(saved.video_model_for(&ToolId::Grok), "");
+    }
+
+    #[test]
+    fn array_shaped_top_level_video_models_does_not_break_parse() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("gateway.json");
+        fs::write(
+            &path,
+            r#"{ "version": 4, "videoModels": ["wan2.7-video", "veo-3"] }"#,
+        )
+        .unwrap();
+        let store = GatewayStore::at(path.clone());
+        let settings = store.load().unwrap();
+        assert!(
+            settings.video_models.is_empty(),
+            "数组型 videoModels 被丢弃成空 map：{:?}",
+            settings.video_models
+        );
+        store.save(&settings).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("[\"wan2.7-video\""),
+            "坏数组不应写回：{text}"
+        );
     }
 
     #[test]

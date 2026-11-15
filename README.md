@@ -265,7 +265,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 ### Agent 接入：开关一拨就接上
 
-给 Agent 打开开关就经网关接入，选它默认用哪个模型；Claude Code 还能分别指定 opus / sonnet / haiku 用哪个模型。接入前会存档 Agent 的配置文件，断开时只还原网关改过的那几项。
+给 Agent 打开开关就经网关接入，选它默认用哪个模型；Claude Code 还能分别指定 opus / sonnet / haiku 用哪个模型。生图和视频模型也在 Agent 详情里单独选择，不会混进聊天模型列表。接入前会存档 Agent 的配置文件，断开时只还原网关改过的那几项。
 
 <p align="center">
   <img src="docs/images/readme-preview/gateway-agents.webp" alt="Agent 接入：Codex 与 Claude Code 已接入网关，Grok 未接入" width="100%">

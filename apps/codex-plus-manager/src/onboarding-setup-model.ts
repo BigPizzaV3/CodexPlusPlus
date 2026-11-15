@@ -67,7 +67,9 @@ export function shouldShowSetup(storedSetup: string | null, storedTour: string |
 
 function chatModel(entry: GatewayPoolEntry, model: string): boolean {
   const lower = model.trim().toLowerCase();
-  return Boolean(lower) && !(entry.imageModels ?? []).some((image) => image.toLowerCase() === lower);
+  return Boolean(lower)
+    && !(entry.imageModels ?? []).some((image) => image.toLowerCase() === lower)
+    && !(entry.videoModels ?? []).some((video) => video.toLowerCase() === lower);
 }
 
 function probeCandidates(payload: GatewayPayload, model: string, exclude: string[]): SetupProbeCandidate[] {
@@ -181,6 +183,7 @@ export function setupGatewayState(focus: AgentFocus, payload: GatewayPayload | n
       official: entry.official,
       models: entry.models,
       imageModels: entry.imageModels,
+      videoModels: entry.videoModels,
       account: entry.account,
       keyCount: entry.keyCount,
       keys: entry.keys?.map(({ id, masked }) => ({ id, masked })),

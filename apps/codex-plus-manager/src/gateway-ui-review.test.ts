@@ -236,6 +236,17 @@ test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思
   assert.match(read("GatewayProviders.tsx"), /"save_gateway_provider_metadata", \{ id: entry\.id, modelMetadata \}/);
 });
 
+test("视频模型与生图模型分开选；通用 Videos 路由按 Agent 固定创建供应商", () => {
+  const agents = read("GatewayAgents.tsx");
+  assert.match(agents, /"save_gateway_video_model", \{ agent, model: next \}/);
+  assert.match(agents, /<VideoModelRow agent=\{agent\.agent\}/, "所有接入 Agent 都能使用通用视频路由");
+  assert.match(agents, /创建成功后固定在这家轮询/);
+  const providers = read("GatewayProviders.tsx");
+  assert.match(providers, /const videoModels = entry\.videoModels \?\? \[\]/);
+  assert.match(providers, /t\("视频模型"\)/, "供应商详情单独列出视频模型");
+  assert.match(read("gateway-model.ts"), /videoOptions\?: VideoOption\[\]/);
+});
+
 test("用量与请求日志并成一页：两个页签各是一条路由，统计表点一行跳到请求并筛选", () => {
   const app = read("App.tsx");
   assert.match(app, /route === "gatewayUsage" \|\| route === "requestLog" \? <UsageTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);

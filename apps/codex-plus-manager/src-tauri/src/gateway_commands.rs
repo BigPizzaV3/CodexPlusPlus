@@ -45,6 +45,8 @@ pub struct GatewayPoolEntry {
         std::collections::BTreeMap<String, codex_plus_core::gateway::store::ProviderPrice>,
     /// 能画图的模型（不进聊天模型列表）：ChatGPT 账号是内置的一项，其余按名字挑。
     pub image_models: Vec<String>,
+    /// 能生成视频的模型（不进聊天模型列表），按模型名从模型列表里挑。
+    pub video_models: Vec<String>,
     /// 按模型的模型资料（思考等级等），格式同直连模式的「模型配置」JSON。
     pub model_metadata: String,
     /// 按模型的上下文窗口（上游模型名 → token）。
@@ -190,6 +192,10 @@ pub struct GatewayPayload {
     pub image_options: Vec<codex_plus_core::gateway::images::ImageOption>,
     /// 生图选「自动」时先用的那一项。
     pub image_auto: Option<codex_plus_core::gateway::images::ImageOption>,
+    /// 「视频模型」能选的：各家的视频模型；旧版后端没有。
+    pub video_options: Vec<codex_plus_core::gateway::video::VideoOption>,
+    /// 视频选「自动」时先用的那一项。
+    pub video_auto: Option<codex_plus_core::gateway::video::VideoOption>,
 }
 
 const GATEWAY_AGENTS: &[ToolId] = &[ToolId::Codex, ToolId::Claude, ToolId::Grok];
@@ -253,6 +259,7 @@ fn pool_entry(
         auto_compact: Default::default(),
         model_metadata: relay.model_metadata.clone(),
         image_models: codex_plus_core::gateway::images::provider_image_models(relay),
+        video_models: codex_plus_core::gateway::video::provider_video_models(relay),
         account: account_kind(relay),
         plan: codex_plus_core::gateway::accounts::account_plan(relay),
         lent_to_codex: codex_plus_core::official_login::is_lent_to_codex(relay),
@@ -470,11 +477,15 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
     // 生图选项要在清掉供应商之前算。
     let image_options = codex_plus_core::gateway::images::options(&gateway);
     let image_auto = codex_plus_core::gateway::images::auto_choice(&gateway);
+    let video_options = codex_plus_core::gateway::video::options(&gateway);
+    let video_auto = codex_plus_core::gateway::video::auto_choice(&gateway);
     let mut gateway = gateway;
     gateway.providers.clear();
     GatewayPayload {
         image_options,
         image_auto,
+        video_options,
+        video_auto,
         gateway,
         port,
         helper_running,
@@ -1171,6 +1182,29 @@ pub fn save_gateway_image_model(
         Ok(())
     });
     respond("生图模型已保存。", "保存生图模型失败", result)
+}
+
+/// 某个 Agent 的视频模型：空串是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。
+#[tauri::command]
+pub fn save_gateway_video_model(
+    agent: String,
+    model: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        GatewayStore::default().update(|gateway| {
+            let model = model.trim();
+            if model.is_empty() {
+                gateway.video_models.remove(agent.as_str());
+            } else {
+                gateway
+                    .video_models
+                    .insert(agent.as_str().to_string(), model.to_string());
+            }
+            Ok(())
+        })?;
+        Ok(())
+    });
+    respond("视频模型已保存。", "保存视频模型失败", result)
 }
 
 /// 某个 Agent 的生图结果只给链接时，要不要下载下来补成图片数据（默认要）。
