@@ -659,3 +659,60 @@ fn web_page_groups_sessions_by_project() {
     assert!(page.contains(r#"const cwd = state.project !== null ? state.project : $("newCwd").value.trim();"#), "项目里新建会话用该项目的目录");
     assert!(page.contains(r#"el("span", "count", ` (${project.threads.length})`)"#), "项目后显示会话数");
 }
+
+/// 后台执行：网页回答转成 app-server 的回包（和桌面 follower 协议的字段不同）。
+#[test]
+fn background_answers_map_to_app_server_results() {
+    use codex_plus_core::remote_control::headless::app_server_result;
+    assert_eq!(
+        app_server_result("item/commandExecution/requestApproval", &json!({ "decision": "accept" })).unwrap(),
+        json!({ "decision": "accept" }),
+        "不能带 requestId：那是桌面 follower 协议的字段"
+    );
+    assert_eq!(
+        app_server_result("item/fileChange/requestApproval", &json!({ "decision": "decline" })).unwrap(),
+        json!({ "decision": "decline" })
+    );
+    assert_eq!(
+        app_server_result("item/tool/requestUserInput", &json!({ "answers": { "q": { "answers": ["蓝色"] } } })).unwrap(),
+        json!({ "answers": { "q": { "answers": ["蓝色"] } } })
+    );
+    let grant = json!({ "permissions": {}, "scope": "turn" });
+    assert_eq!(app_server_result("item/permissions/requestApproval", &json!({ "response": grant })).unwrap(), grant);
+    assert!(app_server_result("item/commandExecution/requestApproval", &json!({})).is_err(), "缺 decision 要报错");
+    assert!(app_server_result("item/tool/call", &json!({})).is_err());
+}
+
+/// 后台执行的权限预设映射到 app-server 的沙箱策略，计划模式不支持。
+#[test]
+fn background_permission_presets_map_to_sandbox_policies() {
+    use codex_plus_core::remote_control::follower::{PERMISSION_PRESETS, permission_mode_of};
+    use codex_plus_core::remote_control::headless::{headless_supports, sandbox_policy_for};
+    for preset in PERMISSION_PRESETS {
+        let settings = json!({
+            "sandboxPolicy": sandbox_policy_for(preset.profile),
+            "approvalPolicy": preset.approval_policy,
+            "approvalsReviewer": preset.reviewer,
+        });
+        assert_eq!(permission_mode_of(&settings), preset.id, "后台发出的设置读回来要是同一个预设：{}", preset.id);
+    }
+    assert!(headless_supports("default"));
+    assert!(!headless_supports("plan"), "turn/start 没有协作模式字段");
+}
+
+/// 后台执行的接线：没在桌面打开的会话发消息不再让桌面打开它。
+#[test]
+fn sending_to_unopened_thread_runs_in_background() {
+    let service = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/remote_control/service.rs")).unwrap();
+    let send = &service[service.find("pub async fn send(").unwrap()..];
+    let send = &send[..send.find("\n    }\n").unwrap()];
+    assert!(!send.contains("open_thread"), "发消息不能让桌面打开会话");
+    assert!(send.contains("ensure_headless"), "没在桌面打开的会话走后台");
+    let create = &service[service.find("pub async fn create_thread(").unwrap()..];
+    let create = &create[..create.find("\n    }\n").unwrap()];
+    assert!(!create.contains("open_thread"), "新建会话也不让桌面打开");
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(!page.contains("正在桌面打开会话…\");\n      await api(\"POST\", `/threads/${state.current}/messages`"), "发消息时不再提示打开桌面");
+    assert!(page.contains("后台运行中"), "后台会话有自己的状态");
+    assert!(page.contains("message.type === \"closed\" && message.reconnect"), "推送来源换了要重连");
+}

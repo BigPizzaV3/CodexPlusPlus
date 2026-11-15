@@ -24,7 +24,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::devices::{self, Principal, Role};
-use super::service::RemoteService;
+use super::service::{RemoteService, StreamSource};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -404,19 +404,31 @@ async fn stream_thread<S: Connection>(
     stream.write_all(handshake.as_bytes()).await?;
     let mut socket = WebSocketStream::from_raw_socket(stream, tokio_tungstenite::tungstenite::protocol::Role::Server, None).await;
     let send = |value: Value| Message::Text(value.to_string().into());
-    let follower = match context.service.follower(&thread_id).await {
-        Ok(Some(follower)) => follower,
-        Ok(None) => {
-            let _ = socket.send(send(json!({ "type": "closed", "reason": "会话没有在桌面打开" }))).await;
-            return Ok(());
-        }
+    // 桌面持有就跟随桌面；否则推后台会话（它跑的时候桌面窗口不动）。
+    let source = match context.service.stream_source(&thread_id).await {
+        Ok(source) => source,
         Err(error) => {
             let _ = socket.send(send(json!({ "type": "error", "error": error.to_string() }))).await;
             return Ok(());
         }
     };
-    let mut updates = follower.subscribe();
-    socket.send(send(json!({ "type": "view", "view": follower.view() }))).await?;
+    let (mut updates, alive_reason) = match &source {
+        StreamSource::Desktop(follower) => (follower.subscribe(), "桌面不再持有这个会话"),
+        StreamSource::Background(session) => (session.subscribe(), "会话已转到桌面"),
+    };
+    let current_view = || async {
+        match &source {
+            StreamSource::Desktop(follower) => follower.is_alive().then(|| follower.view()),
+            StreamSource::Background(session) => match session.is_alive() {
+                true => Some(session.view().await),
+                false => None,
+            },
+        }
+    };
+    match current_view().await {
+        Some(view) => socket.send(send(json!({ "type": "view", "view": view }))).await?,
+        None => return Ok(()),
+    }
     let mut revalidate = tokio::time::interval(REVALIDATE_EVERY);
     loop {
         tokio::select! {
@@ -430,11 +442,14 @@ async fn stream_thread<S: Connection>(
                     let _ = socket.send(send(json!({ "type": "revoked", "reason": "这台设备已被移除" }))).await;
                     break;
                 }
-                if !follower.is_alive() {
-                    let _ = socket.send(send(json!({ "type": "closed", "reason": "桌面不再持有这个会话" }))).await;
-                    break;
+                match current_view().await {
+                    Some(view) => socket.send(send(json!({ "type": "view", "view": view }))).await?,
+                    None => {
+                        // reconnect：网页重新连一次，就会接到新的来源（例如转到桌面后的跟随）。
+                        let _ = socket.send(send(json!({ "type": "closed", "reason": alive_reason, "reconnect": true }))).await;
+                        break;
+                    }
                 }
-                socket.send(send(json!({ "type": "view", "view": follower.view() }))).await?;
             }
             _ = revalidate.tick() => {
                 if !still_authorized(&principal) {

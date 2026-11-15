@@ -1,8 +1,11 @@
-//! 侧车 app-server：和桌面共用 CODEX_HOME，只读会话、建会话，不发起推理。
+//! 侧车 app-server：和桌面共用 CODEX_HOME。两种用法：
+//! - 只读：会话列表、历史、建会话（不发起推理）；
+//! - 后台执行（[`super::headless`]）：`thread/resume` + `turn/start` 自己跑一轮，审批经 [`Sidecar::events`]
+//!   交给调用方，回答用 [`Sidecar::respond_server_request`]。
 //!
-//! 写锁：一个会话同一时间只能有一个 app-server 持有写入权。侧车 `thread/start` 之后就持有了，
+//! 写锁：一个会话同一时间只能有一个 app-server 持有写入权。侧车 `thread/start`（或 `thread/resume`）之后就持有了，
 //! 桌面再 `thread/resume` 会报「thread … already has an active writer」，打不开这个会话。
-//! 所以侧车以 `thread_unload_delay_secs=0` 启动，建完会话立刻 `thread/unsubscribe` 并等它卸载；
+//! 所以侧车以 `thread_unload_delay_secs=0` 启动，跑完一轮就 `thread/unsubscribe` 并等它卸载；
 //! `thread/read` / `thread/list` 不会占锁（P0 实测）。
 
 use std::collections::HashMap;
@@ -16,7 +19,7 @@ use anyhow::{Context, bail};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, broadcast, oneshot};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -24,6 +27,8 @@ pub struct Sidecar {
     child: std::sync::Mutex<Option<Child>>,
     stdin: Mutex<ChildStdin>,
     pending: Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
+    /// 所有服务端推来的消息（通知 + 审批等请求）。后台执行方在这里认领自己会话的消息。
+    events: broadcast::Sender<Value>,
     next_id: AtomicU64,
     alive: Arc<AtomicBool>,
 }
@@ -50,6 +55,7 @@ impl Sidecar {
             child: std::sync::Mutex::new(Some(child)),
             stdin: Mutex::new(stdin),
             pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            events: broadcast::channel(1024).0,
             next_id: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
         });
@@ -70,6 +76,29 @@ impl Sidecar {
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// 订阅服务端推送：`{"method","params"}` 通知，或 `{"id","method","params"}` 请求（审批、提问等）。
+    pub fn events(&self) -> broadcast::Receiver<Value> {
+        self.events.subscribe()
+    }
+
+    /// 回答一个服务端请求（审批、提问）。`id` 取自请求里的 `id`。
+    pub async fn respond_server_request(&self, id: &Value, result: Value) -> anyhow::Result<()> {
+        self.write_line(json!({ "jsonrpc": "2.0", "id": id, "result": result })).await
+    }
+
+    /// 回绝一个没人处理的服务端请求，免得那一轮一直等。
+    pub async fn reject_server_request(&self, id: &Value, message: &str) -> anyhow::Result<()> {
+        self.write_line(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": message } })).await
+    }
+
+    async fn write_line(&self, message: Value) -> anyhow::Result<()> {
+        let line = format!("{message}\n");
+        let mut stdin = self.stdin.lock().await;
+        stdin.write_all(line.as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
     }
 
     async fn notify(&self, method: &str, params: Value) -> anyhow::Result<()> {
@@ -183,15 +212,9 @@ async fn read_loop(stdout: BufReader<tokio::process::ChildStdout>, sidecar: std:
                     let _ = sender.send(message);
                 }
             }
-            (Some(_), true) => {
-                // 侧车不跑推理，不该收到审批之类的服务端请求；收到就拒绝。
-                let reply = json!({
-                    "jsonrpc": "2.0",
-                    "id": message.get("id"),
-                    "error": { "code": -32601, "message": "codex-plus remote sidecar does not handle server requests" },
-                });
-                let mut stdin = sidecar.stdin.lock().await;
-                let _ = stdin.write_all(format!("{reply}\n").as_bytes()).await;
+            // 通知与请求都交给订阅方（后台执行）。没人认领的请求由订阅方统一回绝，避免这一轮挂住。
+            (_, true) => {
+                let _ = sidecar.events.send(message);
             }
             _ => {}
         }

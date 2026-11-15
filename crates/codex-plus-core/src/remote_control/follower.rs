@@ -506,7 +506,7 @@ pub fn build_offline_view(thread: &Value) -> Value {
 }
 
 /// 条目原样透传，只给用户消息补一个 `text`，并截断过长的命令输出。
-fn view_item(item: &Value) -> Value {
+pub(super) fn view_item(item: &Value) -> Value {
     let mut item = item.clone();
     let kind = item.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
     if matches!(kind.as_str(), "userMessage" | "steeringUserMessage") && item.get("text").is_none() {

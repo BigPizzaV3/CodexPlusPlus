@@ -503,7 +503,12 @@
       if (state.current !== id) return;
       if (message.type === "view") applyView(message.view);
       else if (message.type === "revoked") unauthorized(message.reason);
-      else if (message.type === "closed" || message.type === "error") {
+      else if (message.type === "closed" && message.reconnect) {
+        // 推送来源换了（例如后台会话转到桌面）：重连一次就接到新的来源。
+        state.socket.onclose = null;
+        state.socket = null;
+        setTimeout(() => state.current === id && !state.socket && !state.poller && connectSocket(id), 600);
+      } else if (message.type === "closed" || message.type === "error") {
         toast(message.reason || message.error || "实时连接已断开");
         if (state.view) applyView({ ...state.view, live: false, requests: [] });
       }
@@ -526,8 +531,11 @@
     const running = view.runtime === "active";
     const badge = $("state");
     badge.className = `badge${running ? " running" : view.live ? " live" : ""}`;
-    badge.textContent = running ? "运行中" : view.live ? "已在桌面打开" : "未打开";
-    $("open").hidden = !!view.live || !can("message");
+    // 后台会话：在这台电脑后台跑，桌面窗口不切换；随时可以点「在桌面打开」接过去。
+    const background = !!view.headless;
+    badge.textContent = running ? (background ? "后台运行中" : "运行中") : background ? "后台" : view.live ? "已在桌面打开" : "未打开";
+    badge.title = background ? "在这台电脑的后台运行，桌面 Codex 不会切到这个会话" : "";
+    $("open").hidden = (view.live && !background) || !can("message");
     $("interrupt").hidden = !running || !can("message");
     watchForAttention(view);
     $("input").disabled = false;
@@ -587,7 +595,9 @@
       ...efforts.map((effort) => option(effort, `推理：${effortLabels[effort] || effort}`, effort === current.effort)),
     );
     const permissions = options.permissionModes.map((mode) => option(mode.id, mode.label, mode.id === current.permissionMode));
-    if (current.permissionMode === "custom") permissions.unshift(option("custom", "自定义权限", true));
+    if (!current.permissionMode || current.permissionMode === "custom") {
+      permissions.unshift(option("custom", current.permissionMode ? "自定义权限" : "沿用会话权限", true));
+    }
     $("permission").replaceChildren(...permissions);
     $("permission").title = options.permissionModes.find((mode) => mode.id === current.permissionMode)?.detail || "权限";
     $("permission").classList.toggle("danger", current.permissionMode === "full-access");
@@ -604,7 +614,6 @@
     state.applying = true;
     renderControls();
     try {
-      if (!state.view?.live) toast("正在桌面打开会话…");
       const view = await api("POST", `/threads/${state.current}/settings`, change);
       applyView(view);
       if (!state.socket && !state.poller) connectSocket(state.current);
@@ -744,13 +753,11 @@
     state.stickNext = true;
     $("send").disabled = true;
     try {
-      if (!state.view?.live) toast("正在桌面打开会话…");
       await api("POST", `/threads/${state.current}/messages`, { text });
       $("input").value = "";
       if (!state.socket && !state.poller) {
-        const view = await api("GET", `/threads/${state.current}`);
-        applyView(view);
-        if (view.live) connectSocket(state.current);
+        // 后台会话的推送从发消息起就有，直接连。
+        connectSocket(state.current);
       }
     } catch (error) {
       toast(error.message);
@@ -768,7 +775,12 @@
     if (mode === "custom") return;
     changeSettings({ permissionMode: mode }, mode === "full-access" ? "完全访问：命令不经沙箱、不再询问，直接在这台电脑上执行。确定切换吗？" : null);
   };
-  $("plan").onclick = () => changeSettings({ collaborationMode: state.view?.controls?.collaborationMode === "plan" ? "default" : "plan" });
+  $("plan").onclick = () => {
+    const toPlan = state.view?.controls?.collaborationMode !== "plan";
+    // 计划模式只能在桌面里用：没在桌面打开的会话切过去会让桌面打开它。
+    const desktopNeeded = toPlan && (!state.view?.live || state.view?.headless);
+    changeSettings({ collaborationMode: toPlan ? "plan" : "default" }, desktopNeeded ? "计划模式要在桌面里用，会让桌面 Codex 打开这个会话。继续吗？" : null);
+  };
   $("input").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();

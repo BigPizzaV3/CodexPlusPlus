@@ -101,9 +101,12 @@ try {
   // 新建会话：侧车建 → 放锁 → 桌面打开
   const t0 = Date.now();
   const created = await api("POST", "/threads", { cwd: WORK, name: `P1 ${new Date().toISOString().slice(11, 19)}` });
-  record("新建会话并由桌面接管", created.ok, created.ok ? `${Date.now() - t0} ms` : created.error);
+  record("新建会话", created.ok, created.ok ? `${Date.now() - t0} ms` : created.error);
   if (!created.ok) throw new Error(created.error);
   const threadId = created.data.threadId;
+  // 新建默认走后台（桌面不切换，见 run-p3）；P1 验证的是跟随桌面这条路，显式让桌面打开。
+  const opened = await api("POST", `/threads/${threadId}/open`);
+  record("在桌面打开", opened.ok && opened.data.live && !opened.data.headless, opened.error ?? "");
 
   const live = stream(threadId);
   await live.ready;

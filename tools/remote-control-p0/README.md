@@ -11,8 +11,10 @@
 | `ipc-versions.mjs` | 从已安装 Codex 的 `app.asar` 里读出 IPC 方法版本表 |
 | `mock-responses.mjs` | 假的 Responses 上游，用标记触发审批 / 提问 / 慢速输出 |
 | `run-p0.mjs` | 端到端回归，12 项（直接走 IPC，验证协议本身） |
-| `run-p1.mjs` | 端到端回归，25 项（走 Rust 远程桥的 HTTP / WebSocket 接口，验证 P1 实现、会话设置与安全检查） |
+| `run-p1.mjs` | 端到端回归，26 项（走 Rust 远程桥的 HTTP / WebSocket 接口，验证 P1 实现、会话设置与安全检查） |
 | `run-p2.mjs` | 端到端回归，28 项（像手机一样走局域网 HTTPS：证书指纹、配对、权限分级、wss、吊销） |
+| `run-p3.mjs` | 端到端回归，18 项（没在桌面打开的会话在后台执行，桌面当前页面全程不变；需 `P3_CDP_PORT`） |
+| `poc-headless-*.mjs` | 后台执行的协议实测：新建并跑一轮、接管已有会话 + 插话 + 中断 + 放锁、通知结构 |
 
 P1 的正式实现在 `crates/codex-plus-core/src/remote_control/`，网页在
 `crates/codex-plus-core/assets/remote-control/index.html`。

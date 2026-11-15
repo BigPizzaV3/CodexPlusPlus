@@ -1,7 +1,11 @@
 //! 远程控制的业务层：管理 IPC 连接、侧车、会话跟随，给 HTTP 层提供操作。
 //!
-//! 原则：执行只发生在桌面窗口持有的会话里。侧车只读和建会话（建完放锁）；
-//! 没在桌面打开的会话，先经 CDP 向页面发 `navigate-to-route` 让桌面打开，桌面成为 owner 后再跟随。
+//! 两条执行路径：
+//! - 会话已在桌面打开、桌面窗口持有它：跟随桌面（`Follower`），操作经 IPC follower 协议下发；
+//! - 没在桌面打开：**后台执行**（`headless::HeadlessSession`，侧车 `thread/resume` + `turn/start`），
+//!   桌面窗口不切换，用户可以在桌面里继续干别的。只有用户主动点「在桌面打开」才经 CDP 让桌面打开它。
+//!
+//! 后台执行跑的时候侧车持有该会话的写锁，此时「在桌面打开」会先放锁再打开。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +17,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use super::follower::{Follower, PERMISSION_PRESETS, SettingsChange, build_offline_view, current_controls, discover_owner};
+use super::headless::{HeadlessSession, Hub, headless_supports};
 use super::ipc::{IpcConnection, IpcEndpoint, resolve_endpoint};
 use super::sidecar::{Sidecar, resolve_codex_cli};
 use super::versions::{IpcVersions, app_asar_path, default_versions, read_versions_from_asar};
@@ -42,11 +47,18 @@ impl ServiceConfig {
     }
 }
 
+/// 实时推送的来源。
+pub enum StreamSource {
+    Desktop(Arc<Follower>),
+    Background(Arc<HeadlessSession>),
+}
+
 pub struct RemoteService {
     config: ServiceConfig,
     ipc: Mutex<Option<Arc<IpcConnection>>>,
     sidecar: Mutex<Option<Arc<Sidecar>>>,
     followers: Mutex<HashMap<String, Arc<Follower>>>,
+    headless: Mutex<Option<Arc<Hub>>>,
 }
 
 impl RemoteService {
@@ -56,6 +68,7 @@ impl RemoteService {
             ipc: Mutex::new(None),
             sidecar: Mutex::new(None),
             followers: Mutex::new(HashMap::new()),
+            headless: Mutex::new(None),
         })
     }
 
@@ -93,7 +106,51 @@ impl RemoteService {
             .context("没找到 Codex 自带的 CLI（需要它来读取会话列表）")?;
         let sidecar = Sidecar::start(&cli, &self.config.codex_home).await?;
         *slot = Some(sidecar.clone());
+        // 换了进程：之前的后台会话都不在它上面了。
+        self.headless.lock().await.take();
         Ok(sidecar)
+    }
+
+    /// 后台执行的分发器（和只读侧车用同一个 app-server 进程）。
+    async fn headless(&self) -> anyhow::Result<Arc<Hub>> {
+        let sidecar = self.sidecar().await?;
+        let mut slot = self.headless.lock().await;
+        if let Some(hub) = slot.as_ref() {
+            return Ok(hub.clone());
+        }
+        let hub = Hub::new(&sidecar);
+        *slot = Some(hub.clone());
+        Ok(hub)
+    }
+
+    /// 已有的后台会话（不新建）。
+    async fn headless_session(&self, thread_id: &str) -> Option<Arc<HeadlessSession>> {
+        let hub = self.headless.lock().await.clone()?;
+        hub.get(thread_id).await.filter(|session| session.is_alive())
+    }
+
+    /// 取（或建）一个后台会话。新建只读历史、不拿锁；开一轮时才拿。
+    pub async fn ensure_headless(&self, thread_id: &str) -> anyhow::Result<Arc<HeadlessSession>> {
+        let hub = self.headless().await?;
+        if let Some(session) = hub.get(thread_id).await.filter(|session| session.is_alive()) {
+            return Ok(session);
+        }
+        let sidecar = self.sidecar().await?;
+        let thread = sidecar.read_thread(thread_id).await?;
+        if thread.is_null() {
+            bail!("找不到这个会话");
+        }
+        let session = HeadlessSession::new(&sidecar, &thread)?;
+        hub.insert(session.clone()).await;
+        Ok(session)
+    }
+
+    /// 推送来源：桌面持有就跟随桌面，否则用后台会话（没有就建一个，不拿锁）。
+    pub async fn stream_source(&self, thread_id: &str) -> anyhow::Result<StreamSource> {
+        if let Some(follower) = self.follower(thread_id).await? {
+            return Ok(StreamSource::Desktop(follower));
+        }
+        Ok(StreamSource::Background(self.ensure_headless(thread_id).await?))
     }
 
     pub async fn status(&self) -> Value {
@@ -158,14 +215,29 @@ impl RemoteService {
         if let Some(follower) = self.follower(thread_id).await? {
             return Ok(follower.view());
         }
+        // 后台正在跑（或刚跑完还没放锁）时用它的实时视图；否则读磁盘上的历史。
+        if let Some(session) = self.headless_session(thread_id).await {
+            if session.is_holding() || session.is_running().await {
+                return Ok(session.view().await);
+            }
+        }
         let thread = self.sidecar().await?.read_thread(thread_id).await?;
         Ok(build_offline_view(&thread))
     }
 
-    /// 让桌面打开会话并跟随。
+    /// 让桌面打开会话并跟随。后台会话先放锁，桌面才拿得到写入权。
     pub async fn open_thread(&self, thread_id: &str) -> anyhow::Result<Arc<Follower>> {
         if let Some(follower) = self.follower(thread_id).await? {
             return Ok(follower);
+        }
+        if let Some(session) = self.headless_session(thread_id).await {
+            if session.is_running().await {
+                bail!("这个会话正在后台运行，等它跑完再在桌面打开");
+            }
+            session.stop().await;
+            if let Some(hub) = self.headless.lock().await.clone() {
+                hub.remove(thread_id).await;
+            }
         }
         open_in_desktop(self.config.debug_port(), thread_id).await?;
         let conn = self.ipc().await?;
@@ -188,21 +260,29 @@ impl RemoteService {
             bail!("工作目录必须是本机已存在的绝对路径");
         }
         let sidecar = self.sidecar().await?;
-        let thread_id = sidecar.create_thread(cwd, name).await?;
-        self.open_thread(&thread_id).await?;
-        Ok(thread_id)
+        // 建完放锁就返回：第一条消息走后台执行，桌面不用切过去。
+        sidecar.create_thread(cwd, name).await
     }
 
     /// 发消息：会话正在跑就插话，否则开新一轮。
+    ///
+    /// 已由桌面持有的会话跟随桌面；否则在后台执行（桌面窗口不切换）。
     pub async fn send(&self, thread_id: &str, text: &str) -> anyhow::Result<Value> {
-        let follower = self.open_thread(thread_id).await?;
-        if follower.is_running() {
-            let result = follower.steer(text).await?;
-            Ok(json!({ "kind": "steer", "result": result }))
-        } else {
-            let result = follower.start_turn(text).await?;
-            Ok(json!({ "kind": "start", "result": result }))
+        if let Some(follower) = self.follower(thread_id).await? {
+            let value = if follower.is_running() {
+                json!({ "kind": "steer", "result": follower.steer(text).await? })
+            } else {
+                json!({ "kind": "start", "result": follower.start_turn(text).await? })
+            };
+            return Ok(value);
         }
+        let session = self.ensure_headless(thread_id).await?;
+        let value = if session.is_running().await {
+            json!({ "kind": "steer", "result": session.steer(text).await? })
+        } else {
+            json!({ "kind": "start", "background": true, "result": session.start_turn(text).await? })
+        };
+        Ok(value)
     }
 
     /// 会话可选的模型、推理强度、权限模式、协作模式，以及当前值。
@@ -212,7 +292,10 @@ impl RemoteService {
         let modes = sidecar.call("collaborationMode/list", json!({})).await.unwrap_or(Value::Null);
         let current = match self.follower(thread_id).await? {
             Some(follower) => follower.state().as_ref().map(current_controls).unwrap_or(Value::Null),
-            None => Value::Null,
+            None => match self.headless_session(thread_id).await {
+                Some(session) => session.view().await.get("controls").cloned().unwrap_or(Value::Null),
+                None => Value::Null,
+            },
         };
         Ok(json!({
             "models": models.get("data").and_then(Value::as_array).map(|models| models.iter().map(model_option).collect::<Vec<_>>()).unwrap_or_default(),
@@ -222,10 +305,21 @@ impl RemoteService {
         }))
     }
 
-    /// 改会话设置（下一轮起生效）。会话没在桌面打开时先打开。
+    /// 改会话设置（下一轮起生效）。
+    ///
+    /// 桌面持有的会话经桌面改；否则记在后台会话上，随下一轮发出（不打开桌面）。
+    /// 计划模式后台不支持：只有这时才需要先在桌面打开。
     pub async fn update_settings(&self, thread_id: &str, body: &Value) -> anyhow::Result<Value> {
         let change = SettingsChange::from_json(body)?;
-        let follower = self.open_thread(thread_id).await?;
+        let follower = match self.follower(thread_id).await? {
+            Some(follower) => follower,
+            None if change.collaboration_mode.as_deref().is_none_or(headless_supports) => {
+                let session = self.ensure_headless(thread_id).await?;
+                session.apply_settings(&change).await?;
+                return Ok(session.view().await);
+            }
+            None => self.open_thread(thread_id).await?,
+        };
         let mut updates = follower.subscribe();
         follower.update_settings(&change).await?;
         // 等 owner 把改后的值推回来再返回：设置分几次补丁到达，只等第一次推送的话，
@@ -240,18 +334,27 @@ impl RemoteService {
     }
 
     pub async fn interrupt(&self, thread_id: &str) -> anyhow::Result<Value> {
-        let follower = self.follower(thread_id).await?.context("会话没有在桌面打开")?;
-        follower.interrupt().await
+        if let Some(follower) = self.follower(thread_id).await? {
+            return follower.interrupt().await;
+        }
+        self.headless_session(thread_id).await.context("会话没有在运行")?.interrupt().await
     }
 
     pub async fn respond(&self, thread_id: &str, request_id: &Value, body: &Value) -> anyhow::Result<Value> {
-        let follower = self.follower(thread_id).await?.context("会话没有在桌面打开")?;
-        follower.respond(request_id, body).await
+        if let Some(follower) = self.follower(thread_id).await? {
+            return follower.respond(request_id, body).await;
+        }
+        self.headless_session(thread_id).await.context("这个请求已经处理过了")?.respond(request_id, body).await
     }
 
     pub async fn shutdown(&self) {
         for (_, follower) in self.followers.lock().await.drain() {
             follower.stop().await;
+        }
+        if let Some(hub) = self.headless.lock().await.take() {
+            for session in hub.drain().await {
+                session.stop().await;
+            }
         }
         if let Some(sidecar) = self.sidecar.lock().await.take() {
             sidecar.shutdown();

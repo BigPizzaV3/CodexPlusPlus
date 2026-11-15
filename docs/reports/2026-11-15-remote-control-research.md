@@ -492,3 +492,34 @@ flowchart LR
 隔离 Codex 里经 CDP 实测 rail 顺序（Codex++ / 供应商 / 远程控制 / 拓展 / 推荐内容）、页面四个分区与二维码正常；
 手机尺寸浏览器里两种样式互切，刷新后记住选择。
 
+
+## 14. 后台执行：发消息不再让桌面跳过去（2026-11-16）
+
+**问题**：原设计里只有桌面窗口能执行一轮。给没在桌面打开的会话发消息，要先经 CDP 让桌面打开它，
+用户正在桌面看的会话就被切走了，没法一边在桌面干活、一边在手机上推进别的会话。
+
+**做法**：没在桌面打开的会话改由侧车 app-server 在后台执行（`remote_control/headless.rs`），桌面窗口完全不动。
+
+| 操作 | 桌面已持有（跟随桌面） | 没在桌面打开（后台执行） |
+|---|---|---|
+| 发消息 | IPC `thread-follower-start-turn` | 侧车 `thread/resume` 拿锁 + `turn/start` |
+| 插话 | `thread-follower-steer-turn` | `turn/steer { expectedTurnId }` |
+| 中断 | `thread-follower-interrupt-turn` | `turn/interrupt { turnId }` |
+| 审批 / 提问 | follower 回包 `{ requestId, decision }` | 服务端请求的 JSON-RPC 回包 `{ decision }` / `{ answers }` / 权限授予 |
+| 改模型 / 推理 / 权限 | `thread-follower-update-thread-settings` | 记在后台会话上，随下一次 `turn/start` 发出（app-server 沿用到后续轮次） |
+| 计划模式 | 支持 | `turn/start` 没有协作模式字段：网页确认后转到桌面打开 |
+| 实时推送 | 桌面的状态快照 + 补丁 | 侧车通知 `turn/*`、`item/*`、`item/agentMessage/delta` 拼成同样的视图（`headless: true`） |
+
+- **写锁只在跑的时候持有**：开一轮前 `thread/resume`，这一轮结束（没有待回答的请求）800 ms 后 `thread/unsubscribe` 放锁；
+  放锁和开新一轮由同一把锁串行，避免放锁撞上刚开的一轮。跑完之后桌面随时能打开它，看到完整历史。
+- **桌面正占用**（桌面 app-server 还持有该会话但窗口没打开）时 `thread/resume` 会报 active writer，网页提示稍后再试或在桌面打开。
+- 新建会话也不再让桌面打开；「在桌面打开」只在用户主动点时发生，后台正在跑时会拒绝（等它跑完）。
+- 推送来源变化（后台会话转到桌面）时推 `{ type: "closed", reconnect: true }`，网页重连一次接到新来源。
+- 侧车收到的服务端请求按 `threadId` 分给对应的后台会话；没人认领的回 JSON-RPC 错误，免得那一轮挂住。
+
+协议实测：`tools/remote-control-p0/poc-headless-turn.mjs`（新建 + 一轮 + 审批）、`poc-headless-resume.mjs`（接管已有会话、插话、中断、放锁）、
+`poc-headless-dump.mjs`（通知结构）。
+
+验证：`run-p3.mjs` 18/18（桌面当前页面全程不变、会话没有桌面 owner；审批、插话、中断、改设置都在后台完成，
+上游请求核对到新模型 / 推理强度 / 完全访问沙箱；切计划模式时才转到桌面，桌面看到后台跑过的全部 5 轮）、
+`run-p1.mjs` 26/26、`run-p2.mjs` 28/28，core 全部 1959 项。

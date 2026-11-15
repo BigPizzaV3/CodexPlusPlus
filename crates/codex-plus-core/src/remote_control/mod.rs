@@ -14,6 +14,7 @@
 
 pub mod devices;
 pub mod follower;
+pub mod headless;
 pub mod ipc;
 pub mod patch;
 pub mod server;
