@@ -17807,7 +17807,7 @@ function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话；第二组是聚合网关：一个 Agent 经网关同时用多家供应商。
+  // 侧栏先列 Agent 增强；其下「全局管理」是首页（赞助商推荐）、万物皆拓展、MCP 与 Skills、会话；聚合网关（一个 Agent 经网关同时用多家供应商）排在最后。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
   const extensionsShown = true;
@@ -17877,18 +17877,7 @@ function AppSidebar({
       </button>
 
       <nav aria-label={t("主导航")} className="cx-side-nav">
-        <div className="cx-side-group">{shownGeneral.map(renderEntry)}</div>
-
-        {shownGateway.length ? (
-          <div className="cx-side-group" data-group="gateway">
-            <div className="cx-side-heading" title={t("任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家")}>
-              <span>{t("聚合网关")}</span>
-            </div>
-            {shownGateway.map(renderEntry)}
-            {gatewayExtensionItems.map(renderExtensionPage)}
-          </div>
-        ) : null}
-
+        {/* 顺序：Agent 增强 → 全局管理 → 拓展页面 → 聚合网关。Codex++ 的主线是 Agent 增强，网关是可选组件，放最后。 */}
         <div className="cx-side-group" data-tour="agents">
           <div className="cx-side-heading">
             <span>{t("Agent 增强")}</span>
@@ -18009,10 +17998,26 @@ function AppSidebar({
           })}
         </div>
 
+        {/* 排在 Agent 列表下面后要有标题，否则分组之间没有分隔，看起来像 Agent 的子项。 */}
+        <div className="cx-side-group" data-group="general">
+          <div className="cx-side-heading"><span>{t("全局管理")}</span></div>
+          {shownGeneral.map(renderEntry)}
+        </div>
+
         {extensionItems.length ? (
           <div className="cx-side-group">
             <div className="cx-side-heading"><span>{t("拓展页面")}</span></div>
             {extensionItems.map(renderExtensionPage)}
+          </div>
+        ) : null}
+
+        {shownGateway.length ? (
+          <div className="cx-side-group" data-group="gateway">
+            <div className="cx-side-heading" title={t("任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家")}>
+              <span>{t("聚合网关")}</span>
+            </div>
+            {shownGateway.map(renderEntry)}
+            {gatewayExtensionItems.map(renderExtensionPage)}
           </div>
         ) : null}
       </nav>

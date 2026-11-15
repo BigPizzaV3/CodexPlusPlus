@@ -202,6 +202,10 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
   assert.match(sidebar, /match: customizeRoutes/);
   assert.match(sidebar, /<span>\{t\("聚合网关"\)\}<\/span>/);
+  // 分组顺序：Agent 增强 → 全局管理 → 拓展页面 → 聚合网关（网关是可选组件，排最后）。
+  const groupOrder = ['data-tour="agents"', 'data-group="general"', 't("拓展页面")', 'data-group="gateway"'].map((needle) => sidebar.indexOf(needle));
+  assert.ok(groupOrder.every((index, position) => index > 0 && (position === 0 || index > groupOrder[position - 1])), String(groupOrder));
+  assert.match(sidebar, /<div className="cx-side-heading"><span>\{t\("全局管理"\)\}<\/span><\/div>/);
   for (const key of ["hub", "providers", "gateway", "routing", "usage"]) assert.match(sidebar, new RegExp(`key: "${key}"`));
   assert.match(sidebar, /match: \["gatewayUsage", "requestLog"\]/);
   assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
