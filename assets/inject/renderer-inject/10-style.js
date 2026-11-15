@@ -1411,7 +1411,7 @@
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body {
         box-sizing: border-box;
-        padding: 24px 20px 64px;
+        padding: 16px 20px 64px;
       }
       /*
        * 设置页左栏：尺寸、字号、选中态照原生设置页的侧栏（288 宽、30 高的行、14px、10px 圆角乘缩放），
@@ -1425,15 +1425,18 @@
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header { padding: 14px 16px 10px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header > .codex-plus-modal-header { padding: 0; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title { font-size: 18px; font-weight: 600; line-height: 24px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item {
+        box-sizing: border-box;
+        height: 30px;
         min-height: 30px;
         padding: 5px 8px;
         border-radius: var(--codex-plus-control-radius);
         color: var(--codex-plus-text);
         font-size: 14px;
-        line-height: 20px;
+        font-weight: 400;
+        line-height: 21px;
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
@@ -1490,16 +1493,29 @@
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group { margin-top: 0; }
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section { margin-bottom: 44px; }
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:last-child { margin-bottom: 0; }
+      /*
+       * 分页时组里第一节的标题当页面标题，位置照原生：60 高的标题块（上下 13px）、隔 21px 是 46 高的小节标题行。
+       * 分组说明就放在那一行里（次要色），卡片和原生第一张卡片落在同一高度。
+       */
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-title {
         display: block;
         min-height: 0;
-        padding: 12px 0 0;
+        padding: 13px 0;
         font-size: 28px;
         font-weight: 500;
-        line-height: 34px;
+        line-height: 1.2;
       }
-      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-title + .codex-plus-settings-card { margin-top: 32px; }
-      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-description { margin: 6px 0 32px; font-size: 13px; line-height: 18px; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-title + .codex-plus-settings-card { margin-top: 21px; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-description {
+        display: flex;
+        align-items: center;
+        box-sizing: border-box;
+        min-height: 46px;
+        margin: 21px 0 0;
+        padding: 0 0 6px;
+        font-size: 13px;
+        line-height: 18px;
+      }
       .codex-plus-settings-card,
       .codex-plus-settings [data-codex-plus-ext-menu] {
         box-sizing: border-box;
@@ -1532,7 +1548,8 @@
         overflow-wrap: anywhere;
       }
       .codex-plus-settings .codex-plus-row > :not(:first-child) { max-width: 48%; }
-      .codex-plus-settings .codex-plus-row-title { font-size: 13px; font-weight: 500; line-height: 18px; }
+      /* 行高与原生 text-sm 一致：13px × 1.25/0.875。 */
+      .codex-plus-settings .codex-plus-row-title { font-size: 13px; font-weight: 500; line-height: calc(1.25 / .875); }
       /* 设置项标题旁的小标签：实验 / 需重启，与管理器增强页一致。 */
       .codex-plus-settings .codex-plus-feature-tag {
         display: inline-flex;
