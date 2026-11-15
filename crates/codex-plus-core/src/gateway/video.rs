@@ -858,8 +858,7 @@ fn create_job_id(adapter: VideoAdapter, value: &Value) -> Option<String> {
         }
     };
     candidates.iter().find_map(|path| {
-        path.iter()
-            .try_fold(value, |current, key| current.get(*key))
+        value_at_path(value, path)
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|id| !id.is_empty())
@@ -974,12 +973,21 @@ fn extract_content_url(value: &Value) -> Option<String> {
     ]
     .iter()
     .find_map(|path| {
-        path.iter()
-            .try_fold(value, |current, key| current.get(*key))
+        value_at_path(value, path)
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
             .map(str::to_string)
+    })
+}
+
+fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(value, |current, key| {
+        current.get(*key).or_else(|| {
+            key.parse::<usize>()
+                .ok()
+                .and_then(|index| current.as_array()?.get(index))
+        })
     })
 }
 
