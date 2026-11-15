@@ -17,6 +17,7 @@ pub mod install;
 mod lightweight;
 mod provider_lookup_commands;
 mod runtime_health;
+mod skill_backup_usage;
 mod tray_panel;
 mod shutdown_watchdog;
 
@@ -578,6 +579,15 @@ pub fn run() {
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
+            commands::list_skill_file_times,
+            commands::find_skill_repository_matches,
+            commands::apply_skill_repository_matches,
+            commands::discover_skill_source_evidence,
+            commands::preview_skill_duplicates,
+            commands::archive_skill_duplicate,
+            commands::preview_skill_in_place_update,
+            commands::discard_skill_in_place_update_preview,
+            commands::execute_skill_in_place_update,
             commands::import_ccs_skills,
             commands::import_local_skills,
             commands::install_skill,
@@ -587,6 +597,7 @@ pub fn run() {
             commands::uninstall_skill,
             commands::restore_skill_backup,
             commands::delete_skill_backup,
+            skill_backup_usage::skill_backup_usage,
             commands::upsert_skill_repo,
             commands::inspect_skill_repo,
             commands::delete_skill_repo,
