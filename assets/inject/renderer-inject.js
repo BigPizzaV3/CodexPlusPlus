@@ -6496,9 +6496,13 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
+  let codexPlusBackendFirstFailureAt = 0;
   /** 上次心跳成功读取的设置版本。 */
   let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
+  // 启动器先注入页面、后拉起 helper 时，短暂失败不是“后端坏了”。给启动留出窗口，
+  // 避免安装或升级后的第一轮状态检查把“正在连接”误报成中文硬错误。
+  const CODEX_PLUS_BACKEND_STARTUP_GRACE_MS = 15000;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
   // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
   let codexPlusBridgeFailureCount = 0;
@@ -6578,6 +6582,7 @@
       if (seq !== codexPlusBackendCheckSeq || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
       if (nextStatus?.status === "ok") {
         codexPlusBackendFailureCount = 0;
+        codexPlusBackendFirstFailureAt = 0;
         codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
         if (typeof nextStatus.hideOfficialUsageAlert === "boolean") {
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
@@ -6599,14 +6604,24 @@
         }
       } else {
         codexPlusBackendFailureCount += 1;
+        if (!codexPlusBackendFirstFailureAt) codexPlusBackendFirstFailureAt = Date.now();
         sendCodexPlusDiagnostic("backend_check_failed", {
           status: nextStatus?.status || "unknown",
           message: nextStatus?.message || "",
           timeout: !!nextStatus?.timeout,
           consecutiveFailures: codexPlusBackendFailureCount,
         });
-        if (codexPlusBackendFailureCount >= CODEX_PLUS_BACKEND_FAILURE_THRESHOLD) {
+        const startupGraceElapsed =
+          Date.now() - codexPlusBackendFirstFailureAt >= CODEX_PLUS_BACKEND_STARTUP_GRACE_MS;
+        if (codexPlusBackendFailureCount >= CODEX_PLUS_BACKEND_FAILURE_THRESHOLD && startupGraceElapsed) {
           codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
+        } else {
+          const connectingStatus = {
+            status: "checking",
+            message: "正在连接后端…",
+            timeout: !!nextStatus?.timeout,
+          };
+          codexPlusBackendStatus = window.__codexPlusBackendStatus = connectingStatus;
         }
       }
       renderBackendStatus();

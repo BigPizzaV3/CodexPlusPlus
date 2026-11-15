@@ -100,6 +100,38 @@ test("heartbeat retries settings revisions after failed or overlapping reads", a
   await settle();
 });
 
+test("backend startup failures stay in connecting state until the grace window expires", async () => {
+  const source = fragment("40-backend-settings.js");
+  let now = 1_000_000;
+  const context: any = vm.createContext({
+    window: { __codexPlusBackendGeneration: 1 },
+    codexPlusBackendGeneration: 1, codexPlusBackendCheckInFlight: false,
+    codexPlusBackendCheckSeq: 0, codexPlusBackendFailureCount: 0,
+    codexPlusBackendFirstFailureAt: 0,
+    codexPlusBackendStatus: { status: "checking", message: "正在检查后端…" },
+    CODEX_PLUS_BACKEND_FAILURE_THRESHOLD: 3,
+    CODEX_PLUS_BACKEND_STARTUP_GRACE_MS: 15000,
+    Date: { now: () => now },
+    postJson: async () => ({ status: "failed", message: "未连接" }),
+    sendCodexPlusDiagnostic: () => {}, renderBackendStatus: () => {},
+  });
+  vm.runInContext(source.slice(source.indexOf("  async function checkBackendStatus()"),
+    source.indexOf("  async function openManagerFromCodex()")), context);
+
+  await context.checkBackendStatus();
+  now += 5000;
+  await context.checkBackendStatus();
+  now += 5000;
+  await context.checkBackendStatus();
+  assert.equal(context.codexPlusBackendStatus.status, "checking");
+  assert.equal(context.codexPlusBackendStatus.message, "正在连接后端…");
+
+  now += 5000;
+  await context.checkBackendStatus();
+  assert.equal(context.codexPlusBackendStatus.status, "failed");
+  assert.equal(context.codexPlusBackendStatus.message, "未连接");
+});
+
 test("optimistic backend writes apply to the page before their response arrives", async () => {
   const source = fragment("40-backend-settings.js");
   const applied: unknown[] = [];
