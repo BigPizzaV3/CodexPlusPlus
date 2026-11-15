@@ -246,7 +246,7 @@ test("voice and Stepwise service settings live in the Codex settings page, not t
   assert.ok(!appSource.includes("testStepwiseSettings"));
   // Codex 设置页里两节跟在对应清单分组后面。
   const afterGroup = functionBody(servicePage, "renderCodexPlusServiceSettingsAfterGroup");
-  assert.match(afterGroup, /groupId === "chat"[\s\S]*renderCodexPlusDictationServiceSection\(\)/);
+  assert.match(afterGroup, /groupId === "input"[\s\S]*renderCodexPlusDictationServiceSection\(\)/);
   assert.match(afterGroup, /groupId === "stepwise"\) return renderCodexPlusStepwiseServiceSection\(\)/);
   assert.match(catalogPage, /typeof renderCodexPlusServiceSettingsAfterGroup === "function" \? renderCodexPlusServiceSettingsAfterGroup\(group\.id\) : ""/);
 });

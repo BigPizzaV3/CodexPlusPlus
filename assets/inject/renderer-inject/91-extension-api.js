@@ -252,7 +252,10 @@
     if (!panel) return;
     panel.querySelector("[data-codex-plus-ext-menu]")?.remove();
     const markup = renderCodexPlusExtensionMenuRows();
-    if (markup) panel.insertAdjacentHTML("beforeend", markup);
+    // 设置页按分组分页后，拓展项放在「拓展设置」那一组里；有没有拓展项决定左栏里有没有这一组。
+    const host = panel.querySelector("[data-codex-plus-ext-menu-host]") || panel;
+    if (markup) host.insertAdjacentHTML("beforeend", markup);
+    if (typeof refreshCodexPlusSettingsNav === "function") refreshCodexPlusSettingsNav();
   }
 
   /** 会话行按钮重画：让扫描在下一轮把这些行重建，从而带上拓展的项。 */

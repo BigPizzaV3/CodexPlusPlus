@@ -299,7 +299,7 @@
 
   /** 清单分组后面要接的服务配置节；renderCodexPlusSettingsCatalogSections 按分组 id 调用。 */
   function renderCodexPlusServiceSettingsAfterGroup(groupId) {
-    if (groupId === "chat") {
+    if (groupId === "input") {
       codexPlusEnsureServiceSettingsLoaded();
       return renderCodexPlusDictationServiceSection();
     }
@@ -615,6 +615,9 @@
     const scrollWhenReady = () => {
       const node = document.querySelector(`[data-codex-plus-service-section="${section}"]`);
       if (node) {
+        // 设置页按分组分页：先切到这一节所在的分组，再滚过去。
+        const group = node.closest("[data-codex-plus-settings-group]")?.getAttribute("data-codex-plus-settings-group");
+        if (group && typeof selectCodexPlusSettingsGroup === "function") selectCodexPlusSettingsGroup(group);
         node.scrollIntoView({ block: "start" });
         return;
       }

@@ -13,7 +13,8 @@ const serviceTier = read("../../../assets/inject/renderer-inject/30-service-tier
 test("native predictions is an experimental opt-in shown only on the Codex settings page that explains cost and scope", () => {
   const item = catalog.items.find((entry: { key: string }) => entry.key === "codexAppNativePredictions");
   assert.ok(item);
-  assert.equal(item.group, "plugins");
+  // 输入框里的预测归在「输入与发送」。
+  assert.equal(item.group, "input");
   assert.equal(item.control, "bool");
   assert.equal(item.title, "原生输入预测（实验）");
   // 管理器只留增强总开关，内置拓展的开关只在 Codex 里的 Codex++ 设置页里。

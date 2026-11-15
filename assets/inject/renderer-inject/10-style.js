@@ -535,6 +535,13 @@
         height: 19px;
         display: block;
       }
+      [data-codex-plus-rail] .codex-plus-rail-icon .codex-plus-rail-logo {
+        width: 20px;
+        height: 20px;
+        display: block;
+        pointer-events: none;
+        user-select: none;
+      }
       /* 图标栏是纯图标，状态点挂在按钮右上角，不占布局。 */
       #${codexPlusRailNavId} .codex-plus-sidebar-nav-status {
         position: absolute;
@@ -1247,6 +1254,28 @@
         --codex-plus-danger-bg: var(--color-background-danger-soft, rgba(220,38,38,.1));
         --codex-plus-success: var(--color-text-success, #15803d);
         --codex-plus-warning: var(--color-text-warning, #a16207);
+        /*
+         * 设置类页面（设置主页、远程控制、拓展、供应商）直接取 Codex 原生设置页用的那几个变量：
+         * 开关是原生 Switch 的 --switch-*，卡片是 --color-background-panel，内容区是 --color-surface，
+         * 左栏照原生侧栏「surface 65% 叠在工作区底色上」混出来。主题、强调色切换都跟着走。
+         * 这几个名字以前只有引用、从没定义过，一直落在写死的兜底色上。
+         */
+        --codex-plus-switch-on: var(--switch-track-color-checked, var(--color-token-focus-border, #0285ff));
+        --codex-plus-switch-off: var(--switch-track-color, color-mix(in oklab, var(--codex-plus-text) 10%, transparent));
+        --codex-plus-switch-thumb: var(--switch-thumb-color, #fff);
+        --codex-plus-settings-page-bg: var(--color-surface, var(--color-token-main-surface-primary, var(--codex-plus-bg-primary)));
+        --codex-plus-settings-card-bg: var(--color-background-panel, var(--codex-plus-bg-secondary));
+        --codex-plus-settings-card-border: var(--color-token-border, var(--codex-plus-border));
+        --codex-plus-nav-bg: color-mix(in oklab, var(--codex-plus-settings-page-bg) 65%, var(--app-color-background-elevated-secondary-opaque, var(--codex-plus-bg-primary)));
+        --codex-plus-nav-hover-bg: var(--color-background-secondary-ghost-hover, var(--codex-plus-bg-hover));
+        --codex-plus-nav-selected-bg: var(--color-background-secondary-soft-alpha, var(--codex-plus-bg-selected));
+        --codex-plus-control-bg: var(--color-background-primary-soft-alpha, transparent);
+        --codex-plus-control-border: var(--color-token-border, var(--codex-plus-border));
+        --codex-plus-button-bg: var(--color-background-secondary-soft-alt, color-mix(in oklab, var(--codex-plus-text) 5%, transparent));
+        --codex-plus-button-hover-bg: var(--color-background-secondary-soft-hover, var(--codex-plus-bg-hover));
+        /* 原生圆角都乘 --codex-corner-radius-scale：按钮 / 导航项 10px、卡片 16px（缩放 1.25 时即 12.5 / 20）。 */
+        --codex-plus-control-radius: calc(10px * var(--codex-corner-radius-scale, 1));
+        --codex-plus-card-radius: calc(16px * var(--codex-corner-radius-scale, 1));
       }
       :where(.${moreMenuClass}, .${actionTooltipClass}, .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}) {
         color: var(--codex-plus-text);
@@ -1382,11 +1411,38 @@
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body {
         box-sizing: border-box;
-        padding: 72px 32px 64px;
+        padding: 24px 20px 64px;
       }
+      /*
+       * 设置页左栏：尺寸、字号、选中态照原生设置页的侧栏（288 宽、30 高的行、14px、10px 圆角乘缩放），
+       * 版本号与后端状态点在顶上，位置对应原生的「设置」标题。
+       */
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav {
+        box-sizing: border-box;
+        width: 288px;
+        flex-basis: 288px;
+        background: var(--codex-plus-nav-bg);
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header { padding: 14px 16px 10px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header > .codex-plus-modal-header { padding: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title { font-size: 18px; font-weight: 600; line-height: 24px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item {
+        min-height: 30px;
+        padding: 5px 8px;
+        border-radius: var(--codex-plus-control-radius);
+        color: var(--codex-plus-text);
+        font-size: 14px;
+        line-height: 20px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
       .codex-plus-settings {
         width: 100%;
-        max-width: 740px;
+        max-width: 728px;
         min-width: 0;
         margin: 0 auto;
         container: codex-plus-settings / inline-size;
@@ -1406,33 +1462,62 @@
         letter-spacing: -.02em;
         overflow-wrap: anywhere;
       }
-      .codex-plus-settings-section { margin: 0 0 48px; }
+      .codex-plus-settings-section { margin: 0 0 44px; }
       .codex-plus-settings-section:last-child { margin-bottom: 0; }
+      /* 小节标题照原生：14px/500，46 高的标题行里文字居中、底下留 6px，紧贴卡片。 */
       .codex-plus-settings-section-title {
-        margin: 0 0 16px;
+        display: flex;
+        align-items: center;
+        box-sizing: border-box;
+        min-height: 46px;
+        margin: 0;
+        padding: 0 0 6px;
         color: var(--codex-plus-text);
         font-size: 14px;
-        font-weight: 550;
-        line-height: 20px;
+        font-weight: 500;
+        line-height: 21px;
       }
+      .codex-plus-settings-section-description {
+        margin: -4px 0 12px;
+        color: var(--codex-plus-text-secondary);
+        font-size: 12px;
+        line-height: 16px;
+      }
+      .codex-plus-settings-group + .codex-plus-settings-group { margin-top: 48px; }
+      .codex-plus-settings-group[data-codex-plus-settings-group="ext-menu"]:not(:has([data-codex-plus-ext-menu])) { display: none; }
+      /* 分页：左栏选分组，右边只显示当前这一组；组里第一节的标题当页面标题，后面的服务配置节是小节。 */
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group:not([data-active="true"]) { display: none; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group { margin-top: 0; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section { margin-bottom: 44px; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:last-child { margin-bottom: 0; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-title {
+        display: block;
+        min-height: 0;
+        padding: 12px 0 0;
+        font-size: 28px;
+        font-weight: 500;
+        line-height: 34px;
+      }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-title + .codex-plus-settings-card { margin-top: 32px; }
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-description { margin: 6px 0 32px; font-size: 13px; line-height: 18px; }
       .codex-plus-settings-card,
-      .codex-plus-settings > [data-codex-plus-ext-menu] {
+      .codex-plus-settings [data-codex-plus-ext-menu] {
         box-sizing: border-box;
         min-width: 0;
         padding: 0 16px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 16px;
-        background: var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary));
+        border: 1px solid var(--codex-plus-settings-card-border);
+        border-radius: var(--codex-plus-card-radius);
+        background: var(--codex-plus-settings-card-bg);
       }
       .codex-plus-settings > [data-codex-plus-ext-menu] { margin-top: 48px; }
       .codex-plus-settings .codex-plus-row {
         box-sizing: border-box;
-        min-height: 60px;
+        min-height: 52px;
         align-items: center;
         gap: 24px;
-        padding: 10px 0;
-        font-size: 14px;
-        line-height: 20px;
+        padding: 12px 0;
+        font-size: 13px;
+        line-height: 18px;
       }
       .codex-plus-settings .codex-plus-row[hidden] { display: none; }
       /* 内置拓展的子选项缩进挂在所属拓展下面；被顶替时的小字用警示色。 */
@@ -1447,7 +1532,7 @@
         overflow-wrap: anywhere;
       }
       .codex-plus-settings .codex-plus-row > :not(:first-child) { max-width: 48%; }
-      .codex-plus-settings .codex-plus-row-title { font-weight: 500; line-height: 20px; }
+      .codex-plus-settings .codex-plus-row-title { font-size: 13px; font-weight: 500; line-height: 18px; }
       /* 设置项标题旁的小标签：实验 / 需重启，与管理器增强页一致。 */
       .codex-plus-settings .codex-plus-feature-tag {
         display: inline-flex;
@@ -1471,8 +1556,8 @@
       .codex-plus-settings .codex-plus-about {
         margin-top: 2px;
         color: var(--codex-plus-text-secondary);
-        font-size: 13px;
-        line-height: 18px;
+        font-size: 12px;
+        line-height: 16px;
         overflow-wrap: anywhere;
       }
       .codex-plus-settings .codex-plus-toggle {
@@ -1482,15 +1567,17 @@
         min-height: 20px;
         box-sizing: border-box;
         padding: 2px;
-        background: var(--codex-plus-switch-off, #3a3a3a);
+        background: var(--codex-plus-switch-off);
         cursor: pointer;
       }
       .codex-plus-settings .codex-plus-toggle span {
         width: 16px;
         height: 16px;
-        background: var(--codex-plus-switch-thumb, #fff);
+        background: var(--codex-plus-switch-thumb);
+        box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.2));
       }
-      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on, #3485ff); }
+      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] { background: var(--codex-plus-switch-on); }
+      .codex-plus-settings .codex-plus-toggle[data-enabled="true"] span { background: var(--switch-thumb-color-checked, var(--codex-plus-switch-thumb)); }
       .codex-plus-settings .codex-plus-toggle[data-enabled="true"] span { transform: translateX(12px); }
       .codex-plus-settings .codex-plus-toggle[data-pending="true"],
       .codex-plus-settings .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
@@ -1503,40 +1590,54 @@
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
-      .codex-plus-settings .codex-plus-width-input {
+      .codex-plus-settings .codex-plus-width-input,
+      .codex-plus-settings .codex-plus-service-input {
         box-sizing: border-box;
-        min-height: 32px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 8px;
-        background: var(--codex-plus-bg-secondary);
+        min-height: 28px;
+        border: 1px solid var(--codex-plus-control-border);
+        border-radius: var(--codex-plus-control-radius);
+        background: var(--codex-plus-control-bg);
         color: var(--codex-plus-text);
         font-family: inherit;
         font-size: 13px;
         line-height: 18px;
       }
-      .codex-plus-settings .codex-plus-width-input { height: 32px; width: 72px; min-width: 48px; }
+      .codex-plus-settings .codex-plus-action-button,
+      .codex-plus-settings .codex-plus-issue-button {
+        padding: 4px 10px;
+        border-color: transparent;
+        background: var(--codex-plus-button-bg);
+      }
+      .codex-plus-settings .codex-plus-width-input,
+      .codex-plus-settings .codex-plus-service-input { height: 28px; padding: 0 10px; }
+      .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-action-button:hover,
       .codex-plus-settings .codex-plus-action-button:focus-visible,
       .codex-plus-settings .codex-plus-issue-button:hover,
       .codex-plus-settings .codex-plus-issue-button:focus-visible {
-        border-color: var(--codex-plus-border);
-        background: var(--codex-plus-bg-hover);
+        border-color: transparent;
+        background: var(--codex-plus-button-hover-bg);
         color: var(--codex-plus-text);
       }
+      .codex-plus-settings .codex-plus-width-input:focus,
+      .codex-plus-settings .codex-plus-service-input:focus { border-color: var(--color-token-input-border, var(--codex-plus-border)); outline: none; }
       .codex-plus-settings button:focus-visible,
       .codex-plus-settings input:focus-visible,
       .codex-plus-settings select:focus-visible {
-        outline: 2px solid var(--codex-plus-switch-on, #3485ff);
-        outline-offset: 3px;
+        outline: 2px solid var(--codex-plus-focus);
+        outline-offset: 2px;
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] { container: codex-plus-settings-page / inline-size; }
       @container codex-plus-settings-page (max-width: 800px) {
-        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 48px 24px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 24px 16px 48px; }
+        /* 窗口窄时左栏让出宽度，和原生侧栏可拖窄的观感一致。 */
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav { width: 220px; flex-basis: 220px; }
       }
       @container codex-plus-settings-page (max-width: 480px) {
-        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 32px 16px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-modal-body { padding: 16px 12px 32px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav { width: 168px; flex-basis: 168px; }
       }
       /* 「远程控制」页（45-remote-control-page.js）：沿用设置主页的版式，只补本页特有的小件。 */
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] {

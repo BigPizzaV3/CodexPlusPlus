@@ -64,6 +64,26 @@ fn dictation_renderer_contract_harness() {
     );
 }
 
+/// Codex++ 设置页的分组导航（40-backend-settings.js）：左栏列哪些分组、切换与记住选择。
+#[test]
+fn settings_groups_renderer_harness() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let output = Command::new("node")
+        .arg("--test")
+        .arg(repo.join("assets/inject/settings-groups.test.cjs"))
+        .output()
+        .expect("node should run the settings groups harness");
+    assert!(
+        output.status.success(),
+        "settings groups harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Codex++ 设置页里的语音输入 / 下一步建议服务配置与原生浏览器状态（46-service-settings.js）。
 #[test]
 fn service_settings_renderer_harness() {
@@ -521,7 +541,8 @@ fn injection_script_no_longer_carries_the_image_overlay() {
     let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(!script.contains("__CODEX_PLUS_IMAGE_OVERLAY__"));
-    assert!(!script.contains("data:image/png;base64,iVBORw0KGgo"));
+    // 只查这张叠加图本身：脚本里另有 Codex++ 自己的 logo（也是 PNG data URL），不能按前缀一刀切。
+    assert!(!script.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"));
     assert!(!script.contains("/overlay/image"));
     assert!(!script.contains("function installCodexPlusImageOverlay"));
 }

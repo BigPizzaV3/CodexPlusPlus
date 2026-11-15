@@ -1020,16 +1020,16 @@ describe("renderer injection header compatibility", () => {
 
     assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
     assert.match(renderer, /function refreshCodexPlusPageNav\(tab = /);
-    assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
+    assert.match(renderer, /function renderCodexPlusPageNavItems\(tab, root = document\)/);
     // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
     assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
     assert.match(renderer, /main\.className = "codex-plus-page-main"/);
     // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
     // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
     assert.match(renderer, /main\.appendChild\(body\)/);
-    // 左面板只有「拓展」需要（它是脚本列表）；主页与推荐内容是单栏内容页，
-    // 页面切换交给图标栏那三个入口，所以导航容器要在条件分支里创建。
+    // 左面板按页面决定：「拓展」是脚本列表，设置页是分组导航；推荐内容是单栏内容页，没有左面板。
     assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
+    assert.match(renderer, /\} else if \(tab === "home"\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
     assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
@@ -1271,13 +1271,22 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const homeStart = renderer.indexOf('data-codex-plus-panel="home"');
     const homeEnd = renderer.indexOf("${renderCodexPlusExtensionMenuRows()}", homeStart);
     assert.ok(homeStart >= 0 && homeEnd > homeStart);
-    // 模板里只剩清单挂载点和固定的「工具与关于」；设置分组全部按清单生成。
+    // 模板里只剩清单挂载点、固定的「工具与关于」和「拓展设置」；设置分组全部按清单生成。
     const template = renderer.slice(homeStart, homeEnd);
-    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*<section class="codex-plus-settings-section" aria-label="工具与关于" data-codex-plus-settings-tools="true">/);
+    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*<div class="codex-plus-settings-group" data-codex-plus-settings-group="tools" data-codex-plus-settings-label="工具与关于"[^>]*data-codex-plus-settings-tools="true">\s*<section class="codex-plus-settings-section" aria-label="工具与关于">/);
+    assert.match(template, /data-codex-plus-settings-group="ext-menu" data-codex-plus-settings-label="拓展设置"[\s\S]*data-codex-plus-ext-menu-host="true"/);
     const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
     const page = await settingsCatalogRuntime(async () => catalog);
     await page.load();
-    const html = page.sections() + template.slice(template.indexOf('<section class="codex-plus-settings-section" aria-label="工具与关于"'));
+    const html = page.sections() + template.slice(template.indexOf('<div class="codex-plus-settings-group" data-codex-plus-settings-group="tools"'));
+    // 每个分组一个容器，左栏一项对应一个；标签就是分组标题。
+    const groups = Array.from(html.matchAll(/<div class="codex-plus-settings-group" data-codex-plus-settings-group="([^"]+)" data-codex-plus-settings-label="([^"]+)"/g), ([, id, label]) => ({ id, label }));
+    const expectedGroupEntries = catalog.groups
+      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
+        || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
+      .map((group: { id: string; title: string }) => ({ id: group.id, label: group.title }));
+    // 「拓展设置」的容器总在；没有拓展菜单项时由样式隐藏、左栏也不列。
+    assert.deepEqual(groups, [...expectedGroupEntries, { id: "tools", label: "工具与关于" }, { id: "ext-menu", label: "拓展设置" }]);
     const sections = Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g));
     const expectedGroups = catalog.groups
       .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
@@ -1292,9 +1301,13 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const layoutStart = renderer.indexOf("  function installCodexPlusPageLayout(");
     const layoutEnd = renderer.indexOf("  function codexPlusPageTitle(", layoutStart);
     assert.ok(layoutStart >= 0 && layoutEnd > layoutStart);
-    assert.match(renderer.slice(layoutStart, layoutEnd), /if \(tab === "home"\)\s*\{[\s\S]*?body\.querySelector\("\.codex-plus-settings"\)\?\.prepend\(header\)/);
+    // 设置页：版本号与后端状态点挪进左栏顶上，右边按分组分页。
+    const layout = renderer.slice(layoutStart, layoutEnd);
+    assert.match(layout, /else if \(tab === "home"\)\s*\{[\s\S]*?nav\.firstElementChild\.appendChild\(header\)/);
+    assert.match(layout, /setAttribute\("data-codex-plus-settings-paged", "true"\)/);
     const css = installRendererStyle(renderer)[0].textContent ?? "";
     assert.match(css, /\.codex-plus-settings\s+\.codex-plus-row\[hidden\]\s*\{\s*display:\s*none\s*;/);
+    assert.match(css, /\.codex-plus-settings\[data-codex-plus-settings-paged="true"\] > \.codex-plus-settings-group:not\(\[data-active="true"\]\) \{ display: none; \}/);
   });
 
   it("rewrites official usage status at the cache boundary instead of scanning alerts", async () => {
