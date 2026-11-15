@@ -1164,7 +1164,7 @@
         } else if (message.type === "meta") {
           s.meta = message.meta;
         } else if (message.type === "visibility") {
-          tip(message.visible ? "" : "Codex 窗口被最小化或完全挡住了，没有画面。把窗口放到前台就能看到。");
+          tip(message.visible ? "" : "Codex 暂时没有出画面，稍等一下；一直没有的话，在电脑上把 Codex 窗口点出来一次。");
         } else if (message.type === "warning") {
           toast(message.error);
         } else if (message.type === "revoked") {

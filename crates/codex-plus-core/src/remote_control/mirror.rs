@@ -5,7 +5,10 @@
 //! - 输入法用的是网页那一端设备的：网页把「已确定的文字」发来，这里用 `Input.insertText` 写进 Codex 当前聚焦处，
 //!   不经过 Mac 的输入法，中文 / 语音输入都能用；回车、退格、方向键等单独作为按键发。
 //! - 画面是 JPEG 二进制帧；尺寸等元数据变化时另发一条 JSON。每帧发完才回 `screencastFrameAck`，网络慢时自然降帧。
-//! - 它就是桌面上那个窗口：网页上的操作桌面同步可见。最小化时 Chromium 不出画面（推 `visibility: false`）。
+//! - 它就是桌面上那个窗口：网页上的操作桌面同步可见。
+//! - 镜像期间打开 `Emulation.setFocusEmulationEnabled`：Codex 窗口失焦、被挡住、最小化时，页面仍当自己可见且有焦点，
+//!   照常出画面、收键盘（Chromium 会给页面加一个「正在被捕获」的计数，不再按隐藏处理）。连接断开后 Chromium 自动撤销。
+//!   万一仍然没画面（推 `visibility: false`），网页给出提示。
 
 use std::time::Duration;
 
@@ -179,6 +182,8 @@ where
         Message::Text(json!({ "id": id, "method": method, "params": params }).to_string().into())
     };
     socket.send(send(json!({ "type": "ready", "title": target.title }))).await?;
+    // 窗口失焦 / 最小化也照常出画面、接收输入。
+    cdp.send(command("Emulation.setFocusEmulationEnabled", json!({ "enabled": true }))).await?;
     let mut meta: Option<Value> = None;
     let mut revalidate = tokio::time::interval(REVALIDATE_EVERY);
     let reason = loop {
@@ -251,6 +256,7 @@ where
         }
     };
     let _ = cdp.send(command("Page.stopScreencast", json!({}))).await;
+    let _ = cdp.send(command("Emulation.setFocusEmulationEnabled", json!({ "enabled": false }))).await;
     let _ = cdp.close(None).await;
     if let Some(reason) = reason {
         let _ = socket.send(send(json!({ "type": "closed", "reason": reason, "reconnect": true }))).await;

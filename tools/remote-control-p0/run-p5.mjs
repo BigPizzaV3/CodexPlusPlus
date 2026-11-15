@@ -1,5 +1,5 @@
 // 远程控制 P5 端到端：桌面镜像。
-// 核对：连上后收到 JPEG 画面帧和尺寸；鼠标点到 Codex 输入框能聚焦；中文整段写进去；退格删一个字；
+// 核对：连上后收到 JPEG 画面帧和尺寸；窗口在后台也保持可见、有焦点；鼠标点到 Codex 输入框能聚焦；中文整段写进去；退格删一个字；
 // Cmd+A（带 selectAll 命令）+ 退格清空；非法输入被拒；只读设备连不上；局域网 wss 也能用。
 //
 // 前提同 run-p3（隔离桌面开着调试端口 9333）：
@@ -85,6 +85,10 @@ try {
   const jpeg = mirror.firstFrame;
   record("收到 JPEG 画面帧", !!jpeg && jpeg[0] === 0xff && jpeg[1] === 0xd8, `${mirror.frames} 帧，${jpeg?.length ?? 0} 字节`);
   record("收到页面尺寸", mirror.meta?.deviceWidth > 0 && mirror.meta?.deviceHeight > 0, JSON.stringify(mirror.meta));
+
+  // 镜像期间：Codex 窗口在后台 / 被挡住 / 最小化，页面也当自己可见、有焦点（不然不出画面、收不到键盘）
+  const pageState = await codex(`document.visibilityState + "/" + document.hasFocus()`);
+  record("镜像期间 Codex 页面保持可见、有焦点", pageState === "visible/true", pageState);
 
   // 点击：先让输入框失焦，再从镜像点它的中心
   await codex(`document.activeElement?.blur(); window.getSelection()?.removeAllRanges(); true`);
