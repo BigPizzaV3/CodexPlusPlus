@@ -11,7 +11,7 @@ import { AppSelect } from "./AppSelect";
 import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSession } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
 import { AgentGlyph } from "./HubOverview";
-import { MCP_AGENTS, mcpCount, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
+import { MCP_AGENTS, editedEnabledState, mcpCount, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
@@ -230,10 +230,15 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
       onSave={(id, body, targets) => write(async () => {
         // 表体可能取自某家停用的条目（带 enabled = false），先统一成启用，再按各家原来的启停状态写回；
         // 否则写到 Claude 时会被当成「停用即移除」。
+        // 例外：用户在编辑器里亲手改了启停行（插件只能这样改），Codex 以用户写的为准——
+        // 以前这里一律改回原状态，「编辑 → enabled = false → 保存」等于什么都没写（#3115）。
         const base = enabledBody(body, true);
+        const edited = editedEnabledState(editor.row?.body, body);
         for (const agent of targets) {
           const previous = editor.row?.byAgent[agent];
-          const next = previous && !previous.enabled && agent !== "claude" ? enabledBody(base, false) : base;
+          const next = agent === "codex" && edited !== undefined
+            ? enabledBody(base, edited)
+            : previous && !previous.enabled && agent !== "claude" ? enabledBody(base, false) : base;
           if (!(await writeAgent(agent, id, next))) return false;
         }
         setEditor(null);

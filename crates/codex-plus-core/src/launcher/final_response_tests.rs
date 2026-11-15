@@ -40,6 +40,7 @@ fn final_upstream() -> crate::protocol_proxy::UpstreamProxyResponse {
         request_trace: Some(trace),
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: None,
     }
 }

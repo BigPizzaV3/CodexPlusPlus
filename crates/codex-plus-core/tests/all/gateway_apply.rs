@@ -4845,3 +4845,64 @@ fn codex_disconnect_to_a_fallback_provider_only_fills_missing_user_root_settings
     );
     assert_eq!(config.matches("model_instructions_file =").count(), 1);
 }
+
+/// #3115：网关模式（activeRelayId = codex-plus-gateway）重写 Codex 配置时，用户直接在
+/// live config.toml 里给 MCP 加的 `tool_timeout_sec`、`env` 不能被顶掉。网关重写走
+/// `relay_switch`，读「切换时保留」开关；托管供应商的模板里没有 MCP，开关关着时也保留。
+#[test]
+fn gateway_rewrite_keeps_live_mcp_edits_with_or_without_preserve_setting() {
+    for (preserve, port) in [(true, 57411), (false, 57412)] {
+        let fixture = fixture(port);
+        let ctx = &fixture.ctx;
+        std::fs::create_dir_all(&ctx.codex_home).unwrap();
+        let mut direct = codex_plus_core::provider_import::pool_relay_profile(
+            "直连",
+            "https://api.direct.test/v1",
+            "sk-direct",
+            RelayProtocol::Responses,
+            "gpt-direct",
+            "gpt-direct",
+            &[],
+        )
+        .unwrap();
+        direct.id = "direct".into();
+        direct.relay_mode = RelayMode::PureApi;
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut direct).unwrap();
+        let mut seeded = BackendSettings::default();
+        seeded.relay_profiles_enabled = true;
+        seeded.relay_profiles = vec![direct];
+        seeded.active_relay_id = "direct".into();
+        seeded.relay_preserve_nonprovider_settings = preserve;
+        seeded.relay_context_config_contents = "[mcp_servers.my_tool]\ncommand = \"my-tool\"\n".into();
+        codex_plus_core::relay_switch::switch_relay_profile_in_home(
+            &ctx.settings,
+            &ctx.codex_home,
+            seeded,
+            "",
+        )
+        .unwrap();
+        enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+        assert_eq!(ctx.settings.load().unwrap().active_relay_id, "codex-plus-gateway");
+
+        // 用户在 live 里给这条 MCP 加超时和环境变量。
+        let config_path = ctx.codex_home.join("config.toml");
+        let mut doc = std::fs::read_to_string(&config_path)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        doc["mcp_servers"]["my_tool"]["tool_timeout_sec"] = toml_edit::value(120);
+        doc["mcp_servers"]["my_tool"]["env"] = toml_edit::table();
+        doc["mcp_servers"]["my_tool"]["env"]["MY_TOKEN"] = toml_edit::value("live-token");
+        std::fs::write(&config_path, doc.to_string()).unwrap();
+
+        // 网关重写 Codex 配置（池变化、身份同步、重启时都走这里）。
+        refresh_enabled(ctx).unwrap();
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(config.contains("/gw/codex/v1"), "{config}");
+        assert!(
+            config.contains("tool_timeout_sec = 120") && config.contains("live-token"),
+            "preserve={preserve}：{config}"
+        );
+        assert!(config.contains("command = \"my-tool\""), "{config}");
+    }
+}

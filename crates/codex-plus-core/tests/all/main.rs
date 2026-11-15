@@ -62,6 +62,7 @@ mod full_whale_contract;
 mod gateway_account_proxy;
 mod gateway_agents;
 mod gateway_apply;
+mod gateway_auto_compact;
 mod gateway_breaker;
 mod gateway_codex_identity;
 mod gateway_diagnostics;

@@ -407,6 +407,9 @@ pub fn codex_gateway_profile_on(
     profile.id = CODEX_GATEWAY_RELAY_ID.to_string();
     profile.relay_mode = RelayMode::PureApi;
     profile.model_metadata = catalog.model_metadata;
+    // 供应商池里设了压缩阈值的模型（#3100）：与直连模式同一份 `model_auto_compact`，
+    // 生成目录时写 `auto_compact_token_limit = 窗口 × 百分比`；没设的模型照旧留空。
+    profile.model_auto_compact = catalog.model_auto_compact;
     if signed_in {
         profile.config_contents = with_openai_session_identity(&profile.config_contents)?;
     }
@@ -427,6 +430,9 @@ pub fn codex_gateway_profile_on(
 pub struct CodexGatewayModelCatalog {
     pub model_list: String,
     pub model_metadata: String,
+    /// 按模型的自动压缩百分比（`{"模型":"85%"}`，格式同直连模式的 `model_auto_compact`）；
+    /// 一个都没设时为空串（#3100）。
+    pub model_auto_compact: String,
 }
 
 pub fn codex_gateway_model_catalog(
@@ -435,10 +441,40 @@ pub fn codex_gateway_model_catalog(
 ) -> CodexGatewayModelCatalog {
     let model_list = agent_gateway_model_list(gateway, binding, &ToolId::Codex);
     let model_metadata = codex_model_metadata(gateway, binding, &model_list);
+    let model_auto_compact = codex_model_auto_compact(gateway, binding, &model_list);
     CodexGatewayModelCatalog {
         model_list,
         model_metadata,
+        model_auto_compact,
     }
+}
+
+/// Codex 模型列表里每项的自动压缩百分比（#3100），键是 Codex 看到的模型名（含 `<供应商 id>/`、
+/// `group/` 前缀）。百分比保留两位小数，写成直连模式认的 `"85%"` 文本；换算不出合法值的跳过，
+/// 不让一项写坏的设置拦住整份配置。没有任何一项时返回空串，生成的目录与没有这项设置时一致。
+fn codex_model_auto_compact(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model_list: &str,
+) -> String {
+    let mut map = BTreeMap::new();
+    for line in model_list.lines() {
+        let (model, _) = crate::model_suffix::parse_model_suffix(line);
+        if model.is_empty() || map.contains_key(&model) {
+            continue;
+        }
+        let Some(percent) = route::model_entry_auto_compact(gateway, binding, &model) else {
+            continue;
+        };
+        let token = format!("{}%", (percent * 100.0).round() / 100.0);
+        if crate::model_suffix::parse_compact_percent(&token).is_some() {
+            map.insert(model, token);
+        }
+    }
+    if map.is_empty() {
+        return String::new();
+    }
+    serde_json::to_string(&map).unwrap_or_default()
 }
 
 /// 没登录 ChatGPT 时的托管供应商：显式写 `requires_openai_auth = false`，与直连模式手加的
@@ -3389,6 +3425,7 @@ fn add_provider_with(
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             relay,
             extra: Default::default(),
         };
@@ -3928,6 +3965,42 @@ pub fn set_provider_windows(
             .filter(|(model, window)| !model.is_empty() && *window > 0)
             .collect();
         provider.context_window = fallback.filter(|window| *window > 0);
+        Ok(())
+    })?;
+    store.load()
+}
+
+/// 供应商的自动压缩阈值（#3100）：按模型的（键是上游模型名）和其余模型用的默认值，单位是窗口的百分比，
+/// 整表替换。空表加 `fallback = None` 即清掉，回到 Codex 默认。百分比要在 1~100 之间，保留两位小数。
+/// 阈值写进 Agent 的模型资料，保存后要重新写一遍 Agent 配置（调用方负责）。
+pub fn set_provider_auto_compact(
+    store: &GatewayStore,
+    id: &str,
+    auto_compact: crate::gateway::store::ProviderAutoCompact,
+) -> anyhow::Result<GatewaySettings> {
+    let clean = |percent: f64| -> anyhow::Result<f64> {
+        if !crate::gateway::store::ProviderAutoCompact::valid_percent(percent) {
+            bail!("自动压缩阈值要在 1% ~ 100% 之间：{percent}");
+        }
+        Ok((percent * 100.0).round() / 100.0)
+    };
+    let mut models = BTreeMap::new();
+    for (model, percent) in auto_compact.models {
+        let model = model.trim().to_string();
+        if !model.is_empty() {
+            models.insert(model, clean(percent)?);
+        }
+    }
+    let fallback = auto_compact.fallback.map(clean).transpose()?;
+    store.update(|gateway| {
+        let Some(provider) = gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == id)
+        else {
+            bail!("供应商不存在：{id}");
+        };
+        provider.auto_compact = crate::gateway::store::ProviderAutoCompact { models, fallback };
         Ok(())
     })?;
     store.load()

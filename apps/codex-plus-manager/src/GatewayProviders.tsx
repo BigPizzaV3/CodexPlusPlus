@@ -57,6 +57,7 @@ import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaWindows, Switch, t
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
 import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
 import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./ProviderWindowsDialog";
+import { withUnlistedAutoCompact } from "./gateway-auto-compact-model";
 import { ProviderReasoningDialog, reasoningSummary } from "./ProviderReasoningDialog";
 import { ProviderModelsDialog } from "./ProviderModelsDialog";
 import { ProviderSyncDialog } from "./ProviderSyncDialog";
@@ -220,10 +221,10 @@ export function ProvidersView({
     if (form?.mode !== "edit") return;
     if (await run(`edit:${form.entry.id}`, "update_gateway_provider", { id: form.entry.id, input: providerInput(draft) }, t("保存供应商"))) closeForm();
   };
-  const saveFormWindows = async (modelWindows: Record<string, number>, fallback: number | null) => {
+  const saveFormWindows = async (modelWindows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => {
     if (!editingEntry || !formWindows) return;
     const windows = withUnlistedWindows(editingEntry, formWindows, modelWindows);
-    if (await run(`windows:${editingEntry.id}`, "save_gateway_provider_windows", { id: editingEntry.id, windows, fallback }, t("保存上下文窗口"))) setFormWindows(null);
+    if (await run(`windows:${editingEntry.id}`, "save_gateway_provider_windows", { id: editingEntry.id, windows, fallback, autoCompact: withUnlistedAutoCompact(editingEntry, formWindows, autoCompact) }, t("保存上下文窗口"))) setFormWindows(null);
   };
 
   return (
@@ -300,7 +301,7 @@ export function ProvidersView({
           busy={busy !== null}
           entry={{ ...editingEntry, models: formWindows }}
           onCancel={() => setFormWindows(null)}
-          onSave={(modelWindows, fallback) => void saveFormWindows(modelWindows, fallback)}
+          onSave={(modelWindows, fallback, autoCompact) => void saveFormWindows(modelWindows, fallback, autoCompact)}
         />
       ) : null}
     </>
@@ -647,8 +648,8 @@ function PoolRow({
     if (await run(`reasoning:${entry.id}`, "save_gateway_provider_metadata", { id: entry.id, modelMetadata }, t("保存思考等级"))) setReasoningOpen(false);
   };
   const windows = windowSummary(entry);
-  const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null) => {
-    if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback }, t("保存上下文窗口"))) setWindowsOpen(false);
+  const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => {
+    if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback, autoCompact }, t("保存上下文窗口"))) setWindowsOpen(false);
   };
   // 从上游同步上下文窗口 / 思考等级（#2807）：先列差异，勾选后才写入。订阅账号的模型接口不带这些资料。
   const [metaSync, setMetaSync] = useState<MetaSyncKind | null>(null);
@@ -988,7 +989,7 @@ function PoolRow({
         <ProviderReasoningDialog busy={busy !== null} entry={entry} onCancel={() => setReasoningOpen(false)} onSave={(modelMetadata) => void saveReasoning(modelMetadata)} />
       ) : null}
       {windowsOpen ? (
-        <ProviderWindowsDialog busy={busy !== null} entry={entry} onCancel={() => setWindowsOpen(false)} onSave={(modelWindows, fallback) => void saveWindows(modelWindows, fallback)} />
+        <ProviderWindowsDialog busy={busy !== null} entry={entry} onCancel={() => setWindowsOpen(false)} onSave={(modelWindows, fallback, autoCompact) => void saveWindows(modelWindows, fallback, autoCompact)} />
       ) : null}
       {accessOpen ? (
         <ProviderNewApiAccessDialog
