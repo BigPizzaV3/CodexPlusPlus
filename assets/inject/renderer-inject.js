@@ -12524,6 +12524,19 @@
         changed = true;
       }
     }
+    const modalities = Array.isArray(metadata.inputModalities)
+      ? metadata.inputModalities
+      : Array.isArray(metadata.input_modalities)
+        ? metadata.input_modalities
+        : null;
+    if (modalities && JSON.stringify(descriptor.inputModalities || []) !== JSON.stringify(modalities)) {
+      descriptor.inputModalities = modalities;
+      changed = true;
+    }
+    if (typeof metadata.supportsImageDetailOriginal === "boolean" && descriptor.supportsImageDetailOriginal !== metadata.supportsImageDetailOriginal) {
+      descriptor.supportsImageDetailOriginal = metadata.supportsImageDetailOriginal;
+      changed = true;
+    }
     if (Array.isArray(metadata.supportedReasoningEfforts) && metadata.supportedReasoningEfforts.length > 0) {
       const nextEfforts = modelReasoningEfforts(modelName);
       if (JSON.stringify(descriptor.supportedReasoningEfforts || []) !== JSON.stringify(nextEfforts)) {
@@ -12547,6 +12560,14 @@
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
+      ...(Array.isArray(metadata?.inputModalities)
+        ? { inputModalities: metadata.inputModalities }
+        : Array.isArray(metadata?.input_modalities)
+          ? { inputModalities: metadata.input_modalities }
+          : {}),
+      ...(typeof metadata?.supportsImageDetailOriginal === "boolean"
+        ? { supportsImageDetailOriginal: metadata.supportsImageDetailOriginal }
+        : {}),
     };
   }
 

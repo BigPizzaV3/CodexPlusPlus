@@ -984,3 +984,42 @@ fn deepseek_metadata_carries_its_own_instructions_template() {
         );
     }
 }
+
+#[test]
+fn model_ui_metadata_forwards_image_input_modalities() {
+    // 内置元数据里 camelCase / snake_case 的模态声明都要能透传到 UI。
+    let metadata = model_ui_metadata("gpt-6-astra").expect("Astra metadata should exist");
+    assert_eq!(metadata["inputModalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(metadata["input_modalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(metadata["supportsImageDetailOriginal"], serde_json::json!(true));
+
+    // 缺键时不能凭空添加字段，避免给纯文本模型错误宣称图片能力。
+    let custom = serde_json::json!({
+        "display_name": "Provider Text Only",
+        "description": "Provider description"
+    });
+    let ui = model_ui_metadata_with_override("custom-text-only", Some(&custom)).unwrap();
+    assert!(ui.get("inputModalities").is_none());
+    assert!(ui.get("input_modalities").is_none());
+    assert!(ui.get("supportsImageDetailOriginal").is_none());
+
+    // 用户覆盖的 snake_case 声明优先级最高，且只有显式声明的模态数组才写 UI。
+    let override_with_image = serde_json::json!({
+        "input_modalities": ["text", "image"],
+        "supports_image_detail_original": false
+    });
+    let ui = model_ui_metadata_with_override("custom-user-image", Some(&override_with_image)).unwrap();
+    assert_eq!(ui["inputModalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(ui["input_modalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(ui["supportsImageDetailOriginal"], serde_json::json!(false));
+
+    // camelCase 用户覆盖同样要读得到。
+    let override_camel = serde_json::json!({
+        "inputModalities": ["text"],
+        "supportsImageDetailOriginal": true
+    });
+    let ui = model_ui_metadata_with_override("custom-user-camel", Some(&override_camel)).unwrap();
+    assert_eq!(ui["inputModalities"], serde_json::json!(["text"]));
+    assert_eq!(ui["input_modalities"], serde_json::json!(["text"]));
+    assert_eq!(ui["supportsImageDetailOriginal"], serde_json::json!(true));
+}

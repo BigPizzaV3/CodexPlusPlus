@@ -443,6 +443,24 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
             ui[snake] = window.clone();
         }
     }
+    // 图片输入能力：camelCase / snake_case 都读，只有显式声明的模态数组才转发。
+    let modalities = metadata
+        .get("input_modalities")
+        .or_else(|| metadata.get("inputModalities"))
+        .and_then(Value::as_array)
+        .cloned();
+    if let Some(modalities) = modalities {
+        ui["inputModalities"] = json!(modalities);
+        ui["input_modalities"] = json!(modalities);
+    }
+    // 原图精度开关：只有显式 true / false 才转发，缺键不写。
+    if let Some(original) = metadata
+        .get("supports_image_detail_original")
+        .or_else(|| metadata.get("supportsImageDetailOriginal"))
+        .and_then(Value::as_bool)
+    {
+        ui["supportsImageDetailOriginal"] = json!(original);
+    }
     if !has_builtin {
         // 单独声明 Fast 不能替原生描述符制造名称、描述或推理默认档。
         for (ui_field, source_field) in [

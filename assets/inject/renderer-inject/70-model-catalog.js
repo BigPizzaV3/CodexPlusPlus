@@ -413,12 +413,14 @@
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
-      inputModalities: Array.isArray(metadata?.inputModalities)
-        ? metadata.inputModalities
+      ...(Array.isArray(metadata?.inputModalities)
+        ? { inputModalities: metadata.inputModalities }
         : Array.isArray(metadata?.input_modalities)
-          ? metadata.input_modalities
-          : ["text", "image"],
-      supportsImageDetailOriginal: metadata?.supportsImageDetailOriginal === true,
+          ? { inputModalities: metadata.input_modalities }
+          : {}),
+      ...(typeof metadata?.supportsImageDetailOriginal === "boolean"
+        ? { supportsImageDetailOriginal: metadata.supportsImageDetailOriginal }
+        : {}),
     };
   }
 

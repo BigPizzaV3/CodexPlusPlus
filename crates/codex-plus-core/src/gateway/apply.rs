@@ -861,6 +861,9 @@ fn catalog_ui_fields(entry: &Value) -> Map<String, Value> {
         // Fast（优先处理）按这两个字段判断能不能开；不带过去 Codex 里的 Fast 按钮就一直是灰的。
         "service_tiers",
         "additional_speed_tiers",
+        // 图片输入能力：原生目录用这两个字段判断能否发图和原图精度。
+        "input_modalities",
+        "supports_image_detail_original",
     ] {
         if let Some(value) = entry.get(key).filter(|value| !value.is_null()) {
             fields.insert(key.to_string(), value.clone());
