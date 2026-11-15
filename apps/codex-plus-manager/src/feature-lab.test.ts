@@ -11,7 +11,8 @@ import { readFile } from "node:fs/promises";
  *   3. 非法 feature 名（会写坏 config 键路径）直接拒绝；
  *   4. 内置拓展清单、设置清单与分片清单三处登记一致；
  *   5. 服务端几乎不给说明（实测 215 项只有 5 项），用内置中文说明表补，服务端有说明时以服务端为准；
- *   6. config/batchWrite 对任何 key 都回 ok，写完必须回读 enabled 才能判断是否真的生效。
+ *   6. config/batchWrite 对任何 key 都回 ok，写完必须回读 enabled 才能判断是否真的生效；
+ *   7. Codex 启动时经 enablement/set 推送的 15 项带提示（config.toml 优先，memories 总被推成关闭）。
  */
 
 const SHARD_URL = new URL("../../../assets/inject/renderer-inject/96-feature-lab.js", import.meta.url);
@@ -26,6 +27,7 @@ type Feature = {
   risky: boolean;
   locked: boolean;
   known: boolean;
+  pushNote: string;
 };
 
 async function runtime() {
@@ -37,6 +39,7 @@ async function runtime() {
       write: codexPlusFeatureLabWrite,
       verify: codexPlusFeatureLabVerify,
       catalog: codexPlusFeatureLabCatalog,
+      pushed: codexPlusFeatureLabPushedByApp,
       extension: codexPlusFeatureLabExtension,
       stage: codexPlusFeatureLabStage,
       labChoice: codexPlusStatsigLabChoice,
@@ -50,6 +53,7 @@ async function runtime() {
     write(client: unknown, feature: Feature, enabled: boolean): Promise<unknown>;
     verify(client: unknown, name: string): Promise<boolean | null>;
     catalog: Record<string, { title: string; description: string }>;
+    pushed: Set<string>;
     extension(ctx: unknown): void;
     stage(raw: unknown): string;
     labChoice(overrides: unknown, id: string): string;
@@ -111,6 +115,18 @@ it("服务端没给说明时用内置中文说明，服务端给了以服务端�
   assert.equal(unknown?.title, "brand_new_flag");
   assert.equal(unknown?.description, "");
   assert.equal(unknown?.known, false);
+});
+
+it("Codex 启动时推送的 feature 带提示，memories 单独说明总被推成关闭", async () => {
+  const api = await runtime();
+  const pushed = api.normalize({ name: "mcp_connection_sharing", stage: "beta" });
+  assert.match(pushed?.pushNote ?? "", /config\.toml/);
+  const memories = api.normalize({ name: "memories", stage: "beta" });
+  assert.match(memories?.pushNote ?? "", /关闭/);
+  const plain = api.normalize({ name: "code_mode", stage: "underDevelopment" });
+  assert.equal(plain?.pushNote, "");
+  assert.equal(api.pushed.size, 15);
+  for (const name of api.pushed) assert.match(name, /^[A-Za-z][A-Za-z0-9_]*$/, name);
 });
 
 it("内置说明表的 key 都是合法 feature 名，标题与说明都不为空", async () => {

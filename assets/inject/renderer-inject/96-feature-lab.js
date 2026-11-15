@@ -21,6 +21,38 @@
   const codexPlusFeatureLabNamePattern = /^[A-Za-z][A-Za-z0-9_]*$/;
 
   /**
+   * Codex 应用启动时经 experimentalFeature/enablement/set 推送的 feature（26.1111 应用包里的白名单）。
+   * 推送值来自 Statsig，只改 app-server 进程内的默认；config.toml 里写了 features.<name> 的以 config 为准。
+   * 所以这些项「默认」一栏可能和列表里看到的不一致，在这里写一次才算钉住。
+   */
+  const codexPlusFeatureLabPushedByApp = new Set([
+    "api_key_cyber_access_programs",
+    "api_key_model_discovery",
+    "auth_elicitation",
+    "background_paginated_rollout_migration",
+    "codex_apps_mcp_2026_07_28",
+    "daybreak_program_propagation",
+    "mcp_2026_07_28",
+    "mcp_connection_sharing",
+    "mcp_lazy_stdio_startup",
+    "memories",
+    "mentions_v2",
+    "remote_control",
+    "remote_plugin",
+    "tool_suggest",
+    "windows_sandbox_service",
+  ]);
+
+  /** 被 Codex 启动时推送的 feature 的提示；不在白名单里返回空串。 */
+  function codexPlusFeatureLabPushNote(name) {
+    if (!codexPlusFeatureLabPushedByApp.has(name)) return "";
+    if (name === "memories") {
+      return "Codex 启动时总是把它推成关闭；要开必须在这里写入（写进 config.toml 的值优先）。";
+    }
+    return "Codex 启动时会按远程开关推送默认值，没写过时以推送为准；在这里写入后以 config.toml 为准。";
+  }
+
+  /**
    * 内置说明表。
    *
    * `experimentalFeature/list` 只给极少数 feature 带 displayName / description（实测 215 项里只有 5 项），
@@ -225,6 +257,7 @@
       stage,
       description,
       known: Boolean(known),
+      pushNote: codexPlusFeatureLabPushNote(name),
       enabled: raw.enabled === true,
       defaultEnabled: raw.defaultEnabled === true,
       // removed 阶段不能直接判定为不可写：实测 search_tool 写了会生效，js_repl / remote_control 不会。
@@ -323,6 +356,7 @@
       .codex-plus-feature-lab .cpl-tab[aria-selected="true"] { color: inherit; border-bottom-color: light-dark(#0969da, #4493f8) !important; font-weight: 600; }
       .codex-plus-feature-lab .cpl-hint { color: light-dark(#8c959f, #8b949e); font-size: 12px; }
       .codex-plus-feature-lab .cpl-warn { color: light-dark(#9a6700, #f2cc60); font-size: 12px; }
+      .codex-plus-feature-lab .cpl-push-note { color: light-dark(#9a6700, #f2cc60); }
       .codex-plus-feature-lab .cpl-row select { flex: 0 0 auto; appearance: auto !important; }
       .codex-plus-feature-lab p { margin: 0; }
       .codex-plus-feature-lab .cpl-sub { color: light-dark(#57606a, #9aa4ad); }
@@ -509,6 +543,12 @@
         meta.textContent = `默认${defaultText}${feature.stage === "removed" ? " · 已移除，写入后不一定生效" : ""}`;
 
         main.append(title, desc, meta);
+        if (feature.pushNote) {
+          const push = document.createElement("div");
+          push.className = "cpl-meta cpl-push-note";
+          push.textContent = feature.pushNote;
+          main.appendChild(push);
+        }
 
         const toggle = document.createElement("button");
         toggle.type = "button";
