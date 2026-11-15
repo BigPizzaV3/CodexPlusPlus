@@ -122,6 +122,10 @@ pub struct GatewayProvider {
     /// 没单独写窗口的模型用的窗口；都不填就交给模型自带的资料。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// 自动压缩阈值（#3100）：窗口的百分比，与窗口并列按模型填。都不填时不写压缩上限，
+    /// Codex 按自己的默认压缩，行为与没有这项设置时完全一样；旧文件读进来是空的。
+    #[serde(default, skip_serializing_if = "ProviderAutoCompact::is_empty")]
+    pub auto_compact: ProviderAutoCompact,
     /// 这个供应商单独走的 HTTP 代理；空串表示不单独走代理（沿用系统代理）。
     /// 与直连模式的「供应商独立代理」互不相干。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -161,6 +165,30 @@ pub struct GatewayProvider {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+/// 供应商的自动压缩阈值（#3100），单位是窗口的百分比（如 `85.0` 表示窗口的 85%）。
+/// 写进 Codex 模型目录时换算成 `auto_compact_token_limit = 窗口 × 百分比`。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAutoCompact {
+    /// 按模型的阈值：键是上游模型名（不带供应商前缀）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, f64>,
+    /// 没单独写阈值的模型用的阈值；不填就交给 Codex 默认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<f64>,
+}
+
+impl ProviderAutoCompact {
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty() && self.fallback.is_none()
+    }
+
+    /// 合法的百分比：大于等于 1、不超过 100 的有限数。
+    pub fn valid_percent(value: f64) -> bool {
+        value.is_finite() && (1.0..=100.0).contains(&value)
+    }
 }
 
 /// 从上游同步写入的模型资料记录（#2807），键是小写、去掉 `[1M]` 后缀的模型名。
@@ -237,6 +265,25 @@ impl GatewayProvider {
             .map(|(_, window)| *window)
             .or(self.context_window)
             .filter(|window| *window > 0)
+    }
+
+    /// 某个上游模型的自动压缩百分比：单独写的优先（忽略大小写和 `[1M]` 后缀），其次是这家的默认值；
+    /// 都没有（或值不合法）返回 None，交给 Codex 默认。
+    pub fn auto_compact_for(&self, model: &str) -> Option<f64> {
+        let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+        let slug = slug.trim();
+        self.auto_compact
+            .models
+            .iter()
+            .find(|(name, _)| {
+                crate::model_suffix::parse_model_suffix(name.trim())
+                    .0
+                    .trim()
+                    .eq_ignore_ascii_case(slug)
+            })
+            .map(|(_, percent)| *percent)
+            .or(self.auto_compact.fallback)
+            .filter(|percent| ProviderAutoCompact::valid_percent(*percent))
     }
 
     /// 上游配置里带的窗口（从直连模式导入的、或模型列表里写了 `[1M]` 后缀的）收进网关自己的
@@ -887,6 +934,7 @@ impl GatewaySettings {
                 newapi_access: None,
                 subscription_policy: None,
                 upstream_meta: Default::default(),
+                auto_compact: Default::default(),
                 relay,
                 extra: Map::new(),
             };
@@ -1394,6 +1442,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             relay: RelayProfile {
                 id: "deepseek".to_string(),
                 ..RelayProfile::default()
