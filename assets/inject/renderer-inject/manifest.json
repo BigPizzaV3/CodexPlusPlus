@@ -68,7 +68,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 2023
+      "lines": 2046
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -158,7 +158,7 @@
     {
       "name": "92-extension-slots.js",
       "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
-      "lines": 728
+      "lines": 729
     },
     {
       "name": "92-extension-extras.js",
@@ -208,7 +208,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 43
+      "lines": 45
     },
     {
       "name": "99-tail.js",

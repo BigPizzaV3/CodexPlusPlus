@@ -443,9 +443,9 @@
   const codexThreadScrollRestoreWindowMs = 3200;
   const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
   const codexThreadScrollUserIntentWindowMs = 1200;
-  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
+  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:3";
   const codexThreadScrollRouteHooksVersion = "dispatcher:3";
-  const codexThreadScrollListenerVersion = "5";
+  const codexThreadScrollListenerVersion = "6";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");

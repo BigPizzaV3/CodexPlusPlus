@@ -162,6 +162,8 @@
       /* 三项作为一组居中，和 DSH 那条一致；两端对齐会把「上下文占用」甩到最右边，
          和速度、缓存拉得太开，读起来是两段信息。 */
       #${codexPlusUsageStatusLineId}{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:5px 18px;box-sizing:border-box;width:100%;margin:6px 0 0;padding:0 10px;font:inherit;font-size:12px;line-height:17px;color:var(--color-token-text-secondary,rgba(205,205,215,.95));color:color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 82%,transparent);user-select:none;cursor:default}
+      /* 插槽已经提供上间距，迁入时不能再叠一份，否则输入框会向上跳 6px。 */
+      [data-codex-plus-ui-slot="composer.below"] #${codexPlusUsageStatusLineId}{margin-top:0}
       #${codexPlusUsageStatusLineId}[data-hidden="true"]{display:none}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-variant-numeric:tabular-nums;transition:opacity .2s}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-value{font-weight:500}

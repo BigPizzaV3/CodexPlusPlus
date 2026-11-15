@@ -27,7 +27,7 @@ function fixture(entry?: Entry) {
     scrollTo({ top }: { top: number }) { this.scrollTop = top; },
     getBoundingClientRect() { return { top: 0, left: 0, width: this.clientWidth, height: this.clientHeight }; },
     offsetHeight: 1000,
-    querySelector(_selector: string): object | null { return {}; },
+    querySelector(selector: string): object | null { return selector === "[data-above-composer-conversation-id]" ? null : {}; },
     closest(_selector: string): object | null { return null; },
     contains(node: unknown) { return node === this; },
     addEventListener(_name: string, listener: () => void) { scrollListeners.add(listener); },
@@ -48,7 +48,7 @@ function fixture(entry?: Entry) {
     codexThreadScrollKey: "codexThreadScroll", codexThreadScrollVersion: "1",
     codexThreadScrollMaxEntries: 120, codexThreadScrollSaveThrottleMs: 120,
     codexThreadScrollRestoreWindowMs: 3200, codexThreadScrollRestoreDelaysMs: [0, 80, 220],
-    codexThreadScrollUserIntentWindowMs: 1200, codexThreadScrollListenerVersion: "5",
+    codexThreadScrollUserIntentWindowMs: 1200, codexThreadScrollListenerVersion: "6",
     codexThreadScrollAnchorBlocks: "p, pre, li, h1, h2, h3, h4, h5, h6, table, blockquote",
     sessionKey: (id: string) => id,
     currentSessionRef: () => ({ session_id: currentSessionId }),
@@ -74,6 +74,7 @@ function fixture(entry?: Entry) {
     "startThreadScrollRestoreLock", "prepareThreadScrollRestoreLock", "threadScrollTargetTop",
     "threadScrollNearBottom", "threadScrollGuardScroller", "shouldBlockThreadScrollAutobottom",
     "bindThreadScrollListener", "saveThreadScrollPositionNow", "scheduleThreadScrollSave",
+    "restoreThreadScrollAfterProgrammaticScroll",
     "restoreThreadScrollPosition", "scheduleThreadScrollRestore", "syncThreadScrollState",
     "scheduleThreadScrollSyncAttempts", "captureThreadScrollNavigation",
     "handleThreadScrollVisibilityChange", "scheduleThreadScrollSync",
@@ -97,6 +98,57 @@ function fixture(entry?: Entry) {
 const reading: Entry = { top: 2000, scrollHeight: 6000, clientHeight: 1000, at: 1 };
 const bottom: Entry = { top: 5000, scrollHeight: 6000, clientHeight: 1000, at: 1 };
 
+test("mounted conversation identity wins while the sidebar still selects the previous thread", () => {
+  const { context, scroller } = fixture(reading);
+  const mounted = "11111111-1111-4111-8111-111111111111";
+  scroller.querySelector = (selector) => selector === "[data-above-composer-conversation-id]"
+    ? { getAttribute: () => mounted } : null;
+  assert.equal(context.currentThreadScrollSessionId(), mounted);
+});
+
+test("a newly mounted thread restores synchronously, before timer-driven scans", () => {
+  const { context, scroller, flushTimers } = fixture(reading);
+  context.codexPlusBackendSettingsLoaded = true;
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
+  context.syncThreadScrollState();
+  assert.equal(scroller.scrollTop, reading.top);
+  flushTimers();
+  assert.equal(scroller.scrollTop, reading.top);
+});
+
+test("native middle-position compensation is corrected in the scroll frame, but user intent wins", () => {
+  const { context, scroller, scrollListeners, flushTimers } = fixture(reading);
+  context.codexPlusBackendSettingsLoaded = true;
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
+  context.syncThreadScrollState();
+  flushTimers();
+  scroller.scrollTop = reading.top - 189;
+  for (const listener of scrollListeners) listener();
+  assert.equal(scroller.scrollTop, reading.top, "no delayed second visible position");
+  context.cancelThreadScrollRestoreForUserIntent(sessionId);
+  scroller.scrollTop = reading.top - 120;
+  for (const listener of scrollListeners) listener();
+  assert.equal(scroller.scrollTop, reading.top - 120);
+});
+
+test("post-scroll correction is scoped to the active scroller and preserves native return values", () => {
+  const { context, scroller, flushTimers } = fixture(reading);
+  context.codexPlusBackendSettingsLoaded = true;
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
+  context.syncThreadScrollState();
+  flushTimers();
+  scroller.scrollTop = 1811;
+  context.restoreThreadScrollAfterProgrammaticScroll({});
+  assert.equal(scroller.scrollTop, 1811);
+  context.restoreThreadScrollAfterProgrammaticScroll(scroller);
+  assert.equal(scroller.scrollTop, reading.top);
+  context.threadScrollRuntime().applyingRestore = true;
+  scroller.scrollTop = 1811;
+  context.restoreThreadScrollAfterProgrammaticScroll(scroller);
+  assert.equal(scroller.scrollTop, 1811, "our own scrollTo must not recurse");
+  assert.match(extract("installThreadScrollProgrammaticScrollGuard"), /const result = originals\.elementScrollTo\.apply\(this, args\);\s*if \(top != null\) window\.__codexThreadScrollHandlers\?\.didScroll\?\.\(this\);\s*return result;/);
+});
+
 function anchorFixture(entry?: Entry) {
   const result = fixture(entry);
   const { context, scroller } = result;
@@ -112,7 +164,8 @@ function anchorFixture(entry?: Entry) {
   };
   const hit = { closest: (selector: string) => selector === "[data-content-search-unit-key]" ? unit : block };
   scroller.contains = (element) => element === scroller || element === unit;
-  scroller.querySelector = () => geometry.mounted ? unit : null;
+  scroller.querySelector = (selector) => selector === "[data-above-composer-conversation-id]"
+    ? null : geometry.mounted ? unit : null;
   scroller.getBoundingClientRect = () => ({ top: 0, left: 0, width: 900 * geometry.scale, height: 1000 * geometry.scale });
   context.document.elementFromPoint = () => geometry.mounted ? hit : null;
   context.codexPlusBackendSettingsLoaded = true;
@@ -131,6 +184,19 @@ test("reading anchor survives storage, lock creation and content growth above th
   geometry.top += 430;
   context.restoreThreadScrollPosition(sessionId);
   assert.equal(scroller.scrollTop, 3630, "later reflow inside the same message preserves its paragraph");
+});
+
+test("DOM synchronization corrects an active anchor without renewing its restore lock", () => {
+  const { context, scroller, geometry, flushTimers } = anchorFixture({
+    ...reading, anchor: { key: "message-123", block: 0, offset: 50 },
+  });
+  context.syncThreadScrollState();
+  flushTimers();
+  const lock = context.threadScrollRuntime().restoreLock;
+  geometry.top += 136;
+  context.syncThreadScrollState();
+  assert.equal(scroller.scrollTop, 2136);
+  assert.equal(context.threadScrollRuntime().restoreLock, lock);
 });
 
 test("resume captures the current paragraph and accounts for window zoom", () => {

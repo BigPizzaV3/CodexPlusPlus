@@ -443,9 +443,9 @@
   const codexThreadScrollRestoreWindowMs = 3200;
   const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
   const codexThreadScrollUserIntentWindowMs = 1200;
-  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
+  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:3";
   const codexThreadScrollRouteHooksVersion = "dispatcher:3";
-  const codexThreadScrollListenerVersion = "5";
+  const codexThreadScrollListenerVersion = "6";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
@@ -10552,6 +10552,10 @@
   }
 
   function currentThreadScrollSessionId() {
+    // 侧栏选中项可能晚于历史挂载更新，只读取当前滚动容器内的会话标记。
+    const marked = currentThreadScroller()?.querySelector("[data-above-composer-conversation-id]");
+    const mountedId = normalizedCodexThreadUuid(marked?.getAttribute("data-above-composer-conversation-id"));
+    if (mountedId) return mountedId;
     return validThreadScrollSessionKey(currentSessionRef().session_id)
       || validThreadScrollSessionKey(codexPlusCurrentSessionId());
   }
@@ -10859,7 +10863,9 @@
       Element.prototype.scrollTo = function codexThreadScrollGuardedScrollTo(...args) {
         const top = scrollToRequestedTop(args, this);
         if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
-        return originals.elementScrollTo.apply(this, args);
+        const result = originals.elementScrollTo.apply(this, args);
+        if (top != null) window.__codexThreadScrollHandlers?.didScroll?.(this);
+        return result;
       };
     }
     originals.elementScroll = originals.elementScroll || Element.prototype.scroll;
@@ -10914,6 +10920,14 @@
     }
   }
 
+  function restoreThreadScrollAfterProgrammaticScroll(scroller) {
+    const runtime = threadScrollRuntime();
+    if (runtime.applyingRestore || runtime.resumeSessionId || document.visibilityState === "hidden"
+        || !activeThreadScrollRestoreLock() || scroller !== runtime.activeScroller) return;
+    // ResizeObserver 内的原生补偿晚于本帧 scroll 事件，直接在原调用返回前恢复锚点。
+    restoreThreadScrollPosition(runtime.activeSessionId);
+  }
+
   function bindThreadScrollListener(scroller) {
     const runtime = threadScrollRuntime();
     const currentUsesWindow = !runtime.activeScroller || runtime.activeScroller === document.scrollingElement || runtime.activeScroller === document.documentElement || runtime.activeScroller === document.body;
@@ -10926,7 +10940,13 @@
       runtime.scrollListenerVersion = "";
       listenerReplaced = true;
     }
-    runtime.scrollListener = runtime.scrollListener || (() => scheduleThreadScrollSave());
+    runtime.scrollListener = runtime.scrollListener || (() => {
+      // 原生 footer 的补偿在绘制前触发 scroll，不能等下一轮定时恢复才校正。
+      if (document.visibilityState !== "hidden" && !runtime.resumeSessionId && activeThreadScrollRestoreLock()) {
+        restoreThreadScrollPosition(runtime.activeSessionId);
+      }
+      scheduleThreadScrollSave();
+    });
     runtime.scrollListenerVersion = codexThreadScrollListenerVersion;
     if (!listenerReplaced && runtime.activeScroller === scroller && runtime.scrollListenerUsesWindow === nextUsesWindow) return;
     if (runtime.activeScroller) {
@@ -11058,10 +11078,12 @@
       runtime.userScrollIntentUntil = 0;
       if (runtime.userCancelledRestoreSessionId !== nextSessionId) runtime.userCancelledRestoreSessionId = "";
       scheduleThreadScrollRestore(nextSessionId);
+      restoreThreadScrollPosition(nextSessionId);
       return;
     }
     runtime.activeSessionId = nextSessionId;
     if (forceRestore && !userScrollIntentActive() && !threadScrollRestoreCancelledForSession(nextSessionId)) scheduleThreadScrollRestore(nextSessionId);
+    if (activeThreadScrollRestoreLock(nextSessionId)) restoreThreadScrollPosition(nextSessionId);
   }
 
   function scheduleThreadScrollSyncAttempts(forceRestore = true) {
@@ -11140,6 +11162,7 @@
     window.__codexThreadScrollHandlers = {
       shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
       shouldBlockIntoView: shouldBlockThreadScrollIntoView,
+      didScroll: restoreThreadScrollAfterProgrammaticScroll,
       markUserIntent: markThreadScrollUserIntent,
       markKeyboardIntent: markThreadScrollKeyboardIntent,
       markPointerIntent: markThreadScrollPointerIntent,
@@ -23536,7 +23559,8 @@
       .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
       .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}
       .codex-plus-ui-slot{display:flex;flex-direction:column;gap:6px;min-width:0}
-      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty):not(:has(> [data-hidden="true"]:only-child)))){display:none}
+      /* 异步渲染前的空插槽不占间距；:has() 不能嵌套。 */
+      .codex-plus-ui-slot:not(:has(> .codex-plus-ui-slot-item:not(:empty))){display:none}
       .codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}
       .codex-plus-ui-slot-item:empty{display:none}
       [data-codex-plus-ui-slot="composer.above"]{margin:0 0 8px}
@@ -27753,6 +27777,8 @@
   window.__codexSessionDeleteObserver = new MutationObserver((mutations) => {
     // 先同步藏起已删会话的重建行（首帧前生效，#2791），再按原规则排扫描。
     runScanStep(() => hideDeletedSessionRowsInMutations(mutations));
+    // 挂载后的微任务内对齐阅读位置，避免等待轻量扫描期间先绘制原生恢复位置。
+    runScanStep(() => { if (threadScrollRestoreEnabled()) syncThreadScrollState(); });
     scheduleScan(mutations);
   });
   window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {
@@ -27762,7 +27788,7 @@
     // persisted UUID without replacing the DOM node. Re-scan those rows so the
     // action button and its delete reference are rebuilt from the canonical ID.
     attributes: true,
-    attributeFilter: ["data-app-action-sidebar-thread-id", "href"],
+    attributeFilter: ["data-app-action-sidebar-thread-id", "href", "data-above-composer-conversation-id"],
   });
   // 会话复制 / 自动命名两项已下线；同页重复注入时摘掉旧脚本留下的触发器监听。
   document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);

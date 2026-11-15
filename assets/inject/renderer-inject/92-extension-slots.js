@@ -169,7 +169,8 @@
       .codex-plus-side-panel-toggle .codex-plus-ext-icon,.codex-plus-side-panel-toggle svg{display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;font-size:14px;line-height:1}
       .codex-plus-side-panel-toggle[aria-pressed="true"]{background:var(--color-token-list-hover-background,color-mix(in srgb,currentColor 12%,transparent))}
       .codex-plus-ui-slot{display:flex;flex-direction:column;gap:6px;min-width:0}
-      .codex-plus-ui-slot:not(:has(.codex-plus-ui-slot-item:not(:empty):not(:has(> [data-hidden="true"]:only-child)))){display:none}
+      /* 异步渲染前的空插槽不占间距；:has() 不能嵌套。 */
+      .codex-plus-ui-slot:not(:has(> .codex-plus-ui-slot-item:not(:empty))){display:none}
       .codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}
       .codex-plus-ui-slot-item:empty{display:none}
       [data-codex-plus-ui-slot="composer.above"]{margin:0 0 8px}

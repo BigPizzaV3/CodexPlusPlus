@@ -427,6 +427,24 @@ test("三项目作为一组居中，过期只淡化速度项", () => {
   assert.doesNotMatch(shardSource, /\[data-stale="true"\]\{/);
 });
 
+test("迁入 composer.below 插槽后不叠加上间距，旧版直接挂载仍保留间距", () => {
+  const styles: Array<{ textContent: string; dataset: Record<string, string> }> = [];
+  const document = {
+    getElementById: () => null,
+    createElement: () => ({ textContent: "", dataset: {} }),
+    head: { appendChild: (style: typeof styles[number]) => styles.push(style) },
+  };
+  new Function("document", [
+    declaration("codexPlusUsageOwner"), declaration("codexPlusUsageStatusLineId"),
+    declaration("codexPlusUsageStyleId"), declaration("codexPlusUsageInstallStyle"),
+    "codexPlusUsageInstallStyle();",
+  ].join("\n"))(document);
+  assert.equal(styles.length, 1);
+  assert.match(styles[0].textContent, /#codex-plus-usage-statusline\{[^}]*margin:6px 0 0/);
+  assert.match(styles[0].textContent,
+    /\[data-codex-plus-ui-slot="composer\.below"\] #codex-plus-usage-statusline\{margin-top:0\}/);
+});
+
 test("会话 id 只认 composer 上的实时标识，新会话草稿视为无会话", () => {
   const card = (composerId: string | null, placement = "thread") => ({
     closest: () => ({

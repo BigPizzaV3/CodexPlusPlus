@@ -3982,6 +3982,13 @@ describe("拓展运行时内核", () => {
     assert.match(scan, /refreshCodexPlusMessageSlots\(\);\n\s+refreshCodexPlusSidePanels\(\);/);
   });
 
+  it("异步内容挂载前隐藏空插槽，不使用浏览器无效的嵌套 :has", async () => {
+    const slots = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+    assert.ok(slots.includes('.codex-plus-ui-slot:not(:has(> .codex-plus-ui-slot-item:not(:empty))){display:none}'));
+    assert.ok(!slots.includes(':not(:has(> [data-hidden="true"]:only-child))'), "嵌套 :has 会使整条空容器隐藏规则失效");
+    assert.ok(slots.includes('.codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}'), "保留现有单项隐藏行为");
+  });
+
   describe("插槽 DOM 资源生命周期", () => {
     class SlotNode {
       nodeType = 1;
