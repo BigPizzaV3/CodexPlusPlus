@@ -905,3 +905,35 @@ fn desktop_not_running_falls_back_to_background() {
     let follower = &follower[..follower.find("\n    }\n").unwrap()];
     assert!(follower.contains("let Ok(conn) = self.ipc().await else"), "连不上 IPC 时当作没有桌面持有，而不是报错");
 }
+
+/// 一轮失败时视图带上原因（桌面、app-server、离线历史三处都有），网页两种样式都显示出来。
+#[test]
+fn failed_turns_carry_their_error() {
+    use codex_plus_core::remote_control::follower::{build_offline_view, build_view, turn_error};
+    assert_eq!(turn_error(None), Value::Null);
+    assert_eq!(turn_error(Some(&Value::Null)), Value::Null);
+    assert_eq!(turn_error(Some(&json!("连接断开"))), json!({ "message": "连接断开" }));
+    let error = json!({
+        "message": "stream disconnected before completion",
+        "additionalDetails": "error sending request for url (https://example.invalid/v1/responses)",
+        "codexErrorInfo": { "responseStreamDisconnected": { "httpStatusCode": null } },
+    });
+    assert_eq!(
+        turn_error(Some(&error)),
+        json!({
+            "message": "stream disconnected before completion",
+            "details": "error sending request for url (https://example.invalid/v1/responses)",
+            "kind": "responseStreamDisconnected",
+        })
+    );
+    assert_eq!(turn_error(Some(&json!({ "codexErrorInfo": "usageLimitExceeded" })))["kind"], "usageLimitExceeded");
+
+    let desktop = json!({ "turns": [{ "turnId": "t1", "status": "failed", "error": { "message": "额度用完了" }, "items": [] }] });
+    assert_eq!(build_view("thread", &desktop, None)["turns"][0]["error"]["message"], "额度用完了");
+    let history = json!({ "id": "thread", "turns": [{ "id": "t1", "status": "failed", "error": { "message": "上游 502" }, "items": [] }] });
+    assert_eq!(build_offline_view(&history)["turns"][0]["error"]["message"], "上游 502");
+
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(page.contains("function errorNode(error)") && page.contains(r#"if (turn.status === "failed" || turn.error) box.append(errorNode(turn.error));"#));
+    assert!(page.contains(r#"`这一轮失败了：${turn.error?.message || "没有拿到失败原因"}`"#));
+}

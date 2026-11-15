@@ -18,7 +18,7 @@ use anyhow::{Context, bail};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, watch};
 
-use super::follower::{SettingsChange, permission_mode_of, permission_preset, view_item};
+use super::follower::{SettingsChange, permission_mode_of, permission_preset, turn_error, view_item};
 use super::sidecar::Sidecar;
 
 /// 一轮跑完后等多久放锁：给网页留出读完最后几条推送的时间，也避免连发两条时反复拿锁放锁。
@@ -119,6 +119,7 @@ impl HeadlessSession {
             "turns": state.turns.iter().skip(skip).map(|turn| json!({
                 "turnId": turn.get("id").or_else(|| turn.get("turnId")),
                 "status": turn.get("status"),
+                "error": turn_error(turn.get("error")),
                 "startedAtMs": turn.get("startedAt").and_then(Value::as_i64).map(|seconds| seconds * 1000),
                 "items": turn.get("items").and_then(Value::as_array).map(|items| items.iter().map(view_item).collect::<Vec<_>>()).unwrap_or_default(),
             })).collect::<Vec<_>>(),

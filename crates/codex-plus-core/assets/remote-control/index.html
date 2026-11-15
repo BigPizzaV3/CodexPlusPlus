@@ -164,6 +164,11 @@
   .cx-files .more { color: var(--cx-sub); }
   .plus-n { color: var(--cx-green); } .minus-n { color: var(--cx-red); }
   .cx-note { color: var(--cx-faint); font-size: 12px; text-align: center; }
+  .cx-error { display: grid; gap: 4px; padding: 10px 14px; border-radius: 12px; font-size: 13px; word-break: break-word;
+    border: 1px solid color-mix(in srgb, var(--cx-red) 45%, var(--cx-line)); background: color-mix(in srgb, var(--cx-red) 8%, transparent); }
+  .cx-error strong { color: var(--cx-red); font-weight: 600; }
+  .cx-error summary { cursor: pointer; color: var(--cx-sub); font-size: 12px; }
+  .cx-error pre { margin: 6px 0 0; max-height: 220px; overflow: auto; white-space: pre-wrap; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
   .cx-step { color: var(--cx-sub); font-size: 13px; }
   .cx-thinking { align-self: flex-start; font-size: 14px; color: transparent; padding: 14px 0;
     background: linear-gradient(90deg, var(--cx-faint) 30%, var(--cx-text) 50%, var(--cx-faint) 70%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; animation: cx-shine 1.6s linear infinite; }
@@ -343,6 +348,7 @@
   .m-time-tip { align-self: center; font-size: 12px; color: var(--m-time); padding-top: 4px; }
   .m-tip { align-self: center; max-width: 80%; text-align: center; font-size: 12px; color: var(--m-sub);
     padding: 3px 8px; border-radius: 4px; background: color-mix(in srgb, var(--m-text) 6%, transparent); }
+  .m-tip.error { color: var(--m-red); text-align: left; white-space: pre-wrap; word-break: break-word; }
   .m-msg { display: flex; align-items: flex-start; gap: 10px; }
   .m-msg.out { flex-direction: row-reverse; }
   .m-msg .who { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 5px; display: flex; align-items: center; justify-content: center;
@@ -1363,7 +1369,20 @@
       }
     }
     if (turn.status === "interrupted") box.append(el("div", "cx-note", "已停止这一轮"));
-    if (turn.status === "failed") box.append(el("div", "cx-note", "这一轮失败了"));
+    if (turn.status === "failed" || turn.error) box.append(errorNode(turn.error));
+    return box;
+  }
+
+  /** 一轮失败：和 Codex 一样给出原因；长的细节折起来。 */
+  function errorNode(error) {
+    const box = el("div", "cx-error");
+    box.append(el("strong", "", "这一轮失败了"));
+    box.append(el("div", "", error?.message || "没有拿到失败原因，可以在桌面 Codex 里看看这个会话"));
+    if (error?.details) {
+      const details = el("details");
+      details.append(el("summary", "", "详细信息"), el("pre", "", error.details));
+      box.append(details);
+    }
     return box;
   }
 
@@ -2460,7 +2479,11 @@
         }
       }
       if (turn.status === "interrupted") nodes.push(el("div", "m-tip", "已停止这一轮"));
-      if (turn.status === "failed") nodes.push(el("div", "m-tip", "这一轮失败了"));
+      if (turn.status === "failed" || turn.error) {
+        const tip = el("div", "m-tip error", `这一轮失败了：${turn.error?.message || "没有拿到失败原因"}`);
+        if (turn.error?.details) tip.title = turn.error.details;
+        nodes.push(tip);
+      }
       return nodes;
     }
 

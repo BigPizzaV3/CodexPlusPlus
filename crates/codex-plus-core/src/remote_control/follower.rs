@@ -465,6 +465,7 @@ pub fn build_view(thread_id: &str, state: &Value, revision: Option<u64>) -> Valu
             json!({
                 "turnId": turn.get("turnId"),
                 "status": turn.get("status"),
+                "error": turn_error(turn.get("error")),
                 "startedAtMs": turn.get("turnStartedAtMs"),
                 "items": turn.get("items").and_then(Value::as_array).map(|items| items.iter().map(view_item).collect::<Vec<_>>()).unwrap_or_default(),
             })
@@ -501,11 +502,29 @@ pub fn build_offline_view(thread: &Value) -> Value {
         "turns": turns.iter().skip(skip).map(|turn| json!({
             "turnId": turn.get("id"),
             "status": turn.get("status"),
+            "error": turn_error(turn.get("error")),
             "startedAtMs": turn.get("startedAt").and_then(Value::as_i64).map(|seconds| seconds * 1000),
             "items": turn.get("items").and_then(Value::as_array).map(|items| items.iter().map(view_item).collect::<Vec<_>>()).unwrap_or_default(),
         })).collect::<Vec<_>>(),
         "requests": [],
     })
+}
+
+/// 一轮失败的原因：桌面与 app-server 的 turn 都带 `error: { message, additionalDetails, codexErrorInfo }`，
+/// 也兼容直接是字符串。网页只拿 `message` 和 `details` 两段文字。
+pub fn turn_error(error: Option<&Value>) -> Value {
+    let Some(error) = error.filter(|error| !error.is_null()) else { return Value::Null };
+    if let Some(text) = error.as_str() {
+        return json!({ "message": text });
+    }
+    let text = |key: &str| error.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let message = text("message").or_else(|| text("reason"));
+    let details = text("additionalDetails").filter(|details| Some(*details) != message);
+    let kind = error.get("codexErrorInfo").and_then(|info| info.as_str().map(str::to_string).or_else(|| info.as_object()?.keys().next().cloned()));
+    if message.is_none() && details.is_none() && kind.is_none() {
+        return json!({ "message": error.to_string() });
+    }
+    json!({ "message": message, "details": details, "kind": kind })
 }
 
 /// 上下文用量：最近一次请求占了多少 token / 模型上下文窗口（桌面与 app-server 同一结构）。
