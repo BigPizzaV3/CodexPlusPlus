@@ -150,22 +150,63 @@ impl Follower {
         self.conn.request(method, params, Some(&owner), FOLLOWER_TIMEOUT).await?.into_result()
     }
 
+    /// 开新一轮。总是带上会话当前的协作模式（计划 / 默认）：桌面自己发送时也是这样带的，
+    /// 不带的话 owner 会按它界面上的模式发，远程切的计划模式就丢了。
     pub async fn start_turn(&self, text: &str) -> anyhow::Result<Value> {
         let client_user_message_id = uuid::Uuid::new_v4().to_string();
-        self.call(
-            "thread-follower-start-turn",
-            json!({
-                "turnStart": {
-                    "request": {
-                        "threadId": self.thread_id,
-                        "input": [{ "type": "text", "text": text, "text_elements": [] }],
-                        "clientUserMessageId": client_user_message_id,
-                    },
-                    "context": {},
-                }
-            }),
-        )
-        .await
+        let mut request = json!({
+            "threadId": self.thread_id,
+            "input": [{ "type": "text", "text": text, "text_elements": [] }],
+            "clientUserMessageId": client_user_message_id,
+        });
+        if let Some(mode) = self.state().as_ref().and_then(collaboration_mode_of) {
+            request["collaborationMode"] = mode;
+        }
+        self.call("thread-follower-start-turn", json!({ "turnStart": { "request": request, "context": {} } }))
+            .await
+    }
+
+    /// 改下一轮起生效的会话设置：模型、推理强度、权限模式、协作模式。
+    /// 走 owner 的 `thread-follower-update-thread-settings`，桌面界面同步显示。
+    pub async fn update_settings(&self, change: &SettingsChange) -> anyhow::Result<Value> {
+        let state = self.state().context("还没有会话状态")?;
+        let current = current_controls(&state);
+        let model = change.model.clone().or_else(|| current.get("model").and_then(Value::as_str).map(str::to_string));
+        let effort = match &change.effort {
+            Some(effort) => effort.clone(),
+            None => current.get("effort").and_then(Value::as_str).map(str::to_string),
+        };
+        let mut settings = serde_json::Map::new();
+        if let Some(model) = &change.model {
+            settings.insert("model".into(), json!(model));
+        }
+        if change.effort.is_some() {
+            settings.insert("effort".into(), json!(effort));
+        }
+        if let Some(mode) = &change.permission_mode {
+            let preset = permission_preset(mode).with_context(|| format!("未知的权限模式：{mode}"))?;
+            settings.insert("permissions".into(), json!(preset.profile));
+            settings.insert("approvalPolicy".into(), json!(preset.approval_policy));
+            settings.insert("approvalsReviewer".into(), json!(preset.reviewer));
+        }
+        let collaboration = change
+            .collaboration_mode
+            .clone()
+            .or_else(|| (change.model.is_some() || change.effort.is_some()).then(|| current.get("collaborationMode").and_then(Value::as_str).map(str::to_string)).flatten());
+        if let Some(mode) = collaboration {
+            if mode != "plan" && mode != "default" {
+                bail!("未知的协作模式：{mode}");
+            }
+            settings.insert(
+                "collaborationMode".into(),
+                json!({ "mode": mode, "settings": { "model": model, "reasoning_effort": effort, "developer_instructions": null } }),
+            );
+        }
+        if settings.is_empty() {
+            bail!("没有要改的设置");
+        }
+        self.call("thread-follower-update-thread-settings", json!({ "threadSettings": Value::Object(settings) }))
+            .await
     }
 
     /// 运行中插话。`restoreMessage` 不能为 null：owner 会读它的 cwd 与 context.commentAttachments。
@@ -246,6 +287,119 @@ impl Follower {
     }
 }
 
+/// 远程改会话设置的入参；没给的字段保持不变。`effort: Some(None)` 表示改回模型默认档位。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsChange {
+    pub model: Option<String>,
+    pub effort: Option<Option<String>>,
+    pub permission_mode: Option<String>,
+    pub collaboration_mode: Option<String>,
+}
+
+impl SettingsChange {
+    /// 当前设置里是否已经是改后的值。
+    pub fn is_reflected_in(&self, controls: &Value) -> bool {
+        let text = |key: &str| controls.get(key).and_then(Value::as_str);
+        self.model.as_deref().is_none_or(|model| text("model") == Some(model))
+            && self.effort.as_ref().is_none_or(|effort| text("effort") == effort.as_deref())
+            && self.permission_mode.as_deref().is_none_or(|mode| text("permissionMode") == Some(mode))
+            && self.collaboration_mode.as_deref().is_none_or(|mode| text("collaborationMode") == Some(mode))
+    }
+
+    pub fn from_json(body: &Value) -> anyhow::Result<Self> {
+        let text = |key: &str| -> anyhow::Result<Option<String>> {
+            match body.get(key) {
+                None => Ok(None),
+                Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.trim().to_string())),
+                Some(other) => bail!("{key} 无效：{other}"),
+            }
+        };
+        let effort = match body.get("effort") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(Value::String(value)) if !value.trim().is_empty() => Some(Some(value.trim().to_string())),
+            Some(other) => bail!("effort 无效：{other}"),
+        };
+        Ok(Self {
+            model: text("model")?,
+            effort,
+            permission_mode: text("permissionMode")?,
+            collaboration_mode: text("collaborationMode")?,
+        })
+    }
+}
+
+/// 桌面的四个权限预设（与 Codex 页面里的 agent-mode 表一致）。
+pub struct PermissionPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub detail: &'static str,
+    pub profile: &'static str,
+    pub approval_policy: &'static str,
+    pub reviewer: &'static str,
+}
+
+pub const PERMISSION_PRESETS: &[PermissionPreset] = &[
+    PermissionPreset { id: "read-only", label: "只读", detail: "只能读文件，改动和联网都要先问", profile: ":read-only", approval_policy: "on-request", reviewer: "user" },
+    PermissionPreset { id: "auto", label: "默认", detail: "可以改工作区里的文件，越界操作先问你", profile: ":workspace", approval_policy: "on-request", reviewer: "user" },
+    PermissionPreset { id: "guardian-approvals", label: "自动审批", detail: "越界操作交给审批助手判断，不再问你", profile: ":workspace", approval_policy: "on-request", reviewer: "guardian_subagent" },
+    PermissionPreset { id: "full-access", label: "完全访问", detail: "不受沙箱限制、从不询问，命令直接执行", profile: ":danger-full-access", approval_policy: "never", reviewer: "user" },
+];
+
+pub fn permission_preset(id: &str) -> Option<&'static PermissionPreset> {
+    PERMISSION_PRESETS.iter().find(|preset| preset.id == id)
+}
+
+/// 按会话设置反推当前是哪个权限预设；对不上任何预设时返回 `custom`。
+pub fn permission_mode_of(settings: &Value) -> &'static str {
+    let profile = settings
+        .pointer("/activePermissionProfile/id")
+        .or_else(|| settings.get("permissions"))
+        .and_then(Value::as_str);
+    let sandbox = settings.pointer("/sandboxPolicy/type").and_then(Value::as_str);
+    let approval = settings.get("approvalPolicy").and_then(Value::as_str);
+    let reviewer = settings.get("approvalsReviewer").and_then(Value::as_str).unwrap_or("user");
+    let guardian = matches!(reviewer, "guardian_subagent" | "auto_review");
+    match (profile, sandbox, approval) {
+        (Some(":danger-full-access"), _, Some("never")) | (_, Some("dangerFullAccess"), Some("never")) => "full-access",
+        (Some(":read-only"), _, Some("on-request")) | (None, Some("readOnly"), Some("on-request")) => "read-only",
+        (Some(":workspace"), _, Some("on-request")) | (None, Some("workspaceWrite"), Some("on-request")) => {
+            if guardian { "guardian-approvals" } else { "auto" }
+        }
+        _ => "custom",
+    }
+}
+
+/// 会话当前的模型、推理强度、权限模式、协作模式。
+pub fn current_controls(state: &Value) -> Value {
+    let settings = state.get("latestThreadSettings").cloned().unwrap_or(Value::Null);
+    let model = settings
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())
+        .or_else(|| state.get("latestModel").and_then(Value::as_str).filter(|model| !model.is_empty()));
+    let effort = settings
+        .get("effort")
+        .and_then(Value::as_str)
+        .or_else(|| state.get("latestReasoningEffort").and_then(Value::as_str));
+    json!({
+        "model": model,
+        "effort": effort,
+        "permissionMode": permission_mode_of(&settings),
+        "collaborationMode": state.pointer("/latestCollaborationMode/mode").and_then(Value::as_str).unwrap_or("default"),
+    })
+}
+
+/// 开新一轮时带上的协作模式：按会话当前模式、模型与档位拼，说明文本交给服务端按模型模板填。
+fn collaboration_mode_of(state: &Value) -> Option<Value> {
+    let controls = current_controls(state);
+    let mode = controls.get("collaborationMode").and_then(Value::as_str)?;
+    Some(json!({
+        "mode": mode,
+        "settings": { "model": controls.get("model"), "reasoning_effort": controls.get("effort"), "developer_instructions": null },
+    }))
+}
+
 /// 把请求的 method 映射到 follower 方法与参数。
 pub fn response_for(method: &str, request_id: &Value, body: &Value) -> anyhow::Result<(&'static str, Value)> {
     let decision = || body.get("decision").cloned().context("缺少 decision");
@@ -323,6 +477,7 @@ pub fn build_view(thread_id: &str, state: &Value, revision: Option<u64>) -> Valu
         "cwd": state.get("cwd"),
         "model": state.get("latestModel"),
         "runtime": state.pointer("/threadRuntimeStatus/type"),
+        "controls": current_controls(state),
         "truncatedTurns": skip,
         "turns": turns,
         "requests": state.get("requests").cloned().unwrap_or_else(|| json!([])),

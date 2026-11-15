@@ -161,7 +161,36 @@ try {
   const stale = pending && await api("POST", `/threads/${threadId}/requests/${pending.id}`, { answers: {} });
   record("重复提交已处理的请求被拒", stale && !stale.ok, stale?.error);
 
-  record("推送次数合理（有合并）", live.messages > 5 && live.messages < 400, `${live.messages} 条`);
+  // 会话设置：模型、推理强度、权限模式、计划模式；用假上游的请求记录核对真的生效。
+  const MOCK_LOG = process.env.P1_MOCK_LOG;
+  const lastRequest = () => MOCK_LOG ? JSON.parse(fs.readFileSync(MOCK_LOG, "utf8").trim().split("\n").at(-1)) : null;
+  const options = await api("GET", `/threads/${threadId}/options`);
+  const model = options.data?.models?.find((item) => item.efforts?.includes("high") && item.id !== options.data?.current?.model);
+  record("读取可选项", options.ok && options.data.models.length > 0 && options.data.permissionModes.length === 4 && options.data.collaborationModes.some((mode) => mode.id === "plan"),
+    `${options.data?.models?.length} 个模型，当前 ${options.data?.current?.model} / ${options.data?.current?.permissionMode}`);
+  const changed = await api("POST", `/threads/${threadId}/settings`, { model: model?.id, effort: "high", permissionMode: "full-access" });
+  record("改模型、推理强度与权限", changed.ok && changed.data.controls.model === model?.id && changed.data.controls.effort === "high" && changed.data.controls.permissionMode === "full-access",
+    JSON.stringify(changed.data?.controls ?? changed.error));
+  const planned = await api("POST", `/threads/${threadId}/settings`, { collaborationMode: "plan" });
+  record("切到计划模式", planned.ok && planned.data.controls.collaborationMode === "plan" && planned.data.controls.model === model?.id);
+  await api("POST", `/threads/${threadId}/messages`, { text: "设置生效检查" });
+  await live.until((view) => idle(view) && lastTurn(view)?.items.some((item) => item.type === "agentMessage" && item.text?.includes("设置生效检查")));
+  if (MOCK_LOG) {
+    const sent = lastRequest();
+    record("上游请求用上了新设置", sent.model === model?.id && sent.effort === "high" && sent.sandbox === "full" && sent.mode === "plan", JSON.stringify(sent));
+  }
+  const unplanned = await api("POST", `/threads/${threadId}/settings`, { collaborationMode: "default", permissionMode: "auto", effort: null });
+  record("退出计划模式、改回默认权限", unplanned.ok && unplanned.data.controls.collaborationMode === "default" && unplanned.data.controls.permissionMode === "auto", JSON.stringify(unplanned.data?.controls ?? unplanned.error));
+  await api("POST", `/threads/${threadId}/messages`, { text: "回到默认模式" });
+  await live.until((view) => idle(view) && lastTurn(view)?.items.some((item) => item.type === "agentMessage" && item.text?.includes("回到默认模式")));
+  if (MOCK_LOG) {
+    const sent = lastRequest();
+    record("上游请求回到默认模式", sent.mode === "default" && sent.sandbox !== "full", JSON.stringify(sent));
+  }
+  const bad = await api("POST", `/threads/${threadId}/settings`, { permissionMode: "root" });
+  record("未知权限模式被拒", !bad.ok, bad.error);
+
+  record("推送次数合理（有合并）", live.messages > 5 && live.messages < 600, `${live.messages} 条`);
   live.socket.close();
 } catch (error) {
   record("运行中断", false, error.message);

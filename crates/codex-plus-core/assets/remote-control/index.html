@@ -60,8 +60,16 @@
   .request { border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--panel); display: grid; gap: 8px; }
   .request code { display: block; white-space: pre-wrap; word-break: break-all; background: var(--code); padding: 6px 8px; border-radius: 6px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
   .request .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-  footer { padding: 10px 16px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; background: var(--panel); }
+  footer { padding: 8px 16px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; background: var(--panel); }
+  footer .compose { display: flex; gap: 8px; }
   footer textarea { flex: 1; min-height: 40px; max-height: 160px; }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  [hidden] { display: none !important; }
+  .controls select { font: inherit; font-size: 12px; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; max-width: 200px; }
+  .controls select:disabled { opacity: .5; }
+  .controls .plan { font-size: 12px; border-radius: 999px; padding: 3px 10px; }
+  .controls .plan.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--accent); }
+  .controls select.danger { border-color: var(--danger); color: var(--danger); }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
   .toast.show { opacity: .92; }
   .back { display: none; }
@@ -98,8 +106,16 @@
     <div class="log" id="log"><div class="empty">在左侧选择会话。没在桌面打开的会话可以先查看历史，发消息时会自动在桌面打开。</div></div>
     <div class="requests" id="requests"></div>
     <footer>
-      <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
-      <button id="send" class="primary" disabled>发送</button>
+      <div class="controls" id="controls" hidden>
+        <select id="model" title="模型"></select>
+        <select id="effort" title="推理强度"></select>
+        <select id="permission" title="权限"></select>
+        <button id="plan" class="plan" title="计划模式：先和你讨论出完整方案，再动手">计划</button>
+      </div>
+      <div class="compose">
+        <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
+        <button id="send" class="primary" disabled>发送</button>
+      </div>
     </footer>
   </main>
 </div>
@@ -113,7 +129,7 @@
     history.replaceState(null, "", location.pathname);
   }
   const $ = (id) => document.getElementById(id);
-  const state = { threads: [], current: null, view: null, socket: null, busy: false, stickNext: false };
+  const state = { threads: [], current: null, view: null, socket: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false };
 
   function toast(text) {
     const node = $("toast");
@@ -187,6 +203,7 @@
       if (state.current !== id) return;
       applyView(view);
       if (view.live) connectSocket(id);
+      loadOptions(id);
     } catch (error) {
       $("log").replaceChildren(el("div", "empty", `读取失败：${error.message}`));
     }
@@ -246,6 +263,73 @@
     log.replaceChildren(...nodes);
     if (stick) log.scrollTop = log.scrollHeight;
     renderRequests(view.requests || []);
+    renderControls();
+  }
+
+  const effortLabels = { none: "不推理", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "极高", max: "Max", ultra: "Ultra" };
+
+  async function loadOptions(id) {
+    try {
+      const options = await api("GET", `/threads/${id}/options`);
+      if (state.current !== id) return;
+      state.options = options;
+      state.optionsFor = id;
+      renderControls();
+    } catch (error) {
+      toast(`读取可选模型失败：${error.message}`);
+    }
+  }
+
+  function option(value, label, selected) {
+    const node = el("option", "", label);
+    node.value = value;
+    if (selected) node.selected = true;
+    return node;
+  }
+
+  function renderControls() {
+    const box = $("controls");
+    const options = state.optionsFor === state.current ? state.options : null;
+    if (!options || !state.view) { box.hidden = true; return; }
+    box.hidden = false;
+    const current = state.view.controls || options.current || {};
+    const models = [...options.models];
+    if (current.model && !models.some((model) => model.id === current.model)) models.unshift({ id: current.model, label: current.model, efforts: [] });
+    $("model").replaceChildren(...models.map((model) => option(model.id, model.label || model.id, model.id === current.model)));
+    if (!current.model) $("model").prepend(option("", "模型", true));
+    const model = models.find((item) => item.id === current.model);
+    const efforts = model?.efforts?.length ? model.efforts : ["low", "medium", "high"];
+    $("effort").replaceChildren(
+      option("", `默认推理${model?.defaultEffort ? `（${effortLabels[model.defaultEffort] || model.defaultEffort}）` : ""}`, !current.effort),
+      ...efforts.map((effort) => option(effort, `推理：${effortLabels[effort] || effort}`, effort === current.effort)),
+    );
+    const permissions = options.permissionModes.map((mode) => option(mode.id, mode.label, mode.id === current.permissionMode));
+    if (current.permissionMode === "custom") permissions.unshift(option("custom", "自定义权限", true));
+    $("permission").replaceChildren(...permissions);
+    $("permission").title = options.permissionModes.find((mode) => mode.id === current.permissionMode)?.detail || "权限";
+    $("permission").classList.toggle("danger", current.permissionMode === "full-access");
+    const plan = current.collaborationMode === "plan";
+    $("plan").classList.toggle("on", plan);
+    $("plan").textContent = plan ? "计划模式：开" : "计划";
+    for (const id of ["model", "effort", "permission", "plan"]) $(id).disabled = state.applying;
+  }
+
+  async function changeSettings(change, confirmText) {
+    if (!state.current || state.applying) return;
+    if (confirmText && !confirm(confirmText)) { renderControls(); return; }
+    state.applying = true;
+    renderControls();
+    try {
+      if (!state.view?.live) toast("正在桌面打开会话…");
+      const view = await api("POST", `/threads/${state.current}/settings`, change);
+      applyView(view);
+      if (!state.socket) connectSocket(state.current);
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      state.applying = false;
+      renderControls();
+    }
   }
 
   function renderTurn(turn) {
@@ -269,6 +353,9 @@
           break;
         }
         case "userInputResponse": box.append(el("div", "note", "已回答提问")); break;
+        case "modelChanged": box.append(el("div", "note", `模型已从 ${item.fromModel || "?"} 切换为 ${item.toModel || "?"}`)); break;
+        case "contextCompaction": box.append(el("div", "note", "已压缩上下文")); break;
+        case "webSearch": box.append(el("div", "note", `搜索：${item.query || ""}`)); break;
         case "reasoning": case "steered": case "hookRun": break;
         default: if (item.type) box.append(el("div", "note", `[${item.type}]`));
       }
@@ -373,6 +460,14 @@
   }
 
   $("send").onclick = send;
+  $("model").onchange = () => changeSettings({ model: $("model").value });
+  $("effort").onchange = () => changeSettings({ effort: $("effort").value || null });
+  $("permission").onchange = () => {
+    const mode = $("permission").value;
+    if (mode === "custom") return;
+    changeSettings({ permissionMode: mode }, mode === "full-access" ? "完全访问：命令不经沙箱、不再询问，直接在这台电脑上执行。确定切换吗？" : null);
+  };
+  $("plan").onclick = () => changeSettings({ collaborationMode: state.view?.controls?.collaborationMode === "plan" ? "default" : "plan" });
   $("input").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();

@@ -63,6 +63,18 @@ http.createServer(async (req, res) => {
   const input = Array.isArray(json.input) ? json.input : [];
   const last = input[input.length - 1];
   const userText = textOf([...input].reverse().find((item) => item.role === "user"));
+  // MOCK_LOG：记下每个请求的模型、推理档位和协作模式，供回归脚本核对「设置真的生效」。
+  if (process.env.MOCK_LOG) {
+    const developer = input.filter((item) => item.role === "developer").map(textOf).join("\n");
+    const mode = /Collaboration Mode: Plan/i.test(developer) ? "plan" : /Collaboration Mode: Default/i.test(developer) ? "default" : null;
+    // 权限说明每次变化都会追加一条 developer 消息，以最后一条为准。
+    const sandboxOf = (text) => /danger-full-access|full access/i.test(text) ? "full" : /workspace-write/i.test(text) ? "workspace" : /read-only|read only/i.test(text) ? "read-only" : null;
+    const sandbox = input.filter((item) => item.role === "developer").map(textOf).map(sandboxOf).filter(Boolean).at(-1) ?? null;
+    const { appendFileSync } = await import("node:fs");
+    const developers = input.filter((item) => item.role === "developer").map(textOf);
+    const modes = developers.map((text) => (/# Plan Mode\b/.test(text) ? "Plan" : (text.match(/Collaboration Mode: (\w+)/) || [])[1])).filter(Boolean);
+    appendFileSync(process.env.MOCK_LOG, `${JSON.stringify({ id, model: json.model, effort: json.reasoning?.effort ?? null, mode: modes.at(-1)?.toLowerCase() ?? mode, modes, sandbox, user: userText.slice(0, 60) })}\n`);
+  }
 
   if (last?.type === "function_call_output") {
     const output = typeof last.output === "string" ? last.output : JSON.stringify(last.output);

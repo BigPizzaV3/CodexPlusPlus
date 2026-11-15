@@ -309,3 +309,62 @@ fn server_starts_serves_page_and_stops() {
     assert_eq!(codex_plus_core::remote_control::running_port(), None);
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "停掉后端口要释放");
 }
+
+#[test]
+fn permission_mode_is_derived_like_the_desktop_presets() {
+    use codex_plus_core::remote_control::follower::{PERMISSION_PRESETS, permission_mode_of};
+    // 每个预设写出去的设置，读回来要还是同一个预设。
+    for preset in PERMISSION_PRESETS {
+        let settings = json!({
+            "activePermissionProfile": { "id": preset.profile, "extends": null },
+            "approvalPolicy": preset.approval_policy,
+            "approvalsReviewer": preset.reviewer,
+        });
+        assert_eq!(permission_mode_of(&settings), preset.id, "{}", preset.id);
+    }
+    // 没有 profile 时按沙箱类型判断（旧会话）
+    assert_eq!(permission_mode_of(&json!({ "sandboxPolicy": { "type": "readOnly" }, "approvalPolicy": "on-request" })), "read-only");
+    assert_eq!(permission_mode_of(&json!({ "sandboxPolicy": { "type": "dangerFullAccess" }, "approvalPolicy": "never" })), "full-access");
+    assert_eq!(permission_mode_of(&json!({ "sandboxPolicy": { "type": "workspaceWrite" }, "approvalPolicy": "on-request", "approvalsReviewer": "auto_review" })), "guardian-approvals");
+    // 细粒度审批之类对不上预设的
+    assert_eq!(permission_mode_of(&json!({ "activePermissionProfile": { "id": ":workspace" }, "approvalPolicy": { "granular": {} } })), "custom");
+    assert_eq!(permission_mode_of(&Value::Null), "custom");
+}
+
+#[test]
+fn settings_change_parses_and_checks_reflection() {
+    use codex_plus_core::remote_control::follower::SettingsChange;
+    let change = SettingsChange::from_json(&json!({ "model": "gpt-6.1-sol", "effort": "high", "permissionMode": "full-access", "collaborationMode": "plan" })).unwrap();
+    assert_eq!(change.model.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(change.effort, Some(Some("high".to_string())));
+    let reflected = json!({ "model": "gpt-6.1-sol", "effort": "high", "permissionMode": "full-access", "collaborationMode": "plan" });
+    assert!(change.is_reflected_in(&reflected));
+    assert!(!change.is_reflected_in(&json!({ "model": "gpt-6.1-sol", "effort": "high", "permissionMode": "full-access", "collaborationMode": "default" })), "计划模式还没生效");
+
+    let reset = SettingsChange::from_json(&json!({ "effort": null })).unwrap();
+    assert_eq!(reset.effort, Some(None), "null 表示改回模型默认档位");
+    assert!(reset.is_reflected_in(&json!({ "effort": null, "model": "x" })));
+    assert!(!reset.is_reflected_in(&json!({ "effort": "high" })));
+
+    assert_eq!(SettingsChange::from_json(&json!({})).unwrap(), SettingsChange::default());
+    assert!(SettingsChange::from_json(&json!({ "model": 3 })).is_err());
+}
+
+#[test]
+fn current_controls_prefer_thread_settings() {
+    use codex_plus_core::remote_control::follower::current_controls;
+    let state = json!({
+        "latestModel": "old-model",
+        "latestReasoningEffort": "low",
+        "latestThreadSettings": {
+            "model": "gpt-6-luna", "effort": "high",
+            "activePermissionProfile": { "id": ":danger-full-access" }, "approvalPolicy": "never", "approvalsReviewer": "user"
+        },
+        "latestCollaborationMode": { "mode": "plan", "settings": {} }
+    });
+    assert_eq!(current_controls(&state), json!({ "model": "gpt-6-luna", "effort": "high", "permissionMode": "full-access", "collaborationMode": "plan" }));
+    // 会话设置还没下发时退回 latest*
+    let fresh = json!({ "latestModel": "mock-model", "latestReasoningEffort": null });
+    assert_eq!(current_controls(&fresh)["model"], "mock-model");
+    assert_eq!(current_controls(&fresh)["collaborationMode"], "default");
+}

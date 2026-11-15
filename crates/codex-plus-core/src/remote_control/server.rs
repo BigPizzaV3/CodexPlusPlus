@@ -259,6 +259,8 @@ async fn route(request: &HttpRequest, segments: &[&str], context: &ServerContext
             service.send(&valid_thread_id(id)?, &text).await
         }
         ("POST", ["threads", id, "interrupt"]) => service.interrupt(&valid_thread_id(id)?).await,
+        ("GET", ["threads", id, "options"]) => service.options(&valid_thread_id(id)?).await,
+        ("POST", ["threads", id, "settings"]) => service.update_settings(&valid_thread_id(id)?, &json_body(request)?).await,
         ("POST", ["threads", id, "requests", request_id]) => {
             let request_id: Value = serde_json::from_str(request_id).unwrap_or_else(|_| json!(request_id));
             service.respond(&valid_thread_id(id)?, &request_id, &json_body(request)?).await

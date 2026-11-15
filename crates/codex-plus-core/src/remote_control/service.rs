@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use super::follower::{Follower, build_offline_view, discover_owner};
+use super::follower::{Follower, PERMISSION_PRESETS, SettingsChange, build_offline_view, current_controls, discover_owner};
 use super::ipc::{IpcConnection, IpcEndpoint, resolve_endpoint};
 use super::sidecar::{Sidecar, resolve_codex_cli};
 use super::versions::{IpcVersions, app_asar_path, default_versions, read_versions_from_asar};
@@ -205,6 +205,40 @@ impl RemoteService {
         }
     }
 
+    /// 会话可选的模型、推理强度、权限模式、协作模式，以及当前值。
+    pub async fn options(&self, thread_id: &str) -> anyhow::Result<Value> {
+        let sidecar = self.sidecar().await?;
+        let models = sidecar.call("model/list", json!({ "cursor": null, "includeHidden": false, "limit": 100 })).await?;
+        let modes = sidecar.call("collaborationMode/list", json!({})).await.unwrap_or(Value::Null);
+        let current = match self.follower(thread_id).await? {
+            Some(follower) => follower.state().as_ref().map(current_controls).unwrap_or(Value::Null),
+            None => Value::Null,
+        };
+        Ok(json!({
+            "models": models.get("data").and_then(Value::as_array).map(|models| models.iter().map(model_option).collect::<Vec<_>>()).unwrap_or_default(),
+            "permissionModes": PERMISSION_PRESETS.iter().map(|preset| json!({ "id": preset.id, "label": preset.label, "detail": preset.detail })).collect::<Vec<_>>(),
+            "collaborationModes": collaboration_modes(&modes),
+            "current": current,
+        }))
+    }
+
+    /// 改会话设置（下一轮起生效）。会话没在桌面打开时先打开。
+    pub async fn update_settings(&self, thread_id: &str, body: &Value) -> anyhow::Result<Value> {
+        let change = SettingsChange::from_json(body)?;
+        let follower = self.open_thread(thread_id).await?;
+        let mut updates = follower.subscribe();
+        follower.update_settings(&change).await?;
+        // 等 owner 把改后的值推回来再返回：设置分几次补丁到达，只等第一次推送的话，
+        // 紧接着发的消息可能还按旧的协作模式发出（实测会丢计划模式）。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !follower.state().as_ref().map(current_controls).is_some_and(|controls| change.is_reflected_in(&controls)) {
+            if tokio::time::timeout_at(deadline, updates.changed()).await.is_err() {
+                bail!("桌面 5 秒内没有确认新设置");
+            }
+        }
+        Ok(follower.view())
+    }
+
     pub async fn interrupt(&self, thread_id: &str) -> anyhow::Result<Value> {
         let follower = self.follower(thread_id).await?.context("会话没有在桌面打开")?;
         follower.interrupt().await
@@ -251,3 +285,47 @@ pub async fn open_in_desktop(port: u16, thread_id: &str) -> anyhow::Result<()> {
     crate::bridge::evaluate_script(&websocket, &script).await?;
     Ok(())
 }
+
+fn model_option(model: &Value) -> Value {
+    let efforts: Vec<Value> = model
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .map(|efforts| {
+            efforts
+                .iter()
+                .filter_map(|effort| effort.get("reasoningEffort").or(Some(effort)).and_then(Value::as_str).map(|effort| json!(effort)))
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "id": model.get("model").or_else(|| model.get("id")),
+        "label": model.get("displayName").or_else(|| model.get("model")),
+        "description": model.get("description"),
+        "efforts": efforts,
+        "defaultEffort": model.get("defaultReasoningEffort"),
+        "isDefault": model.get("isDefault"),
+    })
+}
+
+/// 协作模式：服务端给的列表里挑计划和默认两种；拿不到时给内置的两种。
+fn collaboration_modes(list: &Value) -> Vec<Value> {
+    let label = |mode: &str| if mode == "plan" { "计划" } else { "默认" };
+    let mut modes: Vec<Value> = list
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("mode").and_then(Value::as_str))
+                .filter(|mode| *mode == "plan" || *mode == "default")
+                .map(|mode| json!({ "id": mode, "label": label(mode) }))
+                .collect()
+        })
+        .unwrap_or_default();
+    if modes.is_empty() {
+        modes = vec![json!({ "id": "default", "label": "默认" }), json!({ "id": "plan", "label": "计划" })];
+    }
+    modes.sort_by_key(|mode| if mode["id"] == "default" { 0 } else { 1 });
+    modes
+}
+
