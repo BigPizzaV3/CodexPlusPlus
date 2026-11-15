@@ -572,6 +572,7 @@
     .m-composer { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr) auto; height: 190px;
       margin: 0 16px 16px; padding: 10px 12px; border: 1px solid var(--m-line); border-radius: 10px; background: var(--m-composer); }
     .m-composer:focus-within { border-color: color-mix(in srgb, var(--m-text) 22%, var(--m-line)); }
+    .m-composer.drag { border-color: #07c160; }
     .m-composer .m-pill { display: contents; }
     .m-composer .m-attach { grid-column: 1 / -1; grid-row: 1; }
     .m-composer .m-pill textarea { grid-column: 1 / -1; grid-row: 2; height: 100% !important; max-height: none; padding: 2px 4px; font-size: 14px; line-height: 21px; }
@@ -3095,6 +3096,20 @@
     $("mGo").onclick = send;
     $("mSearch").oninput = () => { ui.query = $("mSearch").value; renderList(); };
     $("mInput").addEventListener("input", () => { autosize(); renderComposer(); });
+    // 粘贴截图 / 文件、把文件拖进输入区：直接当附件（和 Codex 样式一样）。
+    $("mInput").addEventListener("paste", (event) => {
+      const files = [...(event.clipboardData?.files || [])];
+      if (!files.length || !can("message")) return;
+      event.preventDefault();
+      for (const file of files) addPending(file);
+    });
+    $("mComposer").addEventListener("dragover", (event) => { event.preventDefault(); $("mComposer").classList.add("drag"); });
+    $("mComposer").addEventListener("dragleave", () => $("mComposer").classList.remove("drag"));
+    $("mComposer").addEventListener("drop", (event) => {
+      event.preventDefault();
+      $("mComposer").classList.remove("drag");
+      if (can("message")) for (const file of event.dataTransfer?.files || []) addPending(file);
+    });
     $("mInput").addEventListener("keydown", (event) => {
       // 手机上回车换行，点按钮发送；电脑上回车发送、Shift+回车换行。
       if (!coarse && event.key === "Enter" && !event.shiftKey && !event.isComposing) {

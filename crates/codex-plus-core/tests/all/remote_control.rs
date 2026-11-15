@@ -937,3 +937,15 @@ fn failed_turns_carry_their_error() {
     assert!(page.contains("function errorNode(error)") && page.contains(r#"if (turn.status === "failed" || turn.error) box.append(errorNode(turn.error));"#));
     assert!(page.contains(r#"`这一轮失败了：${turn.error?.message || "没有拿到失败原因"}`"#));
 }
+
+/// 两种样式都能粘贴截图 / 文件、拖文件进输入区当附件。
+#[test]
+fn both_styles_accept_pasted_and_dropped_files() {
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    for input in [r#"$("input").addEventListener("paste""#, r#"$("mInput").addEventListener("paste""#] {
+        assert!(page.contains(input), "缺少 {input}");
+    }
+    for area in [r#"$("compose").addEventListener("drop""#, r#"$("mComposer").addEventListener("drop""#] {
+        assert!(page.contains(area), "缺少 {area}");
+    }
+}
