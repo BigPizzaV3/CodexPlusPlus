@@ -279,12 +279,32 @@ test("batch state and targets only include installed mutable Skills for the requ
   assert.equal(skillBatchState([{ installed: true, bundled: false, enabled: true }], "claude").checked, false);
 });
 
+test("an unknown Codex location is excluded from Codex batches but not other Agents", () => {
+  const unknown = { id: "unknown", installed: true, bundled: false, enabled: false, agents: [],
+    locations: [{ statusError: "无法确定名称" }] };
+  const known = { id: "known", installed: true, bundled: false, enabled: true, agents: ["codex"] };
+  assert.deepEqual(skillBatchState([unknown, known], "codex"), { total: 1, checked: true, mixed: false });
+  assert.deepEqual(skillBatchTargets([unknown, known], "codex", true), []);
+  assert.deepEqual(skillBatchTargets([unknown, known], "codex", false).map((item) => item.id), ["known"]);
+  assert.deepEqual(skillBatchTargets([unknown, known], "claude", true).map((item) => item.id), ["unknown", "known"]);
+});
+
+test("conflicting same-name entries are excluded from batch actions and merges", () => {
+  const first = { id: "shared", installed: true, bundled: false, enabled: true, agents: ["codex"], conflict: "不同内容" };
+  const second = { id: "shared", installed: true, bundled: false, enabled: false, agents: [], conflict: "不同内容" };
+  assert.deepEqual(skillBatchState([first, second], "codex"), { total: 0, checked: false, mixed: false });
+  assert.deepEqual(skillBatchTargets([first, second], "codex", true), []);
+  const current = [first, second];
+  assert.equal(mergeSkillAgentResult(current, [{ ...first, agents: [] }], "shared", "codex"), current);
+  assert.equal(mergeSkillAgentResult([{ ...first, conflict: null as string | null }], current, "shared", "codex")[0].agents[0], "codex");
+});
+
 test("pending operations remain visible and only lock matching Skills and Agents", () => {
   const registry = new SkillBatchRegistry();
   const first = { groupKey: "one", agent: "codex", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[], owner: Symbol("first") };
   const second = { groupKey: "one", agent: "claude", enabled: true, skillIds: ["a"], settledSkillIds: [] as string[], owner: Symbol("second") };
   const settled: symbol[] = [];
-  const unsubscribe = registry.subscribeSettled((owner) => settled.push(owner));
+  const unsubscribe = registry.subscribeSettled((owner) => { settled.push(owner); });
   registry.add(first);
   registry.add(second);
   assert.equal(skillBatchHasPending(registry.getSnapshot(), [{ id: "a" }], "codex"), true);
