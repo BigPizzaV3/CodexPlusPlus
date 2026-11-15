@@ -63,6 +63,42 @@ fn custom_priority_declarations_preserve_other_tiers_and_explicitly_override_kno
     assert!(!tiers[0].description.is_empty());
 }
 
+/// #3042：图片输入能力经 UI 元数据白名单转发给注入层，两种写法都认、输出两种都带；
+/// 用户声明优先于内置；没声明的模型不凭空补字段。
+#[test]
+fn model_ui_metadata_forwards_declared_image_input_capability() {
+    use serde_json::json;
+    let builtin = model_ui_metadata("deepseek-v4-pro").unwrap();
+    assert_eq!(builtin["inputModalities"], json!(["text"]));
+    assert_eq!(builtin["input_modalities"], json!(["text"]));
+    assert_eq!(builtin["supportsImageDetailOriginal"], false);
+    assert_eq!(builtin["supports_image_detail_original"], false);
+
+    // 用户 camelCase 声明压过内置的 snake_case。
+    let camel = json!({"inputModalities": ["text", "image"], "supportsImageDetailOriginal": true});
+    let ui = model_ui_metadata_with_override("deepseek-v4-pro", Some(&camel)).unwrap();
+    assert_eq!(ui["inputModalities"], json!(["text", "image"]));
+    assert_eq!(ui["input_modalities"], json!(["text", "image"]));
+    assert_eq!(ui["supportsImageDetailOriginal"], true);
+    assert_eq!(ui["supports_image_detail_original"], true);
+
+    let snake = json!({"input_modalities": ["text", "image", ""], "supports_image_detail_original": false});
+    let ui = model_ui_metadata_with_override("vendor-3042-vision", Some(&snake)).unwrap();
+    assert_eq!(ui["inputModalities"], json!(["text", "image"]));
+    assert_eq!(ui["supportsImageDetailOriginal"], false);
+
+    let undeclared = json!({"display_name": "Vendor Text"});
+    let ui = model_ui_metadata_with_override("vendor-3042-text", Some(&undeclared)).unwrap();
+    for field in [
+        "inputModalities",
+        "input_modalities",
+        "supportsImageDetailOriginal",
+        "supports_image_detail_original",
+    ] {
+        assert!(ui.get(field).is_none(), "未声明不能补 {field}：{ui}");
+    }
+}
+
 /// 保存并恢复 CODEX_HOME 的守卫，参照 codex_home.rs 内部测试的模式。
 struct CodexHomeEnvGuard {
     previous: Option<OsString>,
@@ -983,4 +1019,43 @@ fn deepseek_metadata_carries_its_own_instructions_template() {
             "{slug} 的 base_instructions 仍是旧文案，codex 实际读的是它"
         );
     }
+}
+
+#[test]
+fn model_ui_metadata_forwards_image_input_modalities() {
+    // 内置元数据里 camelCase / snake_case 的模态声明都要能透传到 UI。
+    let metadata = model_ui_metadata("gpt-6-astra").expect("Astra metadata should exist");
+    assert_eq!(metadata["inputModalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(metadata["input_modalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(metadata["supportsImageDetailOriginal"], serde_json::json!(true));
+
+    // 缺键时不能凭空添加字段，避免给纯文本模型错误宣称图片能力。
+    let custom = serde_json::json!({
+        "display_name": "Provider Text Only",
+        "description": "Provider description"
+    });
+    let ui = model_ui_metadata_with_override("custom-text-only", Some(&custom)).unwrap();
+    assert!(ui.get("inputModalities").is_none());
+    assert!(ui.get("input_modalities").is_none());
+    assert!(ui.get("supportsImageDetailOriginal").is_none());
+
+    // 用户覆盖的 snake_case 声明优先级最高，且只有显式声明的模态数组才写 UI。
+    let override_with_image = serde_json::json!({
+        "input_modalities": ["text", "image"],
+        "supports_image_detail_original": false
+    });
+    let ui = model_ui_metadata_with_override("custom-user-image", Some(&override_with_image)).unwrap();
+    assert_eq!(ui["inputModalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(ui["input_modalities"], serde_json::json!(["text", "image"]));
+    assert_eq!(ui["supportsImageDetailOriginal"], serde_json::json!(false));
+
+    // camelCase 用户覆盖同样要读得到。
+    let override_camel = serde_json::json!({
+        "inputModalities": ["text"],
+        "supportsImageDetailOriginal": true
+    });
+    let ui = model_ui_metadata_with_override("custom-user-camel", Some(&override_camel)).unwrap();
+    assert_eq!(ui["inputModalities"], serde_json::json!(["text"]));
+    assert_eq!(ui["input_modalities"], serde_json::json!(["text"]));
+    assert_eq!(ui["supportsImageDetailOriginal"], serde_json::json!(true));
 }
