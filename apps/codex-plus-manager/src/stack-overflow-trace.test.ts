@@ -28,7 +28,7 @@ function runtime() {
   ].join("\n");
   const api = new Function("sendCodexPlusDiagnostic", body)(
     (event: string, detail: any) => logged.push({ event, detail }));
-  return { ...api, logged };
+  return { trace: api.trace, note: api.note, logged };
 }
 
 function overflow(): never {
