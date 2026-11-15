@@ -477,7 +477,8 @@
 
 /* 上下文窗口：模型一列、窗口一列 */
 .gw-portal .pf-price-row.pf-window-row {
-  grid-template-columns: minmax(0, 1fr) 140px;
+  /* 模型 / 上下文窗口 / 自动压缩阈值（#3100） */
+  grid-template-columns: minmax(0, 1fr) 140px 96px;
 }
 
 .gw-portal .pf-window-row[data-invalid="true"] input {

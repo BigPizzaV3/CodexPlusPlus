@@ -81,6 +81,7 @@ fn deepseek_input() -> ProviderInput {
 fn binding() -> AgentBinding {
     AgentBinding {
         model: "deepseek-v4-pro".into(),
+        token: "gateway-token".into(),
         context_window: Some(1_000_000),
         ..AgentBinding::default()
     }
@@ -177,7 +178,7 @@ fn unset_keeps_catalog_unchanged_and_clearing_restores_default() {
     let profile = codex_gateway_profile(&gateway, &binding(), ctx.port, false).unwrap();
     assert_eq!(profile.model_auto_compact, "");
     let raw = std::fs::read_to_string(&path).unwrap();
-    assert!(!raw.contains("autoCompact"), "没设时 gateway.json 不多写字段：{raw}");
+    assert!(!raw.contains("\"autoCompact\":"), "没设时 gateway.json 不多写供应商级字段：{raw}");
 
     enable_binding(&ctx, &ToolId::Codex, binding()).unwrap();
     let catalog = codex_catalog(&ctx);
@@ -196,8 +197,9 @@ fn unset_keeps_catalog_unchanged_and_clearing_restores_default() {
     set_provider_auto_compact(&ctx.gateway, &id, ProviderAutoCompact::default()).unwrap();
     refresh_enabled(&ctx).unwrap();
     assert!(entry(&codex_catalog(&ctx), "deepseek-v4-pro")["auto_compact_token_limit"].is_null());
+    // 只检查供应商一级的字段：relay 里的 `autoCompactLimit`（直连通道的压缩上限）与这里无关。
     let raw = std::fs::read_to_string(&path).unwrap();
-    assert!(!raw.contains("autoCompact"), "{raw}");
+    assert!(!raw.contains("\"autoCompact\":"), "{raw}");
 }
 
 #[test]
@@ -264,7 +266,7 @@ fn invalid_percent_is_rejected_without_writing() {
 fn legacy_gateway_file_without_field_still_loads() {
     let Fixture { ctx, id, path, _temp } = fixture(57406);
     let raw = std::fs::read_to_string(&path).unwrap();
-    assert!(!raw.contains("autoCompact"));
+    assert!(!raw.contains("\"autoCompact\":"));
     let gateway = ctx.gateway.load().unwrap();
     let provider = gateway.provider(&id).unwrap();
     assert!(provider.auto_compact.is_empty());
