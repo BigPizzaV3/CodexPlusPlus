@@ -1529,6 +1529,8 @@
       },
     };
     build(add);
+    // 没有可勾选项的菜单（主机、加号）不留勾选那一列，文字贴左边。
+    if (![...menu.querySelectorAll(".check")].some((node) => node.textContent)) for (const node of menu.querySelectorAll(".check")) node.remove();
     document.body.append(menu);
     const rect = anchor.getBoundingClientRect();
     const width = menu.offsetWidth;
