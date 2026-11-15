@@ -88,6 +88,8 @@ export type GatewayPoolEntry = {
   modelWindows?: Record<string, number>;
   /** 没单独写窗口的模型用的窗口；都没有就用模型自带资料。 */
   contextWindow?: number | null;
+  /** 自动压缩阈值（#3100）：窗口的百分比，按模型 + 默认值；没设时为空，用 Codex 默认。旧版后端没有。 */
+  autoCompact?: { models?: Record<string, number>; fallback?: number | null } | null;
   /** 网关供应商单独走的 HTTP 代理，空串表示不单独走代理。 */
   proxy?: string;
   /** 主动限速：每个 Key 每分钟最多请求数；没有或 null 表示不限。旧版后端没有。 */

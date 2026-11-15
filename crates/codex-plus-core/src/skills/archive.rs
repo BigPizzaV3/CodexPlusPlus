@@ -104,6 +104,12 @@ pub(super) fn stage_downloaded_zip(
         }
         std::fs::write(&output_path, &contents)
             .with_context(|| format!("写入 {} 失败", output_path.display()))?;
+        #[cfg(unix)]
+        if let Some(mode) = file.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(mode & 0o777))
+                .with_context(|| format!("设置文件权限失败：{}", output_path.display()))?;
+        }
 
         // 与 Git trees API / parse_skills_from_zip 使用相同的 blob ID。
         let mut blob = sha1::Sha1::new();
@@ -174,6 +180,33 @@ mod tests {
         )
         .remove(0)
         .id
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stages_executable_files_with_their_archive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = parse_repo_key("acme/kit@main").unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer.start_file(
+            "kit-main/alpha/SKILL.md",
+            zip::write::SimpleFileOptions::default().unix_permissions(0o644),
+        ).unwrap();
+        writer.write_all(b"---\nname: Alpha\n---\n").unwrap();
+        writer.start_file(
+            "kit-main/alpha/run.sh",
+            zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+        ).unwrap();
+        writer.write_all(b"#!/bin/sh\n").unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+        let staging = tempfile::tempdir().unwrap();
+        let id = skill_id(&repo, "alpha/SKILL.md");
+
+        stage_downloaded_zip(&repo, &zip, &id, None, staging.path()).unwrap();
+
+        assert_eq!(std::fs::metadata(staging.path().join("SKILL.md")).unwrap().permissions().mode() & 0o777, 0o644);
+        assert_eq!(std::fs::metadata(staging.path().join("run.sh")).unwrap().permissions().mode() & 0o777, 0o755);
     }
 
     fn set_declared_size(zip: &mut [u8], name: &str, size: u32) {

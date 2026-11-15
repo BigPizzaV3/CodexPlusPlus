@@ -469,6 +469,23 @@ pub fn model_entry_window(
         .min()
 }
 
+/// Agent 模型列表里一项的自动压缩百分比（#3100）：它会发给的各家里单独设过的取最小值
+/// （与窗口取最小一致，宁早勿晚）；都没设返回 None，交给 Agent 默认。
+pub fn model_entry_auto_compact(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<f64> {
+    model_entry_members(gateway, binding, model)
+        .into_iter()
+        .filter_map(|(relay, upstream)| {
+            gateway
+                .provider(&relay.id)
+                .and_then(|provider| provider.auto_compact_for(&upstream))
+        })
+        .reduce(f64::min)
+}
+
 /// 某家某个模型支持的思考档位（由低到高）：用户在模型资料里写的优先，其次内置模型资料。
 /// 没有资料时为空。与 Codex 模型目录、管理器的「思考等级」读同一份资料。
 pub fn model_reasoning_levels(relay: &RelayProfile, model: &str) -> Vec<String> {
@@ -772,12 +789,37 @@ pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
     format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
 }
 
+/// Claude Desktop 把网关模型标成 1M 上下文的门槛（#3107）。
+///
+/// Desktop 网关模式的 `/v1/models` 发现逻辑（app.asar `[custom-3p] Gateway /v1/models`）只认一个布尔：
+/// 行里 `supports_1m` 是布尔就用它，否则看 `max_input_tokens >= 1e6`；数值本身不保留，
+/// 没有别的档位（256K / 400K 这类窗口无法告诉它）。所以不到 1M 的模型绝不能标 1M，
+/// 否则 Desktop 会把自动压缩推迟到超出上游真实窗口。
+pub const CLAUDE_DESKTOP_1M_WINDOW: u64 = 1_000_000;
+
+/// Claude Desktop `/v1/models` 一行里声明窗口的字段 `(max_input_tokens, supports_1m)`：
+/// 窗口取 [`model_entry_window`]（模型组按最短的那家），达到 [`CLAUDE_DESKTOP_1M_WINDOW`] 才算 1M。
+/// 池里没写窗口时 None，什么都不声明，Desktop 按它自带的 200k。
+///
+/// 标了 1M 的模型 Desktop 会多给一个 `<id>[1m]` 的 1M 选项，id 本身不用加后缀；
+/// 选中后发回来的 `<id>[1m]` 由 [`claude_alias_target`] 剥掉后缀再还原。
+pub fn claude_desktop_window(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<(u64, bool)> {
+    let window = model_entry_window(gateway, binding, model)?;
+    Some((window, window >= CLAUDE_DESKTOP_1M_WINDOW))
+}
+
 /// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
 fn claude_alias_target(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
     requested: &str,
 ) -> Option<String> {
+    // Desktop 的 1M 选项 id 是 `<别名>[1m]`（见 [`claude_desktop_window`]）：先剥掉窗口后缀再对别名。
+    let (requested, _) = crate::model_suffix::parse_model_suffix(requested);
     let digits = [CLAUDE_ALIAS_PREFIX, CLAUDE_EFFORT_ALIAS_PREFIX]
         .iter()
         .find_map(|prefix| {
@@ -1729,6 +1771,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             subscription_policy: None,
             relay: RelayProfile {
                 id: id.to_string(),
@@ -2151,6 +2194,65 @@ mod tests {
             routed(&gateway, "claude-gw-0000000000")[0].1,
             "deepseek-v4-pro"
         );
+    }
+
+    /// #3107：Desktop 只认「是不是 1M」，所以窗口到 1M 才标 1M；256K / 400K 这类只报真实窗口、
+    /// 明确不标 1M。模型组按最短的那家算。
+    #[test]
+    fn desktop_window_marks_1m_only_from_one_million() {
+        let mut gateway = gateway("kimi-k3");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        assert_eq!(claude_desktop_window(&gateway, &binding, "kimi-k3"), None);
+
+        for (window, expected) in [
+            (200_000, false),
+            (400_000, false),
+            (999_999, false),
+            (1_000_000, true),
+            (2_000_000, true),
+        ] {
+            gateway.providers[1]
+                .model_windows
+                .insert("kimi-k3".into(), window);
+            assert_eq!(
+                claude_desktop_window(&gateway, &binding, "kimi-k3"),
+                Some((window, expected)),
+                "{window}"
+            );
+        }
+
+        // 组里一家 1M、一家 400K：按 400K 报，不标 1M。
+        gateway.providers[1]
+            .model_windows
+            .insert("kimi-k3".into(), 1_000_000);
+        gateway.providers[0]
+            .model_windows
+            .insert("deepseek-v4-flash".into(), 400_000);
+        assert_eq!(
+            claude_desktop_window(&gateway, &binding, "group/fast"),
+            Some((400_000, false))
+        );
+    }
+
+    /// #3107：Desktop 给 1M 模型出的 1M 选项 id 是 `<别名>[1m]`，两种别名带后缀都能还原成原模型。
+    #[test]
+    fn desktop_1m_variant_ids_route_back_to_original_model() {
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        for has_effort in [false, true] {
+            let alias = claude_desktop_alias("kimi-k3", has_effort);
+            for id in [
+                alias.clone(),
+                format!("{alias}[1m]"),
+                format!("{alias}[1M]"),
+            ] {
+                assert_eq!(
+                    effective_model(&gateway, &binding, "deepseek-v4-pro", &id),
+                    "kimi-k3",
+                    "{id}"
+                );
+            }
+        }
     }
 
     /// 有思考档位的模型用 mythos-gw- 别名（Desktop 才出思考等级菜单），旧的 claude-gw- 别名仍能还原。

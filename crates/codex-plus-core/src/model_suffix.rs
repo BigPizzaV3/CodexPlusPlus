@@ -443,6 +443,44 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
             ui[snake] = window.clone();
         }
     }
+    // 图片输入能力（#3042）：原生描述符的 inputModalities 决定输入框能不能贴图。
+    // 白名单不转发就流不到注入层，注入的描述符只能瞎猜。用户声明优先，其次内置/目录条目；
+    // 两种写法都认，输出也同时带两种，与窗口字段一致。没声明就不写，交给注入层按原生处理。
+    // 先看用户声明（两种写法），再看合并后的条目，避免用户的 camelCase 被内置的 snake_case 压住。
+    let declared = |snake: &str, camel: &str, valid: fn(&Value) -> bool| {
+        [user_override, metadata.as_object()]
+            .into_iter()
+            .flatten()
+            .flat_map(|source| [source.get(snake), source.get(camel)])
+            .flatten()
+            .find(|value| valid(value))
+            .cloned()
+    };
+    if let Some(modalities) = declared("input_modalities", "inputModalities", Value::is_array)
+        .as_ref()
+        .and_then(Value::as_array)
+    {
+        let modalities: Vec<Value> = modalities
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|modality| !modality.is_empty())
+            .map(|modality| json!(modality))
+            .collect();
+        ui["inputModalities"] = json!(modalities);
+        ui["input_modalities"] = json!(modalities);
+    }
+    if let Some(original) = declared(
+        "supports_image_detail_original",
+        "supportsImageDetailOriginal",
+        Value::is_boolean,
+    )
+    .as_ref()
+    .and_then(Value::as_bool)
+    {
+        ui["supportsImageDetailOriginal"] = json!(original);
+        ui["supports_image_detail_original"] = json!(original);
+    }
     if !has_builtin {
         // 单独声明 Fast 不能替原生描述符制造名称、描述或推理默认档。
         for (ui_field, source_field) in [

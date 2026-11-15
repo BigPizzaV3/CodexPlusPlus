@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { customSkillGroupKey, groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
@@ -75,7 +75,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     },
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
-    groupSkills, legacySkillCustomGroupName, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
+    aggregateSkillGroupItems, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     sourceLabel: (item: FixtureSkill) => item.bundled ? "内置" : item.repoKey === "cc-switch" || !item.repoKey ? "本地" : item.repoKey === "local" ? "本地导入" : item.repoKey.split("@", 1)[0],
     repoUrl: () => "", MCP_AGENTS: ["codex", "claude", "grok"],
@@ -85,7 +85,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async () => true,
   };
   for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
+    "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   vm.runInContext(code, context);
   const collect = (node: any, result: Element[]) => {
@@ -523,7 +523,7 @@ test("shared IDs support independent choices while retaining legacy assignments 
   assert.deepEqual(ui.savedState().assignments, { shared: "Manual" });
   assert.deepEqual(ui.savedState().assignmentsByIdentity, { [skillIdentityKey(skill("shared", "a/repo@main"))]: "" });
   assert.equal(ui.group("repo:a/repo").props.group.items.length, 1);
-  assert.equal(ui.group("repo:z/repo").props.group.items.length, 0);
+  assert.ok(!ui.order().includes("repo:z/repo"));
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   assert.equal(ui.group("builtin").props.group.items.length, 1);
   assert.equal(ui.rowElements("repo:a/repo", "a/repo@main", "shared").find((node) => node.type === "MenuItem" && node.children.includes("按来源"))?.props.checked, true);
@@ -535,7 +535,7 @@ test("shared IDs support independent choices while retaining legacy assignments 
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   assert.equal(ui.group("custom:Other").props.group.items.length, 1);
   assert.equal(ui.group("builtin").props.group.items.length, 1);
-  assert.equal(ui.group("repo:a/repo").props.group.items.length, 0);
+  assert.ok(!ui.order().includes("repo:a/repo"));
 
   const restored = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"));
   restored.server.skills = [...ui.server.skills].reverse();
@@ -572,12 +572,12 @@ test("shared IDs support independent choices while retaining legacy assignments 
   assert.equal(afterDelete.group("repo:z/repo").props.group.items.length, 1);
 });
 
-test("known repository groups stay empty in installed view after individual moves and sorting", async () => {
+test("repository groups hide after their items move, while their sort order is retained", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual"], assignments: {} }));
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
   const move = ui.rowElements("repo:a/repo", "a/repo@main", "alpha").find((node) => node.type === "MenuItem" && node.children.includes("Manual"));
   assert.ok(move); move.props.onClick(); ui.render();
-  assert.equal(ui.group("repo:a/repo").props.group.items.length, 0);
+  assert.ok(!ui.order().includes("repo:a/repo"));
   assert.equal(ui.group("custom:Manual").props.group.items.length, 1);
   ui.sort().props.onClick(); ui.render();
   assert.ok(ui.savedState().order.includes("repo:a/repo"));
@@ -586,12 +586,14 @@ test("known repository groups stay empty in installed view after individual move
   ui.search("");
   const restored = createHarness(ui.storage.get("codex-plus-plus.skill-groups.v1"));
   restored.render(); await tick(); restored.render(); restored.selectTab("已安装");
-  assert.equal(restored.group("repo:a/repo").props.group.items.length, 0);
+  assert.ok(!restored.order().includes("repo:a/repo"));
   assert.equal(restored.group("custom:Manual").props.group.items.length, 1);
-  assert.ok(restored.order().includes("repo:a/repo"));
+  assert.ok(restored.savedState().order.includes("repo:a/repo"));
+  restored.selectTab("发现");
+  assert.equal(restored.group("repo:a/repo").props.group.items.length, 0);
 });
 
-test("configured empty repositories appear in installed view and retain sort and drag order", async () => {
+test("configured empty repositories hide in installed view but remain sortable in discovery", async () => {
   const ui = createHarness(JSON.stringify({ names: ["Manual"], aliases: { "repo:a/empty": "First" } }));
   ui.server.skills = [skill("local-import", "local"), skill("cc-import", "cc-switch")];
   ui.server.repos = [
@@ -603,10 +605,9 @@ test("configured empty repositories appear in installed view and retain sort and
   // a/empty has no cache entry; z/empty has a cached empty scan.
   ui.server.repoCounts = { "z/empty@main": 0 };
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  assert.equal(ui.order().filter((key: string) => key === "repo:a/empty").length, 1);
-  assert.equal(ui.group("repo:a/empty").props.group.label, "First");
-  assert.equal(ui.group("repo:a/empty").props.group.items.length, 0);
-  assert.equal(ui.group("repo:z/empty").props.group.items.length, 0);
+  assert.ok(!ui.order().includes("repo:a/empty"));
+  assert.ok(!ui.order().includes("repo:z/empty"));
+  assert.equal(ui.group("custom:Manual").props.group.items.length, 0);
   assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.repoKey), ["local", "cc-switch"]);
   assert.ok(!ui.order().includes("repo:local") && !ui.order().includes("repo:cc-switch"));
 
@@ -615,6 +616,11 @@ test("configured empty repositories appear in installed view and retain sort and
   ui.sort().props.onClick(); ui.render();
   assert.deepEqual(ui.savedState().order, ["repo:a/empty", "custom:Manual", "repo:z/empty"]);
   ui.search("");
+  ui.selectTab("发现");
+  assert.equal(ui.order().filter((key: string) => key === "repo:a/empty").length, 1);
+  assert.equal(ui.group("repo:a/empty").props.group.label, "First");
+  assert.equal(ui.group("repo:a/empty").props.group.items.length, 0);
+  assert.equal(ui.group("repo:z/empty").props.group.items.length, 0);
   ui.drag("repo:z/empty", "repo:a/empty");
   assert.deepEqual(ui.order(), ["builtin", "user", "repo:z/empty", "repo:a/empty", "custom:Manual"]);
   assert.equal(ui.savedState().sortDirection, null);
@@ -624,6 +630,8 @@ test("configured empty repositories appear in installed view and retain sort and
   restored.server.repos = ui.server.repos;
   restored.server.repoCounts = ui.server.repoCounts;
   restored.render(); await tick(); restored.render(); restored.selectTab("已安装");
+  assert.deepEqual(restored.order(), ["builtin", "user", "custom:Manual"]);
+  restored.selectTab("发现");
   assert.deepEqual(restored.order(), ui.order());
   assert.equal(restored.group("repo:a/empty").props.group.items.length, 0);
   assert.equal(restored.group("repo:z/empty").props.group.items.length, 0);
@@ -634,15 +642,64 @@ test("configured empty repositories appear in installed view and retain sort and
   assert.ok(restored.order().includes("repo:a/empty"));
 });
 
-test("an empty skill inventory still shows configured repositories", async () => {
+test("an empty inventory hides configured repositories only in installed view", async () => {
   const ui = createHarness();
   ui.server.skills = [];
   ui.server.repos = [{ owner: "empty", name: "repo", branch: "main", subdir: "", enabled: true }];
   ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
-  assert.deepEqual(ui.order(), ["builtin", "user", "repo:empty/repo"]);
+  assert.deepEqual(ui.order(), ["builtin", "user"]);
+  ui.selectTab("发现");
   assert.equal(ui.group("repo:empty/repo").props.group.items.length, 0);
   ui.search("empty");
   assert.deepEqual(ui.order(), []);
+});
+
+test("repository matching is next to new group and preserves successful custom assignments", async () => {
+  const original = skill("first", "local");
+  const failed = skill("second", "local");
+  const ui = createHarness(JSON.stringify({ names: ["Manual"], assignmentsByIdentity: {
+    [skillIdentityKey(original)]: "custom:Manual", [skillIdentityKey(failed)]: "",
+  } }));
+  ui.server.skills = [original, failed];
+  ui.render(); await tick(); ui.render();
+  const trailing = ui.find((node) => node.type === "CxFilters").props.trailing;
+  const controls = trailing.children.filter((node: Element) => node?.type === "button");
+  assert.equal(controls.findIndex((node: Element) => node.props["aria-label"] === "匹配仓库") + 1,
+    controls.findIndex((node: Element) => node.props["aria-label"] === "新建分组"));
+  ui.find((node) => node.type === "button" && node.props["aria-label"] === "匹配仓库").props.onClick(); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  assert.deepEqual(Array.from(drawer.props.localSkillIds), ["first", "second"]);
+  ui.hooks.mutation = async (command) => {
+    assert.equal(command, "apply_skill_repository_matches");
+    ui.server.skills = [{ ...original, repoKey: "owner/repo@main" }, failed];
+    return { ...structuredClone(ui.server), status: "failed", message: "one failed", applied: [
+      { localId: "first", fromRepoKey: "local", toRepoKey: "owner/repo@main" },
+    ] };
+  };
+  await drawer.props.onApply([]);
+  ui.render();
+  assert.deepEqual(ui.savedState().assignmentsByIdentity, {
+    [skillIdentityKey(skill("first", "owner/repo@main"))]: "custom:Manual",
+    [skillIdentityKey(failed)]: "",
+  });
+  assert.equal(ui.notices.at(-1)?.status, "failed");
+  ui.unmount();
+});
+
+test("different Agent instances in one repository display as one row", async () => {
+  const ui = createHarness();
+  ui.server.skills = [
+    { ...skill("alpha", "owner/repo@main"), agents: ["codex"],
+      locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", rootKind: "shared", managed: false, enabled: true }] },
+    { ...skill("alpha", "owner/repo@main"), agents: ["claude"],
+      locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", rootKind: "claude", managed: false, enabled: true }] },
+  ];
+  ui.render(); await tick(); ui.render(); ui.selectTab("已安装");
+  const items = ui.group("repo:owner/repo").props.group.items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0].locations.length, 2);
+  assert.equal(items[0].displayInstances.length, 2);
+  ui.unmount();
 });
 
 test("new assignments for duplicate IDs without legacy settings affect only one repository", async () => {
