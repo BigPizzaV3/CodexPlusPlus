@@ -39,6 +39,10 @@ async function runtime() {
       catalog: codexPlusFeatureLabCatalog,
       extension: codexPlusFeatureLabExtension,
       stage: codexPlusFeatureLabStage,
+      labChoice: codexPlusStatsigLabChoice,
+      labNext: codexPlusStatsigLabNextOverrides,
+      labDefault: codexPlusStatsigLabDefaultLabel,
+      labUnknown: codexPlusStatsigLabUnknownRows,
     };`,
   )() as {
     normalize(raw: unknown): Feature | null;
@@ -48,6 +52,14 @@ async function runtime() {
     catalog: Record<string, { title: string; description: string }>;
     extension(ctx: unknown): void;
     stage(raw: unknown): string;
+    labChoice(overrides: unknown, id: string): string;
+    labNext(overrides: unknown, id: string, choice: string): Record<string, string>;
+    labDefault(entry: unknown): string;
+    labUnknown(
+      catalog: Array<{ id: string }>,
+      overrides: Record<string, string>,
+      log: Array<{ id: string; native?: boolean | null; count?: number }>,
+    ): Array<{ id: string; native: boolean | null; count: number }>;
   };
 }
 
@@ -226,4 +238,37 @@ it("内置拓展清单、设置清单与分片清单三处登记一致", async (
   const lab = names.indexOf("96-feature-lab.js");
   assert.ok(lab >= 0, "manifest 应登记 96-feature-lab.js");
   assert.ok(lab < names.indexOf("96-builtin-extensions.js"), "Feature Lab 分片应在内置拓展清单之前");
+});
+
+it("Statsig 页签：选择默认即删掉这一项，其余整份保留且不改入参", async () => {
+  const api = await runtime();
+  const current = { "983842163": "on", "623263923": "off", "bad": "on" };
+  assert.deepEqual(api.labNext(current, "983842163", "default"), { "623263923": "off" });
+  assert.deepEqual(api.labNext(current, "1174206456", "native"), { "983842163": "on", "623263923": "off", "1174206456": "native" });
+  assert.deepEqual(api.labNext(current, "x.y", "on"), { "983842163": "on", "623263923": "off" }, "非法 ID 不写入");
+  assert.deepEqual(current, { "983842163": "on", "623263923": "off", "bad": "on" });
+
+  assert.equal(api.labChoice(current, "983842163"), "on");
+  assert.equal(api.labChoice(current, "1"), "default");
+  assert.equal(api.labChoice({ "1": "weird" }, "1"), "default");
+
+  assert.equal(api.labDefault({ defaultOverride: true }), "强制打开");
+  assert.equal(api.labDefault({ defaultOverride: null }), "不覆盖");
+});
+
+it("Statsig 页签：「其他开关」只列不在清单里的，按查询次数排序，含手动覆盖过的", async () => {
+  const api = await runtime();
+  const rows = api.labUnknown(
+    [{ id: "1174206456" }],
+    { "999": "on" },
+    [
+      { id: "1174206456", native: false, count: 9 },
+      { id: "222", native: true, count: 1 },
+      { id: "333", native: false, count: 5 },
+      { id: "not-digits", native: true, count: 3 },
+    ],
+  );
+  assert.deepEqual(rows.map((row) => row.id), ["333", "222", "999"]);
+  assert.equal(rows[0].native, false);
+  assert.equal(rows[2].native, null, "只有覆盖记录、没被查询过的原值未知");
 });

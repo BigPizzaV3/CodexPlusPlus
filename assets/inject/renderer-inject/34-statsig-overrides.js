@@ -16,8 +16,23 @@
    *   experiments:    { "<experiment id>": { "<key>": value } }
    *   layers:         { "<layer id>": { "<key>": value } }
    *   dynamicConfigs: { "<config id>": { "<key>": value } }
+   *   gateCatalog:    [{ id, title, description, defaultOverride, risk, note? }]（Feature Lab 用）
+   *
+   * 逐项覆盖：后端设置 codexAppStatsigGateOverrides = { "<gate id>": "on" | "off" | "native" }，
+   * 叠加在 gates 上（native = 不覆盖）。它从后端设置实时读，Feature Lab 改了不用重新注入；
+   * 但 Statsig 的 getFeatureGate 是 memoized，界面在挂载时读，所以仍要重载页面才看得到变化。
+   *
+   * 记录：Feature Lab 打开「记录」后，即使总开关关着也会包一层（只透传），把页面查询过的
+   * 开关 ID 与原值记下来，方便找新开关。
    */
   const codexPlusStatsigOverridesConfig = window.__CODEX_PLUS_STATSIG_OVERRIDES__ || null;
+  const codexPlusStatsigGateIdPattern = /^\d{1,12}$/;
+  const codexPlusStatsigGateChoices = new Set(["on", "off", "native"]);
+  /** 页面查询过的开关：id → { id, native, count, lastAt }。挂在 window 上，重注入不丢。 */
+  const codexPlusStatsigGateLog = window.__codexPlusStatsigGateLog instanceof Map
+    ? window.__codexPlusStatsigGateLog
+    : (window.__codexPlusStatsigGateLog = new Map());
+  const codexPlusStatsigGateLogLimit = 500;
 
   function codexPlusStatsigOverridesEnabled() {
     return (
@@ -40,8 +55,75 @@
     return section && typeof section === "object" ? section : {};
   }
 
+  /** 已知开关清单（Rust 侧从 assets/statsig-gates.json 下发）。 */
+  function codexPlusStatsigGateCatalog() {
+    const catalog = codexPlusStatsigOverridesConfig?.gateCatalog;
+    return Array.isArray(catalog)
+      ? catalog.filter((entry) => entry && typeof entry === "object" && codexPlusStatsigGateIdPattern.test(String(entry.id || "")))
+      : [];
+  }
+
+  /** 后端设置里的逐项覆盖，只认「纯数字 ID → on/off/native」。 */
+  function codexPlusStatsigUserGateOverrides() {
+    const settings = typeof codexPlusBackendSettings === "object" && codexPlusBackendSettings ? codexPlusBackendSettings : null;
+    const raw = settings?.codexAppStatsigGateOverrides;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const result = {};
+    for (const [id, choice] of Object.entries(raw)) {
+      if (codexPlusStatsigGateIdPattern.test(id) && codexPlusStatsigGateChoices.has(choice)) result[id] = choice;
+    }
+    return result;
+  }
+
+  /** 生效的闸门覆盖：默认 gates 叠加逐项覆盖。on → true，off → false，native → 不覆盖。 */
+  function codexPlusStatsigEffectiveGates(defaults, user) {
+    const effective = { ...(defaults && typeof defaults === "object" ? defaults : {}) };
+    for (const [id, choice] of Object.entries(user || {})) {
+      if (choice === "on") effective[id] = true;
+      else if (choice === "off") effective[id] = false;
+      else if (choice === "native") delete effective[id];
+    }
+    return effective;
+  }
+
   function codexPlusStatsigGateOverrides() {
-    return codexPlusStatsigOverrideSection("gates");
+    return codexPlusStatsigEffectiveGates(codexPlusStatsigOverrideSection("gates"), codexPlusStatsigUserGateOverrides());
+  }
+
+  function codexPlusStatsigRecording() {
+    return window.__codexPlusStatsigRecording === true;
+  }
+
+  /** 记录一次开关查询（原值）。只在记录打开时写，超上限丢最早的。 */
+  function codexPlusStatsigRecordGate(name, nativeValue) {
+    if (!codexPlusStatsigRecording()) return;
+    const id = String(name);
+    if (!codexPlusStatsigGateIdPattern.test(id)) return;
+    const entry = codexPlusStatsigGateLog.get(id) || { id, native: null, count: 0, lastAt: 0 };
+    entry.native = typeof nativeValue === "boolean" ? nativeValue : entry.native;
+    entry.count += 1;
+    entry.lastAt = Date.now();
+    codexPlusStatsigGateLog.delete(id);
+    codexPlusStatsigGateLog.set(id, entry);
+    while (codexPlusStatsigGateLog.size > codexPlusStatsigGateLogLimit) {
+      codexPlusStatsigGateLog.delete(codexPlusStatsigGateLog.keys().next().value);
+    }
+  }
+
+  /** 读开关的远端原值（绕过覆盖，不打曝光日志）。拿不到客户端时返回 null。 */
+  function codexPlusStatsigNativeGateValue(name) {
+    for (const client of codexPlusStatsigOverrideClients()) {
+      const read = typeof client.__codexPlusStatsigOriginalGetFeatureGate === "function"
+        ? client.__codexPlusStatsigOriginalGetFeatureGate
+        : typeof client.getFeatureGate === "function" ? client.getFeatureGate.bind(client) : null;
+      if (!read) continue;
+      try {
+        const result = read(String(name), { disableExposureLog: true });
+        if (result && typeof result === "object" && typeof result.value === "boolean") return result.value;
+        if (typeof result === "boolean") return result;
+      } catch {}
+    }
+    return null;
   }
 
   function codexPlusStatsigExperimentOverrides() {
@@ -105,8 +187,10 @@
 
     if (typeof client.getFeatureGate === "function" && !client.__codexPlusStatsigFeatureGatePatched) {
       const originalGetFeatureGate = client.getFeatureGate.bind(client);
+      client.__codexPlusStatsigOriginalGetFeatureGate = originalGetFeatureGate;
       client.getFeatureGate = (gateName, options) => {
         const result = originalGetFeatureGate(gateName, options);
+        codexPlusStatsigRecordGate(gateName, result && typeof result === "object" ? result.value : undefined);
         if (!codexPlusStatsigOverridesEnabled()) return result;
         const overrides = codexPlusStatsigGateOverrides();
         const key = String(gateName);
@@ -120,6 +204,7 @@
 
     if (typeof client.checkGate === "function" && !client.__codexPlusStatsigGatePatched) {
       const originalCheckGate = client.checkGate.bind(client);
+      // 不在这里记录：Statsig 的 checkGate 内部就是调 getFeatureGate，记录已在那一层发生。
       client.checkGate = (gateName, options) => {
         if (codexPlusStatsigOverridesEnabled()) {
           const overrides = codexPlusStatsigGateOverrides();
@@ -198,7 +283,7 @@
   }
 
   function codexPlusStatsigOverridesTick() {
-    if (!codexPlusStatsigOverridesEnabled()) return;
+    if (!codexPlusStatsigOverridesEnabled() && !codexPlusStatsigRecording()) return;
     for (const client of codexPlusStatsigOverrideClients()) {
       try {
         if (codexPlusStatsigPatchClient(client)) {

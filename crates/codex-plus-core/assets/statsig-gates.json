@@ -1,0 +1,76 @@
+{
+  "//": "Statsig 界面增强的已知开关。defaultOverride=true：总开关打开时默认强制打开；null：默认不覆盖，只在 Feature Lab 里手动选。每一项都从 26.1111 的应用包代码核对过用途。",
+  "gates": [
+    {
+      "id": "1174206456",
+      "title": "隐藏升级 / 额度推销",
+      "description": "打开后不再弹升级套餐、额度不足的推销入口（ChatGPT 界面侧）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "2120612410",
+      "title": "会话忙时排队追问",
+      "description": "Agent 正在跑时，下一条消息先排进队列，跑完自动发出（threadQueue，app-server 0.148+）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "1189013788",
+      "title": "云端会话排队追问",
+      "description": "云端会话同样支持排队追问。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "1079089693",
+      "title": "会话时间线历史",
+      "description": "历史消息按时间线接口读取（thread/timeline/list，app-server 0.150+）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "1450837220",
+      "title": "侧聊 attach 到源会话",
+      "description": "从会话分出的侧聊保留并挂回原会话（persistentSideChats，app-server 0.166+）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "4226282475",
+      "title": "会话内权限刷新",
+      "description": "切换权限档位后当前会话立即生效，不用新开会话。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "983842163",
+      "title": "截图选区命令",
+      "description": "命令面板里出现「截图选区到当前 / 新会话」。",
+      "defaultOverride": null,
+      "risk": "low"
+    },
+    {
+      "id": "3009531526",
+      "title": "Spotlight 命令",
+      "description": "命令面板里出现 Spotlight 快速唤起相关命令。",
+      "defaultOverride": null,
+      "risk": "low"
+    },
+    {
+      "id": "1372061905",
+      "title": "快捷键唤出窗口",
+      "description": "全局快捷键唤出的小窗及其命令、设置项。",
+      "defaultOverride": null,
+      "risk": "medium"
+    },
+    {
+      "id": "623263923",
+      "title": "设置里的「模型提供商」页",
+      "description": "原生设置「编码」分组里出现「模型提供商」：可看到 config.toml 里的供应商并改新会话的默认供应商。",
+      "defaultOverride": null,
+      "risk": "high",
+      "note": "在这里改默认供应商不会同步到 Codex++：管理器和「供应商」页显示的使用中会和 Codex 实际不一致。要切供应商请用 Codex++ 的「供应商」页。"
+    }
+  ]
+}

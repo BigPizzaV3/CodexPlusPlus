@@ -11,7 +11,9 @@ import { readFile } from "node:fs/promises";
  *   2. 只覆盖配置里列出的闸门 / 实验 / 层 / 动态配置，其余保持远端值；
  *   3. 对象型配置只合并列出的键，其余键原样保留；
  *   4. getFeatureGate 是 memoized 的共享对象，覆盖时不能就地改；
- *   5. 设置项、内置拓展与页面清单三处登记一致。
+ *   5. 设置项、内置拓展与页面清单三处登记一致；
+ *   6. 逐项覆盖（codexAppStatsigGateOverrides）叠加在默认闸门上，从后端设置实时读；
+ *   7. 记录模式在总开关关着时也只记不改，原值读取绕过覆盖。
  */
 
 const SHARD_URL = new URL("../../../assets/inject/renderer-inject/34-statsig-overrides.js", import.meta.url);
@@ -145,23 +147,37 @@ function overridesConfig(enabled: boolean) {
 
 async function runtime(
   client: ReturnType<typeof fakeClient>,
-  settings: { loaded: boolean; enabled: boolean; configEnabled?: boolean },
+  settings: { loaded: boolean; enabled: boolean; configEnabled?: boolean; gateOverrides?: Record<string, unknown>; recording?: boolean },
 ) {
   const source = await readFile(SHARD_URL, "utf8");
   const window: Record<string, unknown> = {
     __STATSIG__: { firstInstance: client, instance: () => client, instances: { a: client } },
     __CODEX_PLUS_STATSIG_OVERRIDES__: overridesConfig(settings.configEnabled ?? settings.enabled),
+    __codexPlusStatsigRecording: settings.recording === true,
   };
+  const backend = { codexAppStatsigGateOverrides: settings.gateOverrides };
   const api = new Function(
     "window",
     "codexPlusBackendSettingsLoaded",
     "codexPlusSettings",
-    `${source}\nreturn { tick: codexPlusStatsigOverridesTick, extension: codexPlusStatsigOverridesExtension };`,
-  )(window, settings.loaded, () => ({ statsigOverrides: settings.enabled })) as {
+    "codexPlusBackendSettings",
+    `${source}\nreturn {
+      tick: codexPlusStatsigOverridesTick,
+      extension: codexPlusStatsigOverridesExtension,
+      effective: codexPlusStatsigEffectiveGates,
+      gates: codexPlusStatsigGateOverrides,
+      user: codexPlusStatsigUserGateOverrides,
+      native: codexPlusStatsigNativeGateValue,
+    };`,
+  )(window, settings.loaded, () => ({ statsigOverrides: settings.enabled }), backend) as {
     tick(): void;
     extension(ctx: { setInterval(fn: () => void, ms: number): void }): void;
+    effective(defaults: Record<string, boolean>, user: Record<string, string>): Record<string, boolean>;
+    gates(): Record<string, boolean>;
+    user(): Record<string, string>;
+    native(name: string): boolean | null;
   };
-  return api;
+  return { ...api, window };
 }
 
 it("开关打开时强制列出的闸门，checkGate 与 getFeatureGate 都能读到", async () => {
@@ -269,4 +285,65 @@ it("设置项、内置拓展和页面清单三处登记一致", async () => {
   const style = await read("../../../assets/inject/renderer-inject/10-style.js");
   assert.match(style, /statsigOverrides: "codexAppStatsigOverrides"/);
   assert.match(style, /statsigOverrides: "statsig-overrides"/);
+});
+
+it("逐项覆盖叠加在默认闸门上：on 强开、off 强关、native 取消默认覆盖", async () => {
+  const client = fakeClient({ "1174206456": false, "2120612410": false, "983842163": false, "623263923": true });
+  const app = await runtime(client, {
+    loaded: true,
+    enabled: true,
+    gateOverrides: { "983842163": "on", "623263923": "off", "2120612410": "native", "bad.key": "on", "111": "maybe" },
+  });
+  assert.deepEqual(app.user(), { "983842163": "on", "623263923": "off", "2120612410": "native" }, "非法条目被丢掉");
+  app.tick();
+  assert.equal(client.checkGate("983842163"), true, "on：不在默认表里也能强开");
+  assert.equal(client.getFeatureGate("623263923").value, false, "off：强关");
+  assert.equal(client.checkGate("2120612410"), false, "native：取消默认强开，回到远端值");
+  assert.equal(client.checkGate("1174206456"), true, "没设过的默认项照旧强开");
+});
+
+it("合并函数不改入参，未知选择不起作用", async () => {
+  const app = await runtime(fakeClient(), { loaded: true, enabled: true });
+  const defaults = { "1": true, "2": true };
+  const merged = app.effective(defaults, { "2": "native", "3": "off", "4": "weird" });
+  assert.deepEqual(merged, { "1": true, "3": false });
+  assert.deepEqual(defaults, { "1": true, "2": true });
+});
+
+it("总开关关着时逐项覆盖也不生效", async () => {
+  const client = fakeClient({ "983842163": false });
+  const app = await runtime(client, { loaded: true, enabled: false, gateOverrides: { "983842163": "on" } });
+  app.tick();
+  assert.equal(client.checkGate("983842163"), false);
+});
+
+it("记录模式：总开关关着也接管，只记录原值、不改返回值", async () => {
+  const client = fakeClient({ "555": true, "777": false });
+  const app = await runtime(client, { loaded: true, enabled: false, recording: true });
+  app.tick();
+  assert.equal(client.checkGate("555"), true);
+  assert.equal(client.getFeatureGate("777").value, false);
+  client.checkGate("555");
+  const log = app.window.__codexPlusStatsigGateLog as Map<string, { native: boolean | null; count: number }>;
+  assert.equal(log.get("555")?.native, true);
+  assert.equal(log.get("555")?.count, 2, "checkGate 内部走 getFeatureGate，只记一次");
+  assert.equal(log.get("777")?.native, false);
+});
+
+it("不在记录模式时不记，也不为了记录去接管客户端", async () => {
+  const client = fakeClient({ "555": true });
+  const app = await runtime(client, { loaded: true, enabled: false, recording: false });
+  app.tick();
+  client.checkGate("555");
+  const log = app.window.__codexPlusStatsigGateLog as Map<string, unknown>;
+  assert.equal(log.size, 0);
+  assert.equal((client as Record<string, unknown>).__codexPlusStatsigFeatureGatePatched, undefined);
+});
+
+it("读原值绕过覆盖", async () => {
+  const client = fakeClient({ "1174206456": false });
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  assert.equal(client.checkGate("1174206456"), true, "界面读到的是覆盖值");
+  assert.equal(app.native("1174206456"), false, "原值仍是远端的 false");
 });

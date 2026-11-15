@@ -313,6 +313,17 @@
       }
       .codex-plus-feature-lab * { box-sizing: border-box; }
       .codex-plus-feature-lab h2 { margin: 0; font-size: 17px; font-weight: 600; }
+      .codex-plus-feature-lab h3 { margin: 8px 0 0; font-size: 14px; font-weight: 600; }
+      .codex-plus-feature-lab .cpl-panel { display: flex; flex-direction: column; gap: 12px; }
+      .codex-plus-feature-lab .cpl-tabs { display: flex; gap: 4px; border-bottom: 1px solid light-dark(#e1e7ec, #333940); }
+      .codex-plus-feature-lab .cpl-tab {
+        height: 30px; padding: 0 12px; border: 0 !important; border-bottom: 2px solid transparent !important;
+        border-radius: 0 !important; background: transparent !important; color: light-dark(#57606a, #9aa4ad);
+      }
+      .codex-plus-feature-lab .cpl-tab[aria-selected="true"] { color: inherit; border-bottom-color: light-dark(#0969da, #4493f8) !important; font-weight: 600; }
+      .codex-plus-feature-lab .cpl-hint { color: light-dark(#8c959f, #8b949e); font-size: 12px; }
+      .codex-plus-feature-lab .cpl-warn { color: light-dark(#9a6700, #f2cc60); font-size: 12px; }
+      .codex-plus-feature-lab .cpl-row select { flex: 0 0 auto; appearance: auto !important; }
       .codex-plus-feature-lab p { margin: 0; }
       .codex-plus-feature-lab .cpl-sub { color: light-dark(#57606a, #9aa4ad); }
       .codex-plus-feature-lab .cpl-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -394,17 +405,13 @@
     document.head.appendChild(style);
   }
 
-  /** 设置页分区本体。渲染是瞬态：每次打开都重新拉一次列表。 */
-  function codexPlusFeatureLabRender({ container, ctx }) {
+  /** 「Codex 实验开关」页签：app-server 的 experimentalFeature。渲染是瞬态，每次打开都重新拉列表。 */
+  function codexPlusFeatureLabRenderFeatures({ container, ctx }) {
     if (!container) return;
-    codexPlusFeatureLabEnsureStyles();
     const root = document.createElement("div");
-    root.className = "codex-plus-feature-lab";
+    root.className = "cpl-panel";
     root.innerHTML = `
-      <div>
-        <h2>Feature Lab</h2>
-        <p class="cpl-sub">Codex app-server 暴露的全部实验开关。改动写入 config.toml 的 <code>features.&lt;name&gt;</code>，重启 Codex 后生效。</p>
-      </div>
+      <p class="cpl-sub">Codex app-server 暴露的全部实验开关。改动写入 config.toml 的 <code>features.&lt;name&gt;</code>，重启 Codex 后生效。</p>
       <div class="cpl-toolbar">
         <input type="search" placeholder="搜索名称或说明" aria-label="搜索 feature" />
         <select aria-label="按阶段过滤">
@@ -597,6 +604,332 @@
     });
     reload.addEventListener("click", () => void load());
     void load();
+  }
+
+  const codexPlusStatsigLabChoiceLabels = {
+    default: "跟随默认",
+    on: "强制打开",
+    off: "强制关闭",
+    native: "不覆盖（用原值）",
+  };
+  const codexPlusStatsigLabRiskLabels = { low: "低风险", medium: "中风险", high: "高风险" };
+
+  /** 某个开关在逐项覆盖里的选择；没设过就是 default。 */
+  function codexPlusStatsigLabChoice(overrides, id) {
+    const value = overrides && typeof overrides === "object" ? overrides[id] : undefined;
+    return value === "on" || value === "off" || value === "native" ? value : "default";
+  }
+
+  /** 改一个开关的选择，返回新的整份覆盖表（default = 删掉这一项）。不改入参。 */
+  function codexPlusStatsigLabNextOverrides(overrides, id, choice) {
+    const next = {};
+    for (const [key, value] of Object.entries(overrides && typeof overrides === "object" ? overrides : {})) {
+      if (/^\d{1,12}$/.test(key) && (value === "on" || value === "off" || value === "native")) next[key] = value;
+    }
+    if (!/^\d{1,12}$/.test(String(id))) return next;
+    if (choice === "on" || choice === "off" || choice === "native") next[String(id)] = choice;
+    else delete next[String(id)];
+    return next;
+  }
+
+  /** 「默认」这一档实际是什么：清单里 defaultOverride=true 是强制打开，否则不覆盖。 */
+  function codexPlusStatsigLabDefaultLabel(entry) {
+    return entry?.defaultOverride === true ? "强制打开" : "不覆盖";
+  }
+
+  /** 页面上「其他开关」一栏：记录到的 + 手动覆盖过但不在清单里的，去掉清单已有的。 */
+  function codexPlusStatsigLabUnknownRows(catalog, overrides, log) {
+    const known = new Set((catalog || []).map((entry) => String(entry.id)));
+    const rows = new Map();
+    for (const entry of log || []) {
+      const id = String(entry?.id || "");
+      if (!/^\d{1,12}$/.test(id) || known.has(id)) continue;
+      rows.set(id, { id, native: typeof entry.native === "boolean" ? entry.native : null, count: entry.count || 0 });
+    }
+    for (const id of Object.keys(overrides || {})) {
+      if (!/^\d{1,12}$/.test(id) || known.has(id) || rows.has(id)) continue;
+      rows.set(id, { id, native: null, count: 0 });
+    }
+    return [...rows.values()].sort((left, right) => right.count - left.count || left.id.localeCompare(right.id));
+  }
+
+  function codexPlusStatsigLabBackendSettings() {
+    return typeof codexPlusBackendSettings === "object" && codexPlusBackendSettings ? codexPlusBackendSettings : {};
+  }
+
+  async function codexPlusStatsigLabSave(key, value) {
+    if (typeof setBackendSetting !== "function") throw new Error("Codex++ 设置还没就绪");
+    await setBackendSetting(key, value);
+  }
+
+  /** 「Statsig 开关」页签。 */
+  function codexPlusStatsigLabRender({ container, ctx }) {
+    if (!container) return;
+    const root = document.createElement("div");
+    root.className = "cpl-panel";
+    root.innerHTML = `
+      <p class="cpl-sub">Codex 界面里不少功能由 Statsig 远程开关决定。这里可以逐个覆盖，只改本机界面，服务端能力（云端任务、真实配额）不变。选择保存在 Codex++ 设置里，<b>重新加载 Codex 页面后生效</b>。</p>
+      <div class="cpl-row cpl-master">
+        <div class="cpl-main">
+          <div class="cpl-title"><span>总开关：Statsig 界面增强</span></div>
+          <div class="cpl-desc cpl-master-desc"></div>
+        </div>
+        <button type="button" class="cpl-switch cpl-master-switch" role="switch" aria-label="Statsig 界面增强总开关"></button>
+      </div>
+      <div class="cpl-toolbar">
+        <button type="button" class="cpl-page-reload">重新加载 Codex 页面</button>
+        <span class="cpl-hint">改完后点这里，界面才会按新值重新读取开关。</span>
+      </div>
+      <div class="cpl-status" role="status"></div>
+      <h3>已知开关</h3>
+      <div class="cpl-list cpl-known-list"></div>
+      <h3>页面查询过的其他开关</h3>
+      <p class="cpl-sub">开始记录后在 Codex 里切几个页面（设置、会话、命令面板），这里会列出页面实际查询过、但不在上面清单里的开关和它们的原值。作用不明，覆盖前请自行确认。</p>
+      <div class="cpl-toolbar">
+        <button type="button" class="cpl-record">开始记录</button>
+        <button type="button" class="cpl-record-clear">清空记录</button>
+        <span class="cpl-count cpl-record-count"></span>
+      </div>
+      <div class="cpl-list cpl-unknown-list"></div>
+    `;
+    container.replaceChildren(root);
+
+    const masterSwitch = root.querySelector(".cpl-master-switch");
+    const masterDesc = root.querySelector(".cpl-master-desc");
+    const status = root.querySelector(".cpl-status");
+    const knownList = root.querySelector(".cpl-known-list");
+    const unknownList = root.querySelector(".cpl-unknown-list");
+    const recordButton = root.querySelector(".cpl-record");
+    const recordClear = root.querySelector(".cpl-record-clear");
+    const recordCount = root.querySelector(".cpl-record-count");
+    const pageReload = root.querySelector(".cpl-page-reload");
+
+    const setStatus = (message, tone = "") => {
+      if (!status.isConnected) return;
+      status.textContent = message || "";
+      status.dataset.tone = tone;
+    };
+    const masterOn = () => codexPlusStatsigLabBackendSettings().codexAppStatsigOverrides === true;
+    const userOverrides = () => (typeof codexPlusStatsigUserGateOverrides === "function" ? codexPlusStatsigUserGateOverrides() : {});
+    const catalog = () => (typeof codexPlusStatsigGateCatalog === "function" ? codexPlusStatsigGateCatalog() : []);
+    const effective = () => (typeof codexPlusStatsigGateOverrides === "function" ? codexPlusStatsigGateOverrides() : {});
+    const nativeValue = (id) => (typeof codexPlusStatsigNativeGateValue === "function" ? codexPlusStatsigNativeGateValue(id) : null);
+    const onOff = (value) => (value === true ? "开" : value === false ? "关" : "未读取");
+
+    const drawMaster = () => {
+      const on = masterOn();
+      masterSwitch.setAttribute("aria-checked", on ? "true" : "false");
+      masterDesc.textContent = on
+        ? "已打开：下面的覆盖在页面重新加载后生效。"
+        : "已关闭：下面的选择会保存，但打开总开关前都不生效（原值照常显示）。";
+    };
+
+    const buildRow = ({ id, title, description, note, risk, defaultLabel, native, extra }) => {
+      const overrides = userOverrides();
+      const choice = codexPlusStatsigLabChoice(overrides, id);
+      const effectiveMap = effective();
+      const now = masterOn() && Object.prototype.hasOwnProperty.call(effectiveMap, id) ? effectiveMap[id] === true : native;
+
+      const row = document.createElement("div");
+      row.className = "cpl-row";
+      row.dataset.gate = id;
+      row.dataset.enabled = now === true ? "true" : "false";
+      const main = document.createElement("div");
+      main.className = "cpl-main";
+      const head = document.createElement("div");
+      head.className = "cpl-title";
+      const titleText = document.createElement("span");
+      titleText.textContent = title;
+      const idText = document.createElement("span");
+      idText.className = "cpl-name";
+      idText.textContent = id;
+      head.append(titleText, idText);
+      if (risk) {
+        const badge = document.createElement("span");
+        badge.className = "cpl-stage";
+        badge.dataset.tone = risk === "high" ? "removed" : risk === "medium" ? "beta" : "stable";
+        badge.textContent = codexPlusStatsigLabRiskLabels[risk] || risk;
+        head.appendChild(badge);
+      }
+      main.appendChild(head);
+      if (description) {
+        const desc = document.createElement("div");
+        desc.className = "cpl-desc";
+        desc.textContent = description;
+        main.appendChild(desc);
+      }
+      if (note) {
+        const warn = document.createElement("div");
+        warn.className = "cpl-warn";
+        warn.textContent = note;
+        main.appendChild(warn);
+      }
+      const meta = document.createElement("div");
+      meta.className = "cpl-meta";
+      meta.textContent = `原值：${onOff(native)} · 现在：${onOff(now)} · 默认：${defaultLabel}${extra ? ` · ${extra}` : ""}`;
+      main.appendChild(meta);
+
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", `${title} 覆盖方式`);
+      for (const value of ["default", "on", "off", "native"]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value === "default" ? `跟随默认（${defaultLabel}）` : codexPlusStatsigLabChoiceLabels[value];
+        option.selected = value === choice;
+        select.appendChild(option);
+      }
+      select.addEventListener("change", () => void changeChoice({ id, title, risk, note, unknown: !risk }, select));
+      row.append(main, select);
+      return row;
+    };
+
+    const drawKnown = () => {
+      if (!knownList.isConnected) return;
+      const entries = catalog();
+      if (!entries.length) {
+        knownList.innerHTML = '<div class="cpl-empty">没有拿到开关清单（Codex++ 注入配置缺失）。</div>';
+        return;
+      }
+      knownList.replaceChildren(...entries.map((entry) => buildRow({
+        id: String(entry.id),
+        title: String(entry.title || entry.id),
+        description: typeof entry.description === "string" ? entry.description : "",
+        note: typeof entry.note === "string" ? entry.note : "",
+        risk: typeof entry.risk === "string" ? entry.risk : "low",
+        defaultLabel: codexPlusStatsigLabDefaultLabel(entry),
+        native: nativeValue(String(entry.id)),
+      })));
+    };
+
+    const drawUnknown = () => {
+      if (!unknownList.isConnected) return;
+      const log = typeof codexPlusStatsigGateLog !== "undefined" ? [...codexPlusStatsigGateLog.values()] : [];
+      const rows = codexPlusStatsigLabUnknownRows(catalog(), userOverrides(), log);
+      const recording = typeof codexPlusStatsigRecording === "function" && codexPlusStatsigRecording();
+      recordButton.textContent = recording ? "停止记录" : "开始记录";
+      recordCount.textContent = log.length ? `已记录 ${log.length} 个开关查询，其中 ${rows.length} 个不在清单里` : "";
+      if (!rows.length) {
+        unknownList.innerHTML = `<div class="cpl-empty">${recording ? "正在记录…在 Codex 里切几个页面试试。" : "还没有记录。"}</div>`;
+        return;
+      }
+      unknownList.replaceChildren(...rows.map((row) => buildRow({
+        id: row.id,
+        title: "未知开关",
+        description: "",
+        note: "",
+        risk: "",
+        defaultLabel: "不覆盖",
+        native: row.native ?? nativeValue(row.id),
+        extra: row.count ? `查询 ${row.count} 次` : "",
+      })));
+    };
+
+    const drawAll = () => {
+      drawMaster();
+      drawKnown();
+      drawUnknown();
+    };
+
+    const changeChoice = async (gate, select) => {
+      const choice = select.value;
+      const previous = codexPlusStatsigLabChoice(userOverrides(), gate.id);
+      if (choice === "on" && (gate.risk === "high" || gate.unknown)) {
+        const answer = await ctx.ask({
+          title: `强制打开「${gate.title}」？`,
+          message: gate.unknown
+            ? `开关 ${gate.id} 不在已知清单里，作用不明，可能让界面出现半成品功能或报错。确定要强制打开吗？`
+            : `${gate.note || "这是高风险开关。"}确定要强制打开吗？`,
+          options: [{ value: "on", label: "仍然打开" }],
+        });
+        if (!answer || answer.value !== "on") {
+          select.value = previous;
+          return;
+        }
+      }
+      select.disabled = true;
+      setStatus("正在保存…");
+      try {
+        await codexPlusStatsigLabSave("codexAppStatsigGateOverrides", codexPlusStatsigLabNextOverrides(userOverrides(), gate.id, choice));
+        setStatus(masterOn()
+          ? `已保存「${gate.title}」：${codexPlusStatsigLabChoiceLabels[choice]}。点「重新加载 Codex 页面」后生效。`
+          : `已保存「${gate.title}」。总开关还关着，打开后才生效。`, "ok");
+      } catch (error) {
+        select.value = previous;
+        setStatus(`保存失败：${error?.message || error}`, "error");
+      } finally {
+        select.disabled = false;
+        drawAll();
+      }
+    };
+
+    masterSwitch.addEventListener("click", async () => {
+      const next = !masterOn();
+      masterSwitch.disabled = true;
+      setStatus("正在保存…");
+      try {
+        await codexPlusStatsigLabSave("codexAppStatsigOverrides", next);
+        if (next && typeof codexPlusStatsigOverridesTick === "function") codexPlusStatsigOverridesTick();
+        setStatus(`已${next ? "打开" : "关闭"}总开关，重新加载 Codex 页面后完整生效。`, "ok");
+      } catch (error) {
+        setStatus(`保存失败：${error?.message || error}`, "error");
+      } finally {
+        masterSwitch.disabled = false;
+        drawAll();
+      }
+    });
+
+    recordButton.addEventListener("click", () => {
+      const next = !(typeof codexPlusStatsigRecording === "function" && codexPlusStatsigRecording());
+      window.__codexPlusStatsigRecording = next;
+      if (next && typeof codexPlusStatsigOverridesTick === "function") codexPlusStatsigOverridesTick();
+      drawUnknown();
+    });
+    recordClear.addEventListener("click", () => {
+      if (typeof codexPlusStatsigGateLog !== "undefined") codexPlusStatsigGateLog.clear();
+      drawUnknown();
+    });
+    pageReload.addEventListener("click", () => {
+      window.location.reload();
+    });
+
+    drawAll();
+    // 记录中时定期刷新「其他开关」；面板关掉（节点脱离文档）就停。
+    const timer = setInterval(() => {
+      if (!root.isConnected) {
+        clearInterval(timer);
+        return;
+      }
+      if (typeof codexPlusStatsigRecording === "function" && codexPlusStatsigRecording()) drawUnknown();
+    }, 1500);
+  }
+
+  /** 设置页分区本体：两个页签共用一个外壳。 */
+  function codexPlusFeatureLabRender({ container, ctx }) {
+    if (!container) return;
+    codexPlusFeatureLabEnsureStyles();
+    const root = document.createElement("div");
+    root.className = "codex-plus-feature-lab";
+    root.innerHTML = `
+      <h2>Feature Lab</h2>
+      <div class="cpl-tabs" role="tablist">
+        <button type="button" role="tab" class="cpl-tab" data-tab="features" aria-selected="true">Codex 实验开关</button>
+        <button type="button" role="tab" class="cpl-tab" data-tab="statsig" aria-selected="false">Statsig 开关</button>
+      </div>
+      <div class="cpl-tab-body"></div>
+    `;
+    container.replaceChildren(root);
+    const body = root.querySelector(".cpl-tab-body");
+    const show = (tab) => {
+      for (const button of root.querySelectorAll(".cpl-tab")) {
+        button.setAttribute("aria-selected", button.dataset.tab === tab ? "true" : "false");
+      }
+      if (tab === "statsig") codexPlusStatsigLabRender({ container: body, ctx });
+      else codexPlusFeatureLabRenderFeatures({ container: body, ctx });
+    };
+    for (const button of root.querySelectorAll(".cpl-tab")) {
+      button.addEventListener("click", () => show(button.dataset.tab));
+    }
+    show("features");
   }
 
   function codexPlusFeatureLabExtension(ctx) {

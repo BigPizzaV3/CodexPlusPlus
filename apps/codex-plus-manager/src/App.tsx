@@ -614,6 +614,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppOfflineAutoReview: boolean;
   /** Statsig 界面增强：隐藏升级推销、放宽网络超时、补开记忆，默认关。 */
   codexAppStatsigOverrides: boolean;
+  /** Statsig 开关逐项覆盖（Codex 页面 Feature Lab 里改）：开关 ID → "on" / "off" / "native"。管理器只原样保留。 */
+  codexAppStatsigGateOverrides?: Record<string, "on" | "off" | "native">;
   /** Codex App 和 CLI 已经经过本地代理的请求按上报用量判断压缩，默认关。 */
   codexAppReportedUsageCompaction: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
@@ -1699,6 +1701,7 @@ const defaultSettings: BackendSettings = {
   codexAppThirdPartyReasoningCollapse: false,
   codexAppOfflineAutoReview: false,
   codexAppStatsigOverrides: false,
+  codexAppStatsigGateOverrides: {},
   codexAppReportedUsageCompaction: false,
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,

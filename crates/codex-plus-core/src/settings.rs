@@ -1263,6 +1263,15 @@ pub struct BackendSettings {
     /// 只改本机界面与超时参数，服务端能力不变。默认关。
     #[serde(rename = "codexAppStatsigOverrides", default)]
     pub codex_app_statsig_overrides: bool,
+    /// Statsig 开关逐项覆盖（Codex 页面 Feature Lab 里设置）：key 是开关 ID（纯数字），
+    /// 值是 "on"（强制开）/ "off"（强制关）/ "native"（不覆盖，用远端原值）。
+    /// 没列出的开关按 assets/statsig-gates.json 的默认处理；只在总开关打开时生效。
+    #[serde(
+        rename = "codexAppStatsigGateOverrides",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub codex_app_statsig_gate_overrides: BTreeMap<String, String>,
     /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
     #[serde(rename = "codexAppReportedUsageCompaction", default)]
     pub codex_app_reported_usage_compaction: bool,
@@ -1579,6 +1588,7 @@ impl Default for BackendSettings {
             codex_app_third_party_reasoning_collapse: false,
             codex_app_offline_auto_review: false,
             codex_app_statsig_overrides: false,
+            codex_app_statsig_gate_overrides: BTreeMap::new(),
             codex_app_reported_usage_compaction: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
@@ -3035,6 +3045,15 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppStatsigOverrides");
+    if let Some(map) = source
+        .get("codexAppStatsigGateOverrides")
+        .and_then(Value::as_object)
+    {
+        target.insert(
+            "codexAppStatsigGateOverrides".to_string(),
+            Value::Object(sanitize_statsig_gate_overrides(map)),
+        );
+    }
     merge_bool_setting(target, source, "codexAppReportedUsageCompaction");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
@@ -3372,6 +3391,25 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::String(ToolId::parse(value).as_str().to_string()),
         );
     }
+}
+
+/// Statsig 逐项覆盖的上限：清单本身只有十来项，记录页能手动加未知开关，留足余量即可。
+const STATSIG_GATE_OVERRIDE_LIMIT: usize = 200;
+
+/// 只保留「纯数字开关 ID → on/off/native」的条目。页面整份提交，非法条目直接丢弃，
+/// 避免把任意 key 写进设置文件、再原样注入页面。
+pub fn sanitize_statsig_gate_overrides(source: &Map<String, Value>) -> Map<String, Value> {
+    source
+        .iter()
+        .filter_map(|(key, value)| {
+            let id = key.trim();
+            let valid_id = !id.is_empty() && id.len() <= 12 && id.bytes().all(|byte| byte.is_ascii_digit());
+            let choice = value.as_str().map(str::trim)?;
+            (valid_id && matches!(choice, "on" | "off" | "native"))
+                .then(|| (id.to_string(), Value::String(choice.to_string())))
+        })
+        .take(STATSIG_GATE_OVERRIDE_LIMIT)
+        .collect()
 }
 
 fn merge_bool_setting(target: &mut Map<String, Value>, source: &Map<String, Value>, key: &str) {
