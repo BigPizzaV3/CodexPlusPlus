@@ -1,4 +1,5 @@
-//! 远程控制（P1）：版本表、IPC 客户端、会话视图、HTTP 安全检查与状态持久化。
+//! 远程控制：版本表、IPC 客户端、会话视图、HTTP 安全检查、状态持久化，
+//! 以及 P2 的配对设备、权限分级与局域网 HTTPS 入口。
 //! 端到端链路（真实 Codex 桌面）由 tools/remote-control-p0/run-p0.mjs 覆盖。
 
 use std::io::Write;
@@ -223,9 +224,220 @@ fn only_loopback_hosts_and_same_origin_are_allowed() {
     assert!(!host_allowed(Some("127.0.0.1:1"), 57360));
     assert!(!host_allowed(None, 57360));
 
-    assert!(origin_allowed(None, "127.0.0.1:57360"));
-    assert!(origin_allowed(Some("http://127.0.0.1:57360"), "127.0.0.1:57360"));
-    assert!(!origin_allowed(Some("https://evil.example"), "127.0.0.1:57360"));
+    assert!(origin_allowed(None, "127.0.0.1:57360", "http"));
+    assert!(origin_allowed(Some("http://127.0.0.1:57360"), "127.0.0.1:57360", "http"));
+    assert!(!origin_allowed(Some("https://evil.example"), "127.0.0.1:57360", "http"));
+    assert!(origin_allowed(Some("https://192.168.1.8:57361"), "192.168.1.8:57361", "https"));
+    assert!(!origin_allowed(Some("http://192.168.1.8:57361"), "192.168.1.8:57361", "https"), "局域网入口是 https");
+}
+
+#[test]
+fn lan_entry_accepts_ip_literals_and_local_names_only() {
+    use codex_plus_core::remote_control::server::lan_host_allowed;
+    assert!(lan_host_allowed(Some("192.168.1.8:57361"), 57361));
+    assert!(lan_host_allowed(Some("100.101.102.103:57361"), 57361), "Tailscale 地址");
+    assert!(lan_host_allowed(Some("[fe80::1]:57361"), 57361));
+    assert!(lan_host_allowed(Some("my-mac.local:57361"), 57361));
+    assert!(lan_host_allowed(Some("my-mac.tail1234.ts.net:57361"), 57361), "MagicDNS");
+    assert!(!lan_host_allowed(Some("evil.example:57361"), 57361), "外部域名指向内网就是 DNS 重绑定");
+    assert!(!lan_host_allowed(Some("192.168.1.8.evil.example:57361"), 57361));
+    assert!(!lan_host_allowed(Some("192.168.1.8:1"), 57361));
+    assert!(!lan_host_allowed(Some("192.168.1.8"), 57361));
+    assert!(!lan_host_allowed(None, 57361));
+}
+
+#[test]
+fn routes_require_roles_by_capability() {
+    use codex_plus_core::remote_control::devices::Role;
+    use codex_plus_core::remote_control::server::required_role;
+    assert_eq!(required_role("GET", &["threads"]), Role::View);
+    assert_eq!(required_role("GET", &["threads", "x", "stream"]), Role::View);
+    assert_eq!(required_role("GET", &["threads", "x", "options"]), Role::View);
+    assert_eq!(required_role("POST", &["threads"]), Role::Message, "新建会话");
+    assert_eq!(required_role("POST", &["threads", "x", "messages"]), Role::Message);
+    assert_eq!(required_role("POST", &["threads", "x", "interrupt"]), Role::Message);
+    assert_eq!(required_role("POST", &["threads", "x", "open"]), Role::Message);
+    assert_eq!(required_role("POST", &["threads", "x", "requests", "3"]), Role::Full, "审批");
+    assert_eq!(required_role("POST", &["threads", "x", "settings"]), Role::Full, "改权限模式");
+    assert!(Role::View < Role::Message && Role::Message < Role::Full);
+}
+
+/// 把状态文件挪到临时目录，结束时恢复。进程级状态，调用方要先拿全局锁。
+struct TempState {
+    dir: tempfile::TempDir,
+}
+
+impl TempState {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        codex_plus_core::remote_control::set_state_path_for_tests(Some(dir.path().join("remote-control.json")));
+        Self { dir }
+    }
+
+    fn state_text(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("remote-control.json")).unwrap_or_default()
+    }
+}
+
+impl Drop for TempState {
+    fn drop(&mut self) {
+        codex_plus_core::remote_control::stop();
+        codex_plus_core::remote_control::set_state_path_for_tests(None);
+    }
+}
+
+#[test]
+fn pairing_issues_device_tokens_that_can_be_revoked() {
+    use codex_plus_core::remote_control::devices::{self, Principal, Role};
+    let _guard = crate::common::global_state_lock();
+    let temp = TempState::new();
+
+    assert!(devices::redeem("ABCD2345", "手机").is_err(), "没有进行中的配对");
+    let pairing = devices::start_pairing(Role::Message);
+    assert_eq!(pairing.code.len(), 8);
+    assert!(devices::redeem("WRONG000", "手机").unwrap_err().to_string().contains("不对"));
+    // 配对码大小写、空格、横线都不敏感
+    let loose = format!("{}-{} ", pairing.code[..4].to_lowercase(), &pairing.code[4..]);
+    let (device, token) = devices::redeem(&loose, "  我的\u{7}手机  ").unwrap();
+    assert_eq!(device.name, "我的手机", "去掉控制字符和首尾空白");
+    assert_eq!(device.role, Role::Message);
+    assert_eq!(token.len(), 64);
+    assert!(devices::redeem(&pairing.code, "第二台").is_err(), "配对码只能用一次");
+
+    let saved = temp.state_text();
+    assert!(!saved.contains(&token), "状态文件里不能有明文设备令牌");
+    assert!(saved.contains(&devices::token_digest(&token)));
+
+    match devices::authorize_device(&token, Some("192.168.1.20")) {
+        Some(Principal::Device { id, role, .. }) => {
+            assert_eq!(id, device.id);
+            assert_eq!(role, Role::Message);
+        }
+        other => panic!("设备令牌应能认出：{other:?}"),
+    }
+    assert!(devices::authorize_device(&"0".repeat(64), None).is_none());
+    assert_eq!(devices::list()[0].last_address.as_deref(), Some("192.168.1.20"), "记下最近来源地址（落盘有节流）");
+
+    // 重新从文件读，设备还在
+    devices::reload();
+    assert!(devices::authorize_device(&token, None).is_some());
+    devices::set_role(&device.id, Role::Full).unwrap();
+    assert_eq!(devices::authorize_device(&token, None).unwrap().role(), Role::Full);
+
+    devices::revoke(&device.id).unwrap();
+    assert!(devices::authorize_device(&token, None).is_none(), "吊销后立刻失效");
+    assert!(!devices::device_exists(&device.id));
+    assert!(devices::revoke(&device.id).is_err());
+}
+
+#[test]
+fn pairing_code_is_voided_after_too_many_wrong_attempts() {
+    use codex_plus_core::remote_control::devices::{self, Role};
+    let _guard = crate::common::global_state_lock();
+    let _temp = TempState::new();
+    let pairing = devices::start_pairing(Role::View);
+    for _ in 0..4 {
+        assert!(devices::redeem("ZZZZZZZZ", "x").is_err());
+    }
+    assert!(devices::redeem("ZZZZZZZZ", "x").unwrap_err().to_string().contains("过多"));
+    assert!(devices::current_pairing().is_none());
+    assert!(devices::redeem(&pairing.code, "x").is_err(), "作废后正确的码也不行");
+}
+
+#[test]
+fn certificate_is_stable_and_grows_with_new_addresses() {
+    use codex_plus_core::remote_control::tls;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tls.json");
+    let home: std::net::IpAddr = "192.168.1.8".parse().unwrap();
+    let office: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+
+    let first = tls::ensure_certificate_at(&path, &[home]).unwrap();
+    assert!(first.names.contains(&"192.168.1.8".to_string()));
+    assert!(first.names.contains(&"localhost".to_string()));
+    let fingerprint = first.fingerprint();
+    assert_eq!(fingerprint.split(':').count(), 32, "SHA-256 指纹");
+    let days = (first.not_after - time::OffsetDateTime::now_utc().unix_timestamp()) / 86_400;
+    assert!((790..=800).contains(&days), "有效期不能超过 iOS 的 825 天上限：{days}");
+    assert!(tls::server_config(&first).is_ok());
+
+    let again = tls::ensure_certificate_at(&path, &[home]).unwrap();
+    assert_eq!(again.fingerprint(), fingerprint, "地址没变就不重签");
+
+    let moved = tls::ensure_certificate_at(&path, &[office]).unwrap();
+    assert_ne!(moved.fingerprint(), fingerprint, "新地址要重签");
+    assert!(moved.names.contains(&"10.0.0.5".to_string()));
+    assert!(moved.names.contains(&"192.168.1.8".to_string()), "保留旧地址，换回原网络不用再重签");
+    assert_eq!(tls::ensure_certificate_at(&path, &[home]).unwrap().fingerprint(), moved.fingerprint());
+
+    assert!(tls::is_tailscale(&"100.100.1.2".parse().unwrap()));
+    assert!(!tls::is_tailscale(&"100.200.1.2".parse().unwrap()));
+}
+
+/// 局域网 HTTPS 入口：自签证书握手、主令牌不认、配对拿设备令牌、按权限放行、吊销即失效；
+/// 本机入口也认设备令牌。只调不碰 Codex 的接口（me / 权限检查），不依赖桌面在跑。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lan_https_entry_pairs_devices_and_enforces_roles() {
+    use codex_plus_core::remote_control::devices::{self, Role};
+    use codex_plus_core::remote_control::{LanOptions, ListenOptions, tls};
+    let _guard = crate::common::global_state_lock();
+    let _temp = TempState::new();
+    let free_port = || std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (port, lan_port) = (free_port(), free_port());
+    let token = generate_token();
+    let certificate = tls::ensure_certificate_at(&tls::tls_path(), &[]).unwrap();
+    let lan = LanOptions { port: lan_port, tls: tls::server_config(&certificate).unwrap(), fingerprint: certificate.fingerprint() };
+    tokio::task::block_in_place(|| {
+        codex_plus_core::remote_control::start_with(ListenOptions { port, token: token.clone(), lan: Some(lan) }).unwrap()
+    });
+    assert_eq!(codex_plus_core::remote_control::running_lan_port(), Some(lan_port));
+
+    let client = reqwest::Client::builder().danger_accept_invalid_certs(true).no_proxy().build().unwrap();
+    let lan_base = format!("https://127.0.0.1:{lan_port}");
+    let get = |base: String, path: &str, bearer: &str| {
+        client.get(format!("{base}{path}")).bearer_auth(bearer).send()
+    };
+
+    let page = client.get(format!("{lan_base}/")).send().await.unwrap();
+    assert_eq!(page.status(), 200);
+    assert!(page.headers()["content-security-policy"].to_str().unwrap().contains("wss://127.0.0.1"));
+    assert_eq!(get(lan_base.clone(), "/api/me", &token).await.unwrap().status(), 401, "局域网不认主令牌");
+
+    let pair = |code: String| client.post(format!("{lan_base}/api/pair")).json(&json!({ "code": code, "name": "测试手机" })).send();
+    assert_eq!(pair("AAAAAAAA".into()).await.unwrap().status(), 400, "没有进行中的配对");
+    let pairing = devices::start_pairing(Role::View);
+    let paired: Value = pair(pairing.code.clone()).await.unwrap().json().await.unwrap();
+    assert_eq!(paired["ok"], true, "{paired}");
+    let device_token = paired["data"]["token"].as_str().unwrap().to_string();
+    let device_id = paired["data"]["device"]["id"].as_str().unwrap().to_string();
+    assert!(paired["data"]["device"].get("tokenSha256").is_none(), "不回传摘要");
+
+    let me: Value = get(lan_base.clone(), "/api/me", &device_token).await.unwrap().json().await.unwrap();
+    assert_eq!(me["data"]["role"], "view");
+    assert_eq!(me["data"]["name"], "测试手机");
+    let thread = uuid::Uuid::new_v4();
+    let interrupt = client.post(format!("{lan_base}/api/threads/{thread}/interrupt")).bearer_auth(&device_token).send().await.unwrap();
+    assert_eq!(interrupt.status(), 403, "只读设备不能停止会话");
+    let cross = client
+        .get(format!("{lan_base}/api/me"))
+        .bearer_auth(&device_token)
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross.status(), 403);
+
+    // 本机入口也认设备令牌
+    let local: Value = get(format!("http://127.0.0.1:{port}"), "/api/me", &device_token).await.unwrap().json().await.unwrap();
+    assert_eq!(local["data"]["kind"], "device");
+    let master: Value = get(format!("http://127.0.0.1:{port}"), "/api/me", &token).await.unwrap().json().await.unwrap();
+    assert_eq!(master["data"]["kind"], "master");
+
+    devices::revoke(&device_id).unwrap();
+    assert_eq!(get(lan_base.clone(), "/api/me", &device_token).await.unwrap().status(), 401, "吊销后立刻失效");
+
+    tokio::task::block_in_place(codex_plus_core::remote_control::stop);
+    assert_eq!(codex_plus_core::remote_control::running_lan_port(), None);
 }
 
 #[test]
@@ -262,7 +474,14 @@ fn state_round_trips_and_defaults_to_disabled() {
     assert!(!missing.enabled, "默认关闭");
     assert!(missing.token.is_empty());
 
-    let state = RemoteControlState { enabled: true, port: 57361, token: "abc".into() };
+    // P1 写的旧文件没有局域网与设备字段，读出来按默认（局域网关）。
+    std::fs::write(&path, br#"{"enabled":true,"port":57360,"token":"t"}"#).unwrap();
+    let legacy = load_state_from(&path);
+    assert!(legacy.enabled && !legacy.lan_enabled);
+    assert_eq!(legacy.lan_port, 57361);
+    assert!(legacy.devices.is_empty());
+
+    let state = RemoteControlState { enabled: true, port: 57361, token: "abc".into(), ..Default::default() };
     save_state_to(&path, &state).unwrap();
     assert_eq!(load_state_from(&path), state);
     assert_eq!(page_url(&state), "http://127.0.0.1:57361/#token=abc", "令牌放在 URL 片段里，不随请求发出");

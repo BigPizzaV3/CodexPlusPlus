@@ -6,14 +6,20 @@
 //! - 没在桌面打开的会话经 CDP 让桌面打开（`navigate-to-route`），桌面成为 owner 后再跟随。
 //!
 //! 本模块负责开关、端口、令牌的持久化与服务的启停。服务跑在独立线程的 tokio 运行时里，
-//! 由管理器进程托管：管理器开着、开关打开时在线。P1 只监听 127.0.0.1。
+//! 由管理器进程托管：管理器开着、开关打开时在线。
+//!
+//! 两个入口共用一个服务：
+//! - 本机回环 `127.0.0.1:port`（HTTP），认主令牌与设备令牌；
+//! - 局域网 / Tailscale `0.0.0.0:lan_port`（自签 HTTPS，默认关），只认配对过的设备令牌。
 
+pub mod devices;
 pub mod follower;
 pub mod ipc;
 pub mod patch;
 pub mod server;
 pub mod service;
 pub mod sidecar;
+pub mod tls;
 pub mod versions;
 
 use std::path::PathBuf;
@@ -25,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const DEFAULT_PORT: u16 = 57360;
+pub const DEFAULT_LAN_PORT: u16 = 57361;
 const STATE_FILE: &str = "remote-control.json";
 const THREAD_NAME: &str = "codex-plus-remote-control";
 
@@ -37,19 +44,51 @@ pub struct RemoteControlState {
     pub port: u16,
     #[serde(default)]
     pub token: String,
+    /// 允许局域网 / Tailscale 上配对过的设备访问。
+    #[serde(default)]
+    pub lan_enabled: bool,
+    #[serde(default = "default_lan_port")]
+    pub lan_port: u16,
+    #[serde(default)]
+    pub devices: Vec<devices::Device>,
 }
 
 fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
+fn default_lan_port() -> u16 {
+    DEFAULT_LAN_PORT
+}
+
 impl Default for RemoteControlState {
     fn default() -> Self {
-        Self { enabled: false, port: DEFAULT_PORT, token: String::new() }
+        Self {
+            enabled: false,
+            port: DEFAULT_PORT,
+            token: String::new(),
+            lan_enabled: false,
+            lan_port: DEFAULT_LAN_PORT,
+            devices: Vec::new(),
+        }
     }
 }
 
+fn state_path_override() -> &'static Mutex<Option<PathBuf>> {
+    static OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+    &OVERRIDE
+}
+
+/// 测试用：把状态文件（及同目录的证书）挪到临时目录；同时清掉内存里的设备表。
+pub fn set_state_path_for_tests(path: Option<PathBuf>) {
+    *state_path_override().lock().unwrap_or_else(|e| e.into_inner()) = path;
+    devices::reload();
+}
+
 pub fn state_path() -> PathBuf {
+    if let Some(path) = state_path_override().lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return path;
+    }
     crate::paths::default_app_state_dir().join(STATE_FILE)
 }
 
@@ -73,6 +112,17 @@ pub fn save_state_to(path: &std::path::Path, state: &RemoteControlState) -> anyh
     Ok(())
 }
 
+/// 读改写状态文件（串行化，设备表与开关可能同时在改）。
+pub fn update_state<R>(change: impl FnOnce(&mut RemoteControlState) -> R) -> anyhow::Result<(RemoteControlState, R)> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = state_path();
+    let mut state = load_state_from(&path);
+    let result = change(&mut state);
+    save_state_to(&path, &state)?;
+    Ok((state, result))
+}
+
 /// 64 位十六进制随机令牌。
 pub fn generate_token() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
@@ -82,9 +132,37 @@ pub fn page_url(state: &RemoteControlState) -> String {
     format!("http://127.0.0.1:{}/#token={}", state.port, state.token)
 }
 
+/// 一次启动用的监听参数。
+#[derive(Clone)]
+pub struct ListenOptions {
+    pub port: u16,
+    pub token: String,
+    pub lan: Option<LanOptions>,
+}
+
+#[derive(Clone)]
+pub struct LanOptions {
+    pub port: u16,
+    pub tls: Arc<rustls::ServerConfig>,
+    pub fingerprint: String,
+}
+
+impl ListenOptions {
+    fn same_as(&self, other: &ListenOptions) -> bool {
+        self.port == other.port
+            && self.token == other.token
+            && match (&self.lan, &other.lan) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.port == b.port && a.fingerprint == b.fingerprint,
+                _ => false,
+            }
+    }
+}
+
 struct Running {
-    port: u16,
-    token: String,
+    options: ListenOptions,
+    /// 局域网入口实际是否在听（端口被占时只有本机入口）。
+    lan_listening: bool,
     stop: tokio::sync::oneshot::Sender<()>,
     thread: std::thread::JoinHandle<()>,
 }
@@ -99,25 +177,44 @@ fn last_error_slot() -> &'static Mutex<Option<String>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+fn lan_error_slot() -> &'static Mutex<Option<String>> {
+    static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
 fn set_last_error(error: Option<String>) {
     *last_error_slot().lock().unwrap_or_else(|e| e.into_inner()) = error;
 }
 
-/// 按给定端口与令牌启动服务；已在同一端口与令牌上运行时什么也不做。
+fn set_lan_error(error: Option<String>) {
+    *lan_error_slot().lock().unwrap_or_else(|e| e.into_inner()) = error;
+}
+
+/// 只开本机入口（测试与 example 用）。
 pub fn start(port: u16, token: &str) -> anyhow::Result<()> {
+    start_with(ListenOptions { port, token: token.to_string(), lan: None })
+}
+
+/// 按给定参数启动服务；参数没变时什么也不做。
+pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
     let mut slot = running_slot().lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().is_some_and(|running| running.port == port && running.token == token) {
+    // 参数没变、且局域网入口（若要）确实在听时不用重启；上次端口被占就再试一次。
+    if slot
+        .as_ref()
+        .is_some_and(|running| running.options.same_as(&options) && (options.lan.is_none() || running.lan_listening))
+    {
         return Ok(());
     }
     if let Some(running) = slot.take() {
         stop_running(running);
     }
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<anyhow::Result<bool>>();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let token_for_thread = token.to_string();
+    let thread_options = options.clone();
     let thread = std::thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
+            let options = thread_options;
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -130,6 +227,7 @@ pub fn start(port: u16, token: &str) -> anyhow::Result<()> {
                 }
             };
             runtime.block_on(async move {
+                let port = options.port;
                 let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
                     Ok(listener) => listener,
                     Err(error) => {
@@ -137,11 +235,44 @@ pub fn start(port: u16, token: &str) -> anyhow::Result<()> {
                         return;
                     }
                 };
+                let lan_listener = match &options.lan {
+                    Some(lan) => match tokio::net::TcpListener::bind(("0.0.0.0", lan.port)).await {
+                        Ok(listener) => {
+                            set_lan_error(None);
+                            Some((listener, tokio_rustls::TlsAcceptor::from(lan.tls.clone()), lan.port))
+                        }
+                        Err(error) => {
+                            set_lan_error(Some(format!("监听局域网端口 {} 失败：{error}", lan.port)));
+                            None
+                        }
+                    },
+                    None => None,
+                };
                 let service = service::RemoteService::new(service::ServiceConfig::detect());
-                let context = Arc::new(server::ServerContext { service: service.clone(), token: token_for_thread, port });
-                let _ = ready_tx.send(Ok(()));
+                let local = Arc::new(server::ServerContext {
+                    service: service.clone(),
+                    token: options.token.clone(),
+                    port,
+                    scope: server::Scope::Loopback,
+                });
+                let _ = ready_tx.send(Ok(lan_listener.is_some()));
+                let lan_task = async {
+                    match lan_listener {
+                        Some((listener, acceptor, lan_port)) => {
+                            let context = Arc::new(server::ServerContext {
+                                service: service.clone(),
+                                token: String::new(),
+                                port: lan_port,
+                                scope: server::Scope::Lan,
+                            });
+                            server::serve_tls(listener, acceptor, context).await
+                        }
+                        None => std::future::pending().await,
+                    }
+                };
                 tokio::select! {
-                    _ = server::serve(listener, context) => {}
+                    _ = server::serve(listener, local) => {}
+                    _ = lan_task => {}
                     _ = stop_rx => {}
                 }
                 service.shutdown().await;
@@ -149,10 +280,14 @@ pub fn start(port: u16, token: &str) -> anyhow::Result<()> {
         })
         .context("无法创建远程控制线程")?;
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(())) => {
-            *slot = Some(Running { port, token: token.to_string(), stop: stop_tx, thread });
+        Ok(Ok(lan_listening)) => {
+            let lan_port = options.lan.as_ref().filter(|_| lan_listening).map(|lan| lan.port);
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "remote_control.started",
+                json!({ "port": options.port, "lanPort": lan_port }),
+            );
+            *slot = Some(Running { options, lan_listening, stop: stop_tx, thread });
             set_last_error(None);
-            let _ = crate::diagnostic_log::append_diagnostic_log("remote_control.started", json!({ "port": port }));
             Ok(())
         }
         Ok(Err(error)) => {
@@ -170,7 +305,7 @@ pub fn start(port: u16, token: &str) -> anyhow::Result<()> {
 fn stop_running(running: Running) {
     let _ = running.stop.send(());
     let _ = running.thread.join();
-    let _ = crate::diagnostic_log::append_diagnostic_log("remote_control.stopped", json!({ "port": running.port }));
+    let _ = crate::diagnostic_log::append_diagnostic_log("remote_control.stopped", json!({ "port": running.options.port }));
 }
 
 pub fn stop() {
@@ -181,20 +316,59 @@ pub fn stop() {
 }
 
 pub fn running_port() -> Option<u16> {
-    running_slot().lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|running| running.port)
+    running_slot().lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|running| running.options.port)
+}
+
+/// 局域网入口正在监听的端口。
+pub fn running_lan_port() -> Option<u16> {
+    running_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|running| running.lan_listening)
+        .and_then(|running| running.options.lan.as_ref().map(|lan| lan.port))
+}
+
+/// 按状态文件组装监听参数；局域网打开时准备好证书。
+fn options_from_state(state: &RemoteControlState) -> anyhow::Result<ListenOptions> {
+    let lan = if state.lan_enabled {
+        let certificate = tls::ensure_certificate_at(&tls::tls_path(), &tls::local_addresses())?;
+        Some(LanOptions { port: state.lan_port, tls: tls::server_config(&certificate)?, fingerprint: certificate.fingerprint() })
+    } else {
+        None
+    };
+    Ok(ListenOptions { port: state.port, token: state.token.clone(), lan })
+}
+
+/// 按状态文件启停服务。
+fn apply_state(state: &RemoteControlState) -> anyhow::Result<()> {
+    if !state.enabled {
+        stop();
+        return Ok(());
+    }
+    set_lan_error(None);
+    // 证书出问题只影响局域网入口，本机入口照常起。
+    let options = options_from_state(state).unwrap_or_else(|error| {
+        set_lan_error(Some(format!("准备局域网证书失败：{error:#}")));
+        ListenOptions { port: state.port, token: state.token.clone(), lan: None }
+    });
+    start_with(options)
 }
 
 /// 管理器启动时调用：开关打开就把服务拉起来。
 pub fn start_from_saved_state() {
-    let mut state = load_state_from(&state_path());
+    let state = match update_state(|state| {
+        if state.enabled && state.token.is_empty() {
+            state.token = generate_token();
+        }
+    }) {
+        Ok((state, ())) => state,
+        Err(_) => load_state_from(&state_path()),
+    };
     if !state.enabled {
         return;
     }
-    if state.token.is_empty() {
-        state.token = generate_token();
-        let _ = save_state_to(&state_path(), &state);
-    }
-    if let Err(error) = start(state.port, &state.token) {
+    if let Err(error) = apply_state(&state) {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "remote_control.start_failed",
             json!({ "port": state.port, "message": error.to_string() }),
@@ -204,42 +378,117 @@ pub fn start_from_saved_state() {
 
 /// 打开 / 关闭远程控制。打开时没有令牌就生成一个。
 pub fn set_enabled(enabled: bool) -> anyhow::Result<Value> {
-    let path = state_path();
-    let mut state = load_state_from(&path);
-    state.enabled = enabled;
-    if enabled && state.token.is_empty() {
-        state.token = generate_token();
-    }
-    save_state_to(&path, &state)?;
-    if enabled {
-        start(state.port, &state.token)?;
-    } else {
-        stop();
-    }
+    let (state, ()) = update_state(|state| {
+        state.enabled = enabled;
+        if enabled && state.token.is_empty() {
+            state.token = generate_token();
+        }
+    })?;
+    apply_state(&state)?;
     Ok(status())
 }
 
-/// 换一个新令牌：之前打开的页面立刻失效。
-pub fn reset_token() -> anyhow::Result<Value> {
-    let path = state_path();
-    let mut state = load_state_from(&path);
-    state.token = generate_token();
-    save_state_to(&path, &state)?;
-    if state.enabled {
-        start(state.port, &state.token)?;
+/// 打开 / 关闭局域网访问（只影响配对设备，本机入口不变）。
+pub fn set_lan_enabled(enabled: bool) -> anyhow::Result<Value> {
+    let (state, ()) = update_state(|state| state.lan_enabled = enabled)?;
+    if !enabled {
+        devices::cancel_pairing();
     }
+    apply_state(&state)?;
     Ok(status())
+}
+
+/// 换一个新令牌：之前打开的页面立刻失效（配对设备不受影响）。
+pub fn reset_token() -> anyhow::Result<Value> {
+    let (state, ()) = update_state(|state| state.token = generate_token())?;
+    apply_state(&state)?;
+    Ok(status())
+}
+
+/// 局域网可用地址与对应的网址。
+fn lan_addresses(port: u16) -> Vec<Value> {
+    tls::local_addresses()
+        .into_iter()
+        .map(|ip| {
+            json!({
+                "address": ip.to_string(),
+                "kind": if tls::is_tailscale(&ip) { "tailscale" } else { "lan" },
+                "url": format!("https://{ip}:{port}/"),
+            })
+        })
+        .collect()
+}
+
+/// 开始配对：生成配对码，返回带二维码的状态。
+pub fn start_pairing(role: &str) -> anyhow::Result<Value> {
+    let role = devices::Role::parse(role)?;
+    if running_lan_port().is_none() {
+        anyhow::bail!("先打开局域网访问");
+    }
+    devices::start_pairing(role);
+    Ok(status())
+}
+
+pub fn cancel_pairing() -> Value {
+    devices::cancel_pairing();
+    status()
+}
+
+pub fn set_device_role(id: &str, role: &str) -> anyhow::Result<Value> {
+    devices::set_role(id, devices::Role::parse(role)?)?;
+    Ok(status())
+}
+
+pub fn revoke_device(id: &str) -> anyhow::Result<Value> {
+    devices::revoke(id)?;
+    let _ = crate::diagnostic_log::append_diagnostic_log("remote_control.device_revoked", json!({ "id": id }));
+    Ok(status())
+}
+
+fn render_qr_svg(content: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(content.as_bytes()).ok()?;
+    Some(
+        code.render::<qrcode::render::svg::Color>()
+            .min_dimensions(220, 220)
+            .dark_color(qrcode::render::svg::Color("#111827"))
+            .light_color(qrcode::render::svg::Color("#ffffff"))
+            .build(),
+    )
 }
 
 pub fn status() -> Value {
     let state = load_state_from(&state_path());
     let running = running_port();
+    let lan_port = running_lan_port();
     let last_error = last_error_slot().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let lan_error = lan_error_slot().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let addresses = lan_port.map(lan_addresses).unwrap_or_default();
+    let fingerprint = lan_port.and_then(|_| tls::load_from(&tls::tls_path())).map(|cert| cert.fingerprint());
+    let pairing = lan_port.and(devices::current_pairing()).map(|pairing| {
+        let links: Vec<Value> = addresses
+            .iter()
+            .filter_map(|address| {
+                let url = format!("{}#pair={}", address["url"].as_str()?, pairing.code);
+                Some(json!({ "address": address["address"], "kind": address["kind"], "url": url, "qrSvg": render_qr_svg(&url) }))
+            })
+            .collect();
+        json!({ "code": pairing.code, "role": pairing.role.as_str(), "expiresAt": pairing.expires_at, "links": links })
+    });
     json!({
         "enabled": state.enabled,
         "running": running.is_some(),
         "port": state.port,
         "url": (state.enabled && running.is_some() && !state.token.is_empty()).then(|| page_url(&state)),
         "error": last_error,
+        "lan": {
+            "enabled": state.lan_enabled,
+            "running": lan_port.is_some(),
+            "port": state.lan_port,
+            "addresses": addresses,
+            "fingerprint": fingerprint,
+            "error": if state.lan_enabled && state.enabled { lan_error } else { None },
+        },
+        "pairing": pairing,
+        "devices": devices::list().iter().map(devices::Device::public).collect::<Vec<_>>(),
     })
 }

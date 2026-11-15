@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#111316">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Codex++">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Codex++ 远程控制</title>
 <style>
   :root {
@@ -73,11 +78,29 @@
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
   .toast.show { opacity: .92; }
   .back { display: none; }
+  .whoami { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  .whoami span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .whoami button { font-size: 12px; padding: 2px 8px; }
+  .readonly { color: var(--muted); font-size: 12px; }
+  .gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 10; }
+  .gate .card { width: min(380px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: grid; gap: 12px; }
+  .gate h2 { margin: 0; font-size: 17px; }
+  .gate p { margin: 0; color: var(--muted); font-size: 13px; }
+  .gate input { width: 100%; }
+  .gate .code { font: 600 18px/1.4 ui-monospace, Menlo, monospace; letter-spacing: 3px; text-transform: uppercase; }
   @media (max-width: 720px) {
     .app { grid-template-columns: 1fr; }
     .app.viewing aside { display: none; }
     .app:not(.viewing) main { display: none; }
     .back { display: inline-block; }
+    /* iOS 输入框字号小于 16px 会自动放大页面 */
+    input, textarea, select, .controls select { font-size: 16px; }
+    button { padding: 7px 13px; }
+    .thread { padding: 12px 14px; }
+    footer { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+    aside { padding-bottom: env(safe-area-inset-bottom); }
+    aside header, main header { padding-top: calc(10px + env(safe-area-inset-top)); }
+    .msg { max-width: 100%; }
   }
 </style>
 </head>
@@ -88,8 +111,13 @@
       <h1>Codex++ 远程控制</h1>
       <button id="refresh" title="刷新会话列表">刷新</button>
     </header>
+    <div class="whoami" id="whoami" hidden>
+      <span id="whoamiText"></span>
+      <button id="notify" hidden title="会话需要审批或回答、或者跑完时提醒">开启提醒</button>
+      <button id="forget" hidden title="清除本机保存的设备令牌">退出</button>
+    </div>
     <div class="threads" id="threads"><div class="empty">加载中…</div></div>
-    <div class="new-thread">
+    <div class="new-thread" id="newThread">
       <input id="newCwd" placeholder="工作目录（绝对路径）">
       <input id="newName" placeholder="会话名称（可选）">
       <button id="create">新建会话</button>
@@ -112,24 +140,92 @@
         <select id="permission" title="权限"></select>
         <button id="plan" class="plan" title="计划模式：先和你讨论出完整方案，再动手">计划</button>
       </div>
-      <div class="compose">
+      <div class="compose" id="compose">
         <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" disabled></textarea>
         <button id="send" class="primary" disabled>发送</button>
       </div>
+      <div class="readonly" id="readonly" hidden>这台设备只能查看。需要发消息可在 Codex++ 的设备列表里调高权限。</div>
     </footer>
   </main>
+</div>
+<div class="gate" id="gate" hidden>
+  <div class="card">
+    <h2 id="gateTitle">配对这台设备</h2>
+    <p id="gateText"></p>
+    <input id="pairCode" class="code" placeholder="配对码" autocomplete="one-time-code" autocapitalize="characters" hidden>
+    <input id="pairName" placeholder="设备名称" maxlength="40" hidden>
+    <button id="pairButton" class="primary" hidden>配对</button>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 (() => {
+  // 令牌来源：本机页面的主令牌走 #token=（只存会话级）；配对设备的令牌存 localStorage，长期有效直到被移除。
+  const MASTER_KEY = "codexPlusRemoteToken";
+  const DEVICE_KEY = "codexPlusRemoteDeviceToken";
   const params = new URLSearchParams(location.hash.slice(1));
-  const token = params.get("token") || sessionStorage.getItem("codexPlusRemoteToken") || "";
-  if (params.get("token")) {
-    sessionStorage.setItem("codexPlusRemoteToken", params.get("token"));
-    history.replaceState(null, "", location.pathname);
-  }
+  const pairCode = params.get("pair") || "";
+  if (params.get("token")) sessionStorage.setItem(MASTER_KEY, params.get("token"));
+  if (params.get("token") || pairCode) history.replaceState(null, "", location.pathname);
+  const token = sessionStorage.getItem(MASTER_KEY) || localStorage.getItem(DEVICE_KEY) || "";
   const $ = (id) => document.getElementById(id);
-  const state = { threads: [], current: null, view: null, socket: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false };
+  const state = { threads: [], current: null, view: null, socket: null, poller: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false, me: null, seenRequests: new Set(), wasRunning: false };
+  const rank = { view: 0, message: 1, full: 2 };
+  const can = (role) => rank[state.me?.role ?? "view"] >= rank[role];
+
+  /** 未配对 / 被移除：盖住整个页面，引导扫码或输入配对码。 */
+  function showGate(title, text, { pairing = false, code = "" } = {}) {
+    closeSocket();
+    $("gate").hidden = false;
+    $("gateTitle").textContent = title;
+    $("gateText").textContent = text;
+    for (const id of ["pairCode", "pairName", "pairButton"]) $(id).hidden = !pairing;
+    if (pairing) {
+      $("pairCode").value = code;
+      $("pairName").value = guessDeviceName();
+      (code ? $("pairName") : $("pairCode")).focus();
+    }
+  }
+
+  function guessDeviceName() {
+    const ua = navigator.userAgent;
+    if (/iPhone/.test(ua)) return "iPhone";
+    if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
+    if (/Android/.test(ua)) return "Android 手机";
+    if (/Macintosh/.test(ua)) return "Mac";
+    if (/Windows/.test(ua)) return "Windows 电脑";
+    return "浏览器";
+  }
+
+  async function pair() {
+    const code = $("pairCode").value.trim();
+    if (!code) return toast("先填配对码");
+    $("pairButton").disabled = true;
+    try {
+      const response = await fetch("/api/pair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, name: $("pairName").value.trim() }),
+      });
+      const payload = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+      if (!payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      localStorage.setItem(DEVICE_KEY, payload.data.token);
+      location.reload();
+    } catch (error) {
+      toast(error.message);
+      $("pairButton").disabled = false;
+    }
+  }
+
+  function unauthorized(message) {
+    if (sessionStorage.getItem(MASTER_KEY)) {
+      sessionStorage.removeItem(MASTER_KEY);
+      showGate("令牌已失效", "请从 Codex++「远程控制」页面重新打开本页。");
+    } else {
+      localStorage.removeItem(DEVICE_KEY);
+      showGate("需要重新配对", `${message || "这台设备已被移除"}。在 Codex++「远程控制」里点「添加设备」，扫码或输入配对码。`, { pairing: true });
+    }
+  }
 
   function toast(text) {
     const node = $("toast");
@@ -146,8 +242,46 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     const payload = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+    if (response.status === 401) unauthorized(payload.error);
     if (!payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     return payload.data;
+  }
+
+  /** 页面不在前台时提醒：标题、振动、系统通知（用户允许过才发）。 */
+  function alertUser(text) {
+    if (!document.hidden) return;
+    document.title = `● ${text} · Codex++`;
+    navigator.vibrate?.(200);
+    if ("Notification" in window && Notification.permission === "granted") {
+      try { new Notification("Codex++ 远程控制", { body: text, tag: "codex-plus-remote" }); } catch {}
+    }
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) document.title = "Codex++ 远程控制"; });
+
+  function watchForAttention(view) {
+    for (const request of view.requests || []) {
+      const key = `${view.threadId || state.current}:${JSON.stringify(request.id)}`;
+      if (state.seenRequests.has(key)) continue;
+      state.seenRequests.add(key);
+      alertUser(request.method === "item/tool/requestUserInput" ? "模型在提问" : "有操作等你审批");
+    }
+    const running = view.runtime === "active";
+    if (state.wasRunning && !running && view.live) alertUser(`「${view.title || "会话"}」这一轮跑完了`);
+    state.wasRunning = running;
+  }
+
+  function applyRole() {
+    const me = state.me;
+    $("whoami").hidden = !me || me.kind === "master";
+    if (me?.kind === "device") {
+      const roleText = { view: "只能查看", message: "可发消息", full: "完全控制" }[me.role] || me.role;
+      $("whoamiText").textContent = `${me.name} · ${roleText}`;
+      $("forget").hidden = false;
+    }
+    $("notify").hidden = !("Notification" in window) || Notification.permission !== "default";
+    $("newThread").hidden = !can("message");
+    $("compose").hidden = !can("message");
+    $("readonly").hidden = can("message");
   }
 
   function el(tag, className, text) {
@@ -192,6 +326,7 @@
   async function selectThread(id) {
     state.current = id;
     state.view = null;
+    state.wasRunning = false;
     closeSocket();
     renderThreads();
     $("app").classList.add("viewing");
@@ -215,16 +350,37 @@
       state.socket.close();
       state.socket = null;
     }
+    clearInterval(state.poller);
+    state.poller = null;
+  }
+
+  // 有的手机浏览器对自签证书的 wss 不放行（页面本身已信任也一样），连不上就改成轮询。
+  let socketFailures = 0;
+
+  function startPolling(id) {
+    clearInterval(state.poller);
+    state.poller = setInterval(async () => {
+      if (state.current !== id || state.busy) return;
+      try {
+        const view = await api("GET", `/threads/${id}`);
+        if (state.current === id) applyView(view);
+      } catch {}
+    }, 1500);
   }
 
   function connectSocket(id) {
     closeSocket();
-    const socket = new WebSocket(`ws://${location.host}/api/threads/${id}/stream?token=${encodeURIComponent(token)}`);
+    if (socketFailures >= 2) return startPolling(id);
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${scheme}://${location.host}/api/threads/${id}/stream?token=${encodeURIComponent(token)}`);
+    let opened = false;
     state.socket = socket;
+    socket.onopen = () => { opened = true; socketFailures = 0; };
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (state.current !== id) return;
       if (message.type === "view") applyView(message.view);
+      else if (message.type === "revoked") unauthorized(message.reason);
       else if (message.type === "closed" || message.type === "error") {
         toast(message.reason || message.error || "实时连接已断开");
         if (state.view) applyView({ ...state.view, live: false, requests: [] });
@@ -233,7 +389,8 @@
     socket.onclose = () => {
       if (state.socket !== socket) return;
       state.socket = null;
-      if (state.current === id && state.view?.live) setTimeout(() => state.current === id && connectSocket(id), 1500);
+      if (!opened) socketFailures += 1;
+      if (state.current === id && state.view?.live) setTimeout(() => state.current === id && !state.socket && !state.poller && connectSocket(id), 1500);
     };
   }
 
@@ -248,8 +405,9 @@
     const badge = $("state");
     badge.className = `badge${running ? " running" : view.live ? " live" : ""}`;
     badge.textContent = running ? "运行中" : view.live ? "已在桌面打开" : "未打开";
-    $("open").hidden = !!view.live;
-    $("interrupt").hidden = !running;
+    $("open").hidden = !!view.live || !can("message");
+    $("interrupt").hidden = !running || !can("message");
+    watchForAttention(view);
     $("input").disabled = false;
     $("send").disabled = false;
     $("send").textContent = running ? "插话" : "发送";
@@ -311,7 +469,8 @@
     const plan = current.collaborationMode === "plan";
     $("plan").classList.toggle("on", plan);
     $("plan").textContent = plan ? "计划模式：开" : "计划";
-    for (const id of ["model", "effort", "permission", "plan"]) $(id).disabled = state.applying;
+    for (const id of ["model", "effort", "permission", "plan"]) $(id).disabled = state.applying || !can("full");
+    box.title = can("full") ? "" : "改模型与权限需要「完全控制」权限";
   }
 
   async function changeSettings(change, confirmText) {
@@ -323,7 +482,7 @@
       if (!state.view?.live) toast("正在桌面打开会话…");
       const view = await api("POST", `/threads/${state.current}/settings`, change);
       applyView(view);
-      if (!state.socket) connectSocket(state.current);
+      if (!state.socket && !state.poller) connectSocket(state.current);
     } catch (error) {
       toast(error.message);
     } finally {
@@ -432,6 +591,9 @@
       card.append(el("strong", "", "需要在桌面处理的请求"));
       card.append(el("code", "", request.method));
     }
+    if (!can("full")) {
+      actions.replaceChildren(el("span", "readonly", "审批与回答需要「完全控制」权限，可在 Codex++ 的设备列表里调整。"));
+    }
     card.append(actions);
     return card;
   }
@@ -446,7 +608,7 @@
       if (!state.view?.live) toast("正在桌面打开会话…");
       await api("POST", `/threads/${state.current}/messages`, { text });
       $("input").value = "";
-      if (!state.socket) {
+      if (!state.socket && !state.poller) {
         const view = await api("GET", `/threads/${state.current}`);
         applyView(view);
         if (view.live) connectSocket(state.current);
@@ -504,10 +666,38 @@
     }
   };
 
-  if (!token) {
-    $("threads").replaceChildren(el("div", "empty", "缺少令牌：请从 Codex++「远程控制」页面打开本页"));
-  } else {
+  $("pairButton").onclick = pair;
+  $("pairName").addEventListener("keydown", (event) => { if (event.key === "Enter") pair(); });
+  $("pairCode").addEventListener("keydown", (event) => { if (event.key === "Enter") $("pairName").focus(); });
+  $("forget").onclick = () => {
+    if (!confirm("退出后这台设备要重新扫码配对。确定吗？")) return;
+    localStorage.removeItem(DEVICE_KEY);
+    location.reload();
+  };
+  $("notify").onclick = async () => {
+    const result = await Notification.requestPermission().catch(() => "denied");
+    toast(result === "granted" ? "已开启：页面在后台时，需要审批或跑完会提醒" : "浏览器没有允许通知，仍会用标题和振动提醒");
+    applyRole();
+  };
+
+  async function boot() {
+    try {
+      state.me = await api("GET", "/me");
+    } catch (error) {
+      if ($("gate").hidden) $("threads").replaceChildren(el("div", "empty", `连接失败：${error.message}`));
+      return;
+    }
+    applyRole();
     loadThreads();
+  }
+
+  if (pairCode && !token) {
+    showGate("配对这台设备", "确认设备名称后点「配对」。配对后这台设备可以长期访问，可随时在 Codex++ 里移除。", { pairing: true, code: pairCode });
+  } else if (!token) {
+    if (location.protocol === "https:") showGate("配对这台设备", "在 Codex++「远程控制」里点「添加设备」，扫码或输入配对码。", { pairing: true });
+    else showGate("缺少令牌", "请从 Codex++「远程控制」页面打开本页。");
+  } else {
+    boot();
   }
 })();
 </script>

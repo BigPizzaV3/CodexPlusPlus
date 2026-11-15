@@ -4752,6 +4752,79 @@ details.relay-fold[open] > .relay-fold-body {
   height: auto;
 }
 
+/* 远程控制：局域网地址、配对二维码 */
+.remote-control-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remote-control-addresses > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remote-control-fingerprint {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.remote-control-pairing {
+  display: grid;
+  gap: 10px;
+  padding: 10px 14px 14px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.remote-control-pairing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.remote-control-code {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  letter-spacing: 2px;
+}
+
+.remote-control-qrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.remote-control-qrs figure {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+.remote-control-qr {
+  width: 180px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+}
+
+.remote-control-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.remote-control-hint {
+  margin: 0;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
 @media (max-width: 760px) {
   .weixin-connect-head {
     display: grid;

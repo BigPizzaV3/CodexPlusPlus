@@ -22,11 +22,12 @@ test("前端调用的命令名与 Tauri 注册一致，动作与后端分发一�
   const page = await read("./RemoteControlPage.tsx");
   const commands = await read("../src-tauri/src/remote_control_commands.rs");
   const lib = await read("../src-tauri/src/lib.rs");
-  assert.match(page, /invoke<RemoteControlStatus>\("remote_control_request", \{ action \}\)/);
+  assert.match(page, /invoke<RemoteControlStatus>\("remote_control_request", \{ action, args \}\)/);
+  assert.match(commands, /pub async fn remote_control_request\(action: String, args: Option<Value>\)/, "带参数的动作从 args 取");
   assert.match(lib, /remote_control_commands::remote_control_request,/);
   assert.match(lib, /remote_control_commands::start_from_saved_state_in_background\(\);/, "管理器启动时按保存的开关拉起");
   assert.match(lib, /codex_plus_core::remote_control::stop\(\);/, "管理器退出时停掉服务");
-  for (const action of ["status", "enable", "disable", "resetToken"]) {
+  for (const action of ["status", "enable", "disable", "resetToken", "enableLan", "disableLan", "startPairing", "cancelPairing", "setDeviceRole", "revokeDevice"]) {
     assert.ok(page.includes(`"${action}"`), `前端缺少动作 ${action}`);
     assert.ok(commands.includes(`"${action}" =>`), `后端缺少动作 ${action}`);
   }
@@ -44,4 +45,16 @@ test("远程控制页的文案都有英文", async () => {
 test("访问链接显示时把令牌打码", async () => {
   const page = await read("./RemoteControlPage.tsx");
   assert.match(page, /url\.replace\(\/#token=\.\*\/, "#token=…"\)/);
+});
+
+test("配对与设备管理：带参数的动作传对参数名，移除设备要确认", async () => {
+  const page = await read("./RemoteControlPage.tsx");
+  const commands = await read("../src-tauri/src/remote_control_commands.rs");
+  assert.match(page, /run\("startPairing", \{ role: pairRole \}\)/);
+  assert.match(page, /run\("setDeviceRole", \{ id: device\.id, role \}\)/);
+  assert.match(page, /run\("revokeDevice", \{ id: device\.id \}\)/);
+  assert.match(commands, /"startPairing" => rc::start_pairing\(arg\(&args, "role"\)\?\)/);
+  assert.match(commands, /"setDeviceRole" => rc::set_device_role\(arg\(&args, "id"\)\?, arg\(&args, "role"\)\?\)/);
+  assert.match(commands, /"revokeDevice" => rc::revoke_device\(arg\(&args, "id"\)\?\)/);
+  assert.match(page, /await appConfirm\(t\("移除后这台设备立刻无法访问/, "移除设备前确认");
 });

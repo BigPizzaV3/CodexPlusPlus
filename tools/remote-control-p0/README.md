@@ -11,7 +11,8 @@
 | `ipc-versions.mjs` | 从已安装 Codex 的 `app.asar` 里读出 IPC 方法版本表 |
 | `mock-responses.mjs` | 假的 Responses 上游，用标记触发审批 / 提问 / 慢速输出 |
 | `run-p0.mjs` | 端到端回归，12 项（直接走 IPC，验证协议本身） |
-| `run-p1.mjs` | 端到端回归，18 项（走 Rust 远程桥的 HTTP / WebSocket 接口，验证 P1 实现与安全检查） |
+| `run-p1.mjs` | 端到端回归，25 项（走 Rust 远程桥的 HTTP / WebSocket 接口，验证 P1 实现、会话设置与安全检查） |
+| `run-p2.mjs` | 端到端回归，28 项（像手机一样走局域网 HTTPS：证书指纹、配对、权限分级、wss、吊销） |
 
 P1 的正式实现在 `crates/codex-plus-core/src/remote_control/`，网页在
 `crates/codex-plus-core/assets/remote-control/index.html`，管理器入口是侧栏「工具 → 远程控制」。
@@ -94,6 +95,22 @@ P1_HOME=$P0/home P1_APP="$APP" P1_CDP_PORT=9333 P1_PORT=57399 P1_TOKEN=$TOKEN \
 # 5. 回归
 P1_PORT=57399 P1_TOKEN=$TOKEN P1_WORK=$P0/work node run-p1.mjs
 # 浏览器手动验证：http://127.0.0.1:57399/#token=$TOKEN
+```
+
+### P2：局域网 HTTPS 与配对设备
+
+```bash
+# 远程桥加开局域网入口；状态文件（设备表、证书）放隔离目录。
+# example 代替管理器按 P1_PAIR_ROLES 依次发配对码，写到 $P0/rc-state/pairing-code.txt；
+# 往 $P0/rc-state/revoke.txt 写设备 ID 即吊销。
+mkdir -p $P0/rc-state
+P1_HOME=$P0/home P1_APP="$APP" P1_CDP_PORT=9333 P1_PORT=57399 P1_TOKEN=$TOKEN \
+P1_LAN_PORT=57398 P1_STATE=$P0/rc-state/remote-control.json P1_PAIR_ROLES=view,full \
+  cargo run -p codex-plus-core --example remote_control_serve &
+# 证书自签：关掉 Node 默认校验，脚本自己按状态文件核对指纹
+NODE_TLS_REJECT_UNAUTHORIZED=0 P1_PORT=57399 P1_TOKEN=$TOKEN P2_LAN_PORT=57398 \
+  P2_DIR=$P0/rc-state P1_WORK=$P0/work node run-p2.mjs
+# 手机手动验证：同一 Wi-Fi 下打开 https://<电脑局域网 IP>:57398/#pair=<配对码>
 ```
 另外用 `node ipc-versions.mjs <app.asar>` 看方法版本有没有变。
 
