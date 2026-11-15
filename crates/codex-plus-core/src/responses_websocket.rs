@@ -726,6 +726,30 @@ pub(crate) async fn handle(
         .await?;
         return Ok(());
     };
+    // 升级只在路由能全程服务原生 Responses 时才允许：客户端升级后才收到路由拒绝不会
+    // 自动回落 HTTP，整轮会失败。混合协议池按既有约定继续走 HTTP/SSE。
+    let settings = crate::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
+    if !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+        crate::launcher::write_http_response(
+            stream,
+            "426 Upgrade Required",
+            "application/json; charset=utf-8",
+            br#"{"status":"upgrade_required","message":"WebSocket transport requires native Responses upstreams; retry with HTTP."}"#,
+        )
+        .await?;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.responses_websocket_upgrade_required",
+            json!({
+                "method": "GET",
+                "path": path,
+                "status": "426 Upgrade Required",
+                "reason": "mixed_protocol_relays",
+            }),
+        );
+        return Ok(());
+    }
     use tokio::io::AsyncWriteExt;
     let mut wire = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
     for (name, value) in response.headers() {

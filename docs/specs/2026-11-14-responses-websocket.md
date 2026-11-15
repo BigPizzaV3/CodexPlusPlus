@@ -32,6 +32,7 @@ response.create
 - `/responses/compact` 保持 HTTP POST。普通生成请求中的原生上游工具事件正常透传。
 - 不自动修改客户端 `supports_websockets`。自定义 provider 在应用配置后显式设置此项为 true 才选择 WS；既有 false 选择保留。
 - 混合协议供应商池不要整体声明 WS 可用。配置 HTTP-only 路由时继续选择 HTTP。
+- 路由池里只要有一位不是原生 Responses，握手阶段直接回 426，客户端继续走 HTTP/SSE。
 - 本地代理可同时接受 HTTP/SSE 与 WS，不增加独立的子代理 WS API。
 
 ## 会话上限与失败恢复
