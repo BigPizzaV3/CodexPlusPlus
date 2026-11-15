@@ -13,7 +13,8 @@ import { readFile } from "node:fs/promises";
  *   4. getFeatureGate 是 memoized 的共享对象，覆盖时不能就地改；
  *   5. 设置项、内置拓展与页面清单三处登记一致；
  *   6. 逐项覆盖（codexAppStatsigGateOverrides）叠加在默认闸门上，从后端设置实时读；
- *   7. 记录模式在总开关关着时也只记不改，原值读取绕过覆盖。
+ *   7. 记录模式在总开关关着时也只记不改，原值读取绕过覆盖；
+ *   8. 接管后与覆盖变化时补派发 values_updated（让 Codex 把执行配置重新发布给主进程），没变不派发。
  */
 
 const SHARD_URL = new URL("../../../assets/inject/renderer-inject/34-statsig-overrides.js", import.meta.url);
@@ -77,8 +78,18 @@ function fakeClient(
   }
 
   const gateCalls: string[] = [];
+  const emitted: Array<{ name: string; status: string; values: unknown }> = [];
   const client = {
     gateCalls,
+    emitted,
+    loadingStatus: "Ready",
+    _memoCache: { stale: true } as Record<string, unknown>,
+    $emt(event: { name: string; status: string; values: unknown }) {
+      emitted.push(event);
+    },
+    getContext() {
+      return { values: { source: "network" } };
+    },
     getFeatureGate(name: string) {
       gateCalls.push(name);
       return gateObjects.get(name) ?? { name, value: false, details: { reason: "Unrecognized" }, ruleID: "", __evaluation: { value: false } };
@@ -155,7 +166,7 @@ async function runtime(
     __CODEX_PLUS_STATSIG_OVERRIDES__: overridesConfig(settings.configEnabled ?? settings.enabled),
     __codexPlusStatsigRecording: settings.recording === true,
   };
-  const backend = { codexAppStatsigGateOverrides: settings.gateOverrides };
+  const backend: { codexAppStatsigGateOverrides?: Record<string, unknown> } = { codexAppStatsigGateOverrides: settings.gateOverrides };
   const api = new Function(
     "window",
     "codexPlusBackendSettingsLoaded",
@@ -177,7 +188,7 @@ async function runtime(
     user(): Record<string, string>;
     native(name: string): boolean | null;
   };
-  return { ...api, window };
+  return { ...api, window, settings, backend };
 }
 
 it("开关打开时强制列出的闸门，checkGate 与 getFeatureGate 都能读到", async () => {
@@ -346,4 +357,49 @@ it("读原值绕过覆盖", async () => {
   app.tick();
   assert.equal(client.checkGate("1174206456"), true, "界面读到的是覆盖值");
   assert.equal(app.native("1174206456"), false, "原值仍是远端的 false");
+});
+
+it("接管后补派发一次 values_updated，覆盖没变时不再派发", async () => {
+  const client = fakeClient({ "1174206456": false });
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  assert.equal(client.emitted.length, 1, "接管后派发一次");
+  assert.deepEqual(client.emitted[0], { name: "values_updated", status: "Ready", values: { source: "network" } });
+  assert.deepEqual(client._memoCache, {}, "派发前清 memo");
+  app.tick();
+  app.tick();
+  assert.equal(client.emitted.length, 1, "覆盖没变不重复派发");
+});
+
+it("逐项覆盖改了、总开关关了都会再派发；只开记录不派发", async () => {
+  const client = fakeClient({ "983842163": false });
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  assert.equal(client.emitted.length, 1);
+  app.backend.codexAppStatsigGateOverrides = { "983842163": "on" };
+  app.tick();
+  assert.equal(client.emitted.length, 2, "Feature Lab 改了逐项覆盖");
+  assert.equal(client.checkGate("983842163"), true);
+  app.settings.enabled = false;
+  app.tick();
+  assert.equal(client.emitted.length, 3, "关掉总开关也通知，回到远端值");
+  assert.equal(client.checkGate("983842163"), false);
+  app.tick();
+  assert.equal(client.emitted.length, 3);
+
+  const recorder = fakeClient({ "555": true });
+  const recorded = await runtime(recorder, { loaded: true, enabled: false, recording: true });
+  recorded.tick();
+  assert.equal(recorder.emitted.length, 0, "只记录、值没变，不打扰 Codex");
+});
+
+it("客户端还没就绪时先不派发，就绪后补上", async () => {
+  const client = fakeClient({ "1174206456": false });
+  client.loadingStatus = "Loading";
+  const app = await runtime(client, { loaded: true, enabled: true });
+  app.tick();
+  assert.equal(client.emitted.length, 0);
+  client.loadingStatus = "Ready";
+  app.tick();
+  assert.equal(client.emitted.length, 1);
 });

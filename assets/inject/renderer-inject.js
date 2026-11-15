@@ -6317,8 +6317,13 @@
    *   gateCatalog:    [{ id, title, description, defaultOverride, risk, note? }]（Feature Lab 用）
    *
    * 逐项覆盖：后端设置 codexAppStatsigGateOverrides = { "<gate id>": "on" | "off" | "native" }，
-   * 叠加在 gates 上（native = 不覆盖）。它从后端设置实时读，Feature Lab 改了不用重新注入；
-   * 但 Statsig 的 getFeatureGate 是 memoized，界面在挂载时读，所以仍要重载页面才看得到变化。
+   * 叠加在 gates 上（native = 不覆盖）。它从后端设置实时读，Feature Lab 改了不用重新注入。
+   *
+   * 通知：Codex 渲染进程只在 Statsig 派发 values_updated 时，把执行配置（权限刷新、时间线、
+   * 排队追问、git 上下文、统一项目等）重新发布给主进程；主进程和读主进程副本的界面都以那份为准。
+   * 接管往往晚于首次发布，所以接管后、以及生效覆盖变化时（含关掉总开关），要补派发一次
+   * values_updated，否则这些开关只在渲染进程里变、主进程仍用远端值。Codex 只在值真的变了
+   * 才重新发布，没变时派发是空操作。个别只在挂载时读一次的界面仍要重载页面。
    *
    * 记录：Feature Lab 打开「记录」后，即使总开关关着也会包一层（只透传），把页面查询过的
    * 开关 ID 与原值记下来，方便找新开关。
@@ -6580,12 +6585,53 @@
     return changed;
   }
 
+  /** 当前生效的覆盖签名；总开关关着时为空串（= 远端原值）。 */
+  function codexPlusStatsigOverridesSignature() {
+    if (!codexPlusStatsigOverridesEnabled()) return "";
+    const sorted = (object) => Object.keys(object).sort().map((key) => [key, object[key]]);
+    return JSON.stringify([
+      sorted(codexPlusStatsigGateOverrides()),
+      sorted(codexPlusStatsigDynamicConfigOverrides()),
+      sorted(codexPlusStatsigExperimentOverrides()),
+      sorted(codexPlusStatsigLayerOverrides()),
+    ]);
+  }
+
+  /**
+   * 覆盖变了就补派发 values_updated，让 Codex 重读开关并把执行配置重新发布给主进程。
+   * 客户端还没 Ready 时不派发：它就绪时 SDK 自己会派发，那时包装已经在了。
+   */
+  function codexPlusStatsigNotifyIfChanged(client) {
+    if (!client.__codexPlusStatsigFeatureGatePatched) return false;
+    const signature = codexPlusStatsigOverridesSignature();
+    const notified = typeof client.__codexPlusStatsigNotifiedSignature === "string"
+      ? client.__codexPlusStatsigNotifiedSignature
+      : "";
+    if (signature === notified) return false;
+    if (client.loadingStatus !== "Ready" || typeof client.$emt !== "function") return false;
+    // 与 SDK 自己的 _setStatus 一致：先清 memo，再派发。
+    try {
+      if (client._memoCache && typeof client._memoCache === "object") client._memoCache = {};
+    } catch {}
+    let values;
+    try {
+      values = typeof client.getContext === "function" ? client.getContext()?.values : undefined;
+    } catch {}
+    client.__codexPlusStatsigNotifiedSignature = signature;
+    client.$emt({ name: "values_updated", status: client.loadingStatus, values });
+    return true;
+  }
+
   function codexPlusStatsigOverridesTick() {
-    if (!codexPlusStatsigOverridesEnabled() && !codexPlusStatsigRecording()) return;
+    const active = codexPlusStatsigOverridesEnabled() || codexPlusStatsigRecording();
     for (const client of codexPlusStatsigOverrideClients()) {
       try {
-        if (codexPlusStatsigPatchClient(client)) {
+        if (active && codexPlusStatsigPatchClient(client)) {
           console.log("[StatsigOverrides]", "已接管 Statsig 开关覆盖");
+        }
+        // 关掉总开关后也走这里：签名回到空串，派发一次让 Codex 回到远端值。
+        if (codexPlusStatsigNotifyIfChanged(client)) {
+          console.log("[StatsigOverrides]", "已通知 Codex 重读开关");
         }
       } catch (error) {
         console.warn("[StatsigOverrides]", "覆盖失败：", error && error.message);
