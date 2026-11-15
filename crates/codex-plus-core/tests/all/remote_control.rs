@@ -632,3 +632,30 @@ fn web_page_offers_both_conversation_styles() {
     // 两种样式共用同一份 DOM，切换只改根上的 data-style，不重渲染数据。
     assert!(page.contains(r#"document.documentElement.dataset.style = next"#));
 }
+
+/// 网页会话列表分两级：先按工作目录列项目，点进项目再看会话。
+#[test]
+fn web_page_groups_sessions_by_project() {
+    let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
+    assert!(page.contains("function projectsOf(threads)"), "按工作目录归组");
+    assert!(page.contains(r#"const key = thread.cwd || "";"#), "没记目录的会话单独一组");
+    assert!(page.contains("project.updatedAt = Math.max(project.updatedAt"), "项目按最近活动排序");
+    assert!(page.contains("if (isRunning(thread)) project.running += 1;"), "项目上带运行中数量");
+    assert!(page.contains(r#"state.project = project.cwd; renderThreads();"#), "点项目进入会话列表");
+    assert!(page.contains(r#"$("projectBack").onclick"#), "能回到项目列表");
+    // 桌面样式下图标栏一直可见，会话开着时点「‹ 项目」也要能退出去，不能只在列表页才生效。
+    let back_start = page.find(r#"$("projectBack").onclick"#).expect("有返回按钮的处理函数");
+    let back_body = &page[back_start..(back_start + 400).min(page.len())];
+    for line in [
+        r#"$("app").classList.remove("viewing")"#,
+        "state.current = null",
+        "state.project = null",
+        "renderThreads();",
+    ] {
+        assert!(back_body.contains(line), "「‹ 项目」缺少 {line}");
+    }
+    assert!(!back_body.contains("contains(\"viewing\")) renderThreads"), "会话开着时不能把点击挡掉");
+
+    assert!(page.contains(r#"const cwd = state.project !== null ? state.project : $("newCwd").value.trim();"#), "项目里新建会话用该项目的目录");
+    assert!(page.contains(r#"el("span", "count", ` (${project.threads.length})`)"#), "项目后显示会话数");
+}

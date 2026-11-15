@@ -62,6 +62,10 @@
   .msg.steer { align-self: flex-end; color: var(--muted); font-size: 13px; }
   .thread-avatar, .thread-time { display: none; }
   .more { display: none; }
+  .project-back { border: none; background: transparent; color: var(--muted); padding: 2px 6px 2px 0; font-size: 13px; }
+  .thread.project .title { font-weight: 600; }
+  .thread .count { color: var(--muted); font-weight: 400; }
+  .thread .running { color: var(--ok); }
   .cmd { align-self: stretch; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
   .cmd summary { cursor: pointer; }
   .cmd pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto; }
@@ -106,6 +110,8 @@
   html[data-style="chat"] .thread-avatar { display: flex; width: 44px; height: 44px; flex: 0 0 44px; border-radius: 6px; align-items: center; justify-content: center; font-size: 17px; font-weight: 600; background: light-dark(#111111, #e8e8e8); color: light-dark(#ffffff, #111111); }
   html[data-style="chat"] .thread-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
   html[data-style="chat"] .thread .title { font-weight: 500; font-size: 16px; }
+  html[data-style="chat"] .thread.project .title { font-weight: 500; }
+  html[data-style="chat"] .project-back { font-size: 15px; color: var(--text); }
   html[data-style="chat"] .thread .meta { font-size: 13px; }
   html[data-style="chat"] .thread-time { display: block; flex: 0 0 auto; align-self: flex-start; color: var(--muted); font-size: 12px; padding-top: 2px; }
   /* 对话区：浅灰底、左白右绿气泡、方角头像 */
@@ -162,7 +168,8 @@
 <div class="app" id="app">
   <aside>
     <header>
-      <h1>Codex++ 远程控制</h1>
+      <button class="project-back" id="projectBack" hidden title="回到项目列表">‹ 项目</button>
+      <h1 id="asideTitle">Codex++ 远程控制</h1>
       <button id="style" title="切换对话样式：Codex 样式 / 聊天样式">样式</button>
       <button id="refresh" title="刷新会话列表">刷新</button>
     </header>
@@ -230,7 +237,7 @@
   const style = localStorage.getItem(STYLE_KEY) || (narrow ? "chat" : "codex");
   document.documentElement.dataset.style = style;
   const $ = (id) => document.getElementById(id);
-  const state = { threads: [], current: null, view: null, socket: null, poller: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false, me: null, seenRequests: new Set(), wasRunning: false };
+  const state = { threads: [], project: null, current: null, view: null, socket: null, poller: null, busy: false, stickNext: false, options: null, optionsFor: null, applying: false, me: null, seenRequests: new Set(), wasRunning: false };
   const rank = { view: 0, message: 1, full: 2 };
   const can = (role) => rank[state.me?.role ?? "view"] >= rank[role];
 
@@ -365,28 +372,77 @@
     try {
       const data = await api("GET", "/threads");
       state.threads = data.threads || [];
-      if (!$("newCwd").value && state.threads[0]?.cwd) $("newCwd").value = state.threads[0].cwd;
       renderThreads();
     } catch (error) {
       $("threads").replaceChildren(el("div", "empty", `读取会话失败：${error.message}`));
     }
   }
 
+  const isRunning = (thread) => thread.status === "active" || thread.status === "running" || thread.status === "inProgress";
+  const baseName = (path) => String(path || "").replace(/\/+$/, "").split("/").pop() || path || "未记录项目";
+
+  /** 会话按工作目录归到项目里，项目按最近活动排序。 */
+  function projectsOf(threads) {
+    const map = new Map();
+    for (const thread of threads) {
+      const key = thread.cwd || "";
+      const project = map.get(key) || { cwd: key, name: baseName(key), threads: [], updatedAt: 0, running: 0 };
+      project.threads.push(thread);
+      project.updatedAt = Math.max(project.updatedAt, Number(thread.updatedAt) || 0);
+      if (isRunning(thread)) project.running += 1;
+      map.set(key, project);
+    }
+    return [...map.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /** 一条列表行：头像 + 标题 / 摘要 + 右侧时间。聊天样式与 Codex 样式共用。 */
+  function listRow({ avatar, titleNode, meta, updatedAt, active, kind, onClick }) {
+    const row = el("div", `thread${active ? " active" : ""}${kind ? ` ${kind}` : ""}`);
+    row.append(el("div", "thread-avatar", avatar));
+    const body = el("div", "thread-body");
+    const title = el("div", "title");
+    title.append(...titleNode);
+    body.append(title);
+    if (meta) body.append(el("div", "meta", meta));
+    row.append(body);
+    row.append(el("div", "thread-time", relative(updatedAt)));
+    row.onclick = onClick;
+    return row;
+  }
+
   function renderThreads() {
     const list = $("threads");
+    const insideProject = state.project !== null;
+    $("projectBack").hidden = !insideProject;
+    $("asideTitle").textContent = insideProject ? baseName(state.project) : "Codex++ 远程控制";
+    $("newCwd").hidden = insideProject;
+    $("newCwd").value = insideProject ? state.project : $("newCwd").value;
     if (!state.threads.length) return list.replaceChildren(el("div", "empty", "还没有会话"));
-    list.replaceChildren(...state.threads.map((thread) => {
-      const row = el("div", `thread${thread.id === state.current ? " active" : ""}`);
-      const title = thread.title || "（未命名）";
-      row.append(el("div", "thread-avatar", title.trim().slice(0, 1).toUpperCase() || "#"));
-      const body = el("div", "thread-body");
-      body.append(el("div", "title", title));
-      body.append(el("div", "meta", `${relative(thread.updatedAt)} · ${thread.cwd || ""}`));
-      row.append(body);
-      row.append(el("div", "thread-time", relative(thread.updatedAt)));
-      row.onclick = () => selectThread(thread.id);
-      return row;
-    }));
+    if (!insideProject) {
+      const projects = projectsOf(state.threads);
+      $("newCwd").value = $("newCwd").value || projects.find((project) => project.cwd)?.cwd || "";
+      return list.replaceChildren(...projects.map((project) => listRow({
+        avatar: (project.name.trim()[0] || "#").toUpperCase(),
+        titleNode: [project.name, el("span", "count", ` (${project.threads.length})`)],
+        meta: [
+          project.running ? el("span", "running", `${project.running} 个运行中 · `) : null,
+          project.threads[0]?.title || "（未命名）",
+        ].filter(Boolean),
+        updatedAt: project.updatedAt,
+        kind: "project",
+        onClick: () => { state.project = project.cwd; renderThreads(); },
+      })));
+    }
+    const threads = state.threads.filter((thread) => (thread.cwd || "") === state.project);
+    if (!threads.length) return list.replaceChildren(el("div", "empty", "这个项目还没有会话"));
+    list.replaceChildren(...threads.map((thread) => listRow({
+      avatar: (thread.title || "#").trim()[0]?.toUpperCase() || "#",
+      titleNode: [isRunning(thread) ? el("span", "running", "● ") : null, thread.title || "（未命名）"].filter(Boolean),
+      meta: relative(thread.updatedAt),
+      updatedAt: thread.updatedAt,
+      active: thread.id === state.current,
+      onClick: () => selectThread(thread.id),
+    })));
   }
 
   async function selectThread(id) {
@@ -720,7 +776,16 @@
     }
   });
   $("refresh").onclick = loadThreads;
+  // 会话页「‹ 返回」回项目里的会话列表；项目列表的「‹ 项目」再退一级。
   $("back").onclick = () => { $("app").classList.remove("viewing"); closeSocket(); state.current = null; renderThreads(); };
+  // 桌面样式下图标栏一直可见，会话开着时也能点：一并退出会话，回到项目列表。
+  $("projectBack").onclick = () => {
+    $("app").classList.remove("viewing");
+    closeSocket();
+    state.current = null;
+    state.project = null;
+    renderThreads();
+  };
   $("open").onclick = async () => {
     try {
       toast("正在桌面打开会话…");
@@ -733,7 +798,8 @@
     try { await api("POST", `/threads/${state.current}/interrupt`); } catch (error) { toast(error.message); }
   };
   $("create").onclick = async () => {
-    const cwd = $("newCwd").value.trim();
+    // 项目里的新建会话用该项目的目录；项目列表上新建要手填目录。
+    const cwd = state.project !== null ? state.project : $("newCwd").value.trim();
     if (!cwd) return toast("先填工作目录");
     $("create").disabled = true;
     try {
