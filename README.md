@@ -402,6 +402,8 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 Codex 用哪种，在「Codex → 连接与供应商」顶部的「连接方式」里一键切换；直连供应商也能一键加进网关的供应商池。
 
+原生 Responses 上游可经普通代理或网关使用 WebSocket `response.create`，支持多轮、工具续接和命名流。客户端需启用 `supports_websockets`，上游也需支持 WS；HTTP-only 兼容路由继续使用 HTTP。[配置、能力边界与恢复方式](docs/specs/2026-11-14-responses-websocket.md)。
+
 网关里的模型名有三种写法：
 
 | 写法 | 发往 |

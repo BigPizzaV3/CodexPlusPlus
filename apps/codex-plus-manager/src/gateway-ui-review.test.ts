@@ -216,7 +216,7 @@ test("模型选择器顶部的供应商按钮是筛选，不是滚动到那一�
 
 test("上下文窗口按模型在供应商池里填，Agent 页只留兜底的默认窗口", () => {
   const providers = read("GatewayProviders.tsx");
-  assert.match(providers, /"save_gateway_provider_windows", \{ id: entry\.id, windows: modelWindows, fallback \}/);
+  assert.match(providers, /"save_gateway_provider_windows", \{ id: entry\.id, windows: modelWindows, fallback, autoCompact \}/);
   const dialog = read("ProviderWindowsDialog.tsx");
   assert.match(dialog, /next\[model\] = windowText\(match\.context\)/, "按公开资料填写用 models.dev 的 limit.context");
   assert.match(read("GatewayAgents.tsx"), /title=\{t\("默认窗口"\)\}/);
