@@ -4,7 +4,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, CloudDownload, Copy, Edit3, ExternalLink, FolderPlus, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, CloudDownload, Copy, Edit3, ExternalLink, FolderOpen, FolderPlus, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
@@ -20,6 +20,8 @@ import { SkillListViewport } from "./SkillListViewport";
 import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
 import { SkillSourceMatchDrawer, type SourceSelection } from "./SkillSourceMatchDrawer";
+import { SkillDuplicatesDrawer } from "./SkillDuplicatesDrawer";
+import { SkillFileTimes } from "./SkillFileTimes";
 import { SkillInPlaceUpdateDrawer } from "./SkillInPlaceUpdateDrawer";
 import { SkillBackupUsage } from "./SkillBackupUsage";
 import { TopbarActions } from "./TopbarActions";
@@ -218,7 +220,7 @@ function SkillBackupList({ backups, busy, onRestore, onDelete }: {
     <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "managed-source" ? t("受控源归档") : backup.purpose === "disabled" ? t("停用副本备份") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
       <small>{t("备份位置")}：{backup.backupPath || t("未知")}</small>
       <small>{t("恢复位置")}：{backup.restorePath || t("未记录")}</small>
-      {backup.missing && <small className="mg-warning">{t("备份文件已丢失")}</small>}
+      {backup.missing ? <small className="mg-warning">{t("备份文件已丢失")}</small> : <SkillFileTimes id={backup.skillId} backupId={backup.id}/>}
       {backup.restoreBlockedReason && <small className="mg-warning">{backup.restoreBlockedReason}</small>}
       <div className="mg-row-actions"><Button disabled={busy || !!backup.missing || !!backup.restoreBlockedReason} onClick={() => onRestore(backup)}>{t("恢复")}</Button>
         <button type="button" className="mg-icon-button" disabled={busy} title={t(backup.missing ? "清除记录" : "删除备份")} aria-label={`${t(backup.missing ? "清除记录" : "删除备份")} ${backup.name || backup.skillId}`} onClick={() => onDelete(backup)}><Trash2 size={14}/></button></div></div>
@@ -232,9 +234,9 @@ function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete }: {
     {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDelete}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
   </ManagementDrawer>;
 }
-function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate }: {
+function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onManageSource }: {
   skill: Skill; count?: number; backups: SkillBackup[]; busy: boolean; onClose: () => void; onOpenUrl: (url: string) => void;
-  onOpenRepo: () => void; onMatch: (localPath?: string, context?: SkillMatchContext) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void;
+  onOpenRepo: () => void; onMatch: (localPath?: string, context?: SkillMatchContext) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onManageSource: () => void;
 }) {
   const url = repoUrl(skill);
   const channel = skillChannelLabel(skill);
@@ -275,6 +277,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
         const sharedAssociation = associationPath && (skill.locations || []).filter((item) =>
           (item.selectable && item.originalPath ? item.originalPath : item.associationPath) === associationPath).length > 1;
         return [<dt key={`${location.manifestPath}:label`}>{rootLabel[location.rootKind] || location.rootKind}</dt>, <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}
+          {(skill.conflict || skill.displayInstances) && <SkillFileTimes id={skill.id} rootKind={location.rootKind}/>}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
           {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
           {(instance || associationPath) && <><br/>{t(hasRepo ? "上游来源" : "来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")}
@@ -286,7 +289,8 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
               {location.selectable && location.originalPath && (skill.displayInstances || skill.conflictKind === "equal-independent") && hasRepo && locationOwner !== "manager" && <Button disabled={busy} onClick={() => onUpdate(locationRepo, location.originalPath || undefined)}><CloudDownload size={14}/>{t("预览此位置更新")}</Button>}</div>}</>}</dd>];
       })}
       {managedSourcePath && <>
-        <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}
+        <dt>{t("受控源目录")}</dt><dd>{managedSourcePath}<SkillFileTimes id={skill.id} rootKind="source"/>
+          <button type="button" className="mg-icon-button" disabled={busy} title={t("管理受控源")} aria-label={t("管理受控源")} onClick={onManageSource}><FolderOpen size={14}/></button>
           {skill.managedSourceStatus === "referenced" && <small>{t("正在被安装位置引用")}</small>}
           {skill.managedSourceStatus === "matching" && <small>{t("未被目录链接引用，内容与安装位置一致")}</small>}
           {skill.managedSourceStatus === "stored" && <small>{t("保留的工作源，可用于重新启用")}</small>}
@@ -354,6 +358,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [repoOpen, setRepoOpen] = useState(false);
   const [detail, setDetail] = useState<Skill | null>(null);
   const [matchTarget, setMatchTarget] = useState<({ id?: string; localPath?: string } & SkillMatchContext) | null>(null);
+  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
   const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
@@ -881,6 +886,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       <Menu>
         <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
         <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>
+        <MenuItem onClick={() => setDuplicatesOpen(true)} disabled={busy}>{t("预览重复副本")}</MenuItem>
         <MenuItem onClick={() => setBackupsOpen(true)} disabled={busy}>{t("查看 Skill 备份")}</MenuItem>
       </Menu>
     </>} />
@@ -956,6 +962,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     {currentDetail && <SkillDetailDrawer skill={currentDetail} count={data?.repoCounts?.[currentDetail.repoKey]}
       backups={(data?.backups || []).filter((backup) => backup.skillId === currentDetail.id)} busy={busy}
       onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(currentDetail.repoKey)}
+      onManageSource={() => { setDetail(null); setDuplicatesOpen(true); }}
       onMatch={(localPath, context) => { setDetail(null); setMatchTarget({ id: currentDetail.id, localPath, ...context }); }}
       onRestore={(backup) => void restoreBackup(backup)}
       onDeleteBackup={(backup) => void deleteBackup(backup)}
@@ -965,6 +972,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       localSkillIds={knownSkills.filter((skill) => skill.installed && !skill.bundled
         && (!skill.repoPath || !skill.repoKey.includes("/"))).map((skill) => skill.id)}
       onClose={() => setMatchTarget(null)} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}
+    {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => setDuplicatesOpen(false)} onArchive={(previewId, id, kind) => run("archive_skill_duplicate", { previewId, id, kind })}/>}
     {backupsOpen && <SkillBackupsDrawer backups={data?.backups || []} busy={busy} onClose={() => setBackupsOpen(false)} onRestore={(backup) => void restoreBackup(backup)} onDelete={(backup) => void deleteBackup(backup)}/>}
     {updateTarget && <SkillInPlaceUpdateDrawer id={updateTarget.id} repoKey={updateTarget.repoKey} localPath={updateTarget.localPath} onClose={() => setUpdateTarget(null)} onExecute={(previewId) => run("execute_skill_in_place_update", { previewId })}/>}
   </div>;
