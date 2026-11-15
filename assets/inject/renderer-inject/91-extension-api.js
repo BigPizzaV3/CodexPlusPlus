@@ -445,7 +445,7 @@
       registerToolView(definition, options = {}) {
         return codexPlusRegisterToolView(definition, options);
       },
-      /** Codex 设置页左侧导航末尾加一项，点开是 render({ container, close }) 画的页面。 */
+      /** Codex++ 设置页左栏加一组，选中时 render({ container, close }) 画右边内容，可返回清理函数（切走或关页时调用）。 */
       registerSettingsSection(definition, options = {}) {
         return codexPlusRegisterSettingsSection(definition, options);
       },

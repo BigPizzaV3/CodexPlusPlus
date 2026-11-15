@@ -5,7 +5,7 @@
    *   悬浮球是单独注入的脚本，这里把注册项同步到 window.__codexPlusFloatingTabs，再请它重画。
    * - registerToolView：对话里的工具调用 / 命令条目末尾挂一块自己的内容（在 activity.after 插槽上），
    *   按工具名或条目类型匹配；render 收到的 call 带工具名、参数、结果（从会话日志里按调用 id 找）。
-   * - registerSettingsSection：Codex 设置页左侧导航末尾加一项，点开是拓展自己画的页面。
+   * - registerSettingsSection：Codex++ 设置页左栏加一组（排在内置分组之后、「工具与关于」之前），选中时画拓展自己的内容。
    * - registerSettingsPanel：「拓展」页面里本拓展详情下方的设置面板，由 40-backend-settings.js 挂载。
    */
 
@@ -119,33 +119,26 @@
     }, options);
   }
 
-  // ---------------------------------------------------------------- Codex 设置页分区
+  // ---------------------------------------------------------------- Codex++ 设置页分区
+  /**
+   * 只登记数据：Codex++ 设置页左栏按注册表画出「一个分区一组」，选中时才调 render 画右边
+   * （40-backend-settings.js 的「拓展注册的设置分区」一段）。以前挂在 Codex 原生设置页左栏最底下，
+   * 在列表外面、不显眼，现在和 Codex++ 自己的设置分组并排。
+   */
   function codexPlusRegisterSettingsSection(definition, options = {}) {
     if (typeof definition?.render !== "function") throw new Error("设置分区需要 render({ container, close })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-    const id = options.id || codexPlusExtensionIdSeed();
-    const disposePage = codexPlusRegisterExtensionPage(definition, { ...options, scriptKey, id: `settings-${id}`, nav: false });
-    const pageId = `${scriptKey}:page:settings-${id}`;
-    const title = String(definition.title || id);
-    const disposeSlot = codexPlusRegisterExtensionSlot({
-      slot: "settings.nav",
-      order: definition.order,
-      render: ({ container, sampleClass }) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = `${sampleClass || ""} codex-plus-settings-nav-item`.trim();
-        button.innerHTML = `${codexPlusExtensionIconMarkup(definition)}<span>${escapeHtml(title)}</span>`;
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          openCodexPlusExtensionPage(pageId);
-        });
-        container.appendChild(button);
-      },
-    }, { scriptKey, id: `settings-nav-${id}` });
+    const sectionKey = String(options.id || definition.id || codexPlusExtensionIdSeed());
+    const id = `${scriptKey}:settingsSection:${sectionKey}`;
+    const dispose = registerCodexPlusExtension("settingsSection", codexPlusRegistry.settingsSections, id, { ...definition, sectionKey }, scriptKey);
+    // 设置页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
+    const changed = () => {
+      if (typeof refreshCodexPlusSettingsSections === "function") refreshCodexPlusSettingsSections();
+    };
+    changed();
     return () => {
-      disposeSlot();
-      disposePage();
+      dispose();
+      changed();
     };
   }
 

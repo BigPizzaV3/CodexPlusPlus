@@ -1402,6 +1402,9 @@
     "standalone": ['0 0 16 16', '<path d="M5.13802 4.65365C5.51357 4.65365 5.81771 4.95778 5.81771 5.33333C5.8177 5.70888 5.51357 6.01302 5.13802 6.01302C4.76258 6.0129 4.45834 5.7088 4.45833 5.33333C4.45833 4.95786 4.76257 4.65377 5.13802 4.65365Z" fill="currentColor"></path><path d="M10.6667 4.79948C10.9612 4.79948 11.2005 5.03878 11.2005 5.33333C11.2005 5.62789 10.9612 5.86719 10.6667 5.86719H8C7.70545 5.86719 7.46615 5.62789 7.46615 5.33333C7.46615 5.03878 7.70545 4.79948 8 4.79948H10.6667Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M10.0664 2.13281C10.8043 2.13281 11.3906 2.13336 11.862 2.17188C12.3394 2.21092 12.747 2.29181 13.1198 2.48177C13.7218 2.78855 14.2115 3.2782 14.5182 3.88021C14.7082 4.25302 14.7891 4.66056 14.8281 5.13802C14.8666 5.60945 14.8672 6.19566 14.8672 6.93359V9.06641C14.8672 9.80434 14.8666 10.3906 14.8281 10.862C14.7891 11.3394 14.7082 11.747 14.5182 12.1198C14.2115 12.7218 13.7218 13.2115 13.1198 13.5182C12.747 13.7082 12.3394 13.7891 11.862 13.8281C11.3906 13.8666 10.8043 13.8672 10.0664 13.8672H5.93359C5.19566 13.8672 4.60945 13.8666 4.13802 13.8281C3.66056 13.7891 3.25302 13.7082 2.88021 13.5182C2.2782 13.2115 1.78855 12.7218 1.48177 12.1198C1.29181 11.747 1.21092 11.3394 1.17188 10.862C1.13336 10.3906 1.13281 9.80434 1.13281 9.06641V6.93359C1.13281 6.19566 1.13336 5.60945 1.17188 5.13802C1.21092 4.66056 1.29181 4.25302 1.48177 3.88021C1.78855 3.2782 2.2782 2.78855 2.88021 2.48177C3.25302 2.29181 3.66056 2.21092 4.13802 2.17188C4.60945 2.13336 5.19566 2.13281 5.93359 2.13281H10.0664ZM5.93359 3.20052C5.17806 3.20052 4.64318 3.20023 4.22526 3.23438C3.81359 3.26801 3.56208 3.33166 3.36458 3.43229C2.96325 3.63681 2.63681 3.96325 2.43229 4.36458C2.33166 4.56208 2.26801 4.81359 2.23438 5.22526C2.20023 5.64318 2.20052 6.17806 2.20052 6.93359V9.06641C2.20052 9.82194 2.20023 10.3568 2.23438 10.7747C2.26801 11.1864 2.33166 11.4379 2.43229 11.6354C2.63681 12.0368 2.96325 12.3632 3.36458 12.5677C3.56208 12.6683 3.81359 12.732 4.22526 12.7656C4.64318 12.7998 5.17806 12.7995 5.93359 12.7995H10.0664C10.8219 12.7995 11.3568 12.7998 11.7747 12.7656C12.1864 12.732 12.4379 12.6683 12.6354 12.5677C13.0368 12.3632 13.3632 12.0368 13.5677 11.6354C13.6683 11.4379 13.732 11.1864 13.7656 10.7747C13.7998 10.3568 13.7995 9.82194 13.7995 9.06641V6.93359C13.7995 6.17806 13.7998 5.64318 13.7656 5.22526C13.732 4.81359 13.6683 4.56208 13.5677 4.36458C13.3632 3.96325 13.0368 3.63681 12.6354 3.43229C12.4379 3.33166 12.1864 3.26801 11.7747 3.23438C11.3568 3.20023 10.8219 3.20052 10.0664 3.20052H5.93359Z" fill="currentColor"></path>'], // 原生「浏览器」
     "tools": ['0 0 16 16', '<path d="M10.666 9.6416C10.956 9.6416 11.1914 9.87704 11.1914 10.167C11.1913 10.4568 10.9559 10.6924 10.666 10.6924H5.33301C5.04325 10.6923 4.80775 10.4567 4.80762 10.167C4.80762 9.87712 5.04317 9.64173 5.33301 9.6416H10.666Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M12.1338 2.47461C13.4543 2.47486 14.5251 3.54569 14.5254 4.86621V11.1338C14.5251 12.4543 13.4543 13.5251 12.1338 13.5254H3.86621C2.54569 13.5251 1.47486 12.4543 1.47461 11.1338V4.86621C1.47486 3.54569 2.54569 2.47486 3.86621 2.47461H12.1338ZM3.86621 3.52539C3.12559 3.52564 2.52564 4.12559 2.52539 4.86621V11.1338C2.52564 11.8744 3.12559 12.4744 3.86621 12.4746H12.1338C12.8744 12.4744 13.4744 11.8744 13.4746 11.1338V4.86621C13.4744 4.12559 12.8744 3.52564 12.1338 3.52539H3.86621Z" fill="currentColor"></path>'], // 原生「环境」
     "ext-menu": ['0 0 16 16', '<path d="M1.66699 9.53271C1.95694 9.53271 2.19238 9.76816 2.19238 10.0581V10.1333C2.19238 10.7019 2.19268 11.0977 2.21777 11.4048C2.24238 11.7054 2.28759 11.876 2.35254 12.0034C2.49394 12.2808 2.71971 12.5066 2.99707 12.6479C3.12456 12.7129 3.29503 12.7581 3.5957 12.7827C3.90287 12.8078 4.29849 12.8081 4.86719 12.8081H5C5.28995 12.8081 5.52539 13.0435 5.52539 13.3335C5.52526 13.6233 5.28987 13.8589 5 13.8589H4.86719C4.31586 13.8589 3.87056 13.859 3.51074 13.8296C3.14481 13.7997 2.82074 13.7364 2.52051 13.5835C2.0455 13.3415 1.65907 12.955 1.41699 12.48C1.26404 12.1798 1.20081 11.8556 1.1709 11.4897C1.14151 11.13 1.1416 10.6845 1.1416 10.1333V10.0581C1.1416 9.76816 1.37704 9.53271 1.66699 9.53271Z" fill="currentColor"></path><path d="M14.333 9.4751C14.623 9.4751 14.8584 9.71054 14.8584 10.0005V10.1333C14.8584 10.6845 14.8585 11.13 14.8291 11.4897C14.7992 11.8556 14.736 12.1798 14.583 12.48C14.3409 12.9549 13.9545 13.3415 13.4795 13.5835C13.1793 13.7364 12.8552 13.7997 12.4893 13.8296C12.1294 13.859 11.6841 13.8589 11.1328 13.8589H10.833C10.5432 13.8589 10.3078 13.6233 10.3076 13.3335C10.3076 13.0435 10.5431 12.8081 10.833 12.8081H11.1328C11.7015 12.8081 12.0971 12.8078 12.4043 12.7827C12.705 12.7581 12.8754 12.7129 13.0029 12.6479C13.2803 12.5066 13.5061 12.2807 13.6475 12.0034C13.7124 11.876 13.7576 11.7053 13.7822 11.4048C13.8073 11.0977 13.8076 10.7019 13.8076 10.1333V10.0005C13.8076 9.71054 14.0431 9.4751 14.333 9.4751Z" fill="currentColor"></path><path d="M5 2.14111C5.28995 2.14111 5.52539 2.37655 5.52539 2.6665C5.52539 2.95645 5.28995 3.19189 5 3.19189H4.86719C4.29847 3.19189 3.90287 3.19219 3.5957 3.21729C3.29495 3.24189 3.12457 3.28709 2.99707 3.35205C2.71964 3.49344 2.49393 3.71915 2.35254 3.99658C2.28757 4.12408 2.24238 4.29447 2.21777 4.59521C2.19268 4.90238 2.19238 5.29798 2.19238 5.8667V5.99951C2.19238 6.28946 1.95694 6.5249 1.66699 6.5249C1.37704 6.5249 1.1416 6.28946 1.1416 5.99951V5.8667C1.1416 5.31536 1.14151 4.87008 1.1709 4.51025C1.2008 4.14428 1.264 3.82028 1.41699 3.52002C1.65907 3.04494 2.04543 2.65858 2.52051 2.4165C2.82077 2.26352 3.14477 2.20031 3.51074 2.17041C3.87057 2.14102 4.31585 2.14111 4.86719 2.14111H5Z" fill="currentColor"></path><path d="M11.1338 2.14111C11.6847 2.14111 12.1296 2.14105 12.4893 2.17041C12.8551 2.2003 13.1793 2.26361 13.4795 2.4165C13.9545 2.65855 14.3409 3.045 14.583 3.52002C14.736 3.82028 14.7992 4.14428 14.8291 4.51025C14.8585 4.8701 14.8584 5.31531 14.8584 5.8667V5.99951C14.8584 6.28946 14.623 6.52491 14.333 6.5249C14.0432 6.52473 13.8086 6.28936 13.8086 5.99951V5.8667C13.8086 5.29797 13.8083 4.90239 13.7832 4.59521C13.7586 4.29445 13.7124 4.12409 13.6475 3.99658C13.506 3.71918 13.2804 3.49342 13.0029 3.35205C12.8754 3.2871 12.7052 3.24187 12.4043 3.21729C12.0972 3.19219 11.7023 3.19189 11.1338 3.19189H11C10.7101 3.19189 10.4746 2.95645 10.4746 2.6665C10.4746 2.37655 10.7101 2.14111 11 2.14111H11.1338Z" fill="currentColor"></path><path d="M4.38672 4.55615C4.7326 4.55631 5.01255 4.83625 5.0127 5.18213C5.0127 5.52813 4.73269 5.80893 4.38672 5.80908C4.04062 5.80908 3.75977 5.52823 3.75977 5.18213C3.75991 4.83615 4.04071 4.55615 4.38672 4.55615Z" fill="currentColor"></path><path d="M6.69238 4.55615C7.03839 4.55615 7.31919 4.83615 7.31934 5.18213C7.31934 5.52823 7.03848 5.80908 6.69238 5.80908C6.34638 5.80897 6.06641 5.52816 6.06641 5.18213C6.06655 4.83622 6.34646 4.55626 6.69238 4.55615Z" fill="currentColor"></path><path d="M8.99902 4.55615C9.3449 4.55631 9.62486 4.83625 9.625 5.18213C9.625 5.52813 9.34499 5.80893 8.99902 5.80908C8.65293 5.80908 8.37207 5.52823 8.37207 5.18213C8.37221 4.83615 8.65301 4.55615 8.99902 4.55615Z" fill="currentColor"></path>'], // 原生「应用快照」
+    // 拓展注册的设置分区（registerSettingsSection）：内置的两个用原生对应页的图标，其余用「插件」。
+    "hooks-editor": ['0 0 16 16', '<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1.59766C9.39452 1.59766 10.5254 2.72853 10.5254 4.12305C10.5254 5.33728 9.66764 6.34981 8.52539 6.5918V11.0342C8.52556 12.2139 9.47942 13.1717 10.6592 13.1758C11.8447 13.1798 12.8084 12.2197 12.8086 11.0342V9.95215L11.8086 10.6797C11.5742 10.8498 11.2457 10.7977 11.0752 10.5635C10.9049 10.329 10.9571 10.0006 11.1914 9.83008L12.7324 8.70898C13.2008 8.36838 13.8581 8.70314 13.8584 9.28223V11.0342C13.8582 12.801 12.4221 14.2316 10.6553 14.2256C9.5416 14.2216 8.56418 13.6464 7.99609 12.7793C7.42476 13.6433 6.44623 14.2148 5.33301 14.2148C3.57068 14.2147 2.14197 12.7857 2.1416 11.0234V9.28223C2.1416 8.70306 2.79918 8.36833 3.26758 8.70898L4.80859 9.83008C5.04289 10.0006 5.09511 10.329 4.9248 10.5635C4.75431 10.7977 4.42581 10.8498 4.19141 10.6797L3.19141 9.95215V11.0234C3.19178 12.2058 4.15058 13.1649 5.33301 13.165C6.51559 13.165 7.47424 12.2059 7.47461 11.0234V6.5918C6.33236 6.34981 5.47461 5.33728 5.47461 4.12305C5.47461 2.72853 6.60548 1.59766 8 1.59766ZM8 2.64844C7.18538 2.64844 6.52539 3.30843 6.52539 4.12305C6.52539 4.93767 7.18538 5.59766 8 5.59766C8.81462 5.59766 9.47461 4.93767 9.47461 4.12305C9.47461 3.30843 8.81462 2.64844 8 2.64844Z" fill="currentColor"></path>'], // 原生「钩子」
+    "feature-lab": ['0 0 16 16', '<path d="M10.7639 7.975C11.0539 7.975 11.2893 8.21044 11.2893 8.50039C11.2891 8.79017 11.0537 9.02578 10.7639 9.02578H8.69751C8.40779 9.02565 8.17232 8.79009 8.17212 8.50039C8.17212 8.21052 8.40767 7.97513 8.69751 7.975H10.7639Z" fill="currentColor"></path><path d="M5.02661 5.46231C5.23163 5.25729 5.56377 5.2573 5.7688 5.46231L6.98462 6.67813C7.25433 6.94821 7.25444 7.38565 6.98462 7.65567L5.7688 8.87149C5.56381 9.07623 5.23158 9.07627 5.02661 8.87149C4.82168 8.66653 4.82182 8.33433 5.02661 8.1293L5.98853 7.16641L5.02661 6.20449C4.82163 5.99949 4.82165 5.66733 5.02661 5.46231Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.2561 1.13418C7.73078 0.92667 8.2717 0.926585 8.74634 1.13418L12.7405 2.88125C13.4166 3.17717 13.8536 3.84633 13.8538 4.58438V8.38125C13.8538 10.1831 13.2191 11.5903 12.2014 12.6684C11.1953 13.7339 9.83514 14.4574 8.40356 14.9564L8.39966 14.9574C8.14413 15.044 7.86712 15.041 7.61353 14.9496C6.17841 14.454 4.81353 13.7338 3.80396 12.6693C2.78265 11.5924 2.14575 10.1849 2.14575 8.38125V4.58438C2.14594 3.84613 2.58358 3.17705 3.26001 2.88125L7.2561 1.13418ZM8.32544 2.0961C8.11904 2.00585 7.88342 2.00589 7.677 2.0961L3.68091 3.84414C3.38676 3.97277 3.19672 4.26336 3.19653 4.58438V8.38125C3.19653 9.91061 3.72656 11.0608 4.56665 11.9467C5.31218 12.7326 6.31853 13.3274 7.45923 13.7748L7.9563 13.9574L7.96802 13.9613C7.99845 13.9726 8.03201 13.9737 8.06274 13.9633C9.40244 13.4958 10.5895 12.8452 11.4377 11.9467C12.2751 11.0596 12.804 9.90981 12.804 8.38125V4.58438C12.8038 4.26348 12.6136 3.97187 12.3196 3.84317L8.32544 2.0961Z" fill="currentColor"></path>'], // 原生「配置」
   };
 
   function codexPlusSettingsGroupIcon(id) {
@@ -1409,15 +1412,38 @@
     return `<svg viewBox="${viewBox}" width="16" height="16" fill="none">${glyph}</svg>`;
   }
 
+  /**
+   * 左栏分区小标题，照原生设置页的「个人 / 集成 / 编码」。分组按 DOM 顺序排，换区时插一条小标题；
+   * 拓展注册的分区与「拓展设置」归「拓展」，清单里新加、没登记的分组归「功能」。
+   */
+  const codexPlusSettingsNavSections = {
+    core: "通用", plugins: "通用", input: "通用", chat: "通用", appearance: "通用",
+    pet: "功能", stepwise: "功能", standalone: "功能",
+    "ext-menu": "拓展",
+    tools: "其他",
+  };
+
+  function codexPlusSettingsNavSection(id) {
+    if (String(id).startsWith("ext-section:")) return "拓展";
+    return codexPlusSettingsNavSections[id] || "功能";
+  }
+
   function renderCodexPlusSettingsNavItems(root = document) {
     const groups = codexPlusSettingsGroupNodes(root);
     const active = codexPlusResolvedSettingsGroup(groups);
+    let section = "";
     return groups.map((node) => {
       const id = node.getAttribute("data-codex-plus-settings-group");
       const label = node.getAttribute("data-codex-plus-settings-label") || id;
       const current = id === active;
-      return `
-      <button type="button" class="codex-plus-page-nav-item" data-codex-plus-settings-nav="${escapeHtml(id)}" data-active="${String(current)}"${current ? ' aria-current="page"' : ""}><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${codexPlusSettingsGroupIcon(id)}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(label)}</span></button>`;
+      const nextSection = codexPlusSettingsNavSection(id);
+      const title = nextSection !== section
+        ? `
+      <div class="codex-plus-page-nav-section-title" role="presentation">${escapeHtml(nextSection)}</div>`
+        : "";
+      section = nextSection;
+      return `${title}
+      <button type="button" class="codex-plus-page-nav-item" data-codex-plus-settings-nav="${escapeHtml(id)}" data-active="${String(current)}"${current ? ' aria-current="page"' : ""}><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${codexPlusSettingsGroupIcon(node.getAttribute("data-codex-plus-settings-icon") || id)}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(label)}</span></button>`;
     }).join("");
   }
 
@@ -1434,6 +1460,7 @@
       if (current) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
+    syncCodexPlusSettingsSectionMounts(root);
   }
 
   function selectCodexPlusSettingsGroup(id) {
@@ -1451,6 +1478,93 @@
     const body = document.querySelector("[data-codex-plus-page-nav-body]");
     if (body) body.innerHTML = renderCodexPlusSettingsNavItems();
     syncCodexPlusSettingsGroups();
+  }
+
+  // ── 拓展注册的设置分区（registerSettingsSection，92-extension-views.js 登记）────────────
+  // 一个分区一组，排在清单分组之后、「工具与关于」之前。外壳（标题 + 挂载点）随设置页重建；
+  // 内容只在选中时调 render 画，切走或关页时调清理函数并清空——注册表持久、DOM 瞬态。
+  const codexPlusSettingsSectionGroupPrefix = "ext-section:";
+
+  function codexPlusSettingsSectionItems() {
+    return codexPlusExtensionItems(codexPlusRegistry.settingsSections);
+  }
+
+  /** 分区列表的指纹：没变就不动 DOM，已经画好的分区（比如编辑到一半的 Hooks）不会被别的拓展注册冲掉。 */
+  function codexPlusSettingsSectionsFingerprint() {
+    return codexPlusSettingsSectionItems().map((item) => `${item.id}\u0000${item.title || ""}`).join("\u0001");
+  }
+
+  function renderCodexPlusSettingsSectionGroups() {
+    return codexPlusSettingsSectionItems().map((item) => {
+      const title = String(item.title || item.sectionKey || item.id);
+      const icon = Object.prototype.hasOwnProperty.call(codexPlusSettingsGroupIcons, item.sectionKey) ? item.sectionKey : "plugins";
+      return renderCodexPlusSettingsGroup(`${codexPlusSettingsSectionGroupPrefix}${item.id}`, title, `
+            <section class="codex-plus-settings-section" aria-label="${escapeHtml(title)}">
+              <h2 class="codex-plus-settings-section-title">${escapeHtml(title)}</h2>
+              <div class="codex-plus-settings-extension-section" data-codex-plus-settings-section-mount="${escapeHtml(item.id)}" ${codexPlusExtensionConstants.extensionAttribute}="${escapeHtml(item.scriptKey || "")}"></div>
+            </section>`, ` data-codex-plus-settings-extension="true" data-codex-plus-settings-icon="${escapeHtml(icon)}"`);
+    }).join("");
+  }
+
+  function mountCodexPlusSettingsSection(mount) {
+    mount.__codexPlusSectionMounted = true;
+    const item = codexPlusRegistry.settingsSections.get(mount.getAttribute("data-codex-plus-settings-section-mount"));
+    if (!item) return;
+    const outcome = runCodexPlusExtensionCallback(item.scriptKey, "settingsSection.render", () =>
+      item.render({ container: mount, close: () => closeCodexPlusPage(), script: item.scriptKey }));
+    if (outcome.ok && typeof outcome.value === "function") mount.__codexPlusSectionCleanup = outcome.value;
+    if (!outcome.ok) {
+      mount.innerHTML = `
+              <div class="codex-plus-settings-card"><div class="codex-plus-row"><div><div class="codex-plus-row-title">拓展分区加载失败</div><div class="codex-plus-row-description">${escapeHtml(item.scriptKey || "")}：${escapeHtml(outcome.error)}</div></div></div></div>`;
+    }
+  }
+
+  function unmountCodexPlusSettingsSection(mount) {
+    const cleanup = mount.__codexPlusSectionCleanup;
+    mount.__codexPlusSectionCleanup = null;
+    mount.__codexPlusSectionMounted = false;
+    if (typeof cleanup === "function") {
+      const item = codexPlusRegistry.settingsSections.get(mount.getAttribute("data-codex-plus-settings-section-mount"));
+      runCodexPlusExtensionCallback(item?.scriptKey || "", "settingsSection.cleanup", cleanup);
+    }
+    mount.replaceChildren();
+  }
+
+  /** 分页时只画当前选中的那组；不分页（弹窗）时每组都显示，全都画。 */
+  function syncCodexPlusSettingsSectionMounts(root = document) {
+    root.querySelectorAll("[data-codex-plus-settings-section-mount]").forEach((mount) => {
+      const group = mount.closest("[data-codex-plus-settings-group]");
+      const paged = !!mount.closest('[data-codex-plus-settings-paged="true"]');
+      const visible = !paged || group?.getAttribute("data-active") === "true";
+      if (visible && !mount.__codexPlusSectionMounted) mountCodexPlusSettingsSection(mount);
+      else if (!visible && mount.__codexPlusSectionMounted) unmountCodexPlusSettingsSection(mount);
+    });
+  }
+
+  /** 关页前把画着的分区都收掉，让拓展的清理函数有机会跑。 */
+  function unmountCodexPlusSettingsSections(root = document) {
+    root.querySelectorAll("[data-codex-plus-settings-section-mount]").forEach((mount) => {
+      if (mount.__codexPlusSectionMounted) unmountCodexPlusSettingsSection(mount);
+    });
+  }
+
+  /** 注册 / 撤销分区后重建分区外壳（指纹没变就跳过），再重画左栏。 */
+  function refreshCodexPlusSettingsSections() {
+    const fingerprint = codexPlusSettingsSectionsFingerprint();
+    let changed = false;
+    document.querySelectorAll('[data-codex-plus-panel="home"]').forEach((panel) => {
+      if (panel.getAttribute("data-codex-plus-settings-sections") === fingerprint) return;
+      const anchor = panel.querySelector('[data-codex-plus-settings-group="ext-menu"], [data-codex-plus-settings-tools]');
+      if (!anchor) return;
+      panel.querySelectorAll("[data-codex-plus-settings-extension]").forEach((node) => {
+        unmountCodexPlusSettingsSections(node);
+        node.remove();
+      });
+      anchor.insertAdjacentHTML("beforebegin", renderCodexPlusSettingsSectionGroups());
+      panel.setAttribute("data-codex-plus-settings-sections", fingerprint);
+      changed = true;
+    });
+    if (changed) refreshCodexPlusSettingsNav();
   }
 
   function normalizeCodexPlusSettingsCatalog(value) {
@@ -1742,7 +1856,8 @@
   function refreshCodexPlusSettingsCatalogView() {
     let rendered = false;
     document.querySelectorAll('[data-codex-plus-panel="home"]').forEach((panel) => {
-      const anchor = panel.querySelector("[data-codex-plus-settings-tools]");
+      // 顺序：清单分组 → 拓展分区 → 拓展设置 → 工具与关于。清单分组插在后三者里最靠前的那个前面。
+      const anchor = panel.querySelector('[data-codex-plus-settings-extension], [data-codex-plus-settings-group="ext-menu"], [data-codex-plus-settings-tools]');
       if (!anchor) return;
       const retryFocused = !!document.activeElement?.closest?.("[data-codex-plus-settings-catalog-retry]");
       panel.querySelectorAll("[data-codex-plus-settings-catalog]").forEach((node) => node.remove());
@@ -1783,8 +1898,16 @@
           ${pageMode ? "" : `<button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>`}
         </div>
         <div class="codex-plus-modal-body">
-          <div class="codex-plus-panel codex-plus-settings" data-codex-plus-panel="home">
+          <div class="codex-plus-panel codex-plus-settings" data-codex-plus-panel="home" data-codex-plus-settings-sections="${escapeHtml(codexPlusSettingsSectionsFingerprint())}">
             ${renderCodexPlusSettingsCatalogSections()}
+            ${renderCodexPlusSettingsSectionGroups()}
+            <div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu" data-codex-plus-settings-label="拓展设置" data-active="${String(codexPlusSettingsActiveGroup === "ext-menu")}">
+            <section class="codex-plus-settings-section" aria-label="拓展设置" data-codex-plus-ext-menu-host="true">
+              <h2 class="codex-plus-settings-section-title">拓展设置</h2>
+              <p class="codex-plus-settings-section-description">已启用的拓展注册的开关与操作。</p>
+            ${renderCodexPlusExtensionMenuRows()}
+            </section>
+            </div>
             <div class="codex-plus-settings-group" data-codex-plus-settings-group="tools" data-codex-plus-settings-label="工具与关于" data-active="${String(codexPlusSettingsActiveGroup === "tools")}" data-codex-plus-settings-tools="true">
             <section class="codex-plus-settings-section" aria-label="工具与关于">
               <h2 class="codex-plus-settings-section-title">工具与关于</h2>
@@ -1817,13 +1940,6 @@
                   <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
                 </div>
               </div>
-            </section>
-            </div>
-            <div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu" data-codex-plus-settings-label="拓展设置" data-active="${String(codexPlusSettingsActiveGroup === "ext-menu")}">
-            <section class="codex-plus-settings-section" aria-label="拓展设置" data-codex-plus-ext-menu-host="true">
-              <h2 class="codex-plus-settings-section-title">拓展设置</h2>
-              <p class="codex-plus-settings-section-description">已启用的拓展注册的开关与操作。</p>
-            ${renderCodexPlusExtensionMenuRows()}
             </section>
             </div>
           </div>
@@ -2117,6 +2233,8 @@
     window.__codexPlusPageLayoutObserver?.disconnect();
     window.__codexPlusPageLayoutObserver = null;
     window.__codexPlusPageLayoutTargets = null;
+    // typeof 守卫：测试会把关页函数单独切出来执行。
+    if (typeof unmountCodexPlusSettingsSections === "function") unmountCodexPlusSettingsSections();
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     if (typeof unmountCodexPlusSettingsPanel === "function") unmountCodexPlusSettingsPanel();
     setCodexPlusSidebarNavActive(false);

@@ -150,6 +150,8 @@
     window.__codexPlusPageLayoutObserver?.disconnect();
     window.__codexPlusPageLayoutObserver = null;
     window.__codexPlusPageLayoutTargets = null;
+    // 设置页里画着的拓展分区先收掉，让拓展的清理函数跑（40-backend-settings.js）。
+    if (typeof unmountCodexPlusSettingsSections === "function") unmountCodexPlusSettingsSections();
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
     restoreCodexPlusPageBackButton();

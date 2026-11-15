@@ -1443,6 +1443,20 @@
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
+      /* 分区小标题照原生：14px/500、次要灰、30 高；分区之间空 16px，标题和第一项之间空 4px（nav-body 自带 1px 间距）。 */
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-section-title {
+        display: flex;
+        align-items: center;
+        box-sizing: border-box;
+        min-height: 30px;
+        margin: 15px 0 3px;
+        padding: 0 6px 0 8px;
+        color: var(--codex-plus-text-tertiary);
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 21px;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
       .codex-plus-settings {
         width: 100%;
         max-width: 728px;
@@ -1506,6 +1520,9 @@
         line-height: 1.2;
       }
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-title + .codex-plus-settings-card { margin-top: 21px; }
+      /* 拓展注册的设置分区（registerSettingsSection）：标题由外壳给，内容是拓展自己画的。 */
+      .codex-plus-settings-section-title + .codex-plus-settings-extension-section { margin-top: 21px; }
+      .codex-plus-settings-extension-section { min-width: 0; }
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-settings-group > .codex-plus-settings-section:first-child > .codex-plus-settings-section-description {
         display: flex;
         align-items: center;

@@ -25,6 +25,7 @@ class FakeElement {
     });
   }
   append(child) { child.parent = this; this.children.push(child); return child; }
+  replaceChildren(...nodes) { this.children = []; this.innerHTML = ""; nodes.forEach((node) => this.append(node)); }
   getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
   setAttribute(name, value) { this.attrs.set(name, String(value)); }
   removeAttribute(name) { this.attrs.delete(name); }
@@ -54,13 +55,23 @@ const group = (id, label, children = []) => new FakeElement({
   class: "codex-plus-settings-group", "data-codex-plus-settings-group": id, "data-codex-plus-settings-label": label, "data-active": "false",
 }, children);
 
-function harness({ stored = "", extMenu = false } = {}) {
+/** 拓展注册的设置分区的外壳：分组 + 挂载点（对应 renderCodexPlusSettingsSectionGroups 的产物）。 */
+const sectionGroup = (registryId, label, icon) => {
+  const node = group(`ext-section:${registryId}`, label, [new FakeElement({ "data-codex-plus-settings-section-mount": registryId })]);
+  node.setAttribute("data-codex-plus-settings-extension", "true");
+  node.setAttribute("data-codex-plus-settings-icon", icon);
+  return node;
+};
+
+function harness({ stored = "", extMenu = false, sections = [] } = {}) {
   const storage = new Map(stored ? [["codex-plus-settings-group", stored]] : []);
-  const panel = new FakeElement({ "data-codex-plus-panel": "home" }, [
+  const registry = new Map(sections.map((section) => [section.id, { scriptKey: "builtin:test", order: 0, ...section }]));
+  const panel = new FakeElement({ "data-codex-plus-panel": "home", "data-codex-plus-settings-paged": "true" }, [
     group("core", "常规"),
     group("plugins", "模型与插件"),
-    group("tools", "工具与关于"),
+    ...sections.map((section) => sectionGroup(section.id, section.title, section.icon || "plugins")),
     group("ext-menu", "拓展设置", extMenu ? [new FakeElement({ "data-codex-plus-ext-menu": "true" })] : []),
+    group("tools", "工具与关于"),
   ]);
   const body = new FakeElement({ class: "codex-plus-modal-body" }, [panel]);
   const nav = new FakeElement({ "data-codex-plus-page-nav-body": "true" });
@@ -70,6 +81,12 @@ function harness({ stored = "", extMenu = false } = {}) {
     window: { localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) } },
     document: root,
     escapeHtml: (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"),
+    codexPlusRegistry: { settingsSections: registry },
+    codexPlusExtensionItems: (map) => [...map.values()].sort((a, b) => a.order - b.order),
+    runCodexPlusExtensionCallback: (scriptKey, label, fn) => {
+      try { return { ok: true, value: fn() }; } catch (error) { return { ok: false, error: String(error?.message || error) }; }
+    },
+    closeCodexPlusPage: () => {},
   });
   vm.runInContext(source, context);
   /** 把渲染出来的左栏按钮放进 nav，好让 sync 能找到它们。 */
@@ -82,7 +99,8 @@ function harness({ stored = "", extMenu = false } = {}) {
     return html;
   };
   const activeGroups = () => panel.children.filter((node) => node.getAttribute("data-active") === "true").map((node) => node.getAttribute("data-codex-plus-settings-group"));
-  return { context, panel, body, nav, storage, renderNav, activeGroups };
+  const mountOf = (registryId) => panel.querySelector(`[data-codex-plus-settings-section-mount="${registryId}"]`);
+  return { context, panel, body, nav, storage, renderNav, activeGroups, mountOf };
 }
 
 test("左栏列出有内容的分组，没记住时选第一组", () => {
@@ -123,4 +141,53 @@ test("有拓展菜单项时左栏多出「拓展设置」，可以切过去", ()
   assert.match(html, /data-codex-plus-settings-nav="ext-menu" data-active="true"[^]*?>拓展设置</);
   h.context.syncCodexPlusSettingsGroups();
   assert.deepEqual(h.activeGroups(), ["ext-menu"]);
+});
+
+test("拓展注册的设置分区：左栏排在内置分组之后、带原生对应图标，选中才画，切走调清理并清空", () => {
+  const calls = [];
+  const hooks = {
+    id: "builtin:hooks-editor:settingsSection:hooks-editor", title: "Hooks 编辑器", icon: "hooks-editor",
+    render: ({ container }) => {
+      calls.push("render");
+      container.innerHTML = "<div>编辑器</div>";
+      return () => calls.push("cleanup");
+    },
+  };
+  const h = harness({ sections: [hooks] });
+  const html = h.renderNav();
+  assert.deepEqual([...html.matchAll(/data-codex-plus-settings-nav="([^"]+)"/g)].map((m) => m[1]),
+    ["core", "plugins", `ext-section:${hooks.id}`, "tools"]);
+  const hooksIcon = h.context.codexPlusSettingsGroupIcon("hooks-editor");
+  assert.ok(html.includes(hooksIcon), "分区用登记的原生「钩子」图标");
+  h.context.syncCodexPlusSettingsGroups();
+  assert.deepEqual(calls, [], "没选中的分区不画");
+  h.context.selectCodexPlusSettingsGroup(`ext-section:${hooks.id}`);
+  assert.deepEqual(calls, ["render"]);
+  assert.equal(h.mountOf(hooks.id).innerHTML, "<div>编辑器</div>");
+  h.context.syncCodexPlusSettingsGroups();
+  assert.deepEqual(calls, ["render"], "重复同步不重画");
+  h.context.selectCodexPlusSettingsGroup("core");
+  assert.deepEqual(calls, ["render", "cleanup"]);
+  assert.equal(h.mountOf(hooks.id).innerHTML, "", "切走后清空，下次选中重画");
+  h.context.selectCodexPlusSettingsGroup(`ext-section:${hooks.id}`);
+  assert.deepEqual(calls, ["render", "cleanup", "render"]);
+  h.context.unmountCodexPlusSettingsSections();
+  assert.deepEqual(calls, ["render", "cleanup", "render", "cleanup"], "关页时也调清理");
+});
+
+test("拓展分区 render 抛错：分区里显示失败原因，不影响别的分组", () => {
+  const broken = { id: "user:demo:settingsSection:x", scriptKey: "user:demo", title: "坏分区", render: () => { throw new Error("boom"); } };
+  const h = harness({ sections: [broken], stored: `ext-section:${broken.id}` });
+  h.context.syncCodexPlusSettingsGroups();
+  assert.match(h.mountOf(broken.id).innerHTML, /拓展分区加载失败[^]*user:demo[^]*boom/);
+  assert.deepEqual(h.activeGroups(), [`ext-section:${broken.id}`]);
+});
+
+test("左栏按区插小标题（照原生的「个人 / 集成 / 编码」），同一区只插一次", () => {
+  const section = { id: "builtin:feature-lab:settingsSection:feature-lab", title: "Feature Lab", icon: "feature-lab", render: () => {} };
+  const h = harness({ sections: [section], extMenu: true });
+  const html = h.renderNav();
+  const sequence = [...html.matchAll(/codex-plus-page-nav-section-title" role="presentation">([^<]+)<|data-codex-plus-settings-nav="([^"]+)"/g)]
+    .map((m) => m[1] ? `#${m[1]}` : m[2]);
+  assert.deepEqual(sequence, ["#通用", "core", "plugins", "#拓展", `ext-section:${section.id}`, "ext-menu", "#其他", "tools"]);
 });

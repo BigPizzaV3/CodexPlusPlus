@@ -334,107 +334,128 @@
     return null;
   }
 
+  // 改下面任何 CSS 都要把它 +1：已注入过的页面靠它判断旧 <style> 是否过期。
+  const codexPlusFeatureLabStyleVersion = "2";
+
+  // 配色、圆角、开关全部复用 Codex++ 设置页（10-style.js :root）的变量，
+  // 而它们又落到 Codex 原生 token 上——这样分区和左栏其它分组看起来是同一套。
   function codexPlusFeatureLabStyles() {
     return `
       .codex-plus-feature-lab {
         display: flex; flex-direction: column; gap: 12px;
-        box-sizing: border-box; width: 100%; max-width: 920px;
-        min-height: 100%; padding: 18px 22px 36px;
-        color: light-dark(#1f2328, #e8e8e8);
+        /* 标题与外边距由 Codex++ 设置页的分组外壳给（registerSettingsSection）。 */
+        box-sizing: border-box; width: 100%;
+        padding: 0;
+        color: var(--codex-plus-text);
         background: transparent;
-        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px; line-height: 18px;
       }
       .codex-plus-feature-lab * { box-sizing: border-box; }
-      .codex-plus-feature-lab h2 { margin: 0; font-size: 17px; font-weight: 600; }
-      .codex-plus-feature-lab h3 { margin: 8px 0 0; font-size: 14px; font-weight: 600; }
+      .codex-plus-feature-lab h3 { margin: 12px 0 0; font-size: 13px; font-weight: 500; line-height: calc(1.25 / .875); }
       .codex-plus-feature-lab .cpl-panel { display: flex; flex-direction: column; gap: 12px; }
-      .codex-plus-feature-lab .cpl-tabs { display: flex; gap: 4px; border-bottom: 1px solid light-dark(#e1e7ec, #333940); }
+      .codex-plus-feature-lab .cpl-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--codex-plus-settings-card-border); }
       .codex-plus-feature-lab .cpl-tab {
         height: 30px; padding: 0 12px; border: 0 !important; border-bottom: 2px solid transparent !important;
-        border-radius: 0 !important; background: transparent !important; color: light-dark(#57606a, #9aa4ad);
+        border-radius: 0 !important; background: transparent !important; color: var(--codex-plus-text-secondary);
       }
-      .codex-plus-feature-lab .cpl-tab[aria-selected="true"] { color: inherit; border-bottom-color: light-dark(#0969da, #4493f8) !important; font-weight: 600; }
-      .codex-plus-feature-lab .cpl-hint { color: light-dark(#8c959f, #8b949e); font-size: 12px; }
-      .codex-plus-feature-lab .cpl-warn { color: light-dark(#9a6700, #f2cc60); font-size: 12px; }
-      .codex-plus-feature-lab .cpl-push-note { color: light-dark(#9a6700, #f2cc60); }
+      .codex-plus-feature-lab .cpl-tab:hover { color: var(--codex-plus-text); }
+      .codex-plus-feature-lab .cpl-tab[aria-selected="true"] { color: var(--codex-plus-text); border-bottom-color: var(--codex-plus-text) !important; font-weight: 500; }
+      .codex-plus-feature-lab .cpl-hint { color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 16px; }
+      .codex-plus-feature-lab .cpl-warn { color: var(--codex-plus-warning); font-size: 12px; line-height: 16px; }
+      .codex-plus-feature-lab .cpl-push-note { color: var(--codex-plus-warning); }
       .codex-plus-feature-lab .cpl-row select { flex: 0 0 auto; appearance: auto !important; }
       .codex-plus-feature-lab p { margin: 0; }
-      .codex-plus-feature-lab .cpl-sub { color: light-dark(#57606a, #9aa4ad); }
+      .codex-plus-feature-lab .cpl-sub { color: var(--codex-plus-text-secondary); }
+      .codex-plus-feature-lab code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
       .codex-plus-feature-lab .cpl-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       .codex-plus-feature-lab input[type="search"],
       .codex-plus-feature-lab select {
-        height: 30px; padding: 0 9px; border-radius: 7px;
-        border: 1px solid light-dark(#d0d7de, #3a3f45);
-        background: light-dark(#fff, #1f2328);
+        height: 28px; padding: 0 10px; border-radius: var(--codex-plus-control-radius);
+        border: 1px solid var(--codex-plus-control-border);
+        background: var(--codex-plus-control-bg);
         color: inherit; font: inherit; outline: none;
       }
+      .codex-plus-feature-lab input[type="search"]:focus,
+      .codex-plus-feature-lab select:focus { border-color: var(--codex-plus-focus); }
       .codex-plus-feature-lab input[type="search"] { flex: 1 1 240px; min-width: 160px; }
       .codex-plus-feature-lab button {
-        height: 30px; padding: 0 11px; border-radius: 7px; cursor: pointer;
-        border: 1px solid light-dark(#d0d7de, #3a3f45);
-        background: light-dark(#f6f8fa, #262b31);
+        height: 28px; padding: 0 12px; border-radius: var(--codex-plus-control-radius); cursor: pointer;
+        border: 0;
+        background: var(--codex-plus-button-bg);
         color: inherit; font: inherit;
       }
-      .codex-plus-feature-lab button:hover:not(:disabled) { background: light-dark(#eef1f4, #2f353c); }
+      .codex-plus-feature-lab button:hover:not(:disabled) { background: var(--codex-plus-button-hover-bg); }
       .codex-plus-feature-lab button:disabled { cursor: default; opacity: .55; }
-      .codex-plus-feature-lab .cpl-status { min-height: 18px; color: light-dark(#57606a, #9aa4ad); }
-      .codex-plus-feature-lab .cpl-status[data-tone="error"] { color: light-dark(#b42318, #ff8a80); }
-      .codex-plus-feature-lab .cpl-status[data-tone="ok"] { color: light-dark(#1a7f37, #7ee2a8); }
-      .codex-plus-feature-lab .cpl-status[data-tone="warn"] { color: light-dark(#8a6d00, #f2cc60); }
-      .codex-plus-feature-lab .cpl-known { display: inline-flex; align-items: center; gap: 5px; color: light-dark(#57606a, #b6bec6); cursor: pointer; user-select: none; }
+      .codex-plus-feature-lab .cpl-status { min-height: 16px; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-feature-lab .cpl-status:empty { display: none; }
+      .codex-plus-feature-lab .cpl-status[data-tone="error"] { color: var(--codex-plus-danger); }
+      .codex-plus-feature-lab .cpl-status[data-tone="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-feature-lab .cpl-status[data-tone="warn"] { color: var(--codex-plus-warning); }
+      .codex-plus-feature-lab .cpl-known { display: inline-flex; align-items: center; gap: 5px; color: var(--codex-plus-text-secondary); cursor: pointer; user-select: none; }
       .codex-plus-feature-lab .cpl-known input { appearance: auto !important; margin: 0; }
-      .codex-plus-feature-lab .cpl-list { display: flex; flex-direction: column; gap: 7px; }
+      /* 与设置页的 .codex-plus-settings-card 一致：一张卡片，行之间分隔线。 */
+      .codex-plus-feature-lab .cpl-list,
+      .codex-plus-feature-lab .cpl-master {
+        display: flex; flex-direction: column;
+        padding: 0 16px;
+        border: 1px solid var(--codex-plus-settings-card-border);
+        border-radius: var(--codex-plus-card-radius);
+        background: var(--codex-plus-settings-card-bg);
+      }
+      .codex-plus-feature-lab .cpl-list:empty { display: none; }
       .codex-plus-feature-lab .cpl-row {
-        display: flex; gap: 14px; align-items: flex-start;
-        padding: 11px 13px; border-radius: 9px;
-        border: 1px solid light-dark(#e1e7ec, #333940);
-        background: light-dark(#fff, #20252b);
+        display: flex; gap: 24px; align-items: center;
+        min-height: 52px; padding: 12px 0;
       }
-      .codex-plus-feature-lab .cpl-row[data-enabled="true"] { border-color: light-dark(#b7dfc4, #2f6b45); }
-      .codex-plus-feature-lab .cpl-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
-      .codex-plus-feature-lab .cpl-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-weight: 600; }
-      .codex-plus-feature-lab .cpl-name { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: light-dark(#6e7781, #8b949e); }
-      .codex-plus-feature-lab .cpl-desc { color: light-dark(#57606a, #b6bec6); }
-      .codex-plus-feature-lab .cpl-meta { font-size: 11px; color: light-dark(#8c959f, #8b949e); }
+      .codex-plus-feature-lab .cpl-row.cpl-master { flex-direction: row; padding: 12px 16px; }
+      .codex-plus-feature-lab .cpl-list > * + * { border-top: 1px solid var(--codex-plus-settings-card-border); }
+      .codex-plus-feature-lab .cpl-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+      .codex-plus-feature-lab .cpl-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-weight: 500; line-height: calc(1.25 / .875); }
+      .codex-plus-feature-lab .cpl-name { font: 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 400; color: var(--codex-plus-text-tertiary); }
+      .codex-plus-feature-lab .cpl-desc { color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-feature-lab .cpl-meta { color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 16px; }
+      /* 阶段标签沿用设置页 .codex-plus-feature-tag 的描边小标签，只给语义色。 */
       .codex-plus-feature-lab .cpl-stage {
-        display: inline-flex; align-items: center; height: 18px; padding: 0 6px;
-        border-radius: 999px; font-size: 11px; font-weight: 500;
-        border: 1px solid transparent;
+        display: inline-flex; align-items: center; padding: 0 5px;
+        border: 1px solid var(--codex-plus-border); border-radius: 4px;
+        color: var(--codex-plus-text-secondary);
+        font-size: 10.5px; font-weight: 500; line-height: 16px;
       }
-      .codex-plus-feature-lab .cpl-stage[data-tone="stable"] { color: light-dark(#1a7f37, #7ee2a8); background: light-dark(#dafbe1, #1b3326); }
-      .codex-plus-feature-lab .cpl-stage[data-tone="beta"] { color: light-dark(#8a6d00, #f2cc60); background: light-dark(#fff8c5, #3a2f10); }
-      .codex-plus-feature-lab .cpl-stage[data-tone="dev"] { color: light-dark(#9a3412, #ffb27d); background: light-dark(#ffebe9, #421f18); }
-      .codex-plus-feature-lab .cpl-stage[data-tone="deprecated"] { color: light-dark(#6e7781, #b6bec6); background: light-dark(#eef1f4, #2c3238); }
-      .codex-plus-feature-lab .cpl-stage[data-tone="removed"] { color: light-dark(#b42318, #ff8a80); background: light-dark(#ffebe9, #421f18); }
-      .codex-plus-feature-lab .cpl-stage[data-tone="known"] { color: light-dark(#0550ae, #79c0ff); background: light-dark(#ddf4ff, #102a43); }
+      .codex-plus-feature-lab .cpl-stage[data-tone="stable"] { color: var(--codex-plus-success); border-color: color-mix(in srgb, var(--codex-plus-success) 40%, transparent); }
+      .codex-plus-feature-lab .cpl-stage[data-tone="beta"],
+      .codex-plus-feature-lab .cpl-stage[data-tone="dev"] { color: var(--codex-plus-warning); border-color: color-mix(in srgb, var(--codex-plus-warning) 40%, transparent); }
+      .codex-plus-feature-lab .cpl-stage[data-tone="removed"] { color: var(--codex-plus-danger); border-color: color-mix(in srgb, var(--codex-plus-danger) 40%, transparent); }
+      .codex-plus-feature-lab .cpl-stage[data-tone="known"] { color: var(--codex-plus-switch-on); border-color: color-mix(in srgb, var(--codex-plus-switch-on) 40%, transparent); }
+      /* 开关与设置页 .codex-plus-toggle 同尺寸同变量。 */
       .codex-plus-feature-lab .cpl-switch {
-        position: relative; flex: 0 0 auto; width: 38px; height: 22px; padding: 0;
-        border-radius: 999px; border: 1px solid light-dark(#c8d0d8, #454b52);
-        background: light-dark(#eaeef2, #333940); transition: background .15s ease;
+        position: relative; flex: 0 0 32px; width: 32px; height: 20px; padding: 0;
+        border: 0; border-radius: 999px;
+        background: var(--codex-plus-switch-off); transition: background .15s ease;
       }
+      .codex-plus-feature-lab .cpl-switch:hover:not(:disabled) { background: var(--codex-plus-switch-off); }
       .codex-plus-feature-lab .cpl-switch::after {
         content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
-        border-radius: 50%; background: light-dark(#fff, #d8dde2);
-        box-shadow: 0 1px 2px rgb(0 0 0 / .28); transition: transform .15s ease;
+        border-radius: 50%; background: var(--codex-plus-switch-thumb);
+        box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.2)); transition: transform .15s ease;
       }
-      .codex-plus-feature-lab .cpl-switch[aria-checked="true"] {
-        border-color: transparent; background: light-dark(#2da44e, #3fb950);
-      }
-      .codex-plus-feature-lab .cpl-switch[aria-checked="true"]::after { transform: translateX(16px); background: #fff; }
-      .codex-plus-feature-lab .cpl-empty { padding: 22px 0; color: light-dark(#57606a, #9aa4ad); }
+      .codex-plus-feature-lab .cpl-switch[aria-checked="true"],
+      .codex-plus-feature-lab .cpl-switch[aria-checked="true"]:hover:not(:disabled) { background: var(--codex-plus-switch-on); }
+      .codex-plus-feature-lab .cpl-switch[aria-checked="true"]::after { transform: translateX(12px); background: var(--switch-thumb-color-checked, var(--codex-plus-switch-thumb)); }
+      .codex-plus-feature-lab .cpl-empty { padding: 22px 0; color: var(--codex-plus-text-secondary); }
       .codex-plus-feature-lab .cpl-note {
-        padding: 9px 11px; border-radius: 8px;
-        background: light-dark(#f6f8fa, #262b31);
-        color: light-dark(#57606a, #b6bec6); font-size: 12px;
+        color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 16px;
       }
     `;
   }
 
   function codexPlusFeatureLabEnsureStyles() {
     const id = "codex-plus-feature-lab-style";
-    if (document.getElementById(id)) return;
+    const existing = document.getElementById(id);
+    if (existing?.dataset.codexPlusStyleVersion === codexPlusFeatureLabStyleVersion) return;
+    existing?.remove();
     const style = document.createElement("style");
     style.id = id;
+    style.dataset.codexPlusStyleVersion = codexPlusFeatureLabStyleVersion;
     style.textContent = codexPlusFeatureLabStyles();
     document.head.appendChild(style);
   }
@@ -950,7 +971,6 @@
     const root = document.createElement("div");
     root.className = "codex-plus-feature-lab";
     root.innerHTML = `
-      <h2>Feature Lab</h2>
       <div class="cpl-tabs" role="tablist">
         <button type="button" role="tab" class="cpl-tab" data-tab="features" aria-selected="true">Codex 实验开关</button>
         <button type="button" role="tab" class="cpl-tab" data-tab="statsig" aria-selected="false">Statsig 开关</button>

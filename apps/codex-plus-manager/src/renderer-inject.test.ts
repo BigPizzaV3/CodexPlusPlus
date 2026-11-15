@@ -1269,16 +1269,17 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
   it("groups the settings homepage into labelled cards and keeps hidden service controls hidden", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const homeStart = renderer.indexOf('data-codex-plus-panel="home"');
-    const homeEnd = renderer.indexOf("${renderCodexPlusExtensionMenuRows()}", homeStart);
+    const homeEnd = renderer.indexOf("data-codex-plus-panel=\"${codexPlusExtensionsTab}\"", homeStart);
     assert.ok(homeStart >= 0 && homeEnd > homeStart);
-    // 模板里只剩清单挂载点、固定的「工具与关于」和「拓展设置」；设置分组全部按清单生成。
+    // 模板里只剩清单挂载点、拓展分区挂载点、固定的「拓展设置」和「工具与关于」；设置分组全部按清单生成。
+    // 「拓展设置」排在「工具与关于」前面：左栏里它和拓展分区同属「拓展」区。
     const template = renderer.slice(homeStart, homeEnd);
-    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*<div class="codex-plus-settings-group" data-codex-plus-settings-group="tools" data-codex-plus-settings-label="工具与关于"[^>]*data-codex-plus-settings-tools="true">\s*<section class="codex-plus-settings-section" aria-label="工具与关于">/);
+    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*\$\{renderCodexPlusSettingsSectionGroups\(\)\}\s*<div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu"[\s\S]*?<\/section>\s*<\/div>\s*<div class="codex-plus-settings-group" data-codex-plus-settings-group="tools" data-codex-plus-settings-label="工具与关于"[^>]*data-codex-plus-settings-tools="true">\s*<section class="codex-plus-settings-section" aria-label="工具与关于">/);
     assert.match(template, /data-codex-plus-settings-group="ext-menu" data-codex-plus-settings-label="拓展设置"[\s\S]*data-codex-plus-ext-menu-host="true"/);
     const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
     const page = await settingsCatalogRuntime(async () => catalog);
     await page.load();
-    const html = page.sections() + template.slice(template.indexOf('<div class="codex-plus-settings-group" data-codex-plus-settings-group="tools"'));
+    const html = page.sections() + template.slice(template.indexOf('<div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu"'));
     // 每个分组一个容器，左栏一项对应一个；标签就是分组标题。
     const groups = Array.from(html.matchAll(/<div class="codex-plus-settings-group" data-codex-plus-settings-group="([^"]+)" data-codex-plus-settings-label="([^"]+)"/g), ([, id, label]) => ({ id, label }));
     const expectedGroupEntries = catalog.groups
@@ -1286,14 +1287,15 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
         || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
       .map((group: { id: string; title: string }) => ({ id: group.id, label: group.title }));
     // 「拓展设置」的容器总在；没有拓展菜单项时由样式隐藏、左栏也不列。
-    assert.deepEqual(groups, [...expectedGroupEntries, { id: "tools", label: "工具与关于" }, { id: "ext-menu", label: "拓展设置" }]);
+    assert.deepEqual(groups, [...expectedGroupEntries, { id: "ext-menu", label: "拓展设置" }, { id: "tools", label: "工具与关于" }]);
     const sections = Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g));
     const expectedGroups = catalog.groups
       .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
         || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
       .map((group: { title: string }) => group.title);
-    assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "工具与关于"]);
-    for (const [, title, contents] of sections) {
+    assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "拓展设置", "工具与关于"]);
+    // 「拓展设置」的行由拓展菜单运行时填，模板里没有卡片。
+    for (const [, title, contents] of sections.filter((match) => match[1] !== "拓展设置")) {
       assert.ok(contents.includes(`<h2 class="codex-plus-settings-section-title">${title}</h2>`));
       assert.ok(contents.includes('class="codex-plus-settings-card"'));
       assert.ok(contents.includes('class="codex-plus-row"'));
@@ -2852,15 +2854,17 @@ describe("拓展菜单项", () => {
 
   it("内置菜单模板保持原样，只追加一个拓展挂载点", async () => {
     const source = await readFile(settingsPath, "utf8");
-    // 挂载点在 home 面板里，且位于「提出问题」之后（即内置项末尾）。
+    // 挂载点在 home 面板自己的「拓展设置」分组里，排在「工具与关于」之前（左栏里和拓展分区同属「拓展」区）。
     const openIdx = source.indexOf("overlay.innerHTML = `");
     const mountIdx = source.indexOf("${renderCodexPlusExtensionMenuRows()}");
-    const issueIdx = source.indexOf("提出问题");
+    const extGroupIdx = source.indexOf('data-codex-plus-settings-group="ext-menu"', openIdx);
+    const toolsGroupIdx = source.indexOf('data-codex-plus-settings-group="tools"', openIdx);
+    const issueIdx = source.indexOf("提出问题", toolsGroupIdx);
     assert.ok(mountIdx > 0, "找不到拓展菜单挂载点");
-    assert.ok(mountIdx > issueIdx, "挂载点应位于内置项之后");
+    assert.ok(extGroupIdx > openIdx && mountIdx > extGroupIdx && mountIdx < toolsGroupIdx, "挂载点应在「拓展设置」分组里、「工具与关于」之前");
     // 关键：内置的行仍然是内联模板，没有被拆成数组。
     assert.ok(
-      source.slice(openIdx, mountIdx).includes('class="codex-plus-row"'),
+      source.slice(toolsGroupIdx, issueIdx).includes('class="codex-plus-row"'),
       "内置菜单行应当仍是内联模板",
     );
     assert.ok(

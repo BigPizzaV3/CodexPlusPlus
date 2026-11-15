@@ -8,12 +8,12 @@
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 190
+      "lines": 191
     },
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3093
+      "lines": 3110
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2571
+      "lines": 2689
     },
     {
       "name": "41-extension-detail.js",
@@ -178,7 +178,7 @@
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 585
+      "lines": 587
     },
     {
       "name": "92-extension-slots.js",
@@ -193,7 +193,7 @@
     {
       "name": "92-extension-views.js",
       "description": "悬浮球页签、工具调用视图、Codex 设置页分区",
-      "lines": 174
+      "lines": 167
     },
     {
       "name": "93-dictation.js",
@@ -208,12 +208,12 @@
     {
       "name": "96-feature-lab.js",
       "description": "内置拓展 Feature Lab：原生实验开关列表与启停",
-      "lines": 982
+      "lines": 1002
     },
     {
       "name": "96-hooks-editor.js",
       "description": "内置拓展 Hooks 编辑器：hooks.json 的模板新建、编辑、启停、信任与试运行",
-      "lines": 1188
+      "lines": 1217
     },
     {
       "name": "96-builtin-extensions.js",

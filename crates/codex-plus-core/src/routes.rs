@@ -446,7 +446,7 @@ pub async fn handle_bridge_request(
             "status": "ok",
             "prompts": crate::custom_prompts::list_custom_prompts(&crate::codex_home::default_codex_home_dir()),
         })),
-        // Codex 设置页「Hooks 编辑器」（96-hooks-editor.js）。不在拓展路由白名单里：能写 hooks.json、能执行命令。
+        // Codex++ 设置页「Hooks 编辑器」（96-hooks-editor.js）。不在拓展路由白名单里：能写 hooks.json、能执行命令。
         "/hooks/files" => {
             let payload = payload.clone();
             let home = crate::codex_home::default_codex_home_dir();

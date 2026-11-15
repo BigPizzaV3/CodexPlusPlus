@@ -437,104 +437,133 @@
     }
   }
 
+  // 改下面任何 CSS 都要把它 +1：已注入过的页面靠它判断旧 <style> 是否过期。
+  const codexPlusHooksEditorStyleVersion = "2";
+
+  // 配色、圆角、开关复用 Codex++ 设置页（10-style.js :root）的变量，与左栏其它分组一致。
   function codexPlusHooksEditorStyles() {
     return `
       .codex-plus-hooks-editor {
         display: flex; flex-direction: column; gap: 12px;
-        box-sizing: border-box; width: 100%; max-width: 960px;
-        padding: 18px 22px 36px;
-        color: light-dark(#1f2328, #e8e8e8);
-        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        /* 标题与外边距由 Codex++ 设置页的分组外壳给（registerSettingsSection）。 */
+        box-sizing: border-box; width: 100%;
+        padding: 0;
+        color: var(--codex-plus-text);
+        font-size: 13px; line-height: 18px;
       }
       .codex-plus-hooks-editor * { box-sizing: border-box; }
-      .codex-plus-hooks-editor h2 { margin: 0; font-size: 17px; font-weight: 600; }
-      .codex-plus-hooks-editor h3 { margin: 6px 0 0; font-size: 13px; font-weight: 600; }
+      .codex-plus-hooks-editor h3 { margin: 12px 0 0; font-size: 13px; font-weight: 500; line-height: calc(1.25 / .875); }
       .codex-plus-hooks-editor p { margin: 0; }
       .codex-plus-hooks-editor code, .codex-plus-hooks-editor .che-mono {
         font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
-      .codex-plus-hooks-editor .che-sub { color: light-dark(#57606a, #9aa4ad); }
+      .codex-plus-hooks-editor .che-sub { color: var(--codex-plus-text-secondary); }
       .codex-plus-hooks-editor .che-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       .codex-plus-hooks-editor input[type="text"], .codex-plus-hooks-editor input[type="number"],
       .codex-plus-hooks-editor select, .codex-plus-hooks-editor textarea {
-        min-height: 30px; padding: 4px 9px; border-radius: 7px;
-        border: 1px solid light-dark(#d0d7de, #3a3f45);
-        background: light-dark(#fff, #1f2328); color: inherit; font: inherit; outline: none;
+        min-height: 28px; padding: 4px 10px; border-radius: var(--codex-plus-control-radius);
+        border: 1px solid var(--codex-plus-control-border);
+        background: var(--codex-plus-control-bg); color: inherit; font: inherit; outline: none;
       }
+      .codex-plus-hooks-editor input:focus, .codex-plus-hooks-editor select:focus,
+      .codex-plus-hooks-editor textarea:focus { border-color: var(--codex-plus-focus); }
       .codex-plus-hooks-editor select { appearance: auto !important; }
       .codex-plus-hooks-editor input[type="checkbox"] { appearance: auto !important; margin: 0; }
       .codex-plus-hooks-editor textarea { width: 100%; resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
       .codex-plus-hooks-editor button {
-        height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer;
-        border: 1px solid light-dark(#d0d7de, #3a3f45);
-        background: light-dark(#f6f8fa, #262b31); color: inherit; font: inherit;
+        height: 28px; padding: 0 12px; border-radius: var(--codex-plus-control-radius); cursor: pointer;
+        border: 0;
+        background: var(--codex-plus-button-bg); color: inherit; font: inherit;
       }
-      .codex-plus-hooks-editor button:hover:not(:disabled) { background: light-dark(#eef1f4, #2f353c); }
+      .codex-plus-hooks-editor button:hover:not(:disabled) { background: var(--codex-plus-button-hover-bg); }
       .codex-plus-hooks-editor button:disabled { cursor: default; opacity: .55; }
-      .codex-plus-hooks-editor button.che-primary { background: light-dark(#0969da, #2f81f7); border-color: transparent; color: #fff; }
-      .codex-plus-hooks-editor button.che-danger { color: light-dark(#b42318, #ff8a80); }
+      /* 主按钮跟 Codex 原生一样用前景色反白。 */
+      .codex-plus-hooks-editor button.che-primary,
+      .codex-plus-hooks-editor button.che-primary:hover:not(:disabled) { background: var(--codex-plus-text); color: var(--codex-plus-bg-primary); }
+      .codex-plus-hooks-editor button.che-primary:hover:not(:disabled) { opacity: .85; }
+      .codex-plus-hooks-editor button.che-danger { color: var(--codex-plus-danger); }
       .codex-plus-hooks-editor .che-file { flex: 1 1 320px; min-width: 220px; }
       .codex-plus-hooks-editor .che-root-input { flex: 1 1 260px; }
-      .codex-plus-hooks-editor .che-status { min-height: 18px; color: light-dark(#57606a, #9aa4ad); white-space: pre-wrap; }
-      .codex-plus-hooks-editor [data-tone="error"] { color: light-dark(#b42318, #ff8a80); }
-      .codex-plus-hooks-editor [data-tone="ok"] { color: light-dark(#1a7f37, #7ee2a8); }
-      .codex-plus-hooks-editor [data-tone="warn"] { color: light-dark(#8a6d00, #f2cc60); }
-      .codex-plus-hooks-editor .che-note {
-        padding: 8px 11px; border-radius: 8px; font-size: 12px;
-        background: light-dark(#f6f8fa, #262b31); color: light-dark(#57606a, #b6bec6);
+      .codex-plus-hooks-editor .che-status { min-height: 16px; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; white-space: pre-wrap; }
+      .codex-plus-hooks-editor .che-status:empty { display: none; }
+      .codex-plus-hooks-editor [data-tone="error"] { color: var(--codex-plus-danger); }
+      .codex-plus-hooks-editor [data-tone="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-hooks-editor [data-tone="warn"] { color: var(--codex-plus-warning); }
+      .codex-plus-hooks-editor .che-note { color: var(--codex-plus-text-tertiary); font-size: 12px; line-height: 16px; }
+      .codex-plus-hooks-editor .che-note[data-tone="warn"] { color: var(--codex-plus-warning); }
+      /* 与设置页的 .codex-plus-settings-card 一致：一张卡片，行之间分隔线。 */
+      .codex-plus-hooks-editor .che-list {
+        display: flex; flex-direction: column;
+        padding: 0 16px;
+        border: 1px solid var(--codex-plus-settings-card-border);
+        border-radius: var(--codex-plus-card-radius);
+        background: var(--codex-plus-settings-card-bg);
       }
-      .codex-plus-hooks-editor .che-note[data-tone="warn"] { background: light-dark(#fff8c5, #3a2f10); }
-      .codex-plus-hooks-editor .che-list { display: flex; flex-direction: column; gap: 7px; }
-      .codex-plus-hooks-editor .che-row {
-        display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 9px;
-        border: 1px solid light-dark(#e1e7ec, #333940); background: light-dark(#fff, #20252b);
+      .codex-plus-hooks-editor .che-list:empty { display: none; }
+      .codex-plus-hooks-editor .che-section { display: flex; flex-direction: column; gap: 8px; }
+      .codex-plus-hooks-editor .che-list > * + * { border-top: 1px solid var(--codex-plus-settings-card-border); }
+      .codex-plus-hooks-editor .che-row { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; }
+      /* 未保存的行：整行淡淡的警示底色，铺满卡片宽度。 */
+      .codex-plus-hooks-editor .che-row[data-dirty="true"] {
+        margin: 0 -16px; padding: 12px 16px;
+        background: color-mix(in srgb, var(--codex-plus-warning) 7%, transparent);
       }
-      .codex-plus-hooks-editor .che-row[data-dirty="true"] { border-color: light-dark(#d4a72c, #9e7a1a); }
-      .codex-plus-hooks-editor .che-head { display: flex; gap: 10px; align-items: flex-start; }
-      .codex-plus-hooks-editor .che-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-      .codex-plus-hooks-editor .che-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-weight: 600; }
-      .codex-plus-hooks-editor .che-command { white-space: pre-wrap; word-break: break-all; color: light-dark(#24292f, #d6dbe0); }
-      .codex-plus-hooks-editor .che-meta { font-size: 11px; color: light-dark(#8c959f, #8b949e); }
+      .codex-plus-hooks-editor .che-head { display: flex; gap: 12px; align-items: flex-start; }
+      .codex-plus-hooks-editor .che-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .codex-plus-hooks-editor .che-title { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-weight: 500; line-height: calc(1.25 / .875); }
+      .codex-plus-hooks-editor .che-command { white-space: pre-wrap; word-break: break-all; color: var(--codex-plus-text-secondary); }
+      .codex-plus-hooks-editor .che-meta { font-size: 12px; line-height: 16px; color: var(--codex-plus-text-tertiary); }
       .codex-plus-hooks-editor .che-actions { display: flex; gap: 6px; flex: 0 0 auto; align-items: center; }
+      /* 标签沿用设置页 .codex-plus-feature-tag 的描边小标签。 */
       .codex-plus-hooks-editor .che-badge {
-        display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px;
-        font-size: 11px; font-weight: 500; background: light-dark(#eef1f4, #2c3238); color: light-dark(#57606a, #b6bec6);
+        display: inline-flex; align-items: center; padding: 0 5px;
+        border: 1px solid var(--codex-plus-border); border-radius: 4px;
+        font-size: 10.5px; font-weight: 500; line-height: 16px; color: var(--codex-plus-text-secondary);
       }
-      .codex-plus-hooks-editor .che-badge[data-tone="ok"] { background: light-dark(#dafbe1, #1b3326); }
-      .codex-plus-hooks-editor .che-badge[data-tone="warn"] { background: light-dark(#fff8c5, #3a2f10); }
-      .codex-plus-hooks-editor .che-badge[data-tone="error"] { background: light-dark(#ffebe9, #421f18); }
+      .codex-plus-hooks-editor .che-badge[data-tone="ok"] { border-color: color-mix(in srgb, var(--codex-plus-success) 40%, transparent); }
+      .codex-plus-hooks-editor .che-badge[data-tone="warn"] { border-color: color-mix(in srgb, var(--codex-plus-warning) 40%, transparent); }
+      .codex-plus-hooks-editor .che-badge[data-tone="error"] { border-color: color-mix(in srgb, var(--codex-plus-danger) 40%, transparent); }
+      /* 开关与设置页 .codex-plus-toggle 同尺寸同变量。 */
       .codex-plus-hooks-editor .che-switch {
-        position: relative; width: 38px; height: 22px; padding: 0; border-radius: 999px;
-        border: 1px solid light-dark(#c8d0d8, #454b52); background: light-dark(#eaeef2, #333940);
+        position: relative; flex: 0 0 32px; width: 32px; height: 20px; padding: 0; border: 0; border-radius: 999px;
+        background: var(--codex-plus-switch-off); transition: background .15s ease;
       }
+      .codex-plus-hooks-editor .che-switch:hover:not(:disabled) { background: var(--codex-plus-switch-off); }
       .codex-plus-hooks-editor .che-switch::after {
         content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
-        background: light-dark(#fff, #d8dde2); box-shadow: 0 1px 2px rgb(0 0 0 / .28); transition: transform .15s ease;
+        background: var(--codex-plus-switch-thumb); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.2)); transition: transform .15s ease;
       }
-      .codex-plus-hooks-editor .che-switch[aria-checked="true"] { border-color: transparent; background: light-dark(#2da44e, #3fb950); }
-      .codex-plus-hooks-editor .che-switch[aria-checked="true"]::after { transform: translateX(16px); background: #fff; }
+      .codex-plus-hooks-editor .che-switch[aria-checked="true"],
+      .codex-plus-hooks-editor .che-switch[aria-checked="true"]:hover:not(:disabled) { background: var(--codex-plus-switch-on); }
+      .codex-plus-hooks-editor .che-switch[aria-checked="true"]::after { transform: translateX(12px); background: var(--switch-thumb-color-checked, var(--codex-plus-switch-thumb)); }
       .codex-plus-hooks-editor .che-form {
         display: grid; grid-template-columns: 110px 1fr; gap: 8px 10px; align-items: center;
-        padding: 10px 12px; border-radius: 9px; border: 1px dashed light-dark(#c8d0d8, #454b52);
+        padding: 12px 16px; border-radius: var(--codex-plus-card-radius);
+        border: 1px solid var(--codex-plus-settings-card-border);
+        background: var(--codex-plus-settings-card-bg);
       }
-      .codex-plus-hooks-editor .che-form > label { color: light-dark(#57606a, #9aa4ad); }
+      .codex-plus-hooks-editor .che-row .che-form { padding: 12px 0 0; border: 0; border-radius: 0; background: transparent; }
+      .codex-plus-hooks-editor .che-form > label { color: var(--codex-plus-text-secondary); }
       .codex-plus-hooks-editor .che-form .che-wide { grid-column: 1 / -1; }
       .codex-plus-hooks-editor .che-check { display: inline-flex; gap: 6px; align-items: center; }
       .codex-plus-hooks-editor .che-test { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
       .codex-plus-hooks-editor .che-test .che-toolbar input { flex: 1 1 auto; }
       .codex-plus-hooks-editor .che-output {
-        margin: 0; padding: 8px 10px; border-radius: 7px; max-height: 220px; overflow: auto; white-space: pre-wrap;
-        background: light-dark(#f6f8fa, #161a1f); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0; padding: 8px 10px; border-radius: var(--codex-plus-control-radius); max-height: 220px; overflow: auto; white-space: pre-wrap;
+        background: var(--codex-plus-button-bg); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
-      .codex-plus-hooks-editor .che-empty { padding: 14px 0; color: light-dark(#57606a, #9aa4ad); }
+      .codex-plus-hooks-editor .che-empty { padding: 14px 0; color: var(--codex-plus-text-secondary); }
     `;
   }
 
   function codexPlusHooksEditorEnsureStyles() {
     const id = "codex-plus-hooks-editor-style";
-    if (document.getElementById(id)) return;
+    const existing = document.getElementById(id);
+    if (existing?.dataset.codexPlusStyleVersion === codexPlusHooksEditorStyleVersion) return;
+    existing?.remove();
     const style = document.createElement("style");
     style.id = id;
+    style.dataset.codexPlusStyleVersion = codexPlusHooksEditorStyleVersion;
     style.textContent = codexPlusHooksEditorStyles();
     document.head.appendChild(style);
   }
@@ -589,7 +618,6 @@
     const root = el(
       "div",
       { className: "codex-plus-hooks-editor" },
-      el("h2", { text: "Hooks 编辑器" }),
       el("p", {
         className: "che-sub",
         text: "在 Codex 的回合事件上挂命令：会话开始、工具调用前后、回合结束等。改的是 hooks.json，开关和信任与原生「Hooks」页共用；保存后新会话立即生效，已打开的会话下一轮生效。",
@@ -1045,12 +1073,13 @@
         return !editablePrefixes.has(source) && source !== prefix;
       });
       if (!rows.length) return null;
+      // 标题和说明在卡片外，卡片里只放行，和设置页其它分区一样。
       return el(
         "div",
-        { className: "che-list" },
+        { className: "che-section" },
         el("h3", { text: "其他来源（只读，可启停）" }),
         el("p", { className: "che-sub", text: "config.toml、插件或托管配置里定义的 hook，这里不能改内容。" }),
-        rows.map((hook) => el(
+        el("div", { className: "che-list" }, rows.map((hook) => el(
           "div",
           { className: "che-row" },
           el(
@@ -1079,7 +1108,7 @@
               enableSwitch(hook, hook.isManaged ? "受管理的 hook 不能在这里切换" : ""),
             ),
           ),
-        )),
+        ))),
       );
     };
 
