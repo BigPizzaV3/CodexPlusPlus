@@ -1565,7 +1565,9 @@ mod tests {
                 ..AgentBinding::default()
             },
         );
-        let alias = route::claude_desktop_alias("kimi-k3", false);
+        // kimi-k3 在内置模型资料里有思考档位（low/high/max），handle_models 会按
+        // has_effort=true 取 mythos-gw- 别名（Desktop 才给它出思考等级菜单）。
+        let alias = route::claude_desktop_alias("kimi-k3", true);
         let agent = ToolId::Unknown("claude-desktop".to_string());
 
         // 中间档（512K）不标 1M：id 无后缀，条目上也没有 1M 字段。
