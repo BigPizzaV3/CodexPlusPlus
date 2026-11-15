@@ -40,6 +40,7 @@ struct SessionState {
     turns: Vec<Value>,
     requests: Vec<Value>,
     turn_id: Option<String>,
+    token_usage: Value,
     /// 网页改过、还没随 `turn/start` 发出去的设置。
     pending: SettingsChange,
 }
@@ -114,9 +115,11 @@ impl HeadlessSession {
                 "collaborationMode": "default",
             },
             "truncatedTurns": skip,
+            "tokenUsage": state.token_usage,
             "turns": state.turns.iter().skip(skip).map(|turn| json!({
                 "turnId": turn.get("id").or_else(|| turn.get("turnId")),
                 "status": turn.get("status"),
+                "startedAtMs": turn.get("startedAt").and_then(Value::as_i64).map(|seconds| seconds * 1000),
                 "items": turn.get("items").and_then(Value::as_array).map(|items| items.iter().map(view_item).collect::<Vec<_>>()).unwrap_or_default(),
             })).collect::<Vec<_>>(),
             "requests": state.requests,
@@ -371,6 +374,9 @@ impl HeadlessSession {
             "serverRequest/resolved" => {
                 let id = params.get("requestId");
                 state.requests.retain(|request| request.get("id") != id);
+            }
+            "thread/tokenUsage/updated" => {
+                state.token_usage = super::follower::token_usage(params.get("tokenUsage"));
             }
             "thread/name/updated" => {
                 if let Some(name) = params.get("name").and_then(Value::as_str) {

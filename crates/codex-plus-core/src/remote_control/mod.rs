@@ -124,6 +124,29 @@ pub fn update_state<R>(change: impl FnOnce(&mut RemoteControlState) -> R) -> any
     Ok((state, result))
 }
 
+/// 这台电脑给人看的名字（手机顶栏显示「xxx 的 MacBook Pro」那种）：macOS 取「电脑名称」，
+/// Windows 取 COMPUTERNAME，其它取主机名。只算一次。
+pub fn host_display_name() -> String {
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output() {
+                let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if output.status.success() && !name.is_empty() {
+                    return name;
+                }
+            }
+        }
+        std::env::var("COMPUTERNAME")
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| tls::local_hostname().map(|name| name.trim_end_matches(".local").to_string()))
+            .unwrap_or_else(|| "这台电脑".to_string())
+    })
+    .clone()
+}
+
 /// 64 位十六进制随机令牌。
 pub fn generate_token() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())

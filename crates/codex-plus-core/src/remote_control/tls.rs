@@ -83,7 +83,7 @@ pub fn is_tailscale(ip: &IpAddr) -> bool {
 }
 
 /// 本机名对应的 mDNS 名（`xxx.local`），取不到就不放。
-fn local_hostname() -> Option<String> {
+pub fn local_hostname() -> Option<String> {
     let name = std::env::var("COMPUTERNAME")
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())

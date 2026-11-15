@@ -97,57 +97,209 @@
   .gate p { margin: 0; color: var(--muted); font-size: 13px; }
   .gate input { width: 100%; }
   .gate .code { font: 600 18px/1.4 ui-monospace, Menlo, monospace; letter-spacing: 3px; text-transform: uppercase; }
-  /* ---- 聊天样式：按微信的对话页做，手机默认用它；Codex 样式保持上面的桌面形态 ---- */
-  html[data-style="chat"] { --chat-bg: light-dark(#ededed, #0f1113); --chat-in: light-dark(#ffffff, #23262a); --chat-out: light-dark(#95ec69, #3f7f2e); --chat-out-text: light-dark(#111111, #eaf6e4); }
-  html[data-style="chat"] body { background: var(--chat-bg); }
-  html[data-style="chat"] aside { background: var(--panel); }
-  html[data-style="chat"] aside header h1 { font-size: 16px; }
-  html[data-style="chat"] .whoami { border-bottom: none; padding-top: 0; }
-  /* 会话列表：头像 + 标题 / 摘要 + 右侧时间 */
-  html[data-style="chat"] .thread { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: none; position: relative; }
-  html[data-style="chat"] .thread::after { content: ""; position: absolute; left: 66px; right: 0; bottom: 0; border-bottom: 1px solid var(--line); }
-  html[data-style="chat"] .thread:hover, html[data-style="chat"] .thread.active { background: var(--bg); }
-  html[data-style="chat"] .thread-avatar { display: flex; width: 44px; height: 44px; flex: 0 0 44px; border-radius: 6px; align-items: center; justify-content: center; font-size: 17px; font-weight: 600; background: light-dark(#111111, #e8e8e8); color: light-dark(#ffffff, #111111); }
-  html[data-style="chat"] .thread-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
-  html[data-style="chat"] .thread .title { font-weight: 500; font-size: 16px; }
-  html[data-style="chat"] .thread.project .title { font-weight: 500; }
-  html[data-style="chat"] .project-back { font-size: 15px; color: var(--text); }
-  html[data-style="chat"] .thread .meta { font-size: 13px; }
-  html[data-style="chat"] .thread-time { display: block; flex: 0 0 auto; align-self: flex-start; color: var(--muted); font-size: 12px; padding-top: 2px; }
-  /* 对话区：浅灰底、左白右绿气泡、方角头像 */
-  html[data-style="chat"] .log { background: var(--chat-bg); gap: 16px; padding: 14px 12px; }
-  html[data-style="chat"] .msg { max-width: 100%; }
-  html[data-style="chat"] .msg .avatar { display: flex; width: 34px; height: 34px; flex: 0 0 34px; border-radius: 5px; font-size: 15px; background: light-dark(#d5d5d5, #2c3035); color: var(--text); }
-  html[data-style="chat"] .msg.agent .avatar { background: light-dark(#111111, #e8e8e8); color: light-dark(#ffffff, #111111); }
-  html[data-style="chat"] .msg .bubble { max-width: calc(100% - 52px); padding: 8px 11px; border-radius: 5px; font-size: 15px; line-height: 1.45; background: var(--chat-in); }
-  html[data-style="chat"] .msg.user .bubble { background: var(--chat-out); color: var(--chat-out-text); border: none; }
-  html[data-style="chat"] .msg.agent .bubble { border: none; }
-  html[data-style="chat"] .msg.typing .bubble { color: var(--muted); font-size: 14px; }
-  html[data-style="chat"] .msg.typing .bubble::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: chat-dots 1.2s steps(4, end) infinite; }
-  @keyframes chat-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
-  html[data-style="chat"] .msg.steer { align-self: center; font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--text) 8%, transparent); padding: 2px 8px; border-radius: 4px; }
-  html[data-style="chat"] .note { align-self: center; text-align: center; font-size: 12px; }
-  html[data-style="chat"] .cmd { align-self: flex-start; max-width: calc(100% - 44px); margin-left: 44px; background: var(--chat-in); border: none; border-radius: 5px; }
-  html[data-style="chat"] .requests { background: var(--chat-bg); padding-bottom: 8px; }
-  html[data-style="chat"] .request { background: var(--chat-in); border: none; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); border-radius: 8px; }
-  html[data-style="chat"] .empty { background: transparent; }
-  /* 标题栏：返回 + 居中标题 + 停止 / 更多 */
-  html[data-style="chat"] main header { position: relative; justify-content: center; padding-left: 52px; padding-right: 12px; }
-  html[data-style="chat"] main header .title { flex: none; max-width: 55%; text-align: center; font-size: 16px; }
-  html[data-style="chat"] .badge { display: none; }
-  html[data-style="chat"] #open { display: none !important; }
-  html[data-style="chat"] .more { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 4px 0; font-size: 17px; line-height: 1; }
-  html[data-style="chat"] .back { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); border: none; background: transparent; font-size: 22px; padding: 0 8px; }
-  /* 模型 / 权限只在点「⋯」时出现 */
-  html[data-style="chat"] .controls { display: none; }
-  html[data-style="chat"] .controls.chat-open { display: flex; }
-  /* 输入条：微信的圆角输入框 + 绿色发送 */
-  html[data-style="chat"] footer { background: var(--panel); border-top-color: var(--line); }
-  html[data-style="chat"] #input { border-radius: 8px; background: light-dark(#ffffff, #2a2e33); min-height: 38px; }
-  html[data-style="chat"] #send { border-radius: 8px; background: #07c160; border-color: #07c160; color: #fff; }
-  html[data-style="chat"] #send:disabled { opacity: .45; }
-  html[data-style="chat"] #send.danger, html[data-style="chat"] #interrupt { color: var(--danger); }
-  html[data-style="chat"] .toast { bottom: calc(18px + env(safe-area-inset-bottom)); }
+  /* ================= 聊天样式：独立的手机界面（列表 / 项目 / 对话 / 设置），照微信与 Codex 手机端做 ================= */
+  html[data-style="chat"] .app { display: none !important; }
+  html:not([data-style="chat"]) .m { display: none !important; }
+  html[data-style="chat"] body { background: var(--m-bg); }
+  .m {
+    --m-bg: light-dark(#ededed, #111111);
+    --m-bar: light-dark(#ededed, #191919);
+    --m-row: light-dark(#ffffff, #191919);
+    --m-row-active: light-dark(#e5e5e5, #262626);
+    --m-line: light-dark(#e5e5e5, #2a2a2a);
+    --m-text: light-dark(#191919, #e8e8e8);
+    --m-sub: light-dark(#8a8a8a, #808080);
+    --m-time: light-dark(#b2b2b2, #6a6a6a);
+    --m-field: light-dark(#ffffff, #2c2c2c);
+    --m-green: #07c160;
+    --m-blue: light-dark(#576b95, #7d93c9);
+    --m-red: #fa5151;
+    --m-warn: #e3a92b;
+    --m-in: light-dark(#ffffff, #2c2c2c);
+    --m-out: light-dark(#95ec69, #3eb575);
+    --m-out-text: light-dark(#191919, #0e1a12);
+    --m-composer: light-dark(#f7f7f7, #1c1c1c);
+    --m-pill: light-dark(#ffffff, #2c2c2c);
+    position: fixed; inset: 0; max-width: 640px; margin: 0 auto; display: flex; flex-direction: column;
+    background: var(--m-row); color: var(--m-text); overflow: hidden;
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .m button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; border-radius: 0; }
+  .m button:hover:not(:disabled) { border-color: transparent; }
+  .m svg { display: block; }
+  .m-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--m-row); }
+  /* 顶栏 */
+  .m-top { flex: 0 0 auto; display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; height: 48px;
+    padding: env(safe-area-inset-top) 8px 0; background: var(--m-bar); }
+  .m-top .m-icon { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; }
+  .m-top .m-icon svg { width: 26px; height: 26px; }
+  .m-top .m-title { justify-self: center; min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 6px; font-size: 17px; font-weight: 600; }
+  .m-top .m-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-top .m-title .dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--m-green); }
+  .m-top .m-title .dot.off { background: var(--m-red); }
+  .m-top .m-title svg { flex: 0 0 auto; width: 14px; height: 14px; opacity: .7; }
+  .m-top .m-back { display: flex; align-items: center; gap: 2px; height: 44px; font-size: 16px; }
+  .m-top .m-back svg { width: 24px; height: 24px; }
+  .m-top .m-back .count { font-size: 14px; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--m-text) 10%, transparent); }
+  /* 搜索 */
+  .m-search { flex: 0 0 auto; padding: 4px 12px 10px; background: var(--m-bar); }
+  .m-search label { position: relative; display: block; }
+  .m-search input { width: 100%; height: 36px; border: none; border-radius: 8px; background: var(--m-field); color: var(--m-text);
+    font-size: 16px; text-align: center; padding: 0 12px; outline: none; }
+  .m-search input:focus, .m-search input:not(:placeholder-shown) { text-align: left; padding-left: 34px; }
+  .m-search svg { position: absolute; left: 10px; top: 9px; width: 18px; height: 18px; opacity: .5; display: none; }
+  .m-search input:focus + svg, .m-search input:not(:placeholder-shown) + svg { display: block; }
+  /* 列表 */
+  .m-rows { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--m-row); }
+  .m-row { position: relative; display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
+  .m-row:active, .m-row.active { background: var(--m-row-active); }
+  .m-row::after { content: ""; position: absolute; left: 76px; right: 0; bottom: 0; border-bottom: 1px solid var(--m-line); }
+  .m-row:last-child::after { display: none; }
+  .m-row-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .m-row-head { display: flex; align-items: baseline; gap: 8px; }
+  .m-row-title { flex: 1; min-width: 0; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-row-time { flex: 0 0 auto; font-size: 12px; color: var(--m-time); }
+  .m-row-sub { font-size: 14px; color: var(--m-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-row-sub .running { color: var(--m-blue); }
+  .m-empty { padding: 48px 24px; text-align: center; color: var(--m-sub); font-size: 14px; }
+  /* 头像：单字方块 / 九宫格（按微信群头像的排法） */
+  .m-avatar { position: relative; flex: 0 0 48px; width: 48px; height: 48px; }
+  .m-avatar .face { width: 100%; height: 100%; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;
+    justify-content: center; gap: 2px; padding: 2px; box-sizing: border-box; background: light-dark(#dcdcdc, #2e2e2e); }
+  .m-avatar .face.single { padding: 0; align-items: center; color: #fff; font-size: 21px; font-weight: 500; }
+  .m-avatar .grid-row { display: flex; justify-content: center; gap: 2px; }
+  .m-avatar .tile { display: flex; align-items: center; justify-content: center; border-radius: 2px; color: #fff; font-weight: 500; overflow: hidden; }
+  .m-avatar .badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+    border-radius: 9px; background: var(--m-red); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+  .m-avatar .badge.dot { min-width: 10px; width: 10px; height: 10px; padding: 0; top: -3px; right: -3px; }
+  /* 底部标签栏 */
+  .m-tabs { flex: 0 0 auto; display: flex; border-top: 1px solid var(--m-line); background: var(--m-composer); padding-bottom: env(safe-area-inset-bottom); }
+  .m-tabs button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 7px 0 5px; font-size: 11px; color: var(--m-text); position: relative; }
+  .m-tabs button svg { width: 26px; height: 26px; }
+  .m-tabs button[aria-selected="true"] { color: var(--m-green); }
+  .m-tabs .badge { position: absolute; top: 2px; left: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box;
+    border-radius: 9px; background: var(--m-red); color: #fff; font-size: 11px; line-height: 18px; }
+  /* 对话 */
+  .m-chat { background: var(--m-bg); }
+  .m-chat .m-top { background: var(--m-bg); border-bottom: 1px solid var(--m-line); }
+  .m-chat .m-title { flex-direction: column; gap: 0; }
+  .m-chat .m-title small { font-size: 11px; font-weight: 400; color: var(--m-sub); }
+  .m-log { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 12px 16px; display: flex; flex-direction: column; gap: 16px; }
+  .m-time-tip { align-self: center; font-size: 12px; color: var(--m-time); padding-top: 4px; }
+  .m-tip { align-self: center; max-width: 80%; text-align: center; font-size: 12px; color: var(--m-sub);
+    padding: 3px 8px; border-radius: 4px; background: color-mix(in srgb, var(--m-text) 6%, transparent); }
+  .m-msg { display: flex; align-items: flex-start; gap: 10px; }
+  .m-msg.out { flex-direction: row-reverse; }
+  .m-msg .who { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 5px; display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 600; }
+  .m-msg.in .who { background: light-dark(#191919, #e8e8e8); color: light-dark(#ffffff, #191919); }
+  .m-msg.out .who { background: light-dark(#c9c9c9, #3a3a3a); color: light-dark(#ffffff, #d0d0d0); }
+  .m-bubble { position: relative; max-width: calc(100% - 100px); padding: 9px 12px; border-radius: 6px; font-size: 16px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; background: var(--m-in); color: var(--m-text); }
+  .m-bubble::before { content: ""; position: absolute; top: 13px; width: 0; height: 0; border: 7px solid transparent; }
+  .m-msg.in .m-bubble::before { left: -13px; border-right-color: var(--m-in); }
+  .m-msg.out .m-bubble { background: var(--m-out); color: var(--m-out-text); }
+  .m-msg.out .m-bubble::before { right: -13px; border-left-color: var(--m-out); }
+  .m-bubble .tag { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 3px; font-size: 11px; line-height: 17px; vertical-align: 2px;
+    background: color-mix(in srgb, currentColor 14%, transparent); }
+  .m-bubble pre, .m-bubble code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .m-bubble pre { margin: 6px 0; padding: 8px 10px; border-radius: 5px; overflow-x: auto; white-space: pre; background: color-mix(in srgb, var(--m-text) 7%, transparent); }
+  .m-bubble code { padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--m-text) 8%, transparent); }
+  .m-bubble.typing { display: flex; gap: 5px; align-items: center; padding: 14px 14px; }
+  .m-bubble.typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--m-sub); animation: m-dot 1.2s infinite ease-in-out; }
+  .m-bubble.typing i:nth-child(2) { animation-delay: .15s; } .m-bubble.typing i:nth-child(3) { animation-delay: .3s; }
+  @keyframes m-dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+  /* 卡片气泡：命令、改文件、审批、提问 */
+  .m-card { max-width: calc(100% - 100px); width: 280px; border-radius: 6px; background: var(--m-in); color: var(--m-text); overflow: hidden; font-size: 14px; }
+  .m-card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; font-weight: 500; }
+  .m-card-head .state { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--m-sub); }
+  .m-card-head .state.ok { color: var(--m-green); } .m-card-head .state.bad { color: var(--m-red); }
+  .m-card-body { padding: 0 12px 10px; }
+  .m-card .m-cmd { display: block; font: 12.5px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; color: var(--m-sub);
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .m-card pre.out { margin: 8px 0 0; padding: 8px; border-radius: 4px; max-height: 240px; overflow: auto; font: 12px/1.45 ui-monospace, Menlo, monospace;
+    white-space: pre-wrap; background: color-mix(in srgb, var(--m-text) 6%, transparent); }
+  .m-card-foot { display: flex; border-top: 1px solid var(--m-line); }
+  .m-card-foot button { flex: 1; padding: 11px 0; font-size: 15px; text-align: center; }
+  .m-card-foot button + button { border-left: 1px solid var(--m-line); }
+  .m-card-foot button.primary { color: var(--m-green); font-weight: 600; }
+  .m-card-foot button.danger { color: var(--m-red); }
+  .m-card-foot button:disabled { opacity: .4; }
+  .m-card .reason { margin-bottom: 6px; }
+  .m-card .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .m-card .choices button { padding: 6px 12px; border-radius: 16px; border: 1px solid var(--m-line); font-size: 14px; }
+  .m-card .choices button.on { border-color: var(--m-green); color: var(--m-green); }
+  .m-card .choices input { flex: 1 0 100%; height: 34px; border-radius: 6px; border: 1px solid var(--m-line); background: transparent; color: inherit; padding: 0 10px; font-size: 16px; }
+  .m-card .readonly { padding: 10px 12px; color: var(--m-sub); font-size: 13px; border-top: 1px solid var(--m-line); }
+  .m-card.attention { box-shadow: 0 0 0 1.5px var(--m-warn); }
+  /* 输入区：胶囊输入框 + 模式 / 权限 / 模型 / 上下文 */
+  .m-composer { flex: 0 0 auto; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--m-composer); border-top: 1px solid var(--m-line); }
+  .m-pill { display: flex; align-items: flex-end; gap: 6px; min-height: 46px; padding: 4px 6px 4px 8px; box-sizing: border-box; border-radius: 23px; background: var(--m-pill); }
+  .m-pill .plus { flex: 0 0 38px; height: 38px; display: flex; align-items: center; justify-content: center; color: var(--m-sub); }
+  .m-pill .plus svg { width: 26px; height: 26px; }
+  .m-pill textarea { flex: 1; min-width: 0; max-height: 132px; height: 38px; padding: 8px 2px; border: none; outline: none; resize: none;
+    background: transparent; color: var(--m-text); font: inherit; font-size: 16px; line-height: 22px; }
+  .m-pill textarea::placeholder { color: var(--m-sub); }
+  .m-pill .go { flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .m-pill .go svg { width: 20px; height: 20px; }
+  .m-pill .go.send { background: var(--m-green); color: #fff; }
+  .m-pill .go.stop { background: var(--m-text); color: var(--m-composer); }
+  .m-pill .go:disabled { opacity: .4; }
+  .m-chips { display: flex; align-items: center; gap: 16px; padding: 8px 6px 0; overflow-x: auto; scrollbar-width: none; font-size: 14px; color: var(--m-sub); }
+  .m-chips::-webkit-scrollbar { display: none; }
+  .m-chips button { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; white-space: nowrap; max-width: 220px; }
+  .m-chips button span { overflow: hidden; text-overflow: ellipsis; }
+  .m-chips button svg { flex: 0 0 auto; width: 16px; height: 16px; }
+  .m-chips button.warn { color: var(--m-warn); }
+  .m-chips button.on { color: var(--m-blue); }
+  .m-chips button:disabled { opacity: .5; }
+  .m-chips .ring { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .m-chips .ring svg { width: 18px; height: 18px; }
+  .m-readonly { padding: 12px 4px; text-align: center; color: var(--m-sub); font-size: 13px; }
+  /* 设置 */
+  .m-settings { background: var(--m-bg); }
+  .m-group { margin: 12px 0 0; background: var(--m-row); }
+  .m-group-title { padding: 18px 16px 6px; font-size: 13px; color: var(--m-sub); }
+  .m .m-item { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px; padding: 0 16px; box-sizing: border-box; text-align: left; font-size: 17px; }
+  .m-item + .m-item::before { content: ""; position: absolute; left: 16px; right: 0; top: 0; border-top: 1px solid var(--m-line); }
+  .m-item .value { margin-left: auto; color: var(--m-sub); font-size: 15px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m .m-item.danger { justify-content: center; color: var(--m-red); }
+  .m .m-item:disabled { opacity: 1; cursor: default; }
+  .m-seg { margin-left: auto; display: inline-flex; padding: 2px; border-radius: 8px; background: color-mix(in srgb, var(--m-text) 8%, transparent); }
+  .m-seg button { padding: 5px 12px; border-radius: 6px; font-size: 14px; }
+  .m-seg button[aria-pressed="true"] { background: var(--m-row); box-shadow: 0 1px 2px rgb(0 0 0 / .12); font-weight: 500; }
+  /* 底部弹出菜单 */
+  .m-mask { position: fixed; inset: 0; z-index: 20; background: rgb(0 0 0 / .45); display: flex; align-items: flex-end; justify-content: center; animation: m-fade .18s; }
+  .m-sheet { width: 100%; max-width: 640px; max-height: 82vh; display: flex; flex-direction: column; border-radius: 14px 14px 0 0; overflow: hidden;
+    background: var(--m-bg); color: var(--m-text); padding-bottom: env(safe-area-inset-bottom); animation: m-up .22s ease-out;
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif; }
+  .m-sheet-title { padding: 14px 16px 10px; text-align: center; font-size: 13px; color: var(--m-sub); background: var(--m-row); }
+  .m-sheet-body { overflow-y: auto; background: var(--m-row); }
+  .m-sheet button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  .m-sheet .opt { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 8px 18px; box-sizing: border-box; text-align: left; }
+  .m-sheet .opt + .opt::before { content: ""; position: absolute; left: 18px; right: 0; top: 0; border-top: 1px solid var(--m-line); }
+  .m-sheet .opt .label { display: grid; gap: 2px; flex: 1; min-width: 0; }
+  .m-sheet .opt small { font-size: 13px; color: var(--m-sub); }
+  .m-sheet .opt.danger { color: var(--m-red); }
+  .m-sheet .opt.center { justify-content: center; text-align: center; }
+  .m-sheet .opt .check { color: var(--m-green); font-weight: 700; }
+  .m-sheet .opt:disabled { opacity: .45; }
+  .m-sheet .section { padding: 12px 18px 4px; font-size: 13px; color: var(--m-sub); }
+  .m-sheet .seg-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 18px 14px; }
+  .m-sheet .seg-row button { padding: 6px 14px; border-radius: 16px; border: 1px solid var(--m-line); font-size: 14px; }
+  .m-sheet .seg-row button.on { border-color: var(--m-green); color: var(--m-green); }
+  .m-sheet .form { display: grid; gap: 10px; padding: 14px 18px 18px; }
+  .m-sheet .form input, .m-sheet .form textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--m-line); border-radius: 8px; background: var(--m-bg);
+    color: inherit; font: inherit; font-size: 16px; padding: 10px 12px; }
+  .m-sheet .form textarea { min-height: 80px; resize: none; }
+  .m-sheet .primary-btn { height: 44px; border-radius: 8px; background: var(--m-green); color: #fff; font-weight: 600; }
+  .m-sheet .primary-btn:disabled { opacity: .5; }
+  .m-sheet .cancel { margin-top: 8px; width: 100%; min-height: 54px; background: var(--m-row); }
+  @keyframes m-up { from { transform: translateY(100%); } to { transform: none; } }
+  @keyframes m-fade { from { opacity: 0; } to { opacity: 1; } }
+  html[data-style="chat"] .toast { bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 30; }
+  html[data-style="chat"] .gate { background: var(--bg); }
   @media (max-width: 720px) {
     .app { grid-template-columns: 1fr; }
     .app.viewing aside { display: none; }
@@ -210,6 +362,51 @@
       <div class="readonly" id="readonly" hidden>这台设备只能查看。需要发消息可在 Codex++ 的设备列表里调高权限。</div>
     </footer>
   </main>
+</div>
+<!-- 聊天样式：手机界面。和上面的 Codex 样式共用数据与接口，只是另一套呈现。 -->
+<div class="m" id="m">
+  <section class="m-screen" id="mList">
+    <header class="m-top">
+      <button class="m-icon" id="mFilter" aria-label="筛选"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg></button>
+      <button class="m-title" id="mHost" aria-label="这台电脑"><i class="dot" id="mHostDot"></i><span id="mHostName">远程控制</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+      <button class="m-icon" id="mNew" aria-label="新建会话"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M12 8v8M8 12h8"/></svg></button>
+    </header>
+    <div class="m-search"><label><input id="mSearch" type="search" placeholder="搜索" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></label></div>
+    <div class="m-rows" id="mRows"><div class="m-empty">加载中…</div></div>
+  </section>
+  <section class="m-screen" id="mProject" hidden>
+    <header class="m-top">
+      <button class="m-back" id="mProjectBack" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span class="count" id="mProjectBackCount" hidden></span></button>
+      <div class="m-title"><span id="mProjectTitle"></span></div>
+      <button class="m-icon" id="mProjectNew" aria-label="在这个项目里新建会话"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M12 8v8M8 12h8"/></svg></button>
+    </header>
+    <div class="m-rows" id="mProjectRows"></div>
+  </section>
+  <section class="m-screen m-settings" id="mSettings" hidden>
+    <header class="m-top"><span></span><div class="m-title"><span>设置</span></div><span></span></header>
+    <div class="m-rows" id="mSettingsBody" style="background: var(--m-bg)"></div>
+  </section>
+  <nav class="m-tabs" id="mTabs">
+    <button id="mTabChats" aria-selected="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.9-.9L3 20l1.3-4.4a8 8 0 0 1-1.1-4.1A8.4 8.4 0 0 1 11.7 3.2h.8a8.4 8.4 0 0 1 8.5 8.3Z"/></svg><span>对话</span><b class="badge" id="mTabBadge" hidden></b></button>
+    <button id="mTabSettings" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.8v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button>
+  </nav>
+  <section class="m-screen m-chat" id="mChat" hidden>
+    <header class="m-top">
+      <button class="m-back" id="mChatBack" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span class="count" id="mChatBackCount" hidden></span></button>
+      <div class="m-title"><span id="mChatTitle"></span><small id="mChatState"></small></div>
+      <button class="m-icon" id="mChatMore" aria-label="更多"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></svg></button>
+    </header>
+    <div class="m-log" id="mLog"></div>
+    <footer class="m-composer" id="mComposer">
+      <div class="m-pill">
+        <button class="plus" id="mPlus" aria-label="更多操作"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+        <textarea id="mInput" rows="1" placeholder="发消息..." enterkeyhint="send"></textarea>
+        <button class="go send" id="mGo" aria-label="发送" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+      </div>
+      <div class="m-chips" id="mChips"></div>
+    </footer>
+    <div class="m-readonly" id="mReadonly" hidden>这台设备只能查看。需要发消息可在 Codex++ 的设备列表里调高权限。</div>
+  </section>
 </div>
 <div class="gate" id="gate" hidden>
   <div class="card">
@@ -350,6 +547,7 @@
     $("newThread").hidden = !can("message");
     $("compose").hidden = !can("message");
     $("readonly").hidden = can("message");
+    m.onRole();
   }
 
   function el(tag, className, text) {
@@ -375,6 +573,7 @@
       renderThreads();
     } catch (error) {
       $("threads").replaceChildren(el("div", "empty", `读取会话失败：${error.message}`));
+      m.onThreadsError(error.message);
     }
   }
 
@@ -411,6 +610,11 @@
   }
 
   function renderThreads() {
+    renderThreadsCodex();
+    m.onThreads();
+  }
+
+  function renderThreadsCodex() {
     const list = $("threads");
     const insideProject = state.project !== null;
     $("projectBack").hidden = !insideProject;
@@ -555,6 +759,7 @@
     if (stick) log.scrollTop = log.scrollHeight;
     renderRequests(view.requests || []);
     renderControls();
+    m.onView();
   }
 
   const effortLabels = { none: "不推理", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "极高", max: "Max", ultra: "Ultra" };
@@ -566,6 +771,7 @@
       state.options = options;
       state.optionsFor = id;
       renderControls();
+      m.onView();
     } catch (error) {
       toast(`读取可选模型失败：${error.message}`);
     }
@@ -622,6 +828,7 @@
     } finally {
       state.applying = false;
       renderControls();
+      m.onView();
     }
   }
 
@@ -827,16 +1034,802 @@
     }
   };
 
+  // ================= 手机界面（聊天样式）=================
+  // 四屏：列表（项目）/ 项目（会话）/ 对话 / 设置。和 Codex 样式共用 state、接口和推送，只是另一套呈现。
+  const m = (() => {
+    const SEEN_KEY = "codexPlusRemoteSeen";
+    const ui = { screen: "list", from: "list", project: null, filter: "all", query: "", stick: false, expanded: new Set(), requestCards: new Map() };
+    const palette = ["#c8574d", "#3f9a8c", "#c98a3a", "#5677b8", "#8b62b3", "#55995a", "#b9567f", "#5f8ea6", "#a0784f"];
+    const coarse = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+    const isChat = () => document.documentElement.dataset.style === "chat";
+    const svg = (d, attrs = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"${attrs}>${d}</svg>`;
+    const ICON = {
+      send: svg('<path d="M12 19V5M5 12l7-7 7 7"/>', ' stroke-width="2.4"'),
+      stop: svg('<rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/>'),
+      // 无限符号：对应 Codex 手机端的「∞ Agent」。
+      agent: svg('<path d="M6.5 15.5a3.5 3.5 0 1 1 0-7c3 0 8 7 11 7a3.5 3.5 0 1 0 0-7c-3 0-8 7-11 7Z"/>'),
+      plan: svg('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
+      shield: svg('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v4M12 16h.01"/>'),
+      spark: svg('<path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/>'),
+      bot: svg('<path d="m7 9 3 3-3 3M13 15h4"/>', ' stroke-width="2.2"'),
+    };
+
+    // ---------- 未读：每个会话上次看到时的 updatedAt，存在本机 ----------
+    let seen = null;
+    try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || "null"); } catch {}
+    const saveSeen = () => { try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch {} };
+    function markSeen(id) {
+      if (!id) return;
+      seen = seen || {};
+      seen[id] = Math.floor(Date.now() / 1000) + 1;
+      saveSeen();
+    }
+    function initSeen(threads) {
+      if (seen) return;
+      // 第一次打开：已有的会话都算看过，免得满屏红点。
+      seen = {};
+      for (const thread of threads) seen[thread.id] = Number(thread.updatedAt) || 0;
+      saveSeen();
+    }
+    const unread = (thread) => !!seen && thread.id !== state.current && (Number(thread.updatedAt) || 0) > (seen[thread.id] || 0);
+
+    // ---------- 小工具 ----------
+    const hash = (text) => { let value = 7; for (const ch of String(text)) value = (value * 31 + ch.codePointAt(0)) >>> 0; return value; };
+    const colorOf = (key) => palette[hash(key) % palette.length];
+    const firstChar = (text) => { const ch = [...String(text || "").trim()][0] || "#"; return /[a-z]/i.test(ch) ? ch.toUpperCase() : ch; };
+    const pad = (value) => String(value).padStart(2, "0");
+    /** 微信式时间：今天 时:分；昨天；本周 周几；今年 几月几日；更早 年月日。 */
+    function chatTime(seconds, withClock = false) {
+      if (!seconds) return "";
+      const date = new Date(seconds * 1000);
+      const now = new Date();
+      const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+      const dayStart = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+      const days = Math.round((dayStart(now) - dayStart(date)) / 86400000);
+      if (days <= 0) return clock;
+      let day;
+      if (days === 1) day = "昨天";
+      else if (days < 7) day = `周${"日一二三四五六"[date.getDay()]}`;
+      else if (date.getFullYear() === now.getFullYear()) day = `${date.getMonth() + 1}月${date.getDate()}日`;
+      else day = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+      return withClock ? `${day} ${clock}` : day;
+    }
+    const formatTokens = (value) => (value >= 1e6 ? `${+(value / 1e6).toFixed(value % 1e6 ? 1 : 0)}M` : value >= 1e3 ? `${Math.round(value / 1e3)}K` : String(value));
+    const roleText = (role) => ({ view: "只能查看", message: "可发消息", full: "完全控制" }[role] || role || "");
+
+    /** 头像：一个会话用单字方块；多个会话按微信群头像的排法拼九宫格，每格是会话标题的首字。 */
+    function avatarNode(tiles, { badge = 0, dot = false } = {}) {
+      const box = el("div", "m-avatar");
+      const face = el("div", "face");
+      if (tiles.length === 1) {
+        face.classList.add("single");
+        face.style.background = colorOf(tiles[0].key);
+        face.textContent = tiles[0].char;
+      } else {
+        const count = Math.min(tiles.length, 9);
+        const layout = { 2: [2], 3: [1, 2], 4: [2, 2], 5: [2, 3], 6: [3, 3], 7: [1, 3, 3], 8: [2, 3, 3], 9: [3, 3, 3] }[count];
+        const columns = count <= 4 ? 2 : 3;
+        const size = Math.floor((48 - 4 - 2 * (columns - 1)) / columns);
+        let index = 0;
+        for (const perRow of layout) {
+          const row = el("div", "grid-row");
+          for (let k = 0; k < perRow; k += 1, index += 1) {
+            const tile = el("div", "tile", tiles[index].char);
+            Object.assign(tile.style, { width: `${size}px`, height: `${size}px`, background: colorOf(tiles[index].key), fontSize: `${Math.round(size * 0.6)}px` });
+            row.append(tile);
+          }
+          face.append(row);
+        }
+      }
+      box.append(face);
+      if (badge) box.append(el("b", "badge", badge > 99 ? "99+" : String(badge)));
+      else if (dot) box.append(el("b", "badge dot"));
+      return box;
+    }
+
+    function rowNode({ avatar, title, sub, time, active, onClick }) {
+      const row = el("div", `m-row${active ? " active" : ""}`);
+      const body = el("div", "m-row-body");
+      const head = el("div", "m-row-head");
+      head.append(el("div", "m-row-title", title), el("div", "m-row-time", time));
+      const subLine = el("div", "m-row-sub");
+      subLine.append(...sub);
+      body.append(head, subLine);
+      row.append(avatar, body);
+      row.onclick = onClick;
+      return row;
+    }
+
+    const byRecent = (a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0);
+    const threadTitle = (thread) => thread.title || thread.preview || "（未命名）";
+
+    function filteredThreads() {
+      const query = ui.query.trim().toLowerCase();
+      return state.threads.filter((thread) => {
+        if (ui.filter === "running" && !isRunning(thread)) return false;
+        if (ui.filter === "unread" && !unread(thread)) return false;
+        return !query || [thread.title, thread.preview, thread.cwd].some((value) => String(value || "").toLowerCase().includes(query));
+      });
+    }
+
+    function setBackCount(id, count) {
+      const node = $(id);
+      node.hidden = !count;
+      node.textContent = count > 99 ? "99+" : String(count);
+    }
+
+    // ---------- 列表（项目）----------
+    function renderList() {
+      const rows = $("mRows");
+      const total = state.threads.filter(unread).length;
+      $("mTabBadge").hidden = !total;
+      $("mTabBadge").textContent = total > 99 ? "99+" : String(total);
+      if (!state.threads.length) return rows.replaceChildren(el("div", "m-empty", "还没有会话。点右上角 ⊕ 新建一个。"));
+      const threads = filteredThreads();
+      if (!threads.length) return rows.replaceChildren(el("div", "m-empty", ui.query ? "没有匹配的会话" : "没有符合筛选的会话"));
+      rows.replaceChildren(...projectsOf(threads).map((project) => {
+        const sessions = [...project.threads].sort(byRecent);
+        const single = sessions.length === 1;
+        const tiles = single
+          ? [{ char: firstChar(project.name), key: project.cwd || project.name }]
+          : sessions.slice(0, 9).map((thread) => ({ char: firstChar(threadTitle(thread)), key: thread.id }));
+        const sub = [];
+        if (project.running) sub.push(el("span", "running", `${project.running} 个运行中 · `));
+        sub.push(document.createTextNode(threadTitle(sessions[0])));
+        return rowNode({
+          avatar: avatarNode(tiles, { badge: sessions.filter(unread).length }),
+          title: single ? project.name : `${project.name}（${sessions.length}）`,
+          sub,
+          time: chatTime(project.updatedAt),
+          // 只有一个会话的项目直接进对话（和微信单聊一样）。
+          onClick: () => (single ? openChat(sessions[0].id, "list") : openProject(project.cwd)),
+        });
+      }));
+    }
+
+    // ---------- 项目（会话）----------
+    function renderProject() {
+      if (ui.project === null) return;
+      const sessions = state.threads.filter((thread) => (thread.cwd || "") === ui.project).sort(byRecent);
+      $("mProjectTitle").textContent = `${baseName(ui.project)}（${sessions.length}）`;
+      setBackCount("mProjectBackCount", state.threads.filter((thread) => unread(thread) && (thread.cwd || "") !== ui.project).length);
+      $("mProjectNew").hidden = !can("message");
+      const rows = $("mProjectRows");
+      if (!sessions.length) return rows.replaceChildren(el("div", "m-empty", "这个项目还没有会话"));
+      rows.replaceChildren(...sessions.map((thread) => {
+        const sub = [];
+        if (isRunning(thread)) sub.push(el("span", "running", "运行中 · "));
+        sub.push(document.createTextNode(thread.preview && thread.preview !== thread.title ? thread.preview : relative(thread.updatedAt)));
+        return rowNode({
+          avatar: avatarNode([{ char: firstChar(threadTitle(thread)), key: thread.id }], { dot: unread(thread) }),
+          title: threadTitle(thread),
+          sub,
+          time: chatTime(thread.updatedAt),
+          active: thread.id === state.current,
+          onClick: () => openChat(thread.id, "project"),
+        });
+      }));
+    }
+
+    // ---------- 对话 ----------
+    function msgNode(direction, content) {
+      const node = el("div", `m-msg ${direction}`);
+      const who = el("div", "who");
+      if (direction === "out") who.textContent = "我";
+      else who.innerHTML = ICON.bot;
+      node.append(who, content);
+      return node;
+    }
+
+    /** 文字气泡：认 ``` 代码块和 `行内代码`，其余原样（不解析 HTML）。 */
+    function textBubble(text, tag) {
+      const node = el("div", "m-bubble");
+      if (tag) node.append(el("span", "tag", tag));
+      String(text || "").split(/```[^\n]*\n?/).forEach((part, index) => {
+        if (!part) return;
+        if (index % 2 === 1) return node.append(el("pre", "", part.replace(/\n$/, "")));
+        const trimmed = index > 0 ? part.replace(/^\n/, "") : part;
+        for (const segment of trimmed.split(/(`[^`\n]+`)/)) {
+          if (/^`[^`]+`$/.test(segment)) node.append(el("code", "", segment.slice(1, -1)));
+          else if (segment) node.append(document.createTextNode(segment));
+        }
+      });
+      return node;
+    }
+
+    function typingBubble() {
+      const node = el("div", "m-bubble typing");
+      node.append(el("i"), el("i"), el("i"));
+      return node;
+    }
+
+    function commandCard(item) {
+      const card = el("div", "m-card");
+      const [label, tone] = { completed: ["完成", "ok"], failed: ["失败", "bad"], declined: ["已拒绝", "bad"], inProgress: ["运行中", ""] }[item.status] || [item.status || "", ""];
+      const head = el("div", "m-card-head");
+      head.append(el("span", "", "⌘ 执行命令"), el("span", `state ${tone}`, label));
+      const body = el("div", "m-card-body");
+      body.append(el("code", "m-cmd", item.command || ""));
+      if (item.aggregatedOutput) {
+        const output = el("pre", "out", item.aggregatedOutput);
+        const key = item.id || item.command;
+        output.hidden = !ui.expanded.has(key);
+        body.append(output);
+        card.style.cursor = "pointer";
+        card.onclick = () => {
+          output.hidden = !output.hidden;
+          if (output.hidden) ui.expanded.delete(key); else ui.expanded.add(key);
+        };
+      }
+      card.append(head, body);
+      return card;
+    }
+
+    function fileCard(item) {
+      const card = el("div", "m-card");
+      const files = (item.changes || []).map((change) => change.path).filter(Boolean);
+      const head = el("div", "m-card-head");
+      head.append(el("span", "", `✎ 改动了 ${files.length} 个文件`), el("span", "state", item.status === "completed" ? "已应用" : item.status || ""));
+      const body = el("div", "m-card-body");
+      body.append(el("code", "m-cmd", files.join("\n")));
+      card.append(head, body);
+      return card;
+    }
+
+    function turnNodes(turn) {
+      const nodes = [];
+      for (const item of turn.items || []) {
+        switch (item.type) {
+          case "userMessage": nodes.push(msgNode("out", textBubble(item.text))); break;
+          case "steeringUserMessage": nodes.push(msgNode("out", textBubble(item.text, "插话"))); break;
+          case "agentMessage": if (item.text) nodes.push(msgNode("in", textBubble(item.text))); break;
+          case "commandExecution": nodes.push(msgNode("in", commandCard(item))); break;
+          case "fileChange": nodes.push(msgNode("in", fileCard(item))); break;
+          case "userInputResponse": nodes.push(el("div", "m-tip", "已回答提问")); break;
+          case "modelChanged": nodes.push(el("div", "m-tip", `模型切换为 ${item.toModel || "?"}`)); break;
+          case "contextCompaction": nodes.push(el("div", "m-tip", "已压缩上下文")); break;
+          case "webSearch": nodes.push(el("div", "m-tip", `搜索：${item.query || ""}`)); break;
+          default: break;
+        }
+      }
+      if (turn.status === "interrupted") nodes.push(el("div", "m-tip", "已停止这一轮"));
+      if (turn.status === "failed") nodes.push(el("div", "m-tip", "这一轮失败了"));
+      return nodes;
+    }
+
+    /** 审批 / 提问卡片。同一个请求复用同一个节点，推送重绘时不丢已选的答案。 */
+    function requestCard(request) {
+      const key = `${state.current}:${JSON.stringify(request.id)}`;
+      const cached = ui.requestCards.get(key);
+      if (cached) return cached;
+      const card = el("div", "m-card attention");
+      const params = request.params || {};
+      const foot = el("div", "m-card-foot");
+      const respond = async (body) => {
+        for (const button of card.querySelectorAll("button")) button.disabled = true;
+        ui.stick = true;
+        try {
+          await api("POST", `/threads/${state.current}/requests/${encodeURIComponent(JSON.stringify(request.id))}`, body);
+        } catch (error) {
+          toast(error.message);
+          for (const button of card.querySelectorAll("button")) button.disabled = false;
+        }
+      };
+      const head = el("div", "m-card-head");
+      const body = el("div", "m-card-body");
+      if (request.method === "item/commandExecution/requestApproval" || request.method === "item/fileChange/requestApproval") {
+        const isCommand = request.method.includes("commandExecution");
+        head.append(el("span", "", isCommand ? "⌘ 请求执行命令" : "✎ 请求修改文件"));
+        if (params.reason) body.append(el("div", "reason", params.reason));
+        if (isCommand) body.append(el("code", "m-cmd", params.command || ""));
+        const decisions = (params.availableDecisions || ["accept", "decline"]).filter((decision) => typeof decision === "string");
+        if (!decisions.includes("decline") && !decisions.includes("cancel")) decisions.push("decline");
+        const labels = { accept: "同意", acceptForSession: "本会话都同意", decline: "拒绝", cancel: "拒绝并停止" };
+        for (const decision of decisions.slice(0, 3)) {
+          const button = el("button", decision === "accept" ? "primary" : decision === "decline" || decision === "cancel" ? "danger" : "", labels[decision] || decision);
+          button.onclick = (event) => { event.stopPropagation(); respond({ decision }); };
+          foot.append(button);
+        }
+      } else if (request.method === "item/tool/requestUserInput") {
+        head.append(el("span", "", "? 模型在提问"));
+        const answers = {};
+        for (const question of params.questions || []) {
+          body.append(el("div", "reason", question.question || question.header || ""));
+          const choices = el("div", "choices");
+          for (const option of question.options || []) {
+            const button = el("button", "", option.label);
+            button.onclick = () => {
+              answers[question.id] = { answers: [option.label] };
+              for (const other of choices.querySelectorAll("button")) other.classList.toggle("on", other === button);
+            };
+            choices.append(button);
+          }
+          if (question.isOther !== false) {
+            const input = el("input");
+            input.placeholder = "其他答案";
+            input.oninput = () => { answers[question.id] = { answers: [input.value] }; };
+            choices.append(input);
+          }
+          body.append(choices);
+        }
+        const submit = el("button", "primary", "提交回答");
+        submit.onclick = () => respond({ answers });
+        foot.append(submit);
+      } else {
+        head.append(el("span", "", "需要在桌面处理"));
+        body.append(el("code", "m-cmd", request.method));
+      }
+      card.append(head, body);
+      card.append(can("full") ? foot : el("div", "readonly", "审批与回答需要「完全控制」权限"));
+      ui.requestCards.set(key, card);
+      return card;
+    }
+
+    function renderChat() {
+      if (ui.screen !== "chat") return;
+      const view = state.view;
+      renderComposer();
+      if (!view) return;
+      markSeen(state.current);
+      $("mChatTitle").textContent = view.title || "（未命名）";
+      const running = view.runtime === "active";
+      $("mChatState").textContent = running ? (view.headless ? "后台运行中…" : "运行中…") : view.headless ? "在后台运行，桌面不会切过来" : view.live ? "桌面已打开" : "";
+      setBackCount("mChatBackCount", state.threads.filter(unread).length);
+      const log = $("mLog");
+      const stick = nearBottom(log) || ui.stick;
+      ui.stick = false;
+      const nodes = [];
+      if (view.truncatedTurns) nodes.push(el("div", "m-tip", `更早的 ${view.truncatedTurns} 轮未显示`));
+      let lastShown = 0;
+      for (const turn of view.turns || []) {
+        const ms = Number(turn.startedAtMs) || Number(turn.items?.[0]?.startedAtMs) || 0;
+        if (ms && ms - lastShown > 5 * 60 * 1000) {
+          nodes.push(el("div", "m-time-tip", chatTime(ms / 1000, true)));
+          lastShown = ms;
+        }
+        nodes.push(...turnNodes(turn));
+      }
+      const lastItem = view.turns?.at(-1)?.items?.at(-1);
+      if (running && lastItem?.type !== "agentMessage" && !(view.requests || []).length) nodes.push(msgNode("in", typingBubble()));
+      const liveKeys = new Set();
+      for (const request of view.requests || []) {
+        liveKeys.add(`${state.current}:${JSON.stringify(request.id)}`);
+        nodes.push(msgNode("in", requestCard(request)));
+      }
+      for (const key of [...ui.requestCards.keys()]) if (!liveKeys.has(key)) ui.requestCards.delete(key);
+      if (!nodes.length) nodes.push(el("div", "m-empty", "还没有消息，发一条开始吧"));
+      log.replaceChildren(...nodes);
+      if (stick) log.scrollTop = log.scrollHeight;
+    }
+
+    // ---------- 输入区 ----------
+    function autosize() {
+      const input = $("mInput");
+      input.style.height = "38px";
+      input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
+    }
+
+    function renderComposer() {
+      const allowed = can("message");
+      $("mComposer").hidden = !allowed;
+      $("mReadonly").hidden = allowed;
+      const running = state.view?.runtime === "active";
+      const hasText = !!$("mInput").value.trim();
+      const go = $("mGo");
+      go.hidden = !hasText && !running;
+      go.className = `go ${hasText ? "send" : "stop"}`;
+      go.innerHTML = hasText ? ICON.send : ICON.stop;
+      go.setAttribute("aria-label", hasText ? (running ? "插话" : "发送") : "停止");
+      $("mInput").placeholder = running ? "运行中，发消息即插话…" : "发消息...";
+      renderChips();
+    }
+
+    function chip(icon, label, tone, onClick) {
+      const button = el("button", tone || "");
+      button.innerHTML = icon;
+      button.append(el("span", "", label));
+      button.disabled = state.applying || !can("full");
+      button.onclick = onClick;
+      return button;
+    }
+
+    function currentControls() {
+      const options = state.optionsFor === state.current ? state.options : null;
+      return { options, current: state.view?.controls || options?.current || {} };
+    }
+
+    function renderChips() {
+      const box = $("mChips");
+      if (!state.view) return box.replaceChildren();
+      const { options, current } = currentControls();
+      const plan = current.collaborationMode === "plan";
+      const mode = options?.permissionModes?.find((item) => item.id === current.permissionMode);
+      const model = options?.models?.find((item) => item.id === current.model);
+      const modelId = current.model || state.view.model;
+      const modelLabel = model?.label || options?.models?.find((item) => item.id === modelId)?.label || modelId || "模型";
+      const effort = current.effort ? effortLabels[current.effort] || current.effort : "";
+      const chips = [
+        chip(plan ? ICON.plan : ICON.agent, plan ? "计划" : "Agent", plan ? "on" : "", openModeSheet),
+        chip(ICON.shield, mode?.label || (current.permissionMode === "custom" ? "自定义权限" : "沿用权限"), current.permissionMode === "full-access" ? "warn" : "", openPermissionSheet),
+        chip(ICON.spark, effort ? `${modelLabel} · ${effort}` : modelLabel, "", openModelSheet),
+      ];
+      const usage = state.view.tokenUsage;
+      if (usage?.window) {
+        const ratio = Math.max(0, Math.min(1, usage.used / usage.window));
+        const ring = el("div", "ring");
+        const circumference = 2 * Math.PI * 7;
+        ring.innerHTML = `<svg viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${(ratio * circumference).toFixed(1)} ${circumference.toFixed(1)}" transform="rotate(-90 9 9)"/></svg>`;
+        ring.append(el("span", "", `${formatTokens(usage.used)} / ${formatTokens(usage.window)}`));
+        ring.title = "上下文用量";
+        chips.push(ring);
+      }
+      box.replaceChildren(...chips);
+    }
+
+    async function send() {
+      const text = $("mInput").value.trim();
+      if (!text) {
+        if (state.view?.runtime === "active") await interrupt();
+        return;
+      }
+      if (!state.current || state.busy) return;
+      state.busy = true;
+      ui.stick = true;
+      $("mGo").disabled = true;
+      try {
+        await api("POST", `/threads/${state.current}/messages`, { text });
+        $("mInput").value = "";
+        autosize();
+        if (!state.socket && !state.poller) connectSocket(state.current);
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        state.busy = false;
+        $("mGo").disabled = false;
+        renderComposer();
+      }
+    }
+
+    async function interrupt() {
+      try { await api("POST", `/threads/${state.current}/interrupt`); } catch (error) { toast(error.message); }
+    }
+
+    async function openInDesktop() {
+      try {
+        toast("正在桌面打开会话…");
+        const view = await api("POST", `/threads/${state.current}/open`);
+        applyView(view);
+        connectSocket(state.current);
+      } catch (error) { toast(error.message); }
+    }
+
+    // ---------- 底部弹出菜单 ----------
+    function closeSheet() { document.getElementById("mSheetMask")?.remove(); }
+    function openSheet(title, build) {
+      closeSheet();
+      const mask = el("div", "m-mask");
+      mask.id = "mSheetMask";
+      const sheet = el("div", "m-sheet");
+      if (title) sheet.append(el("div", "m-sheet-title", title));
+      const body = el("div", "m-sheet-body");
+      build(body);
+      const cancel = el("button", "cancel", "取消");
+      cancel.onclick = closeSheet;
+      sheet.append(body, cancel);
+      mask.append(sheet);
+      mask.onclick = (event) => { if (event.target === mask) closeSheet(); };
+      $("m").append(mask);
+    }
+    function optionButton({ label, detail, checked, danger, center, disabled, onClick }) {
+      const button = el("button", `opt${danger ? " danger" : ""}${center ? " center" : ""}`);
+      const text = el("span", "label");
+      text.append(el("span", "", label));
+      if (detail) text.append(el("small", "", detail));
+      button.append(text);
+      if (checked) button.append(el("span", "check", "✓"));
+      button.disabled = !!disabled;
+      button.onclick = () => { closeSheet(); onClick?.(); };
+      return button;
+    }
+
+    function openModeSheet() {
+      const { current } = currentControls();
+      const plan = current.collaborationMode === "plan";
+      openSheet("模式", (body) => {
+        body.append(
+          optionButton({ label: "Agent", detail: "直接动手做", checked: !plan, onClick: () => plan && changeSettings({ collaborationMode: "default" }) }),
+          optionButton({
+            label: "计划", detail: "先和你讨论出完整方案，再动手", checked: plan,
+            onClick: () => {
+              if (plan) return;
+              const desktopNeeded = !state.view?.live || state.view?.headless;
+              changeSettings({ collaborationMode: "plan" }, desktopNeeded ? "计划模式要在桌面里用，会让桌面 Codex 打开这个会话。继续吗？" : null);
+            },
+          }),
+        );
+      });
+    }
+
+    function openPermissionSheet() {
+      const { options, current } = currentControls();
+      if (!options) return toast("还在读取可选项…");
+      openSheet("权限", (body) => {
+        for (const mode of options.permissionModes) {
+          body.append(optionButton({
+            label: mode.label, detail: mode.detail, checked: mode.id === current.permissionMode, danger: mode.id === "full-access",
+            onClick: () => mode.id !== current.permissionMode && changeSettings({ permissionMode: mode.id },
+              mode.id === "full-access" ? "完全访问：命令不经沙箱、不再询问，直接在这台电脑上执行。确定切换吗？" : null),
+          }));
+        }
+      });
+    }
+
+    function openModelSheet() {
+      const { options, current } = currentControls();
+      if (!options) return toast("还在读取可选项…");
+      const models = [...options.models];
+      if (current.model && !models.some((model) => model.id === current.model)) models.unshift({ id: current.model, label: current.model, efforts: [] });
+      const model = models.find((item) => item.id === current.model);
+      openSheet("模型与推理强度", (body) => {
+        body.append(el("div", "section", "推理强度"));
+        const efforts = el("div", "seg-row");
+        const list = model?.efforts?.length ? model.efforts : ["low", "medium", "high"];
+        for (const effort of [null, ...list]) {
+          const label = effort ? effortLabels[effort] || effort : `默认${model?.defaultEffort ? `（${effortLabels[model.defaultEffort] || model.defaultEffort}）` : ""}`;
+          const button = el("button", (current.effort || null) === effort ? "on" : "", label);
+          button.onclick = () => { closeSheet(); if ((current.effort || null) !== effort) changeSettings({ effort }); };
+          efforts.append(button);
+        }
+        body.append(efforts, el("div", "section", "模型"));
+        for (const item of models) {
+          body.append(optionButton({ label: item.label || item.id, detail: item.description, checked: item.id === current.model,
+            onClick: () => item.id !== current.model && changeSettings({ model: item.id }) }));
+        }
+      });
+    }
+
+    function openMoreSheet() {
+      const view = state.view;
+      if (!view) return;
+      const running = view.runtime === "active";
+      openSheet(view.cwd || "", (body) => {
+        if ((!view.live || view.headless) && can("message")) {
+          body.append(optionButton({ label: "在桌面打开", detail: running ? "等这一轮跑完再打开" : "让桌面 Codex 切到这个会话", disabled: running, onClick: openInDesktop }));
+        }
+        if (running && can("message")) body.append(optionButton({ label: "停止这一轮", danger: true, onClick: interrupt }));
+        body.append(optionButton({ label: "刷新", onClick: () => selectThread(state.current) }));
+      });
+    }
+
+    function openFilterSheet() {
+      openSheet("显示", (body) => {
+        for (const [id, label] of [["all", "全部会话"], ["running", "只看运行中"], ["unread", "只看未读"]]) {
+          body.append(optionButton({ label, checked: ui.filter === id, onClick: () => { ui.filter = id; renderList(); } }));
+        }
+      });
+    }
+
+    function openHostSheet() {
+      openSheet("", (body) => {
+        body.append(
+          optionButton({ label: state.me?.host || "这台电脑", detail: `已连接 · ${location.host}`, disabled: true }),
+          optionButton({ label: state.me?.kind === "device" ? state.me.name : "本机浏览器", detail: `这台设备 · ${roleText(state.me?.role)}`, disabled: true }),
+          optionButton({ label: "刷新会话列表", onClick: loadThreads }),
+        );
+      });
+    }
+
+    function openNewSheet(presetCwd) {
+      if (!can("message")) return toast("这台设备只能查看");
+      const projects = projectsOf(state.threads).filter((project) => project.cwd);
+      let cwd = presetCwd ?? projects[0]?.cwd ?? "";
+      openSheet("新建会话", (body) => {
+        if (presetCwd == null && projects.length) {
+          body.append(el("div", "section", "项目"));
+          const row = el("div", "seg-row");
+          for (const project of projects.slice(0, 12)) {
+            const button = el("button", project.cwd === cwd ? "on" : "", project.name);
+            button.onclick = () => {
+              cwd = project.cwd;
+              path.value = cwd;
+              for (const other of row.querySelectorAll("button")) other.classList.toggle("on", other === button);
+            };
+            row.append(button);
+          }
+          body.append(row);
+        }
+        const form = el("div", "form");
+        const path = el("input");
+        path.placeholder = "工作目录（绝对路径）";
+        path.value = cwd;
+        path.hidden = presetCwd != null;
+        const name = el("input");
+        name.placeholder = "会话名称（可选）";
+        const text = el("textarea");
+        text.placeholder = "第一条消息（可选）";
+        const create = el("button", "primary-btn", "创建");
+        create.onclick = async () => {
+          const target = path.value.trim();
+          if (!target) return toast("先选项目或填工作目录");
+          create.disabled = true;
+          try {
+            const data = await api("POST", "/threads", { cwd: target, name: name.value.trim() || undefined, text: text.value.trim() || undefined });
+            closeSheet();
+            await loadThreads();
+            openChat(data.threadId, ui.screen === "project" ? "project" : "list");
+          } catch (error) {
+            toast(error.message);
+            create.disabled = false;
+          }
+        };
+        form.append(path, name, text, create);
+        body.append(form);
+      });
+    }
+
+    // ---------- 设置 ----------
+    function renderSettings() {
+      const body = $("mSettingsBody");
+      const me = state.me || {};
+      const item = (label, value) => {
+        const node = el("div", "m-item");
+        node.append(el("span", "", label));
+        if (value != null) node.append(el("span", "value", value));
+        return node;
+      };
+      const groups = [];
+      const device = el("div", "m-group");
+      device.append(item("电脑", me.host || ""), item("这台设备", me.kind === "device" ? me.name : "本机浏览器"), item("权限", roleText(me.role)));
+      groups.push(el("div", "m-group-title", "连接"), device);
+      const display = el("div", "m-group");
+      const styleRow = item("对话样式");
+      const seg = el("div", "m-seg");
+      for (const [id, label] of [["chat", "聊天"], ["codex", "Codex"]]) {
+        const button = el("button", "", label);
+        button.setAttribute("aria-pressed", String((document.documentElement.dataset.style || "chat") === id));
+        button.onclick = () => setStyle(id);
+        seg.append(button);
+      }
+      styleRow.append(seg);
+      display.append(styleRow);
+      groups.push(el("div", "m-group-title", "显示"), display);
+      const alerts = el("div", "m-group");
+      const permission = "Notification" in window ? Notification.permission : "unsupported";
+      const notifyRow = el("button", "m-item");
+      notifyRow.append(el("span", "", "系统通知"), el("span", "value", { granted: "已开启", denied: "已被浏览器拒绝", default: "点击开启", unsupported: "浏览器不支持" }[permission]));
+      notifyRow.disabled = permission !== "default";
+      notifyRow.onclick = () => $("notify").onclick();
+      alerts.append(notifyRow);
+      groups.push(el("div", "m-group-title", "提醒：页面开着时，需要审批、模型提问或一轮跑完会提醒"), alerts);
+      if (me.kind === "device") {
+        const leave = el("div", "m-group");
+        const button = el("button", "m-item danger", "退出配对");
+        button.onclick = () => $("forget").onclick();
+        leave.append(button);
+        groups.push(leave);
+      }
+      body.replaceChildren(...groups);
+    }
+
+    // ---------- 导航 ----------
+    function show(screen) {
+      ui.screen = screen;
+      $("mList").hidden = screen !== "list";
+      $("mProject").hidden = screen !== "project";
+      $("mSettings").hidden = screen !== "settings";
+      $("mChat").hidden = screen !== "chat";
+      $("mTabs").hidden = screen !== "list" && screen !== "settings";
+      $("mTabChats").setAttribute("aria-selected", String(screen !== "settings"));
+      $("mTabSettings").setAttribute("aria-selected", String(screen === "settings"));
+    }
+    function openProject(cwd) {
+      ui.project = cwd;
+      history.pushState({ m: "project" }, "");
+      show("project");
+      renderProject();
+    }
+    function openChat(id, from) {
+      ui.from = from;
+      ui.stick = true;
+      ui.requestCards.clear();
+      history.pushState({ m: "chat" }, "");
+      show("chat");
+      $("mChatTitle").textContent = threadTitle(state.threads.find((thread) => thread.id === id) || {});
+      $("mChatState").textContent = "";
+      $("mLog").replaceChildren(el("div", "m-empty", "加载中…"));
+      markSeen(id);
+      selectThread(id);
+    }
+    function leaveChat() {
+      closeSocket();
+      markSeen(state.current);
+      state.current = null;
+      state.view = null;
+      show(ui.from === "project" && ui.project !== null ? "project" : "list");
+      renderList();
+      renderProject();
+      // 刚聊过的会话时间、摘要变了，回到列表时立刻刷新一次。
+      loadThreads();
+    }
+    function goBack() {
+      if (history.state?.m) history.back();
+      else popped();
+    }
+    function popped() {
+      closeSheet();
+      if (ui.screen === "chat") leaveChat();
+      else if (ui.screen === "project") { ui.project = null; show("list"); renderList(); }
+    }
+    window.addEventListener("popstate", popped);
+
+    function setStyle(next) {
+      document.documentElement.dataset.style = next;
+      localStorage.setItem(STYLE_KEY, next);
+      $("style").textContent = next === "chat" ? "Codex 样式" : "聊天样式";
+      renderThreads();
+      if (state.view) applyView(state.view);
+      if (next === "chat") {
+        show(state.current ? "chat" : "list");
+        renderSettings();
+      } else if (state.current) {
+        $("app").classList.add("viewing");
+      }
+    }
+
+    // ---------- 事件 ----------
+    $("mTabChats").onclick = () => { show("list"); renderList(); };
+    $("mTabSettings").onclick = () => { show("settings"); renderSettings(); };
+    $("mFilter").onclick = openFilterSheet;
+    $("mHost").onclick = openHostSheet;
+    $("mNew").onclick = () => openNewSheet(null);
+    $("mProjectNew").onclick = () => openNewSheet(ui.project);
+    $("mProjectBack").onclick = goBack;
+    $("mChatBack").onclick = goBack;
+    $("mChatMore").onclick = openMoreSheet;
+    $("mPlus").onclick = openMoreSheet;
+    $("mGo").onclick = send;
+    $("mSearch").oninput = () => { ui.query = $("mSearch").value; renderList(); };
+    $("mInput").addEventListener("input", () => { autosize(); renderComposer(); });
+    $("mInput").addEventListener("keydown", (event) => {
+      // 手机上回车换行，点按钮发送；电脑上回车发送、Shift+回车换行。
+      if (!coarse && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        send();
+      }
+    });
+    // 列表页开着时定期刷新：别处（桌面、别的设备）开的会话、跑完的会话能及时出现。
+    setInterval(() => {
+      if (isChat() && state.me && !document.hidden && (ui.screen === "list" || ui.screen === "project")) loadThreads();
+    }, 8000);
+    show("list");
+
+    return {
+      onThreads() {
+        initSeen(state.threads);
+        renderList();
+        renderProject();
+      },
+      onThreadsError(message) { $("mRows").replaceChildren(el("div", "m-empty", `读取会话失败：${message}`)); },
+      onView() { renderChat(); },
+      onRole() {
+        $("mHostName").textContent = state.me?.host || "远程控制";
+        $("mHostDot").classList.toggle("off", !state.me);
+        $("mNew").style.visibility = can("message") ? "" : "hidden";
+        renderSettings();
+        renderComposer();
+      },
+      onOffline(message) {
+        $("mHostDot").classList.add("off");
+        $("mRows").replaceChildren(el("div", "m-empty", `连接失败：${message}`));
+      },
+      setStyle,
+    };
+  })();
+
   // 样式切换：按设备记在 localStorage；聊天样式下模型 / 权限收进「⋯」。
   const styleLabel = () => (document.documentElement.dataset.style === "chat" ? "Codex 样式" : "聊天样式");
   $("style").textContent = styleLabel();
-  $("style").onclick = () => {
-    const next = document.documentElement.dataset.style === "chat" ? "codex" : "chat";
-    document.documentElement.dataset.style = next;
-    localStorage.setItem(STYLE_KEY, next);
-    $("style").textContent = styleLabel();
-    if (state.view) applyView(state.view);
-  };
+  $("style").onclick = () => m.setStyle(document.documentElement.dataset.style === "chat" ? "codex" : "chat");
   $("more").onclick = () => $("controls").classList.toggle("chat-open");
 
   $("pairButton").onclick = pair;
@@ -858,6 +1851,7 @@
       state.me = await api("GET", "/me");
     } catch (error) {
       if ($("gate").hidden) $("threads").replaceChildren(el("div", "empty", `连接失败：${error.message}`));
+      m.onOffline(error.message);
       return;
     }
     applyRole();

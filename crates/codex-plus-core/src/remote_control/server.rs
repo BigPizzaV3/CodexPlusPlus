@@ -345,7 +345,11 @@ fn text_field(body: &Value, key: &str) -> anyhow::Result<String> {
 async fn route(request: &HttpRequest, segments: &[&str], context: &ServerContext, principal: &Principal) -> anyhow::Result<Value> {
     let service = &context.service;
     match (request.method.as_str(), segments) {
-        ("GET", ["me"]) => Ok(principal.describe()),
+        ("GET", ["me"]) => {
+            let mut me = principal.describe();
+            me["host"] = json!(super::host_display_name());
+            Ok(me)
+        }
         ("GET", ["status"]) => Ok(service.status().await),
         ("GET", ["threads"]) => service.list_threads(request.query.get("cursor").map(String::as_str)).await,
         ("POST", ["threads"]) => {

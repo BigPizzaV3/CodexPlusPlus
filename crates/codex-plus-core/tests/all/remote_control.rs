@@ -618,19 +618,33 @@ async fn codex_page_bridge_route_shares_the_manager_dispatch() {
     assert_eq!(cancelled["pairing"], Value::Null);
 }
 
-/// 网页的两种对话样式：Codex 样式与按微信做的聊天样式，切换按设备记住。
+/// 网页的两种对话样式：Codex 样式（桌面形态）与聊天样式（独立的手机界面，照微信与 Codex 手机端做），切换按设备记住。
 #[test]
 fn web_page_offers_both_conversation_styles() {
     let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
-    assert!(page.contains(r#"html[data-style="chat"] .msg .bubble"#), "聊天样式的气泡");
-    assert!(page.contains(r#"html[data-style="chat"] .thread-avatar"#), "聊天样式的会话列表头像");
-    assert!(page.contains(r#"id="style""#), "样式切换按钮");
+    // 两套界面互斥显示，只切根节点的 data-style
+    assert!(page.contains(r#"html[data-style="chat"] .app { display: none !important; }"#));
+    assert!(page.contains(r#"html:not([data-style="chat"]) .m { display: none !important; }"#));
     assert!(page.contains("codexPlusRemoteStyle"), "按设备记住选择");
     assert!(page.contains(r#"narrow ? "chat" : "codex""#), "手机默认聊天样式");
-    assert!(page.contains(r#"html[data-style="chat"] .controls { display: none; }"#), "聊天样式下模型与权限收进「⋯」");
-    assert!(page.contains(r#"id="more""#));
-    // 两种样式共用同一份 DOM，切换只改根上的 data-style，不重渲染数据。
-    assert!(page.contains(r#"document.documentElement.dataset.style = next"#));
+    // 手机界面四屏 + 底部标签栏
+    for id in [r#"id="mList""#, r#"id="mProject""#, r#"id="mChat""#, r#"id="mSettings""#, r#"id="mTabs""#] {
+        assert!(page.contains(id), "缺少 {id}");
+    }
+    // 列表：主机名顶栏、搜索、九宫格项目头像（按微信群头像的排法）、未读角标
+    assert!(page.contains(r#"id="mHostName""#) && page.contains(r#"id="mSearch""#));
+    assert!(page.contains("{ 2: [2], 3: [1, 2], 4: [2, 2], 5: [2, 3], 6: [3, 3], 7: [1, 3, 3], 8: [2, 3, 3], 9: [3, 3, 3] }"));
+    assert!(page.contains("const unread = (thread) =>"), "本机记录已读");
+    // 对话：带尾巴的左右气泡、时间分隔、卡片式命令 / 审批
+    assert!(page.contains(".m-msg.in .m-bubble::before") && page.contains(".m-msg.out .m-bubble::before"));
+    assert!(page.contains(r#"el("div", "m-time-tip", chatTime(ms / 1000, true))"#));
+    assert!(page.contains("function requestCard(request)"));
+    // 输入区：胶囊输入框 + 模式 / 权限 / 模型 / 上下文用量
+    assert!(page.contains(r#"class="m-pill""#) && page.contains(r#"id="mChips""#));
+    assert!(page.contains("openModeSheet") && page.contains("openPermissionSheet") && page.contains("openModelSheet"));
+    assert!(page.contains("state.view.tokenUsage"), "上下文用量圈");
+    // 安卓返回键 / iOS 侧滑：进项目、进对话都压一层历史
+    assert!(page.contains(r#"history.pushState({ m: "chat" }, "")"#) && page.contains(r#"window.addEventListener("popstate", popped)"#));
 }
 
 /// 网页会话列表分两级：先按工作目录列项目，点进项目再看会话。

@@ -465,6 +465,7 @@ pub fn build_view(thread_id: &str, state: &Value, revision: Option<u64>) -> Valu
             json!({
                 "turnId": turn.get("turnId"),
                 "status": turn.get("status"),
+                "startedAtMs": turn.get("turnStartedAtMs"),
                 "items": turn.get("items").and_then(Value::as_array).map(|items| items.iter().map(view_item).collect::<Vec<_>>()).unwrap_or_default(),
             })
         })
@@ -480,6 +481,7 @@ pub fn build_view(thread_id: &str, state: &Value, revision: Option<u64>) -> Valu
         "controls": current_controls(state),
         "truncatedTurns": skip,
         "turns": turns,
+        "tokenUsage": token_usage(state.get("latestTokenUsageInfo")),
         "requests": state.get("requests").cloned().unwrap_or_else(|| json!([])),
     })
 }
@@ -499,10 +501,22 @@ pub fn build_offline_view(thread: &Value) -> Value {
         "turns": turns.iter().skip(skip).map(|turn| json!({
             "turnId": turn.get("id"),
             "status": turn.get("status"),
+            "startedAtMs": turn.get("startedAt").and_then(Value::as_i64).map(|seconds| seconds * 1000),
             "items": turn.get("items").and_then(Value::as_array).map(|items| items.iter().map(view_item).collect::<Vec<_>>()).unwrap_or_default(),
         })).collect::<Vec<_>>(),
         "requests": [],
     })
+}
+
+/// 上下文用量：最近一次请求占了多少 token / 模型上下文窗口（桌面与 app-server 同一结构）。
+pub fn token_usage(info: Option<&Value>) -> Value {
+    let Some(info) = info else { return Value::Null };
+    let used = info.pointer("/last/totalTokens").and_then(Value::as_u64);
+    let window = info.get("modelContextWindow").and_then(Value::as_u64);
+    match (used, window) {
+        (Some(used), Some(window)) if window > 0 => json!({ "used": used, "window": window }),
+        _ => Value::Null,
+    }
 }
 
 /// 条目原样透传，只给用户消息补一个 `text`，并截断过长的命令输出。
