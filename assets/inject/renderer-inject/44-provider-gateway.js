@@ -46,6 +46,14 @@
   function codexPlusGatewaySetStatus(message, tone = "") {
     codexPlusGatewayPageState.status = String(message || "");
     codexPlusGatewayPageState.statusTone = tone;
+    // 同步底部状态栏（如果当前是网关页签）
+    if (codexPlusProviderPageState.tab === "gateway") {
+      const footer = document.querySelector("[data-codex-provider-footer]");
+      if (footer) {
+        footer.textContent = codexPlusGatewayPageState.status;
+        footer.dataset.tone = tone;
+      }
+    }
   }
 
   function codexPlusGatewaySelect(id) {
@@ -290,23 +298,32 @@
     const busy = Boolean(codexPlusGatewayPageState.busy);
     const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
     return gatewayMode
-      ? `<div class="codex-plus-provider-note" data-codex-gateway-mode="gateway">Codex 正经 Codex++ 网关接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。改动供应商池后，已打开的对话下一条请求就生效。
-          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button></div>`
-      : `<div class="codex-plus-provider-note" data-codex-gateway-mode="direct">Codex 现在是直连，这里的供应商池暂时不起作用。
-          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="connect" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在接入…" : "让 Codex 经网关接入"}</button></div>`;
+      ? `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="gateway">
+          <span>Codex 正经 Codex++ 网关接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
+          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button>
+        </div>`
+      : `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="direct">
+          <span>Codex 现在是直连，这里的供应商池暂时不起作用。</span>
+          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="connect" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在接入…" : "让 Codex 经网关接入"}</button>
+        </div>`;
   }
 
   function renderCodexPlusGatewayList() {
     const state = codexPlusGatewayPageState;
     const entries = codexPlusGatewayEntries();
+    const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
+    // 当前 Codex 绑定的模型（格式 "providerId/model"），用来标出活跃供应商。
+    const activeModel = state.payload?.gateway?.bindings?.codex?.model || "";
+    const activeProviderId = gatewayMode && activeModel.includes("/") ? activeModel.split("/")[0] : "";
     const rows = entries.map((entry, index) => {
       const selected = entry.id === state.selectedId && !state.isNew;
       const enabled = entry.enabled !== false;
+      const isActive = gatewayMode && entry.id === activeProviderId;
       const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
       return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-disabled="${!enabled}" data-codex-gateway-select="${escapeHtml(entry.id)}">
         <div class="codex-plus-provider-item-main">
-          <div class="codex-plus-provider-item-name">${escapeHtml(entry.name || entry.id)}</div>
-          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(tag)}</span><span class="codex-plus-provider-badge">${entry.models?.length || 0} 个模型</span>${enabled ? "" : '<span class="codex-plus-provider-badge" data-tone="off">已停用</span>'}</div>
+          <div class="codex-plus-provider-item-name">${isActive ? '<span class="codex-plus-provider-item-dot" aria-hidden="true"></span>' : ""}${escapeHtml(entry.name || entry.id)}</div>
+          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(tag)}</span><span class="codex-plus-provider-badge">${entry.models?.length || 0} 个模型</span>${!enabled ? '<span class="codex-plus-provider-badge" data-tone="off">已停用</span>' : isActive ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</div>
         </div>
         <div class="codex-plus-provider-item-actions">
           <button type="button" title="上移" aria-label="上移" data-codex-gateway-move="-1" data-id="${escapeHtml(entry.id)}" ${index === 0 ? "disabled" : ""}>↑</button>
@@ -396,13 +413,12 @@
     }
     return `<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
-        <div class="codex-plus-provider-sidebar-header"><span>网关供应商池</span>
-          <button type="button" class="codex-plus-action-button" data-codex-gateway-action="new" ${state.busy ? "disabled" : ""}>新建</button></div>
+        <div class="codex-plus-provider-sidebar-header"><span>供应商池</span>
+          <button type="button" class="codex-plus-action-button" data-codex-gateway-action="new" ${state.busy ? "disabled" : ""}>+ 新建</button></div>
         ${renderCodexPlusGatewayList()}
       </aside>
       <section class="codex-plus-provider-detail">
         ${renderCodexPlusGatewayModeBar()}
-        <div class="codex-plus-provider-status" data-tone="${state.statusTone}" role="status" aria-live="polite" ${state.status ? "" : "hidden"}>${escapeHtml(state.status)}</div>
         ${renderCodexPlusGatewayDetail()}
       </section></div>${renderCodexPlusGatewayDisconnectDialog()}`;
   }

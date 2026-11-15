@@ -89,11 +89,14 @@
   function codexPlusProviderSetStatus(message, tone = "") {
     codexPlusProviderPageState.status = String(message || "");
     codexPlusProviderPageState.statusTone = tone;
-    const node = document.querySelector("[data-codex-provider-status]");
-    if (node) {
-      node.textContent = codexPlusProviderPageState.status;
-      node.dataset.tone = tone;
-      node.hidden = !codexPlusProviderPageState.status;
+    // 同步底部状态栏（如果当前是直连页签）
+    const state = codexPlusProviderPageState;
+    if (state.tab !== "gateway") {
+      const footer = document.querySelector("[data-codex-provider-footer]");
+      if (footer) {
+        footer.textContent = codexPlusProviderPageState.status;
+        footer.dataset.tone = tone;
+      }
     }
   }
 
@@ -450,7 +453,7 @@
       const selected = profile.id === state.selectedId && !state.isNew;
       return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-codex-provider-select="${escapeHtml(profile.id)}">
         <div class="codex-plus-provider-item-main">
-          <div class="codex-plus-provider-item-name">${escapeHtml(profile.name || profile.id)}</div>
+          <div class="codex-plus-provider-item-name">${active ? '<span class="codex-plus-provider-item-dot" aria-hidden="true"></span>' : ""}${escapeHtml(profile.name || profile.id)}</div>
           <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(codexPlusProviderModeLabel(profile))}</span>${active ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</div>
         </div>
         <div class="codex-plus-provider-item-actions">
@@ -559,6 +562,17 @@
     return text.length <= 8 ? "••••" : `${text.slice(0, 3)}…${text.slice(-4)}`;
   }
 
+  function codexPlusProviderSyncFooter() {
+    const footer = document.querySelector("[data-codex-provider-footer]");
+    if (!footer) return;
+    const state = codexPlusProviderPageState;
+    const isGateway = state.tab === "gateway";
+    const msg = isGateway ? codexPlusGatewayPageState.status : state.status;
+    const tone = isGateway ? codexPlusGatewayPageState.statusTone : state.statusTone;
+    footer.textContent = msg || "";
+    footer.dataset.tone = tone || "";
+  }
+
   function renderCodexPlusProviderPage() {
     const panel = document.querySelector("[data-codex-provider-panel]");
     if (!panel) return;
@@ -570,29 +584,33 @@
     const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
     const gatewayMode = state.data?.gatewayMode === true;
     const tabs = `<div class="codex-plus-provider-tabs" role="tablist" aria-label="供应商类型">
-      <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">网关供应商池${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
-      <button type="button" role="tab" data-codex-provider-tab="direct" aria-selected="${state.tab !== "gateway"}">直连供应商${gatewayMode ? "" : '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>'}</button>
+      <div class="codex-plus-provider-tab-group">
+        <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">网关供应商池${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
+        <button type="button" role="tab" data-codex-provider-tab="direct" aria-selected="${state.tab !== "gateway"}">直连供应商${gatewayMode ? "" : '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>'}</button>
+      </div>
     </div>`;
+    const footer = `<div class="codex-plus-provider-footer" data-codex-provider-footer></div>`;
     if (state.tab === "gateway") {
-      panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}${renderCodexPlusGatewayPane()}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
+      panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}${renderCodexPlusGatewayPane()}${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
       const gatewayDetail = panel.querySelector(".codex-plus-provider-detail");
       if (gatewayDetail) gatewayDetail.scrollTop = scroll;
+      codexPlusProviderSyncFooter();
       return;
     }
     panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
-          <button type="button" class="codex-plus-action-button" data-codex-provider-action="new" ${state.busy ? "disabled" : ""}>新建</button></div>
+          <button type="button" class="codex-plus-action-button" data-codex-provider-action="new" ${state.busy ? "disabled" : ""}>+ 新建</button></div>
         ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
         ${renderCodexPlusProviderList()}
       </aside>
       <section class="codex-plus-provider-detail">
-        <div class="codex-plus-provider-status" data-codex-provider-status data-tone="${state.statusTone}" role="status" aria-live="polite" ${state.status ? "" : "hidden"}>${escapeHtml(state.status)}</div>
         ${gatewayMode ? '<div class="codex-plus-provider-note">Codex 正经网关接入，直连供应商暂时不起作用；在这里点「使用」会先断开网关并还原。</div>' : ""}
         ${renderCodexPlusProviderDetail()}
-      </section></div></div>${renderCodexPlusGatewayDisconnectDialog()}`;
+      </section></div>${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
     const detail = panel.querySelector(".codex-plus-provider-detail");
     if (detail) detail.scrollTop = scroll;
+    codexPlusProviderSyncFooter();
   }
 
   async function codexPlusProviderConfirmDiscard() {
