@@ -625,12 +625,41 @@ fn windows_names_equal(left: &str, right: &str) -> bool {
     result == 0 || result == 2
 }
 
+/// macOS 文件名大小写 / Unicode 规范化比较：路径组件比较是协调表里的热路径，
+/// 每个组件对只做一次 objc 规范化。进程里累积的 scope 一多，重复计算会把
+/// 整个 Skill 协调锁拖住（全量 skills 测试能卡十几分钟）。
 #[cfg(target_os = "macos")]
 fn macos_names_may_alias(left: &str, right: &str) -> bool {
     use objc2_foundation::{NSComparisonResult, NSString};
-    let left = NSString::from_str(left).decomposedStringWithCanonicalMapping();
-    let right = NSString::from_str(right).decomposedStringWithCanonicalMapping();
-    left.caseInsensitiveCompare(&right) == NSComparisonResult::Same
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static COMPONENT_PAIRS: RefCell<HashMap<String, HashMap<String, bool>>> =
+            RefCell::new(HashMap::new());
+    }
+    if left == right {
+        return true;
+    }
+    // 缓存按字典序归一成一个方向，查的时候直接用 &str，不额外分配。
+    let (first, second) = if left <= right { (left, right) } else { (right, left) };
+    if let Some(cached) = COMPONENT_PAIRS.with(|cache| {
+        cache.borrow().get(first).and_then(|row| row.get(second)).copied()
+    }) {
+        return cached;
+    }
+    let result = {
+        let left = NSString::from_str(first).decomposedStringWithCanonicalMapping();
+        let right = NSString::from_str(second).decomposedStringWithCanonicalMapping();
+        left.caseInsensitiveCompare(&right) == NSComparisonResult::Same
+    };
+    COMPONENT_PAIRS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        // 组件名来自实际目录，数量有限；设上限只是防止异常路径把内存撑大。
+        if cache.len() < 65_536 {
+            cache.entry(first.to_string()).or_default().insert(second.to_string(), result);
+        }
+    });
+    result
 }
 
 #[cfg(target_os = "macos")]

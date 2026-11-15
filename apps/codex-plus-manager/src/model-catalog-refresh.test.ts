@@ -406,6 +406,34 @@ it("catalog patches respect hidden entries and never alter selected model or rea
   assert.deepEqual([...value.hiddenModels], ["group/1"]);
 });
 
+it("catalog image capability reaches native descriptors only when declared (#3042)", async () => {
+  const r = runtime();
+  await load(r, ["a/native", "a/text", "a/vision", "a/plain"], {
+    "a/native": { displayName: "Native" },
+    "a/text": { inputModalities: ["text"], supportsImageDetailOriginal: false },
+    "a/vision": { input_modalities: ["text", "image"], supports_image_detail_original: true },
+    "a/plain": { displayName: "Plain" },
+  });
+  const value = { hostId: "local", models: [
+    { model: "a/native", inputModalities: ["text", "image"], supportsImageDetailOriginal: true },
+    { model: "a/text", inputModalities: ["text", "image"], supportsImageDetailOriginal: true },
+  ] };
+  r.api.patch(value);
+  const byModel = new Map(value.models.map((entry: any) => [entry.model, entry]));
+  // 没声明：保留原生描述符的值。
+  assert.deepEqual(byModel.get("a/native").inputModalities, ["text", "image"]);
+  assert.equal(byModel.get("a/native").supportsImageDetailOriginal, true);
+  // 声明为纯文本：覆盖原生值。
+  assert.deepEqual(byModel.get("a/text").inputModalities, ["text"]);
+  assert.equal(byModel.get("a/text").supportsImageDetailOriginal, false);
+  // 注入的描述符：snake_case 声明同样生效。
+  assert.deepEqual(byModel.get("a/vision").inputModalities, ["text", "image"]);
+  assert.equal(byModel.get("a/vision").supportsImageDetailOriginal, true);
+  // 注入的描述符没声明：不替它宣称收图。
+  assert.equal("inputModalities" in byModel.get("a/plain"), false);
+  assert.equal("supportsImageDetailOriginal" in byModel.get("a/plain"), false);
+});
+
 it("recognizes only a verified local pure API multi-instance catalog when relay switching is disabled", async () => {
   const profile = { id: "gateway", relayMode: "pureApi", modelList: "a/sol\nb/terra" };
   const worker = { relayProfilesEnabled: false, codexMultiInstance: true, activeRelayId: "gateway",

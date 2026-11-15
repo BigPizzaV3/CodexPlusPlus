@@ -12639,6 +12639,17 @@
         changed = true;
       }
     }
+    // 图片输入能力（#3042）：只在目录/元数据明确声明时覆盖，没声明保留原生描述符的值。
+    const modalities = codexPlusModelInputModalities(metadata);
+    if (modalities && JSON.stringify(descriptor.inputModalities ?? null) !== JSON.stringify(modalities)) {
+      descriptor.inputModalities = modalities;
+      changed = true;
+    }
+    const original = codexPlusModelImageDetailOriginal(metadata);
+    if (original !== null && descriptor.supportsImageDetailOriginal !== original) {
+      descriptor.supportsImageDetailOriginal = original;
+      changed = true;
+    }
     if (Array.isArray(metadata.supportedReasoningEfforts) && metadata.supportedReasoningEfforts.length > 0) {
       const nextEfforts = modelReasoningEfforts(modelName);
       if (JSON.stringify(descriptor.supportedReasoningEfforts || []) !== JSON.stringify(nextEfforts)) {
@@ -12651,6 +12662,8 @@
 
   function codexPlusModelDescriptor(modelName) {
     const metadata = codexPlusModelMetadata(modelName);
+    const modalities = codexPlusModelInputModalities(metadata);
+    const original = codexPlusModelImageDetailOriginal(metadata);
     return {
       model: modelName,
       id: modelName,
@@ -12662,7 +12675,27 @@
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
+      // 图片输入能力只带目录/元数据里声明过的；没声明不写，不替未知模型宣称收图，
+      // 与此前的原生行为一致。
+      ...(modalities ? { inputModalities: modalities } : {}),
+      ...(original !== null ? { supportsImageDetailOriginal: original } : {}),
     };
+  }
+
+  // 元数据里声明的输入模态（camelCase / snake_case 都认），没声明返回 null。
+  function codexPlusModelInputModalities(metadata) {
+    const declared = Array.isArray(metadata?.inputModalities) ? metadata.inputModalities
+      : Array.isArray(metadata?.input_modalities) ? metadata.input_modalities : null;
+    if (!declared) return null;
+    return declared.filter((modality) => typeof modality === "string" && modality.trim())
+      .map((modality) => modality.trim());
+  }
+
+  // 是否支持原图细节（`detail: "original"`），没声明返回 null。
+  function codexPlusModelImageDetailOriginal(metadata) {
+    if (typeof metadata?.supportsImageDetailOriginal === "boolean") return metadata.supportsImageDetailOriginal;
+    if (typeof metadata?.supports_image_detail_original === "boolean") return metadata.supports_image_detail_original;
+    return null;
   }
 
   function modelArrayLooksPatchable(value, allowEmpty = false) {
