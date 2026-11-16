@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3293
+      "lines": 3283
     },
     {
       "name": "20-menu.js",
@@ -88,7 +88,7 @@
     {
       "name": "47-task-board-page.js",
       "description": "左侧图标栏「任务面板」页：记下要做什么、拖卡片改状态、详情编辑（经 /task-board 读写 core task_board 的任务文件）",
-      "lines": 788
+      "lines": 816
     },
     {
       "name": "50-navigation.js",

@@ -20,7 +20,8 @@ type Run = { taskId: number; threadId: string; state: string; updatedAt: number;
 /** 分片顶层只有常量和函数声明，直接求值拿出纯函数。 */
 async function loadShard() {
   const source = await read(shardPath);
-  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist };`)() as {
+  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist, codexPlusTaskSections };`)() as {
+    codexPlusTaskSections: (tasks: Task[], filter: string, query: string) => Array<{ status: string; tasks: Task[] }>;
     codexPlusTaskExcerpt: (body: string) => string;
     codexPlusTaskChecklist: (body: string) => { done: number; total: number };
     codexPlusTaskStatuses: Array<{ id: string; label: string }>;
@@ -58,6 +59,30 @@ test("按状态分列，每列最近改过状态的在前；搜索命中编号�
   assert.equal(shard.codexPlusTaskProjectName("D:\\work\\Codex++\\"), "Codex++");
   assert.equal(shard.codexPlusTaskProjectName("/Users/me/repo"), "repo");
   assert.equal(shard.codexPlusTaskProjectName(null), "");
+});
+
+test("三栏：「未了结」按状态分组且不含完成 / 已取消；单个状态只出一组；搜索在分类内过滤", async () => {
+  const shard = await loadShard();
+  const tasks = [
+    task(1, { status: "todo", statusAt: 5 }),
+    task(2, { status: "backlog", statusAt: 9 }),
+    task(3, { status: "done" }),
+    task(4, { status: "cancelled" }),
+    task(5, { status: "todo", statusAt: 7, title: "修登录" }),
+    task(6, { status: "blocked" }),
+  ];
+  const ids = (sections: Array<{ status: string; tasks: Task[] }>) => sections.map((section) => [section.status, section.tasks.map((item) => item.id)]);
+  assert.deepEqual(ids(shard.codexPlusTaskSections(tasks, "open", "")), [["backlog", [2]], ["todo", [5, 1]], ["blocked", [6]]]);
+  assert.deepEqual(ids(shard.codexPlusTaskSections(tasks, "done", "")), [["done", [3]]]);
+  assert.deepEqual(ids(shard.codexPlusTaskSections(tasks, "in_review", "")), []);
+  assert.deepEqual(ids(shard.codexPlusTaskSections(tasks, "open", "登录")), [["todo", [5]]]);
+});
+
+test("侧栏分类和拖放目标不占用 data-codex-task-status；只有状态项能接拖放", async () => {
+  const page = await read(shardPath);
+  assert.match(page, /data-codex-task-filter="\$\{entry\.id\}"\$\{drop \? ` data-codex-task-drop="\$\{entry\.id\}"` : ""\}/);
+  assert.match(page, /item\(codexPlusTaskOpenFilter, codexPlusTaskIcons\.tray, .*, false\)/, "「未了结」不是拖放目标");
+  assert.match(page, /localStorage\.setItem\("codex-plus-task-board-filter", state\.filter\)/, "记住上次选的分类");
 });
 
 test("卡片摘要去掉 Markdown 标记；清单进度按 - [ ] / - [x] 计数", async () => {
