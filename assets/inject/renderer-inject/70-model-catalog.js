@@ -219,7 +219,9 @@
 
   scheduleCodexModelCatalogRetry();
 
-  async function loadCodexModelCatalog(force = false) {
+  // timeoutMs 不传时按准备读取的默认 2 秒截止：模型列表、白名单解锁等读不到也能降级，桥接卡住时不能拖住原生请求。
+  // 只有新建聊天读运行时上下文（读不到就开不了聊天，#3137）才显式放宽到 codexBridgePreparationReadTimeoutMs。
+  async function loadCodexModelCatalog(force = false, timeoutMs) {
     if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return codexModelCatalog;
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && Date.now() < codexModelCatalogRuntime.retryAt) return codexModelCatalogRuntime.failure || codexModelCatalog;
@@ -234,7 +236,7 @@
       identity = codexModelCatalogIdentity(codexPlusBackendSettings);
     }
     let failedCatalog = null;
-    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {}, timeoutMs)
       .then(async (result) => {
         if (!current()) return codexModelCatalog;
         const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
@@ -244,7 +246,7 @@
         }
         if (!nextCatalog.models.length && nextCatalog.status === "not_configured") {
           try {
-            const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
+            const settingsResp = await readCodexAppServerPreparation("/settings/get", {}, timeoutMs);
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
               const activeId = settingsResp.activeRelayId || "";
               const profile = settingsResp.relayProfiles.find(p => p.id === activeId);
@@ -1054,7 +1056,8 @@
   }
 
   async function codexThreadRuntimeContext(params) {
-    const catalog = codexModelCatalogSnapshotAfterFailure(await loadCodexModelCatalog(true));
+    const catalog = codexModelCatalogSnapshotAfterFailure(
+      await loadCodexModelCatalog(true, codexBridgePreparationReadTimeoutMs));
     const runtime = catalog.runtimeContext;
     if (!runtime && catalog.status === "failed") {
       throw new Error(catalog.message || "读取上下文配置失败，请稍后重新发送");

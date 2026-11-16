@@ -347,7 +347,7 @@ describe("managed aggregate session connection", () => {
         loadCodexModelCatalog: async () => ({ runtimeContext }),
         codexModelCatalog: { get runtimeContext() { return runtimeContext; } },
         modelResponseHostId: (params: any, hostId: string) => params?.hostId || hostId,
-        codexAppServerPreparationTimeoutMs: 1500,
+        codexAppServerPreparationTimeoutMs: 1500, codexBridgePreparationReadTimeoutMs: 8000,
         sendCodexPlusDiagnostic() {}, codexPlusModelUnlockEnabled: () => false,
         codexPluginMarketplacePatchEnabled: () => false, codexPlusSettings: () => ({}),
         setTimeout, clearTimeout,

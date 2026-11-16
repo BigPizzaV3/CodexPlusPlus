@@ -40,6 +40,7 @@ function runtime() {
     codexRemoteSessionActiveProfile: () => state.profileEnabled ? { relayMode: state.relayMode } : null,
     codexModelCatalog: { get runtimeContext() { return state.runtime; } },
     loadCodexModelCatalog: async () => ({ model: "selected", runtimeContext: state.runtime }),
+    codexBridgePreparationReadTimeoutMs: 8000,
     codexManagedSessionRecoveryOptions: () => ({ timeoutMs: 5000 }),
     applyCodexRemoteSessionProviderOverride: (_method: string, params: any) => params,
     applyCodexManagedSessionConnection: (_method: string, params: any) => params,

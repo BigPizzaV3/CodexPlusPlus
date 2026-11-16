@@ -389,7 +389,7 @@ describe("bridge preparation read deadlines (#3137)", () => {
       if (delay !== undefined) setTimeout(() => resolve({ status: "ok", path }), delay);
     });
     const api = new Function("postJson", "setTimeout", "clearTimeout", "sendCodexPlusDiagnostic",
-      `${deadlines}\nreturn { read: readCodexAppServerPreparation, quick: codexAppServerPreparationTimeoutMs };`)(
+      `${deadlines}\nreturn { read: readCodexAppServerPreparation, slow: codexBridgePreparationReadTimeoutMs };`)(
       postJson, setTimeout, clearTimeout, (event: string, detail: any) => diagnostics.push({ event, detail }));
     const advance = async (ms: number) => {
       const target = now + ms;
@@ -414,10 +414,10 @@ describe("bridge preparation read deadlines (#3137)", () => {
     return { api, replies, advance, track, diagnostics };
   }
 
-  it("accepts a slow reply that the old two-second deadline rejected", async () => {
+  it("accepts a slow reply on reads that pass the bridge deadline", async () => {
     const env = clock();
     env.replies.set("/codex-model-catalog", 2906);
-    const read = env.track(env.api.read("/codex-model-catalog", {}));
+    const read = env.track(env.api.read("/codex-model-catalog", {}, env.api.slow));
     await env.advance(2905);
     assert.equal(read.done, false);
     await env.advance(1);
@@ -426,9 +426,9 @@ describe("bridge preparation read deadlines (#3137)", () => {
     assert.deepEqual(env.diagnostics, []);
   });
 
-  it("still bounds a read that never returns at eight seconds", async () => {
+  it("still bounds a bridge-deadline read that never returns at eight seconds", async () => {
     const env = clock();
-    const read = env.track(env.api.read("/gateway/connection-generation", {}));
+    const read = env.track(env.api.read("/gateway/connection-generation", {}, env.api.slow));
     await env.advance(7999);
     assert.equal(read.done, false);
     await env.advance(1);
@@ -437,18 +437,24 @@ describe("bridge preparation read deadlines (#3137)", () => {
       detail: { path: "/gateway/connection-generation", timeoutMs: 8000 } }]);
   });
 
-  it("keeps the two-second deadline for reads that pass it explicitly", async () => {
+  it("keeps the two-second default so degradable reads never hold a native request", async () => {
     const env = clock();
-    env.replies.set("/thread-resume-model-metadata", 2906);
-    const read = env.track(env.api.read("/thread-resume-model-metadata", {}, env.api.quick));
+    env.replies.set("/codex-model-catalog", 2906);
+    const read = env.track(env.api.read("/codex-model-catalog", {}));
     await env.advance(1999);
     assert.equal(read.done, false);
     await env.advance(1);
-    assert.match(String(read.error?.message), /timed out: \/thread-resume-model-metadata/);
+    assert.match(String(read.error?.message), /timed out: \/codex-model-catalog/);
     assert.deepEqual(env.diagnostics, [{ event: "app_server_preparation_read_timeout",
-      detail: { path: "/thread-resume-model-metadata", timeoutMs: 2000 } }]);
+      detail: { path: "/codex-model-catalog", timeoutMs: 2000 } }]);
     await env.advance(1000);
     assert.equal(read.value, undefined, "a late reply must not resolve an expired read");
+  });
+
+  it("widens only the reads a new chat cannot start without", () => {
+    const catalog = readFileSync(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
+    assert.match(source, /readCodexAppServerPreparation\("\/gateway\/connection-generation", \{\},\s*codexBridgePreparationReadTimeoutMs\)/);
+    assert.match(catalog, /loadCodexModelCatalog\(true, codexBridgePreparationReadTimeoutMs\)/);
   });
 });
 

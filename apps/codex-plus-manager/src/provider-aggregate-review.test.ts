@@ -90,6 +90,7 @@ function runtime(mode: "aggregate" | "pureApi", source: string, status: "idle" |
     client, window: { __codexSessionDeleteBridge: () => {} },
     codexAppServerModelRequestPatchVersion: patchVersion,
     codexPlusBackendSettings: settings, codexModelCatalog: {}, codexAppServerPreparationTimeoutMs: 100,
+    codexBridgePreparationReadTimeoutMs: 100,
     registerNativeHostClient() {}, sendCodexPlusDiagnostic: (name: string) => diagnostics.push(name),
     showToast: (message: string) => notices.push(message),
     codexPlusPluginNativeInterceptClient: () => null,

@@ -4762,7 +4762,9 @@
   }
 
   async function codexGatewayConnectionGeneration() {
-    const connection = await readCodexAppServerPreparation("/gateway/connection-generation", {});
+    // 读不到连接代数就无法开始聊天（#3137），按放宽的截止等迟到的回包。
+    const connection = await readCodexAppServerPreparation("/gateway/connection-generation", {},
+      codexBridgePreparationReadTimeoutMs);
     if (connection?.status !== "ok" || typeof connection.active !== "boolean"
         || typeof connection.generation !== "string") {
       throw new Error(connection?.message || "读取网关连接状态失败，请稍后重试");
@@ -5765,14 +5767,14 @@
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
-  // 桥接只读请求的默认截止（#3137）：模型目录、网关连接代数读不到就无法开始聊天，
-  // 而桥接偶发 2–3 秒才回包，2 秒截止会把迟到的成功当失败。放宽到有界的 8 秒；
-  // 读不到也能降级的读取（会话元数据、设置）仍显式传 codexAppServerPreparationTimeoutMs，及时降级。
+  // 「读不到就开不了聊天」的准备读取的截止（#3137）：新建聊天读运行时上下文所需的模型目录、网关连接代数。
+  // 桥接偶发 2–3 秒才回包，2 秒截止会把迟到的成功当失败，这两处显式放宽到有界的 8 秒。
+  // 其余读取（模型列表、白名单、会话元数据、设置）读不到也能降级，仍按默认 2 秒，桥接卡住时不拖住原生请求。
   const codexBridgePreparationReadTimeoutMs = 8000;
 
   // 发送前只读取辅助配置；桥接无回包时及时降级，迟到的结果也不再应用。
   // 写 RPC（尤其 thread/resume）不能这样竞速，否则会在 turn/start 后迟到修改会话。
-  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexBridgePreparationReadTimeoutMs) {
+  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexAppServerPreparationTimeoutMs) {
     let timeoutId;
     try {
       return await Promise.race([
@@ -12508,7 +12510,9 @@
 
   scheduleCodexModelCatalogRetry();
 
-  async function loadCodexModelCatalog(force = false) {
+  // timeoutMs 不传时按准备读取的默认 2 秒截止：模型列表、白名单解锁等读不到也能降级，桥接卡住时不能拖住原生请求。
+  // 只有新建聊天读运行时上下文（读不到就开不了聊天，#3137）才显式放宽到 codexBridgePreparationReadTimeoutMs。
+  async function loadCodexModelCatalog(force = false, timeoutMs) {
     if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return codexModelCatalog;
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && Date.now() < codexModelCatalogRuntime.retryAt) return codexModelCatalogRuntime.failure || codexModelCatalog;
@@ -12523,7 +12527,7 @@
       identity = codexModelCatalogIdentity(codexPlusBackendSettings);
     }
     let failedCatalog = null;
-    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {}, timeoutMs)
       .then(async (result) => {
         if (!current()) return codexModelCatalog;
         const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
@@ -12533,7 +12537,7 @@
         }
         if (!nextCatalog.models.length && nextCatalog.status === "not_configured") {
           try {
-            const settingsResp = await readCodexAppServerPreparation("/settings/get", {});
+            const settingsResp = await readCodexAppServerPreparation("/settings/get", {}, timeoutMs);
             if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
               const activeId = settingsResp.activeRelayId || "";
               const profile = settingsResp.relayProfiles.find(p => p.id === activeId);
@@ -13343,7 +13347,8 @@
   }
 
   async function codexThreadRuntimeContext(params) {
-    const catalog = codexModelCatalogSnapshotAfterFailure(await loadCodexModelCatalog(true));
+    const catalog = codexModelCatalogSnapshotAfterFailure(
+      await loadCodexModelCatalog(true, codexBridgePreparationReadTimeoutMs));
     const runtime = catalog.runtimeContext;
     if (!runtime && catalog.status === "failed") {
       throw new Error(catalog.message || "读取上下文配置失败，请稍后重新发送");

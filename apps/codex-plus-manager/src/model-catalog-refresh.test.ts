@@ -44,6 +44,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
     sendCodexPlusDiagnostic: (event: string, detail: any) => diagnostics.push({ event, detail }),
     uniqueValues: (values: any[]) => [...new Set(values.filter(value => typeof value === "string" && value.trim()))],
     readCodexAppServerPreparation: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    codexBridgePreparationReadTimeoutMs: 8000,
     findCodexQueryClient: () => sharedWindow.testQueryClient || ({
       getQueryCache: () => ({
         getAll: () => [...queries, { queryKey: ["threads", "local"] }],
