@@ -190,6 +190,8 @@ fn presets_cover_local_and_cloud() {
     let presets = presets();
     assert!(presets.iter().any(|preset| !preset.needs_key), "要有免 Key 的本地选项");
     assert!(presets.iter().any(|preset| preset.id == "ollama"));
+    let ergou = presets.iter().find(|preset| preset.id == "ergou").expect("二狗 API 预设要在清单里");
+    assert!(ergou.needs_key && !ergou.base_url.is_empty() && !ergou.model.is_empty());
     assert_eq!(mask_secret("sk-1234567890abcd"), "sk-1***cd");
 }
 
