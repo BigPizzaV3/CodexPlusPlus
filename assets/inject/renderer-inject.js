@@ -2843,6 +2843,12 @@
         font-size: 13px;
         appearance: auto !important;
       }
+      /* 原生下拉的弹出层不跟主题：深色下选项是浅色字配白底，没选中的项几乎看不见。
+         选项显式用 Codex 下拉菜单的底色与正文色（排序、供应商页、拓展设置表单的下拉都适用）。 */
+      :is(.${codexPlusPageClass}, .codex-plus-modal-overlay) select option {
+        background-color: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+      }
       .codex-plus-extension-badge {
         display: inline-flex;
         flex: 0 0 auto;

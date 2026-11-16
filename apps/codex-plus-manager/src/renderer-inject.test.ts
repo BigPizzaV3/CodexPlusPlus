@@ -1158,6 +1158,15 @@ describe("renderer injection header compatibility", () => {
     assert.match(appended[0].textContent ?? "", /#codex-plus-sidebar-nav/);
   });
 
+  it("themes native select options so dark mode popups stay readable", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const css = installRendererStyle(renderer)[0].textContent ?? "";
+    // 弹出层不跟主题：不显式给选项底色，深色下就是浅色字配白底。
+    const rule = css.match(/:is\(\.codex-plus-page-overlay, \.codex-plus-modal-overlay\) select option \{([^}]+)\}/)?.[1] ?? "";
+    assert.match(rule, /background-color: var\(--codex-plus-bg-elevated\)/);
+    assert.match(rule, /color: var\(--codex-plus-text\)/);
+  });
+
   it("does not override the host document root typography or foreground", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const appended = installRendererStyle(renderer);
