@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   agentModels,
+  dispatchStatus,
   maskAccountText,
   memberLabel,
   memberStatus,
@@ -33,6 +34,83 @@ function payload(): GatewayPayload {
     grokProfiles: [],
   } as GatewayPayload;
 }
+
+test("重启清空冷却记录后，已查到的耗尽窗口仍显示红色并同步到模型矩阵", () => {
+  const data = payload();
+  const now = 1_000_000;
+  data.pool[0].quota = { updatedAtMs: now, windows: [
+    { windowMinutes: 300, usedPercent: 100, resetsAtMs: now + 3 * 3_600_000 },
+    { windowMinutes: 10080, usedPercent: 71, resetsAtMs: now + 86_400_000 },
+  ] };
+  const expected = { state: "cooling", text: "额度耗尽 · {0} 后恢复", args: ["3h"] };
+  assert.deepEqual(memberStatus(data, "chatgpt-1", now), expected);
+  assert.deepEqual(dispatchStatus(data, "chatgpt-1", "gpt-5.5", now), expected);
+  data.health.keys = [{ relayId: "chatgpt-1", keyId: "login", state: "ok", remainingMs: null }];
+  assert.deepEqual(memberStatus(data, "chatgpt-1", now), expected, "旧的健康 Key 记录不能遮住官方耗尽读数");
+});
+
+test("仅有7d窗口的账号按实际窗口判断，重新查到可用读数才恢复空闲", () => {
+  const data = payload();
+  const now = 1_000_000;
+  const entry = data.pool[0];
+  entry.quota = { updatedAtMs: now, windows: [
+    { windowMinutes: 10080, usedPercent: 100, resetsAtMs: now + 86_400_000 },
+  ] };
+  for (const plan of ["ChatGPT Plus", "ChatGPT Pro", "Team"]) {
+    entry.plan = plan;
+    assert.equal(memberStatus(data, entry.id, now).state, "cooling");
+    entry.quota.windows[0].usedPercent = 30;
+    assert.equal(memberStatus(data, entry.id, now).state, "idle");
+    entry.quota.windows[0].usedPercent = 100;
+  }
+});
+
+test("多个窗口耗尽要等最晚一个恢复，未知重置时间不编造倒计时", () => {
+  const data = payload();
+  const now = 1_000_000;
+  data.pool[0].quota = { updatedAtMs: now, windows: [
+    { windowMinutes: 300, usedPercent: 100, resetsAtMs: now + 3_600_000 },
+    { windowMinutes: 10080, usedPercent: 100, resetsAtMs: now + 86_400_000 },
+  ] };
+  assert.deepEqual(memberStatus(data, "chatgpt-1", now),
+    { state: "cooling", text: "额度耗尽 · {0} 后恢复", args: ["1d"] });
+  data.pool[0].quota.windows[1].resetsAtMs = null;
+  assert.deepEqual(memberStatus(data, "chatgpt-1", now),
+    { state: "cooling", text: "额度耗尽", args: [] });
+});
+
+test("过期、未来、已重置和无效窗口不永久锁红，新响应头按窗口观测时间生效", () => {
+  const data = payload();
+  const now = 1_000_000;
+  data.pool[0].quota = { updatedAtMs: now, windows: [
+    { windowMinutes: 300, usedPercent: 100, resetsAtMs: now + 3_600_000 },
+  ] };
+  const quota = data.pool[0].quota;
+  for (const observedAtMs of [now - 600_001, now + 1]) {
+    quota.windows[0].observedAtMs = observedAtMs;
+    assert.equal(memberStatus(data, "chatgpt-1", now).state, "idle");
+  }
+  quota.updatedAtMs = now - 600_001;
+  quota.windows[0].observedAtMs = now;
+  assert.equal(memberStatus(data, "chatgpt-1", now).state, "cooling");
+  quota.windows[0].resetsAtMs = now;
+  assert.equal(memberStatus(data, "chatgpt-1", now).state, "idle");
+  quota.windows[0].resetsAtMs = now + 3_600_000;
+  for (const usedPercent of [NaN, Infinity, 101, -1]) {
+    quota.windows[0].usedPercent = usedPercent;
+    assert.equal(memberStatus(data, "chatgpt-1", now).state, "idle");
+  }
+});
+
+test("官方明确受限时即使未返回窗口也不显示绿色套餐名", () => {
+  const data = payload();
+  const now = 1_000_000;
+  data.pool[0].quota = { updatedAtMs: now, officialAllowed: false, windows: [] };
+  assert.deepEqual(memberStatus(data, "chatgpt-1", now),
+    { state: "cooling", text: "订阅额度受限", args: [] });
+  data.pool[0].quota.updatedAtMs = now - 600_001;
+  assert.equal(memberStatus(data, "chatgpt-1", now).state, "idle");
+});
 
 test("裸模型名的显示、模型组成员标签里的账号名打码", () => {
   const data = payload();
