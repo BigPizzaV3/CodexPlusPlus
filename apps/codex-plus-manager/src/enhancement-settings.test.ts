@@ -137,10 +137,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   for (const item of enhancementCatalog.items) {
     const standalone = enhancementGroup(item.group).standalone === true;
     // 启动前的会话维护与拓展权限不是内置拓展，总开关管不着。
-    const unmanaged = [
-      "enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled",
-      "threadModelFollowSwitchEnabled", "keepProjectsWithoutAccount", "usageHistoryEnabled",
-    ].includes(item.key);
+    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled", "usageHistoryEnabled"].includes(item.key);
     assert.equal(item.masterGated !== false, !standalone && !unmanaged, `${item.key} master gating`);
   }
 
