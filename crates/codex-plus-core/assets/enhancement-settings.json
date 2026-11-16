@@ -481,6 +481,12 @@
       "setting": "dictation.enabled"
     },
     {
+      "id": "shell-command",
+      "title": "! 命令",
+      "description": "输入框里输入 !命令 回车，在当前会话目录直接运行（不经沙箱），输出显示在输入框上方并加入会话上下文",
+      "group": "chat"
+    },
+    {
       "id": "session-title-hook",
       "title": "会话标题中间件",
       "description": "首轮结束后按拓展的 session/title 中间件改会话标题",
