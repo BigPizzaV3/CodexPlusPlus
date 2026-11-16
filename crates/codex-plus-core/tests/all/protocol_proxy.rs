@@ -9202,22 +9202,3 @@ fn responses_item_id_normalization_keeps_opaque_compaction_and_long_ids() {
     assert_eq!(body["input"][1]["id"], json!(long_message), "改写后超过 64 字符时不改写");
     assert_eq!(body["input"][2]["id"], "cmp_resp_compact_1", "旧 cp_ 前缀仍然修复");
 }
-
-#[test]
-fn websocket_upgrade_serves_only_pure_native_responses_pools() {
-    // #3135：混合协议供应商池在握手阶段就要拒绝 WS（426），不能先 101 再在路由层拒绝。
-    let native_settings = remote_compaction_settings("http://127.0.0.1:9", RelayProtocol::Responses);
-    assert!(codex_plus_core::protocol_proxy::websocket_upgrade_serves_all_routes(&native_settings));
-
-    let mut mixed_settings = remote_compaction_settings("http://127.0.0.1:9", RelayProtocol::Responses);
-    mixed_settings.relay_profiles.push(RelayProfile {
-        id: "chat-member".to_string(),
-        name: "chat-member".to_string(),
-        protocol: RelayProtocol::ChatCompletions,
-        base_url: "http://127.0.0.1:9".to_string(),
-        api_key: "sk-chat".to_string(),
-        relay_mode: RelayMode::PureApi,
-        ..RelayProfile::default()
-    });
-    assert!(!codex_plus_core::protocol_proxy::websocket_upgrade_serves_all_routes(&mixed_settings));
-}

@@ -1017,31 +1017,66 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
 
-/// WS 升级前置能力判断（#3135）：只有当「全部供应商配置」和「全部已启用的网关
-/// 供应商」都是原生 Responses 协议时，WS 才可能在路由阶段被服务；否则应在握手
-/// 阶段就拒绝（426），让客户端按既有逻辑回落 HTTP，而不是先回 101 再在路由层
-/// 把整轮打成 local_responses_websocket_error。
-pub fn websocket_upgrade_serves_all_routes(
+/// #3135：混合协议供应商池在握手阶段就要拒绝 WS（426），不能先 101 再在路由层拒绝。
+/// 函数本体是 main 上已有的 pub(crate) `protocol_proxy::websocket_upgrade_serves_all_routes`，
+/// 集成测试看不到 pub(crate) 项，所以在模块内单测。
+#[cfg(test)]
+mod websocket_upgrade_gate_tests {
+    use super::websocket_upgrade_serves_all_routes;
+    use crate::settings::{BackendSettings, RelayProfile, RelayProtocol};
+
+    #[test]
+    fn websocket_upgrade_serves_only_pure_native_responses_pools() {
+        let mut native_settings = BackendSettings::default();
+        native_settings.relay_profiles.push(RelayProfile {
+            id: "native".to_string(),
+            name: "native".to_string(),
+            protocol: RelayProtocol::Responses,
+            base_url: "http://127.0.0.1:9".to_string(),
+            api_key: "sk-native".to_string(),
+            ..RelayProfile::default()
+        });
+        assert!(websocket_upgrade_serves_all_routes(&native_settings));
+
+        let mut mixed_settings = native_settings.clone();
+        mixed_settings.relay_profiles.push(RelayProfile {
+            id: "chat-member".to_string(),
+            name: "chat-member".to_string(),
+            protocol: RelayProtocol::ChatCompletions,
+            base_url: "http://127.0.0.1:9".to_string(),
+            api_key: "sk-chat".to_string(),
+            ..RelayProfile::default()
+        });
+        assert!(!websocket_upgrade_serves_all_routes(&mixed_settings));
+    }
+}
+
+/// 本地 WS 入口只能把 `response.create` 转给原生 Responses 上游；Chat Completions /
+/// Anthropic 兼容路由只能走 HTTP/SSE。混合协议池一律在握手阶段回 426，让客户端继续
+/// 用 HTTP，而不是升级成功后在路由阶段把整轮请求打成失败（#2963 的能力边界；#3135 在
+/// 握手阶段调用）。与 main 上既有实现保持一致，只保留这一份定义。
+pub(crate) fn websocket_upgrade_serves_all_routes(
     settings: &crate::settings::BackendSettings,
 ) -> bool {
-    let native = |relay: &crate::settings::RelayProfile| {
+    let native_responses = |relay: &crate::settings::RelayProfile| {
         relay.protocol == crate::settings::RelayProtocol::Responses
     };
-    if !settings.relay_profiles.iter().all(native) {
+    if settings.relay_profiles_enabled
+        && !settings.relay_profiles.iter().all(native_responses)
+    {
         return false;
     }
-    // 网关成员各自有协议；池里只要有一位不是 Responses，升级成功也可能在路由
-    // 阶段失败。store 读不到时按无网关供应商处理（路由同样不会用到它）。
-    crate::gateway::store::GatewayStore::default()
-        .load()
-        .map(|store| {
-            store
-                .providers
-                .iter()
-                .filter(|provider| provider.enabled)
-                .all(|provider| native(&provider.relay))
-        })
-        .unwrap_or(true)
+    // 网关成员各自有协议；池里只要有一位是 Chat / Anthropic，升级成功也可能在路由阶段失败。
+    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
+        // 读不到网关配置时不能假定全部是原生 Responses，否则会把错误推迟到 101 之后。
+        return false;
+    };
+    gateway
+        .with_extension_providers()
+        .providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .all(|provider| native_responses(&provider.relay))
 }
 
 pub(crate) fn exec_retry_after_duration(
