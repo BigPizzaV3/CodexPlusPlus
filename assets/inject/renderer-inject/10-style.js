@@ -2078,17 +2078,66 @@
       .codex-plus-extensions-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .codex-plus-extensions-filterbar .codex-plus-extensions-filter { flex-wrap: wrap; }
       .codex-plus-extensions-filter-count, .codex-plus-discovery-section-count { color: var(--codex-plus-text-secondary); font-weight: 400; }
-      .codex-plus-extensions-sort {
-        margin-top: 16px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: 8px;
+      /* 和 Codex 原生下拉一致的胶囊按钮 + 菜单（实测 Codex 的「更改权限」「推理强度」菜单）：
+         按钮 28px 高、13px 次要色、悬停 / 展开淡底；菜单半透明浮层 + 8px 模糊、20px 圆角、4px 内边距；
+         选项 5px 8px、15px 圆角、悬停用列表悬停色，选中项右侧对勾。颜色都取 Codex 自己的变量，浅色主题跟着变。 */
+      .codex-plus-extensions-sort { position: relative; margin-top: 16px; }
+      .codex-plus-menu-trigger {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 28px;
+        border: 1px solid transparent;
+        border-radius: 9999px;
+        padding: 0 8px 0 10px;
+        background: transparent;
+        color: var(--color-text-tertiary, var(--codex-plus-text-secondary));
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .codex-plus-menu-trigger:is(:hover, [aria-expanded="true"]) { background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover)); color: var(--codex-plus-text); }
+      .codex-plus-menu-trigger:focus-visible { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: 0; }
+      .codex-plus-menu-trigger svg { flex: 0 0 auto; opacity: .75; }
+      .codex-plus-menu-popover {
+        position: absolute;
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        min-width: 160px;
+        box-sizing: border-box;
+        border-radius: 20px;
+        padding: 4px;
+        background: color-mix(in srgb, var(--color-surface-elevated-secondary, var(--codex-plus-bg-elevated)) 90%, transparent);
+        color: var(--codex-plus-text);
+        box-shadow: var(--shadow-dropdown-overlay, 0 0 0 .5px var(--codex-plus-border), 0 8px 16px -4px rgba(0, 0, 0, .12));
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .codex-plus-extensions-sort-menu { top: calc(100% + 4px); right: 0; }
+      .codex-plus-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        border: 0;
+        border-radius: 15px;
         padding: 5px 8px;
         background: transparent;
         color: var(--codex-plus-text);
         font: inherit;
         font-size: 13px;
-        appearance: auto !important;
+        line-height: 18.5px;
+        text-align: left;
+        white-space: nowrap;
+        cursor: pointer;
       }
+      .codex-plus-menu-item:is(:hover, :focus-visible) { background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover)); outline: none; }
+      .codex-plus-menu-item-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .codex-plus-menu-item svg { flex: 0 0 auto; opacity: .75; }
+      .codex-plus-menu-item:is(:hover, :focus-visible) svg { opacity: 1; }
       /* 原生下拉的弹出层不跟主题：深色下选项是浅色字配白底，没选中的项几乎看不见。
          选项显式用 Codex 下拉菜单的底色与正文色（排序、供应商页、拓展设置表单的下拉都适用）。 */
       :is(.${codexPlusPageClass}, .codex-plus-modal-overlay) select option {

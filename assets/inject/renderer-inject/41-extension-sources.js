@@ -9,6 +9,8 @@
     /** 精选排序：null = 跟随数据（每个脚本都有更新时间时「最近更新」，否则清单原顺序）。 */
     marketSort: null,
     communitySort: "stars",
+    /** 展开着的排序菜单所属分栏（market / community），空 = 收起。 */
+    sortMenu: "",
     community: { listing: null, loading: false, loaded: false, error: "", notice: "", preparing: "" },
     mine: { listing: null, loading: false, loaded: false, error: "", notice: "", busy: "" },
     dsh: {
@@ -94,19 +96,86 @@
       .map((entry) => entry.item);
   }
 
-  /** 分栏条右侧的排序下拉：精选（默认 / 最近更新 / 名称）、社区（星数 / 最近更新 / 名称）。 */
+  const codexPlusExtensionSortOptions = {
+    market: { label: "拓展市场排序", options: [["default", "默认顺序"], ["updated", "最近更新"], ["name", "名称"]] },
+    community: { label: "社区拓展排序", options: [["stars", "星数"], ["updated", "最近更新"], ["name", "名称"]] },
+  };
+
+  // Codex 原生菜单的两个图标：按钮上的下箭头、选中项的对勾（取自 Codex 菜单）。
+  const codexPlusMenuIcons = {
+    chevron: '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.72 4.22a.4.4 0 0 1 .56 0L6 6.93l2.72-2.71a.4.4 0 1 1 .56.56L6.46 7.61a.65.65 0 0 1-.92 0L2.72 4.78a.4.4 0 0 1 0-.56Z" fill="currentColor"/></svg>',
+    check: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M12.7216 2.99666C12.8863 2.75824 13.2125 2.69837 13.4511 2.86287C13.6895 3.0274 13.75 3.35377 13.5858 3.59236L7.20011 12.8472C6.97922 13.1685 6.52057 13.2111 6.24405 12.9361L2.45987 9.18123C2.25451 8.97704 2.25305 8.64475 2.45694 8.43904C2.66115 8.23343 2.99433 8.23205 3.20011 8.43611L6.62296 11.8326L12.7216 2.99666Z" fill="currentColor"/></svg>',
+  };
+
+  /**
+   * 分栏条右侧的排序：和 Codex 原生下拉一样是胶囊按钮 + 自绘菜单（不用原生 select，
+   * 它的弹出层不跟主题、样子也和 Codex 不一样）。精选：默认 / 最近更新 / 名称；社区：星数 / 最近更新 / 名称。
+   */
   function renderCodexPlusExtensionsSortControl(filter) {
-    const options = filter === "market"
-      ? [["default", "默认顺序"], ["updated", "最近更新"], ["name", "名称"]]
-      : filter === "community"
-      ? [["stars", "星数"], ["updated", "最近更新"], ["name", "名称"]]
-      : null;
-    if (!options) return "";
+    const spec = codexPlusExtensionSortOptions[filter];
+    if (!spec) return "";
     const value = filter === "market" ? codexPlusMarketSortValue() : codexPlusExtensionSources.communitySort;
-    const label = filter === "market" ? "拓展市场排序" : "社区拓展排序";
-    return `<select class="codex-plus-extensions-sort" data-codex-extensions-sort="${filter}" aria-label="${label}" title="${label}">${options
-      .map(([id, text]) => `<option value="${id}"${id === value ? " selected" : ""}>${escapeHtml(text)}</option>`)
-      .join("")}</select>`;
+    const current = spec.options.find(([id]) => id === value) || spec.options[0];
+    const open = codexPlusExtensionSources.sortMenu === filter;
+    const menu = open
+      ? `<div class="codex-plus-menu-popover codex-plus-extensions-sort-menu" role="menu" aria-label="${spec.label}">${spec.options
+        .map(([id, text]) => `<button type="button" class="codex-plus-menu-item" role="menuitemradio" aria-checked="${String(id === current[0])}" data-codex-extensions-sort-value="${id}"><span class="codex-plus-menu-item-label">${escapeHtml(text)}</span>${id === current[0] ? codexPlusMenuIcons.check : ""}</button>`)
+        .join("")}</div>`
+      : "";
+    return `<div class="codex-plus-extensions-sort" data-codex-extensions-sort="${filter}"><button type="button" class="codex-plus-menu-trigger" data-codex-extensions-sort-toggle="${filter}" aria-haspopup="menu" aria-expanded="${String(open)}" aria-label="${spec.label}：${escapeHtml(current[1])}" title="${spec.label}"><span>${escapeHtml(current[1])}</span>${codexPlusMenuIcons.chevron}</button>${menu}</div>`;
+  }
+
+  /** 收起排序菜单；`refocus` 时焦点回到按钮（键盘操作关掉菜单后不丢焦点）。 */
+  function closeCodexPlusExtensionsSortMenu(refocus = false) {
+    const filter = codexPlusExtensionSources.sortMenu;
+    if (!filter) return;
+    codexPlusExtensionSources.sortMenu = "";
+    window.removeEventListener("keydown", codexPlusExtensionsSortMenuKeydown, true);
+    codexPlusExtensionSourcesRefresh();
+    if (refocus) document.querySelector(`[data-codex-extensions-sort-toggle="${filter}"]`)?.focus({ preventScroll: true });
+  }
+
+  function openCodexPlusExtensionsSortMenu(filter) {
+    codexPlusExtensionSources.sortMenu = filter;
+    // Codex 在 document 捕获阶段把按键送进输入框，菜单的方向键 / Esc 要在 window 捕获阶段先拿到。
+    window.addEventListener("keydown", codexPlusExtensionsSortMenuKeydown, true);
+    codexPlusExtensionSourcesRefresh();
+    const menu = document.querySelector(".codex-plus-extensions-sort-menu");
+    (menu?.querySelector('[aria-checked="true"]') || menu?.querySelector(".codex-plus-menu-item"))?.focus({ preventScroll: true });
+  }
+
+  /** 菜单键盘操作：上下移动、Home / End、回车 / 空格选中、Esc / Tab 收起。 */
+  function codexPlusExtensionsSortMenuKeydown(event) {
+    const menu = document.querySelector(".codex-plus-extensions-sort-menu");
+    if (!menu) {
+      window.removeEventListener("keydown", codexPlusExtensionsSortMenuKeydown, true);
+      return;
+    }
+    const items = Array.from(menu.querySelectorAll(".codex-plus-menu-item"));
+    const index = items.indexOf(document.activeElement);
+    let next = null;
+    if (event.key === "ArrowDown") next = items[(index + 1) % items.length];
+    else if (event.key === "ArrowUp") next = items[(index - 1 + items.length) % items.length];
+    else if (event.key === "Home") next = items[0];
+    else if (event.key === "End") next = items[items.length - 1];
+    else if (event.key === "Enter" || event.key === " ") {
+      // 回车 / 空格也在这里接：Codex 在 document 捕获阶段会把按键截走，按钮自己收不到激活。
+      if (index < 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      items[index].click();
+      return;
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCodexPlusExtensionsSortMenu(event.key === "Escape");
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    next?.focus({ preventScroll: true });
   }
 
   // ── 公用小件 ──────────────────────────────────────────────────────────
@@ -700,6 +769,24 @@
   function handleCodexPlusExtensionSourcesClick(target, event) {
     if (!target?.closest) return false;
     const dsh = codexPlusExtensionSources.dsh;
+    const sortToggle = target.closest("[data-codex-extensions-sort-toggle]");
+    if (sortToggle) {
+      const filter = sortToggle.getAttribute("data-codex-extensions-sort-toggle");
+      if (codexPlusExtensionSources.sortMenu === filter) closeCodexPlusExtensionsSortMenu(true);
+      else openCodexPlusExtensionsSortMenu(filter);
+      return true;
+    }
+    const sortValue = target.closest("[data-codex-extensions-sort-value]");
+    if (sortValue) {
+      const filter = codexPlusExtensionSources.sortMenu;
+      const value = sortValue.getAttribute("data-codex-extensions-sort-value");
+      if (filter === "market") codexPlusExtensionSources.marketSort = value;
+      else if (filter === "community") codexPlusExtensionSources.communitySort = value;
+      closeCodexPlusExtensionsSortMenu(true);
+      return true;
+    }
+    // 点菜单外面：收起菜单，这次点击照常交给后面的处理（和 Codex 原生菜单一样不吞点击）。
+    if (codexPlusExtensionSources.sortMenu && !target.closest(".codex-plus-extensions-sort")) closeCodexPlusExtensionsSortMenu();
     const communityInstall = target.closest("[data-codex-community-install]");
     if (communityInstall) {
       if (!communityInstall.disabled) void installCodexPlusCommunityExtension(communityInstall.getAttribute("data-codex-community-install"));
@@ -825,13 +912,4 @@
     return false;
   }
 
-  /** 排序下拉。 */
-  function handleCodexPlusExtensionSourcesChange(target) {
-    const select = target?.closest?.("[data-codex-extensions-sort]");
-    if (!select) return false;
-    if (select.getAttribute("data-codex-extensions-sort") === "market") codexPlusExtensionSources.marketSort = select.value;
-    else codexPlusExtensionSources.communitySort = select.value;
-    codexPlusExtensionSourcesRefresh();
-    return true;
-  }
   // ── 拓展页分栏到此为止 ──

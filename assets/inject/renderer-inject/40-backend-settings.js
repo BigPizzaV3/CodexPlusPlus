@@ -2253,7 +2253,6 @@
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
-      if (typeof handleCodexPlusExtensionSourcesChange === "function" && handleCodexPlusExtensionSourcesChange(target)) return;
       if (typeof handleCodexPlusServiceSettingsChange === "function" && handleCodexPlusServiceSettingsChange(target)) return;
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {

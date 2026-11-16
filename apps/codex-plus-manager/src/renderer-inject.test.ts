@@ -1469,6 +1469,8 @@ const postJson = async (path, body) => { calls.push([path, body]); const reply =
 const codexPlusActiveEntry = () => "";
 let askAnswer = null; const asks = []; const codexPlusAsk = async (question) => { asks.push(question); return askAnswer; };
 const showToast = () => {}; const reloadUserScriptsAfterChange = async () => { calls.push(["reload"]); };
+// 排序菜单开合会挂 / 摘 window 上的按键监听、找菜单节点；这里只需要它们存在。
+const window = { addEventListener() {}, removeEventListener() {} }; const document = { querySelector: () => null };
 const codexPlusConfirmPreparedInstall = async (prepared) => { asks.push(prepared); return askAnswer; };
 ${segment(renderer, "  const codexPlusExtensionSources = {", "  // ── 事件 ──")}
 ${segment(renderer, "  function codexPlusDshPluginById(", "  // ── 拓展页分栏到此为止 ──")}`
@@ -1677,7 +1679,26 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     sortRuntime.configure(scripts, market, { packages, marketSort: "name" });
     const sorted = Array.from(sortRuntime.overview().matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
     assert.deepEqual(sorted.slice(-2), ["Codex Model Matrix", "Codex Relay Balance"]);
-    assert.match(sortRuntime.overview(), /<select class="codex-plus-extensions-sort" data-codex-extensions-sort="market"[^>]*><option value="default">默认顺序<\/option><option value="updated">最近更新<\/option><option value="name" selected>/);
+    // 排序是仿 Codex 原生下拉的胶囊按钮 + 自绘菜单，不用原生 select（弹出层不跟主题）。
+    let html = sortRuntime.overview();
+    assert.doesNotMatch(html, /<select/);
+    assert.match(html, /<button type="button" class="codex-plus-menu-trigger" data-codex-extensions-sort-toggle="market" aria-haspopup="menu" aria-expanded="false"[^>]*><span>名称<\/span>/);
+    assert.doesNotMatch(html, /role="menu"/, "the menu stays closed until the trigger is clicked");
+    assert.equal(sortRuntime.click(fakeTarget({ "data-codex-extensions-sort-toggle": "market" })), true);
+    html = sortRuntime.overview();
+    assert.match(html, /aria-expanded="true"/);
+    const items = Array.from(html.matchAll(/role="menuitemradio" aria-checked="(true|false)" data-codex-extensions-sort-value="(\w+)"><span class="codex-plus-menu-item-label">([^<]+)</g)).map((match) => [match[2], match[3], match[1]]);
+    assert.deepEqual(items, [["default", "默认顺序", "false"], ["updated", "最近更新", "false"], ["name", "名称", "true"]]);
+    assert.equal(html.match(/M12\.7216 2\.99666/g)?.length, 1, "only the selected item carries the check mark");
+    // 选一项：改排序并收起菜单。
+    assert.equal(sortRuntime.click(fakeTarget({ "data-codex-extensions-sort-value": "updated" })), true);
+    assert.equal(sortRuntime.sources.marketSort, "updated");
+    assert.doesNotMatch(sortRuntime.overview(), /role="menu"/);
+    // 点菜单外面：收起，但不吞这次点击（交给后面的处理）。
+    sortRuntime.click(fakeTarget({ "data-codex-extensions-sort-toggle": "market" }));
+    const outside = { closest: (selector: string) => (selector === "[data-codex-extensions-browse]" ? {} : null), getAttribute: () => null };
+    assert.equal(sortRuntime.click(outside), false);
+    assert.equal(sortRuntime.sources.sortMenu, "");
 
     runtime.configure(scripts, market, { packages, selected: { kind: "market", key: "request-toasts" } });
     const detail = runtime.detail();
