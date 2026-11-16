@@ -73,14 +73,23 @@ struct Fixture {
 }
 impl Fixture {
     fn new(profile: Value) -> Self {
+        Self::with_profiles(vec![profile])
+    }
+    fn with_profiles(profiles: Vec<Value>) -> Self {
         let guard = crate::paths::settings_path_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         let previous = crate::paths::set_settings_path_for_tests(Some(path.clone()));
         let gateway = GatewayPathTestScope::new(temp.path());
+        let active = profiles
+            .first()
+            .and_then(|profile| profile.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("ws-test")
+            .to_string();
         std::fs::write(
             path,
-            json!({"relayProfiles":[profile],"activeRelayId":"ws-test"}).to_string(),
+            json!({"relayProfiles":profiles,"activeRelayId":active}).to_string(),
         )
         .unwrap();
         Self {
@@ -91,10 +100,15 @@ impl Fixture {
         }
     }
     fn gateway(&self, relay: Value) {
+        self.gateway_profiles(vec![relay]);
+    }
+    fn gateway_profiles(&self, relays: Vec<Value>) {
         let settings: GatewaySettings = serde_json::from_value(json!({
             "version":3,"bindings":{"codex":{"enabled":true,"model":"ws-model","token":"local-test",
                 "autoReviewModel":"review-model","extraModels":["review-model"]}},
-            "providers":[{"relay":relay,"keyConcurrency":1}],"autoModels":false
+            "providers":relays.into_iter().map(|relay| json!({
+                "relay":relay,"keyConcurrency":1
+            })).collect::<Vec<_>>(),"autoModels":false
         }))
         .unwrap();
         GatewayStore::default().save(&settings).unwrap();
@@ -364,9 +378,42 @@ async fn helper_ws_http_200_is_rejected_and_never_posts_a_generation() {
     finish(upstream).await;
 }
 
+/// 升级请求直接打在本地 WS 入口上，只看握手状态行：拒绝必须发生在 101 之前。
+async fn upgrade_status(url: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // connect 只接受 host:port，URL 里的 /v1/responses 必须先去掉。
+    let authority = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET /v1/responses HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\n\
+                 Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                 Sec-WebSocket-Version: 13\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut buffer = [0_u8; 1024];
+    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer))
+        .await
+        .expect("升级拒绝没有在 5 秒内返回")
+        .unwrap();
+    String::from_utf8_lossy(&buffer[..read])
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 #[tokio::test]
-async fn helper_ws_chat_compatibility_route_is_explicitly_rejected() {
-    if isolated("helper_ws_chat_compatibility_route_is_explicitly_rejected").await {
+async fn helper_ws_chat_only_pool_is_rejected_before_upgrade() {
+    if isolated("helper_ws_chat_only_pool_is_rejected_before_upgrade").await {
         return;
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -374,16 +421,63 @@ async fn helper_ws_chat_compatibility_route_is_explicitly_rejected() {
     relay["protocol"] = json!("chatCompletions");
     let _fixture = Fixture::new(relay);
     let (url, task) = helper(1).await;
-    let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
-    send(&mut ws, create("")).await;
-    assert_eq!(next(&mut ws).await["status"], 400);
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), listener.accept())
             .await
             .is_err()
     );
-    ws.close(None).await.unwrap();
-    drop(ws);
+    finish(task).await;
+}
+
+#[tokio::test]
+async fn mixed_protocol_pool_is_rejected_before_upgrade() {
+    if isolated("mixed_protocol_pool_is_rejected_before_upgrade").await {
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut chat = profile(listener.local_addr().unwrap());
+    chat["id"] = json!("ws-chat");
+    chat["protocol"] = json!("chatCompletions");
+    let _fixture = Fixture::with_profiles(vec![profile(listener.local_addr().unwrap()), chat]);
+    let (url, task) = helper(1).await;
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+    finish(task).await;
+}
+
+#[tokio::test]
+async fn mixed_gateway_protocol_pool_is_rejected_before_upgrade() {
+    if isolated("mixed_gateway_protocol_pool_is_rejected_before_upgrade").await {
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let native = profile(listener.local_addr().unwrap());
+    let mut chat = profile(listener.local_addr().unwrap());
+    chat["id"] = json!("ws-gateway-chat");
+    chat["protocol"] = json!("chatCompletions");
+    let fixture = Fixture::new(native.clone());
+    fixture.gateway_profiles(vec![native, chat]);
+    let (url, task) = helper(1).await;
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
     finish(task).await;
 }
 

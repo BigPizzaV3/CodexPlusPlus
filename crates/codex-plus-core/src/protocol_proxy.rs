@@ -188,6 +188,33 @@ pub(crate) fn managed_protocol_proxy_base_urls() -> Vec<String> {
     ports.into_iter().map(local_responses_proxy_base_url).collect()
 }
 
+/// 本地 WS 入口只能把 `response.create` 转给原生 Responses 上游；Chat Completions /
+/// Anthropic 兼容路由只能走 HTTP/SSE。混合协议池一律在握手阶段回 426，让客户端继续
+/// 用 HTTP，而不是升级成功后在路由阶段把整轮请求打成失败（#2963 的能力边界）。
+pub(crate) fn websocket_upgrade_serves_all_routes(
+    settings: &crate::settings::BackendSettings,
+) -> bool {
+    let native_responses = |relay: &crate::settings::RelayProfile| {
+        relay.protocol == crate::settings::RelayProtocol::Responses
+    };
+    if settings.relay_profiles_enabled
+        && !settings.relay_profiles.iter().all(native_responses)
+    {
+        return false;
+    }
+    // 网关成员各自有协议；池里只要有一位是 Chat / Anthropic，升级成功也可能在路由阶段失败。
+    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
+        // 读不到网关配置时不能假定全部是原生 Responses，否则会把错误推迟到 101 之后。
+        return false;
+    };
+    gateway
+        .with_extension_providers()
+        .providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .all(|provider| native_responses(&provider.relay))
+}
+
 pub(crate) fn is_managed_protocol_proxy_base_url(value: &str) -> bool {
     let Ok(mut parsed) = reqwest::Url::parse(value.trim()) else {
         return false;
