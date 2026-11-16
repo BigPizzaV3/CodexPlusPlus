@@ -12310,12 +12310,18 @@
   let codexModelCatalogLoadedAt = previousCodexModelCatalogRuntime?.loadedAt || 0;
   let codexModelCatalogPromise = null;
   let codexModelCatalogRevision = 0;
+  // 模型目录读取的独立有界上限（#3137）：桥接偶发 2-3s 回包不能掐掉聊天创建，
+  // 但也不能无限等；10s 仍无回包才按失败处理并安排重试。
+  const codexModelCatalogReadTimeoutMs = 10000;
   // 仅交接数据与函数，不交接 DOM；旧闭包的迟到请求不能重新发布目录。
   const codexModelCatalogRuntime = {
     catalog: codexModelCatalog,
     loadedAt: codexModelCatalogLoadedAt,
     source: previousCodexModelCatalogRuntime?.source || "",
     settingsKey: previousCodexModelCatalogRuntime?.settingsKey || "",
+    // 最近一次成功加载时的配置指纹（#3137）：与 settingsKey 一致时创建聊天可复用
+    // 已校验快照，不必每次 thread/start 前强刷目录并被 2s 竞速掐掉迟到回包。
+    snapshotKey: previousCodexModelCatalogRuntime?.snapshotKey || "",
     retryAt: previousCodexModelCatalogRuntime?.retryAt || 0,
     failure: previousCodexModelCatalogRuntime?.failure || null,
     modelListRequests: previousCodexModelCatalogRuntime?.modelListRequests || new Map(),
@@ -12455,6 +12461,7 @@
     if (sourceChanged) {
       codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
       codexModelCatalogRuntime.catalog = codexModelCatalog;
+      codexModelCatalogRuntime.snapshotKey = "";
       window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.({ sourceChanged: true });
     }
     codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
@@ -12510,7 +12517,12 @@
       codexModelCatalogRuntime.settingsKey = codexModelSettingsKey(codexPlusBackendSettings);
     }
     let failedCatalog = null;
-    const request = readCodexAppServerPreparation("/codex-model-catalog", {})
+    // 目录读取用更宽的有界等待（#3137）：桥接偶发 2-3s 才回包时不再直接失败；
+    // 超过 10s 视为桥接卡死，才走失败/重试路径。写 RPC 的顺序保护不受影响。
+    // 兜底常量是为了个别只切取本函数的测试切片（声明区不在切片里）也能运行。
+    const catalogReadTimeoutMs = typeof codexModelCatalogReadTimeoutMs === "number"
+      ? codexModelCatalogReadTimeoutMs : 10000;
+    const request = readCodexAppServerPreparation("/codex-model-catalog", {}, catalogReadTimeoutMs)
       .then(async (result) => {
         if (!current()) return codexModelCatalog;
         const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
@@ -12547,6 +12559,7 @@
         window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.(previousCatalog, nextCatalog);
         codexModelCatalog = codexModelCatalogRuntime.catalog = nextCatalog;
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
+        codexModelCatalogRuntime.snapshotKey = codexModelCatalogRuntime.settingsKey;
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
         if (changed) refreshCodexNativeModelQueries();
@@ -13317,7 +13330,20 @@
   }
 
   async function codexThreadRuntimeContext(params) {
-    const catalog = await loadCodexModelCatalog(true);
+    // 创建聊天优先复用已校验快照（#3137）：桥接偶发 2-3s 回包时，旧的每次强刷
+    // 会被 2s 竞速掐成 "preparation read timed out"，聊天无法开始。快照指纹与
+    // 当前配置一致时直接复用，过期后按普通节奏后台刷新；否则仍走完整强刷。
+    // 只读交接对象（window），不引用闭包声明，保证只取这几行函数的测试切片可用。
+    const runtimeState = window.__codexPlusModelCatalogRuntime;
+    const snapshotUsable = !!runtimeState?.snapshotKey && !!runtimeState?.loadedAt
+      && runtimeState.snapshotKey === runtimeState.settingsKey
+      && ["ok", "not_applied"].includes(runtimeState.catalog?.status);
+    const catalog = snapshotUsable
+      ? codexModelCatalog
+      : await loadCodexModelCatalog(true);
+    if (snapshotUsable && Date.now() - runtimeState.loadedAt >= 10000) {
+      void loadCodexModelCatalog();
+    }
     const runtime = catalog.runtimeContext;
     if (!runtime && catalog.status === "failed") {
       throw new Error(catalog.message || "读取上下文配置失败，请稍后重新发送");
