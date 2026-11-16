@@ -87,6 +87,21 @@
       "defaultOverride": null,
       "risk": "low",
       "note": "诊断会查 OpenAI 公开状态页；用第三方供应商时，它可能把供应商自己的错误归到「平台故障」，看技术详情里的原始错误为准。"
+    },
+    {
+      "id": "1937538638",
+      "title": "编辑更早的消息",
+      "description": "不只最后一条，会话里更早的用户消息也能点「编辑」改写重发（原生回退到该条再重跑）。",
+      "defaultOverride": null,
+      "risk": "medium",
+      "note": "改写更早的消息会丢掉它之后的所有轮次；与 Codex++ 的「轮次回退」是两套机制，回退记录互不相通。"
+    },
+    {
+      "id": "3278809559",
+      "title": "设置里的「导入」页",
+      "description": "原生设置出现「导入」：从 Claude Code 等其他 AI 应用导入聊天、AGENTS.md、技能、MCP、子智能体、钩子等，可开自动同步。拉不到远程开关时这一页会被藏起来。",
+      "defaultOverride": null,
+      "risk": "low"
     }
   ]
 }
