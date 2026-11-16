@@ -549,6 +549,13 @@
       /* 吸顶标题行：top 抵掉详情区 20px 的上内边距，否则滚动时标题上方会漏出一条正文。 */
       /* 只有按钮的行：控件区按内容收窄，不占 60%，说明文字不被挤断。 */
       .codex-plus-provider-line[data-kind="action"] .codex-plus-provider-line-control { flex: 0 0 auto; }
+      /* 供应商页的下拉：.codex-plus-menu-* 胶囊按钮 + 菜单（与拓展页排序同一套），这里只管定位。
+         菜单靠右对齐按钮，选项多（测试用模型）时限高滚动。 */
+      .codex-plus-provider-menu { position: relative; display: inline-flex; min-width: 0; }
+      .codex-plus-provider-menu .codex-plus-menu-trigger { max-width: 100%; }
+      .codex-plus-provider-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .codex-plus-provider-menu-popover { top: calc(100% + 4px); right: 0; max-height: 320px; overflow-y: auto; }
+      .codex-plus-provider-model-row .codex-plus-provider-menu { justify-self: end; }
       /* 「配置文件」折叠标题：小节标题是 flex，原生三角会消失，自己画一个会转的箭头。 */
       details.codex-plus-provider-group > summary { cursor: pointer; list-style: none; gap: 6px; user-select: none; }
       details.codex-plus-provider-group > summary::-webkit-details-marker { display: none; }

@@ -200,7 +200,7 @@
     renderCodexPlusProviderPage();
     let result;
     if (kind === "test") {
-      const model = String(document.querySelector("[data-codex-gateway-test-model]")?.value || "").trim();
+      const model = String(document.querySelector("[data-codex-gateway-test-model]")?.dataset.value || "").trim();
       result = await codexPlusGatewayCall("test_gateway_provider", { id: entry?.id, model: model || null, keyId: null });
     } else {
       const draft = state.draft;
@@ -358,7 +358,8 @@
       `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
     // 与直连页同一套卡片：小节标题 + 圆角卡片，卡片里一行一项（左标题右控件）。
     const testRow = entry
-      ? codexPlusProviderLine("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`, "点右上角「测试」时用这个模型发一次请求。")
+      ? codexPlusProviderActionLine("测试用模型", "点右上角「测试」时用这个模型发一次请求。",
+        codexPlusProviderMenu("gw-test-model", "", [["", "默认"], ...(entry.models || []).map((model) => [model, model])], "测试用模型", 'data-codex-gateway-test-model="true"'))
       : "";
     const managerRow = (title, help) => codexPlusProviderCard("更多设置", codexPlusProviderActionLine(title, help,
       '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
@@ -384,10 +385,7 @@
     return `${header}
       ${codexPlusProviderCard("连接", [
         codexPlusProviderLine("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`),
-        codexPlusProviderLine("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
-          <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
-          <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
-          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`),
+        codexPlusProviderActionLine("协议", "", codexPlusProviderMenu("gw-protocol", draft.protocol, codexPlusProviderProtocolOptions, "协议")),
         codexPlusProviderLine("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`),
       ].join(""))}
       ${codexPlusProviderCard("API Key", state.isNew

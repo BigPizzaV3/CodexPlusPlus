@@ -67,7 +67,7 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
   const toasts: string[] = [];
   const document = { querySelector: () => null, querySelectorAll: () => [], activeElement: null, hidden: false };
   const api = new Function(
-    "codexPlusProviderEditing", "postJson", "codexPlusAsk", "showToast", "escapeHtml", "document",
+    "codexPlusProviderEditing", "postJson", "codexPlusAsk", "showToast", "escapeHtml", "document", "codexPlusMenuIcons",
     `${pageSource}\n${gatewaySource}\nreturn { state: codexPlusProviderPageState, applyList: codexPlusProviderApplyList, commit: codexPlusProviderCommit,
       use: codexPlusProviderUse, selectKey: codexPlusProviderSelectKey, applyModelLines: codexPlusProviderApplyModelLines,
       modelLines: codexPlusProviderModelLines, duplicate: codexPlusProviderDuplicate, renderPage: renderCodexPlusProviderPage,
@@ -75,7 +75,7 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
       gwEditable: codexPlusGatewayEditable, gwConnect: codexPlusGatewayConnect, gwOpenDisconnect: codexPlusGatewayOpenDisconnect,
       gwApplyDisconnect: codexPlusGatewayApplyDisconnect, gwInput: codexPlusGatewayHandleInput, gwStartNew: codexPlusGatewayStartNew,
       modelEditor: codexPlusProviderModelEditor, windowLabel: codexPlusProviderWindowLabel,
-      detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail };`,
+      detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail, menuChanged: codexPlusProviderMenuChanged };`,
   )(
     loadEditing(),
     async (path: string, payload: any) => {
@@ -86,6 +86,8 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
     (message: string) => toasts.push(message),
     (value: unknown) => String(value ?? ""),
     document,
+    // 41 分片的菜单图标，桩里不加载 41。
+    { chevron: "<svg data-icon=\"chevron\"></svg>", check: "<svg data-icon=\"check\"></svg>" },
   );
   return { ...api, calls, toasts };
 }
@@ -168,9 +170,34 @@ describe("供应商页（43 分片）", () => {
     assert.match(html, /data-active="true" data-codex-provider-model-default="qwen3"/);
     assert.match(html, /data-active="false" data-codex-provider-model-default="plain"/);
     // 非预设窗口（272000）也要作为选项保留，否则回显会丢。
-    assert.match(html, /<option value="272000" selected>272K<\/option>/);
-    assert.match(html, /<option value="1000000" selected>1M<\/option>/);
+    assert.match(html, /data-codex-provider-menu-toggle="model-window" data-value="272000"[^>]*><span class="codex-plus-provider-menu-label">272K<\/span>/);
+    assert.match(html, /data-codex-provider-menu-toggle="model-window" data-value="1000000"[^>]*><span class="codex-plus-provider-menu-label">1M<\/span>/);
+    assert.match(html, /\["272000","272K"\]/, "非预设窗口也在菜单选项里");
     assert.equal(page.windowLabel("1000000"), "1M");
+  });
+
+  it("下拉都用 Codex 原生样式的菜单，不用原生 select；选中后写回草稿", () => {
+    const page = loadPage({ postJson: () => listResult() });
+    page.applyList(listResult());
+    const direct = page.detail();
+    assert.doesNotMatch(direct, /<select|<option/);
+    assert.match(direct, /class="codex-plus-menu-trigger" data-codex-provider-menu-toggle="mode" data-value="pureApi"/);
+    assert.match(direct, /data-codex-provider-menu-toggle="protocol" data-value="responses"/);
+    // 有下拉的行是 div 不是 label：label 会把整行的点击转给按钮，点空白处也会弹菜单。
+    assert.doesNotMatch(direct, /<label class="codex-plus-provider-line"[^>]*>(?:(?!<\/label>)[\s\S])*data-codex-provider-menu-toggle/);
+    page.menuChanged("protocol", "chatCompletions");
+    assert.equal(page.state.draft.protocol, "chatCompletions");
+    page.menuChanged("mode", "mixedApi");
+    assert.equal(page.state.draft.officialMixApiKey, true);
+    assert.equal(page.state.dirty, true);
+    page.gwApply(gatewayResult());
+    page.gwSelect("gw-a");
+    const gateway = page.gwDetail();
+    assert.doesNotMatch(gateway, /<select|<option/);
+    assert.match(gateway, /data-codex-provider-menu-toggle="gw-test-model" data-value=""[^>]*data-codex-gateway-test-model="true"/);
+    page.menuChanged("gw-protocol", "anthropicMessages");
+    assert.equal(page.gw.draft.protocol, "anthropicMessages");
+    assert.equal(page.gw.dirty, true);
   });
 
   it("复制供应商时让服务端按来源还原 Key", async () => {

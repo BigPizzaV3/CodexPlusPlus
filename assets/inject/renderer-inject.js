@@ -1303,6 +1303,13 @@
       /* 吸顶标题行：top 抵掉详情区 20px 的上内边距，否则滚动时标题上方会漏出一条正文。 */
       /* 只有按钮的行：控件区按内容收窄，不占 60%，说明文字不被挤断。 */
       .codex-plus-provider-line[data-kind="action"] .codex-plus-provider-line-control { flex: 0 0 auto; }
+      /* 供应商页的下拉：.codex-plus-menu-* 胶囊按钮 + 菜单（与拓展页排序同一套），这里只管定位。
+         菜单靠右对齐按钮，选项多（测试用模型）时限高滚动。 */
+      .codex-plus-provider-menu { position: relative; display: inline-flex; min-width: 0; }
+      .codex-plus-provider-menu .codex-plus-menu-trigger { max-width: 100%; }
+      .codex-plus-provider-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .codex-plus-provider-menu-popover { top: calc(100% + 4px); right: 0; max-height: 320px; overflow-y: auto; }
+      .codex-plus-provider-model-row .codex-plus-provider-menu { justify-self: end; }
       /* 「配置文件」折叠标题：小节标题是 flex，原生三角会消失，自己画一个会转的箭头。 */
       details.codex-plus-provider-group > summary { cursor: pointer; list-style: none; gap: 6px; user-select: none; }
       details.codex-plus-provider-group > summary::-webkit-details-marker { display: none; }
@@ -15216,6 +15223,134 @@ ${key} = ${value}`]);
     return `<div class="codex-plus-provider-line" data-kind="action"><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">${escapeHtml(label)}</span>${help ? `<span class="codex-plus-provider-line-help">${helpHtml ? help : escapeHtml(help)}</span>` : ""}</span><span class="codex-plus-provider-line-control">${control}</span></div>`;
   }
 
+  /**
+   * 和 Codex 原生一样的下拉：胶囊按钮 + 自绘菜单（复用 10-style 的 .codex-plus-menu-*，与拓展页排序同一套）。
+   * 不用原生 select：它的弹出层不跟主题，样子也和 Codex 不一样。
+   * 当前值放在按钮的 data-value 上；菜单只在 DOM 里开合、不重绘整页——模型行里还没填名字的新行只存在于 DOM，整页重绘会丢。
+   * kind 决定选中后做什么（见 codexPlusProviderMenuChanged），attrs 给读值的地方留钩子（如 data-codex-provider-model-window）。
+   */
+  function codexPlusProviderMenu(kind, value, options, label, attrs = "") {
+    const current = options.find(([id]) => id === value) || options[0] || ["", ""];
+    return `<div class="codex-plus-provider-menu"><button type="button" class="codex-plus-menu-trigger" data-codex-provider-menu-toggle="${escapeHtml(kind)}" data-value="${escapeHtml(current[0])}" data-options="${escapeHtml(JSON.stringify(options))}" data-menu-label="${escapeHtml(label)}" aria-haspopup="menu" aria-expanded="false" aria-label="${escapeHtml(label)}：${escapeHtml(current[1])}" ${attrs}><span class="codex-plus-provider-menu-label">${escapeHtml(current[1])}</span>${codexPlusMenuIcons.chevron}</button></div>`;
+  }
+
+  function codexPlusProviderOpenMenu(trigger) {
+    codexPlusProviderCloseMenu();
+    let options = [];
+    try {
+      options = JSON.parse(trigger.dataset.options || "[]");
+    } catch {}
+    const value = trigger.dataset.value || "";
+    trigger.setAttribute("aria-expanded", "true");
+    trigger.insertAdjacentHTML("afterend", `<div class="codex-plus-menu-popover codex-plus-provider-menu-popover" role="menu" aria-label="${escapeHtml(trigger.dataset.menuLabel || "")}">${options
+      .map(([id, text]) => `<button type="button" class="codex-plus-menu-item" role="menuitemradio" aria-checked="${String(id === value)}" data-codex-provider-menu-value="${escapeHtml(id)}"><span class="codex-plus-menu-item-label">${escapeHtml(text)}</span>${id === value ? codexPlusMenuIcons.check : ""}</button>`)
+      .join("")}</div>`);
+    // Codex 在 document 捕获阶段把按键送进输入框，菜单的方向键 / Esc 要在 window 捕获阶段先拿到。
+    window.addEventListener("keydown", codexPlusProviderMenuKeydown, true);
+    window.addEventListener("pointerdown", codexPlusProviderMenuPointerdown, true);
+    const menu = trigger.nextElementSibling;
+    (menu?.querySelector('[aria-checked="true"]') || menu?.querySelector(".codex-plus-menu-item"))?.focus({ preventScroll: true });
+  }
+
+  /** 收起菜单；`refocus` 时焦点回到按钮（键盘操作关掉菜单后不丢焦点）。 */
+  function codexPlusProviderCloseMenu(refocus = false) {
+    window.removeEventListener("keydown", codexPlusProviderMenuKeydown, true);
+    window.removeEventListener("pointerdown", codexPlusProviderMenuPointerdown, true);
+    const menu = document.querySelector(".codex-plus-provider-menu-popover");
+    if (!menu) return;
+    const trigger = menu.previousElementSibling;
+    menu.remove();
+    trigger?.setAttribute("aria-expanded", "false");
+    if (refocus) trigger?.focus({ preventScroll: true });
+  }
+
+  /** 点菜单外面收起；点的是菜单自己或它的按钮就交给点击处理。 */
+  function codexPlusProviderMenuPointerdown(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".codex-plus-provider-menu")) return;
+    codexPlusProviderCloseMenu();
+  }
+
+  /** 菜单键盘操作：上下移动、Home / End、回车 / 空格选中、Esc / Tab 收起（与拓展页排序菜单一致）。 */
+  function codexPlusProviderMenuKeydown(event) {
+    const menu = document.querySelector(".codex-plus-provider-menu-popover");
+    if (!menu) return codexPlusProviderCloseMenu();
+    const items = Array.from(menu.querySelectorAll(".codex-plus-menu-item"));
+    const index = items.indexOf(document.activeElement);
+    let next = null;
+    if (event.key === "ArrowDown") next = items[(index + 1) % items.length];
+    else if (event.key === "ArrowUp") next = items[(index - 1 + items.length) % items.length];
+    else if (event.key === "Home") next = items[0];
+    else if (event.key === "End") next = items[items.length - 1];
+    else if (event.key === "Enter" || event.key === " ") {
+      if (index < 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      codexPlusProviderChooseMenuItem(items[index]);
+      return;
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      codexPlusProviderCloseMenu(event.key === "Escape");
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    next?.focus({ preventScroll: true });
+  }
+
+  /** 选中一项：按钮上的值和文字就地更新，再按 kind 写回草稿。 */
+  function codexPlusProviderChooseMenuItem(item) {
+    const trigger = item.closest(".codex-plus-provider-menu-popover")?.previousElementSibling;
+    if (!trigger) return;
+    const value = item.dataset.codexProviderMenuValue || "";
+    const text = item.textContent.trim();
+    trigger.dataset.value = value;
+    const label = trigger.querySelector(".codex-plus-provider-menu-label");
+    if (label) label.textContent = text;
+    trigger.setAttribute("aria-label", `${trigger.dataset.menuLabel || ""}：${text}`);
+    codexPlusProviderCloseMenu(true);
+    codexPlusProviderMenuChanged(trigger.dataset.codexProviderMenuToggle, value, trigger);
+  }
+
+  function codexPlusProviderMenuChanged(kind, value, trigger) {
+    if (kind === "mode") {
+      if (value === "official") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: false });
+      else if (value === "mixedApi") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: true });
+      else codexPlusProviderPatch({ relayMode: "pureApi", officialMixApiKey: false });
+      return renderCodexPlusProviderPage();
+    }
+    if (kind === "protocol") {
+      codexPlusProviderPatch({ protocol: value });
+      return renderCodexPlusProviderPage();
+    }
+    if (kind === "model-window") {
+      const list = trigger.closest("[data-codex-provider-model-list]");
+      if (list) codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
+      return;
+    }
+    // 网关页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
+    if (kind === "gw-protocol") codexPlusGatewayHandleInput({ target: { dataset: { codexGatewayField: "protocol" }, value } });
+  }
+
+  /** 菜单的点击（开合、选中）；是它的事件就处理并返回 true。 */
+  function codexPlusProviderHandleMenuClick(target) {
+    const item = target.closest(".codex-plus-provider-menu-popover .codex-plus-menu-item");
+    if (item) {
+      codexPlusProviderChooseMenuItem(item);
+      return true;
+    }
+    const trigger = target.closest("[data-codex-provider-menu-toggle]");
+    if (!trigger) return false;
+    if (trigger.getAttribute("aria-expanded") === "true") codexPlusProviderCloseMenu();
+    else codexPlusProviderOpenMenu(trigger);
+    return true;
+  }
+
+  const codexPlusProviderProtocolOptions = [["responses", "Responses"], ["chatCompletions", "Chat Completions"], ["anthropicMessages", "Anthropic Messages"]];
+
   /** 上下文窗口的显示名：1000000 → 1M，272000 → 272K。 */
   function codexPlusProviderWindowLabel(value) {
     const n = Number(value);
@@ -15285,14 +15420,8 @@ ${key} = ${value}`]);
       ${statusBanner}
       ${codexPlusProviderCard("基本", [
         codexPlusProviderLine("名称", codexPlusProviderInput("name", draft.name)),
-        codexPlusProviderLine("模式", `<select class="codex-plus-provider-input" data-codex-provider-mode="true">
-          <option value="official" ${mode === "official" ? "selected" : ""}>官方登录</option>
-          <option value="mixedApi" ${mode === "mixedApi" ? "selected" : ""}>官方登录 + API</option>
-          <option value="pureApi" ${mode === "pureApi" ? "selected" : ""}>纯 API</option></select>`),
-        showApi ? codexPlusProviderLine("协议", `<select class="codex-plus-provider-input" data-codex-provider-field="protocol">
-          <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
-          <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
-          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`) : "",
+        codexPlusProviderActionLine("模式", "", codexPlusProviderMenu("mode", mode, [["official", "官方登录"], ["mixedApi", "官方登录 + API"], ["pureApi", "纯 API"]], "模式")),
+        showApi ? codexPlusProviderActionLine("协议", "", codexPlusProviderMenu("protocol", draft.protocol, codexPlusProviderProtocolOptions, "协议")) : "",
         showApi ? codexPlusProviderLine("接口地址", codexPlusProviderInput("baseUrl", draft.baseUrl, 'placeholder="https://example.com/v1" spellcheck="false"')) : "",
       ].join(""))}
       ${showApi ? codexPlusProviderCard("API Key", `${keyRows || '<div class="codex-plus-provider-help">还没有 Key。</div>'}
@@ -15393,7 +15522,7 @@ ${key} = ${value}`]);
     return `<div class="codex-plus-provider-model-row" data-codex-provider-model-row>
         <button type="button" class="codex-plus-provider-star" data-active="${isDefault}" data-codex-provider-model-default="${escapeHtml(slug)}" title="${isDefault ? "默认模型" : "设为默认模型"}" aria-label="${isDefault ? "默认模型" : "设为默认模型"}">${isDefault ? "★" : "☆"}</button>
         <input type="text" class="codex-plus-provider-input" data-codex-provider-model-name value="${escapeHtml(slug)}" placeholder="模型名，例如 deepseek-v4-pro" spellcheck="false" aria-label="模型名">
-        <select class="codex-plus-provider-input" data-codex-provider-model-window aria-label="上下文窗口">${values.map((value) => `<option value="${escapeHtml(value)}" ${value === win ? "selected" : ""}>${value ? codexPlusProviderWindowLabel(value) : "窗口：默认"}</option>`).join("")}</select>
+        ${codexPlusProviderMenu("model-window", win, values.map((value) => [value, value ? codexPlusProviderWindowLabel(value) : "窗口：默认"]), "上下文窗口", "data-codex-provider-model-window")}
         <button type="button" class="codex-plus-provider-model-remove" data-codex-provider-model-remove aria-label="移除这个模型">移除</button>
       </div>`;
   }
@@ -15402,7 +15531,7 @@ ${key} = ${value}`]);
   function codexPlusProviderModelRowsText(list) {
     return Array.from(list.querySelectorAll("[data-codex-provider-model-row]")).map((row) => {
       const name = String(row.querySelector("[data-codex-provider-model-name]")?.value || "").trim();
-      const win = String(row.querySelector("[data-codex-provider-model-window]")?.value || "");
+      const win = String(row.querySelector("[data-codex-provider-model-window]")?.dataset.value || "");
       return name && win && !name.includes("[") ? `${name}[${win}]` : name;
     }).filter(Boolean).join("\n");
   }
@@ -15429,10 +15558,6 @@ ${key} = ${value}`]);
         }
         star?.setAttribute("data-codex-provider-model-default", name);
       }
-      return true;
-    }
-    if (event.type === "change" && row && target.matches("[data-codex-provider-model-window]")) {
-      codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
       return true;
     }
     if (event.type !== "click") return false;
@@ -15493,17 +15618,6 @@ ${key} = ${value}`]);
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     if (codexPlusProviderHandleModelEditor(event)) return;
-    if (target.dataset.codexProviderMode) {
-      const mode = target.value;
-      if (mode === "official") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: false });
-      else if (mode === "mixedApi") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: true });
-      else codexPlusProviderPatch({ relayMode: "pureApi", officialMixApiKey: false });
-      return renderCodexPlusProviderPage();
-    }
-    if (target.dataset.codexProviderField === "protocol") {
-      codexPlusProviderPatch({ protocol: target.value });
-      return renderCodexPlusProviderPage();
-    }
     if (target.dataset.codexProviderKeySelect) codexPlusProviderSelectKey(target.dataset.codexProviderKeySelect);
   }
 
@@ -15511,6 +15625,7 @@ ${key} = ${value}`]);
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const state = codexPlusProviderPageState;
     if (!target) return;
+    if (codexPlusProviderHandleMenuClick(target)) return;
     const tab = target.closest("[data-codex-provider-tab]");
     if (tab) {
       const next = tab.dataset.codexProviderTab === "gateway" ? "gateway" : "direct";
@@ -15627,6 +15742,7 @@ ${key} = ${value}`]);
     state.pollTimer = setInterval(codexPlusProviderPoll, 5000);
     // 关页时由 closeCodexPlusPage 调用（92-extension-host.js）。
     window.__codexPlusExtensionPageCleanup = () => {
+      codexPlusProviderCloseMenu();
       clearInterval(state.pollTimer);
       state.pollTimer = null;
     };
@@ -15840,7 +15956,7 @@ ${key} = ${value}`]);
     renderCodexPlusProviderPage();
     let result;
     if (kind === "test") {
-      const model = String(document.querySelector("[data-codex-gateway-test-model]")?.value || "").trim();
+      const model = String(document.querySelector("[data-codex-gateway-test-model]")?.dataset.value || "").trim();
       result = await codexPlusGatewayCall("test_gateway_provider", { id: entry?.id, model: model || null, keyId: null });
     } else {
       const draft = state.draft;
@@ -15998,7 +16114,8 @@ ${key} = ${value}`]);
       `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
     // 与直连页同一套卡片：小节标题 + 圆角卡片，卡片里一行一项（左标题右控件）。
     const testRow = entry
-      ? codexPlusProviderLine("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`, "点右上角「测试」时用这个模型发一次请求。")
+      ? codexPlusProviderActionLine("测试用模型", "点右上角「测试」时用这个模型发一次请求。",
+        codexPlusProviderMenu("gw-test-model", "", [["", "默认"], ...(entry.models || []).map((model) => [model, model])], "测试用模型", 'data-codex-gateway-test-model="true"'))
       : "";
     const managerRow = (title, help) => codexPlusProviderCard("更多设置", codexPlusProviderActionLine(title, help,
       '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
@@ -16024,10 +16141,7 @@ ${key} = ${value}`]);
     return `${header}
       ${codexPlusProviderCard("连接", [
         codexPlusProviderLine("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`),
-        codexPlusProviderLine("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
-          <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
-          <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
-          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`),
+        codexPlusProviderActionLine("协议", "", codexPlusProviderMenu("gw-protocol", draft.protocol, codexPlusProviderProtocolOptions, "协议")),
         codexPlusProviderLine("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`),
       ].join(""))}
       ${codexPlusProviderCard("API Key", state.isNew
