@@ -24,7 +24,7 @@ pub const BASE_INSTRUCTIONS: &str = r#"你是「加加」，Codex++ 里的一个
 - 用户要的是「帮我盯着」时，用 watch 或 later，不要口头答应了却不安排。
 
 # 说话方式
-- 像微信聊天：简短、口语、中文，一般一两句话。列表最多五六行。不用标题，少用加粗。
+- 默认像微信聊天：简短、口语、中文，一般一两句话。列表最多五六行。不用标题，少用加粗。用户在设置里给你定了性格的话，语气按性格来。
 - 提到某个会话时，在句末附上会话卡片标记 [[会话:会话ID前8位]]，用户点卡片就能进去。一条回复最多附三张卡片。
 - 会话 ID 平时用前 8 位就行，工具都认。
 
@@ -39,6 +39,7 @@ pub const BASE_INSTRUCTIONS: &str = r#"你是「加加」，Codex++ 里的一个
 pub fn developer_instructions(
     now_text: &str,
     host: &str,
+    persona: &str,
     user_memory: &str,
     notes: &str,
     watched: &[Watched],
@@ -50,6 +51,14 @@ pub fn developer_instructions(
         let body = body.trim();
         if body.is_empty() { format!("\n## {title}\n（空）\n") } else { format!("\n## {title}\n{body}\n") }
     };
+    if !persona.trim().is_empty() {
+        text.push_str(&format!(
+            "\n## 你的性格（用户在设置里给你定的）\n{}\n照这个性格说话，而且要放开演：每条回复的语气、用词、口头禅都带出这个性格，让用户一眼认出是你，\
+             不要退回平淡的汇报腔。它比默认的说话方式优先。\
+             但「规矩」那几条不变：内容照实说、不编造，不替用户审批，打断别人干活前先问。\n",
+            persona.trim()
+        ));
+    }
     text.push_str(&section("关于用户（你记下的，USER）", user_memory));
     text.push_str(&section("你的笔记（NOTES）", notes));
     let watched_lines: Vec<String> = watched

@@ -151,7 +151,11 @@ fn developer_instructions_carry_memory_watch_list_and_recent_chat() {
         ChatMessage { id: 1, at: 0, role: "user".into(), text: "帮我盯着".into(), threads: vec![], request: None, resolved: false, by: None, rev: 1 },
         ChatMessage { id: 2, at: 0, role: "event".into(), text: "不该出现".into(), threads: vec![], request: None, resolved: false, by: None, rev: 2 },
     ];
-    let text = prompt::developer_instructions("2026-11-17 02:30 周二", "MacBook", "- 喜欢简短", "", &watched, &later, &recent);
+    let text = prompt::developer_instructions("2026-11-17 02:30 周二", "MacBook", "", "- 喜欢简短", "", &watched, &later, &recent);
+    assert!(!text.contains("你的性格"), "没设性格就不写这一节");
+    let styled = prompt::developer_instructions("now", "Mac", "  毒舌，但靠谱  ", "", "", &[], &[], &[]);
+    assert!(styled.contains("## 你的性格（用户在设置里给你定的）\n毒舌，但靠谱\n"));
+    assert!(styled.contains("不替用户审批"), "性格压不过规矩");
     assert!(text.contains("2026-11-17 02:30") && text.contains("MacBook"));
     assert!(text.contains("- 喜欢简短"));
     assert!(text.contains("（空）"), "空的笔记写明是空的");
@@ -224,6 +228,72 @@ fn store_persists_chat_settings_and_tracks_unread() {
     assert_eq!(reopened.watched.len(), WATCH_LIMIT, "满了挤掉最早的");
     assert!(reopened.unwatch("t44"));
     assert!(!reopened.unwatch("nope"));
+}
+
+#[test]
+fn persona_and_avatar_settings_are_validated() {
+    use codex_plus_core::remote_control::jiajia::Jiajia;
+    use codex_plus_core::remote_control::jiajia::store::{Avatar, PERSONA_LIMIT, Settings};
+    let base = Settings::default();
+    assert_eq!(base.persona, "");
+    assert_eq!(base.avatar, Avatar::default());
+
+    let set = Jiajia::apply_settings(base.clone(), &json!({ "persona": "  傲娇  " })).unwrap();
+    assert_eq!(set.persona, "傲娇", "去掉首尾空白");
+    assert_eq!(Jiajia::apply_settings(set.clone(), &json!({ "persona": "" })).unwrap().persona, "", "清空就是恢复默认");
+    assert!(Jiajia::apply_settings(base.clone(), &json!({ "persona": "字".repeat(PERSONA_LIMIT + 1) })).is_err());
+    assert!(Jiajia::apply_settings(base.clone(), &json!({ "persona": 1 })).is_err());
+
+    let with_image = Settings { avatar: Avatar { image: Some("avatar.jpg".into()), version: 3, ..Default::default() }, ..base.clone() };
+    let text = Jiajia::apply_settings(with_image.clone(), &json!({ "avatar": { "text": "🐱", "color": "#07c160" } })).unwrap();
+    assert_eq!(text.avatar.text.as_deref(), Some("🐱"));
+    assert_eq!(text.avatar.color.as_deref(), Some("#07c160"));
+    assert_eq!(text.avatar.image, None, "改用文字头像就不用图片了");
+    assert!(Jiajia::apply_settings(base.clone(), &json!({ "avatar": { "text": "五个字太长" } })).is_err());
+    assert!(Jiajia::apply_settings(base.clone(), &json!({ "avatar": { "color": "red" } })).is_err());
+    assert!(Jiajia::apply_settings(base.clone(), &json!({ "avatar": { "color": "#12345g" } })).is_err());
+    let reset = Jiajia::apply_settings(text, &json!({ "avatar": { "reset": true } })).unwrap();
+    assert_eq!((reset.avatar.text, reset.avatar.color, reset.avatar.image), (None, None, None));
+    assert!(Jiajia::apply_settings(with_image.clone(), &json!({ "model": "x" })).unwrap().avatar.image.is_some(), "不碰头像就保持原样");
+}
+
+#[test]
+fn avatar_images_are_checked_stored_and_replaced() {
+    use codex_plus_core::remote_control::jiajia::Jiajia;
+    use codex_plus_core::remote_control::jiajia::store::avatar_extension;
+    assert_eq!(avatar_extension(b"\xff\xd8\xff\xe0rest"), Some("jpg"));
+    assert_eq!(avatar_extension(b"\x89PNG\r\n\x1a\nrest"), Some("png"));
+    assert_eq!(avatar_extension(b"GIF89a..."), Some("gif"));
+    assert_eq!(avatar_extension(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
+    assert_eq!(avatar_extension(b"<svg onload=alert(1)>"), None, "只认位图，不认 SVG / HTML");
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let jiajia = Jiajia::new(dir.path().to_path_buf(), std::sync::Weak::new());
+        assert!(jiajia.avatar_image().is_none());
+        assert!(jiajia.set_avatar_image(b"not an image").is_err());
+        assert!(jiajia.set_avatar_image(&vec![0xff; 2 * 1024 * 1024]).is_err(), "太大的拒收");
+
+        let summary = jiajia.set_avatar_image(b"\x89PNG\r\n\x1a\npng-bytes").unwrap();
+        assert_eq!(summary["settings"]["avatar"]["image"], "avatar.png");
+        assert_eq!(summary["settings"]["avatar"]["version"], 1);
+        assert_eq!(jiajia.avatar_image().unwrap().1, "image/png");
+        // 换成 JPEG：旧的 PNG 删掉
+        jiajia.set_avatar_image(b"\xff\xd8\xff\xe0jpeg").unwrap();
+        assert!(!dir.path().join("avatar.png").exists());
+        assert_eq!(jiajia.avatar_image().unwrap().1, "image/jpeg");
+
+        // 改用文字头像：图片文件删掉，版本号变，网页才会重画
+        let summary = jiajia.update_settings(&json!({ "avatar": { "text": "猫" } })).await.unwrap();
+        assert!(!dir.path().join("avatar.jpg").exists());
+        assert_eq!(summary["settings"]["avatar"]["text"], "猫");
+        assert_eq!(summary["settings"]["avatar"]["version"], 3);
+        assert!(jiajia.avatar_image().is_none());
+
+        jiajia.update_settings(&json!({ "persona": "元气满满" })).await.unwrap();
+        assert_eq!(Store::open(dir.path()).settings.persona, "元气满满", "写回了文件");
+    });
 }
 
 #[test]
@@ -307,7 +377,8 @@ fn jiajia_routes_require_roles() {
     assert_eq!(required_role("GET", &["jiajia"]), Role::View, "只读设备也能看加加");
     assert_eq!(required_role("GET", &["jiajia", "stream"]), Role::View);
     assert_eq!(required_role("POST", &["jiajia", "read"]), Role::View);
-    for action in ["messages", "interrupt", "settings", "clear", "memory"] {
+    assert_eq!(required_role("GET", &["jiajia", "avatar"]), Role::View);
+    for action in ["messages", "interrupt", "settings", "clear", "memory", "avatar"] {
         assert_eq!(required_role("POST", &["jiajia", action]), Role::Message, "{action}");
     }
 }
@@ -374,6 +445,14 @@ fn web_page_pins_jiajia_and_reuses_request_cards() {
         "m.startJiajia();",
         "function jjSetupSheet()",
         "api(\"POST\", \"/jiajia/read\"",
+        // 性格与头像：··· 里两项；头像图片裁成 256 的正方形再传；列表和气泡都用同一个画头像的函数
+        "function jjPersonaSheet()",
+        "function jjAvatarSheet()",
+        "canvas.width = canvas.height = 256;",
+        "fetch(\"/api/jiajia/avatar\", { method: \"POST\"",
+        "/api/jiajia/avatar?v=${avatar.version || 0}&token=",
+        "jjFace(avatar.querySelector(\".face\"));",
+        "jjFace(node.querySelector(\".who\"));",
     ] {
         assert!(page.contains(expected), "网页缺少：{expected}");
     }

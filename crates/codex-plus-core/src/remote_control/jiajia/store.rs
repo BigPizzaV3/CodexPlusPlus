@@ -49,11 +49,55 @@ pub struct Settings {
     /// 会话有动静时唤醒加加主动说（关掉就只发固定格式的提醒，不花模型调用）。
     pub proactive: bool,
     pub done_reports: DoneReports,
+    /// 用户给加加定的性格（说话方式、口头禅……），空的就是默认的简短干练。
+    pub persona: String,
+    pub avatar: Avatar,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { configured: false, model: None, effort: None, proactive: true, done_reports: DoneReports::Watched }
+        Self {
+            configured: false,
+            model: None,
+            effort: None,
+            proactive: true,
+            done_reports: DoneReports::Watched,
+            persona: String::new(),
+            avatar: Avatar::default(),
+        }
+    }
+}
+
+/// 加加的头像：图片（存在 jiajia 目录里），或者一两个字 / emoji 配底色；都没有就是默认的「加」。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Avatar {
+    pub text: Option<String>,
+    /// `#rrggbb`
+    pub color: Option<String>,
+    /// 图片文件名（`avatar.jpg` 等），在 jiajia 目录下。
+    pub image: Option<String>,
+    /// 每换一次图片加一，网页拿它绕开缓存。
+    pub version: u64,
+}
+
+/// 性格描述的字数上限。
+pub const PERSONA_LIMIT: usize = 800;
+/// 头像图片大小上限（网页会先缩到 256×256）。
+pub const AVATAR_LIMIT: usize = 1024 * 1024;
+
+/// 认头像图片的格式（看文件头，不信 Content-Type）。
+pub fn avatar_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
     }
 }
 

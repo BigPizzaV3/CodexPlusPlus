@@ -323,6 +323,13 @@ async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, conte
             Err(error) => write_json(&mut stream, 400, &json!({ "ok": false, "error": error.to_string() })).await,
         };
     }
+    // 加加的头像图片（<img> 带不了请求头，令牌走 ?token=）。
+    if request.method == "GET" && segments.as_slice() == ["jiajia", "avatar"] {
+        return match context.service.jiajia().avatar_image() {
+            Some((bytes, content_type)) => write_body(&mut stream, 200, content_type, &bytes).await,
+            None => write_json(&mut stream, 404, &json!({ "ok": false, "error": "没有设头像图片" })).await,
+        };
+    }
     if let ["threads", thread_id, "stream"] = segments.as_slice() {
         if request.header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
             let thread_id = valid_thread_id(thread_id)?;
@@ -491,7 +498,9 @@ async fn route(request: &HttpRequest, segments: &[&str], context: &ServerContext
             service.jiajia().send(&text, principal_name(principal), principal.role()).await
         }
         ("POST", ["jiajia", "interrupt"]) => service.jiajia().interrupt().await,
-        ("POST", ["jiajia", "settings"]) => service.jiajia().update_settings(&json_body(request)?),
+        ("POST", ["jiajia", "settings"]) => service.jiajia().update_settings(&json_body(request)?).await,
+        // 头像图片：请求体就是图片本身（网页先缩成 256×256）。
+        ("POST", ["jiajia", "avatar"]) => service.jiajia().set_avatar_image(&request.body),
         ("POST", ["jiajia", "read"]) => {
             let upto = json_body(request)?.get("upto").and_then(Value::as_u64).unwrap_or(0);
             let jiajia = service.jiajia();

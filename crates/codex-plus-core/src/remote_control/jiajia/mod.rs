@@ -260,10 +260,71 @@ impl Jiajia {
         Ok(self.memory())
     }
 
-    /// 改设置：模型、推理强度、主动消息、跑完要不要报；第一次选完模型时 `configured: true`。
-    pub fn update_settings(&self, body: &Value) -> anyhow::Result<Value> {
-        let mut store = self.store();
-        let mut settings = store.settings.clone();
+    /// 改设置：模型、推理强度、主动消息、跑完要不要报、性格、头像（文字 / 底色 / 恢复默认）；
+    /// 第一次选完模型时 `configured: true`。性格写在会话的说明里，改了就换新会话。
+    pub async fn update_settings(&self, body: &Value) -> anyhow::Result<Value> {
+        let persona_changed = {
+            let mut store = self.store();
+            let before = store.settings.persona.clone();
+            let mut settings = Self::apply_settings(store.settings.clone(), body)?;
+            // 换成文字头像或恢复默认：旧图片删掉。
+            if settings.avatar.image.is_none() {
+                if let Some(old) = store.settings.avatar.image.clone() {
+                    let _ = std::fs::remove_file(store.dir().join(old));
+                }
+            }
+            if settings.avatar.image != store.settings.avatar.image || settings.avatar.text != store.settings.avatar.text || settings.avatar.color != store.settings.avatar.color {
+                settings.avatar.version = store.settings.avatar.version + 1;
+            }
+            let changed = settings.persona != before;
+            store.settings = settings;
+            store.save_settings();
+            changed
+        };
+        if persona_changed {
+            self.mark_rotate().await;
+        }
+        self.touch();
+        Ok(self.summary())
+    }
+
+    /// 存一张头像图片（网页已缩成 256×256）。只认图片文件头。
+    pub fn set_avatar_image(&self, bytes: &[u8]) -> anyhow::Result<Value> {
+        if bytes.len() > store::AVATAR_LIMIT {
+            bail!("头像图片太大（上限 1 MB）");
+        }
+        let extension = store::avatar_extension(bytes).context("只支持 JPEG / PNG / GIF / WebP 图片")?;
+        {
+            let mut store = self.store();
+            let name = format!("avatar.{extension}");
+            if let Some(old) = store.settings.avatar.image.clone().filter(|old| old != &name) {
+                let _ = std::fs::remove_file(store.dir().join(old));
+            }
+            std::fs::write(store.dir().join(&name), bytes).context("保存头像失败")?;
+            store.settings.avatar.image = Some(name);
+            store.settings.avatar.version += 1;
+            store.save_settings();
+        }
+        self.touch();
+        Ok(self.summary())
+    }
+
+    /// 头像图片：(内容, Content-Type)。没设图片时返回 None。
+    pub fn avatar_image(&self) -> Option<(Vec<u8>, &'static str)> {
+        let store = self.store();
+        let name = store.settings.avatar.image.clone()?;
+        let bytes = std::fs::read(store.dir().join(&name)).ok()?;
+        let content_type = match store::avatar_extension(&bytes)? {
+            "jpg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            _ => "image/webp",
+        };
+        Some((bytes, content_type))
+    }
+
+    /// 把网页传来的改动套到设置上（纯函数，校验也在这里）。
+    pub fn apply_settings(mut settings: store::Settings, body: &Value) -> anyhow::Result<store::Settings> {
         if let Some(model) = body.get("model") {
             settings.model = model.as_str().map(str::trim).filter(|model| !model.is_empty()).map(str::to_string);
         }
@@ -279,11 +340,37 @@ impl Jiajia {
         if body.get("configured").and_then(Value::as_bool) == Some(true) {
             settings.configured = true;
         }
-        store.settings = settings;
-        store.save_settings();
-        drop(store);
-        self.touch();
-        Ok(self.summary())
+        if let Some(persona) = body.get("persona") {
+            let persona = persona.as_str().context("persona 要是文字")?.trim();
+            if persona.chars().count() > store::PERSONA_LIMIT {
+                bail!("性格描述最多 {} 字", store::PERSONA_LIMIT);
+            }
+            settings.persona = persona.to_string();
+        }
+        if let Some(avatar) = body.get("avatar") {
+            if avatar.get("reset").and_then(Value::as_bool) == Some(true) {
+                settings.avatar = store::Avatar { version: settings.avatar.version, ..Default::default() };
+            } else {
+                // 设文字 / 底色就是不用图片了。
+                if let Some(text) = avatar.get("text") {
+                    let text = text.as_str().map(str::trim).filter(|text| !text.is_empty());
+                    if text.is_some_and(|text| text.chars().count() > 4) {
+                        bail!("头像文字最多 4 个字符（一两个字或一个 emoji）");
+                    }
+                    settings.avatar.text = text.map(str::to_string);
+                    settings.avatar.image = None;
+                }
+                if let Some(color) = avatar.get("color") {
+                    let color = color.as_str().filter(|color| !color.is_empty());
+                    if color.is_some_and(|color| !(color.len() == 7 && color.starts_with('#') && color[1..].chars().all(|c| c.is_ascii_hexdigit()))) {
+                        bail!("头像底色要是 #rrggbb");
+                    }
+                    settings.avatar.color = color.map(str::to_string);
+                    settings.avatar.image = None;
+                }
+            }
+        }
+        Ok(settings)
     }
 
     /// 清空聊天：记忆、回访、盯着的会话保留，换一个新会话（不带旧聊天）。
@@ -461,6 +548,7 @@ impl Jiajia {
             let developer = prompt::developer_instructions(
                 &prompt::format_now(now),
                 &super::host_display_name(),
+                &store.settings.persona,
                 &store.user_memory,
                 &store.notes,
                 &store.watched,

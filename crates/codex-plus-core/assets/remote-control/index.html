@@ -394,8 +394,16 @@
   .m-card .readonly { padding: 10px 12px; color: var(--m-sub); font-size: 13px; border-top: 1px solid var(--m-line); }
   .m-card.attention { box-shadow: 0 0 0 1.5px var(--m-warn); }
   /* 加加：头像、会话卡片、审批卡片上的会话名、状态行 */
-  .m-avatar .face.jj, .m-msg .who.jj { background: linear-gradient(135deg, #07c160, #10aeff); color: #fff; font-weight: 600; }
+  .m-avatar .face.jj, .m-msg .who.jj, .jj-preview .face.jj { background: linear-gradient(135deg, #07c160, #10aeff); color: #fff; font-weight: 600; }
+  .m-avatar .face.jj, .m-msg .who.jj { overflow: hidden; white-space: nowrap; }
+  .face.jj.jj-img, .who.jj.jj-img { background-size: cover; background-position: center; background-repeat: no-repeat; }
   .m-row.jj-row { background: color-mix(in srgb, var(--m-green) 6%, var(--m-row)); }
+  .m-sheet .jj-preview { display: flex; justify-content: center; padding: 16px 0 6px; }
+  .m-sheet .jj-preview .face { width: 72px; height: 72px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 32px; }
+  .m-sheet .swatches { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 18px 12px; }
+  .m-sheet .swatches button { width: 32px; height: 32px; border-radius: 50%; border: 2px solid transparent; }
+  .m-sheet .swatches button.on { border-color: var(--m-text); }
+  .m-sheet .persona { min-height: 110px; }
   .m-card.m-thread { cursor: pointer; }
   .m-card.m-thread .m-card-head { padding-bottom: 2px; }
   .m-card.m-thread .m-card-head .kind { font-size: 12px; font-weight: 400; color: var(--m-sub); }
@@ -3081,9 +3089,7 @@
     function jjRow() {
       const summary = jj.summary || {};
       const avatar = avatarNode([{ char: "加", key: "jiajia" }], { badge: summary.unread || 0 });
-      const face = avatar.querySelector(".face");
-      face.style.background = "";
-      face.classList.add("jj");
+      jjFace(avatar.querySelector(".face"));
       const sub = [];
       const thinking = jjThinkingText();
       if (thinking) sub.push(el("span", "running", thinking));
@@ -3119,11 +3125,28 @@
       if (jj.summary && !jj.summary.settings?.configured && can("message")) jjSetupSheet();
     }
 
+    /** 把加加的头像画到一个方块上：图片，或者文字 + 底色；都没设就是渐变底的「加」。 */
+    function jjFace(node, avatar = jj.summary?.settings?.avatar || {}) {
+      node.classList.add("jj");
+      node.style.background = "";
+      node.style.fontSize = "";
+      node.textContent = "";
+      node.classList.toggle("jj-img", !!avatar.image);
+      if (avatar.image) {
+        node.style.backgroundImage = `url("/api/jiajia/avatar?v=${avatar.version || 0}&token=${encodeURIComponent(token)}")`;
+        return node;
+      }
+      const text = avatar.text || "加";
+      node.textContent = text;
+      // 两个以上的字缩小一点，不然方块里放不下。
+      if ([...text].length > 1) node.style.fontSize = "0.8em";
+      if (avatar.color) node.style.background = avatar.color;
+      return node;
+    }
+
     function jjMsg(content) {
       const node = msgNode("in", content);
-      const who = node.querySelector(".who");
-      who.textContent = "加";
-      who.classList.add("jj");
+      jjFace(node.querySelector(".who"));
       return node;
     }
 
@@ -3377,6 +3400,116 @@
       });
     }
 
+    const JJ_PERSONAS = [
+      ["温柔体贴", "说话温柔体贴，会关心我累不累、要不要休息，偶尔用「～」，但不啰嗦。"],
+      ["毒舌吐槽", "嘴有点毒，爱吐槽烂代码和我的拖延，但事情办得靠谱，吐槽完一定给结论。"],
+      ["元气活泼", "元气满满，爱用感叹号和 emoji，像个热情的小跟班，汇报也透着开心。"],
+      ["冷静专业", "冷静专业，像资深工程师在站会上汇报：先说结论再说细节，不寒暄、不用语气词。"],
+      ["傲娇", "有点傲娇，嘴上说「才不是特意帮你看的」，其实什么都替我盯得好好的。"],
+    ];
+
+    /** 性格：一段描述，加加照着说话。可以从预设填一个再改。 */
+    function jjPersonaSheet() {
+      const settings = jj.summary?.settings || {};
+      openSheet("加加的性格", (body) => {
+        body.append(el("div", "hint", "写下你希望加加怎么说话：语气、口头禅、称呼你什么都行。规矩不变（不编造、不替你审批）。改完下一条消息起生效。"));
+        const presets = el("div", "seg-row");
+        const input = el("textarea", "memory persona");
+        input.value = settings.persona || "";
+        input.maxLength = 800;
+        input.placeholder = "留空就是默认：简短干练，像同事发微信";
+        for (const [label, text] of JJ_PERSONAS) {
+          const button = el("button", "", label);
+          button.onclick = () => { input.value = text; input.focus(); };
+          presets.append(button);
+        }
+        const form = el("div", "form");
+        const save = el("button", "primary-btn", "保存");
+        save.onclick = async () => {
+          closeSheet();
+          await jjSettings({ persona: input.value.trim() });
+          toast(input.value.trim() ? "性格改好了" : "已恢复默认性格");
+        };
+        form.append(input, save);
+        body.append(el("div", "section", "预设（点一下填进去，可以再改）"), presets, form);
+      });
+    }
+
+    /** 头像：选一张图（裁成正方形、缩到 256），或者一两个字 / emoji 配底色。 */
+    function jjAvatarSheet() {
+      const current = jj.summary?.settings?.avatar || {};
+      const colors = ["", "#07c160", "#10aeff", "#fa5151", "#ff9f0a", "#8b62b3", "#3f9a8c", "#191919", "#b9567f"];
+      let color = current.image ? "" : current.color || "";
+      openSheet("加加的头像", (body) => {
+        const preview = el("div", "jj-preview");
+        const face = el("div", "face");
+        preview.append(face);
+        const form = el("div", "form");
+        const text = el("input");
+        text.maxLength = 4;
+        text.placeholder = "一两个字或一个 emoji，默认「加」";
+        text.value = current.image ? "" : current.text || "";
+        const draw = () => jjFace(face, { text: text.value.trim() || undefined, color: color || undefined });
+        if (current.image) jjFace(face, current); else draw();
+        text.oninput = draw;
+        const swatches = el("div", "swatches");
+        for (const value of colors) {
+          const swatch = el("button", value === color ? "on" : "");
+          swatch.title = value ? value : "默认渐变";
+          swatch.style.background = value || "linear-gradient(135deg, #07c160, #10aeff)";
+          swatch.onclick = () => {
+            color = value;
+            for (const other of swatches.children) other.classList.toggle("on", other === swatch);
+            draw();
+          };
+          swatches.append(swatch);
+        }
+        const useText = el("button", "primary-btn", "用文字头像");
+        useText.onclick = () => { closeSheet(); jjSettings({ avatar: { text: text.value.trim(), color } }); };
+        form.append(text);
+        const confirm = el("div", "form");
+        confirm.append(useText);
+        body.append(
+          preview,
+          optionButton({ label: "从相册选图片", detail: "会裁成正方形", onClick: jjPickAvatar }),
+          el("div", "section", "或者用文字 / emoji，再挑个底色"),
+          form,
+          swatches,
+          confirm,
+          optionButton({ label: "恢复默认头像", center: true, onClick: () => jjSettings({ avatar: { reset: true } }) }),
+        );
+      });
+    }
+
+    function jjPickAvatar() {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          // 居中裁成正方形，缩到 256×256：上传快，也免得大图撑爆头像。
+          const bitmap = await createImageBitmap(file);
+          const side = Math.min(bitmap.width, bitmap.height);
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = 256;
+          canvas.getContext("2d").drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 256, 256);
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+          if (!blob) throw new Error("这张图片处理不了，换一张试试");
+          const response = await fetch("/api/jiajia/avatar", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "image/jpeg" }, body: blob });
+          const payload = await response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
+          if (response.status === 401) unauthorized(payload.error);
+          if (!payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+          jj.summary = payload.data;
+          renderList();
+          jjRender();
+          toast("头像换好了");
+        } catch (error) { toast(error.message); }
+      };
+      input.click();
+    }
+
     function jjWatchedSheet() {
       const watched = jj.summary?.watched || [];
       openSheet(`加加盯着的会话（${watched.length}）`, (body) => {
@@ -3393,7 +3526,11 @@
       const reports = { watched: "只报加加盯着的", all: "全部都报", none: "不报" };
       openSheet("加加", (body) => {
         const effort = settings.effort ? ` · ${effortLabels[settings.effort] || settings.effort}` : "";
+        const persona = (settings.persona || "").trim();
+        const avatar = settings.avatar || {};
         body.append(
+          optionButton({ label: "性格", detail: persona ? (persona.length > 24 ? `${persona.slice(0, 24)}…` : persona) : "默认：简短干练", onClick: jjPersonaSheet }),
+          optionButton({ label: "头像", detail: avatar.image ? "图片" : avatar.text ? `文字「${avatar.text}」` : "默认", onClick: jjAvatarSheet }),
           optionButton({ label: "模型与推理强度", detail: `${modelLabel(settings.model)}${effort}`, onClick: jjModelSheet }),
           optionButton({
             label: "主动消息", detail: settings.proactive ? "开：会话出错、跑完时加加会主动说（每次算一轮模型调用）" : "关：只发固定格式的提醒，不调用模型",
