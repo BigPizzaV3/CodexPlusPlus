@@ -197,14 +197,18 @@ pub(crate) fn websocket_upgrade_serves_all_routes(
     let native_responses = |relay: &crate::settings::RelayProfile| {
         relay.protocol == crate::settings::RelayProtocol::Responses
     };
-    if !settings.relay_profiles.iter().all(native_responses) {
+    if settings.relay_profiles_enabled
+        && !settings.relay_profiles.iter().all(native_responses)
+    {
         return false;
     }
     // 网关成员各自有协议；池里只要有一位是 Chat / Anthropic，升级成功也可能在路由阶段失败。
-    let gateway = crate::gateway::store::GatewayStore::default()
-        .load()
-        .unwrap_or_default();
+    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
+        // 读不到网关配置时不能假定全部是原生 Responses，否则会把错误推迟到 101 之后。
+        return false;
+    };
     gateway
+        .with_extension_providers()
         .providers
         .iter()
         .filter(|provider| provider.enabled)

@@ -100,10 +100,15 @@ impl Fixture {
         }
     }
     fn gateway(&self, relay: Value) {
+        self.gateway_profiles(vec![relay]);
+    }
+    fn gateway_profiles(&self, relays: Vec<Value>) {
         let settings: GatewaySettings = serde_json::from_value(json!({
             "version":3,"bindings":{"codex":{"enabled":true,"model":"ws-model","token":"local-test",
                 "autoReviewModel":"review-model","extraModels":["review-model"]}},
-            "providers":[{"relay":relay,"keyConcurrency":1}],"autoModels":false
+            "providers":relays.into_iter().map(|relay| json!({
+                "relay":relay,"keyConcurrency":1
+            })).collect::<Vec<_>>(),"autoModels":false
         }))
         .unwrap();
         GatewayStore::default().save(&settings).unwrap();
@@ -438,6 +443,31 @@ async fn mixed_protocol_pool_is_rejected_before_upgrade() {
     chat["id"] = json!("ws-chat");
     chat["protocol"] = json!("chatCompletions");
     let _fixture = Fixture::with_profiles(vec![profile(listener.local_addr().unwrap()), chat]);
+    let (url, task) = helper(1).await;
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+    finish(task).await;
+}
+
+#[tokio::test]
+async fn mixed_gateway_protocol_pool_is_rejected_before_upgrade() {
+    if isolated("mixed_gateway_protocol_pool_is_rejected_before_upgrade").await {
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let native = profile(listener.local_addr().unwrap());
+    let mut chat = profile(listener.local_addr().unwrap());
+    chat["id"] = json!("ws-gateway-chat");
+    chat["protocol"] = json!("chatCompletions");
+    let fixture = Fixture::new(native.clone());
+    fixture.gateway_profiles(vec![native, chat]);
     let (url, task) = helper(1).await;
     assert_eq!(
         upgrade_status(&format!("{url}/v1/responses")).await,
