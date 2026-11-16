@@ -426,10 +426,10 @@
       .codex-plus-provider-sidebar { box-sizing: border-box; width: 240px; flex: 0 0 240px; overflow-y: auto; padding: 10px 8px; border-right: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary)); }
       .codex-plus-provider-sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 2px 8px 8px; font-size: 12px; font-weight: 600; color: var(--codex-plus-text-secondary); letter-spacing: .02em; }
       .codex-plus-provider-list { display: flex; flex-direction: column; gap: 1px; }
-      /* 侧栏条目：左侧 2px 彩条标记选中态 */
-      .codex-plus-provider-item { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 8px; border-radius: 6px; cursor: pointer; border-left: 2px solid transparent; }
+      /* 侧栏条目：照 Codex 原生侧栏，选中只用圆角底色，不加彩条。 */
+      .codex-plus-provider-item { display: flex; align-items: center; gap: 6px; padding: 7px 8px 7px 10px; border-radius: 8px; cursor: pointer; }
       .codex-plus-provider-item:hover { background: var(--codex-plus-bg-hover); }
-      .codex-plus-provider-item[data-selected="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); border-left-color: var(--codex-plus-text); }
+      .codex-plus-provider-item[data-selected="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
       /* 活跃供应商的绿点指示器 */
       .codex-plus-provider-item-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--codex-plus-success, #10a37f); vertical-align: middle; margin-right: 4px; margin-bottom: 1px; flex-shrink: 0; }
       .codex-plus-provider-item-main { flex: 1; min-width: 0; }
@@ -499,6 +499,58 @@
       .codex-plus-provider-mode-bar button { margin-left: auto; }
       .codex-plus-provider-note { padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 12px; }
       .codex-plus-provider-empty { padding: 48px 24px; color: var(--codex-plus-text-secondary); }
+      /* 详情改版：照 Codex 原生设置页——居中窄栏、14px 小节标题、圆角卡片里一行一项（左标题右控件）。 */
+      .codex-plus-provider-detail { padding: 20px 32px 32px; }
+      .codex-plus-provider-detail > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+      .codex-plus-provider-detail-header { align-items: center; padding: 0 0 4px; border-bottom: 0; }
+      .codex-plus-provider-title { font-size: 20px; font-weight: 500; line-height: 28px; }
+      .codex-plus-provider-group { gap: 0; padding: 0; margin-top: 24px; border-bottom: 0; }
+      .codex-plus-provider-group > .codex-plus-provider-section-title { display: flex; align-items: center; min-height: 32px; padding: 0 0 6px; color: var(--codex-plus-text); font-size: 14px; font-weight: 500; letter-spacing: 0; line-height: 21px; text-transform: none; }
+      .codex-plus-provider-card { box-sizing: border-box; min-width: 0; padding: 0 16px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-card-radius); background: var(--codex-plus-settings-card-bg); }
+      .codex-plus-provider-card > * + * { border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-group-note { margin: 6px 4px 0; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-provider-line { display: flex; align-items: center; justify-content: space-between; gap: 24px; box-sizing: border-box; min-height: 52px; padding: 12px 0; }
+      .codex-plus-provider-line-copy { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+      .codex-plus-provider-line-title { color: var(--codex-plus-text); font-size: 13px; font-weight: 500; line-height: 18px; }
+      .codex-plus-provider-line-help { color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-provider-line-control { display: flex; flex: 0 1 60%; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+      .codex-plus-provider-line[data-stack="true"] { flex-direction: column; align-items: stretch; gap: 8px; }
+      .codex-plus-provider-line[data-stack="true"] .codex-plus-provider-line-control { flex: none; width: 100%; }
+      .codex-plus-provider-card .codex-plus-provider-input { min-height: 28px; padding: 4px 10px; border-color: var(--codex-plus-control-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-control-bg); }
+      .codex-plus-provider-card .codex-plus-provider-input:focus { border-color: var(--codex-plus-focus, #2563eb); }
+      .codex-plus-provider-card .codex-plus-provider-key { padding: 12px 0; border-radius: 0; }
+      .codex-plus-provider-card .codex-plus-provider-key:hover { background: transparent; }
+      .codex-plus-provider-card .codex-plus-provider-key-add { padding: 12px 0; }
+      .codex-plus-provider-card .codex-plus-provider-help { padding: 12px 0; }
+      .codex-plus-provider-page .codex-plus-action-button { box-sizing: border-box; min-height: 28px; border: 1px solid var(--codex-plus-control-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-button-bg); color: var(--codex-plus-text); font: inherit; font-size: 13px; cursor: pointer; }
+      .codex-plus-provider-page .codex-plus-action-button:hover:not(:disabled):not([data-primary="true"]) { background: var(--codex-plus-button-hover-bg); }
+      /* 重新设计：标题行吸顶，操作按钮始终可见；横向铺满详情区，内容仍对齐 760px 居中栏。 */
+      .codex-plus-provider-detail > .codex-plus-provider-detail-header { position: sticky; top: 0; z-index: 3; max-width: none; margin: 0 -32px; padding: 14px max(32px, calc((100% - 760px) / 2)); background: var(--codex-plus-settings-page-bg); border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-card .codex-plus-action-button[data-danger="true"]:not(:disabled) { color: var(--codex-plus-danger, #dc2626); }
+      .codex-plus-provider-card .codex-plus-action-button:disabled { opacity: .5; cursor: default; }
+      /* 结果提示：保存、测试、获取模型的结果贴在标题行下面，不再只在底部状态栏的小字里。 */
+      .codex-plus-provider-banner { box-sizing: border-box; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-settings-card-bg); color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .codex-plus-provider-banner[data-tone="ok"] { color: var(--codex-plus-success, #10a37f); border-color: color-mix(in srgb, var(--codex-plus-success, #10a37f) 35%, transparent); }
+      .codex-plus-provider-banner[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); border-color: color-mix(in srgb, var(--codex-plus-warning, #d97706) 40%, transparent); }
+      .codex-plus-provider-banner[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); background: var(--codex-plus-danger-bg, rgba(220,38,38,.08)); border-color: color-mix(in srgb, var(--codex-plus-danger, #dc2626) 40%, transparent); }
+      /* 模型行编辑器：星标 | 模型名 | 窗口下拉 | 移除。 */
+      .codex-plus-provider-model-list { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
+      .codex-plus-provider-model-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) 120px auto; align-items: center; gap: 8px; }
+      .codex-plus-provider-star { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--codex-plus-control-radius); background: transparent; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 15px; line-height: 1; cursor: pointer; }
+      .codex-plus-provider-star:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-provider-star[data-active="true"] { color: var(--codex-plus-warning, #d97706); }
+      .codex-plus-provider-model-remove { padding: 0 4px; border: 0; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+      .codex-plus-provider-model-add { align-self: flex-start; }
+      /* 左侧列表：名称、模式标签下面补一行「默认模型 · 接口域名」。 */
+      .codex-plus-provider-item-sub { margin-top: 3px; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 11px; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
+      /* 卡片行收尾：没有控件的行不占右半边；「配置文件」折叠标题可点；网关接入提示在详情栏里做成圆角横幅。 */
+      .codex-plus-provider-line-control:empty { display: none; }
+      .codex-plus-provider-line-help .codex-plus-provider-link { vertical-align: baseline; }
+      details.codex-plus-provider-group > summary { cursor: pointer; list-style-position: inside; }
+      details.codex-plus-provider-group:not([open]) > summary { padding-bottom: 0; }
+      .codex-plus-provider-detail > .codex-plus-provider-mode-bar, .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
+      .codex-plus-provider-sidebar-header { padding: 4px 8px 10px; color: var(--codex-plus-text-secondary); font-weight: 500; letter-spacing: 0; }
+      .codex-plus-provider-sidebar-header .codex-plus-action-button { min-height: 24px; padding: 0 8px; font-size: 12px; }
       .codex-plus-plugin-job-message { font-size: 12px; color: var(--codex-plus-text-secondary); margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
       .codex-plus-plugin-job-message[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-plugin-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; font-size: 12px; color: var(--codex-plus-text-secondary); }

@@ -337,10 +337,6 @@
     return `<div class="codex-plus-provider-list" role="list" aria-label="网关供应商池">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">供应商池是空的。</div>'}</div>`;
   }
 
-  function codexPlusGatewayField(label, control, help = "") {
-    return codexPlusProviderField(label, control, help);
-  }
-
   function renderCodexPlusGatewayDetail() {
     const state = codexPlusGatewayPageState;
     const entry = state.isNew ? null : codexPlusGatewaySelected();
@@ -355,18 +351,27 @@
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="toggle" ${busy ? "disabled" : ""}>${enabled ? "停用" : "启用"}</button>` : ""}
         ${editable ? `<button type="button" class="codex-plus-action-button" data-primary="true" data-codex-gateway-action="save" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : "保存"}</button>` : ""}
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
-        ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>'
-          : `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`}
+        ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>' : ""}
       </div></div>`;
+    // 删除放到页面底部的「危险操作」卡片，与直连页一致。
+    const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从供应商池删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
+      `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
+    // 与直连页同一套卡片：小节标题 + 圆角卡片，卡片里一行一项（左标题右控件）。
     const testRow = entry
-      ? `<div class="codex-plus-provider-row">${codexPlusGatewayField("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`)}</div>`
+      ? codexPlusProviderLine("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`, "点右上角「测试」时用这个模型发一次请求。")
       : "";
+    const managerRow = (title, help) => codexPlusProviderCard("更多设置", codexPlusProviderActionLine(title, help,
+      '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
     if (!editable) {
-      return `${header}<div class="codex-plus-provider-section"><div class="codex-plus-provider-note">${entry.account
-        ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
-        : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。"}</div>
-        <div class="codex-plus-provider-help">模型：${escapeHtml((entry.models || []).join("、") || "（无）")}</div>${testRow}
-        <button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button></div>`;
+      return `${header}
+        ${codexPlusProviderCard("模型", [
+          codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
+          testRow,
+        ].join(""), entry.account
+          ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
+          : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。")}
+        ${managerRow("账号与订阅", "登录、额度和刷新在 Codex++ 管理器里管理。")}
+        ${dangerCard}`;
     }
     const draft = state.draft;
     const keys = entry?.keys || [];
@@ -374,35 +379,32 @@
         <button type="button" data-codex-gateway-key-replace="${escapeHtml(key.id)}">替换</button>
         ${keys.length > 1 ? `<button type="button" data-codex-gateway-key-delete="${escapeHtml(key.id)}">删除</button>` : ""}</div>`).join("");
     const fetched = state.fetchedModels.length
-      ? `<div class="codex-plus-provider-help">上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button></div>`
+      ? `上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button>`
       : "";
     return `${header}
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">连接</div>
-        ${codexPlusGatewayField("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`)}
-        ${codexPlusGatewayField("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
+      ${codexPlusProviderCard("连接", [
+        codexPlusProviderLine("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`),
+        codexPlusProviderLine("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
           <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
           <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
-          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`)}
-        ${codexPlusGatewayField("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`)}
-      </div>
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">API Key</div>
-        ${state.isNew
-          ? codexPlusGatewayField("Key", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="2" data-codex-gateway-field="keys" placeholder="一行一个，多个 Key 自动轮换" spellcheck="false" autocomplete="off">${escapeHtml(draft.keys)}</textarea>`)
-          : `${keyRows || '<div class="codex-plus-provider-help">没有已保存的 Key。</div>'}
+          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`),
+        codexPlusProviderLine("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`),
+      ].join(""))}
+      ${codexPlusProviderCard("API Key", state.isNew
+        ? codexPlusProviderLine("Key", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="2" data-codex-gateway-field="keys" placeholder="一行一个，多个 Key 自动轮换" spellcheck="false" autocomplete="off">${escapeHtml(draft.keys)}</textarea>`, "", true)
+        : `${keyRows || '<div class="codex-plus-provider-help">没有已保存的 Key。</div>'}
             <div class="codex-plus-provider-key-add"><input type="password" class="codex-plus-provider-input" data-codex-gateway-new-key="true" placeholder="sk-..." autocomplete="off" spellcheck="false">
-            <button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-key" ${busy ? "disabled" : ""}>添加 Key</button></div>
-            <div class="codex-plus-provider-help">Key 只显示首尾几位；多个 Key 会自动轮换。</div>`}
-      </div>
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">模型</div>
-        ${codexPlusGatewayField("默认模型", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="model" value="${escapeHtml(draft.model)}" spellcheck="false">`)}
-        ${codexPlusGatewayField("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-gateway-field="modelList" spellcheck="false" placeholder="一行一个">${escapeHtml(draft.modelList)}</textarea>`)}
-        ${fetched}
-        <button type="button" class="codex-plus-action-button" data-codex-gateway-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "从上游获取模型"}</button>
-        ${testRow}
-      </div>
-      <div class="codex-plus-provider-section">
-        <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="open-manager">价格、代理、限速、窗口、模型组与订阅登录在 Codex++ 中设置</button>
-      </div>`;
+            <button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-key" ${busy ? "disabled" : ""}>添加 Key</button></div>`,
+        "Key 只显示首尾几位；多个 Key 会自动轮换。")}
+      ${codexPlusProviderCard("模型", [
+        codexPlusProviderLine("默认模型", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="model" value="${escapeHtml(draft.model)}" spellcheck="false">`),
+        codexPlusProviderLine("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-gateway-field="modelList" spellcheck="false" placeholder="一行一个">${escapeHtml(draft.modelList)}</textarea>`, "一行一个模型名。", true),
+        codexPlusProviderActionLine("从上游获取模型", fetched || "读取供应商的 /models，可一键填入上面的列表。",
+          `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "获取"}</button>`, true),
+        testRow,
+      ].join(""))}
+      ${managerRow("价格、代理、限速、窗口、模型组", "这些高级项和订阅登录在 Codex++ 管理器里设置。")}
+      ${dangerCard}`;
   }
 
   function renderCodexPlusGatewayPane() {

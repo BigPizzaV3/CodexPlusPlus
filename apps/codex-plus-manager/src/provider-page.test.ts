@@ -73,7 +73,9 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
       modelLines: codexPlusProviderModelLines, duplicate: codexPlusProviderDuplicate, renderPage: renderCodexPlusProviderPage,
       gw: codexPlusGatewayPageState, gwApply: codexPlusGatewayApplyResult, gwSelect: codexPlusGatewaySelect, gwSave: codexPlusGatewaySave,
       gwEditable: codexPlusGatewayEditable, gwConnect: codexPlusGatewayConnect, gwOpenDisconnect: codexPlusGatewayOpenDisconnect,
-      gwApplyDisconnect: codexPlusGatewayApplyDisconnect, gwInput: codexPlusGatewayHandleInput, gwStartNew: codexPlusGatewayStartNew };`,
+      gwApplyDisconnect: codexPlusGatewayApplyDisconnect, gwInput: codexPlusGatewayHandleInput, gwStartNew: codexPlusGatewayStartNew,
+      modelEditor: codexPlusProviderModelEditor, windowLabel: codexPlusProviderWindowLabel,
+      detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail };`,
   )(
     loadEditing(),
     async (path: string, payload: any) => {
@@ -157,6 +159,20 @@ describe("供应商页（43 分片）", () => {
     assert.equal(page.modelLines(page.state.draft), "deepseek-v4-pro[1000000]\nqwen3");
   });
 
+  it("模型行编辑器：一行一个，星标跟默认模型，窗口回显成下拉", () => {
+    const page = loadPage({ postJson: () => listResult() });
+    page.applyList(listResult());
+    page.applyModelLines("deepseek-v4-pro[1M]\nqwen3[272000]\nplain");
+    const html = page.modelEditor({ ...page.state.draft, model: "qwen3" });
+    assert.equal((html.match(/data-codex-provider-model-row/g) || []).length, 3);
+    assert.match(html, /data-active="true" data-codex-provider-model-default="qwen3"/);
+    assert.match(html, /data-active="false" data-codex-provider-model-default="plain"/);
+    // 非预设窗口（272000）也要作为选项保留，否则回显会丢。
+    assert.match(html, /<option value="272000" selected>272K<\/option>/);
+    assert.match(html, /<option value="1000000" selected>1M<\/option>/);
+    assert.equal(page.windowLabel("1000000"), "1M");
+  });
+
   it("复制供应商时让服务端按来源还原 Key", async () => {
     const page = loadPage({ postJson: (path) => (path === "/providers/commit" ? listResult("r2") : listResult()) });
     page.applyList(listResult());
@@ -234,6 +250,28 @@ describe("供应商页的网关页签（44 分片）", () => {
     assert.deepEqual(sent.payload.args.input.keys, []);
     assert.equal(page.gw.dirty, false);
     assert.match(page.gw.status, /下一条请求/);
+  });
+
+  it("直连与网关两个页签的详情都用原生设置页的卡片，删除收在底部「危险操作」", () => {
+    const page = loadPage({ postJson: () => listResult() });
+    page.applyList(listResult("r1", "a"));
+    page.state.selectedId = "b";
+    page.applyList(listResult("r1", "a"));
+    const direct = page.detail();
+    assert.doesNotMatch(direct, /codex-plus-provider-section"|codex-plus-provider-field/, "不再用旧的平铺小节");
+    assert.match(direct, /codex-plus-provider-card/);
+    const directHeader = direct.slice(0, direct.indexOf("</div></div>"));
+    assert.doesNotMatch(directHeader, /data-codex-provider-action="delete"/, "删除不放在标题栏");
+    assert.match(direct, /危险操作[\s\S]*data-codex-provider-action="delete"/);
+    page.gwApply(gatewayResult());
+    for (const id of ["gw-a", "acct"]) {
+      page.gwSelect(id);
+      const html = page.gwDetail();
+      assert.doesNotMatch(html, /codex-plus-provider-section"|codex-plus-provider-field/, `${id} 不再用旧的平铺小节`);
+      assert.match(html, /codex-plus-provider-card/);
+      assert.match(html, /危险操作[\s\S]*data-codex-gateway-action="delete"/);
+      assert.match(html, /data-codex-gateway-test-model="true"/, "「测试」读的下拉还在");
+    }
   });
 
   it("新建必须填 Key，提交 create_gateway_provider{source:custom}", async () => {

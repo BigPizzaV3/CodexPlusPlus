@@ -1180,10 +1180,10 @@
       .codex-plus-provider-sidebar { box-sizing: border-box; width: 240px; flex: 0 0 240px; overflow-y: auto; padding: 10px 8px; border-right: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary)); }
       .codex-plus-provider-sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 2px 8px 8px; font-size: 12px; font-weight: 600; color: var(--codex-plus-text-secondary); letter-spacing: .02em; }
       .codex-plus-provider-list { display: flex; flex-direction: column; gap: 1px; }
-      /* 侧栏条目：左侧 2px 彩条标记选中态 */
-      .codex-plus-provider-item { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 8px; border-radius: 6px; cursor: pointer; border-left: 2px solid transparent; }
+      /* 侧栏条目：照 Codex 原生侧栏，选中只用圆角底色，不加彩条。 */
+      .codex-plus-provider-item { display: flex; align-items: center; gap: 6px; padding: 7px 8px 7px 10px; border-radius: 8px; cursor: pointer; }
       .codex-plus-provider-item:hover { background: var(--codex-plus-bg-hover); }
-      .codex-plus-provider-item[data-selected="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); border-left-color: var(--codex-plus-text); }
+      .codex-plus-provider-item[data-selected="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
       /* 活跃供应商的绿点指示器 */
       .codex-plus-provider-item-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--codex-plus-success, #10a37f); vertical-align: middle; margin-right: 4px; margin-bottom: 1px; flex-shrink: 0; }
       .codex-plus-provider-item-main { flex: 1; min-width: 0; }
@@ -1253,6 +1253,58 @@
       .codex-plus-provider-mode-bar button { margin-left: auto; }
       .codex-plus-provider-note { padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 12px; }
       .codex-plus-provider-empty { padding: 48px 24px; color: var(--codex-plus-text-secondary); }
+      /* 详情改版：照 Codex 原生设置页——居中窄栏、14px 小节标题、圆角卡片里一行一项（左标题右控件）。 */
+      .codex-plus-provider-detail { padding: 20px 32px 32px; }
+      .codex-plus-provider-detail > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+      .codex-plus-provider-detail-header { align-items: center; padding: 0 0 4px; border-bottom: 0; }
+      .codex-plus-provider-title { font-size: 20px; font-weight: 500; line-height: 28px; }
+      .codex-plus-provider-group { gap: 0; padding: 0; margin-top: 24px; border-bottom: 0; }
+      .codex-plus-provider-group > .codex-plus-provider-section-title { display: flex; align-items: center; min-height: 32px; padding: 0 0 6px; color: var(--codex-plus-text); font-size: 14px; font-weight: 500; letter-spacing: 0; line-height: 21px; text-transform: none; }
+      .codex-plus-provider-card { box-sizing: border-box; min-width: 0; padding: 0 16px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-card-radius); background: var(--codex-plus-settings-card-bg); }
+      .codex-plus-provider-card > * + * { border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-group-note { margin: 6px 4px 0; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-provider-line { display: flex; align-items: center; justify-content: space-between; gap: 24px; box-sizing: border-box; min-height: 52px; padding: 12px 0; }
+      .codex-plus-provider-line-copy { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+      .codex-plus-provider-line-title { color: var(--codex-plus-text); font-size: 13px; font-weight: 500; line-height: 18px; }
+      .codex-plus-provider-line-help { color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-provider-line-control { display: flex; flex: 0 1 60%; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+      .codex-plus-provider-line[data-stack="true"] { flex-direction: column; align-items: stretch; gap: 8px; }
+      .codex-plus-provider-line[data-stack="true"] .codex-plus-provider-line-control { flex: none; width: 100%; }
+      .codex-plus-provider-card .codex-plus-provider-input { min-height: 28px; padding: 4px 10px; border-color: var(--codex-plus-control-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-control-bg); }
+      .codex-plus-provider-card .codex-plus-provider-input:focus { border-color: var(--codex-plus-focus, #2563eb); }
+      .codex-plus-provider-card .codex-plus-provider-key { padding: 12px 0; border-radius: 0; }
+      .codex-plus-provider-card .codex-plus-provider-key:hover { background: transparent; }
+      .codex-plus-provider-card .codex-plus-provider-key-add { padding: 12px 0; }
+      .codex-plus-provider-card .codex-plus-provider-help { padding: 12px 0; }
+      .codex-plus-provider-page .codex-plus-action-button { box-sizing: border-box; min-height: 28px; border: 1px solid var(--codex-plus-control-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-button-bg); color: var(--codex-plus-text); font: inherit; font-size: 13px; cursor: pointer; }
+      .codex-plus-provider-page .codex-plus-action-button:hover:not(:disabled):not([data-primary="true"]) { background: var(--codex-plus-button-hover-bg); }
+      /* 重新设计：标题行吸顶，操作按钮始终可见；横向铺满详情区，内容仍对齐 760px 居中栏。 */
+      .codex-plus-provider-detail > .codex-plus-provider-detail-header { position: sticky; top: 0; z-index: 3; max-width: none; margin: 0 -32px; padding: 14px max(32px, calc((100% - 760px) / 2)); background: var(--codex-plus-settings-page-bg); border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-card .codex-plus-action-button[data-danger="true"]:not(:disabled) { color: var(--codex-plus-danger, #dc2626); }
+      .codex-plus-provider-card .codex-plus-action-button:disabled { opacity: .5; cursor: default; }
+      /* 结果提示：保存、测试、获取模型的结果贴在标题行下面，不再只在底部状态栏的小字里。 */
+      .codex-plus-provider-banner { box-sizing: border-box; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-settings-card-bg); color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .codex-plus-provider-banner[data-tone="ok"] { color: var(--codex-plus-success, #10a37f); border-color: color-mix(in srgb, var(--codex-plus-success, #10a37f) 35%, transparent); }
+      .codex-plus-provider-banner[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); border-color: color-mix(in srgb, var(--codex-plus-warning, #d97706) 40%, transparent); }
+      .codex-plus-provider-banner[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); background: var(--codex-plus-danger-bg, rgba(220,38,38,.08)); border-color: color-mix(in srgb, var(--codex-plus-danger, #dc2626) 40%, transparent); }
+      /* 模型行编辑器：星标 | 模型名 | 窗口下拉 | 移除。 */
+      .codex-plus-provider-model-list { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
+      .codex-plus-provider-model-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) 120px auto; align-items: center; gap: 8px; }
+      .codex-plus-provider-star { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--codex-plus-control-radius); background: transparent; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 15px; line-height: 1; cursor: pointer; }
+      .codex-plus-provider-star:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-provider-star[data-active="true"] { color: var(--codex-plus-warning, #d97706); }
+      .codex-plus-provider-model-remove { padding: 0 4px; border: 0; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+      .codex-plus-provider-model-add { align-self: flex-start; }
+      /* 左侧列表：名称、模式标签下面补一行「默认模型 · 接口域名」。 */
+      .codex-plus-provider-item-sub { margin-top: 3px; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 11px; line-height: 15px; text-overflow: ellipsis; white-space: nowrap; }
+      /* 卡片行收尾：没有控件的行不占右半边；「配置文件」折叠标题可点；网关接入提示在详情栏里做成圆角横幅。 */
+      .codex-plus-provider-line-control:empty { display: none; }
+      .codex-plus-provider-line-help .codex-plus-provider-link { vertical-align: baseline; }
+      details.codex-plus-provider-group > summary { cursor: pointer; list-style-position: inside; }
+      details.codex-plus-provider-group:not([open]) > summary { padding-bottom: 0; }
+      .codex-plus-provider-detail > .codex-plus-provider-mode-bar, .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
+      .codex-plus-provider-sidebar-header { padding: 4px 8px 10px; color: var(--codex-plus-text-secondary); font-weight: 500; letter-spacing: 0; }
+      .codex-plus-provider-sidebar-header .codex-plus-action-button { min-height: 24px; padding: 0 8px; font-size: 12px; }
       .codex-plus-plugin-job-message { font-size: 12px; color: var(--codex-plus-text-secondary); margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
       .codex-plus-plugin-job-message[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-plugin-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; font-size: 12px; color: var(--codex-plus-text-secondary); }
@@ -14970,6 +15022,7 @@ ${key} = ${value}`]);
         <div class="codex-plus-provider-item-main">
           <div class="codex-plus-provider-item-name">${active ? '<span class="codex-plus-provider-item-dot" aria-hidden="true"></span>' : ""}${escapeHtml(profile.name || profile.id)}</div>
           <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(codexPlusProviderModeLabel(profile))}</span>${active ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</div>
+          ${profile.model || profile.baseUrl ? `<div class="codex-plus-provider-item-sub">${escapeHtml(profile.model || "")}${profile.model && profile.baseUrl ? " · " : ""}${escapeHtml(String(profile.baseUrl || "").replace(/^https?:\/\//, "").replace(/\/.*$/, ""))}</div>` : ""}
         </div>
         <div class="codex-plus-provider-item-actions">
           <button type="button" title="上移" aria-label="上移" data-codex-provider-move="-1" data-id="${escapeHtml(profile.id)}" ${index === 0 ? "disabled" : ""}>↑</button>
@@ -14983,12 +15036,48 @@ ${key} = ${value}`]);
     return `<div class="codex-plus-provider-list" role="list" aria-label="供应商">${rows}${draftRow}</div>`;
   }
 
-  function codexPlusProviderField(label, control, help = "") {
-    return `<label class="codex-plus-provider-field"><span class="codex-plus-provider-label">${escapeHtml(label)}</span>${control}${help ? `<span class="codex-plus-provider-help">${escapeHtml(help)}</span>` : ""}</label>`;
-  }
-
   function codexPlusProviderInput(key, value, attrs = "") {
     return `<input type="text" class="codex-plus-provider-input" data-codex-provider-field="${key}" value="${escapeHtml(value ?? "")}" ${attrs}>`;
+  }
+
+  /** 详情页的一张分组卡片：小标题 + 圆角卡片（行间细线），照 Codex 原生设置页；note 是卡片下面的小字。 */
+  function codexPlusProviderCard(title, rows, note = "") {
+    return `<section class="codex-plus-provider-group"><div class="codex-plus-provider-section-title">${escapeHtml(title)}</div><div class="codex-plus-provider-card">${rows}</div>${note ? `<div class="codex-plus-provider-group-note">${escapeHtml(note)}</div>` : ""}</section>`;
+  }
+
+  /** 卡片里的一行：左边标题（+ 说明），右边控件；stack 为 true 时控件换到下一行铺满（多行文本框用）。 */
+  function codexPlusProviderLine(label, control, help = "", stack = false) {
+    return `<label class="codex-plus-provider-line"${stack ? ' data-stack="true"' : ""}><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">${escapeHtml(label)}</span>${help ? `<span class="codex-plus-provider-line-help">${escapeHtml(help)}</span>` : ""}</span><span class="codex-plus-provider-line-control">${control}</span></label>`;
+  }
+
+  /**
+   * 卡片里的按钮行：左边标题 + 说明，右边按钮。用 div 而不是 label（label 会把整行的点击转给第一个按钮）。
+   * helpHtml 为 true 时 help 已是拼好的 HTML（里面带链接按钮），调用方负责转义。
+   */
+  function codexPlusProviderActionLine(label, help, control, helpHtml = false) {
+    return `<div class="codex-plus-provider-line"><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">${escapeHtml(label)}</span>${help ? `<span class="codex-plus-provider-line-help">${helpHtml ? help : escapeHtml(help)}</span>` : ""}</span><span class="codex-plus-provider-line-control">${control}</span></div>`;
+  }
+
+  /** 上下文窗口的显示名：1000000 → 1M，272000 → 272K。 */
+  function codexPlusProviderWindowLabel(value) {
+    const n = Number(value);
+    if (!n) return String(value || "");
+    if (n >= 1000000 && n % 1000000 === 0) return `${n / 1000000}M`;
+    return n >= 1000 ? `${Math.round(n / 1000)}K` : String(n);
+  }
+
+  /**
+   * 模型行编辑器：一行一个模型（默认星标、名称、上下文窗口、移除）。
+   * 写回仍走 codexPlusProviderApplyModelLines，`slug[窗口]` 的序列化与管理器、文本框完全一致。
+   */
+  function codexPlusProviderModelEditor(draft) {
+    const rows = codexPlusProviderModelLines(draft).split("\n").filter(Boolean)
+      .map((line) => codexPlusProviderEditingApi.parseModelSuffix(line));
+    const rowHtml = (row) => {
+      const slug = row.slug || "";
+      return codexPlusProviderModelRowHtml(slug, row.window ? String(row.window) : "", Boolean(slug) && slug === draft.model);
+    };
+    return `<div class="codex-plus-provider-line" data-stack="true"><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">模型列表</span><span class="codex-plus-provider-line-help">星标是默认模型；窗口选「默认」表示沿用 Codex 默认长度。Agent 请求这些模型名时会路由到这个供应商。</span></span><div class="codex-plus-provider-line-control"><div class="codex-plus-provider-model-list" data-codex-provider-model-list>${rows.length ? rows.map(rowHtml).join("") : '<div class="codex-plus-provider-help">还没有模型。</div>'}<button type="button" class="codex-plus-action-button codex-plus-provider-model-add" data-codex-provider-action="add-model">+ 添加模型</button></div></div></div>`;
   }
 
   function renderCodexPlusProviderDetail() {
@@ -15006,14 +15095,14 @@ ${key} = ${value}`]);
         ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="save" data-primary="true" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : isActive ? "保存并应用" : "保存"}</button>` : ""}
         ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
         ${state.isNew ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="cancel-new">取消</button>` : `
-          ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="duplicate" ${busy ? "disabled" : ""}>复制</button>` : ""}
-          ${draft.gatewayManaged ? "" : `<button type="button" class="codex-plus-action-button" data-codex-provider-action="delete" data-danger="true" ${busy || isActive ? "disabled" : ""} title="${isActive ? "当前使用的供应商不能删除" : "删除"}">删除</button>`}`}
+          ${editable ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="duplicate" ${busy ? "disabled" : ""}>复制</button>` : ""}`}
       </div></div>`;
     if (!editable) {
-      return `${header}<div class="codex-plus-provider-section"><div class="codex-plus-provider-note">${draft.gatewayManaged
-        ? "这是 Codex++ 网关接管 Codex 时生成的条目，由网关维护，这里只能切换。"
-        : "聚合供应商的成员、路由和策略请在 Codex++ 管理器里编辑；这里可以直接切换使用。"}</div>
-        <button type="button" class="codex-plus-action-button" data-codex-provider-action="open-manager">在 Codex++ 中打开</button></div>`;
+      return `${header}${codexPlusProviderCard("编辑", codexPlusProviderActionLine(draft.gatewayManaged ? "由网关维护" : "成员、路由和策略",
+        draft.gatewayManaged
+          ? "这是 Codex++ 网关接管 Codex 时生成的条目，由网关维护，这里只能切换。"
+          : "聚合供应商的成员、路由和策略请在 Codex++ 管理器里编辑；这里可以直接切换使用。",
+        '<button type="button" class="codex-plus-action-button" data-codex-provider-action="open-manager">在 Codex++ 中打开</button>'))}`;
     }
     const mode = codexPlusProviderModeKey(draft);
     const showApi = mode !== "official";
@@ -15027,49 +15116,53 @@ ${key} = ${value}`]);
         <button type="button" data-codex-provider-key-remove="${escapeHtml(entry.id)}" aria-label="删除这把 Key">移除</button>
       </div>`;
     }).join("");
+    // 获取结果直接作为「从上游获取模型」那一行的说明文字（行内 span，不再套一层带内边距的 help 块）。
     const fetched = state.fetchedModels.length
-      ? `<div class="codex-plus-provider-help">上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-provider-action="fill-models">全部填入</button></div>`
+      ? `上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-provider-action="fill-models">全部填入</button>`
+      : "";
+    const statusBanner = state.status
+      ? `<div class="codex-plus-provider-banner" data-tone="${escapeHtml(state.statusTone || "info")}" role="${state.statusTone === "error" ? "alert" : "status"}">${escapeHtml(state.status)}</div>`
       : "";
     return `${header}
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">基本</div>
-        ${codexPlusProviderField("名称", codexPlusProviderInput("name", draft.name))}
-        ${codexPlusProviderField("模式", `<select class="codex-plus-provider-input" data-codex-provider-mode="true">
+      ${statusBanner}
+      ${codexPlusProviderCard("基本", [
+        codexPlusProviderLine("名称", codexPlusProviderInput("name", draft.name)),
+        codexPlusProviderLine("模式", `<select class="codex-plus-provider-input" data-codex-provider-mode="true">
           <option value="official" ${mode === "official" ? "selected" : ""}>官方登录</option>
           <option value="mixedApi" ${mode === "mixedApi" ? "selected" : ""}>官方登录 + API</option>
-          <option value="pureApi" ${mode === "pureApi" ? "selected" : ""}>纯 API</option></select>`)}
-        ${showApi ? codexPlusProviderField("协议", `<select class="codex-plus-provider-input" data-codex-provider-field="protocol">
+          <option value="pureApi" ${mode === "pureApi" ? "selected" : ""}>纯 API</option></select>`),
+        showApi ? codexPlusProviderLine("协议", `<select class="codex-plus-provider-input" data-codex-provider-field="protocol">
           <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
           <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
-          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`) : ""}
-        ${showApi ? codexPlusProviderField("接口地址", codexPlusProviderInput("baseUrl", draft.baseUrl, 'placeholder="https://example.com/v1" spellcheck="false"')) : ""}
-      </div>
-      ${showApi ? `<div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">API Key</div>
-        ${keyRows || '<div class="codex-plus-provider-help">还没有 Key。</div>'}
+          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`) : "",
+        showApi ? codexPlusProviderLine("接口地址", codexPlusProviderInput("baseUrl", draft.baseUrl, 'placeholder="https://example.com/v1" spellcheck="false"')) : "",
+      ].join(""))}
+      ${showApi ? codexPlusProviderCard("API Key", `${keyRows || '<div class="codex-plus-provider-help">还没有 Key。</div>'}
         <div class="codex-plus-provider-key-add">
           <input type="text" class="codex-plus-provider-input" data-codex-provider-new-key-name="true" placeholder="名称（可选）">
           <input type="password" class="codex-plus-provider-input" data-codex-provider-new-key="true" placeholder="sk-..." autocomplete="off" spellcheck="false">
           <button type="button" class="codex-plus-action-button" data-codex-provider-action="add-key">添加</button>
+        </div>`, "已保存的 Key 只显示首尾几位；选中哪一把，保存后 Codex 就用哪一把。") : ""}
+      ${codexPlusProviderCard("模型", [
+        codexPlusProviderLine("默认模型", codexPlusProviderInput("model", draft.model, 'spellcheck="false"')),
+        codexPlusProviderModelEditor(draft),
+        showApi ? codexPlusProviderActionLine("从上游获取模型", fetched || "读取供应商的 /models，可一键填入上面的列表。",
+          `<button type="button" class="codex-plus-action-button" data-codex-provider-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "获取"}</button>`, true) : "",
+        codexPlusProviderLine("上下文窗口", codexPlusProviderInput("contextWindow", draft.contextWindow, 'inputmode="numeric" placeholder="留空用模型默认值"')),
+        codexPlusProviderLine("自动压缩阈值", codexPlusProviderInput("autoCompactLimit", draft.autoCompactLimit, 'inputmode="numeric" placeholder="留空用默认值"')),
+      ].join(""))}
+      <details class="codex-plus-provider-group"><summary class="codex-plus-provider-section-title">配置文件</summary>
+        <div class="codex-plus-provider-card">
+          <div class="codex-plus-provider-help">直接编辑这个供应商的 config.toml / auth.json 快照；上面的字段会同步回读。</div>
+          ${codexPlusProviderLine("config.toml", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="10" data-codex-provider-file="config" spellcheck="false">${escapeHtml(draft.configContents || "")}</textarea>`, "", true)}
+          ${codexPlusProviderLine("auth.json", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="4" data-codex-provider-file="auth" spellcheck="false">${escapeHtml(draft.authContents || "")}</textarea>`, "", true)}
         </div>
-        <div class="codex-plus-provider-help">已保存的 Key 只显示首尾几位；选中哪一把，保存后 Codex 就用哪一把。</div>
-      </div>` : ""}
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">模型</div>
-        ${codexPlusProviderField("默认模型", codexPlusProviderInput("model", draft.model, 'spellcheck="false"'))}
-        ${codexPlusProviderField("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-provider-models="true" spellcheck="false" placeholder="一行一个，例如 deepseek-v4-pro[1M]">${escapeHtml(codexPlusProviderModelLines(draft))}</textarea>`, "后缀 [1M] / [256K] 设置该模型的上下文窗口。")}
-        ${fetched}
-        ${showApi ? `<button type="button" class="codex-plus-action-button" data-codex-provider-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "从上游获取模型"}</button>` : ""}
-        <div class="codex-plus-provider-row">
-          ${codexPlusProviderField("上下文窗口", codexPlusProviderInput("contextWindow", draft.contextWindow, 'inputmode="numeric" placeholder="留空用模型默认值"'))}
-          ${codexPlusProviderField("自动压缩阈值", codexPlusProviderInput("autoCompactLimit", draft.autoCompactLimit, 'inputmode="numeric" placeholder="留空用默认值"'))}
-        </div>
-      </div>
-      <details class="codex-plus-provider-section"><summary class="codex-plus-provider-section-title">配置文件</summary>
-        <div class="codex-plus-provider-help">直接编辑这个供应商的 config.toml / auth.json 快照；上面的字段会同步回读。</div>
-        ${codexPlusProviderField("config.toml", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="10" data-codex-provider-file="config" spellcheck="false">${escapeHtml(draft.configContents || "")}</textarea>`)}
-        ${codexPlusProviderField("auth.json", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="4" data-codex-provider-file="auth" spellcheck="false">${escapeHtml(draft.authContents || "")}</textarea>`)}
       </details>
-      <div class="codex-plus-provider-section">
-        <button type="button" class="codex-plus-provider-link" data-codex-provider-action="open-manager">更多设置（模型路由、请求头、兼容选项）在 Codex++ 中编辑</button>
-      </div>`;
+      ${codexPlusProviderCard("更多设置", codexPlusProviderActionLine("模型路由、请求头、兼容选项", "这些高级项在 Codex++ 管理器里编辑。",
+        '<button type="button" class="codex-plus-action-button" data-codex-provider-action="open-manager">在 Codex++ 中打开</button>'))}
+      ${draft.gatewayManaged || state.isNew ? "" : codexPlusProviderCard("危险操作", codexPlusProviderActionLine("删除这个供应商",
+        isActive ? "当前使用的供应商不能删除，先切换到别的供应商。" : "它的 Key 和配置快照会一起删掉。",
+        `<button type="button" class="codex-plus-action-button" data-codex-provider-action="delete" data-danger="true" ${busy || isActive ? "disabled" : ""}>删除</button>`))}`;
   }
 
   function codexPlusProviderPreviewKey(key) {
@@ -15135,8 +15228,85 @@ ${key} = ${value}`]);
     return Boolean(answer);
   }
 
+  /** 模型行里的一行：星标 | 模型名 | 窗口下拉 | 移除。「添加模型」插入新行用，样子与 codexPlusProviderModelEditor 里的一致。 */
+  function codexPlusProviderModelRowHtml(slug, win, isDefault) {
+    const presets = ["", "128000", "200000", "256000", "400000", "1000000"];
+    const values = presets.includes(win) ? presets : [...presets, win];
+    return `<div class="codex-plus-provider-model-row" data-codex-provider-model-row>
+        <button type="button" class="codex-plus-provider-star" data-active="${isDefault}" data-codex-provider-model-default="${escapeHtml(slug)}" title="${isDefault ? "默认模型" : "设为默认模型"}" aria-label="${isDefault ? "默认模型" : "设为默认模型"}">${isDefault ? "★" : "☆"}</button>
+        <input type="text" class="codex-plus-provider-input" data-codex-provider-model-name value="${escapeHtml(slug)}" placeholder="模型名，例如 deepseek-v4-pro" spellcheck="false" aria-label="模型名">
+        <select class="codex-plus-provider-input" data-codex-provider-model-window aria-label="上下文窗口">${values.map((value) => `<option value="${escapeHtml(value)}" ${value === win ? "selected" : ""}>${value ? codexPlusProviderWindowLabel(value) : "窗口：默认"}</option>`).join("")}</select>
+        <button type="button" class="codex-plus-provider-model-remove" data-codex-provider-model-remove aria-label="移除这个模型">移除</button>
+      </div>`;
+  }
+
+  /** 从模型行编辑器读出当前所有行，拼成 `slug[窗口]` 文本（空名字的行丢掉）。 */
+  function codexPlusProviderModelRowsText(list) {
+    return Array.from(list.querySelectorAll("[data-codex-provider-model-row]")).map((row) => {
+      const name = String(row.querySelector("[data-codex-provider-model-name]")?.value || "").trim();
+      const win = String(row.querySelector("[data-codex-provider-model-window]")?.value || "");
+      return name && win && !name.includes("[") ? `${name}[${win}]` : name;
+    }).filter(Boolean).join("\n");
+  }
+
+  /** 模型行编辑器的输入 / 选择 / 点击；是它的事件就处理并返回 true。 */
+  function codexPlusProviderHandleModelEditor(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const state = codexPlusProviderPageState;
+    if (!target || !state.draft) return false;
+    const list = target.closest("[data-codex-provider-model-list]");
+    if (!list) return false;
+    const row = target.closest("[data-codex-provider-model-row]");
+    if (event.type === "input" && row && target.matches("[data-codex-provider-model-name]")) {
+      const name = target.value.trim();
+      const star = row.querySelector("[data-codex-provider-model-default]");
+      const prev = star?.getAttribute("data-codex-provider-model-default") || "";
+      codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
+      if (name) {
+        // 改的是默认模型那一行：默认模型跟着改名，星标不丢。
+        if (prev && prev === state.draft.model) {
+          codexPlusProviderPatch({ model: name });
+          const modelInput = document.querySelector('[data-codex-provider-field="model"]');
+          if (modelInput && document.activeElement !== modelInput) modelInput.value = name;
+        }
+        star?.setAttribute("data-codex-provider-model-default", name);
+      }
+      return true;
+    }
+    if (event.type === "change" && row && target.matches("[data-codex-provider-model-window]")) {
+      codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
+      return true;
+    }
+    if (event.type !== "click") return false;
+    const star = target.closest("[data-codex-provider-model-default]");
+    if (star) {
+      const slug = star.getAttribute("data-codex-provider-model-default") || "";
+      if (slug && slug !== state.draft.model) {
+        codexPlusProviderPatch({ model: slug });
+        renderCodexPlusProviderPage();
+      }
+      return true;
+    }
+    if (target.closest("[data-codex-provider-model-remove]")) {
+      row?.remove();
+      codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
+      renderCodexPlusProviderPage();
+      return true;
+    }
+    if (target.closest('[data-codex-provider-action="add-model"]')) {
+      // 新行先只存在于 DOM：名字还空着，状态里不记，填了名字才写回。
+      list.querySelector(":scope > .codex-plus-provider-help")?.remove();
+      list.querySelector('[data-codex-provider-action="add-model"]')?.insertAdjacentHTML("beforebegin", codexPlusProviderModelRowHtml("", "", false));
+      const names = list.querySelectorAll("[data-codex-provider-model-name]");
+      names[names.length - 1]?.focus();
+      return true;
+    }
+    return false;
+  }
+
   function codexPlusProviderHandleInput(event) {
     if (codexPlusGatewayHandleInput(event)) return;
+    if (codexPlusProviderHandleModelEditor(event)) return;
     const target = event.target;
     const state = codexPlusProviderPageState;
     if (!state.draft || !(target instanceof HTMLElement)) return;
@@ -15164,6 +15334,7 @@ ${key} = ${value}`]);
   function codexPlusProviderHandleChange(event) {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+    if (codexPlusProviderHandleModelEditor(event)) return;
     if (target.dataset.codexProviderMode) {
       const mode = target.value;
       if (mode === "official") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: false });
@@ -15210,6 +15381,7 @@ ${key} = ${value}`]);
       codexPlusProviderSetStatus("");
       return renderCodexPlusProviderPage();
     }
+    if (codexPlusProviderHandleModelEditor(event)) return;
     const removeKey = target.closest("[data-codex-provider-key-remove]");
     if (removeKey) return codexPlusProviderRemoveKey(removeKey.dataset.codexProviderKeyRemove);
     const action = target.closest("[data-codex-provider-action]")?.dataset.codexProviderAction;
@@ -15647,10 +15819,6 @@ ${key} = ${value}`]);
     return `<div class="codex-plus-provider-list" role="list" aria-label="网关供应商池">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">供应商池是空的。</div>'}</div>`;
   }
 
-  function codexPlusGatewayField(label, control, help = "") {
-    return codexPlusProviderField(label, control, help);
-  }
-
   function renderCodexPlusGatewayDetail() {
     const state = codexPlusGatewayPageState;
     const entry = state.isNew ? null : codexPlusGatewaySelected();
@@ -15665,18 +15833,27 @@ ${key} = ${value}`]);
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="toggle" ${busy ? "disabled" : ""}>${enabled ? "停用" : "启用"}</button>` : ""}
         ${editable ? `<button type="button" class="codex-plus-action-button" data-primary="true" data-codex-gateway-action="save" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : "保存"}</button>` : ""}
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
-        ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>'
-          : `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`}
+        ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>' : ""}
       </div></div>`;
+    // 删除放到页面底部的「危险操作」卡片，与直连页一致。
+    const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从供应商池删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
+      `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
+    // 与直连页同一套卡片：小节标题 + 圆角卡片，卡片里一行一项（左标题右控件）。
     const testRow = entry
-      ? `<div class="codex-plus-provider-row">${codexPlusGatewayField("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`)}</div>`
+      ? codexPlusProviderLine("测试用模型", `<select class="codex-plus-provider-input" data-codex-gateway-test-model="true"><option value="">默认</option>${(entry.models || []).map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}</select>`, "点右上角「测试」时用这个模型发一次请求。")
       : "";
+    const managerRow = (title, help) => codexPlusProviderCard("更多设置", codexPlusProviderActionLine(title, help,
+      '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
     if (!editable) {
-      return `${header}<div class="codex-plus-provider-section"><div class="codex-plus-provider-note">${entry.account
-        ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
-        : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。"}</div>
-        <div class="codex-plus-provider-help">模型：${escapeHtml((entry.models || []).join("、") || "（无）")}</div>${testRow}
-        <button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button></div>`;
+      return `${header}
+        ${codexPlusProviderCard("模型", [
+          codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
+          testRow,
+        ].join(""), entry.account
+          ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
+          : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。")}
+        ${managerRow("账号与订阅", "登录、额度和刷新在 Codex++ 管理器里管理。")}
+        ${dangerCard}`;
     }
     const draft = state.draft;
     const keys = entry?.keys || [];
@@ -15684,35 +15861,32 @@ ${key} = ${value}`]);
         <button type="button" data-codex-gateway-key-replace="${escapeHtml(key.id)}">替换</button>
         ${keys.length > 1 ? `<button type="button" data-codex-gateway-key-delete="${escapeHtml(key.id)}">删除</button>` : ""}</div>`).join("");
     const fetched = state.fetchedModels.length
-      ? `<div class="codex-plus-provider-help">上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button></div>`
+      ? `上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button>`
       : "";
     return `${header}
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">连接</div>
-        ${codexPlusGatewayField("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`)}
-        ${codexPlusGatewayField("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
+      ${codexPlusProviderCard("连接", [
+        codexPlusProviderLine("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`),
+        codexPlusProviderLine("协议", `<select class="codex-plus-provider-input" data-codex-gateway-field="protocol">
           <option value="chatCompletions" ${draft.protocol === "chatCompletions" ? "selected" : ""}>Chat Completions</option>
           <option value="responses" ${draft.protocol === "responses" ? "selected" : ""}>Responses</option>
-          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`)}
-        ${codexPlusGatewayField("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`)}
-      </div>
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">API Key</div>
-        ${state.isNew
-          ? codexPlusGatewayField("Key", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="2" data-codex-gateway-field="keys" placeholder="一行一个，多个 Key 自动轮换" spellcheck="false" autocomplete="off">${escapeHtml(draft.keys)}</textarea>`)
-          : `${keyRows || '<div class="codex-plus-provider-help">没有已保存的 Key。</div>'}
+          <option value="anthropicMessages" ${draft.protocol === "anthropicMessages" ? "selected" : ""}>Anthropic Messages</option></select>`),
+        codexPlusProviderLine("接口地址", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="baseUrl" value="${escapeHtml(draft.baseUrl)}" placeholder="https://example.com/v1" spellcheck="false">`),
+      ].join(""))}
+      ${codexPlusProviderCard("API Key", state.isNew
+        ? codexPlusProviderLine("Key", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="2" data-codex-gateway-field="keys" placeholder="一行一个，多个 Key 自动轮换" spellcheck="false" autocomplete="off">${escapeHtml(draft.keys)}</textarea>`, "", true)
+        : `${keyRows || '<div class="codex-plus-provider-help">没有已保存的 Key。</div>'}
             <div class="codex-plus-provider-key-add"><input type="password" class="codex-plus-provider-input" data-codex-gateway-new-key="true" placeholder="sk-..." autocomplete="off" spellcheck="false">
-            <button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-key" ${busy ? "disabled" : ""}>添加 Key</button></div>
-            <div class="codex-plus-provider-help">Key 只显示首尾几位；多个 Key 会自动轮换。</div>`}
-      </div>
-      <div class="codex-plus-provider-section"><div class="codex-plus-provider-section-title">模型</div>
-        ${codexPlusGatewayField("默认模型", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="model" value="${escapeHtml(draft.model)}" spellcheck="false">`)}
-        ${codexPlusGatewayField("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-gateway-field="modelList" spellcheck="false" placeholder="一行一个">${escapeHtml(draft.modelList)}</textarea>`)}
-        ${fetched}
-        <button type="button" class="codex-plus-action-button" data-codex-gateway-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "从上游获取模型"}</button>
-        ${testRow}
-      </div>
-      <div class="codex-plus-provider-section">
-        <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="open-manager">价格、代理、限速、窗口、模型组与订阅登录在 Codex++ 中设置</button>
-      </div>`;
+            <button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-key" ${busy ? "disabled" : ""}>添加 Key</button></div>`,
+        "Key 只显示首尾几位；多个 Key 会自动轮换。")}
+      ${codexPlusProviderCard("模型", [
+        codexPlusProviderLine("默认模型", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="model" value="${escapeHtml(draft.model)}" spellcheck="false">`),
+        codexPlusProviderLine("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-gateway-field="modelList" spellcheck="false" placeholder="一行一个">${escapeHtml(draft.modelList)}</textarea>`, "一行一个模型名。", true),
+        codexPlusProviderActionLine("从上游获取模型", fetched || "读取供应商的 /models，可一键填入上面的列表。",
+          `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "获取"}</button>`, true),
+        testRow,
+      ].join(""))}
+      ${managerRow("价格、代理、限速、窗口、模型组", "这些高级项和订阅登录在 Codex++ 管理器里设置。")}
+      ${dangerCard}`;
   }
 
   function renderCodexPlusGatewayPane() {
