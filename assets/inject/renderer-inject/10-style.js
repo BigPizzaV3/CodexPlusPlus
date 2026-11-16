@@ -1751,8 +1751,9 @@
       .codex-plus-task-card[data-selected="true"] { border-color: var(--codex-plus-focus, #2563eb); }
       .codex-plus-task-card-title { display: -webkit-box; overflow: hidden; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
       .codex-plus-task-card-meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--codex-plus-text-tertiary); font-size: 11.5px; }
-      .codex-plus-task-card-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-task-card-meta > span:last-child { flex: none; margin-left: auto; }
+      .codex-plus-task-card-meta > * { flex: none; white-space: nowrap; }
+      .codex-plus-task-card-meta > .codex-plus-task-card-project { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .codex-plus-task-card-meta > :last-child { margin-left: auto; }
       .codex-plus-task-quick-add { display: flex; flex: none; align-items: center; gap: 6px; height: 32px; padding: 0 9px; border: 1px dashed var(--codex-plus-border); border-radius: 8px; color: var(--codex-plus-text-tertiary); cursor: text; }
       .codex-plus-task-quick-add:focus-within { border-style: solid; border-color: var(--codex-plus-focus, #2563eb); background: var(--codex-plus-bg-primary); }
       .codex-plus-task-quick-add input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--codex-plus-text); font: inherit; }
@@ -1786,6 +1787,21 @@
       .codex-plus-task-status-picker button[aria-checked="true"] { border-color: var(--codex-plus-text-secondary); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); font-weight: 550; }
       .codex-plus-task-body-input { flex: 1; min-height: 180px; padding: 8px 9px !important; line-height: 1.6; resize: none; }
       .codex-plus-task-times { display: flex; gap: 14px; color: var(--codex-plus-text-tertiary); font-size: 11.5px; }
+      .codex-plus-task-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .codex-plus-task-start .codex-plus-action-button { padding: 0 12px; white-space: nowrap; }
+      .codex-plus-task-start .codex-plus-action-button:disabled { opacity: 0.6; cursor: default; }
+      .codex-plus-task-start-hint { min-width: 0; color: var(--codex-plus-text-tertiary); font-size: 11.5px; }
+      .codex-plus-task-runs { display: flex; flex: none; flex-direction: column; overflow: hidden; border: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); border-radius: 8px; }
+      .codex-plus-task-run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; padding: 7px 9px; border: 0; border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+      .codex-plus-task-run:last-child { border-bottom: 0; }
+      .codex-plus-task-run:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-task-run-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-task-run-time { color: var(--codex-plus-text-tertiary); font-size: 11.5px; white-space: nowrap; }
+      .codex-plus-task-run-last { display: -webkit-box; grid-column: 1 / -1; overflow: hidden; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+      .codex-plus-task-run-badge { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; }
+      .codex-plus-task-run-badge[data-tone="running"] { background: color-mix(in srgb, var(--codex-plus-focus, #2563eb) 16%, transparent); color: var(--codex-plus-focus, #2563eb); }
+      .codex-plus-task-run-badge[data-tone="done"] { color: var(--codex-plus-success); }
+      .codex-plus-task-run-badge[data-tone="warn"] { color: var(--codex-plus-warning); }
       .codex-plus-task-status { display: flex; flex: none; align-items: center; gap: 14px; height: 28px; padding: 0 4px; border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); color: var(--codex-plus-text-tertiary); font-size: 11.5px; font-variant-numeric: tabular-nums; }
       .codex-plus-task-status [data-tone="warn"] { color: var(--codex-plus-warning); }
       .codex-plus-task-status [data-tone="danger"] { color: var(--codex-plus-danger); }

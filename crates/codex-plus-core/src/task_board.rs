@@ -10,6 +10,9 @@
 //!
 //! 编号对外写作 `T-12`。frontmatter 里不认识的键原样保留，以后加字段不会被旧版本抹掉。
 //! 手改文件写坏了也不报错：状态不认识时归到「收集」，没有 frontmatter 时第一行当标题。
+//!
+//! 任务可以交给 Codex 去做（见「交给 Codex」一节）：对话按首条消息里的 `[T-12]` 认回任务，
+//! 对话开始跑时任务进「进行中」，跑完进「待验收」。
 
 use anyhow::{anyhow, bail, Context};
 use serde::{Deserialize, Serialize};
@@ -346,27 +349,327 @@ pub fn delete_task(dir: &Path, id: u64) -> anyhow::Result<()> {
     std::fs::remove_file(&path).with_context(|| format!("删除 T-{id} 失败"))
 }
 
+// ---------- 交给 Codex ----------
+//
+// 「在 Codex 中开始」打开 `codex://threads/new?prompt=…&path=…`：Codex 选中（没有就新建）该目录的项目，
+// 新对话的输入框里预填好任务内容，用户确认后自己发送。提示词以 `[T-12]` 开头，Codex 把首条用户消息
+// 存进线程表的 `first_user_message`，靠它把对话认回任务；手动新开的对话里写上 `[T-12]` 也算。
+// 对话的运行状态读 rollout 末尾的 `task_started` / `task_complete` / `turn_aborted` 事件。
+
+/// rollout 只读末尾这么多字节找最近一次回合事件。
+const ROLLOUT_TAIL_BYTES: u64 = 256 * 1024;
+/// 首条消息里只在开头这么多字符内找 `[T-N]`（前面可能有 Codex 拼进去的附件说明）。
+const MARKER_SCAN_CHARS: usize = 4000;
+/// 最多认这么多条带编号的对话。
+const MAX_LINKED_THREADS: usize = 500;
+const LAST_MESSAGE_CHARS: usize = 240;
+
+/// 交给 Codex 的提示词：`[T-12] 标题`，有正文时空一行接正文。
+pub fn task_prompt(task: &Task) -> String {
+    let mut prompt = format!("[T-{}] {}", task.id, task.title);
+    let body = task.body.trim();
+    if !body.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(body);
+    }
+    prompt
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// 新对话链接。项目目录存在时带上 `path`，Codex 会切到（或新建）这个项目；不存在就用当前项目。
+pub fn new_thread_link(task: &Task) -> String {
+    let mut link = format!("codex://threads/new?prompt={}", percent_encode(&task_prompt(task)));
+    if let Some(project) = task.project.as_deref().filter(|path| Path::new(path).is_absolute() && Path::new(path).is_dir()) {
+        link.push_str("&path=");
+        link.push_str(&percent_encode(project));
+    }
+    link
+}
+
+/// 消息里第一个 `[T-数字]` 的编号。
+pub fn task_marker_id(text: &str) -> Option<u64> {
+    let head: String = text.chars().take(MARKER_SCAN_CHARS).collect();
+    let mut rest = head.as_str();
+    while let Some(start) = rest.find("[T-") {
+        let after = &rest[start + 3..];
+        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        if !digits.is_empty()
+            && !digits.starts_with('0')
+            && after[digits.len()..].starts_with(']')
+            && let Ok(id) = digits.parse()
+        {
+            return Some(id);
+        }
+        rest = after;
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// 回合进行中。
+    Running,
+    /// 最近一个回合正常结束。
+    Finished,
+    /// 最近一个回合被中断。
+    Aborted,
+    /// 还没有回合事件（刚建好、或 rollout 读不到）。
+    Idle,
+}
+
+/// 一条认回任务的 Codex 对话。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRun {
+    pub task_id: u64,
+    pub thread_id: String,
+    pub title: String,
+    pub cwd: String,
+    pub state: RunState,
+    /// 毫秒：线程表的更新时间。
+    pub updated_at: i64,
+    /// 毫秒：最近一个回合开始 / 结束的时间。
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    /// 回合结束时 Codex 最后说的话（截断）。
+    pub last_message: Option<String>,
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// rollout 每行的 `timestamp`（`2026-11-02T10:08:57.450Z`，UTC）转毫秒。
+pub fn parse_rollout_timestamp(text: &str) -> Option<i64> {
+    let text = text.strip_suffix('Z')?;
+    let (date, time) = text.split_once('T')?;
+    let mut date_parts = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (date_parts.next()??, date_parts.next()??, date_parts.next()??);
+    let (clock, fraction) = time.split_once('.').unwrap_or((time, ""));
+    let mut clock_parts = clock.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (clock_parts.next()??, clock_parts.next()??, clock_parts.next()??);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let millis = format!("{fraction:0<3}").get(..3)?.parse::<i64>().ok()?;
+    Some(((days_from_civil(year, month, day) * 24 + hour) * 60 + minute) * 60_000 + second * 1000 + millis)
+}
+
+/// 从 rollout 末尾倒着找最近的回合事件：运行状态、开始 / 结束时间、最后一句话。
+pub fn rollout_run_state(path: &Path) -> (RunState, Option<i64>, Option<i64>, Option<String>) {
+    use std::io::{Read, Seek, SeekFrom};
+    let idle = (RunState::Idle, None, None, None);
+    let Ok(mut file) = std::fs::File::open(path) else { return idle };
+    let len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let start = len.saturating_sub(ROLLOUT_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return idle;
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return idle;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0); // 从中间开始读，第一行不完整。
+    }
+    let (mut state, mut finished_at, mut last_message) = (None, None, None);
+    for line in lines.iter().rev() {
+        if !line.contains("\"event_msg\"") || !(line.contains("task_started") || line.contains("task_complete") || line.contains("turn_aborted")) {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(line) else { continue };
+        let at = event.get("timestamp").and_then(Value::as_str).and_then(parse_rollout_timestamp);
+        let payload = event.get("payload").unwrap_or(&Value::Null);
+        match payload.get("type").and_then(Value::as_str) {
+            Some("task_started") => return (state.unwrap_or(RunState::Running), at, finished_at, last_message),
+            Some("task_complete") if state.is_none() => {
+                state = Some(RunState::Finished);
+                finished_at = at;
+                last_message = payload
+                    .get("last_agent_message")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| text.chars().take(LAST_MESSAGE_CHARS).collect());
+            }
+            Some("turn_aborted") if state.is_none() => {
+                state = Some(RunState::Aborted);
+                finished_at = at;
+            }
+            _ => {}
+        }
+    }
+    match state {
+        Some(state) => (state, None, finished_at, last_message),
+        None => idle,
+    }
+}
+
+/// 秒或毫秒都转成毫秒（线程表的时间列在不同版本里单位不一样）。
+fn to_ms(value: i64) -> i64 {
+    if value.abs() < 100_000_000_000 { value * 1000 } else { value }
+}
+
+/// 从 Codex 线程表找首条消息带 `[T-N]` 的对话（不含已归档），新的在前。读不到数据库时为空。
+pub fn linked_runs(home: &Path) -> Vec<TaskRun> {
+    let Ok((connection, columns)) = crate::extension_history::thread_db(home) else { return Vec::new() };
+    let has = |column: &str| columns.iter().any(|existing| existing == column);
+    if !has("first_user_message") {
+        return Vec::new();
+    }
+    let column = |name: &str| if has(name) { name.to_string() } else { format!("NULL AS {name}") };
+    let archived = if has("archived") { " AND (archived = 0 OR archived IS NULL)" } else { "" };
+    let order = if has("updated_at") { " ORDER BY updated_at DESC" } else { "" };
+    let sql = format!(
+        "SELECT id, {}, {}, {}, {}, first_user_message FROM threads WHERE instr(first_user_message, '[T-') > 0{archived}{order} LIMIT {MAX_LINKED_THREADS}",
+        column("title"),
+        column("cwd"),
+        column("updated_at"),
+        column("rollout_path"),
+    );
+    let Ok(mut statement) = connection.prepare(&sql) else { return Vec::new() };
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        ))
+    });
+    let Ok(rows) = rows else { return Vec::new() };
+    rows.filter_map(Result::ok)
+        .filter_map(|(thread_id, title, cwd, updated_at, rollout, message)| {
+            let task_id = task_marker_id(&message)?;
+            let (state, started_at, finished_at, last_message) =
+                rollout.as_deref().filter(|path| !path.is_empty()).map(|path| rollout_run_state(Path::new(path))).unwrap_or((RunState::Idle, None, None, None));
+            let title = if title.trim().is_empty() { message.lines().next().unwrap_or("").chars().take(MAX_TITLE_CHARS).collect() } else { title };
+            Some(TaskRun { task_id, thread_id, title, cwd, state, updated_at: to_ms(updated_at), started_at, finished_at, last_message })
+        })
+        .collect()
+}
+
+/// 按对话的进展推任务状态。只看「进入当前状态之后」发生的事，手动挪过的状态不会被旧事件拽回去：
+/// - 有回合在跑，且开始于进入当前状态之后：收集 / 待办 / 待验收 → 进行中。
+/// - 没有回合在跑，最近一次正常结束在进入当前状态之后：收集 / 待办 / 进行中 → 待验收。
+///
+/// 卡住、完成、已取消不自动动。
+pub fn auto_status(task: &Task, runs: &[TaskRun]) -> Option<TaskStatus> {
+    let runs: Vec<&TaskRun> = runs.iter().filter(|run| run.task_id == task.id).collect();
+    let running_since = runs.iter().filter(|run| run.state == RunState::Running).filter_map(|run| run.started_at).max();
+    if runs.iter().any(|run| run.state == RunState::Running) {
+        let fresh = running_since.is_some_and(|at| at > task.status_at);
+        return (fresh && matches!(task.status, TaskStatus::Backlog | TaskStatus::Todo | TaskStatus::InReview)).then_some(TaskStatus::InProgress);
+    }
+    let finished = runs.iter().filter(|run| run.state == RunState::Finished).filter_map(|run| run.finished_at).max()?;
+    (finished > task.status_at && matches!(task.status, TaskStatus::Backlog | TaskStatus::Todo | TaskStatus::InProgress)).then_some(TaskStatus::InReview)
+}
+
+/// 把对话进展写回任务文件，返回改了几个。
+pub fn apply_auto_status(dir: &Path, tasks: &[Task], runs: &[TaskRun]) -> usize {
+    tasks
+        .iter()
+        .filter_map(|task| auto_status(task, runs).map(|status| (task.id, status)))
+        .filter(|(id, status)| update_task(dir, *id, TaskPatch { status: Some(*status), ..Default::default() }).is_ok())
+        .count()
+}
+
+fn open_link(url: &str) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        crate::windows_open_url(url)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("open").arg(url).status().context("打开 Codex 链接失败")?;
+        if !status.success() {
+            bail!("打开 Codex 链接失败（open 退出码 {status}）");
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ()).context("打开 Codex 链接失败")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
+    {
+        let _ = url;
+        bail!("当前平台不支持打开 Codex 链接")
+    }
+}
+
 // ---------- 前端分发 ----------
 
-fn dir_override() -> &'static Mutex<Option<PathBuf>> {
-    static OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
-    &OVERRIDE
+#[derive(Default)]
+struct Overrides {
+    tasks_dir: Option<PathBuf>,
+    codex_home: Option<PathBuf>,
+    /// 测试里把要打开的链接记下来，不真的打开。
+    opened: Option<Vec<String>>,
+}
+
+fn overrides() -> std::sync::MutexGuard<'static, Overrides> {
+    static OVERRIDES: Mutex<Overrides> = Mutex::new(Overrides { tasks_dir: None, codex_home: None, opened: None });
+    OVERRIDES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 测试用：把任务目录挪到临时目录。
 pub fn set_tasks_dir_for_tests(dir: Option<PathBuf>) {
-    *dir_override().lock().unwrap_or_else(|e| e.into_inner()) = dir;
+    overrides().tasks_dir = dir;
+}
+
+/// 测试用：Codex 主目录挪到临时目录，并且「在 Codex 中开始」只记下链接不真的打开（传 None 恢复）。
+pub fn set_codex_home_for_tests(home: Option<PathBuf>) {
+    let mut overrides = overrides();
+    overrides.opened = home.as_ref().map(|_| Vec::new());
+    overrides.codex_home = home;
+}
+
+/// 测试用：取走记下的链接。
+pub fn take_opened_links_for_tests() -> Vec<String> {
+    overrides().opened.as_mut().map(std::mem::take).unwrap_or_default()
 }
 
 pub fn tasks_dir() -> PathBuf {
-    if let Some(dir) = dir_override().lock().unwrap_or_else(|e| e.into_inner()).clone() {
+    if let Some(dir) = overrides().tasks_dir.clone() {
         return dir;
     }
     crate::paths::default_app_state_dir().join(TASKS_DIR)
 }
 
+fn codex_home() -> PathBuf {
+    overrides().codex_home.clone().unwrap_or_else(crate::codex_sqlite::default_codex_home_dir)
+}
+
 fn board_payload(dir: &Path) -> Value {
-    json!({ "dir": dir.display().to_string(), "tasks": list_tasks(dir) })
+    let runs = linked_runs(&codex_home());
+    let mut tasks = list_tasks(dir);
+    if apply_auto_status(dir, &tasks, &runs) > 0 {
+        tasks = list_tasks(dir);
+    }
+    // 只回传认得出任务的对话。
+    let runs: Vec<&TaskRun> = runs.iter().filter(|run| tasks.iter().any(|task| task.id == run.task_id)).collect();
+    json!({ "dir": dir.display().to_string(), "tasks": tasks, "runs": runs })
 }
 
 /// Codex 页面（`47-task-board-page.js`）经 bridge 路由 `/task-board` 调用：`{ action, ...args }`。
@@ -399,6 +702,14 @@ pub fn dispatch(action: &str, args: &Value) -> anyhow::Result<Value> {
             update_task(&dir, id()?, patch)?;
         }
         "delete" => delete_task(&dir, id()?)?,
+        "start" => {
+            let task = read_task(&dir, id()?)?;
+            let link = new_thread_link(&task);
+            let recorded = overrides().opened.as_mut().map(|opened| opened.push(link.clone())).is_some();
+            if !recorded {
+                open_link(&link)?;
+            }
+        }
         other => bail!("未知的任务面板动作：{other}"),
     }
     Ok(board_payload(&dir))

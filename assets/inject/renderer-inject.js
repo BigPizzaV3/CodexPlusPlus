@@ -2505,8 +2505,9 @@
       .codex-plus-task-card[data-selected="true"] { border-color: var(--codex-plus-focus, #2563eb); }
       .codex-plus-task-card-title { display: -webkit-box; overflow: hidden; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
       .codex-plus-task-card-meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--codex-plus-text-tertiary); font-size: 11.5px; }
-      .codex-plus-task-card-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-task-card-meta > span:last-child { flex: none; margin-left: auto; }
+      .codex-plus-task-card-meta > * { flex: none; white-space: nowrap; }
+      .codex-plus-task-card-meta > .codex-plus-task-card-project { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .codex-plus-task-card-meta > :last-child { margin-left: auto; }
       .codex-plus-task-quick-add { display: flex; flex: none; align-items: center; gap: 6px; height: 32px; padding: 0 9px; border: 1px dashed var(--codex-plus-border); border-radius: 8px; color: var(--codex-plus-text-tertiary); cursor: text; }
       .codex-plus-task-quick-add:focus-within { border-style: solid; border-color: var(--codex-plus-focus, #2563eb); background: var(--codex-plus-bg-primary); }
       .codex-plus-task-quick-add input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--codex-plus-text); font: inherit; }
@@ -2540,6 +2541,21 @@
       .codex-plus-task-status-picker button[aria-checked="true"] { border-color: var(--codex-plus-text-secondary); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); font-weight: 550; }
       .codex-plus-task-body-input { flex: 1; min-height: 180px; padding: 8px 9px !important; line-height: 1.6; resize: none; }
       .codex-plus-task-times { display: flex; gap: 14px; color: var(--codex-plus-text-tertiary); font-size: 11.5px; }
+      .codex-plus-task-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .codex-plus-task-start .codex-plus-action-button { padding: 0 12px; white-space: nowrap; }
+      .codex-plus-task-start .codex-plus-action-button:disabled { opacity: 0.6; cursor: default; }
+      .codex-plus-task-start-hint { min-width: 0; color: var(--codex-plus-text-tertiary); font-size: 11.5px; }
+      .codex-plus-task-runs { display: flex; flex: none; flex-direction: column; overflow: hidden; border: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); border-radius: 8px; }
+      .codex-plus-task-run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; padding: 7px 9px; border: 0; border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+      .codex-plus-task-run:last-child { border-bottom: 0; }
+      .codex-plus-task-run:hover { background: var(--codex-plus-bg-hover); }
+      .codex-plus-task-run-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-task-run-time { color: var(--codex-plus-text-tertiary); font-size: 11.5px; white-space: nowrap; }
+      .codex-plus-task-run-last { display: -webkit-box; grid-column: 1 / -1; overflow: hidden; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+      .codex-plus-task-run-badge { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; }
+      .codex-plus-task-run-badge[data-tone="running"] { background: color-mix(in srgb, var(--codex-plus-focus, #2563eb) 16%, transparent); color: var(--codex-plus-focus, #2563eb); }
+      .codex-plus-task-run-badge[data-tone="done"] { color: var(--codex-plus-success); }
+      .codex-plus-task-run-badge[data-tone="warn"] { color: var(--codex-plus-warning); }
       .codex-plus-task-status { display: flex; flex: none; align-items: center; gap: 14px; height: 28px; padding: 0 4px; border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); color: var(--codex-plus-text-tertiary); font-size: 11.5px; font-variant-numeric: tabular-nums; }
       .codex-plus-task-status [data-tone="warn"] { color: var(--codex-plus-warning); }
       .codex-plus-task-status [data-tone="danger"] { color: var(--codex-plus-danger); }
@@ -15497,6 +15513,9 @@ ${key} = ${value}`]);
    *     本页经 bridge 路由 `/task-board` `{ action, ...args }` 调用，每个动作都返回整个面板。
    *   - 路由不在拓展白名单里（能新建、改、删任务文件）。
    *   - 任务文件可能被编辑器或 Agent 直接改：页面开着时定时重读，有变化才重画。
+   *   - 「在 Codex 中开始」由 core 打开 `codex://threads/new` 链接：新对话预填 `[T-N] 标题`，用户自己发送。
+   *     core 按首条消息里的 `[T-N]` 把对话认回任务（返回里的 runs），并按对话进展推状态：
+   *     开始跑 → 进行中，跑完 → 待验收。点对话行跳到那条对话。
    *
    * 页面 DOM 每次打开重建，状态只放在 codexPlusTaskBoardState 里（见 01-registry 的生命周期约定）。
    * 只重画变化的区域（看板 / 详情 / 状态栏），工具栏的搜索框和正在编辑的输入框不被打断。
@@ -15525,6 +15544,7 @@ ${key} = ${value}`]);
     // 鼠标按下期间不重画：失焦保存触发的重画会把正要点的按钮换掉，这一下点击就丢了。
     pointerDown: false,
     renderPending: false,
+    lastWrite: null,
     pollTimer: null,
     onFocus: null,
     onRelease: null,
@@ -15567,6 +15587,26 @@ ${key} = ${value}`]);
   }
 
   const codexPlusTasks = () => (Array.isArray(codexPlusTaskBoardState.data?.tasks) ? codexPlusTaskBoardState.data.tasks : []);
+  const codexPlusTaskRunStates = {
+    running: { label: "运行中", tone: "running" },
+    finished: { label: "已跑完", tone: "done" },
+    aborted: { label: "已中断", tone: "warn" },
+    idle: { label: "未开始", tone: "idle" },
+  };
+
+  /** 认回这个任务的 Codex 对话，最近有动静的在前。 */
+  function codexPlusTaskRunsFor(id, runs = codexPlusTaskBoardState.data?.runs) {
+    const list = Array.isArray(runs) ? runs.filter((run) => run.taskId === id) : [];
+    const at = (run) => Math.max(Number(run.finishedAt || 0), Number(run.startedAt || 0), Number(run.updatedAt || 0));
+    return list.sort((a, b) => at(b) - at(a));
+  }
+
+  /** 打开一条 Codex 对话：先关掉本页，再让 Codex 自己的路由跳过去。 */
+  function codexPlusTaskOpenThread(threadId) {
+    if (!threadId) return;
+    closeCodexPlusPage();
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "navigate-to-route", path: `/local/${threadId}` } }));
+  }
 
   async function codexPlusTaskRequest(action, args = {}) {
     const result = await postJson("/task-board", { action, ...args });
@@ -15595,10 +15635,15 @@ ${key} = ${value}`]);
 
   function codexPlusTaskCard(task) {
     const selected = task.id === codexPlusTaskBoardState.selectedId;
-    const project = task.project ? `<span title="${escapeHtml(task.project)}">${escapeHtml(codexPlusTaskProjectName(task.project))}</span>` : "";
+    const project = task.project ? `<span class="codex-plus-task-card-project" title="${escapeHtml(task.project)}">${escapeHtml(codexPlusTaskProjectName(task.project))}</span>` : "";
+    const runs = codexPlusTaskRunsFor(task.id);
+    const running = runs.filter((run) => run.state === "running").length;
+    const runBadge = running
+      ? `<span class="codex-plus-task-run-badge" data-tone="running" title="${running} 个 Codex 对话正在跑">运行中</span>`
+      : runs.length ? `<span class="codex-plus-task-run-badge" title="${runs.length} 个 Codex 对话">${runs.length} 个对话</span>` : "";
     return `<button type="button" class="codex-plus-task-card" draggable="true" data-codex-task-open="${task.id}" data-selected="${String(selected)}">
       <span class="codex-plus-task-card-title">${escapeHtml(task.title)}</span>
-      <span class="codex-plus-task-card-meta"><code>${codexPlusTaskKey(task.id)}</code>${project}<span title="进入这一列：${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">${codexPlusTaskAgo(task.statusAt)}</span></span>
+      <span class="codex-plus-task-card-meta"><code>${codexPlusTaskKey(task.id)}</code>${project}<span title="进入这一列：${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">${codexPlusTaskAgo(task.statusAt)}</span>${runBadge}</span>
     </button>`;
   }
 
@@ -15685,6 +15730,7 @@ ${key} = ${value}`]);
     aside.hidden = false;
     aside.dataset.taskId = String(task.id);
     const projects = [...new Set(codexPlusTasks().map((item) => item.project).filter(Boolean))];
+    const runs = codexPlusTaskRunsFor(task.id);
     aside.innerHTML = `<header>
         <code>${codexPlusTaskKey(task.id)}</code><span class="codex-plus-task-spacer"></span>
         <button type="button" class="codex-plus-task-icon-button" data-codex-task-action="delete" title="删除任务" aria-label="删除任务">
@@ -15694,6 +15740,7 @@ ${key} = ${value}`]);
       </header>
       <div class="codex-plus-task-detail-body">
         <input type="text" class="codex-plus-task-title-input" data-codex-task-field="title" value="${escapeHtml(task.title)}" aria-label="标题">
+        ${codexPlusTaskStartSection(task, runs)}
         <div class="codex-plus-task-field-label">状态 <span title="${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">· ${codexPlusTaskAgo(task.statusAt)}进入</span></div>
         <div class="codex-plus-task-status-picker" role="radiogroup" aria-label="状态">${codexPlusTaskStatuses.map((entry) => `<button type="button" role="radio" aria-checked="${String(entry.id === task.status)}" data-codex-task-status="${entry.id}" title="${escapeHtml(entry.hint)}"><span class="codex-plus-task-dot" data-status="${entry.id}"></span>${escapeHtml(entry.label)}</button>`).join("")}</div>
         <label class="codex-plus-task-field-label" for="codex-plus-task-project">项目</label>
@@ -15701,8 +15748,37 @@ ${key} = ${value}`]);
         <datalist id="codex-plus-task-projects">${projects.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist>
         <label class="codex-plus-task-field-label" for="codex-plus-task-body">内容</label>
         <textarea id="codex-plus-task-body" class="codex-plus-provider-input codex-plus-task-body-input" data-codex-task-field="body" placeholder="要做什么、为什么、做到什么程度算完（Markdown）">${escapeHtml(task.body)}</textarea>
+        ${codexPlusTaskRunList(runs)}
         <p class="codex-plus-task-times"><span title="${escapeHtml(codexPlusTaskFullTime(task.createdAt))}">创建于 ${codexPlusTaskAgo(task.createdAt)}</span><span title="${escapeHtml(codexPlusTaskFullTime(task.updatedAt))}">更新于 ${codexPlusTaskAgo(task.updatedAt)}</span></p>
       </div>`;
+  }
+
+  /** 「在 Codex 中开始」：新开一个对话，输入框里填好 `[T-N] 标题` 和正文，由用户确认后发送。 */
+  function codexPlusTaskStartSection(task, runs) {
+    const where = task.project
+      ? `在「${escapeHtml(codexPlusTaskProjectName(task.project))}」里新开对话`
+      : "没填项目，用 Codex 当前选中的项目";
+    const label = runs.length ? "再开一个 Codex 对话" : "在 Codex 中开始";
+    return `<div class="codex-plus-task-start">
+        <button type="button" class="codex-plus-action-button" data-codex-task-action="start">${label}</button>
+        <span class="codex-plus-task-start-hint" title="新对话的输入框里会填好任务内容，你确认后发送。对话开始跑，任务进「进行中」；跑完进「待验收」。">${where}，发送后自动跟进状态</span>
+      </div>`;
+  }
+
+  /** 认回这个任务的 Codex 对话：点一行跳过去。 */
+  function codexPlusTaskRunList(runs) {
+    if (!runs.length) return "";
+    const rows = runs.map((run) => {
+      const state = codexPlusTaskRunStates[run.state] || codexPlusTaskRunStates.idle;
+      const at = run.state === "running" ? run.startedAt : (run.finishedAt || run.updatedAt);
+      const when = at ? `<span class="codex-plus-task-run-time" title="${escapeHtml(codexPlusTaskFullTime(at))}">${codexPlusTaskAgo(at)}</span>` : "";
+      const last = run.lastMessage ? `<span class="codex-plus-task-run-last">${escapeHtml(run.lastMessage)}</span>` : "";
+      return `<button type="button" class="codex-plus-task-run" data-codex-task-thread="${escapeHtml(run.threadId)}" title="打开这个对话${run.cwd ? `（${escapeHtml(run.cwd)}）` : ""}">
+          <span class="codex-plus-task-run-badge" data-tone="${state.tone}">${state.label}</span>
+          <span class="codex-plus-task-run-title">${escapeHtml(run.title || run.threadId)}</span>${when}${last}
+        </button>`;
+    }).join("");
+    return `<div class="codex-plus-task-field-label">Codex 对话 <span>· ${runs.length}</span></div><div class="codex-plus-task-runs">${rows}</div>`;
   }
 
   function renderCodexPlusTaskStatus() {
@@ -15751,7 +15827,8 @@ ${key} = ${value}`]);
     Object.assign(task, patch);
     if (patch.status) task.statusAt = Date.now();
     renderCodexPlusTaskBoard();
-    void codexPlusTaskRun("update", { id, patch });
+    // 记下最近一次写入：「在 Codex 中开始」要等它写完，新对话里才是刚改的标题和正文。
+    codexPlusTaskBoardState.lastWrite = codexPlusTaskRun("update", { id, patch });
   }
 
   async function codexPlusTaskCreate(input, openAfter) {
@@ -15806,6 +15883,11 @@ ${key} = ${value}`]);
       codexPlusTaskSelect(Number(open.getAttribute("data-codex-task-open")));
       return;
     }
+    const thread = target?.closest("[data-codex-task-thread]");
+    if (thread) {
+      codexPlusTaskOpenThread(thread.getAttribute("data-codex-task-thread"));
+      return;
+    }
     const statusButton = target?.closest("[data-codex-task-status]");
     if (statusButton && state.selectedId != null) {
       const status = statusButton.getAttribute("data-codex-task-status");
@@ -15844,6 +15926,18 @@ ${key} = ${value}`]);
       case "closeDetail":
         codexPlusTaskSelect(null);
         return;
+      case "start": {
+        const task = codexPlusTasks().find((item) => item.id === state.selectedId);
+        if (!task || button.disabled) return;
+        // 点按钮时编辑框已失焦保存（或用键盘触发时还在编辑）：等写完，新对话里填的才是最新的标题和正文。
+        const editing = document.activeElement;
+        if (editing instanceof Element && editing.matches("[data-codex-task-field]")) codexPlusTaskCommitField(editing);
+        button.disabled = true;
+        await state.lastWrite;
+        // Codex 收到链接后会跳到新对话；这里关掉本页，免得盖在输入框上面。
+        if (await codexPlusTaskRun("start", { id: task.id })) closeCodexPlusPage();
+        return;
+      }
       case "delete": {
         const task = codexPlusTasks().find((item) => item.id === state.selectedId);
         if (!task) return;
@@ -15959,7 +16053,7 @@ ${key} = ${value}`]);
     const state = codexPlusTaskBoardState;
     if (!document.querySelector("[data-codex-task-main]") || document.hidden) return;
     void codexPlusTaskRequest("list").then((data) => {
-      if (JSON.stringify(data.tasks) === JSON.stringify(state.data?.tasks)) return;
+      if (JSON.stringify([data.tasks, data.runs]) === JSON.stringify([state.data?.tasks, state.data?.runs])) return;
       state.data = data;
       state.error = "";
       renderCodexPlusTaskBoard();

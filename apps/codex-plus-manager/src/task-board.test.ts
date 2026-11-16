@@ -15,15 +15,19 @@ const task = (id: number, patch: Partial<Task> = {}): Task => ({
   id, title: `任务 ${id}`, status: "backlog", project: null, body: "", createdAt: id, updatedAt: id, statusAt: id, ...patch,
 });
 
+type Run = { taskId: number; threadId: string; state: string; updatedAt: number; startedAt?: number | null; finishedAt?: number | null };
+
 /** 分片顶层只有常量和函数声明，直接求值拿出纯函数。 */
 async function loadShard() {
   const source = await read(shardPath);
-  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey };`)() as {
+  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates };`)() as {
     codexPlusTaskStatuses: Array<{ id: string; label: string }>;
     codexPlusTaskGroups: (tasks: Task[]) => Record<string, Task[]>;
     codexPlusTaskMatches: (task: Task, query: string) => boolean;
     codexPlusTaskProjectName: (project?: string | null) => string;
     codexPlusTaskKey: (id: number) => string;
+    codexPlusTaskRunsFor: (id: number, runs: Run[]) => Run[];
+    codexPlusTaskRunStates: Record<string, { label: string }>;
   };
 }
 
@@ -100,4 +104,27 @@ test("管理器里不再有任务面板页面", async () => {
   assert.doesNotMatch(app, /taskBoard|TaskBoardPage/);
   const lib = await read("../src-tauri/src/lib.rs");
   assert.doesNotMatch(lib, /task_board/);
+});
+
+test("交给 Codex：开始按钮走 core 的 start，对话行跳到那条对话，状态值与 core 的 RunState 一致", async () => {
+  const shard = await loadShard();
+  const page = await read(shardPath);
+  const core = await read("../../../crates/codex-plus-core/src/task_board.rs");
+  assert.ok(core.includes(`"start" =>`), "后端有 start 动作");
+  assert.match(page, /codexPlusTaskRun\("start", \{ id: task\.id \}\)\) closeCodexPlusPage\(\);/, "开始成功后关掉本页，露出 Codex 的新对话");
+  assert.match(page, /await state\.lastWrite;/, "等失焦保存写完，新对话里是最新的标题和正文");
+  assert.match(page, /type: "navigate-to-route", path: `\/local\/\$\{threadId\}`/);
+  assert.match(page, /JSON\.stringify\(\[data\.tasks, data\.runs\]\)/, "定时重读也比对对话进展");
+  assert.match(core, /format!\("\[T-\{\}\] \{\}", task\.id, task\.title\)/, "提示词以 [T-N] 开头，core 才认得回来");
+
+  const variants = [...core.matchAll(/^    (Running|Finished|Aborted|Idle),$/gm)].map((match) => match[1].toLowerCase());
+  assert.deepEqual(Object.keys(shard.codexPlusTaskRunStates).sort(), variants.sort());
+
+  const runs: Run[] = [
+    { taskId: 1, threadId: "old", state: "finished", updatedAt: 10, finishedAt: 20 },
+    { taskId: 2, threadId: "other", state: "running", updatedAt: 99, startedAt: 99 },
+    { taskId: 1, threadId: "new", state: "running", updatedAt: 5, startedAt: 30 },
+  ];
+  assert.deepEqual(shard.codexPlusTaskRunsFor(1, runs).map((run) => run.threadId), ["new", "old"], "只取这个任务的，最近有动静的在前");
+  assert.deepEqual(shard.codexPlusTaskRunsFor(3, runs), []);
 });
