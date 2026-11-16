@@ -2763,6 +2763,87 @@
       }
       .codex-plus-extensions-filter button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
       .codex-plus-extensions-filter button:hover { background: var(--codex-plus-bg-hover); }
+      /* 分栏条（精选 / 社区 / 本地 / 我发布的 / dsh 插件）与右侧排序，对齐管理器「拓展」页。 */
+      .codex-plus-extensions-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .codex-plus-extensions-filterbar .codex-plus-extensions-filter { flex-wrap: wrap; }
+      .codex-plus-extensions-filter-count, .codex-plus-discovery-section-count { color: var(--codex-plus-text-secondary); font-weight: 400; }
+      .codex-plus-extensions-sort {
+        margin-top: 16px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 8px;
+        padding: 5px 8px;
+        background: transparent;
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        appearance: auto !important;
+      }
+      .codex-plus-extension-badge {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 3px;
+        border-radius: 4px;
+        padding: 0 5px;
+        background: var(--codex-plus-bg-hover);
+        color: var(--codex-plus-text-secondary);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 16px;
+        white-space: nowrap;
+      }
+      .codex-plus-extension-badge svg { width: 11px; height: 11px; }
+      .codex-plus-extension-badge[data-tone="ok"] { background: color-mix(in srgb, #22c55e 14%, transparent); color: #22c55e; }
+      .codex-plus-extension-badge[data-tone="warn"] { background: color-mix(in srgb, #f59e0b 16%, transparent); color: #d97706; }
+      .codex-plus-extension-badge[data-tone="danger"] { background: color-mix(in srgb, #ef4444 14%, transparent); color: #ef4444; }
+      .codex-plus-extension-card[data-dimmed="true"] { opacity: .6; }
+      a.codex-plus-extension-card-select, span.codex-plus-extension-card-select { text-decoration: none; }
+      span.codex-plus-extension-card-select { cursor: default; }
+      .codex-plus-extensions-notice { margin-top: 12px; border-radius: 8px; padding: 8px 12px; background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .codex-plus-extensions-notice[data-tone="error"] { background: color-mix(in srgb, #ef4444 12%, transparent); color: #ef4444; }
+      .codex-plus-extensions-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; border: 1px solid color-mix(in srgb, #f59e0b 40%, transparent); border-radius: 10px; padding: 10px 14px; background: color-mix(in srgb, #f59e0b 8%, transparent); }
+      .codex-plus-extensions-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 18px; }
+      .codex-plus-extensions-banner-text strong { color: var(--codex-plus-text); font-weight: 500; }
+      .codex-plus-extensions-banner-switch { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-extensions-pane-meta { margin-top: 12px; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-discovery-section-title .codex-plus-extensions-pane-meta { display: inline; margin: 0 0 0 8px; font-weight: 400; }
+      .codex-plus-extensions-text-button { border: 0; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+      .codex-plus-extensions-text-button:hover:not(:disabled) { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-extensions-text-button[data-tone="danger"] { color: #ef4444; }
+      .codex-plus-extensions-text-button:disabled { cursor: default; opacity: .5; }
+      /* dsh 插件：一列，每个插件一行，点开看各行明细。 */
+      .codex-plus-dsh-list { display: flex; flex-direction: column; gap: 4px; }
+      .codex-plus-extension-card-icon[data-tone="ok"] { color: #22c55e; }
+      .codex-plus-dsh-chevron { display: inline-flex; flex: 0 0 auto; color: var(--codex-plus-text-secondary); transition: transform .15s; }
+      .codex-plus-dsh-chevron svg { width: 16px; height: 16px; }
+      .codex-plus-dsh-chevron[data-open="true"] { transform: rotate(180deg); }
+      .codex-plus-dsh-detail { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px 48px; border-left: 2px solid var(--codex-plus-border); padding: 4px 0 4px 14px; font-size: 13px; line-height: 18px; }
+      .codex-plus-dsh-source { color: var(--codex-plus-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+      .codex-plus-dsh-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
+      .codex-plus-dsh-row { display: flex; flex-direction: column; gap: 6px; border-radius: 8px; padding: 8px 10px; background: var(--codex-plus-bg-hover); }
+      .codex-plus-dsh-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .codex-plus-dsh-row-head code { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-dsh-row-actions { display: inline-flex; gap: 2px; margin-left: auto; }
+      .codex-plus-dsh-status { border-radius: 4px; padding: 0 5px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 11px; line-height: 16px; }
+      .codex-plus-dsh-status[data-status="compatible"] { color: #22c55e; }
+      .codex-plus-dsh-status[data-status="partial"] { color: #d97706; }
+      .codex-plus-dsh-status[data-status="incompatible"], .codex-plus-dsh-status[data-status="error"] { color: #ef4444; }
+      .codex-plus-dsh-mappings { display: flex; flex-wrap: wrap; gap: 4px; }
+      .codex-plus-dsh-mappings span { border-radius: 4px; padding: 0 6px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-dsh-tools { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+      .codex-plus-dsh-tools li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+      .codex-plus-dsh-tools li span { flex: 1 1 auto; min-width: 0; color: var(--codex-plus-text-secondary); overflow-wrap: anywhere; }
+      .codex-plus-dsh-reason, .codex-plus-dsh-line, .codex-plus-dsh-companion { color: var(--codex-plus-text-secondary); overflow-wrap: anywhere; }
+      .codex-plus-dsh-warning { color: #d97706; overflow-wrap: anywhere; }
+      .codex-plus-dsh-config { display: flex; flex-direction: column; gap: 6px; }
+      .codex-plus-dsh-config textarea { box-sizing: border-box; width: 100%; border: 1px solid var(--codex-plus-border); border-radius: 8px; padding: 8px; background: var(--codex-plus-bg-primary, transparent); color: var(--codex-plus-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .codex-plus-dsh-config small { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-dsh-config-actions { display: flex; gap: 8px; }
+      .codex-plus-dsh-import { display: flex; gap: 8px; margin-top: 8px; }
+      .codex-plus-dsh-import input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--codex-plus-border); border-radius: 8px; padding: 6px 10px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 13px; }
+      .codex-plus-dsh-index { margin-top: 12px; color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-dsh-index summary { cursor: pointer; }
+      .codex-plus-dsh-market { margin-top: 8px; }
       .codex-plus-discovery-section-title {
         margin: 32px 0 16px;
         color: var(--codex-plus-text);
@@ -7357,47 +7438,119 @@
     `;
   }
 
-  /** 主区使用原生插件列表的图标、简介和独立操作列，避免嵌套按钮。 */
-  function renderCodexPlusExtensionsOverview() {
-    const { installed, market } = codexPlusExtensionsEntries();
-    const isInstalled = codexPlusExtensionsFilter === "installed";
-    const entries = filterCodexPlusExtensionsEntries(isInstalled ? installed : market);
-    const cards = entries.map((entry) => {
-      const item = codexPlusExtensionMarketItem(entry);
-      const description = item?.description || entry.script?.description || entry.meta || "";
-      const select = `${entry.kind}:${escapeHtml(entry.key)}`;
-      const isPackage = item?.kind === "package";
-      const installing = isPackage && codexPlusPackageInstalling === entry.key;
-      const action = entry.kind === "market"
-        ? `<button type="button" class="codex-plus-discovery-icon-button" ${isPackage ? "data-codex-package-install" : "data-codex-market-install"}="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="${installing ? "正在准备安装…" : `安装 ${escapeHtml(entry.name)}`}"${codexPlusPackageInstalling && isPackage ? " disabled" : ""}${installing ? ' data-busy="true"' : ""}>${codexPlusDiscoveryIcons.plus}</button>`
-        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`;
-      return `
+  /** 拓展页的分栏：和管理器「拓展」页同一排（精选 / 社区 / 本地 / 我发布的 / dsh 插件）。 */
+  const codexPlusExtensionsFilters = [
+    ["market", "精选"],
+    ["community", "社区"],
+    ["installed", "本地"],
+    ["mine", "我发布的"],
+    ["dsh", "dsh 插件"],
+  ];
+
+  function codexPlusExtensionsFilterValue(value) {
+    return codexPlusExtensionsFilters.some(([id]) => id === value) ? value : "market";
+  }
+
+  /** 分栏胶囊 + 右侧排序（精选、社区才有）。 */
+  function renderCodexPlusExtensionsFilterBar() {
+    const counts = {
+      market: codexPlusScriptMarket.loaded ? (codexPlusScriptMarket.scripts || []).length + (codexPlusScriptMarket.packages || []).length : null,
+      installed: codexPlusUserScriptsLoaded ? (codexPlusUserScripts.scripts || []).length : null,
+    };
+    const pills = codexPlusExtensionsFilters.map(([id, label]) => {
+      const active = codexPlusExtensionsFilter === id;
+      const count = counts[id] == null ? "" : ` <span class="codex-plus-extensions-filter-count">${counts[id]}</span>`;
+      return `<button type="button" data-codex-extensions-browse="${id}" data-active="${String(active)}" aria-pressed="${String(active)}">${escapeHtml(label)}${count}</button>`;
+    }).join("");
+    const sort = typeof renderCodexPlusExtensionsSortControl === "function" ? renderCodexPlusExtensionsSortControl(codexPlusExtensionsFilter) : "";
+    return `<div class="codex-plus-extensions-filterbar"><div class="codex-plus-extensions-filter" role="group" aria-label="拓展来源">${pills}</div>${sort}</div>`;
+  }
+
+  /** 列表里的一节：标题带数量，下面是两列卡片。 */
+  function renderCodexPlusExtensionsSection(title, cards) {
+    return `
+      <h2 class="codex-plus-discovery-section-title">${escapeHtml(title)} <span class="codex-plus-discovery-section-count">${cards.length}</span></h2>
+      <div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true">${cards.join("")}</div>
+    `;
+  }
+
+  /** 状态小标签（已安装 / 可更新 / 本机源码 …），tone：neutral / ok / warn / danger。 */
+  function codexPlusExtensionBadge(text, tone = "neutral", title = "") {
+    return `<span class="codex-plus-extension-badge" data-tone="${tone}"${title ? ` title="${escapeHtml(title)}"` : ""}>${escapeHtml(text)}</span>`;
+  }
+
+  /** 精选里已安装条目的状态：与管理器一致，只给已安装 / 可更新 / 本机源码打标。 */
+  function codexPlusCuratedStatusBadge(item) {
+    if (!item) return "";
+    if (item.localSource) return codexPlusExtensionBadge(`本机源码 ${item.installedVersion || ""}`.trim(), "neutral", "你在本机编写并发布的拓展，在「本地」里管理");
+    if (item.updateAvailable) return codexPlusExtensionBadge("可更新", "warn");
+    const version = item.installedVersion || String(item.installedSha || "").slice(0, 7);
+    return codexPlusExtensionBadge(version ? `已安装 ${version}` : "已安装");
+  }
+
+  /** 一张拓展卡片：左边选中按钮（图标、名字、标签、简介），右边独立的操作列，避免嵌套按钮。 */
+  function codexPlusExtensionCardHtml(entry, { status = false } = {}) {
+    const item = codexPlusExtensionMarketItem(entry);
+    const description = item?.description || entry.script?.description || entry.meta || "";
+    const select = `${entry.kind}:${escapeHtml(entry.key)}`;
+    const isPackage = item?.kind === "package";
+    const installAttr = isPackage ? "data-codex-package-install" : "data-codex-market-install";
+    const installing = isPackage && codexPlusPackageInstalling === item.id;
+    const busyAttrs = `${codexPlusPackageInstalling && isPackage ? " disabled" : ""}${installing ? ' data-busy="true"' : ""}`;
+    const actions = [];
+    if (entry.kind === "market") {
+      actions.push(`<button type="button" class="codex-plus-discovery-icon-button" ${installAttr}="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="${installing ? "正在准备安装…" : `安装 ${escapeHtml(entry.name)}`}"${busyAttrs}>${codexPlusDiscoveryIcons.plus}</button>`);
+    } else {
+      // 精选里已安装、有审核过的新版本：给「更新」，走同一条安装流程。
+      if (status && item?.updateAvailable) {
+        actions.push(`<button type="button" class="codex-plus-discovery-icon-button" ${installAttr}="${escapeHtml(item.id)}" aria-label="更新 ${escapeHtml(entry.name)}" title="更新 ${escapeHtml(entry.name)}"${busyAttrs}>${codexPlusDiscoveryIcons.refresh}</button>`);
+      }
+      actions.push(`<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`);
+    }
+    const badges = `${codexPlusOfficialBadge(item)}${status ? codexPlusCuratedStatusBadge(item) : ""}`;
+    return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
             <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(item, entry.script))}</span>
             <span class="codex-plus-extension-card-copy">
-              <span class="codex-plus-extension-card-heading"><span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>${codexPlusOfficialBadge(item)}</span>
+              <span class="codex-plus-extension-card-heading"><span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>${badges}</span>
               <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
             </span>
           </button>
-          <div class="codex-plus-extension-card-actions">${action}</div>
+          <div class="codex-plus-extension-card-actions">${actions.join("")}</div>
         </article>
       `;
-    }).join("");
-    const empty = codexPlusExtensionsQuery.trim() ? `没有匹配「${codexPlusExtensionsQuery}」的拓展。`
-      : isInstalled ? (codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…")
-      : codexPlusScriptMarket.loading && !codexPlusScriptMarket.loaded ? "正在读取拓展…"
-      : codexPlusScriptMarket.message || "市场里没有可安装的拓展。";
-    return `
-      <div class="codex-plus-extensions-filter" role="group" aria-label="拓展来源">
-        <button type="button" data-codex-extensions-browse="market" data-active="${String(!isInstalled)}" aria-pressed="${String(!isInstalled)}">市场</button>
-        <button type="button" data-codex-extensions-browse="installed" data-active="${String(isInstalled)}" aria-pressed="${String(isInstalled)}">已安装</button>
-      </div>
-      <h2 class="codex-plus-discovery-section-title">${isInstalled ? "已安装拓展" : "市场拓展"}</h2>
-      <div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true">
-        ${cards || `<div class="codex-plus-extensions-detail-empty" role="status">${escapeHtml(empty)}</div>`}
-      </div>
-    `;
+  }
+
+  /**
+   * 主区：分栏条 + 当前分栏的列表。精选分「已安装 / 可安装」，本地分「已启用 / 未启用」（与管理器一致）；
+   * 社区、我发布的、dsh 插件由 41-extension-sources.js 画。
+   */
+  function renderCodexPlusExtensionsOverview() {
+    const filter = codexPlusExtensionsFilterValue(codexPlusExtensionsFilter);
+    const head = renderCodexPlusExtensionsFilterBar();
+    if (filter === "community" || filter === "mine" || filter === "dsh") {
+      return `${head}${typeof renderCodexPlusExtensionSourcePane === "function" ? renderCodexPlusExtensionSourcePane(filter) : ""}`;
+    }
+    const { installed, market, curated } = codexPlusExtensionsEntries();
+    const query = codexPlusExtensionsQuery.trim();
+    let sections;
+    let empty;
+    if (filter === "installed") {
+      const entries = filterCodexPlusExtensionsEntries(installed);
+      const on = entries.filter((entry) => entry.enabled).map((entry) => codexPlusExtensionCardHtml(entry));
+      const off = entries.filter((entry) => !entry.enabled).map((entry) => codexPlusExtensionCardHtml(entry));
+      sections = `${on.length ? renderCodexPlusExtensionsSection("已启用", on) : ""}${off.length ? renderCodexPlusExtensionsSection("未启用", off) : ""}`;
+      empty = query ? `没有匹配「${query}」的拓展。` : codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…";
+    } else {
+      const own = filterCodexPlusExtensionsEntries(curated).map((entry) => codexPlusExtensionCardHtml(entry, { status: true }));
+      const available = filterCodexPlusExtensionsEntries(market).map((entry) => codexPlusExtensionCardHtml(entry));
+      sections = `${own.length ? renderCodexPlusExtensionsSection("已安装", own) : ""}${available.length ? renderCodexPlusExtensionsSection("可安装", available) : ""}`;
+      empty = query ? `没有匹配「${query}」的拓展。`
+        : codexPlusScriptMarket.loading && !codexPlusScriptMarket.loaded ? "正在读取拓展…"
+        : codexPlusScriptMarket.message || "市场里没有可安装的拓展。";
+    }
+    return `${head}${sections || `<div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true"><div class="codex-plus-extensions-detail-empty" role="status">${escapeHtml(empty)}</div></div>`}`;
   }
 
   /** 只刷新侧栏和结果区；搜索输入框保持原 DOM 与光标位置。 */
@@ -7821,6 +7974,44 @@
   }
 
   /**
+   * 安装前的确认框（与管理器 InstallDialog 同一套说明）：审核渠道、实际版本、它要的能力、同名冲突。
+   * 返回 `{ value: "install" | "enable" }`，取消时为 null。精选 / 社区安装共用。
+   */
+  function codexPlusConfirmPreparedInstall(prepared, fallbackName) {
+    const trust = prepared.channel === "official"
+      ? "Codex++ 官方拓展，安装的是审核过的版本。"
+      : prepared.channel === "curated"
+      ? "经 Codex++ 审核的精选拓展，安装的是审核过的那一版；作者之后的改动要再审核才会更新。"
+      : "⚠ 未经 Codex++ 审核，作者可以在新版本里加入任意代码。只安装你信任的作者的拓展。";
+    const sha = String(prepared.sha || "").slice(0, 7);
+    const version = prepared.fromDefaultBranch
+      ? `${prepared.repo} · 作者未发布版本，将安装默认分支的提交 ${sha}`
+      : `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${sha}`;
+    const lines = codexPlusPackagePermissionLines(prepared.permissions);
+    const conflict = prepared.conflict
+      ? prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
+        ? `本机已装 ${prepared.conflict.repo || ""} 的${prepared.conflict.channel === "official" ? "官方" : "精选"}版本 ${prepared.id}，社区里的同 id 拓展不能替换它。`
+        : prepared.conflict.source === "github"
+        ? `本机已有来自 ${prepared.conflict.repo || ""} 的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
+        : `本机已有手动或对话生成的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
+      : "";
+    const message = [
+      trust,
+      version,
+      "",
+      "它会获得这些能力：",
+      ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+      ...(conflict ? ["", conflict] : []),
+    ].join("\n");
+    const verb = prepared.conflict ? "替换并安装" : "安装";
+    return codexPlusAsk({
+      title: `安装 ${prepared.name || fallbackName}`,
+      message,
+      options: [{ value: "install", label: `${verb}（暂不启用）` }, { value: "enable", label: `${verb}并启用` }],
+    });
+  }
+
+  /**
    * 安装精选 / 官方拓展包：后端按清单锁定的提交下载并暂存 → 确认框列出能力 → 用户确认后放进拓展目录。
    * 与管理器「精选」栏的安装是同一条流程（extension_discovery::CommunityStore）。
    */
@@ -7836,30 +8027,7 @@
         showToast(`准备安装 ${name} 失败：${prepared?.message || "未知错误"}`, { type: "error" });
         return;
       }
-      const trust = prepared.channel === "official"
-        ? "Codex++ 官方拓展，安装的是审核过的版本。"
-        : "经 Codex++ 审核的精选拓展，安装的是审核过的那一版；作者之后的改动要再审核才会更新。";
-      const version = `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${String(prepared.sha || "").slice(0, 7)}`;
-      const lines = codexPlusPackagePermissionLines(prepared.permissions);
-      const conflict = prepared.conflict
-        ? prepared.conflict.source === "github"
-          ? `本机已有来自 ${prepared.conflict.repo || ""} 的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
-          : `本机已有手动或对话生成的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
-        : "";
-      const message = [
-        trust,
-        version,
-        "",
-        "它会获得这些能力：",
-        ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
-        ...(conflict ? ["", conflict] : []),
-      ].join("\n");
-      const verb = prepared.conflict ? "替换并安装" : "安装";
-      const answer = await codexPlusAsk({
-        title: `安装 ${prepared.name || name}`,
-        message,
-        options: [{ value: "install", label: `${verb}（暂不启用）` }, { value: "enable", label: `${verb}并启用` }],
-      });
+      const answer = await codexPlusConfirmPreparedInstall(prepared, name);
       if (!answer) {
         void postJson("/script-market/package/discard", { token: prepared.token });
         return;
@@ -7921,8 +8089,9 @@
         meta: `${item.author || item.repo?.split("/")[0] || "未知作者"} · ${item.tag || `v${item.version}`}`,
         item,
       }));
-    const scripts = (codexPlusScriptMarket.scripts || [])
-      .filter((item) => !localByMarketId.has(item.id))
+    const sortScripts = (items) => typeof codexPlusSortMarketScripts === "function" ? codexPlusSortMarketScripts(items) : items;
+    const scripts = sortScripts((codexPlusScriptMarket.scripts || [])
+      .filter((item) => !localByMarketId.has(item.id)))
       .map((item) => ({
         kind: "market",
         key: item.id,
@@ -7932,7 +8101,21 @@
       }));
     const market = [...packages, ...scripts];
     const available = (codexPlusScriptMarket.scripts || []).filter((item) => localByMarketId.has(item.id));
-    return { installed, market, available, localByMarketId };
+    // 精选里「已安装」一节：装了的拓展包（含本机源码，有更新的排前面）和市场脚本，点开看本地详情。
+    const localByPackageId = new Map(
+      local.filter((script) => script.source === "user" && script.package?.id).map((script) => [script.package.id, script]),
+    );
+    const curatedEntry = (item, script) => script
+      ? { kind: "installed", key: script.key, name: item.name || item.id, enabled: !!script.enabled, script, item }
+      : { kind: "market", key: item.id, name: item.name || item.id, item };
+    const curated = [
+      ...(codexPlusScriptMarket.packages || [])
+        .filter((item) => item.installed || item.localSource)
+        .sort((a, b) => Number(!!b.updateAvailable) - Number(!!a.updateAvailable))
+        .map((item) => curatedEntry(item, localByPackageId.get(item.id))),
+      ...sortScripts(available).map((item) => curatedEntry(item, localByMarketId.get(item.id))),
+    ];
+    return { installed, market, available, curated, localByMarketId };
   }
 
   /**
@@ -7942,7 +8125,8 @@
    * `market_id` 回查，否则拿不到图标、简介、标签。纯本地脚本两者都没有。
    */
   function codexPlusExtensionMarketItem(entry) {
-    if (entry.kind === "market") return entry.item || null;
+    if (entry.item) return entry.item;
+    if (entry.kind === "market") return null;
     return codexPlusLocalMarketItem(entry.script);
   }
 
@@ -8138,6 +8322,7 @@
       loadUserScripts();
       // 市场清单拉过一次就缓存，切换分组不再重复请求；失败后可从界面手动刷新。
       void loadScriptMarket();
+      if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter);
     }
     refreshCodexPlusPageNav(normalized);
   }
@@ -9103,6 +9288,7 @@
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (typeof handleCodexPlusExtensionSourcesInput === "function" && handleCodexPlusExtensionSourcesInput(target)) return;
       const searchInput = target?.closest("[data-codex-extensions-search]");
       if (searchInput) {
         codexPlusExtensionsQuery = searchInput.value;
@@ -9116,6 +9302,7 @@
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
+      if (typeof handleCodexPlusExtensionSourcesChange === "function" && handleCodexPlusExtensionSourcesChange(target)) return;
       if (typeof handleCodexPlusServiceSettingsChange === "function" && handleCodexPlusServiceSettingsChange(target)) return;
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
@@ -9141,11 +9328,14 @@
       if (handleCodexPlusExtensionMenuClick(target)) return;
       // 拓展详情的页签、设置表单开关、README 页内锚点。
       if (typeof handleCodexPlusExtensionDetailClick === "function" && handleCodexPlusExtensionDetailClick(target, event)) return;
+      // 社区 / 我发布的 / dsh 插件分栏的按钮。
+      if (typeof handleCodexPlusExtensionSourcesClick === "function" && handleCodexPlusExtensionSourcesClick(target, event)) return;
       const extensionsBrowse = target?.closest("[data-codex-extensions-browse]");
       if (extensionsBrowse) {
-        codexPlusExtensionsFilter = extensionsBrowse.dataset.codexExtensionsBrowse === "installed" ? "installed" : "market";
+        codexPlusExtensionsFilter = codexPlusExtensionsFilterValue(extensionsBrowse.dataset.codexExtensionsBrowse);
         codexPlusExtensionsSelected = null;
         refreshCodexPlusExtensionsView();
+        if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter);
         return;
       }
       // 设置页左栏：切换右边显示的分组。
@@ -9264,6 +9454,7 @@
         // 顺带丢掉 README 缓存：改过的 README 重新打开详情就能看到。
         if (typeof clearCodexPlusExtensionReadmes === "function") clearCodexPlusExtensionReadmes();
         void loadScriptMarket(true);
+        if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter, true);
         return;
       }
       const extensionsUninstall = target?.closest("[data-codex-extensions-uninstall]");
@@ -10374,6 +10565,843 @@
     };
     return blocks(text.split("\n"));
   }
+  // 拓展页的「社区 / 我发布的 / dsh 插件」分栏，以及精选 / 社区的排序（对齐管理器「拓展」页）。
+  // 数据与操作都经桥接交给管理器进程里同一套实现（core 的宿主路由，见 routes::register_host_route）：
+  //   /extension-market/community  社区拓展：列表、显示开关、prepare → 确认 → install / discard
+  //   /extension-market/published  我发布的：列表、下架、重新上架、删除仓库（gh 鉴权）
+  //   /extension-market/dsh        dsh 插件：导入、启停、按行停用 / 配置、重新分析、skill、移除、接入 Codex
+  // payload 统一是 `{ action, payload }`。状态放在这里，主区重画时从这里读，不缓存 DOM。
+
+  const codexPlusExtensionSources = {
+    /** 精选排序：null = 跟随数据（每个脚本都有更新时间时「最近更新」，否则清单原顺序）。 */
+    marketSort: null,
+    communitySort: "stars",
+    community: { listing: null, loading: false, loaded: false, error: "", notice: "", preparing: "" },
+    mine: { listing: null, loading: false, loaded: false, error: "", notice: "", busy: "" },
+    dsh: {
+      snapshot: null, loading: false, loaded: false, busy: "", notice: null,
+      open: new Set(), editing: null, draft: "", draftError: "",
+      source: "", indexUrl: "", market: null,
+    },
+  };
+
+  const codexPlusExtensionSourceRoutes = {
+    community: "/extension-market/community",
+    mine: "/extension-market/published",
+    dsh: "/extension-market/dsh",
+  };
+
+  /** 调宿主路由；后台返回 failed 时抛出它的说明。 */
+  async function codexPlusExtensionSourceCall(source, action, payload = {}) {
+    const result = await postJson(codexPlusExtensionSourceRoutes[source], { action, payload });
+    if (!result || result.status === "failed") {
+      const message = result?.message || "未知错误";
+      throw new Error(message === "Unknown bridge path" ? "这个功能需要新版 Codex++ 管理工具在运行" : message);
+    }
+    return result;
+  }
+
+  function codexPlusExtensionSourcesRefresh() {
+    if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+  }
+
+  /** 切到某个分栏时按需读取；`force` 时重新读（社区会跳过 10 分钟缓存）。 */
+  function codexPlusExtensionSourceEnsureLoaded(filter, force = false) {
+    if (filter === "community") {
+      if (force || !codexPlusExtensionSources.community.loaded) void loadCodexPlusCommunity(force);
+    } else if (filter === "mine") {
+      if (force || !codexPlusExtensionSources.mine.loaded) void loadCodexPlusPublished();
+    } else if (filter === "dsh") {
+      if (force || !codexPlusExtensionSources.dsh.loaded) void runCodexPlusDsh("snapshot", {}, "");
+    }
+  }
+
+  // ── 排序 ──────────────────────────────────────────────────────────────
+
+  /** 清单里的更新时间（ISO、`YYYY-MM-DD[ HH:mm]`、Unix 秒 / 毫秒）；读不出返回 null。与管理器 parseMarketTime 一致。 */
+  function codexPlusParseMarketTime(value) {
+    const unix = (number) => (!Number.isFinite(number) || number < 1e8 ? null : number < 1e11 ? Math.round(number * 1000) : Math.round(number));
+    if (typeof value === "number") return unix(value);
+    const text = String(value ?? "").trim();
+    if (!text) return null;
+    if (/^\d+(\.\d+)?$/.test(text) && !/^\d{4}$/.test(text)) return unix(Number(text));
+    const spaced = /^(\d{4}-\d{2}-\d{2})\s+(\d{1,2})(:\d{2}(?::\d{2}(?:\.\d+)?)?)\s*(.*)$/.exec(text);
+    const normalized = spaced
+      ? `${spaced[1]}T${spaced[2].padStart(2, "0")}${spaced[3]}${/^(utc|gmt)$/i.test(spaced[4]) ? "Z" : spaced[4]}`
+      : text;
+    const time = Date.parse(normalized);
+    return Number.isNaN(time) ? null : time;
+  }
+
+  function codexPlusMarketSortValue() {
+    if (codexPlusExtensionSources.marketSort) return codexPlusExtensionSources.marketSort;
+    const scripts = codexPlusScriptMarket.scripts || [];
+    return scripts.length && scripts.every((script) => codexPlusParseMarketTime(script.updatedAt) !== null) ? "updated" : "default";
+  }
+
+  /** 精选里单文件脚本的排序（拓展包固定在前，官方优先，由后端排好）。同值保持清单原顺序。 */
+  function codexPlusSortMarketScripts(items) {
+    const sort = codexPlusMarketSortValue();
+    if (sort === "default") return items.slice();
+    return items
+      .map((item, index) => ({ item, index, time: codexPlusParseMarketTime(item.updatedAt) }))
+      .sort((left, right) => {
+        if (sort === "updated") {
+          if (left.time !== right.time) {
+            if (left.time === null) return 1;
+            if (right.time === null) return -1;
+            return right.time - left.time;
+          }
+        } else {
+          const byName = String(left.item.name || "").localeCompare(String(right.item.name || ""), undefined, { sensitivity: "base", numeric: true });
+          if (byName) return byName;
+        }
+        return left.index - right.index;
+      })
+      .map((entry) => entry.item);
+  }
+
+  /** 分栏条右侧的排序下拉：精选（默认 / 最近更新 / 名称）、社区（星数 / 最近更新 / 名称）。 */
+  function renderCodexPlusExtensionsSortControl(filter) {
+    const options = filter === "market"
+      ? [["default", "默认顺序"], ["updated", "最近更新"], ["name", "名称"]]
+      : filter === "community"
+      ? [["stars", "星数"], ["updated", "最近更新"], ["name", "名称"]]
+      : null;
+    if (!options) return "";
+    const value = filter === "market" ? codexPlusMarketSortValue() : codexPlusExtensionSources.communitySort;
+    const label = filter === "market" ? "拓展市场排序" : "社区拓展排序";
+    return `<select class="codex-plus-extensions-sort" data-codex-extensions-sort="${filter}" aria-label="${label}" title="${label}">${options
+      .map(([id, text]) => `<option value="${id}"${id === value ? " selected" : ""}>${escapeHtml(text)}</option>`)
+      .join("")}</select>`;
+  }
+
+  // ── 公用小件 ──────────────────────────────────────────────────────────
+
+  const codexPlusExtensionSourceIcons = {
+    star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+    plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a6 6 0 0 1-12 0V8z"/></svg>',
+    chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+  };
+
+  function codexPlusExtensionSourceMatches(texts) {
+    const query = codexPlusExtensionsQuery.trim().toLowerCase();
+    return !query || texts.filter(Boolean).join(" ").toLowerCase().includes(query);
+  }
+
+  function renderCodexPlusExtensionSourceNotices(state) {
+    const notice = state.notice
+      ? typeof state.notice === "object"
+        ? `<div class="codex-plus-extensions-notice" data-tone="${state.notice.tone === "error" ? "error" : "ok"}" role="status">${escapeHtml(state.notice.text)}</div>`
+        : `<div class="codex-plus-extensions-notice" data-tone="ok" role="status">${escapeHtml(state.notice)}</div>`
+      : "";
+    const error = state.error ? `<div class="codex-plus-extensions-notice" data-tone="error" role="alert">${escapeHtml(state.error)}</div>` : "";
+    return `${error}${notice}`;
+  }
+
+  function renderCodexPlusExtensionSourceEmpty(text) {
+    return `<div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true"><div class="codex-plus-extensions-detail-empty" role="status">${escapeHtml(text)}</div></div>`;
+  }
+
+  /** 卡片：主区是指向仓库的链接（社区 / 我发布的没有本地详情页），右边操作列。 */
+  function codexPlusExtensionLinkCard({ url, icon, name, badges = "", description = "", actions = "", dimmed = false, title = "" }) {
+    const href = /^https:\/\//i.test(String(url || "")) ? url : "";
+    const inner = `
+            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(icon)}</span>
+            <span class="codex-plus-extension-card-copy">
+              <span class="codex-plus-extension-card-heading"><span class="codex-plus-extension-card-title">${escapeHtml(name)}</span>${badges}</span>
+              <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
+            </span>`;
+    const hover = title ? ` title="${escapeHtml(title)}"` : "";
+    const select = href
+      ? `<a class="codex-plus-extension-card-select" href="${escapeHtml(href)}" target="_blank" rel="noreferrer"${hover}>${inner}</a>`
+      : `<span class="codex-plus-extension-card-select"${hover}>${inner}</span>`;
+    return `
+        <article class="codex-plus-extension-card"${dimmed ? ' data-dimmed="true"' : ""}>
+          ${select}
+          <div class="codex-plus-extension-card-actions">${actions}</div>
+        </article>
+      `;
+  }
+
+  function renderCodexPlusExtensionSourcePane(filter) {
+    if (filter === "community") return renderCodexPlusCommunityPane();
+    if (filter === "mine") return renderCodexPlusPublishedPane();
+    if (filter === "dsh") return renderCodexPlusDshPane();
+    return "";
+  }
+
+  // ── 社区 ──────────────────────────────────────────────────────────────
+
+  async function loadCodexPlusCommunity(force = false) {
+    const state = codexPlusExtensionSources.community;
+    if (state.loading) return;
+    state.loading = true;
+    state.error = "";
+    codexPlusExtensionSourcesRefresh();
+    try {
+      state.listing = await codexPlusExtensionSourceCall("community", "list", { force });
+    } catch (error) {
+      state.error = String(error?.message || error);
+    } finally {
+      state.loading = false;
+      state.loaded = true;
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  async function setCodexPlusCommunityEnabled(enabled) {
+    const state = codexPlusExtensionSources.community;
+    state.error = "";
+    try {
+      state.listing = await codexPlusExtensionSourceCall("community", "setEnabled", { enabled });
+      codexPlusExtensionSourcesRefresh();
+      if (enabled) await loadCodexPlusCommunity(false);
+    } catch (error) {
+      state.error = String(error?.message || error);
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  /** 社区拓展安装：prepare（下载校验、列出权限）→ 确认框 → install；取消时清掉暂存。 */
+  async function installCodexPlusCommunityExtension(repo) {
+    const state = codexPlusExtensionSources.community;
+    if (!repo || state.preparing) return;
+    state.preparing = repo;
+    state.error = "";
+    state.notice = "";
+    codexPlusExtensionSourcesRefresh();
+    let prepared = null;
+    try {
+      prepared = await codexPlusExtensionSourceCall("community", "prepare", { repo });
+    } catch (error) {
+      state.error = `准备安装 ${repo} 失败：${error?.message || error}`;
+      state.preparing = "";
+      codexPlusExtensionSourcesRefresh();
+      return;
+    }
+    try {
+      const answer = await codexPlusConfirmPreparedInstall(prepared, repo);
+      if (!answer) {
+        void codexPlusExtensionSourceCall("community", "discard", { token: prepared.token }).catch(() => undefined);
+        return;
+      }
+      const enable = answer.value === "enable";
+      const result = await codexPlusExtensionSourceCall("community", "install", { token: prepared.token, enable, replace: !!prepared.conflict });
+      const parts = [enable ? "拓展已安装并启用。" : "拓展已安装，尚未启用，可在「本地」里启用。"];
+      if (result.hooksError) parts.push(`Codex 钩子配置未能同步：${result.hooksError}`);
+      else if (result.hooksAdded) parts.push("Codex 配置里新增了「Codex++ 拓展钩子」，请在 Codex 的 Hooks 设置里信任一次，新开对话生效。");
+      state.notice = `${prepared.name || repo} ${prepared.tag || String(prepared.sha || "").slice(0, 7)}：${parts.join("")}`;
+      await reloadUserScriptsAfterChange();
+      await loadCodexPlusCommunity(false);
+    } catch (error) {
+      state.error = `安装 ${repo} 失败：${error?.message || error}`;
+    } finally {
+      state.preparing = "";
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  /** 按风险列出的徽标（与管理器 riskBadges 一致）。 */
+  function codexPlusRiskBadges(permissions = {}) {
+    const badges = [];
+    if (permissions.backend) badges.push("后台进程");
+    if (permissions.hooks?.length) badges.push("钩子");
+    if (permissions.gatewayRequest || permissions.gatewayResponse) badges.push("网关");
+    if (permissions.tools?.length) badges.push("模型工具");
+    return badges;
+  }
+
+  function codexPlusEngineWarning(engine) {
+    return typeof engine === "number" ? `需要拓展 API v${engine}，请先更新 Codex++` : `需要 Codex++ ${engine}，当前版本不兼容`;
+  }
+
+  function codexPlusCommunityEntries() {
+    const entries = (codexPlusExtensionSources.community.listing?.entries || [])
+      .filter((entry) => codexPlusExtensionSourceMatches([entry.name, entry.id, entry.repo, entry.description, entry.author, ...(entry.keywords || [])]));
+    const sort = codexPlusExtensionSources.communitySort;
+    const sorted = entries.slice();
+    if (sort === "updated") sorted.sort((a, b) => String(b.pushedAt || "").localeCompare(String(a.pushedAt || "")));
+    else if (sort === "name") sorted.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    else sorted.sort((a, b) => (b.stars || 0) - (a.stars || 0));
+    // 需要更新 Codex++ 的排到最后。
+    return sorted.sort((a, b) => Number(!!b.compatible) - Number(!!a.compatible));
+  }
+
+  function renderCodexPlusCommunityCard(entry) {
+    const state = codexPlusExtensionSources.community;
+    const local = entry.installed?.channel === "local";
+    const facts = [
+      entry.author || entry.owner,
+      entry.version ? `v${entry.version}` : "",
+      entry.license,
+      entry.pushedAt ? `更新于 ${String(entry.pushedAt).slice(0, 10)}` : "",
+      !entry.compatible ? codexPlusEngineWarning(entry.engine) : "",
+    ].filter(Boolean).join(" · ");
+    const installedText = entry.installed
+      ? entry.installed.fromDefaultBranch ? `${entry.installed.version}（${String(entry.installed.sha || "").slice(0, 7)}）` : entry.installed.tag || entry.installed.version
+      : "";
+    const badges = [
+      `<span class="codex-plus-extension-badge" data-tone="neutral" title="GitHub 星数">${codexPlusExtensionSourceIcons.star}${escapeHtml(String(entry.stars || 0))}</span>`,
+      ...codexPlusRiskBadges(entry.permissions).map((badge) => codexPlusExtensionBadge(badge, "neutral", "安装前会列出它要的全部权限")),
+      entry.warnings?.length ? codexPlusExtensionBadge("可疑", "danger", entry.warnings.join("\n")) : "",
+      !entry.compatible ? codexPlusExtensionBadge("需要更新 Codex++", "warn", facts) : "",
+      local ? codexPlusExtensionBadge(`本机源码 ${entry.installed.version || ""}`.trim(), "neutral", "你在本机编写并发布的拓展，在「本地」里管理")
+        : entry.installed ? codexPlusExtensionBadge(`已安装 ${installedText}`.trim()) : "",
+    ].join("");
+    const busy = state.preparing === entry.repo;
+    const disabled = !entry.compatible || !!state.preparing;
+    // 本机源码不给安装：从 GitHub 重装会覆盖本机源码。已安装的给「重新安装」。
+    const action = local ? "" : `<button type="button" class="codex-plus-discovery-icon-button" data-codex-community-install="${escapeHtml(entry.repo)}" aria-label="${entry.installed ? "重新安装" : "安装"} ${escapeHtml(entry.name)}" title="${busy ? "正在准备安装…" : entry.installed ? "重新安装" : "安装"}"${disabled ? " disabled" : ""}${busy ? ' data-busy="true"' : ""}>${entry.installed ? codexPlusDiscoveryIcons.refresh : codexPlusDiscoveryIcons.plus}</button>`;
+    return codexPlusExtensionLinkCard({
+      url: entry.url,
+      icon: entry.icon || entry.ownerAvatar,
+      name: entry.name || entry.repo,
+      badges,
+      description: entry.description || facts,
+      title: [entry.repo, entry.description, facts, (entry.keywords || []).map((tag) => `#${tag}`).join(" ")].filter(Boolean).join("\n"),
+      actions: action,
+      dimmed: !entry.compatible,
+    });
+  }
+
+  function renderCodexPlusCommunityPane() {
+    const state = codexPlusExtensionSources.community;
+    const listing = state.listing;
+    const enabled = listing?.enabled ?? true;
+    const banner = `
+      <div class="codex-plus-extensions-banner" data-tone="warn">
+        <div class="codex-plus-extensions-banner-text">
+          <strong>社区拓展未经 Codex++ 审核</strong>
+          <span title="这里列出 GitHub 上打了 codexpp-extension 标签的拓展包仓库。作者可以在新版本里加入任意代码，只安装你信任的作者的拓展。安装时锁定到作者发布的版本，并在安装前列出它要的权限。">只安装你信任的作者的拓展；安装前会列出它要的权限。</span>
+        </div>
+        <label class="codex-plus-extensions-banner-switch"><span>显示社区拓展</span><button type="button" class="codex-plus-toggle" data-codex-community-enabled="${String(enabled)}" data-enabled="${String(enabled)}" role="switch" aria-checked="${String(enabled)}" aria-label="显示社区拓展"><span></span></button></label>
+      </div>`;
+    const message = listing?.message ? `<div class="codex-plus-extensions-notice" data-tone="${listing.stale ? "error" : "ok"}">${escapeHtml(listing.message)}</div>` : "";
+    if (!enabled) {
+      return `${banner}${message}${renderCodexPlusExtensionSourceNotices(state)}${renderCodexPlusExtensionSourceEmpty("社区拓展已关闭，不会访问 GitHub。")}`;
+    }
+    const entries = codexPlusCommunityEntries();
+    const installed = entries.filter((entry) => entry.installed).map(renderCodexPlusCommunityCard);
+    const available = entries.filter((entry) => !entry.installed).map(renderCodexPlusCommunityCard);
+    const minutes = listing?.fetchedAt ? Math.max(0, Math.floor((Date.now() / 1000 - listing.fetchedAt) / 60)) : null;
+    const meta = minutes === null ? "" : `<div class="codex-plus-extensions-pane-meta"${listing.problems?.length ? ` title="${listing.problems.length} 个仓库暂时读不到，下次刷新再试"` : ""}>列表更新于 ${minutes} 分钟前</div>`;
+    const empty = state.loading || !state.loaded ? "正在读取社区拓展…"
+      : listing?.entries?.length ? "没有匹配的拓展。"
+      : state.error ? "社区拓展读取失败。"
+      : "还没有社区拓展。给仓库加上 codexpp-extension 标签即可出现在这里。";
+    const sections = `${installed.length ? renderCodexPlusExtensionsSection("已安装", installed) : ""}${available.length ? renderCodexPlusExtensionsSection("可安装", available) : ""}`;
+    return `${banner}${message}${renderCodexPlusExtensionSourceNotices(state)}${meta}${sections || renderCodexPlusExtensionSourceEmpty(empty)}`;
+  }
+
+  // ── 我发布的 ──────────────────────────────────────────────────────────
+
+  async function loadCodexPlusPublished() {
+    const state = codexPlusExtensionSources.mine;
+    if (state.loading) return;
+    state.loading = true;
+    state.error = "";
+    codexPlusExtensionSourcesRefresh();
+    try {
+      state.listing = await codexPlusExtensionSourceCall("mine", "mine");
+    } catch (error) {
+      state.error = String(error?.message || error);
+    } finally {
+      state.loading = false;
+      state.loaded = true;
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  async function runCodexPlusPublished(repo, action, done) {
+    const state = codexPlusExtensionSources.mine;
+    if (!repo || state.busy) return;
+    state.busy = repo;
+    state.error = "";
+    state.notice = "";
+    codexPlusExtensionSourcesRefresh();
+    try {
+      await codexPlusExtensionSourceCall("mine", action, { repo });
+      state.notice = done;
+      state.busy = "";
+      await loadCodexPlusPublished();
+      // 下架 / 删除后社区栏的缓存已在后台清掉，下次切过去重新读。
+      codexPlusExtensionSources.community.loaded = false;
+    } catch (error) {
+      state.error = String(error?.message || error);
+    } finally {
+      state.busy = "";
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  /** 删除仓库不可恢复：和管理器一样要把仓库名原样填一遍才删。 */
+  async function deleteCodexPlusPublishedRepo(repo) {
+    const answer = await codexPlusAsk({
+      title: "删除 GitHub 仓库",
+      message: `将永久删除这个 GitHub 仓库（含所有提交、release 和 star），无法恢复；本机的拓展包不会被删除。\n\n确认请把仓库名填到下面：\n${repo}`,
+      input: { placeholder: repo, default: "" },
+      options: [{ value: "delete", label: "永久删除" }],
+    });
+    if (!answer) return;
+    if (String(answer.text || "").trim() !== repo) {
+      codexPlusExtensionSources.mine.error = "填的仓库名不一致，没有删除。";
+      codexPlusExtensionSourcesRefresh();
+      return;
+    }
+    await runCodexPlusPublished(repo, "deleteRepo", `已删除仓库 ${repo}`);
+  }
+
+  function renderCodexPlusPublishedPane() {
+    const state = codexPlusExtensionSources.mine;
+    const listing = state.listing;
+    const entries = (listing?.entries || []).filter((entry) => codexPlusExtensionSourceMatches([entry.repo, entry.id, entry.description]));
+    const cards = entries.map((entry) => {
+      const pending = state.busy === entry.repo;
+      const facts = [
+        entry.repo,
+        `★ ${entry.stars || 0}`,
+        entry.version ? `本机发布 v${entry.version}` : "",
+        entry.pushedAt ? `更新于 ${String(entry.pushedAt).slice(0, 10)}` : "",
+      ].filter(Boolean).join(" · ");
+      const badges = [
+        codexPlusExtensionBadge(entry.listed ? "已上架" : "已下架", entry.listed ? "ok" : "neutral"),
+        entry.visibility && entry.visibility !== "PUBLIC" ? codexPlusExtensionBadge("私有") : "",
+        entry.archived ? codexPlusExtensionBadge("已归档") : "",
+      ].join("");
+      const disabled = state.busy ? " disabled" : "";
+      const toggle = entry.listed
+        ? `<button type="button" class="codex-plus-extensions-text-button" data-codex-published-action="unlist" data-codex-published-repo="${escapeHtml(entry.repo)}" title="下架后 ${escapeHtml(entry.repo)} 不再出现在社区拓展里，已安装的用户不受影响；仓库和 release 都保留，之后可以重新上架。"${disabled}>${pending ? "正在处理…" : "下架"}</button>`
+        : `<button type="button" class="codex-plus-extensions-text-button" data-codex-published-action="relist" data-codex-published-repo="${escapeHtml(entry.repo)}"${disabled}>${pending ? "正在处理…" : "重新上架"}</button>`;
+      const remove = `<button type="button" class="codex-plus-discovery-icon-button" data-codex-published-action="deleteRepo" data-codex-published-repo="${escapeHtml(entry.repo)}" aria-label="删除仓库 ${escapeHtml(entry.repo)}" title="删除仓库"${disabled}>${codexPlusExtensionSourceIcons.trash}</button>`;
+      return codexPlusExtensionLinkCard({
+        url: entry.url,
+        icon: codexPlusGithubAvatar(entry.repo),
+        name: entry.id || String(entry.repo || "").split("/")[1] || entry.repo,
+        badges,
+        description: entry.description || facts,
+        title: facts,
+        actions: `${toggle}${remove}`,
+        dimmed: !entry.listed,
+      });
+    });
+    const title = listing?.account ? `GitHub 账号 ${listing.account} 发布的拓展` : "我发布的拓展";
+    const hint = '<div class="codex-plus-extensions-pane-meta" title="列出当前 gh 账号名下带 codexpp-extension 标签的仓库，以及从本机发布、已下架的仓库。下架只是去掉标签，仓库保留；删除仓库不可恢复。">下架只是去掉标签，仓库保留；删除仓库不可恢复。</div>';
+    const empty = state.loading || !state.loaded ? "正在读取…"
+      : listing?.entries?.length ? "没有匹配的拓展。"
+      : state.error ? "读取失败：需要本机装好 gh 并登录。"
+      : "还没有发布过拓展。在管理工具「本地」里点拓展包的「…」→「发布到 GitHub」。";
+    const body = cards.length ? renderCodexPlusExtensionsSection(title, cards) : `<h2 class="codex-plus-discovery-section-title">${escapeHtml(title)}</h2>${renderCodexPlusExtensionSourceEmpty(empty)}`;
+    return `${renderCodexPlusExtensionSourceNotices(state)}${hint}${body}`;
+  }
+
+  // ── dsh 插件 ──────────────────────────────────────────────────────────
+
+  /** 跑一个 dsh 操作：成功后换上新的快照，后台的说明显示在提示条里。返回是否成功。 */
+  async function runCodexPlusDsh(action, payload = {}, busy = action) {
+    const state = codexPlusExtensionSources.dsh;
+    if (state.busy) return false;
+    state.busy = busy || "snapshot";
+    if (action === "snapshot") state.loading = true;
+    codexPlusExtensionSourcesRefresh();
+    try {
+      const snapshot = await codexPlusExtensionSourceCall("dsh", action, payload);
+      state.snapshot = snapshot;
+      if (snapshot.message) state.notice = { tone: "ok", text: snapshot.message };
+      return true;
+    } catch (error) {
+      state.notice = { tone: "error", text: String(error?.message || error) };
+      return false;
+    } finally {
+      state.busy = "";
+      state.loading = false;
+      state.loaded = true;
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  async function importCodexPlusDshSource(value) {
+    const source = String(value || "").trim();
+    if (!source) return;
+    const answer = await codexPlusAsk({
+      title: "导入 dsh 插件",
+      message: "导入时会在本机运行插件代码来列出它的工具，插件以你的用户权限运行、没有沙箱。只导入你信任的插件。继续吗？",
+      options: [{ value: "import", label: "导入" }],
+    });
+    if (!answer) return;
+    if (await runCodexPlusDsh("import", { source }, "import")) codexPlusExtensionSources.dsh.source = "";
+    codexPlusExtensionSourcesRefresh();
+  }
+
+  async function browseCodexPlusDshIndex() {
+    const state = codexPlusExtensionSources.dsh;
+    const url = state.indexUrl.trim();
+    if (!url || state.busy) return;
+    state.busy = "browse";
+    codexPlusExtensionSourcesRefresh();
+    try {
+      const result = await codexPlusExtensionSourceCall("dsh", "browse_index", { url });
+      state.market = Array.isArray(result.entries) ? result.entries : [];
+      if (!state.market.length) state.notice = { tone: "ok", text: "索引里没有能导入的插件。" };
+    } catch (error) {
+      state.notice = { tone: "error", text: String(error?.message || error) };
+    } finally {
+      state.busy = "";
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  async function removeCodexPlusDshPlugin(plugin) {
+    const answer = await codexPlusAsk({
+      title: "移除 dsh 插件",
+      message: plugin.managed
+        ? `移除 ${plugin.name}？下载的包会移入 Codex++ 的备份目录。`
+        : `移除 ${plugin.name}？只解除登记，不会删除你的本地目录。`,
+      options: [{ value: "remove", label: "移除" }],
+    });
+    if (answer) await runCodexPlusDsh("remove", { id: plugin.id }, `${plugin.id}:remove`);
+  }
+
+  async function saveCodexPlusDshConfig(plugin, rowId) {
+    const state = codexPlusExtensionSources.dsh;
+    let config = null;
+    if (state.draft.trim()) {
+      try {
+        config = JSON.parse(state.draft);
+      } catch (error) {
+        state.draftError = `不是有效 JSON：${error?.message || error}`;
+        codexPlusExtensionSourcesRefresh();
+        return;
+      }
+    }
+    if (config !== null && (typeof config !== "object" || Array.isArray(config))) {
+      state.draftError = "配置必须是 JSON 对象";
+      codexPlusExtensionSourcesRefresh();
+      return;
+    }
+    if (await runCodexPlusDsh("set_config", { id: plugin.id, rowId, config }, `${plugin.id}:config`)) {
+      state.editing = null;
+      codexPlusExtensionSourcesRefresh();
+    }
+  }
+
+  function codexPlusDshSourceText(source = {}) {
+    if (source.type === "local") return source.path || "";
+    if (source.type === "npm") return `npm: ${source.spec}${source.registry ? `（${source.registry}）` : ""}`;
+    if (source.type === "git") return `git: ${source.url}${source.reference ? `#${source.reference}` : ""}${source.path ? ` (${source.path})` : ""}`;
+    return "";
+  }
+
+  const codexPlusDshStatusLabel = {
+    compatible: "完全兼容", partial: "部分兼容", incompatible: "不兼容", error: "加载失败", disabled: "已停用", skills: "按 skill 导入",
+  };
+
+  function codexPlusDshMappingLabel(target) {
+    return {
+      instructions: "提示词 → instructions",
+      mirror: "会话镜像（钩子 → dsh 会话日志）",
+      commands: "斜杠命令",
+      connection: "前端请求路由",
+      "gateway:request": "每一步的请求 → 网关",
+      "gateway:step": "每一步的请求 → 网关",
+      "gateway:response": "回复流 → 网关",
+      "gateway:instructions": "提示词组装 → 网关",
+      "gateway:error": "失败重试 → 网关",
+    }[target] || `钩子 ${target}`;
+  }
+
+  function renderCodexPlusDshCompanion(companion) {
+    const parts = [];
+    if (companion.instructions) parts.push(companion.staticPrompt ? "系统提示词追加到每次请求的 instructions" : "系统提示词（含动态片段）每次请求求值后追加到 instructions");
+    if (companion.hooks?.length) parts.push(`事件转成 Codex 钩子 ${companion.hooks.join("、")}`);
+    if (companion.gatewayStep) parts.push("每一步的模型请求经网关交给插件（换模型、按步准入、改写工具结果）");
+    if (companion.gatewayResponse) parts.push("回复流经网关交给插件（llm/stream、agent/assistant-stream）");
+    if (companion.gatewayError) parts.push("agent/request-error 经网关决定失败重试");
+    if (companion.commands?.length) parts.push(`斜杠命令 ${companion.commands.map((command) => `/${command.name}`).join(" ")}`);
+    const state = !companion.installed ? "配套拓展包未生成，点「重新分析」重试。"
+      : !companion.scriptsEnabled ? "拓展总开关已关闭，配套拓展包不会运行。"
+      : !companion.enabled ? "配套拓展包已停用。" : "";
+    const notes = [
+      companion.instructions ? "提示词只对经 Codex++ 本地代理 / 网关发出的请求生效。" : "",
+      companion.hooks?.length ? "钩子需在 Codex 的 Hooks 设置里信任「Codex++ 拓展钩子」；插件在常驻进程里运行，内存状态跨事件保留。" : "",
+    ].join("");
+    return `<div class="codex-plus-dsh-companion">配套拓展「${escapeHtml(companion.id)}」：${escapeHtml(parts.join("；"))}。${escapeHtml(notes)}${state ? `<div class="codex-plus-dsh-warning">${escapeHtml(state)}</div>` : ""}</div>`;
+  }
+
+  function renderCodexPlusDshPlugin(plugin) {
+    const state = codexPlusExtensionSources.dsh;
+    const report = plugin.report || {};
+    const rows = report.rows || [];
+    const open = state.open.has(plugin.id);
+    const skillCount = report.skills?.length || 0;
+    const problems = rows.filter((row) => row.status === "incompatible" || row.status === "error").length + (report.diagnostics?.length || 0);
+    const busy = !!state.busy;
+    const id = escapeHtml(plugin.id);
+    const badges = [
+      plugin.version ? codexPlusExtensionBadge(`v${plugin.version}`) : "",
+      report.kind === "bundle" ? codexPlusExtensionBadge("组合包") : "",
+      codexPlusExtensionBadge(`${plugin.toolCount || 0} 个工具`),
+      skillCount ? codexPlusExtensionBadge(`${skillCount} 个 skill`) : "",
+      problems ? codexPlusExtensionBadge(`${problems} 项不兼容`, "warn") : "",
+    ].join("");
+    const source = codexPlusDshSourceText(plugin.source);
+    const head = `
+        <article class="codex-plus-extension-card codex-plus-dsh-plugin"${plugin.enabled ? "" : ' data-dimmed="true"'}>
+          <button type="button" class="codex-plus-extension-card-select" data-codex-dsh-expand="${id}" aria-expanded="${String(open)}" title="${escapeHtml(source)}">
+            <span class="codex-plus-extension-card-icon" data-tone="${plugin.enabled ? "ok" : "off"}" aria-hidden="true">${codexPlusExtensionSourceIcons.plug}</span>
+            <span class="codex-plus-extension-card-copy">
+              <span class="codex-plus-extension-card-heading"><span class="codex-plus-extension-card-title">${escapeHtml(report.title || plugin.name)}</span>${badges}</span>
+              <span class="codex-plus-extension-card-description">${escapeHtml(report.description || source)}</span>
+            </span>
+            <span class="codex-plus-dsh-chevron" data-open="${String(open)}" aria-hidden="true">${codexPlusExtensionSourceIcons.chevron}</span>
+          </button>
+          <div class="codex-plus-extension-card-actions">
+            <button type="button" class="codex-plus-toggle" data-codex-dsh-toggle="${id}" data-enabled="${String(!!plugin.enabled)}" role="switch" aria-checked="${String(!!plugin.enabled)}" aria-label="启用插件 ${escapeHtml(plugin.name)}" title="停用后 Codex 里不再提供这个插件的工具"${busy ? " disabled" : ""}><span></span></button>
+          </div>
+        </article>`;
+    if (!open) return head;
+    const disabled = busy ? " disabled" : "";
+    const actions = [
+      `<button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-action="reinspect" data-codex-dsh-id="${id}"${disabled}>重新分析</button>`,
+      skillCount ? `<button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-action="import_skills" data-codex-dsh-id="${id}"${disabled}>${plugin.importedSkills?.length ? "重新导入 skill" : "导入 skill"}</button>` : "",
+      plugin.mcpJson ? `<button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-copy-mcp="${id}">复制 MCP JSON</button>` : "",
+      `<button type="button" class="codex-plus-extensions-text-button" data-tone="danger" data-codex-dsh-action="remove" data-codex-dsh-id="${id}"${disabled}>移除</button>`,
+    ].join("");
+    const rowHtml = rows.map((row) => {
+      const rowId = escapeHtml(row.id);
+      const configurable = (row.kind === "plugin" && row.status !== "incompatible") || row.status === "disabled";
+      const rowDisabled = (plugin.disabledRows || []).includes(row.id);
+      const editing = state.editing?.plugin === plugin.id && state.editing?.row === row.id;
+      const editor = editing ? `
+              <div class="codex-plus-dsh-config">
+                <textarea data-codex-dsh-draft="true" rows="6" spellcheck="false" aria-label="插件配置（JSON）">${escapeHtml(state.draft)}</textarea>
+                <small>浅合并到组合包里的配置之上；留空表示清除。</small>
+                ${state.draftError ? `<div class="codex-plus-dsh-warning">${escapeHtml(state.draftError)}</div>` : ""}
+                <div class="codex-plus-dsh-config-actions">
+                  <button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-dsh-save-config="${id}" data-codex-dsh-row="${rowId}"${disabled}>保存并重新分析</button>
+                  <button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-cancel-config="true">取消</button>
+                </div>
+              </div>` : "";
+      return `
+            <div class="codex-plus-dsh-row">
+              <div class="codex-plus-dsh-row-head">
+                <span class="codex-plus-dsh-status" data-status="${escapeHtml(row.status)}">${escapeHtml(codexPlusDshStatusLabel[row.status] || row.status)}</span>
+                <strong>${rowId}</strong>
+                ${row.module && row.module !== row.id ? `<code>${escapeHtml(row.module)}</code>` : ""}
+                <span class="codex-plus-dsh-row-actions">${configurable ? `
+                  <button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-edit-config="${id}" data-codex-dsh-row="${rowId}"${disabled}>配置</button>
+                  <button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-row-toggle="${id}" data-codex-dsh-row="${rowId}" data-enabled="${String(rowDisabled)}"${disabled}>${rowDisabled ? "启用此行" : "停用此行"}</button>` : ""}
+                </span>
+              </div>
+              ${row.mappings?.length ? `<div class="codex-plus-dsh-mappings">${row.mappings.map((target) => `<span>${escapeHtml(codexPlusDshMappingLabel(target))}</span>`).join("")}</div>` : ""}
+              ${row.tools?.length ? `<ul class="codex-plus-dsh-tools">${row.tools.map((tool) => `<li><code>${escapeHtml(tool.name)}</code><span>${escapeHtml(tool.description || "")}</span></li>`).join("")}</ul>` : ""}
+              ${[...(row.reasons || []), ...(row.notes || [])].map((text) => `<div class="codex-plus-dsh-reason">${escapeHtml(text)}</div>`).join("")}
+              ${editor}
+            </div>`;
+    }).join("");
+    const skills = skillCount
+      ? `<div class="codex-plus-dsh-line">${escapeHtml(plugin.importedSkills?.length ? `已导入 Skills：${plugin.importedSkills.join("、")}` : `包含 skill：${(report.skills || []).map((skill) => skill.name).join("、")}`)}</div>`
+      : "";
+    const mcp = plugin.mcpJson ? '<div class="codex-plus-dsh-line">包里有 MCP 配置，复制后可在 MCP 设置里用 JSON 导入。</div>' : "";
+    return `${head}
+        <div class="codex-plus-dsh-detail">
+          <div class="codex-plus-dsh-source">${escapeHtml(source)}</div>
+          <div class="codex-plus-dsh-actions">${actions}</div>
+          ${(report.diagnostics || []).map((text) => `<div class="codex-plus-dsh-warning">${escapeHtml(text)}</div>`).join("")}
+          ${rowHtml}
+          ${plugin.companion ? renderCodexPlusDshCompanion(plugin.companion) : ""}
+          ${skills}${mcp}
+        </div>`;
+  }
+
+  function renderCodexPlusDshPane() {
+    const state = codexPlusExtensionSources.dsh;
+    const snapshot = state.snapshot;
+    const plugins = snapshot?.plugins || [];
+    const integration = snapshot?.integration;
+    const busy = state.busy ? " disabled" : "";
+    let banner = "";
+    if (snapshot && !snapshot.toolchain?.node) {
+      banner = '<div class="codex-plus-extensions-banner" data-tone="warn"><div class="codex-plus-extensions-banner-text"><strong>没有找到 Node 运行时</strong><span>请安装 Codex App（自带 Node）或 Node.js 后再导入。</span></div></div>';
+    } else if (integration && !integration.registered) {
+      banner = `<div class="codex-plus-extensions-banner" data-tone="warn"><div class="codex-plus-extensions-banner-text"><strong>dsh 插件 MCP 未接入 Codex</strong><span>${escapeHtml(integration.status === "conflict" ? integration.message : "工具插件需要先把 dsh 插件 MCP 接入 Codex（只写入 Codex++ 托管的一条 MCP 配置）。")}</span></div><button type="button" class="codex-plus-extensions-detail-button" data-codex-dsh-action="connect_codex"${busy || integration.status === "conflict" ? " disabled" : ""}>${state.busy === "connect_codex" ? "正在接入…" : "接入 Codex"}</button></div>`;
+    }
+    const shown = plugins.filter((plugin) => codexPlusExtensionSourceMatches([plugin.name, plugin.id, plugin.report?.title, plugin.report?.description]));
+    const toolTotal = plugins.filter((plugin) => plugin.enabled).reduce((sum, plugin) => sum + (plugin.toolCount || 0), 0);
+    const aside = integration?.registered ? ` <span class="codex-plus-extensions-pane-meta" title="改动在新开 Codex 对话后生效">已接入 Codex · ${toolTotal} 个工具</span>` : "";
+    const list = shown.length
+      ? `<div class="codex-plus-dsh-list">${shown.map(renderCodexPlusDshPlugin).join("")}</div>`
+      : renderCodexPlusExtensionSourceEmpty(state.loading || !state.loaded ? "正在读取 dsh 插件…" : plugins.length ? "没有匹配的插件。" : "还没有导入 dsh 插件。在下面填 npm 包名、git 地址或本地目录。");
+    const intro = "导入 dsh（deepseek-harness）插件：工具插件经 Codex++ 托管的 MCP 在 Codex 里调用，skill 导入 Codex Skills，MCP 配置可一键复制导入；系统提示词与工具前后、回合前后的事件经自动生成的配套拓展转成网关 instructions 与 Codex 钩子。依赖 dsh agent 循环、会话或模型服务的插件无法在 Codex 里运行，会逐项说明原因。";
+    const market = state.market?.length
+      ? `<ul class="codex-plus-dsh-tools codex-plus-dsh-market">${state.market.map((entry, index) => `<li><code>${escapeHtml(entry.title || entry.name)}${entry.version ? ` ${escapeHtml(entry.version)}` : ""}</code><span>${escapeHtml(entry.description || "")}${entry.note ? `（${escapeHtml(entry.note)}）` : ""}</span><button type="button" class="codex-plus-extensions-text-button" data-codex-dsh-import-index="${index}"${busy}>导入</button></li>`).join("")}</ul>`
+      : "";
+    const npmHint = snapshot && !snapshot.toolchain?.npm ? '<div class="codex-plus-extensions-pane-meta">未找到 npm：只能导入本地目录，或不需要额外依赖的 git 仓库。</div>' : "";
+    return `${banner}${renderCodexPlusExtensionSourceNotices(state)}
+      <h2 class="codex-plus-discovery-section-title">已导入 <span class="codex-plus-discovery-section-count">${plugins.length}</span>${aside}</h2>
+      ${list}
+      <h2 class="codex-plus-discovery-section-title" title="${escapeHtml(intro)}">导入插件</h2>
+      <div class="codex-plus-dsh-import">
+        <input type="text" data-codex-dsh-source="true" value="${escapeHtml(state.source)}" spellcheck="false" aria-label="插件来源" placeholder="npm 包名（如 @scope/dsh-tool-x，可加 #registry:地址）、git 地址（可加 #分支&path:子目录）或本地目录绝对路径"${busy} />
+        <button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-dsh-import="true"${busy}>${state.busy === "import" ? "正在导入…" : "导入"}</button>
+      </div>
+      ${npmHint}
+      <details class="codex-plus-dsh-index"${state.market?.length ? " open" : ""}>
+        <summary>从插件市场索引导入</summary>
+        <div class="codex-plus-dsh-import">
+          <input type="text" data-codex-dsh-index-url="true" value="${escapeHtml(state.indexUrl)}" spellcheck="false" aria-label="插件市场索引地址" placeholder="dsh 插件市场索引地址（格式 1 的 JSON），列出后可逐个导入"${busy} />
+          <button type="button" class="codex-plus-extensions-detail-button" data-codex-dsh-browse="true"${busy}>${state.busy === "browse" ? "正在读取…" : "浏览索引"}</button>
+        </div>
+        ${market}
+      </details>`;
+  }
+
+  // ── 事件 ──────────────────────────────────────────────────────────────
+
+  function codexPlusDshPluginById(id) {
+    return (codexPlusExtensionSources.dsh.snapshot?.plugins || []).find((plugin) => plugin.id === id) || null;
+  }
+
+  /** 拓展页的点击：命中这些分栏的按钮就处理并返回 true。 */
+  function handleCodexPlusExtensionSourcesClick(target, event) {
+    if (!target?.closest) return false;
+    const dsh = codexPlusExtensionSources.dsh;
+    const communityInstall = target.closest("[data-codex-community-install]");
+    if (communityInstall) {
+      if (!communityInstall.disabled) void installCodexPlusCommunityExtension(communityInstall.getAttribute("data-codex-community-install"));
+      return true;
+    }
+    const communitySwitch = target.closest("[data-codex-community-enabled]");
+    if (communitySwitch) {
+      void setCodexPlusCommunityEnabled(communitySwitch.getAttribute("data-codex-community-enabled") !== "true");
+      return true;
+    }
+    const published = target.closest("[data-codex-published-action]");
+    if (published) {
+      if (published.disabled) return true;
+      const repo = published.getAttribute("data-codex-published-repo") || "";
+      const action = published.getAttribute("data-codex-published-action");
+      if (action === "deleteRepo") void deleteCodexPlusPublishedRepo(repo);
+      else if (action === "unlist") void runCodexPlusPublished(repo, "unlist", `已下架 ${repo}`);
+      else if (action === "relist") void runCodexPlusPublished(repo, "relist", `已重新上架 ${repo}，社区列表刷新后可见`);
+      return true;
+    }
+    const expand = target.closest("[data-codex-dsh-expand]");
+    if (expand) {
+      const id = expand.getAttribute("data-codex-dsh-expand");
+      if (dsh.open.has(id)) dsh.open.delete(id);
+      else dsh.open.add(id);
+      codexPlusExtensionSourcesRefresh();
+      return true;
+    }
+    const toggle = target.closest("[data-codex-dsh-toggle]");
+    if (toggle) {
+      const id = toggle.getAttribute("data-codex-dsh-toggle");
+      if (!toggle.disabled) void runCodexPlusDsh("set_enabled", { id, enabled: toggle.getAttribute("data-enabled") !== "true" }, `${id}:toggle`);
+      return true;
+    }
+    const action = target.closest("[data-codex-dsh-action]");
+    if (action) {
+      if (action.disabled) return true;
+      const name = action.getAttribute("data-codex-dsh-action");
+      const id = action.getAttribute("data-codex-dsh-id") || "";
+      if (name === "remove") {
+        const plugin = codexPlusDshPluginById(id);
+        if (plugin) void removeCodexPlusDshPlugin(plugin);
+      } else if (name === "connect_codex") {
+        void runCodexPlusDsh("connect_codex", {}, "connect_codex");
+      } else if (name === "reinspect" || name === "import_skills") {
+        void runCodexPlusDsh(name, { id }, `${id}:${name}`);
+      }
+      return true;
+    }
+    const copy = target.closest("[data-codex-dsh-copy-mcp]");
+    if (copy) {
+      const plugin = codexPlusDshPluginById(copy.getAttribute("data-codex-dsh-copy-mcp"));
+      if (plugin?.mcpJson) {
+        Promise.resolve(navigator.clipboard?.writeText(plugin.mcpJson))
+          .then(() => showToast("MCP JSON 已复制", null), () => showToast("复制失败", { type: "error" }));
+      }
+      return true;
+    }
+    const rowToggle = target.closest("[data-codex-dsh-row-toggle]");
+    if (rowToggle) {
+      const id = rowToggle.getAttribute("data-codex-dsh-row-toggle");
+      const rowId = rowToggle.getAttribute("data-codex-dsh-row");
+      if (!rowToggle.disabled) void runCodexPlusDsh("set_row_enabled", { id, rowId, enabled: rowToggle.getAttribute("data-enabled") === "true" }, `${id}:row:${rowId}`);
+      return true;
+    }
+    const edit = target.closest("[data-codex-dsh-edit-config]");
+    if (edit) {
+      const plugin = codexPlusDshPluginById(edit.getAttribute("data-codex-dsh-edit-config"));
+      const rowId = edit.getAttribute("data-codex-dsh-row");
+      if (plugin) {
+        const current = plugin.configs?.[rowId];
+        dsh.editing = { plugin: plugin.id, row: rowId };
+        dsh.draft = current === undefined ? "{\n  \n}" : JSON.stringify(current, null, 2);
+        dsh.draftError = "";
+        codexPlusExtensionSourcesRefresh();
+      }
+      return true;
+    }
+    if (target.closest("[data-codex-dsh-cancel-config]")) {
+      dsh.editing = null;
+      codexPlusExtensionSourcesRefresh();
+      return true;
+    }
+    const save = target.closest("[data-codex-dsh-save-config]");
+    if (save) {
+      const plugin = codexPlusDshPluginById(save.getAttribute("data-codex-dsh-save-config"));
+      if (plugin && !save.disabled) void saveCodexPlusDshConfig(plugin, save.getAttribute("data-codex-dsh-row"));
+      return true;
+    }
+    if (target.closest("[data-codex-dsh-import]")) {
+      void importCodexPlusDshSource(dsh.source);
+      return true;
+    }
+    if (target.closest("[data-codex-dsh-browse]")) {
+      void browseCodexPlusDshIndex();
+      return true;
+    }
+    const indexImport = target.closest("[data-codex-dsh-import-index]");
+    if (indexImport) {
+      const entry = dsh.market?.[Number(indexImport.getAttribute("data-codex-dsh-import-index"))];
+      if (entry?.source && !indexImport.disabled) void importCodexPlusDshSource(entry.source);
+      return true;
+    }
+    return false;
+  }
+
+  /** 输入框：只记进状态，不重画（重画会丢光标）。 */
+  function handleCodexPlusExtensionSourcesInput(target) {
+    if (!target?.closest) return false;
+    const dsh = codexPlusExtensionSources.dsh;
+    if (target.closest("[data-codex-dsh-source]")) {
+      dsh.source = target.value;
+      return true;
+    }
+    if (target.closest("[data-codex-dsh-index-url]")) {
+      dsh.indexUrl = target.value;
+      return true;
+    }
+    if (target.closest("[data-codex-dsh-draft]")) {
+      dsh.draft = target.value;
+      return true;
+    }
+    return false;
+  }
+
+  /** 排序下拉。 */
+  function handleCodexPlusExtensionSourcesChange(target) {
+    const select = target?.closest?.("[data-codex-extensions-sort]");
+    if (!select) return false;
+    if (select.getAttribute("data-codex-extensions-sort") === "market") codexPlusExtensionSources.marketSort = select.value;
+    else codexPlusExtensionSources.communitySort = select.value;
+    codexPlusExtensionSourcesRefresh();
+    return true;
+  }
+  // ── 拓展页分栏到此为止 ──
   // 生成文件，勿手改：node scripts/assemble-provider-editing.mjs
   // 来源：apps/codex-plus-manager/src/relay-profile-editing.ts（与管理器共用的供应商编辑纯函数）
 var codexPlusProviderEditing = (() => {

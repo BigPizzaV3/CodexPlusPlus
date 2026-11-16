@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3283
+      "lines": 3364
     },
     {
       "name": "20-menu.js",
@@ -53,12 +53,17 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2851
+      "lines": 2961
     },
     {
       "name": "41-extension-detail.js",
       "description": "拓展详情页的页签（细节 README / 设置 / 功能）、右侧栏、通用设置表单与 README 的 Markdown 渲染",
       "lines": 557
+    },
+    {
+      "name": "41-extension-sources.js",
+      "description": "拓展页的「社区 / 我发布的 / dsh 插件」分栏与精选 / 社区排序，经宿主路由交给管理器",
+      "lines": 837
     },
     {
       "name": "42-provider-editing.generated.js",

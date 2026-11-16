@@ -209,6 +209,18 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Codex 拓展页的「社区 / 我发布的 / dsh 插件」分栏：实现在管理器里，经 helper 桥接分发给页面。
+/// helper 跑在本进程里，登记一次即可。
+fn register_codex_bridge_routes() {
+    use codex_plus_core::routes::{HostRouteHandler, register_host_route};
+    let community: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(extension_community_commands::bridge_request(payload)));
+    let published: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(extension_publish_commands::bridge_request(payload)));
+    let dsh: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(dsh_plugin_commands::bridge_request(payload)));
+    register_host_route("/extension-market/community", community);
+    register_host_route("/extension-market/published", published);
+    register_host_route("/extension-market/dsh", dsh);
+}
+
 pub fn run() {
     install_panic_logger();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -220,6 +232,7 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
+    register_codex_bridge_routes();
     #[cfg(target_os = "macos")]
     if let Some(root) = codex_plus_core::install::default_install_root() {
         match codex_plus_core::install::macos::migrate_legacy_manager_bundle(&root) {

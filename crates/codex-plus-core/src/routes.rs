@@ -357,6 +357,32 @@ pub async fn evaluate_extension_cdp(debug_port: u16, payload: &Value) -> anyhow:
     Ok(json!({ "status": "ok", "results": results }))
 }
 
+/// 宿主路由返回的 future。
+pub type HostRouteFuture = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send>>;
+/// 宿主（管理器进程）登记的桥接路由处理函数，入参是页面传来的整份 payload。
+pub type HostRouteHandler = Arc<dyn Fn(Value) -> HostRouteFuture + Send + Sync>;
+
+/// 宿主登记的桥接路由。实现依赖管理器里的状态（Skills、托管 MCP 事务、gh 发布），core 拿不到，
+/// 只负责分发：管理器启动时登记，桥接收到同名路径就交给它；没登记（独立 helper、测试）时按未知路径处理。
+static HOST_ROUTES: std::sync::RwLock<std::collections::BTreeMap<String, HostRouteHandler>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// 登记（或替换）一条宿主路由。
+pub fn register_host_route(path: &str, handler: HostRouteHandler) {
+    HOST_ROUTES
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_string(), handler);
+}
+
+fn host_route(path: &str) -> Option<HostRouteHandler> {
+    HOST_ROUTES
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(path)
+        .cloned()
+}
+
 pub async fn handle_bridge_request(
     ctx: BridgeContext,
     path: &str,
@@ -893,6 +919,10 @@ pub async fn handle_bridge_request(
                 })),
             }
         }
+        _ if host_route(path).is_some() => match host_route(path) {
+            Some(handler) => handler(payload.clone()).await,
+            None => Err(anyhow::anyhow!("宿主路由 {path} 已撤销")),
+        },
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.unknown_path",

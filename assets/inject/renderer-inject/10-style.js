@@ -2009,6 +2009,87 @@
       }
       .codex-plus-extensions-filter button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
       .codex-plus-extensions-filter button:hover { background: var(--codex-plus-bg-hover); }
+      /* 分栏条（精选 / 社区 / 本地 / 我发布的 / dsh 插件）与右侧排序，对齐管理器「拓展」页。 */
+      .codex-plus-extensions-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .codex-plus-extensions-filterbar .codex-plus-extensions-filter { flex-wrap: wrap; }
+      .codex-plus-extensions-filter-count, .codex-plus-discovery-section-count { color: var(--codex-plus-text-secondary); font-weight: 400; }
+      .codex-plus-extensions-sort {
+        margin-top: 16px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: 8px;
+        padding: 5px 8px;
+        background: transparent;
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 13px;
+        appearance: auto !important;
+      }
+      .codex-plus-extension-badge {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 3px;
+        border-radius: 4px;
+        padding: 0 5px;
+        background: var(--codex-plus-bg-hover);
+        color: var(--codex-plus-text-secondary);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 16px;
+        white-space: nowrap;
+      }
+      .codex-plus-extension-badge svg { width: 11px; height: 11px; }
+      .codex-plus-extension-badge[data-tone="ok"] { background: color-mix(in srgb, #22c55e 14%, transparent); color: #22c55e; }
+      .codex-plus-extension-badge[data-tone="warn"] { background: color-mix(in srgb, #f59e0b 16%, transparent); color: #d97706; }
+      .codex-plus-extension-badge[data-tone="danger"] { background: color-mix(in srgb, #ef4444 14%, transparent); color: #ef4444; }
+      .codex-plus-extension-card[data-dimmed="true"] { opacity: .6; }
+      a.codex-plus-extension-card-select, span.codex-plus-extension-card-select { text-decoration: none; }
+      span.codex-plus-extension-card-select { cursor: default; }
+      .codex-plus-extensions-notice { margin-top: 12px; border-radius: 8px; padding: 8px 12px; background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .codex-plus-extensions-notice[data-tone="error"] { background: color-mix(in srgb, #ef4444 12%, transparent); color: #ef4444; }
+      .codex-plus-extensions-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; border: 1px solid color-mix(in srgb, #f59e0b 40%, transparent); border-radius: 10px; padding: 10px 14px; background: color-mix(in srgb, #f59e0b 8%, transparent); }
+      .codex-plus-extensions-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 18px; }
+      .codex-plus-extensions-banner-text strong { color: var(--codex-plus-text); font-weight: 500; }
+      .codex-plus-extensions-banner-switch { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-extensions-pane-meta { margin-top: 12px; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; }
+      .codex-plus-discovery-section-title .codex-plus-extensions-pane-meta { display: inline; margin: 0 0 0 8px; font-weight: 400; }
+      .codex-plus-extensions-text-button { border: 0; border-radius: 6px; padding: 4px 8px; background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+      .codex-plus-extensions-text-button:hover:not(:disabled) { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-extensions-text-button[data-tone="danger"] { color: #ef4444; }
+      .codex-plus-extensions-text-button:disabled { cursor: default; opacity: .5; }
+      /* dsh 插件：一列，每个插件一行，点开看各行明细。 */
+      .codex-plus-dsh-list { display: flex; flex-direction: column; gap: 4px; }
+      .codex-plus-extension-card-icon[data-tone="ok"] { color: #22c55e; }
+      .codex-plus-dsh-chevron { display: inline-flex; flex: 0 0 auto; color: var(--codex-plus-text-secondary); transition: transform .15s; }
+      .codex-plus-dsh-chevron svg { width: 16px; height: 16px; }
+      .codex-plus-dsh-chevron[data-open="true"] { transform: rotate(180deg); }
+      .codex-plus-dsh-detail { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px 48px; border-left: 2px solid var(--codex-plus-border); padding: 4px 0 4px 14px; font-size: 13px; line-height: 18px; }
+      .codex-plus-dsh-source { color: var(--codex-plus-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+      .codex-plus-dsh-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
+      .codex-plus-dsh-row { display: flex; flex-direction: column; gap: 6px; border-radius: 8px; padding: 8px 10px; background: var(--codex-plus-bg-hover); }
+      .codex-plus-dsh-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .codex-plus-dsh-row-head code { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-dsh-row-actions { display: inline-flex; gap: 2px; margin-left: auto; }
+      .codex-plus-dsh-status { border-radius: 4px; padding: 0 5px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 11px; line-height: 16px; }
+      .codex-plus-dsh-status[data-status="compatible"] { color: #22c55e; }
+      .codex-plus-dsh-status[data-status="partial"] { color: #d97706; }
+      .codex-plus-dsh-status[data-status="incompatible"], .codex-plus-dsh-status[data-status="error"] { color: #ef4444; }
+      .codex-plus-dsh-mappings { display: flex; flex-wrap: wrap; gap: 4px; }
+      .codex-plus-dsh-mappings span { border-radius: 4px; padding: 0 6px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-dsh-tools { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+      .codex-plus-dsh-tools li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+      .codex-plus-dsh-tools li span { flex: 1 1 auto; min-width: 0; color: var(--codex-plus-text-secondary); overflow-wrap: anywhere; }
+      .codex-plus-dsh-reason, .codex-plus-dsh-line, .codex-plus-dsh-companion { color: var(--codex-plus-text-secondary); overflow-wrap: anywhere; }
+      .codex-plus-dsh-warning { color: #d97706; overflow-wrap: anywhere; }
+      .codex-plus-dsh-config { display: flex; flex-direction: column; gap: 6px; }
+      .codex-plus-dsh-config textarea { box-sizing: border-box; width: 100%; border: 1px solid var(--codex-plus-border); border-radius: 8px; padding: 8px; background: var(--codex-plus-bg-primary, transparent); color: var(--codex-plus-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .codex-plus-dsh-config small { color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-dsh-config-actions { display: flex; gap: 8px; }
+      .codex-plus-dsh-import { display: flex; gap: 8px; margin-top: 8px; }
+      .codex-plus-dsh-import input { flex: 1 1 auto; min-width: 0; border: 1px solid var(--codex-plus-border); border-radius: 8px; padding: 6px 10px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 13px; }
+      .codex-plus-dsh-index { margin-top: 12px; color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-dsh-index summary { cursor: pointer; }
+      .codex-plus-dsh-market { margin-top: 8px; }
       .codex-plus-discovery-section-title {
         margin: 32px 0 16px;
         color: var(--codex-plus-text);

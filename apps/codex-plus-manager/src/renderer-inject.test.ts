@@ -1131,7 +1131,8 @@ describe("renderer injection header compatibility", () => {
     // 市场走 bridge 的两个新路由。
     assert.match(renderer, /postJson\("\/script-market\/list", \{\}\)/);
     assert.match(renderer, /postJson\("\/script-market\/install", \{ id \}\)/);
-    assert.match(renderer, /data-codex-extensions-browse="installed"/);
+    // 分栏与管理器「拓展」页一致：精选 / 社区 / 本地 / 我发布的 / dsh 插件。
+    assert.match(renderer, /\["market", "精选"\],\s*\["community", "社区"\],\s*\["installed", "本地"\],\s*\["mine", "我发布的"\],\s*\["dsh", "dsh 插件"\]/);
     const start = renderer.indexOf("  function refreshCodexPlusExtensionsView()");
     const end = renderer.indexOf("  function codexPlusExtensionsSelectionDetail()", start);
     assert.ok(start >= 0 && end > start);
@@ -1436,9 +1437,21 @@ describe("native-style extension and sponsor discovery", () => {
   function escapeSource(renderer: string) {
     return segment(renderer, "  function escapeHtml(value)", "  function confirmDelete(");
   }
-  function extensionRuntime(renderer: string) {
+  function extensionRuntime(renderer: string, options: { sources?: boolean } = {}) {
     const icon = renderer.match(/^  const codexPlusDefaultExtensionIconPath = .+;$/m)?.[0];
     assert.ok(icon);
+    // 带上「社区 / 我发布的 / dsh 插件」分片时，桥接与对话框用桩：调用记进 calls，返回 responses 里的值。
+    const sources = options.sources
+      ? `const calls = [], responses = {};
+const postJson = async (path, body) => { calls.push([path, body]); const reply = responses[path + ":" + body.action]; return typeof reply === "function" ? reply(body) : reply ?? { status: "failed", message: "no stub" }; };
+// 主区重画走真实的 refreshCodexPlusExtensionsView；不在拓展页时它直接返回，这里不需要画。
+const codexPlusActiveEntry = () => "";
+let askAnswer = null; const asks = []; const codexPlusAsk = async (question) => { asks.push(question); return askAnswer; };
+const showToast = () => {}; const reloadUserScriptsAfterChange = async () => { calls.push(["reload"]); };
+const codexPlusConfirmPreparedInstall = async (prepared) => { asks.push(prepared); return askAnswer; };
+${segment(renderer, "  const codexPlusExtensionSources = {", "  // ── 事件 ──")}
+${segment(renderer, "  function codexPlusDshPluginById(", "  // ── 拓展页分栏到此为止 ──")}`
+      : `const codexPlusExtensionSources = null, calls = [], responses = {}, asks = []; let askAnswer = null;`;
     return new Function(`${icon}\n${escapeSource(renderer)}
 let codexPlusUserScripts = { scripts: [] }, codexPlusUserScriptsLoaded = false;
 let codexPlusScriptMarket = { scripts: [], packages: [], loaded: false, loading: false, message: "" };
@@ -1446,18 +1459,26 @@ let codexPlusExtensionsQuery = "", codexPlusExtensionsFilter = "market", codexPl
 let codexPlusPackageInstalling = "";
 ${segment(renderer, "  function userScriptStatusLabel(", "  async function uninstallUserScript(")}
 ${segment(renderer, "  function codexPlusExtensionsEntries()", "  const codexPlusAdsUrl =")}
+${sources}
 return {
   nav: renderCodexPlusExtensionsNav, overview: renderCodexPlusExtensionsOverview, detail: renderCodexPlusExtensionsDetail,
+  sources: codexPlusExtensionSources, calls, responses, asks,
+  answer(value) { askAnswer = value; },
+  click(target) { return handleCodexPlusExtensionSourcesClick(target); },
+  load(filter, force) { codexPlusExtensionSourceEnsureLoaded(filter, force); },
   configure(scripts, market, options = {}) {
     codexPlusUserScripts = { scripts }; codexPlusUserScriptsLoaded = options.userLoaded ?? true;
     codexPlusScriptMarket = { scripts: market, packages: options.packages || [], loaded: options.marketLoaded ?? true, loading: options.loading ?? false, message: options.message || "" };
     codexPlusPackageInstalling = options.installing || "";
+    if (codexPlusExtensionSources && options.marketSort) codexPlusExtensionSources.marketSort = options.marketSort;
     codexPlusExtensionsQuery = options.query || ""; codexPlusExtensionsFilter = options.filter || "market";
     codexPlusExtensionsSelected = options.selected || null;
   }
 };`)() as {
       nav: () => string; overview: () => string; detail: () => string;
       configure: (scripts: Record<string, unknown>[], market: Record<string, unknown>[], options?: Record<string, unknown>) => void;
+      sources: Record<string, any>; calls: unknown[][]; responses: Record<string, unknown>; asks: any[];
+      answer: (value: unknown) => void; click: (target: unknown) => boolean; load: (filter: string, force?: boolean) => void;
     };
   }
 
@@ -1563,17 +1584,28 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     assert.ok(overview.includes("Available &lt;script&gt;"));
     assert.ok(overview.includes("Catalog &lt;docs&gt; &amp; &quot;more&quot;"));
     assert.ok(overview.includes('src="https://example.test/logo.png?x=1&amp;y=2"'));
-    assert.doesNotMatch(overview, /<script>|data-codex-market-install="owned"|Owned market|Builtin/);
+    assert.doesNotMatch(overview, /<script>|data-codex-market-install="owned"|Builtin/);
+    // 精选和管理器一样分「已安装」「可安装」两节：装过的市场脚本列在已安装里，点开看本地详情。
+    const [installedPart, availablePart] = overview.split("可安装");
+    assert.match(installedPart, /已安装 <span class="codex-plus-discovery-section-count">1<\/span>/);
+    assert.ok(installedPart.includes("Owned market"));
+    assert.ok(installedPart.includes('data-codex-extensions-select="installed:user&quot;&amp;"'));
+    assert.ok(installedPart.includes("已安装"));
+    assert.doesNotMatch(availablePart, /Owned market/);
     const cards = Array.from(overview.matchAll(/<article class="codex-plus-extension-card">([\s\S]*?)<\/article>/g));
-    assert.equal(cards.length, 1);
-    assert.match(cards[0][1], /<\/button>\s*<div class="codex-plus-extension-card-actions"><button/);
-    assert.equal(Array.from(cards[0][1].matchAll(/<button\b/g)).length, 2);
-    assert.doesNotMatch(cards[0][1], /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
+    assert.equal(cards.length, 2);
+    for (const [, card] of cards) {
+      assert.match(card, /<\/button>\s*<div class="codex-plus-extension-card-actions"><button/);
+      assert.equal(Array.from(card.matchAll(/<button\b/g)).length, 2);
+      assert.doesNotMatch(card, /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
+    }
     assert.equal(runtime.detail(), overview, "opening extensions initially displays the browse results");
 
     runtime.configure(scripts, market, { filter: "installed" });
     const installed = runtime.overview();
     assert.ok(installed.includes("Owned market"), "installed market scripts use their catalog display name");
+    // 本地分「已启用」「未启用」两节。
+    assert.ok(installed.indexOf("已启用") < installed.indexOf("Owned market") && installed.indexOf("Owned market") < installed.indexOf("未启用"));
     assert.ok(installed.includes('data-codex-user-script-key="user&quot;&amp;"'));
     assert.ok(installed.includes('role="switch" aria-checked="true"'));
     assert.ok(installed.includes('role="switch" aria-checked="false"'));
@@ -1597,7 +1629,7 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
     const packages = [
       { kind: "package", id: "request-toasts", name: "请求滚动提示", description: "toasts", repo: "BigPizzaV3/codexpp-request-toasts", official: true, version: "0.2.0", tag: "v0.2.0", sha: "a".repeat(40), installed: false, localSource: false, tags: [] },
-      { kind: "package", id: "rice-maid-pet", name: "大肥鱼吃米饭桌宠", description: "pet", repo: "BigPizzaV3/codexpp-rice-maid-pet", official: true, version: "1.0.2", sha: "b".repeat(40), installed: true, localSource: true, updateAvailable: false, tags: [] },
+      { kind: "package", id: "rice-maid-pet", name: "大肥鱼吃米饭桌宠", description: "pet", repo: "BigPizzaV3/codexpp-rice-maid-pet", official: true, version: "1.0.2", sha: "b".repeat(40), installed: true, localSource: true, installedVersion: "1.0.2", updateAvailable: false, tags: [] },
       { kind: "package", id: "ice-tea", name: "冰红茶语音按钮", description: "tea", repo: "BigPizzaV3/codexpp-ice-tea", official: false, version: "0.1.0", sha: "c".repeat(40), installed: false, tags: [] },
     ];
     const market = [
@@ -1608,16 +1640,23 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     runtime.configure(scripts, market, { packages });
     const overview = runtime.overview();
     const names = Array.from(overview.matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
-    // 拓展包排在单文件脚本前面；本机已装（含本机源码）的不再列进市场。
-    assert.deepEqual(names, ["请求滚动提示", "冰红茶语音按钮", "Codex Relay Balance", "Codex Model Matrix"]);
+    // 「已安装」一节先列本机已装的（含本机源码）；「可安装」里拓展包排在单文件脚本前面。
+    assert.deepEqual(names, ["大肥鱼吃米饭桌宠", "请求滚动提示", "冰红茶语音按钮", "Codex Relay Balance", "Codex Model Matrix"]);
+    assert.ok(overview.includes("本机源码 1.0.2"));
     assert.ok(overview.includes('data-codex-package-install="request-toasts"'));
     assert.doesNotMatch(overview, /data-codex-market-install="request-toasts"|data-codex-package-install="relay"/);
-    assert.equal(overview.match(/codex-plus-extension-official/g)?.length, 1, "only official packages carry the badge");
+    assert.equal(overview.match(/codex-plus-extension-official/g)?.length, 2, "only official packages carry the badge");
     // 头像与管理器同一套取法：拓展包用仓库作者，脚本用主页仓库作者，主页是市场仓库本身时不用头像。
     assert.ok(overview.includes('src="https://github.com/BigPizzaV3.png?size=64"'));
     assert.ok(overview.includes('src="https://github.com/Xiazhixuan119748.png?size=64"'));
     const relayCard = overview.split("<article").find((card) => card.includes("Codex Relay Balance")) || "";
     assert.doesNotMatch(relayCard, /<img/);
+    // 精选排序：选「名称」后脚本按名称排，拓展包仍在前。
+    const sortRuntime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    sortRuntime.configure(scripts, market, { packages, marketSort: "name" });
+    const sorted = Array.from(sortRuntime.overview().matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    assert.deepEqual(sorted.slice(-2), ["Codex Model Matrix", "Codex Relay Balance"]);
+    assert.match(sortRuntime.overview(), /<select class="codex-plus-extensions-sort" data-codex-extensions-sort="market"[^>]*><option value="default">默认顺序<\/option><option value="updated">最近更新<\/option><option value="name" selected>/);
 
     runtime.configure(scripts, market, { packages, selected: { kind: "market", key: "request-toasts" } });
     const detail = runtime.detail();
@@ -1633,6 +1672,182 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     runtime.configure(scripts, market, { packages: updatable, selected: { kind: "installed", key: "user:rice-maid-pet" } });
     assert.match(runtime.detail(), /data-codex-package-install="rice-maid-pet"[^>]*>更新/);
     assert.match(runtime.detail(), /有新版本 v1\.1\.0 可更新/);
+  });
+
+  // 假的点击目标：closest("[data-x]") 命中 attrs 里有的属性就返回自己。
+  function fakeTarget(attrs: Record<string, string>, disabled = false) {
+    const node = {
+      disabled,
+      getAttribute: (name: string) => attrs[name] ?? null,
+      closest: (selector: string) => (attrs[selector.replace(/^\[|\]$/g, "")] !== undefined ? node : null),
+    };
+    return node;
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("renders the 社区 pane like the manager and installs through prepare → confirm → install", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    const permissions = { backend: "server.js", hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: [], renderer: [] };
+    const entry = (repo: string, extra: Record<string, unknown> = {}) => ({ repo, url: `https://github.com/${repo}`, owner: repo.split("/")[0], ownerAvatar: `https://github.com/${repo.split("/")[0]}.png`, name: repo.split("/")[1], id: repo.split("/")[1], description: `${repo} <desc>`, stars: 1, pushedAt: "2026-11-01", compatible: true, engine: 1, keywords: [], permissions, installed: null, ...extra });
+    let listCalls = 0;
+    runtime.responses["/extension-market/community:list"] = () => { listCalls += 1; return { enabled: true, fetchedAt: Math.floor(Date.now() / 1000) - 120, problems: [], message: "", entries: [
+      entry("alice/low", { stars: 3 }),
+      entry("bob/high", { stars: 9 }),
+      entry("eve/old", { stars: 99, compatible: false, engine: 9 }),
+      entry("mallory/sus", { stars: 5, warnings: ["名字仿冒官方"] }),
+      entry("me/mine", { installed: { channel: "local", version: "0.3.0" } }),
+      entry("carol/done", { installed: { channel: "community", version: "1.0.0", tag: "v1.0.0" } }),
+    ] }; };
+    runtime.load("community");
+    await settle();
+    runtime.configure([], [], { filter: "community" });
+    const html = runtime.overview();
+    assert.match(html, /社区拓展未经 Codex\+\+ 审核/);
+    assert.match(html, /列表更新于 2 分钟前/);
+    const names = Array.from(html.matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    // 已安装在前；可安装按星数，需要更新 Codex++ 的排最后。
+    assert.deepEqual(names, ["mine", "done", "high", "sus", "low", "old"]);
+    assert.ok(html.includes("bob/high &lt;desc&gt;"));
+    assert.match(html, /data-tone="danger" title="名字仿冒官方">可疑/);
+    assert.match(html, />需要更新 Codex\+\+</);
+    assert.match(html, />后台进程</);
+    assert.match(html, /本机源码 0\.3\.0/);
+    assert.match(html, /已安装 v1\.0\.0/);
+    assert.doesNotMatch(html, /data-codex-community-install="me\/mine"/, "local sources are managed in 本地");
+    assert.match(html, /data-codex-community-install="eve\/old"[^>]*disabled/);
+    assert.match(html, /<a class="codex-plus-extension-card-select" href="https:\/\/github.com\/bob\/high" target="_blank"/);
+    // 排序：名称。
+    runtime.sources.communitySort = "name";
+    const byName = Array.from(runtime.overview().matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    assert.deepEqual(byName.slice(2), ["high", "low", "sus", "old"]);
+
+    runtime.responses["/extension-market/community:prepare"] = { token: "t-1", repo: "bob/high", name: "high", channel: "community", permissions, conflict: null, sha: "f".repeat(40) };
+    runtime.responses["/extension-market/community:install"] = { hooksAdded: true };
+    runtime.answer({ value: "enable" });
+    assert.equal(runtime.click(fakeTarget({ "data-codex-community-install": "bob/high" })), true);
+    await settle(); await settle();
+    const actions = runtime.calls.map((call) => (call[1] as { action?: string } | undefined)?.action ?? call[0]);
+    assert.deepEqual(actions.slice(-4), ["prepare", "install", "reload", "list"]);
+    assert.deepEqual(runtime.calls.find((call) => (call[1] as { action?: string })?.action === "install")?.[1], { action: "install", payload: { token: "t-1", enable: true, replace: false } });
+    assert.match(runtime.sources.community.notice, /拓展已安装并启用。Codex 配置里新增了「Codex\+\+ 拓展钩子」/);
+    assert.equal(listCalls, 2);
+
+    runtime.answer(null);
+    runtime.click(fakeTarget({ "data-codex-community-install": "bob/high" }));
+    await settle(); await settle();
+    assert.equal((runtime.calls.at(-1)?.[1] as { action: string }).action, "discard");
+
+    // 关掉社区：只显示已关闭的说明，不再列条目。
+    runtime.responses["/extension-market/community:setEnabled"] = { enabled: false, entries: [] };
+    runtime.click(fakeTarget({ "data-codex-community-enabled": "true" }));
+    await settle();
+    assert.match(runtime.overview(), /社区拓展已关闭，不会访问 GitHub。/);
+  });
+
+  it("renders 我发布的 and only deletes a repo after its name is typed back", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    runtime.responses["/extension-market/published:mine"] = { account: "me", entries: [
+      { repo: "me/codexpp-a", url: "https://github.com/me/codexpp-a", description: "A", stars: 2, pushedAt: "2026-10-01T00:00:00Z", visibility: "PUBLIC", archived: false, listed: true, id: "a", version: "1.0.0" },
+      { repo: "me/codexpp-b", url: "https://github.com/me/codexpp-b", description: "B", stars: 0, pushedAt: "", visibility: "PRIVATE", archived: true, listed: false, id: null, version: null },
+    ] };
+    runtime.load("mine");
+    await settle();
+    runtime.configure([], [], { filter: "mine" });
+    const html = runtime.overview();
+    assert.match(html, /GitHub 账号 me 发布的拓展/);
+    assert.match(html, /data-tone="ok">已上架/);
+    assert.match(html, />已下架</);
+    assert.match(html, />私有</);
+    assert.match(html, />已归档</);
+    assert.match(html, /data-codex-published-action="unlist" data-codex-published-repo="me\/codexpp-a"/);
+    assert.match(html, /data-codex-published-action="relist" data-codex-published-repo="me\/codexpp-b"/);
+    assert.match(html, /codex-plus-extension-card-title">codexpp-b</, "falls back to the repo name without a local id");
+
+    runtime.answer({ value: "delete", text: "me/codexpp-x" });
+    runtime.click(fakeTarget({ "data-codex-published-action": "deleteRepo", "data-codex-published-repo": "me/codexpp-a" }));
+    await settle(); await settle();
+    assert.ok(!runtime.calls.some((call) => (call[1] as { action?: string })?.action === "deleteRepo"));
+    assert.match(runtime.sources.mine.error, /仓库名不一致/);
+
+    runtime.responses["/extension-market/published:deleteRepo"] = { ok: true };
+    runtime.answer({ value: "delete", text: " me/codexpp-a " });
+    runtime.click(fakeTarget({ "data-codex-published-action": "deleteRepo", "data-codex-published-repo": "me/codexpp-a" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.find((call) => (call[1] as { action?: string })?.action === "deleteRepo")?.[1], { action: "deleteRepo", payload: { repo: "me/codexpp-a" } });
+    assert.equal(runtime.sources.mine.notice, "已删除仓库 me/codexpp-a");
+  });
+
+  it("renders dsh 插件 with expandable rows, JSON config and import confirmation", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    const plugin = {
+      id: "word", name: "dsh-word", version: "1.2.0", source: { type: "npm", spec: "dsh-word" }, root: "/x", managed: true, enabled: true,
+      disabledRows: [], configs: { main: { lang: "zh" } }, importedSkills: [], toolCount: 2, mcpJson: "{}",
+      report: { title: "字数 <统计>", description: "count", rows: [
+        { id: "main", module: "main", status: "compatible", kind: "plugin", reasons: [], notes: [], tools: [{ name: "count_words", description: "数字数" }], mappings: ["instructions"] },
+        { id: "loop", module: "agent", status: "incompatible", kind: "plugin", reasons: ["依赖 dsh agent 循环"], notes: [], tools: [] },
+      ], skills: [{ name: "writing", description: "" }] },
+      companion: { id: "dsh-word-companion", hooks: ["PreToolUse"], instructions: true, staticPrompt: true, installed: true, enabled: true, scriptsEnabled: true },
+    };
+    const snapshot = (message = "") => ({ message, plugins: [plugin], integration: { status: "missing", registered: false, message: "" }, toolchain: { node: "22", npm: "10" }, pluginDir: "/p" });
+    runtime.responses["/extension-market/dsh:snapshot"] = snapshot();
+    runtime.load("dsh");
+    await settle();
+    runtime.configure([], [], { filter: "dsh" });
+    let html = runtime.overview();
+    assert.match(html, /dsh 插件 MCP 未接入 Codex/);
+    assert.match(html, /data-codex-dsh-action="connect_codex"/);
+    assert.match(html, /字数 &lt;统计&gt;/);
+    assert.match(html, /2 个工具/);
+    assert.match(html, /1 个 skill/);
+    assert.match(html, /1 项不兼容/);
+    assert.doesNotMatch(html, /count_words/, "rows stay collapsed until the plugin is opened");
+
+    runtime.click(fakeTarget({ "data-codex-dsh-expand": "word" }));
+    html = runtime.overview();
+    assert.match(html, /<code>count_words<\/code><span>数字数<\/span>/);
+    assert.match(html, /提示词 → instructions/);
+    assert.match(html, /依赖 dsh agent 循环/);
+    assert.match(html, /配套拓展「dsh-word-companion」/);
+    assert.match(html, /data-codex-dsh-edit-config="word" data-codex-dsh-row="main"/);
+    assert.doesNotMatch(html, /data-codex-dsh-row="loop"/, "incompatible rows cannot be configured");
+
+    runtime.click(fakeTarget({ "data-codex-dsh-edit-config": "word", "data-codex-dsh-row": "main" }));
+    assert.equal(runtime.sources.dsh.draft, JSON.stringify({ lang: "zh" }, null, 2));
+    runtime.sources.dsh.draft = "[1]";
+    runtime.click(fakeTarget({ "data-codex-dsh-save-config": "word", "data-codex-dsh-row": "main" }));
+    await settle();
+    assert.equal(runtime.sources.dsh.draftError, "配置必须是 JSON 对象");
+    runtime.responses["/extension-market/dsh:set_config"] = snapshot("配置已保存并重新分析。");
+    runtime.sources.dsh.draft = '{"lang":"en"}';
+    runtime.click(fakeTarget({ "data-codex-dsh-save-config": "word", "data-codex-dsh-row": "main" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.at(-1)?.[1], { action: "set_config", payload: { id: "word", rowId: "main", config: { lang: "en" } } });
+    assert.equal(runtime.sources.dsh.editing, null);
+    assert.deepEqual(runtime.sources.dsh.notice, { tone: "ok", text: "配置已保存并重新分析。" });
+
+    runtime.responses["/extension-market/dsh:set_enabled"] = snapshot();
+    runtime.click(fakeTarget({ "data-codex-dsh-toggle": "word", "data-enabled": "true" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.at(-1)?.[1], { action: "set_enabled", payload: { id: "word", enabled: false } });
+
+    // 导入会在本机跑插件代码：先确认；取消就不调。
+    runtime.sources.dsh.source = " dsh-new ";
+    runtime.answer(null);
+    runtime.click(fakeTarget({ "data-codex-dsh-import": "true" }));
+    await settle(); await settle();
+    assert.notEqual((runtime.calls.at(-1)?.[1] as { action: string }).action, "import");
+    runtime.responses["/extension-market/dsh:import"] = snapshot("已导入 dsh-new：1 个工具。");
+    runtime.answer({ value: "import" });
+    runtime.click(fakeTarget({ "data-codex-dsh-import": "true" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.at(-1)?.[1], { action: "import", payload: { source: "dsh-new" } });
+    assert.equal(runtime.sources.dsh.source, "");
+
+    // 老版本管理器没有这条宿主路由：说清楚要新版。
+    runtime.responses["/extension-market/dsh:reinspect"] = { status: "failed", message: "Unknown bridge path" };
+    runtime.click(fakeTarget({ "data-codex-dsh-action": "reinspect", "data-codex-dsh-id": "word" }));
+    await settle(); await settle();
+    assert.match(runtime.sources.dsh.notice.text, /需要新版 Codex\+\+ 管理工具/);
   });
 
   it("installs curated packages through prepare → confirm → install and discards on cancel", async () => {

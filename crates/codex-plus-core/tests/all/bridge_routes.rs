@@ -2285,3 +2285,24 @@ async fn retired_remote_routes_are_unavailable() {
         );
     }
 }
+
+/// 管理器登记的宿主路由（Codex 拓展页的社区 / 我发布的 / dsh 插件）：登记后按路径分发，错误转成 failed；
+/// 没登记的路径仍是未知路径。
+#[tokio::test]
+async fn host_routes_dispatch_registered_handlers_and_map_errors() {
+    use codex_plus_core::routes::{HostRouteHandler, register_host_route};
+    let ctx = test_context();
+    let unregistered = handle_bridge_request(ctx.clone(), "/extension-market/test-host-missing", json!({})).await;
+    assert_eq!(unregistered["message"], "Unknown bridge path");
+
+    let echo: HostRouteHandler = Arc::new(|payload| Box::pin(async move { Ok(json!({ "status": "ok", "echo": payload })) }));
+    register_host_route("/extension-market/test-host-echo", echo);
+    let ok = handle_bridge_request(ctx.clone(), "/extension-market/test-host-echo", json!({ "action": "list" })).await;
+    assert_eq!(ok["echo"]["action"], "list");
+
+    let failing: HostRouteHandler = Arc::new(|_| Box::pin(async { anyhow::bail!("gh 未登录") }));
+    register_host_route("/extension-market/test-host-failing", failing);
+    let failed = handle_bridge_request(ctx, "/extension-market/test-host-failing", json!({})).await;
+    assert_eq!(failed["status"], "failed");
+    assert!(failed["message"].as_str().unwrap_or_default().contains("gh 未登录"));
+}
