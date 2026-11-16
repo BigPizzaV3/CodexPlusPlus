@@ -525,7 +525,7 @@
       .codex-plus-provider-page .codex-plus-action-button { box-sizing: border-box; min-height: 28px; border: 1px solid var(--codex-plus-control-border); border-radius: var(--codex-plus-control-radius); background: var(--codex-plus-button-bg); color: var(--codex-plus-text); font: inherit; font-size: 13px; cursor: pointer; }
       .codex-plus-provider-page .codex-plus-action-button:hover:not(:disabled):not([data-primary="true"]) { background: var(--codex-plus-button-hover-bg); }
       /* 重新设计：标题行吸顶，操作按钮始终可见；横向铺满详情区，内容仍对齐 760px 居中栏。 */
-      .codex-plus-provider-detail > .codex-plus-provider-detail-header { position: sticky; top: 0; z-index: 3; max-width: none; margin: 0 -32px; padding: 14px max(32px, calc((100% - 760px) / 2)); background: var(--codex-plus-settings-page-bg); border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-detail > .codex-plus-provider-detail-header { position: sticky; top: -20px; z-index: 3; max-width: none; margin: 0 -32px; padding: 14px max(32px, calc((100% - 760px) / 2)); background: var(--codex-plus-settings-page-bg); border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
       .codex-plus-provider-card .codex-plus-action-button[data-danger="true"]:not(:disabled) { color: var(--codex-plus-danger, #dc2626); }
       .codex-plus-provider-card .codex-plus-action-button:disabled { opacity: .5; cursor: default; }
       /* 结果提示：保存、测试、获取模型的结果贴在标题行下面，不再只在底部状态栏的小字里。 */
@@ -546,7 +546,16 @@
       /* 卡片行收尾：没有控件的行不占右半边；「配置文件」折叠标题可点；网关接入提示在详情栏里做成圆角横幅。 */
       .codex-plus-provider-line-control:empty { display: none; }
       .codex-plus-provider-line-help .codex-plus-provider-link { vertical-align: baseline; }
-      details.codex-plus-provider-group > summary { cursor: pointer; list-style-position: inside; }
+      /* 吸顶标题行：top 抵掉详情区 20px 的上内边距，否则滚动时标题上方会漏出一条正文。 */
+      /* 只有按钮的行：控件区按内容收窄，不占 60%，说明文字不被挤断。 */
+      .codex-plus-provider-line[data-kind="action"] .codex-plus-provider-line-control { flex: 0 0 auto; }
+      /* 「配置文件」折叠标题：小节标题是 flex，原生三角会消失，自己画一个会转的箭头。 */
+      details.codex-plus-provider-group > summary { cursor: pointer; list-style: none; gap: 6px; user-select: none; }
+      details.codex-plus-provider-group > summary::-webkit-details-marker { display: none; }
+      details.codex-plus-provider-group > summary::before { content: ""; width: 6px; height: 6px; margin: 0 2px 2px 1px; border-right: 1.5px solid var(--codex-plus-text-secondary); border-bottom: 1.5px solid var(--codex-plus-text-secondary); transform: rotate(-45deg); transition: transform .15s ease; }
+      details.codex-plus-provider-group[open] > summary::before { transform: rotate(45deg); margin-bottom: 4px; }
+      details.codex-plus-provider-group > summary:hover { color: var(--codex-plus-text); }
+      details.codex-plus-provider-group > summary::after { content: "config.toml / auth.json"; margin-left: 4px; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; font-weight: 400; }
       details.codex-plus-provider-group:not([open]) > summary { padding-bottom: 0; }
       .codex-plus-provider-detail > .codex-plus-provider-mode-bar, .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
       .codex-plus-provider-sidebar-header { padding: 4px 8px 10px; color: var(--codex-plus-text-secondary); font-weight: 500; letter-spacing: 0; }

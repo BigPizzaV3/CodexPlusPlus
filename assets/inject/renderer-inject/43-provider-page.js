@@ -488,7 +488,8 @@
    * helpHtml 为 true 时 help 已是拼好的 HTML（里面带链接按钮），调用方负责转义。
    */
   function codexPlusProviderActionLine(label, help, control, helpHtml = false) {
-    return `<div class="codex-plus-provider-line"><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">${escapeHtml(label)}</span>${help ? `<span class="codex-plus-provider-line-help">${helpHtml ? help : escapeHtml(help)}</span>` : ""}</span><span class="codex-plus-provider-line-control">${control}</span></div>`;
+    // data-kind="action"：右边只有按钮，控件区按内容收窄，说明文字才不会被挤成两行。
+    return `<div class="codex-plus-provider-line" data-kind="action"><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">${escapeHtml(label)}</span>${help ? `<span class="codex-plus-provider-line-help">${helpHtml ? help : escapeHtml(help)}</span>` : ""}</span><span class="codex-plus-provider-line-control">${control}</span></div>`;
   }
 
   /** 上下文窗口的显示名：1000000 → 1M，272000 → 272K。 */
