@@ -198,7 +198,7 @@
     {
       "name": "92-extension-extras.js",
       "description": "拓展输入触发、快捷键、主题、向用户提问与拓展变更事件",
-      "lines": 402
+      "lines": 405
     },
     {
       "name": "92-extension-views.js",

@@ -1086,6 +1086,18 @@ describe("renderer injection header compatibility", () => {
     assert.ok(!themeBody.includes('textSecondary: "#a1a1aa"'), "主题函数里残留硬编码的次要色");
   });
 
+  it("各分片的顶层函数不重名（同一 IIFE 里后声明的会静默覆盖前面的）", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    // 10-31 拓展主题的 applyCodexPlusTheme() 覆盖了 40 分片的 applyCodexPlusTheme(overlay)，
+    // 所有页面根节点都没拿到宿主配色变量和 data-codex-plus-theme，原生下拉在深色下变成白底浅字。
+    // closeCodexPlusPage 是 92-extension-host 有意覆盖（多做拓展页清理），单独放行。
+    const intentional = new Set(["closeCodexPlusPage"]);
+    const names = [...renderer.matchAll(/^ {2}(?:async )?function\*? ?([\w$]+)\s*\(/gm)].map((match) => match[1]);
+    const duplicated = [...new Set(names.filter((name, index) => names.indexOf(name) !== index))].filter((name) => !intentional.has(name));
+    assert.deepEqual(duplicated, []);
+    assert.equal((renderer.match(/^ {2}function applyCodexPlusTheme\(/gm) || []).length, 1);
+  });
+
   it("lists user scripts in the 拓展 page left panel", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
