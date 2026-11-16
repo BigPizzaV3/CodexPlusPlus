@@ -38,6 +38,7 @@
     pointerDown: false,
     renderPending: false,
     lastWrite: null,
+    revealId: null,
     pollTimer: null,
     onFocus: null,
     onRelease: null,
@@ -309,6 +310,9 @@
     const switched = aside && aside.dataset.taskId !== String(codexPlusTaskBoardState.selectedId ?? "");
     if (detail && (!editing || switched)) renderCodexPlusTaskDetail();
     renderCodexPlusTaskStatus();
+    const reveal = codexPlusTaskBoardState.revealId;
+    codexPlusTaskBoardState.revealId = null;
+    if (reveal != null) codexPlusTaskRevealColumn(reveal);
   }
 
   // ---------- 操作 ----------
@@ -365,7 +369,22 @@
 
   function codexPlusTaskSelect(id) {
     codexPlusTaskBoardState.selectedId = id;
+    codexPlusTaskBoardState.revealId = id;
     renderCodexPlusTaskBoard();
+  }
+
+  /**
+   * 打开详情后看板变窄：选中卡片所在的列不在视野里时，横向滚过去。
+   * 由 renderCodexPlusTaskBoard 在真正重画之后调用（鼠标按下期间重画会推迟，提前算位置是错的）。
+   */
+  function codexPlusTaskRevealColumn(id) {
+    const columns = document.querySelector(".codex-plus-task-columns");
+    const column = columns?.querySelector(`[data-codex-task-open="${id}"]`)?.closest("[data-codex-task-column]");
+    if (!column) return;
+    const box = columns.getBoundingClientRect();
+    const rect = column.getBoundingClientRect();
+    const delta = rect.left < box.left ? rect.left - box.left : rect.right > box.right ? rect.right - box.right : 0;
+    if (Math.abs(delta) > 1) columns.scrollBy({ left: delta, behavior: "smooth" });
   }
 
   async function codexPlusTaskHandleClick(event) {

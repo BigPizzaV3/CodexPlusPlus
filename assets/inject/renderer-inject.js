@@ -2481,7 +2481,7 @@
       .codex-plus-task-new { padding: 0 12px; white-space: nowrap; }
       .codex-plus-task-shell .codex-plus-remote-banner { margin: 0; }
       .codex-plus-task-body { display: flex; flex: 1; gap: 10px; min-height: 0; }
-      .codex-plus-task-main { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+      .codex-plus-task-main { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; container: codex-task-main / inline-size; }
       .codex-plus-task-empty { padding: 32px 4px; color: var(--codex-plus-text-secondary); }
       .codex-plus-task-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--codex-plus-text-tertiary); }
       .codex-plus-task-dot[data-status="backlog"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--codex-plus-text-tertiary); }
@@ -2490,11 +2490,18 @@
       .codex-plus-task-dot[data-status="in_review"] { background: var(--codex-plus-warning); }
       .codex-plus-task-dot[data-status="blocked"] { background: var(--codex-plus-danger); }
       .codex-plus-task-dot[data-status="done"] { background: var(--codex-plus-success); }
-      .codex-plus-task-dot[data-status="cancelled"] { background: var(--codex-plus-border); }
+      .codex-plus-task-dot[data-status="cancelled"] { background: linear-gradient(135deg, transparent 42%, var(--codex-plus-text-tertiary) 42% 58%, transparent 58%); box-shadow: inset 0 0 0 1.5px var(--codex-plus-text-tertiary); }
       .codex-plus-task-count { color: var(--codex-plus-text-tertiary); font-size: 12px; font-variant-numeric: tabular-nums; }
       .codex-plus-task-page code { font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 11px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-task-columns { display: flex; flex: 1; gap: 8px; min-height: 0; overflow-x: auto; padding-bottom: 8px; }
-      .codex-plus-task-column { display: flex; flex: 1 0 200px; max-width: 320px; min-height: 0; flex-direction: column; border: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); border-radius: 10px; background: var(--codex-plus-bg-secondary, transparent); }
+      .codex-plus-task-columns { display: flex; flex: 1; gap: 8px; min-height: 0; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x mandatory; }
+      .codex-plus-task-column { display: flex; flex: 1 0 200px; min-width: 0; max-width: 320px; min-height: 0; flex-direction: column; border: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); border-radius: 10px; background: var(--codex-plus-bg-secondary, transparent); scroll-snap-align: start; }
+      /* 放不下全部列时（比如打开了详情）：算出能完整放下几列，列宽撑满，滚动按整列停，不露半截的列。 */
+      @container codex-task-main (max-width: 407.98px) { .codex-plus-task-column { flex: 0 0 calc((100cqw - 0px) / 1); max-width: none; } }
+      @container codex-task-main (min-width: 408px) and (max-width: 615.98px) { .codex-plus-task-column { flex: 0 0 calc((100cqw - 8px) / 2); max-width: none; } }
+      @container codex-task-main (min-width: 616px) and (max-width: 823.98px) { .codex-plus-task-column { flex: 0 0 calc((100cqw - 16px) / 3); max-width: none; } }
+      @container codex-task-main (min-width: 824px) and (max-width: 1031.98px) { .codex-plus-task-column { flex: 0 0 calc((100cqw - 24px) / 4); max-width: none; } }
+      @container codex-task-main (min-width: 1032px) and (max-width: 1239.98px) { .codex-plus-task-column { flex: 0 0 calc((100cqw - 32px) / 5); max-width: none; } }
+      @container codex-task-main (min-width: 1240px) and (max-width: 1447.98px) { .codex-plus-task-column { flex: 0 0 calc((100cqw - 40px) / 6); max-width: none; } }
       .codex-plus-task-column[data-over="true"] { border-color: var(--codex-plus-focus, #2563eb); background: var(--codex-plus-bg-hover); }
       .codex-plus-task-column > header, .codex-plus-task-list-group > header { display: flex; flex: none; align-items: center; gap: 7px; height: 34px; padding: 0 10px; }
       .codex-plus-task-column > header h3, .codex-plus-task-list-group > header h3 { font-size: 12.5px; font-weight: 600; }
@@ -15545,6 +15552,7 @@ ${key} = ${value}`]);
     pointerDown: false,
     renderPending: false,
     lastWrite: null,
+    revealId: null,
     pollTimer: null,
     onFocus: null,
     onRelease: null,
@@ -15816,6 +15824,9 @@ ${key} = ${value}`]);
     const switched = aside && aside.dataset.taskId !== String(codexPlusTaskBoardState.selectedId ?? "");
     if (detail && (!editing || switched)) renderCodexPlusTaskDetail();
     renderCodexPlusTaskStatus();
+    const reveal = codexPlusTaskBoardState.revealId;
+    codexPlusTaskBoardState.revealId = null;
+    if (reveal != null) codexPlusTaskRevealColumn(reveal);
   }
 
   // ---------- 操作 ----------
@@ -15872,7 +15883,22 @@ ${key} = ${value}`]);
 
   function codexPlusTaskSelect(id) {
     codexPlusTaskBoardState.selectedId = id;
+    codexPlusTaskBoardState.revealId = id;
     renderCodexPlusTaskBoard();
+  }
+
+  /**
+   * 打开详情后看板变窄：选中卡片所在的列不在视野里时，横向滚过去。
+   * 由 renderCodexPlusTaskBoard 在真正重画之后调用（鼠标按下期间重画会推迟，提前算位置是错的）。
+   */
+  function codexPlusTaskRevealColumn(id) {
+    const columns = document.querySelector(".codex-plus-task-columns");
+    const column = columns?.querySelector(`[data-codex-task-open="${id}"]`)?.closest("[data-codex-task-column]");
+    if (!column) return;
+    const box = columns.getBoundingClientRect();
+    const rect = column.getBoundingClientRect();
+    const delta = rect.left < box.left ? rect.left - box.left : rect.right > box.right ? rect.right - box.right : 0;
+    if (Math.abs(delta) > 1) columns.scrollBy({ left: delta, behavior: "smooth" });
   }
 
   async function codexPlusTaskHandleClick(event) {
