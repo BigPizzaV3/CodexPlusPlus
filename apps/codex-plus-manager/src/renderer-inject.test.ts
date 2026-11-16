@@ -1441,15 +1441,17 @@ describe("native-style extension and sponsor discovery", () => {
     assert.ok(icon);
     return new Function(`${icon}\n${escapeSource(renderer)}
 let codexPlusUserScripts = { scripts: [] }, codexPlusUserScriptsLoaded = false;
-let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
+let codexPlusScriptMarket = { scripts: [], packages: [], loaded: false, loading: false, message: "" };
 let codexPlusExtensionsQuery = "", codexPlusExtensionsFilter = "market", codexPlusExtensionsSelected = null;
+let codexPlusPackageInstalling = "";
 ${segment(renderer, "  function userScriptStatusLabel(", "  async function uninstallUserScript(")}
 ${segment(renderer, "  function codexPlusExtensionsEntries()", "  const codexPlusAdsUrl =")}
 return {
   nav: renderCodexPlusExtensionsNav, overview: renderCodexPlusExtensionsOverview, detail: renderCodexPlusExtensionsDetail,
   configure(scripts, market, options = {}) {
     codexPlusUserScripts = { scripts }; codexPlusUserScriptsLoaded = options.userLoaded ?? true;
-    codexPlusScriptMarket = { scripts: market, loaded: options.marketLoaded ?? true, loading: options.loading ?? false, message: options.message || "" };
+    codexPlusScriptMarket = { scripts: market, packages: options.packages || [], loaded: options.marketLoaded ?? true, loading: options.loading ?? false, message: options.message || "" };
+    codexPlusPackageInstalling = options.installing || "";
     codexPlusExtensionsQuery = options.query || ""; codexPlusExtensionsFilter = options.filter || "market";
     codexPlusExtensionsSelected = options.selected || null;
   }
@@ -1589,6 +1591,86 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     assert.ok(runtime.detail().includes('data-codex-extensions-uninstall="user&quot;&amp;"'));
     runtime.configure(scripts, market, { selected: { kind: "installed", key: "builtin.js" } });
     assert.doesNotMatch(runtime.detail(), /data-codex-extensions-uninstall/);
+  });
+
+  it("lists curated packages like the manager's 精选: official first, badge, GitHub avatars, pinned install", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
+    const packages = [
+      { kind: "package", id: "request-toasts", name: "请求滚动提示", description: "toasts", repo: "BigPizzaV3/codexpp-request-toasts", official: true, version: "0.2.0", tag: "v0.2.0", sha: "a".repeat(40), installed: false, localSource: false, tags: [] },
+      { kind: "package", id: "rice-maid-pet", name: "大肥鱼吃米饭桌宠", description: "pet", repo: "BigPizzaV3/codexpp-rice-maid-pet", official: true, version: "1.0.2", sha: "b".repeat(40), installed: true, localSource: true, updateAvailable: false, tags: [] },
+      { kind: "package", id: "ice-tea", name: "冰红茶语音按钮", description: "tea", repo: "BigPizzaV3/codexpp-ice-tea", official: false, version: "0.1.0", sha: "c".repeat(40), installed: false, tags: [] },
+    ];
+    const market = [
+      { id: "relay", name: "Codex Relay Balance", homepage: "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket", version: "1", tags: [] },
+      { id: "matrix", name: "Codex Model Matrix", homepage: "https://github.com/Xiazhixuan119748/Codex-Model-Matrix", version: "1", tags: [] },
+    ];
+    const scripts = [{ key: "user:rice-maid-pet", name: "Agent 桌宠", source: "user", enabled: true, status: "loaded", package: { id: "rice-maid-pet" } }];
+    runtime.configure(scripts, market, { packages });
+    const overview = runtime.overview();
+    const names = Array.from(overview.matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    // 拓展包排在单文件脚本前面；本机已装（含本机源码）的不再列进市场。
+    assert.deepEqual(names, ["请求滚动提示", "冰红茶语音按钮", "Codex Relay Balance", "Codex Model Matrix"]);
+    assert.ok(overview.includes('data-codex-package-install="request-toasts"'));
+    assert.doesNotMatch(overview, /data-codex-market-install="request-toasts"|data-codex-package-install="relay"/);
+    assert.equal(overview.match(/codex-plus-extension-official/g)?.length, 1, "only official packages carry the badge");
+    // 头像与管理器同一套取法：拓展包用仓库作者，脚本用主页仓库作者，主页是市场仓库本身时不用头像。
+    assert.ok(overview.includes('src="https://github.com/BigPizzaV3.png?size=64"'));
+    assert.ok(overview.includes('src="https://github.com/Xiazhixuan119748.png?size=64"'));
+    const relayCard = overview.split("<article").find((card) => card.includes("Codex Relay Balance")) || "";
+    assert.doesNotMatch(relayCard, /<img/);
+
+    runtime.configure(scripts, market, { packages, selected: { kind: "market", key: "request-toasts" } });
+    const detail = runtime.detail();
+    assert.ok(detail.includes('data-codex-package-install="request-toasts"'));
+    assert.ok(detail.includes("codex-plus-extension-official"));
+    runtime.configure(scripts, market, { packages, installing: "request-toasts", selected: { kind: "market", key: "request-toasts" } });
+    assert.match(runtime.detail(), /disabled>正在准备…/);
+    // 已装的拓展包回查清单拿到头像；本机源码不提示更新。
+    runtime.configure(scripts, market, { packages, selected: { kind: "installed", key: "user:rice-maid-pet" } });
+    assert.ok(runtime.detail().includes('src="https://github.com/BigPizzaV3.png?size=64"'));
+    assert.doesNotMatch(runtime.detail(), /可更新|data-codex-package-install/);
+    const updatable = packages.map((item) => item.id === "rice-maid-pet" ? { ...item, localSource: false, updateAvailable: true, tag: "v1.1.0" } : item);
+    runtime.configure(scripts, market, { packages: updatable, selected: { kind: "installed", key: "user:rice-maid-pet" } });
+    assert.match(runtime.detail(), /data-codex-package-install="rice-maid-pet"[^>]*>更新/);
+    assert.match(runtime.detail(), /有新版本 v1\.1\.0 可更新/);
+  });
+
+  it("installs curated packages through prepare → confirm → install and discards on cancel", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const harness = new Function("bridge", "answer", `
+const calls = [], toasts = [], asks = [];
+let codexPlusScriptMarket = { scripts: [], packages: [{ kind: "package", id: "request-toasts", name: "请求滚动提示" }], loaded: true };
+let codexPlusPackageInstalling = "", codexPlusExtensionsSelected = { kind: "market", key: "request-toasts" };
+let codexPlusUserScripts = { scripts: [{ key: "user:request-toasts" }] };
+const postJson = async (path, payload) => { calls.push([path, payload]); return bridge(path, payload); };
+const showToast = (message) => toasts.push(message);
+const codexPlusAsk = async (question) => { asks.push(question); return answer; };
+const reloadUserScriptsAfterChange = async () => calls.push(["reload"]);
+const refreshCodexPlusExtensionsView = () => {}, codexPlusActiveEntry = () => "extensions";
+${segment(renderer, "  function codexPlusScriptMarketFromPayload(", "  async function loadScriptMarket(")}
+${segment(renderer, "  /** 安装确认框里的能力清单", "  /**\n   * 市场条目与本地脚本合并后的视图。")}
+return { calls, toasts, asks, install: installPackageFromMarket, selected: () => codexPlusExtensionsSelected, busy: () => codexPlusPackageInstalling };`);
+    const prepared = { token: "request-toasts-1", repo: "BigPizzaV3/codexpp-request-toasts", id: "request-toasts", name: "请求滚动提示", version: "0.2.0", tag: "v0.2.0", sha: "a".repeat(40), channel: "official", permissions: { backend: null, hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: ["/request-log/recent"], renderer: ["main.js"] }, conflict: null };
+    const bridge = async (path: string) => path === "/script-market/package/prepare" ? prepared
+      : path === "/script-market/package/install" ? { scripts: [], packages: [], installed: { key: "user:request-toasts", hooksAdded: false } }
+      : {};
+    const ok = harness(bridge, { value: "enable" });
+    await ok.install("request-toasts");
+    assert.deepEqual(ok.calls.map((call: unknown[]) => call[0]), ["/script-market/package/prepare", "/script-market/package/install", "reload"]);
+    assert.deepEqual(ok.calls[1][1], { token: "request-toasts-1", enable: true, replace: false });
+    assert.match(ok.asks[0].message, /官方拓展[\s\S]*锁定提交 aaaaaaa[\s\S]*本地路由 \/request-log\/recent[\s\S]*在 Codex 页面里运行脚本：main\.js/);
+    assert.deepEqual(ok.selected(), { kind: "installed", key: "user:request-toasts" });
+    assert.equal(ok.busy(), "");
+
+    const cancelled = harness(bridge, null);
+    await cancelled.install("request-toasts");
+    assert.deepEqual(cancelled.calls.map((call: unknown[]) => call[0]), ["/script-market/package/prepare", "/script-market/package/discard"]);
+
+    const failed = harness(async () => ({ status: "failed", message: "下载失败" }), { value: "enable" });
+    await failed.install("request-toasts");
+    assert.equal(failed.asks.length, 0);
+    assert.match(failed.toasts[0], /准备安装 请求滚动提示 失败：下载失败/);
+    assert.equal(failed.busy(), "");
   });
 
   it("retains loading, empty and escaped search/error states in extension browse results", async () => {

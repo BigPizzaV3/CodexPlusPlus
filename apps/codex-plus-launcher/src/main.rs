@@ -1894,6 +1894,10 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::script_market::install_market_script_by_id(&self.user_scripts, id).await
     }
 
+    async fn script_market_package(&self, action: &str, payload: Value) -> anyhow::Result<Value> {
+        codex_plus_core::script_market::market_package_request(&self.user_scripts, action, &payload).await
+    }
+
     async fn open_devtools(&self) -> anyhow::Result<Value> {
         let debug_port = *self.debug_port.lock().unwrap();
         let targets = codex_plus_core::cdp::list_targets(debug_port).await?;

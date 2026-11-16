@@ -74,6 +74,9 @@ async fn bridge_routes_cover_all_current_paths() {
             "/script-market/install",
             json!({"id": "codex-relay-balance"}),
         ),
+        ("/script-market/package/prepare", json!({"id": "request-toasts"})),
+        ("/script-market/package/install", json!({"token": "t1", "enable": true})),
+        ("/script-market/package/discard", json!({"token": "t1"})),
         ("/stepwise/settings", json!({})),
         (
             "/stepwise/generate",

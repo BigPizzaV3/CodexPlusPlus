@@ -2834,6 +2834,26 @@
         white-space: nowrap;
         text-overflow: ellipsis;
       }
+      .codex-plus-extension-card-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .codex-plus-extension-card-heading .codex-plus-extension-card-title { min-width: 0; }
+      /* 「官方」徽标：与管理器精选栏的绿色小标签同义。 */
+      .codex-plus-extension-official {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        border-radius: 4px;
+        padding: 0 5px;
+        background: color-mix(in srgb, #22c55e 14%, transparent);
+        color: #22c55e;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 16px;
+        vertical-align: middle;
+      }
+      .codex-plus-extensions-detail-title .codex-plus-extension-official { margin-left: 8px; font-size: 12px; line-height: 18px; }
+      .codex-plus-discovery-icon-button[data-busy="true"] svg { animation: codex-plus-ext-install-spin 1s linear infinite; }
+      @keyframes codex-plus-ext-install-spin { to { transform: rotate(360deg); } }
+      .codex-plus-discovery-icon-button:disabled { cursor: default; opacity: .5; }
       .codex-plus-extension-card-description {
         display: block;
         overflow: hidden;
@@ -7149,7 +7169,10 @@
   // 不区分就会在无后端时把「正在读取」直接显示成「未发现」。
   let codexPlusUserScriptsLoaded = false;
   // 市场清单。为空 + 未加载 = 还在拉；加载过为空 = 市场里确实没东西。
-  let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
+  // packages：精选 / 官方拓展包（锁定到审核过的提交），和管理器「精选」栏同一份清单。
+  let codexPlusScriptMarket = { scripts: [], packages: [], loaded: false, loading: false, message: "" };
+  // 正在准备 / 安装的拓展包 id（按钮转圈、防重复点击）。
+  let codexPlusPackageInstalling = "";
   // 「拓展」页左面板的搜索关键词，纯前端过滤。
   let codexPlusExtensionsQuery = "";
   let codexPlusExtensionsFilter = "market";
@@ -7325,7 +7348,7 @@
       const marketItem = codexPlusExtensionMarketItem(entry);
       return `
         <button type="button" class="codex-plus-page-nav-item codex-plus-extensions-nav-entry" data-codex-extensions-select="installed:${escapeHtml(entry.key)}" data-active="${String(selected)}" title="${escapeHtml(entry.name)}" aria-label="${escapeHtml(entry.name)}">
-          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || entry.script?.package?.icon)}</span>
+          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(marketItem, entry.script))}</span>
           <span class="codex-plus-page-nav-item-text"><span class="codex-plus-page-nav-item-name">${escapeHtml(entry.name)}</span></span>
           <span class="codex-plus-page-nav-item-state" data-state="${entry.enabled ? "on" : "off"}" title="${entry.enabled ? "已启用" : "已禁用"}"></span>
         </button>
@@ -7353,15 +7376,17 @@
       const item = codexPlusExtensionMarketItem(entry);
       const description = item?.description || entry.script?.description || entry.meta || "";
       const select = `${entry.kind}:${escapeHtml(entry.key)}`;
+      const isPackage = item?.kind === "package";
+      const installing = isPackage && codexPlusPackageInstalling === entry.key;
       const action = entry.kind === "market"
-        ? `<button type="button" class="codex-plus-discovery-icon-button" data-codex-market-install="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="安装 ${escapeHtml(entry.name)}">${codexPlusDiscoveryIcons.plus}</button>`
+        ? `<button type="button" class="codex-plus-discovery-icon-button" ${isPackage ? "data-codex-package-install" : "data-codex-market-install"}="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="${installing ? "正在准备安装…" : `安装 ${escapeHtml(entry.name)}`}"${codexPlusPackageInstalling && isPackage ? " disabled" : ""}${installing ? ' data-busy="true"' : ""}>${codexPlusDiscoveryIcons.plus}</button>`
         : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`;
       return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
-            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon || entry.script?.package?.icon)}</span>
+            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(item, entry.script))}</span>
             <span class="codex-plus-extension-card-copy">
-              <span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>
+              <span class="codex-plus-extension-card-heading"><span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>${codexPlusOfficialBadge(item)}</span>
               <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
             </span>
           </button>
@@ -7422,10 +7447,7 @@
     const local = sel.kind === "installed"
       ? (codexPlusUserScripts.scripts || []).find((script) => script.key === sel.key) || null
       : null;
-    const marketId = sel.kind === "market" ? sel.key : (local?.market_id || "");
-    const marketItem = marketId
-      ? (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null
-      : null;
+    const marketItem = sel.kind === "market" ? codexPlusMarketItemById(sel.key) : codexPlusLocalMarketItem(local);
     if ((sel.kind === "installed" && !local) || (sel.kind === "market" && !marketItem)) return null;
     return { sel, local, marketItem };
   }
@@ -7473,14 +7495,17 @@
     const { sel, local, marketItem } = detail;
     const name = marketItem?.name || local?.name || sel.key;
     const version = marketItem?.version || local?.version || "";
-    const author = marketItem?.author || "";
+    const author = marketItem?.author || marketItem?.repo?.split("/")[0] || "";
     const description = marketItem?.description || local?.description || local?.package?.description || "";
     const tags = marketItem?.tags || [];
     const requirements = marketItem?.requirements || [];
     const limitations = marketItem?.limitations || [];
     const homepage = marketItem?.homepage || local?.homepage || "";
     const isInstalled = sel.kind === "installed";
-    const updateAvailable = isInstalled && marketItem && version && local?.version && local.version !== version;
+    // 拓展包按锁定提交比对（后端算好，本机源码不算有更新）；单文件脚本按版本号比对。
+    const updateAvailable = marketItem?.kind === "package"
+      ? isInstalled && !!marketItem.updateAvailable
+      : isInstalled && marketItem && version && local?.version && local.version !== version;
 
     // 详情沿用列表的内容宽度，管理操作保持独立。
     const sourceLabel = local ? (typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户") : "";
@@ -7496,6 +7521,10 @@
         <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}"><span></span></button>
       `);
       // 内置脚本在只读目录里，删不掉；只给用户目录的脚本提供卸载。
+      // 精选拓展包有审核过的新提交：和管理器一样直接给「更新」，走同一条确认安装流程。
+      if (updateAvailable && marketItem?.kind === "package") {
+        actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-package-install="${escapeHtml(marketItem.id)}"${codexPlusPackageInstalling ? " disabled" : ""}>${codexPlusPackageInstalling === marketItem.id ? "正在准备…" : "更新"}</button>`);
+      }
       if (local?.source === "user") {
         actions.push(`<button type="button" class="codex-plus-extensions-detail-button" data-codex-extensions-uninstall="${escapeHtml(local.key)}">卸载</button>`);
       }
@@ -7503,6 +7532,9 @@
       if (typeof codexPlusExtensionHasSettings === "function" && codexPlusExtensionHasSettings(local)) {
         actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-gear" data-codex-extensions-tab="settings" title="设置" aria-label="${escapeHtml(name)} 的设置">${codexPlusDiscoveryIcons.settings}</button>`);
       }
+    } else if (marketItem?.kind === "package") {
+      const installing = codexPlusPackageInstalling === marketItem.id;
+      actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-package-install="${escapeHtml(marketItem.id)}"${codexPlusPackageInstalling ? " disabled" : ""}>${installing ? "正在准备…" : "安装"}</button>`);
     } else if (marketItem) {
       actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-market-install="${escapeHtml(marketItem.id)}">安装</button>`);
     }
@@ -7524,12 +7556,12 @@
     return `
       <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
       <div class="codex-plus-extensions-detail-head">
-        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || local?.package?.icon)}</div>
+        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(marketItem, local))}</div>
         <div class="codex-plus-extensions-detail-heading">
-          <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}</div>
+          <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}${codexPlusOfficialBadge(marketItem)}</div>
           ${publisherLine ? `<div class="codex-plus-extensions-detail-meta">${publisherLine}</div>` : ""}
           ${description ? `<div class="codex-plus-extensions-detail-description">${escapeHtml(description)}</div>` : ""}
-          ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 v${escapeHtml(version)} 可更新</div>` : ""}
+          ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 ${escapeHtml(marketItem?.tag || `v${version}`)} 可更新</div>` : ""}
         </div>
         <div class="codex-plus-extensions-detail-actions">${actions.join("")}</div>
       </div>
@@ -7732,6 +7764,17 @@
    * 清单与「已安装」状态都由后端合并好（见 script_market::market_scripts_payload），
    * 前端只需合并本地脚本清单来显示来源与状态。
    */
+  /** 后端市场 payload（script_market::market_scripts_payload）→ 页面状态。 */
+  function codexPlusScriptMarketFromPayload(result) {
+    return {
+      scripts: result.scripts,
+      packages: Array.isArray(result.packages) ? result.packages : [],
+      loaded: true,
+      loading: false,
+      message: result.message || "",
+    };
+  }
+
   async function loadScriptMarket(force = false) {
     if (codexPlusScriptMarket.loading) return;
     if (codexPlusScriptMarket.loaded && !force) return;
@@ -7739,12 +7782,7 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
     const result = await postJson("/script-market/list", {});
     if (Array.isArray(result?.scripts)) {
-      codexPlusScriptMarket = {
-        scripts: result.scripts,
-        loaded: true,
-        loading: false,
-        message: result.message || "",
-      };
+      codexPlusScriptMarket = codexPlusScriptMarketFromPayload(result);
     } else {
       codexPlusScriptMarket = {
         ...codexPlusScriptMarket,
@@ -7760,12 +7798,7 @@
     if (!id) return;
     const result = await postJson("/script-market/install", { id });
     if (Array.isArray(result?.scripts)) {
-      codexPlusScriptMarket = {
-        scripts: result.scripts,
-        loaded: true,
-        loading: false,
-        message: result.message || "",
-      };
+      codexPlusScriptMarket = codexPlusScriptMarketFromPayload(result);
     }
     // 后端装完会把本地清单一起带回来，省一次往返。
     if (result?.user_scripts?.scripts) {
@@ -7780,6 +7813,92 @@
       if (installed) codexPlusExtensionsSelected = { kind: "installed", key: installed.key };
     }
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+  }
+
+  /** 安装确认框里的能力清单，按风险从高到低（与管理器 permissionLines 同一套文案）。 */
+  function codexPlusPackagePermissionLines(permissions = {}) {
+    const lines = [];
+    if (permissions.backend) lines.push(`常驻后台进程 ${permissions.backend}：可读写本机文件、访问网络`);
+    for (const hook of permissions.hooks || []) {
+      lines.push(hook.matcher ? `Codex 钩子 ${hook.event}（匹配 ${hook.matcher}）：可拦截或改写工具调用` : `Codex 钩子 ${hook.event}：可拦截或改写工具调用`);
+    }
+    if (permissions.gatewayRequest) lines.push(`网关请求中间件 ${permissions.gatewayRequest} 个：可读取并改写发往模型的完整请求`);
+    if (permissions.gatewayResponse) lines.push(`网关响应中间件 ${permissions.gatewayResponse} 个：可读取并改写模型回复`);
+    if (permissions.tools?.length) lines.push(`模型工具：${permissions.tools.join("、")}`);
+    for (const route of permissions.routes || []) lines.push(`本地路由 ${route}`);
+    if (permissions.renderer?.length) lines.push(`在 Codex 页面里运行脚本：${permissions.renderer.join("、")}`);
+    return lines;
+  }
+
+  /**
+   * 安装精选 / 官方拓展包：后端按清单锁定的提交下载并暂存 → 确认框列出能力 → 用户确认后放进拓展目录。
+   * 与管理器「精选」栏的安装是同一条流程（extension_discovery::CommunityStore）。
+   */
+  async function installPackageFromMarket(id) {
+    if (!id || codexPlusPackageInstalling) return;
+    const item = (codexPlusScriptMarket.packages || []).find((entry) => entry.id === id);
+    const name = item?.name || id;
+    codexPlusPackageInstalling = id;
+    if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+    try {
+      const prepared = await postJson("/script-market/package/prepare", { id });
+      if (!prepared?.token) {
+        showToast(`准备安装 ${name} 失败：${prepared?.message || "未知错误"}`, { type: "error" });
+        return;
+      }
+      const trust = prepared.channel === "official"
+        ? "Codex++ 官方拓展，安装的是审核过的版本。"
+        : "经 Codex++ 审核的精选拓展，安装的是审核过的那一版；作者之后的改动要再审核才会更新。";
+      const version = `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${String(prepared.sha || "").slice(0, 7)}`;
+      const lines = codexPlusPackagePermissionLines(prepared.permissions);
+      const conflict = prepared.conflict
+        ? prepared.conflict.source === "github"
+          ? `本机已有来自 ${prepared.conflict.repo || ""} 的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
+          : `本机已有手动或对话生成的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
+        : "";
+      const message = [
+        trust,
+        version,
+        "",
+        "它会获得这些能力：",
+        ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+        ...(conflict ? ["", conflict] : []),
+      ].join("\n");
+      const verb = prepared.conflict ? "替换并安装" : "安装";
+      const answer = await codexPlusAsk({
+        title: `安装 ${prepared.name || name}`,
+        message,
+        options: [{ value: "install", label: `${verb}（暂不启用）` }, { value: "enable", label: `${verb}并启用` }],
+      });
+      if (!answer) {
+        void postJson("/script-market/package/discard", { token: prepared.token });
+        return;
+      }
+      const result = await postJson("/script-market/package/install", {
+        token: prepared.token,
+        enable: answer.value === "enable",
+        replace: !!prepared.conflict,
+      });
+      if (!Array.isArray(result?.scripts)) {
+        showToast(`安装 ${name} 失败：${result?.message || "未知错误"}`, { type: "error" });
+        return;
+      }
+      codexPlusScriptMarket = codexPlusScriptMarketFromPayload(result);
+      const installed = result.installed || {};
+      const tips = [answer.value === "enable" ? `${name} 已安装并启用` : `${name} 已安装，尚未启用`];
+      if (installed.hooksError) tips.push(`Codex 钩子配置未能同步：${installed.hooksError}`);
+      else if (installed.hooksAdded) tips.push("Codex 配置里新增了「Codex++ 拓展钩子」，请在 Codex 的 Hooks 设置里信任一次，新开对话生效");
+      showToast(tips.join("。"), installed.hooksError ? { type: "warn" } : null);
+      // 装好后热重载，拓展立刻跑起来（与启停流程一致）；重载会顺带刷新本地清单。
+      await reloadUserScriptsAfterChange();
+      if (codexPlusExtensionsSelected?.kind === "market" && codexPlusExtensionsSelected.key === id) {
+        const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === installed.key);
+        if (local) codexPlusExtensionsSelected = { kind: "installed", key: local.key };
+      }
+    } finally {
+      codexPlusPackageInstalling = "";
+      if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+    }
   }
 
   /**
@@ -7802,7 +7921,17 @@
       enabled: !!script.enabled,
       script,
     }));
-    const market = (codexPlusScriptMarket.scripts || [])
+    // 和管理器「精选」一样：拓展包（官方在前，后端已排好）排在单文件脚本前面；已装的（含本机源码）不再列。
+    const packages = (codexPlusScriptMarket.packages || [])
+      .filter((item) => !item.installed && !item.localSource)
+      .map((item) => ({
+        kind: "market",
+        key: item.id,
+        name: item.name || item.id,
+        meta: `${item.author || item.repo?.split("/")[0] || "未知作者"} · ${item.tag || `v${item.version}`}`,
+        item,
+      }));
+    const scripts = (codexPlusScriptMarket.scripts || [])
       .filter((item) => !localByMarketId.has(item.id))
       .map((item) => ({
         kind: "market",
@@ -7811,6 +7940,7 @@
         meta: `${item.author || "未知作者"} · v${item.version}`,
         item,
       }));
+    const market = [...packages, ...scripts];
     const available = (codexPlusScriptMarket.scripts || []).filter((item) => localByMarketId.has(item.id));
     return { installed, market, available, localByMarketId };
   }
@@ -7823,9 +7953,49 @@
    */
   function codexPlusExtensionMarketItem(entry) {
     if (entry.kind === "market") return entry.item || null;
-    const marketId = entry.script?.market_id;
-    if (!marketId) return null;
-    return (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null;
+    return codexPlusLocalMarketItem(entry.script);
+  }
+
+  /** 本地脚本对应的市场条目：市场脚本靠 `market_id`，精选拓展包靠拓展包 id。 */
+  function codexPlusLocalMarketItem(script) {
+    const marketId = script?.market_id;
+    if (marketId) return (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null;
+    const packageId = script?.package?.id;
+    if (!packageId) return null;
+    return (codexPlusScriptMarket.packages || []).find((item) => item.id === packageId) || null;
+  }
+
+  /** 按 id 找市场条目（单文件脚本或拓展包）。 */
+  function codexPlusMarketItemById(id) {
+    return (codexPlusScriptMarket.scripts || []).find((item) => item.id === id)
+      || (codexPlusScriptMarket.packages || []).find((item) => item.id === id)
+      || null;
+  }
+
+  // 市场仓库本身：主页指向它的脚本不用作者头像（否则一排全是同一个头像），退回默认图标。
+  const codexPlusScriptMarketRepo = "bigpizzav3/codexplusplusscriptmarket";
+
+  /** GitHub 头像地址：`owner/repo` 或 GitHub 仓库地址（与管理器 githubAvatar 一致）。 */
+  function codexPlusGithubAvatar(repoOrUrl) {
+    const match = /^(?:https?:\/\/github\.com\/)?([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)/.exec(String(repoOrUrl || "").trim());
+    if (!match || `${match[1]}/${match[2]}`.toLowerCase() === codexPlusScriptMarketRepo) return "";
+    return `https://github.com/${match[1]}.png?size=64`;
+  }
+
+  /**
+   * 条目图标，与管理器同一套取法：清单给的图标 → 本地拓展包自带的图标 →
+   * 拓展包仓库 / 主页仓库作者的 GitHub 头像；都没有时由 extensionIconMarkup 退回默认字形。
+   */
+  function codexPlusExtensionIcon(item, local) {
+    if (item?.icon) return item.icon;
+    if (local?.package?.icon) return local.package.icon;
+    if (item?.kind === "package") return codexPlusGithubAvatar(item.repo);
+    return /^https?:\/\/github\.com\//i.test(String(item?.homepage || "")) ? codexPlusGithubAvatar(item.homepage) : "";
+  }
+
+  /** 「官方」徽标：只有清单标了官方且仓库属于官方账号的拓展包才有（后端已校验）。 */
+  function codexPlusOfficialBadge(item) {
+    return item?.official ? '<span class="codex-plus-extension-official" title="Codex++ 官方拓展">官方</span>' : "";
   }
 
   function filterCodexPlusExtensionsEntries(entries) {
@@ -7833,7 +8003,7 @@
     if (!query) return entries;
     return entries.filter((entry) => {
       const marketItem = codexPlusExtensionMarketItem(entry);
-      return [entry.name, entry.key, entry.script?.name, entry.meta, marketItem?.description, ...(marketItem?.tags || [])]
+      return [entry.name, entry.key, entry.script?.name, entry.meta, marketItem?.description, marketItem?.author, marketItem?.repo, ...(marketItem?.tags || [])]
         .filter(Boolean)
         .some((text) => String(text).toLowerCase().includes(query));
     });
@@ -9093,6 +9263,12 @@
         void installScriptFromMarket(marketInstall.getAttribute("data-codex-market-install"));
         return;
       }
+      // 精选 / 官方拓展包的「安装」：先准备再弹确认框。
+      const packageInstall = target?.closest("[data-codex-package-install]");
+      if (packageInstall) {
+        if (!packageInstall.disabled) void installPackageFromMarket(packageInstall.getAttribute("data-codex-package-install"));
+        return;
+      }
       const extensionsRefresh = target?.closest("[data-codex-market-refresh]");
       if (extensionsRefresh) {
         // 顺带丢掉 README 缓存：改过的 README 重新打开详情就能看到。
@@ -9918,10 +10094,12 @@
     const market = marketItem ? table("市场", [
       ["作者", marketItem.author || ""],
       ["最新版本", marketItem.version ? `v${marketItem.version}` : ""],
-      ["更新时间", marketItem.updated_at || ""],
+      ["更新时间", String(marketItem.updatedAt || marketItem.updated_at || "").slice(0, 10)],
+      ...(marketItem.kind === "package" ? [["锁定提交", String(marketItem.sha || "").slice(0, 7)]] : []),
     ]) : "";
     const links = [
       [marketItem?.homepage || local?.homepage, "主页"],
+      ...(marketItem?.repo ? [[`https://github.com/${marketItem.repo}`, "仓库"]] : []),
       [local?.source_url || marketItem?.script_url, "源文件"],
     ].filter(([url]) => /^https?:\/\//i.test(String(url || "")));
     const resources = links.length

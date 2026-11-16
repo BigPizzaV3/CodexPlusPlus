@@ -2080,6 +2080,26 @@
         white-space: nowrap;
         text-overflow: ellipsis;
       }
+      .codex-plus-extension-card-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .codex-plus-extension-card-heading .codex-plus-extension-card-title { min-width: 0; }
+      /* 「官方」徽标：与管理器精选栏的绿色小标签同义。 */
+      .codex-plus-extension-official {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        border-radius: 4px;
+        padding: 0 5px;
+        background: color-mix(in srgb, #22c55e 14%, transparent);
+        color: #22c55e;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 16px;
+        vertical-align: middle;
+      }
+      .codex-plus-extensions-detail-title .codex-plus-extension-official { margin-left: 8px; font-size: 12px; line-height: 18px; }
+      .codex-plus-discovery-icon-button[data-busy="true"] svg { animation: codex-plus-ext-install-spin 1s linear infinite; }
+      @keyframes codex-plus-ext-install-spin { to { transform: rotate(360deg); } }
+      .codex-plus-discovery-icon-button:disabled { cursor: default; opacity: .5; }
       .codex-plus-extension-card-description {
         display: block;
         overflow: hidden;

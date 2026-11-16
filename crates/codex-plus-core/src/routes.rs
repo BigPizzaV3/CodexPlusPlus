@@ -195,6 +195,10 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn script_market_install(&self, _payload: Value) -> anyhow::Result<Value> {
         anyhow::bail!("script market is unavailable")
     }
+    /// 精选 / 官方拓展包的安装步骤（prepare / install / discard）。
+    async fn script_market_package(&self, _action: &str, _payload: Value) -> anyhow::Result<Value> {
+        anyhow::bail!("script market is unavailable")
+    }
     /// 独立插件市场只读取索引，安装时才获取目标插件。
     async fn plugin_market_list(&self, payload: Value) -> anyhow::Result<Value> {
         crate::plugin_market::list_plugins(
@@ -637,6 +641,10 @@ pub async fn handle_bridge_request(
         "/ads" => ctx.runtime.ads().await,
         "/script-market/list" => ctx.runtime.script_market_list().await,
         "/script-market/install" => ctx.runtime.script_market_install(payload.clone()).await,
+        // 精选 / 官方拓展包：prepare（下载校验、返回权限）→ install（用户确认后放进拓展目录）/ discard。
+        "/script-market/package/prepare" => ctx.runtime.script_market_package("prepare", payload.clone()).await,
+        "/script-market/package/install" => ctx.runtime.script_market_package("install", payload.clone()).await,
+        "/script-market/package/discard" => ctx.runtime.script_market_package("discard", payload.clone()).await,
         "/plugin-market/list" => ctx.runtime.plugin_market_list(payload.clone()).await,
         "/plugin-market/install" => ctx.runtime.plugin_market_install(payload.clone()).await,
         "/plugin-market/install-status" => {
@@ -1097,6 +1105,13 @@ impl BridgeRuntimeService for CoreRuntimeService {
             anyhow::bail!("脚本 id 不能为空");
         }
         crate::script_market::install_market_script_by_id(user_scripts, id).await
+    }
+
+    async fn script_market_package(&self, action: &str, payload: Value) -> anyhow::Result<Value> {
+        let Some(user_scripts) = &self.user_scripts else {
+            anyhow::bail!("用户脚本目录不可用");
+        };
+        crate::script_market::market_package_request(user_scripts, action, &payload).await
     }
 
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
