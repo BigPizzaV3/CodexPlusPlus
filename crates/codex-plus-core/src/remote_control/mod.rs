@@ -16,6 +16,7 @@ pub mod devices;
 pub mod follower;
 pub mod headless;
 pub mod ipc;
+pub mod jiajia;
 pub mod mirror;
 pub mod patch;
 pub mod server;
@@ -301,6 +302,10 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                     None => None,
                 };
                 let service = service::RemoteService::new(service::ServiceConfig::detect());
+                // 加加的工具经本机入口转回来：先告诉它端口，再起后台循环（没配置过就什么也不做）。
+                let jiajia = service.jiajia();
+                jiajia.set_port(port);
+                jiajia.start();
                 let local = Arc::new(server::ServerContext {
                     service: service.clone(),
                     token: options.token.clone(),

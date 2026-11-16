@@ -85,6 +85,7 @@ mod installers;
 mod issue_20261018_compat;
 mod issue_renderer_regressions;
 mod issue_repair_safety;
+mod jiajia;
 mod launcher;
 mod live_anthropic_upstream;
 mod live_endpoint_conflict;

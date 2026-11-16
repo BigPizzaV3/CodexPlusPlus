@@ -254,6 +254,8 @@ pub fn required_role(method: &str, segments: &[&str]) -> Role {
         // 桌面镜像能操作 Codex 的一切（设置、审批……），只给完全控制。
         ("GET", ["mirror"]) => Role::Full,
         ("GET", _) => Role::View,
+        // 标记加加的消息已读：只读设备也能看加加。
+        ("POST", ["jiajia", "read"]) => Role::View,
         ("POST", ["threads", _, "settings"] | ["threads", _, "requests", _]) => Role::Full,
         _ => Role::Message,
     }
@@ -291,6 +293,10 @@ async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, conte
         }
         return pair(&mut stream, &request, &peer).await;
     }
+    // 加加的 MCP 进程转回来的工具调用：只认本机入口和加加专用令牌（不是主令牌，也不是设备令牌）。
+    if request.method == "POST" && request.path == "/api/jiajia/tool" {
+        return jiajia_tool(&mut stream, &mut request, &context).await;
+    }
     let Some(principal) = authenticate(&request, &context, &peer) else {
         let error = match context.scope {
             Scope::Loopback => "令牌无效，请从 Codex++ 重新打开远程控制页面",
@@ -322,6 +328,9 @@ async fn handle_connection<S: Connection>(mut stream: S, peer: SocketAddr, conte
             let thread_id = valid_thread_id(thread_id)?;
             return stream_thread(stream, &request, context, principal, thread_id).await;
         }
+    }
+    if segments.as_slice() == ["jiajia", "stream"] && request.header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
+        return stream_jiajia(stream, &request, context, principal).await;
     }
     if segments.as_slice() == ["mirror"] {
         if !request.header("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
@@ -369,6 +378,38 @@ async fn pair<S: Connection>(stream: &mut S, request: &HttpRequest, peer: &Socke
             write_json(stream, 200, &json!({ "ok": true, "data": { "token": token, "device": device.public() } })).await
         }
         Err(error) => write_json(stream, 400, &json!({ "ok": false, "error": error.to_string() })).await,
+    }
+}
+
+/// 加加的工具调用（MCP 进程转回来的）。
+async fn jiajia_tool<S: Connection>(stream: &mut S, request: &mut HttpRequest, context: &ServerContext) -> anyhow::Result<()> {
+    let jiajia = context.service.jiajia();
+    let authorized = context.scope == Scope::Loopback && provided_token(request).is_some_and(|token| token_matches(jiajia.tool_token(), &token));
+    if !authorized {
+        return write_json(stream, 401, &json!({ "ok": false, "error": "令牌无效" })).await;
+    }
+    if let Err(error) = read_body(stream, request, MAX_BODY_BYTES).await {
+        return write_json(stream, 400, &json!({ "ok": false, "error": error.to_string() })).await;
+    }
+    let body = json_body(request).unwrap_or_else(|_| json!({}));
+    let name = body.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+    let arguments = body.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let result = jiajia.call_tool(&name, &arguments).await;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "remote_control.jiajia_tool",
+        json!({ "tool": name, "ok": result.is_ok(), "error": result.as_ref().err().map(|error| format!("{error:#}")) }),
+    );
+    match result {
+        Ok(text) => write_json(stream, 200, &json!({ "ok": true, "data": { "text": text } })).await,
+        Err(error) => write_json(stream, 200, &json!({ "ok": false, "error": format!("{error:#}") })).await,
+    }
+}
+
+/// 设备名（加加的聊天记录里标「谁发的」）。
+fn principal_name(principal: &Principal) -> Option<String> {
+    match principal {
+        Principal::Master => Some("本机浏览器".into()),
+        Principal::Device { name, .. } => Some(name.clone()),
     }
 }
 
@@ -436,6 +477,29 @@ async fn route(request: &HttpRequest, segments: &[&str], context: &ServerContext
             let request_id: Value = serde_json::from_str(request_id).unwrap_or_else(|_| json!(request_id));
             service.respond(&valid_thread_id(id)?, &request_id, &json_body(request)?).await
         }
+        // ---------- 加加 ----------
+        ("GET", ["jiajia"]) => Ok(service.jiajia().state()),
+        ("GET", ["jiajia", "messages"]) => {
+            let before = request.query.get("before").and_then(|value| value.parse::<u64>().ok());
+            Ok(json!({ "messages": service.jiajia().page_before(before, 60) }))
+        }
+        ("GET", ["jiajia", "models"]) => Ok(json!({ "models": service.models().await? })),
+        ("GET", ["jiajia", "memory"]) => Ok(service.jiajia().memory()),
+        ("POST", ["jiajia", "messages"]) => {
+            let body = json_body(request)?;
+            let text = text_field(&body, "text")?;
+            service.jiajia().send(&text, principal_name(principal), principal.role()).await
+        }
+        ("POST", ["jiajia", "interrupt"]) => service.jiajia().interrupt().await,
+        ("POST", ["jiajia", "settings"]) => service.jiajia().update_settings(&json_body(request)?),
+        ("POST", ["jiajia", "read"]) => {
+            let upto = json_body(request)?.get("upto").and_then(Value::as_u64).unwrap_or(0);
+            let jiajia = service.jiajia();
+            jiajia.mark_read(upto);
+            Ok(jiajia.summary())
+        }
+        ("POST", ["jiajia", "clear"]) => service.jiajia().clear_chat().await,
+        ("POST", ["jiajia", "memory"]) => service.jiajia().set_memory(&json_body(request)?).await,
         _ => bail!("不支持的接口：{} {}", request.method, request.path),
     }
 }
@@ -520,6 +584,52 @@ async fn stream_thread<S: Connection>(
                         break;
                     }
                 }
+            }
+            _ = revalidate.tick() => {
+                if !still_authorized(&principal) {
+                    let _ = socket.send(send(json!({ "type": "revoked", "reason": "这台设备已被移除" }))).await;
+                    break;
+                }
+            }
+            incoming = socket.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let _ = socket.close(None).await;
+    Ok(())
+}
+
+/// 加加的推送：连上先给完整状态，之后每次变化推摘要和新增 / 改动的聊天记录。
+async fn stream_jiajia<S: Connection>(stream: S, request: &HttpRequest, context: Arc<ServerContext>, principal: Principal) -> anyhow::Result<()> {
+    let mut socket = upgrade_websocket(stream, request).await?;
+    let send = |value: Value| Message::Text(value.to_string().into());
+    let jiajia = context.service.jiajia();
+    let mut updates = jiajia.subscribe();
+    let state = jiajia.state();
+    let mut last_rev = state.pointer("/summary/rev").and_then(Value::as_u64).unwrap_or(0);
+    socket.send(send(json!({ "type": "state", "state": state }))).await?;
+    let mut revalidate = tokio::time::interval(REVALIDATE_EVERY);
+    loop {
+        tokio::select! {
+            changed = updates.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                tokio::time::sleep(PUSH_COALESCE).await;
+                updates.borrow_and_update();
+                if !still_authorized(&principal) {
+                    let _ = socket.send(send(json!({ "type": "revoked", "reason": "这台设备已被移除" }))).await;
+                    break;
+                }
+                let messages = jiajia.changed_since(last_rev);
+                // 以发出去的记录为准推进：摘要和增量分两次取，中间新增的那条下次还会发。
+                last_rev = messages.iter().map(|message| message.rev).max().unwrap_or(last_rev);
+                let summary = jiajia.summary();
+                socket.send(send(json!({ "type": "update", "summary": summary, "messages": messages }))).await?;
             }
             _ = revalidate.tick() => {
                 if !still_authorized(&principal) {

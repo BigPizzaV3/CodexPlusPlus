@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 
 use super::follower::{Follower, PERMISSION_PRESETS, SettingsChange, build_offline_view, current_controls, discover_owner};
 use super::headless::{HeadlessSession, Hub, headless_supports};
+use super::jiajia::Jiajia;
 use super::ipc::{IpcConnection, IpcEndpoint, resolve_endpoint};
 use super::sidecar::{Sidecar, resolve_codex_cli};
 use super::uploads::{Attachment, user_inputs};
@@ -60,6 +61,8 @@ pub struct RemoteService {
     sidecar: Mutex<Option<Arc<Sidecar>>>,
     followers: Mutex<HashMap<String, Arc<Follower>>>,
     headless: Mutex<Option<Arc<Hub>>>,
+    /// 加加（聊天机器人），第一次用到时建。
+    jiajia: std::sync::OnceLock<Arc<Jiajia>>,
 }
 
 impl RemoteService {
@@ -70,7 +73,17 @@ impl RemoteService {
             sidecar: Mutex::new(None),
             followers: Mutex::new(HashMap::new()),
             headless: Mutex::new(None),
+            jiajia: std::sync::OnceLock::new(),
         })
+    }
+
+    /// 加加。状态放在 Codex++ 状态目录的 `jiajia/` 下。
+    pub fn jiajia(self: &Arc<Self>) -> Arc<Jiajia> {
+        self.jiajia.get_or_init(|| Jiajia::new(Jiajia::default_dir(), Arc::downgrade(self))).clone()
+    }
+
+    pub fn codex_home(&self) -> &Path {
+        &self.config.codex_home
     }
 
     fn endpoint(&self) -> IpcEndpoint {
@@ -98,7 +111,7 @@ impl RemoteService {
         Ok(conn)
     }
 
-    async fn sidecar(&self) -> anyhow::Result<Arc<Sidecar>> {
+    pub(crate) async fn sidecar(&self) -> anyhow::Result<Arc<Sidecar>> {
         let mut slot = self.sidecar.lock().await;
         if let Some(sidecar) = slot.as_ref().filter(|sidecar| sidecar.is_alive()) {
             return Ok(sidecar.clone());
@@ -302,9 +315,8 @@ impl RemoteService {
 
     /// 会话可选的模型、推理强度、权限模式、协作模式，以及当前值。
     pub async fn options(&self, thread_id: &str) -> anyhow::Result<Value> {
-        let sidecar = self.sidecar().await?;
-        let models = sidecar.call("model/list", json!({ "cursor": null, "includeHidden": false, "limit": 100 })).await?;
-        let modes = sidecar.call("collaborationMode/list", json!({})).await.unwrap_or(Value::Null);
+        let models = self.models().await?;
+        let modes = self.sidecar().await?.call("collaborationMode/list", json!({})).await.unwrap_or(Value::Null);
         let current = match self.follower(thread_id).await? {
             Some(follower) => follower.state().as_ref().map(current_controls).unwrap_or(Value::Null),
             None => match self.headless_session(thread_id).await {
@@ -313,11 +325,17 @@ impl RemoteService {
             },
         };
         Ok(json!({
-            "models": models.get("data").and_then(Value::as_array).map(|models| models.iter().map(model_option).collect::<Vec<_>>()).unwrap_or_default(),
+            "models": models,
             "permissionModes": PERMISSION_PRESETS.iter().map(|preset| json!({ "id": preset.id, "label": preset.label, "detail": preset.detail })).collect::<Vec<_>>(),
             "collaborationModes": collaboration_modes(&modes),
             "current": current,
         }))
+    }
+
+    /// 可选的模型（含推理强度档位）。
+    pub async fn models(&self) -> anyhow::Result<Vec<Value>> {
+        let models = self.sidecar().await?.call("model/list", json!({ "cursor": null, "includeHidden": false, "limit": 100 })).await?;
+        Ok(models.get("data").and_then(Value::as_array).map(|models| models.iter().map(model_option).collect()).unwrap_or_default())
     }
 
     /// 改会话设置（下一轮起生效）。

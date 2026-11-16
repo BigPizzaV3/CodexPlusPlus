@@ -638,7 +638,8 @@ fn web_page_offers_both_conversation_styles() {
     // 对话：带尾巴的左右气泡、时间分隔、卡片式命令 / 审批
     assert!(page.contains(".m-msg.in .m-bubble::before") && page.contains(".m-msg.out .m-bubble::before"));
     assert!(page.contains(r#"el("div", "m-time-tip", chatTime(ms / 1000, true))"#));
-    assert!(page.contains("function requestCard(request)"));
+    // 审批卡片可指定会话：加加贴过来的卡片属于别的会话
+    assert!(page.contains("function requestCard(request, threadId = state.current, onDone = null)"));
     // 输入区：胶囊输入框 + 模式 / 权限 / 模型 / 上下文用量
     assert!(page.contains(r#"class="m-pill""#) && page.contains(r#"id="mChips""#));
     assert!(page.contains("openModeSheet") && page.contains("openPermissionSheet") && page.contains("openModelSheet"));
@@ -693,7 +694,7 @@ fn chat_style_uses_pc_wechat_layout_on_wide_screens() {
     let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/remote-control/index.html")).unwrap();
     assert!(page.contains("@media (min-width: 900px)") && page.contains("grid-template-columns: 64px 300px minmax(0, 1fr)"));
     assert!(page.contains(r#"window.matchMedia?.("(min-width: 900px)")"#), "脚本和样式用同一个断点");
-    assert!(page.contains(r#"$("mChat").hidden = wideNow ? false : screen !== "chat";"#), "宽屏对话区一直在");
+    assert!(page.contains(r#"$("mChat").hidden = wideNow ? screen === "bot" : screen !== "chat";"#), "宽屏对话区一直在（只让位给加加）");
     assert!(page.contains(r#".m-tabs .m-rail-only, .m-placeholder { display: none; }"#), "图标栏多出的按钮在手机上不显示");
     assert!(page.contains(r#"$("mTabStyle").onclick = () => setStyle("codex");"#) && page.contains(r#"$("style").onclick"#), "两种样式随时互切");
     assert!(page.contains(r#"go.textContent = stop ? "停止" : "发送";"#), "宽屏右下角是「发送」按钮");

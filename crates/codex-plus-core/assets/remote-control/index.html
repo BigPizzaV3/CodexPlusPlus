@@ -393,6 +393,24 @@
   .m-card .choices input { flex: 1 0 100%; height: 34px; border-radius: 6px; border: 1px solid var(--m-line); background: transparent; color: inherit; padding: 0 10px; font-size: 16px; }
   .m-card .readonly { padding: 10px 12px; color: var(--m-sub); font-size: 13px; border-top: 1px solid var(--m-line); }
   .m-card.attention { box-shadow: 0 0 0 1.5px var(--m-warn); }
+  /* 加加：头像、会话卡片、审批卡片上的会话名、状态行 */
+  .m-avatar .face.jj, .m-msg .who.jj { background: linear-gradient(135deg, #07c160, #10aeff); color: #fff; font-weight: 600; }
+  .m-row.jj-row { background: color-mix(in srgb, var(--m-green) 6%, var(--m-row)); }
+  .m-card.m-thread { cursor: pointer; }
+  .m-card.m-thread .m-card-head { padding-bottom: 2px; }
+  .m-card.m-thread .m-card-head .kind { font-size: 12px; font-weight: 400; color: var(--m-sub); }
+  .m-card.m-thread .m-card-body { color: var(--m-sub); font-size: 13px; }
+  .m-card .jj-thread { padding: 8px 12px 0; font-size: 13px; color: var(--m-blue); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-card.resolved { opacity: .6; box-shadow: none; }
+  .m-card.resolved .m-card-head { align-items: flex-start; }
+  .m-card.resolved .m-card-head > span:first-child { min-width: 0; overflow-wrap: anywhere; font-weight: 400; }
+  .m-card.resolved .m-card-head .state { flex: 0 0 auto; white-space: nowrap; }
+  .m-bot-stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; min-width: 0; max-width: calc(100% - 50px); }
+  .m-bot-stack > .m-bubble, .m-bot-stack > .m-card { max-width: 100%; }
+  .m-more-older { align-self: center; font-size: 13px; color: var(--m-blue); padding: 4px 10px; }
+  .m-sheet .memory { width: 100%; box-sizing: border-box; min-height: 120px; border: 1px solid var(--m-line); border-radius: 8px; background: var(--m-bg);
+    color: inherit; font: 14px/1.5 ui-monospace, Menlo, monospace; padding: 10px 12px; resize: vertical; }
+  .m-sheet .hint { padding: 0 18px 12px; font-size: 13px; color: var(--m-sub); line-height: 1.5; }
   /* 输入区：胶囊输入框 + 模式 / 权限 / 模型 / 上下文 */
   .m-composer { flex: 0 0 auto; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); background: var(--m-composer); border-top: 1px solid var(--m-line); }
   .m-pill { display: flex; align-items: flex-end; gap: 6px; min-height: 46px; padding: 4px 6px 4px 8px; box-sizing: border-box; border-radius: 23px; background: var(--m-pill); }
@@ -517,7 +535,7 @@
       --m-row-active: light-dark(#dedede, #333333); --m-line: light-dark(#e6e6e6, #313131); --m-field: light-dark(#e3e3e3, #333333);
       --m-composer: light-dark(#ffffff, #262626); --m-rail: light-dark(#ececec, #2e2e2e); }
     .m > #mList, .m > #mProject, .m > #mSettings { grid-column: 2; grid-row: 1; border-right: 1px solid var(--m-line); }
-    .m > #mChat { grid-column: 3; grid-row: 1; }
+    .m > #mChat, .m > #mBot { grid-column: 3; grid-row: 1; }
     /* 图标栏 */
     .m-tabs { grid-column: 1; grid-row: 1; flex-direction: column; align-items: center; gap: 6px; padding: 28px 0 14px; border: none; background: var(--m-rail); }
     .m-tabs .m-rail-only { display: flex; }
@@ -600,6 +618,7 @@
   <nav class="cx-rail">
     <button class="on" id="railThreads" title="会话"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/></svg></button>
     <button id="mirrorOpen" title="桌面镜像：直接看并操作桌面上的 Codex 窗口" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></button>
+    <button id="jiajiaOpen" title="加加：帮你照看会话的助理（切到聊天样式）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 12h.01M15 12h.01M9.5 15.5h5"/></svg></button>
     <span class="grow"></span>
     <button id="notify" hidden title="开启提醒：需要审批、模型提问或一轮跑完时提醒"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg></button>
     <button id="style" title="切换到聊天样式（照微信）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.9-.9L3 20l1.3-4.4a8 8 0 0 1-1.1-4.1A8.4 8.4 0 0 1 11.7 3.2h.8a8.4 8.4 0 0 1 8.5 8.3Z"/></svg></button>
@@ -691,6 +710,22 @@
       <div class="m-chips" id="mChips"></div>
     </footer>
     <div class="m-readonly" id="mReadonly" hidden>这台设备只能查看。需要发消息可在 Codex++ 的设备列表里调高权限。</div>
+  </section>
+  <!-- 加加：聊天机器人，替用户照看会话（远程控制服务里的 jiajia 模块） -->
+  <section class="m-screen m-chat" id="mBot" hidden>
+    <header class="m-top">
+      <button class="m-back" id="mBotBack" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg><span class="count" id="mBotBackCount" hidden></span></button>
+      <div class="m-title"><span>加加</span><small id="mBotState"></small></div>
+      <button class="m-icon" id="mBotMore" aria-label="加加的设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></svg></button>
+    </header>
+    <div class="m-log" id="mBotLog"></div>
+    <footer class="m-composer" id="mBotComposer">
+      <div class="m-pill">
+        <textarea id="mBotInput" rows="1" placeholder="和加加说…" enterkeyhint="send"></textarea>
+        <button class="go send" id="mBotGo" aria-label="发送" hidden></button>
+      </div>
+    </footer>
+    <div class="m-readonly" id="mBotReadonly" hidden>这台设备只能查看，不能和加加说话。可在 Codex++ 的设备列表里调高权限。</div>
   </section>
 </div>
 <!-- 桌面镜像：Codex 桌面窗口的实时画面 -->
@@ -2216,13 +2251,15 @@
     // ---------- 列表（项目）----------
     function renderList() {
       const rows = $("mRows");
-      const total = state.threads.filter(unread).length;
+      const total = state.threads.filter(unread).length + (jj.summary?.unread || 0);
       $("mTabBadge").hidden = !total;
       $("mTabBadge").textContent = total > 99 ? "99+" : String(total);
-      if (!state.threads.length) return rows.replaceChildren(el("div", "m-empty", "还没有会话。点右上角 ⊕ 新建一个。"));
+      // 加加置顶（搜索、筛选时不显示）。
+      const pinned = jj.summary && !ui.query.trim() && ui.filter === "all" ? [jjRow()] : [];
+      if (!state.threads.length) return rows.replaceChildren(...pinned, el("div", "m-empty", "还没有会话。点右上角 ⊕ 新建一个。"));
       const threads = filteredThreads();
-      if (!threads.length) return rows.replaceChildren(el("div", "m-empty", ui.query ? "没有匹配的会话" : "没有符合筛选的会话"));
-      rows.replaceChildren(...projectsOf(threads).map((project) => {
+      if (!threads.length) return rows.replaceChildren(...pinned, el("div", "m-empty", ui.query ? "没有匹配的会话" : "没有符合筛选的会话"));
+      rows.replaceChildren(...pinned, ...projectsOf(threads).map((project) => {
         const sessions = [...project.threads].sort(byRecent);
         const single = sessions.length === 1;
         const tiles = single
@@ -2510,9 +2547,9 @@
       return nodes;
     }
 
-    /** 审批 / 提问卡片。同一个请求复用同一个节点，推送重绘时不丢已选的答案。 */
-    function requestCard(request) {
-      const key = `${state.current}:${JSON.stringify(request.id)}`;
+    /** 审批 / 提问卡片。同一个请求复用同一个节点，推送重绘时不丢已选的答案。加加贴的卡片属于别的会话，传 threadId。 */
+    function requestCard(request, threadId = state.current, onDone = null) {
+      const key = `${threadId}:${JSON.stringify(request.id)}`;
       const cached = ui.requestCards.get(key);
       if (cached) return cached;
       const card = el("div", "m-card attention");
@@ -2522,7 +2559,8 @@
         for (const button of card.querySelectorAll("button")) button.disabled = true;
         ui.stick = true;
         try {
-          await api("POST", `/threads/${state.current}/requests/${encodeURIComponent(JSON.stringify(request.id))}`, body);
+          await api("POST", `/threads/${threadId}/requests/${encodeURIComponent(JSON.stringify(request.id))}`, body);
+          onDone?.();
         } catch (error) {
           toast(error.message);
           for (const button of card.querySelectorAll("button")) button.disabled = false;
@@ -2970,6 +3008,416 @@
       });
     }
 
+    // ---------- 加加：聊天机器人，替用户照看会话 ----------
+    // 推送连 /api/jiajia/stream：先给完整状态，之后推摘要 + 新增 / 改动的聊天记录（按 id 合并）。
+    const jj = { summary: null, messages: [], hasMore: false, socket: null, failures: 0, poller: null, models: null, stick: false, maxSeen: 0, sending: false };
+    const JJ_INTRO = "我是加加，帮你照看电脑上 Codex 的会话：问我哪些在跑、让我给某个会话带句话、在某个项目新开会话、盯着一个会话跑完告诉你，都行。会话要你审批时我也会把卡片贴过来。";
+
+    function jjConnect() {
+      if (jj.socket || jj.poller || !state.me) return;
+      if (jj.failures >= 2) return jjPoll();
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${scheme}://${location.host}/api/jiajia/stream?token=${encodeURIComponent(token)}`);
+      let opened = false;
+      jj.socket = socket;
+      socket.onopen = () => { opened = true; jj.failures = 0; };
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === "state") jjApplyState(message.state);
+        else if (message.type === "update") jjApplyUpdate(message.summary, message.messages || []);
+        else if (message.type === "revoked") unauthorized(message.reason);
+      };
+      socket.onclose = () => {
+        if (jj.socket !== socket) return;
+        jj.socket = null;
+        if (!opened) jj.failures += 1;
+        setTimeout(jjConnect, document.hidden ? 6000 : 1500);
+      };
+    }
+
+    // 自签证书下有的手机浏览器不放行 wss：退回轮询。
+    function jjPoll() {
+      clearInterval(jj.poller);
+      const tick = async () => { try { jjApplyState(await api("GET", "/jiajia")); } catch {} };
+      tick();
+      jj.poller = setInterval(() => !document.hidden && tick(), 3000);
+    }
+
+    function jjApplyState(data) {
+      jj.summary = data.summary;
+      jj.messages = data.messages || [];
+      jj.hasMore = !!data.hasMore;
+      jjAfterChange();
+    }
+
+    function jjApplyUpdate(summary, messages) {
+      jj.summary = summary;
+      for (const message of messages) {
+        const index = jj.messages.findIndex((existing) => existing.id === message.id);
+        if (index >= 0) jj.messages[index] = message;
+        else jj.messages.push(message);
+      }
+      jj.messages.sort((a, b) => a.id - b.id);
+      jjAfterChange();
+    }
+
+    function jjAfterChange() {
+      // 页面在后台时，加加说了新话就提醒（标题、振动、系统通知）。
+      const fresh = jj.messages.filter((message) => message.id > jj.maxSeen && (message.role === "bot" || message.role === "notice"));
+      if (jj.maxSeen && fresh.length) alertUser(`加加：${fresh.at(-1).text || "有新消息"}`);
+      jj.maxSeen = Math.max(jj.maxSeen, ...jj.messages.map((message) => message.id), 1);
+      // 宽屏上列表一直在旁边：看得见就刷新置顶那一行。
+      if (!$("mList").hidden) renderList();
+      jjRender();
+    }
+
+    function jjThinkingText() {
+      const summary = jj.summary;
+      if (!summary?.thinking) return "";
+      return summary.activity ? `${summary.activity}…` : "正在输入…";
+    }
+
+    /** 列表置顶的那一行。 */
+    function jjRow() {
+      const summary = jj.summary || {};
+      const avatar = avatarNode([{ char: "加", key: "jiajia" }], { badge: summary.unread || 0 });
+      const face = avatar.querySelector(".face");
+      face.style.background = "";
+      face.classList.add("jj");
+      const sub = [];
+      const thinking = jjThinkingText();
+      if (thinking) sub.push(el("span", "running", thinking));
+      else sub.push(document.createTextNode(summary.last ? (summary.last.card ? `[审批] ${summary.last.text}` : summary.last.text) : "帮你照看会话，点进来聊聊"));
+      const row = rowNode({
+        avatar,
+        title: "加加",
+        sub,
+        time: summary.last ? chatTime(summary.last.at / 1000) : "",
+        active: wide() && ui.screen === "bot",
+        onClick: openBot,
+      });
+      row.classList.add("jj-row");
+      return row;
+    }
+
+    function openBot() {
+      // 宽屏上从某个会话切过来：先把那个会话放下（不然它的推送还连着）。
+      if (state.current) {
+        clearPending();
+        closeSocket();
+        markSeen(state.current);
+        state.current = null;
+        state.view = null;
+      }
+      if (!wide() || (ui.screen !== "bot" && ui.screen !== "chat")) history.pushState({ m: "bot" }, "");
+      jj.stick = true;
+      show("bot");
+      renderList();
+      jjConnect();
+      jjRender();
+      jjAutosize();
+      if (jj.summary && !jj.summary.settings?.configured && can("message")) jjSetupSheet();
+    }
+
+    function jjMsg(content) {
+      const node = msgNode("in", content);
+      const who = node.querySelector(".who");
+      who.textContent = "加";
+      who.classList.add("jj");
+      return node;
+    }
+
+    /** 加加提到的会话：卡片，点进去打开那个会话。 */
+    function jjThreadCard(id) {
+      const thread = state.threads.find((item) => item.id === id);
+      const card = el("div", "m-card m-thread");
+      const head = el("div", "m-card-head");
+      head.append(el("span", "", thread ? threadTitle(thread) : `会话 ${id.slice(0, 8)}`), el("span", "state kind", thread && isRunning(thread) ? "运行中" : "会话"));
+      const body = el("div", "m-card-body", thread ? `${baseName(thread.cwd)} · ${relative(thread.updatedAt)}` : "点开看看");
+      card.append(head, body);
+      card.onclick = () => openChat(id, "bot");
+      return card;
+    }
+
+    /** 审批卡片：复用会话里的审批卡片，加上会话名；处理过的灰掉。 */
+    function jjRequestCard(message) {
+      const info = message.request || {};
+      if (message.resolved) {
+        const card = el("div", "m-card resolved");
+        const head = el("div", "m-card-head");
+        head.append(el("span", "", message.text || "审批"), el("span", "state", "已处理"));
+        card.append(head);
+        card.onclick = () => info.threadId && openChat(info.threadId, "bot");
+        return card;
+      }
+      const card = requestCard(info.request || {}, info.threadId, () => { message.resolved = true; jjRender(); });
+      if (!card.dataset.jj) {
+        card.dataset.jj = "1";
+        const link = el("div", "jj-thread", `「${info.title || "会话"}」 ›`);
+        link.onclick = (event) => { event.stopPropagation(); openChat(info.threadId, "bot"); };
+        card.prepend(link);
+      }
+      return card;
+    }
+
+    function jjMessageNodes(message) {
+      const cards = (message.threads || []).filter((id) => !message.request || id !== message.request.threadId).map(jjThreadCard);
+      switch (message.role) {
+        case "user": return [msgNode("out", textBubble(message.text))];
+        case "event": return [el("div", "m-tip", `会话动静：${message.text}`)];
+        case "notice": {
+          const stack = el("div", "m-bot-stack");
+          stack.append(message.request ? jjRequestCard(message) : textBubble(message.text, "提醒"), ...cards);
+          return [jjMsg(stack)];
+        }
+        default: {
+          const stack = el("div", "m-bot-stack");
+          if (message.text) stack.append(textBubble(message.text));
+          stack.append(...cards);
+          return [jjMsg(stack)];
+        }
+      }
+    }
+
+    function jjRender() {
+      if ($("mBot").hidden) return;
+      const summary = jj.summary;
+      $("mBotState").textContent = jjThinkingText();
+      setBackCount("mBotBackCount", state.threads.filter(unread).length);
+      $("mBotMore").style.visibility = can("message") ? "" : "hidden";
+      const log = $("mBotLog");
+      const stick = nearBottom(log) || jj.stick;
+      jj.stick = false;
+      const nodes = [];
+      if (!summary) {
+        nodes.push(el("div", "m-empty", "连接中…"));
+      } else {
+        if (jj.hasMore) {
+          const older = el("button", "m-more-older", "查看更早的消息");
+          older.onclick = jjLoadOlder;
+          nodes.push(older);
+        }
+        if (!jj.messages.length) {
+          nodes.push(jjMsg(textBubble(JJ_INTRO)));
+          if (!summary.settings?.configured && can("message")) {
+            const start = el("button", "m-more-older", "选个模型，开始用加加 ›");
+            start.onclick = jjSetupSheet;
+            nodes.push(start);
+          }
+        }
+        let lastShown = 0;
+        for (const message of jj.messages) {
+          if (message.at - lastShown > 5 * 60 * 1000) {
+            nodes.push(el("div", "m-time-tip", chatTime(message.at / 1000, true)));
+            lastShown = message.at;
+          }
+          nodes.push(...jjMessageNodes(message));
+        }
+        if (summary.thinking) nodes.push(jjMsg(typingBubble()));
+      }
+      log.replaceChildren(...nodes);
+      if (stick) log.scrollTop = log.scrollHeight;
+      jjRenderComposer();
+      jjMarkRead();
+    }
+
+    function jjMarkRead() {
+      const summary = jj.summary;
+      const last = jj.messages.at(-1);
+      if (!summary || !last || document.hidden || $("mBot").hidden || last.id <= (summary.readUpto || 0)) return;
+      summary.readUpto = last.id;
+      summary.unread = 0;
+      api("POST", "/jiajia/read", { upto: last.id }).catch(() => {});
+    }
+
+    async function jjLoadOlder() {
+      const first = jj.messages[0];
+      if (!first) return;
+      try {
+        const data = await api("GET", `/jiajia/messages?before=${first.id}`);
+        const older = data.messages || [];
+        jj.hasMore = older.length >= 60;
+        jj.messages = [...older.filter((message) => !jj.messages.some((existing) => existing.id === message.id)), ...jj.messages];
+        const log = $("mBotLog");
+        const fromBottom = log.scrollHeight - log.scrollTop;
+        jjRender();
+        log.scrollTop = log.scrollHeight - fromBottom;
+      } catch (error) { toast(error.message); }
+    }
+
+    function jjAutosize() {
+      const input = $("mBotInput");
+      if (wide()) { input.style.height = ""; return; }
+      input.style.height = "38px";
+      input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
+    }
+
+    function jjRenderComposer() {
+      const allowed = can("message");
+      $("mBotComposer").hidden = !allowed;
+      $("mBotReadonly").hidden = allowed;
+      const thinking = !!jj.summary?.thinking;
+      const hasText = !!$("mBotInput").value.trim();
+      const go = $("mBotGo");
+      if (wide()) {
+        const stop = thinking && !hasText;
+        go.hidden = false;
+        go.className = `go ${stop ? "stop" : "send"}${hasText ? " ready" : ""}`;
+        go.textContent = stop ? "停止" : "发送";
+        go.disabled = jj.sending || (!hasText && !stop);
+      } else {
+        go.hidden = !hasText && !thinking;
+        go.className = `go ${hasText ? "send" : "stop"}`;
+        go.innerHTML = hasText ? ICON.send : ICON.stop;
+        go.disabled = jj.sending;
+      }
+      go.setAttribute("aria-label", hasText ? "发送" : "停止");
+      $("mBotInput").placeholder = thinking ? "加加在回复，发消息会插进去…" : "和加加说…";
+    }
+
+    async function jjSend() {
+      const text = $("mBotInput").value.trim();
+      if (!text) {
+        if (jj.summary?.thinking) api("POST", "/jiajia/interrupt").catch((error) => toast(error.message));
+        return;
+      }
+      if (!jj.summary?.settings?.configured) return jjSetupSheet();
+      if (jj.sending) return;
+      jj.sending = true;
+      jjRenderComposer();
+      try {
+        await api("POST", "/jiajia/messages", { text });
+        $("mBotInput").value = "";
+        jj.stick = true;
+        jjAutosize();
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        jj.sending = false;
+        jjRenderComposer();
+      }
+    }
+
+    async function jjSettings(change) {
+      try {
+        jj.summary = await api("POST", "/jiajia/settings", change);
+        jjRender();
+        renderList();
+      } catch (error) { toast(error.message); }
+    }
+
+    async function jjModels() {
+      if (!jj.models) jj.models = (await api("GET", "/jiajia/models")).models || [];
+      return jj.models;
+    }
+
+    const modelLabel = (id) => jj.models?.find((model) => model.id === id)?.label || id || "Codex 默认";
+
+    /** 第一次打开：选模型。每次唤醒加加都是一轮模型调用，便宜快的模型就够用。 */
+    async function jjSetupSheet() {
+      let models;
+      try { models = await jjModels(); } catch (error) { return toast(`读取模型失败：${error.message}`); }
+      openSheet("给加加选个模型", (body) => {
+        body.append(el("div", "hint", "加加每次回复、每次被会话动静唤醒都会调用一次模型。管会话用便宜、快的模型就够了，之后可在右上角 ··· 里改。"));
+        for (const model of models) {
+          body.append(optionButton({
+            label: model.label || model.id, detail: model.description,
+            onClick: () => jjSettings({ model: model.id, configured: true }),
+          }));
+        }
+        body.append(optionButton({ label: "跟随 Codex 默认模型", onClick: () => jjSettings({ model: null, configured: true }) }));
+      });
+    }
+
+    async function jjModelSheet() {
+      let models;
+      try { models = await jjModels(); } catch (error) { return toast(`读取模型失败：${error.message}`); }
+      const settings = jj.summary?.settings || {};
+      const current = models.find((model) => model.id === settings.model);
+      openSheet("加加的模型与推理强度", (body) => {
+        body.append(el("div", "section", "推理强度"));
+        const efforts = el("div", "seg-row");
+        const list = current?.efforts?.length ? current.efforts : ["low", "medium", "high"];
+        for (const effort of [null, ...list]) {
+          const label = effort ? effortLabels[effort] || effort : "默认";
+          const button = el("button", (settings.effort || null) === effort ? "on" : "", label);
+          button.onclick = () => { closeSheet(); jjSettings({ effort }); };
+          efforts.append(button);
+        }
+        body.append(efforts, el("div", "section", "模型"));
+        for (const model of models) {
+          body.append(optionButton({ label: model.label || model.id, detail: model.description, checked: model.id === settings.model,
+            onClick: () => model.id !== settings.model && jjSettings({ model: model.id, effort: null }) }));
+        }
+        body.append(optionButton({ label: "跟随 Codex 默认模型", checked: !settings.model, onClick: () => settings.model && jjSettings({ model: null, effort: null }) }));
+      });
+    }
+
+    async function jjMemorySheet() {
+      let memory;
+      try { memory = await api("GET", "/jiajia/memory"); } catch (error) { return toast(error.message); }
+      openSheet("加加的记忆", (body) => {
+        const form = el("div", "form");
+        const user = el("textarea", "memory");
+        user.value = memory.user || "";
+        user.placeholder = "关于你：偏好、习惯、在做的事";
+        const notes = el("textarea", "memory");
+        notes.value = memory.notes || "";
+        notes.placeholder = "加加自己的备忘";
+        const save = el("button", "primary-btn", "保存");
+        save.onclick = async () => {
+          try {
+            await api("POST", "/jiajia/memory", { user: user.value, notes: notes.value });
+            closeSheet();
+            toast("记忆已保存，下次对话起生效");
+          } catch (error) { toast(error.message); }
+        };
+        form.append(el("div", "section", "关于你"), user, el("div", "section", "加加的笔记"), notes, save);
+        body.append(el("div", "hint", "加加用 remember 工具记下的内容。改了以后加加会换一个新会话接上（最近的聊天会带过去）。"), form);
+      });
+    }
+
+    function jjWatchedSheet() {
+      const watched = jj.summary?.watched || [];
+      openSheet(`加加盯着的会话（${watched.length}）`, (body) => {
+        if (!watched.length) body.append(el("div", "hint", "还没有。让加加发消息、新开会话时会自动盯上，也可以跟它说「帮我盯着某某会话」。"));
+        for (const item of [...watched].reverse()) {
+          body.append(optionButton({ label: item.title || `会话 ${item.threadId.slice(0, 8)}`, detail: item.reason, onClick: () => openChat(item.threadId, "bot") }));
+        }
+      });
+    }
+
+    async function jjMoreSheet() {
+      const settings = jj.summary?.settings || {};
+      try { await jjModels(); } catch {}
+      const reports = { watched: "只报加加盯着的", all: "全部都报", none: "不报" };
+      openSheet("加加", (body) => {
+        const effort = settings.effort ? ` · ${effortLabels[settings.effort] || settings.effort}` : "";
+        body.append(
+          optionButton({ label: "模型与推理强度", detail: `${modelLabel(settings.model)}${effort}`, onClick: jjModelSheet }),
+          optionButton({
+            label: "主动消息", detail: settings.proactive ? "开：会话出错、跑完时加加会主动说（每次算一轮模型调用）" : "关：只发固定格式的提醒，不调用模型",
+            checked: settings.proactive, onClick: () => jjSettings({ proactive: !settings.proactive }),
+          }),
+          optionButton({
+            label: "会话跑完时", detail: reports[settings.doneReports] || reports.watched,
+            onClick: () => openSheet("会话跑完时要不要报", (inner) => {
+              for (const [id, label] of Object.entries(reports)) inner.append(optionButton({ label, checked: (settings.doneReports || "watched") === id, onClick: () => jjSettings({ doneReports: id }) }));
+            }),
+          }),
+          optionButton({ label: "盯着的会话", detail: `${(jj.summary?.watched || []).length} 个`, onClick: jjWatchedSheet }),
+          optionButton({ label: "记忆", detail: "加加记下的关于你的事", onClick: jjMemorySheet }),
+          optionButton({
+            label: "清空聊天记录", detail: "记忆、盯着的会话、回访都保留", danger: true,
+            onClick: async () => {
+              if (!confirm("清空和加加的聊天记录？")) return;
+              try { jjApplyState(await api("POST", "/jiajia/clear")); } catch (error) { toast(error.message); }
+            },
+          }),
+        );
+      });
+    }
+
     // ---------- 设置 ----------
     function renderSettings() {
       const body = $("mSettingsBody");
@@ -3017,13 +3465,15 @@
     // ---------- 导航 ----------
     function show(screen) {
       ui.screen = screen;
-      if (screen !== "chat") ui.side = screen;
+      if (screen !== "chat" && screen !== "bot") ui.side = screen;
       const wideNow = wide();
       const side = wideNow ? ui.side || "list" : screen;
       $("mList").hidden = side !== "list";
       $("mProject").hidden = side !== "project";
       $("mSettings").hidden = side !== "settings";
-      $("mChat").hidden = wideNow ? false : screen !== "chat";
+      // 加加和会话对话占同一个位置（宽屏是右栏）。
+      $("mBot").hidden = screen !== "bot";
+      $("mChat").hidden = wideNow ? screen === "bot" : screen !== "chat";
       $("mTabs").hidden = wideNow ? false : screen !== "list" && screen !== "settings";
       $("m").classList.toggle("no-chat", !state.current);
       $("mTabChats").setAttribute("aria-selected", String(side !== "settings"));
@@ -3061,7 +3511,15 @@
       markSeen(state.current);
       state.current = null;
       state.view = null;
-      show(ui.from === "project" && ui.project !== null ? "project" : "list");
+      // 从加加的会话卡片点进来的，返回加加。
+      if (ui.from === "bot") {
+        ui.from = "list";
+        show("bot");
+        jj.stick = true;
+        jjRender();
+      } else {
+        show(ui.from === "project" && ui.project !== null ? "project" : "list");
+      }
       renderList();
       renderProject();
       // 刚聊过的会话时间、摘要变了，回到列表时立刻刷新一次。
@@ -3074,6 +3532,7 @@
     function popped() {
       closeSheet();
       if (ui.screen === "chat") leaveChat();
+      else if (ui.screen === "bot") { show(ui.side === "project" && ui.project !== null ? "project" : "list"); renderList(); }
       else if (ui.screen === "project") { ui.project = null; show("list"); renderList(); }
     }
     window.addEventListener("popstate", popped);
@@ -3106,7 +3565,7 @@
     $("mTabSettings").onclick = () => { show("settings"); renderSettings(); };
     $("mTabMirror").onclick = () => setStyle("mirror");
     $("mTabStyle").onclick = () => setStyle("codex");
-    wideQuery?.addEventListener?.("change", () => { show(ui.screen); autosize(); renderComposer(); renderChat(); });
+    wideQuery?.addEventListener?.("change", () => { show(ui.screen); autosize(); renderComposer(); renderChat(); jjAutosize(); jjRender(); });
     $("mFilter").onclick = openFilterSheet;
     $("mHost").onclick = openHostSheet;
     $("mNew").onclick = () => openNewSheet(null);
@@ -3114,6 +3573,22 @@
     $("mProjectBack").onclick = goBack;
     $("mChatBack").onclick = goBack;
     $("mChatMore").onclick = openMoreSheet;
+    $("mBotBack").onclick = goBack;
+    $("mBotMore").onclick = jjMoreSheet;
+    $("mBotGo").onclick = jjSend;
+    $("mBotInput").addEventListener("input", () => { jjAutosize(); jjRenderComposer(); });
+    $("mBotInput").addEventListener("keydown", (event) => {
+      if (!coarse && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        jjSend();
+      }
+    });
+    // 切回前台：手机切后台时推送会断，回来立刻重连、标已读。
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      jjConnect();
+      jjMarkRead();
+    });
     $("mPlus").onclick = openAttachSheet;
     $("mGo").onclick = send;
     $("mSearch").oninput = () => { ui.query = $("mSearch").value; renderList(); };
@@ -3150,6 +3625,8 @@
         initSeen(state.threads);
         renderList();
         renderProject();
+        // 加加的会话卡片要用会话标题、运行状态。
+        jjRender();
       },
       onThreadsError(message) { $("mRows").replaceChildren(el("div", "m-empty", `读取会话失败：${message}`)); },
       onView() { renderChat(); },
@@ -3168,6 +3645,9 @@
         $("mRows").replaceChildren(el("div", "m-empty", `连接失败：${message}`));
       },
       setStyle,
+      // 加加：页面一认证就连推送（列表上的未读、提醒要用）。
+      startJiajia: jjConnect,
+      openBot,
       // 下面这些 Codex 样式也在用：未读、附件、文件夹浏览。
       unread,
       markSeen,
@@ -3182,6 +3662,8 @@
 
   // 样式切换：按设备记在 localStorage；聊天样式下模型 / 权限收进「⋯」。
   $("mirrorOpen").onclick = () => m.setStyle("mirror");
+  // 加加只在聊天样式里：切过去直接打开。
+  $("jiajiaOpen").onclick = () => { m.setStyle("chat"); m.openBot(); };
   $("style").onclick = () => m.setStyle(document.documentElement.dataset.style === "chat" ? "codex" : "chat");
 
   $("pairButton").onclick = pair;
@@ -3208,6 +3690,7 @@
     }
     applyRole();
     loadThreads();
+    m.startJiajia();
     // 上次停在桌面镜像：有权限就接着连，否则退回自绘界面。
     if (document.documentElement.dataset.style === "mirror") {
       if (can("full")) mirror.start();
