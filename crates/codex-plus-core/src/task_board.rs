@@ -369,7 +369,18 @@ fn board_payload(dir: &Path) -> Value {
     json!({ "dir": dir.display().to_string(), "tasks": list_tasks(dir) })
 }
 
-/// 管理器页面的唯一入口：每个动作都返回整个面板（任务不多，整表刷新最简单，也不会和手改文件对不上）。
+/// Codex 页面（`47-task-board-page.js`）经 bridge 路由 `/task-board` 调用：`{ action, ...args }`。
+/// 只读写本地任务文件，不依赖管理器是否在跑。
+pub fn bridge_route(payload: &Value) -> anyhow::Result<Value> {
+    let action = payload.get("action").and_then(Value::as_str).unwrap_or("list");
+    let mut value = dispatch(action, payload)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("status".into(), json!("ok"));
+    }
+    Ok(value)
+}
+
+/// 动作分发：每个动作都返回整个面板（任务不多，整表刷新最简单，也不会和手改文件对不上）。
 pub fn dispatch(action: &str, args: &Value) -> anyhow::Result<Value> {
     let dir = tasks_dir();
     let id = || -> anyhow::Result<u64> { args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow!("缺少任务编号")) };

@@ -19,7 +19,6 @@ mod provider_lookup_commands;
 mod remote_control_commands;
 mod runtime_health;
 mod skill_backup_usage;
-mod task_board_commands;
 mod tray_panel;
 mod shutdown_watchdog;
 
@@ -387,7 +386,6 @@ pub fn run() {
             commands::load_settings,
             config_doctor_commands::config_doctor_request,
             remote_control_commands::remote_control_request,
-            task_board_commands::task_board_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,

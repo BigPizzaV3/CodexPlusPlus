@@ -1,5 +1,5 @@
 use codex_plus_core::task_board::{
-    create_task, delete_task, dispatch, list_tasks, parse_task, read_task, render_task, set_tasks_dir_for_tests, update_task,
+    bridge_route, create_task, delete_task, dispatch, list_tasks, parse_task, read_task, render_task, set_tasks_dir_for_tests, update_task,
     NewTask, TaskPatch, TaskStatus,
 };
 use serde_json::json;
@@ -145,6 +145,13 @@ fn dispatch_round_trips_through_the_frontend_actions() {
     assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
     let deleted = dispatch("delete", &json!({ "id": 1 })).unwrap();
     assert!(deleted["tasks"].as_array().unwrap().is_empty());
+
+    // Codex 页面经 bridge 路由 `/task-board` 传 `{ action, ...args }`，成功时带 status: ok。
+    let via_bridge = bridge_route(&json!({ "action": "create", "task": { "title": "从 Codex 建的" } })).unwrap();
+    assert_eq!(via_bridge["status"], "ok");
+    assert_eq!(via_bridge["tasks"][0]["title"], "从 Codex 建的");
+    assert_eq!(bridge_route(&json!({})).unwrap()["tasks"].as_array().unwrap().len(), 1, "缺 action 时按 list");
+    assert!(bridge_route(&json!({ "action": "update", "id": 99, "patch": {} })).is_err());
 
     set_tasks_dir_for_tests(None);
 }

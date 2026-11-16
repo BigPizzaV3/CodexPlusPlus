@@ -73,7 +73,7 @@ test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死�
   assert.match(renderer, /\[codexPlusRailRemoteId, "remote"\],/, "选中态");
   assert.match(renderer, /if \(tab === codexPlusRemoteControlTab\) return "remote";/);
   // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
-  assert.equal(renderer.split("#${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}`)) return;").length - 1, 2);
+  assert.equal(renderer.split("#${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);
   assert.match(renderer, /#\$\{codexPlusRailRemoteId\} > button/, "扫描调度排除自己的节点");
   assert.match(pageSource, /data-codex-plus-active-tab="\$\{codexPlusRemoteControlTab\}"/);
   assert.match(pageSource, /postJson\("\/remote-control", \{ action, \.\.\.args \}\)/);

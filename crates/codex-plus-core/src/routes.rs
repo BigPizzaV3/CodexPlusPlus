@@ -509,6 +509,14 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
+        // Codex 页面里的「任务面板」（47-task-board-page.js）。不在拓展路由白名单里：能新建、改、删任务文件。
+        "/task-board" => {
+            let payload = payload.clone();
+            tokio::task::spawn_blocking(move || crate::task_board::bridge_route(&payload))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+        }
         "/providers/test" => crate::provider_page::route_test(&payload).await,
         "/providers/models" => crate::provider_page::route_models(&payload).await,
         // 开放给拓展的设置只读子集：当前供应商的名称、模式、模型与上下文窗口。整份设置（/settings/get）仍不开放。

@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 560
+      "lines": 563
     },
     {
       "name": "01-registry.js",
@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3110
+      "lines": 3189
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2690
+      "lines": 2695
     },
     {
       "name": "41-extension-detail.js",
@@ -84,6 +84,11 @@
       "name": "46-service-settings.js",
       "description": "Codex++ 设置页的语音输入与下一步建议服务配置（地址、模型、Key、本地模型下载、全局热键、测试连接）与原生浏览器状态",
       "lines": 628
+    },
+    {
+      "name": "47-task-board-page.js",
+      "description": "左侧图标栏「任务面板」页：记下要做什么、拖卡片改状态、详情编辑（经 /task-board 读写 core task_board 的任务文件）",
+      "lines": 578
     },
     {
       "name": "50-navigation.js",
