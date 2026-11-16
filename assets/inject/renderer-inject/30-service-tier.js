@@ -1590,10 +1590,14 @@
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
+  // 桥接只读请求的默认截止（#3137）：模型目录、网关连接代数读不到就无法开始聊天，
+  // 而桥接偶发 2–3 秒才回包，2 秒截止会把迟到的成功当失败。放宽到有界的 8 秒；
+  // 读不到也能降级的读取（会话元数据、设置）仍显式传 codexAppServerPreparationTimeoutMs，及时降级。
+  const codexBridgePreparationReadTimeoutMs = 8000;
 
   // 发送前只读取辅助配置；桥接无回包时及时降级，迟到的结果也不再应用。
   // 写 RPC（尤其 thread/resume）不能这样竞速，否则会在 turn/start 后迟到修改会话。
-  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexAppServerPreparationTimeoutMs) {
+  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexBridgePreparationReadTimeoutMs) {
     let timeoutId;
     try {
       return await Promise.race([

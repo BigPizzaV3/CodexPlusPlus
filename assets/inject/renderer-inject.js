@@ -5765,10 +5765,14 @@
   }
 
   const codexAppServerPreparationTimeoutMs = 2000;
+  // 桥接只读请求的默认截止（#3137）：模型目录、网关连接代数读不到就无法开始聊天，
+  // 而桥接偶发 2–3 秒才回包，2 秒截止会把迟到的成功当失败。放宽到有界的 8 秒；
+  // 读不到也能降级的读取（会话元数据、设置）仍显式传 codexAppServerPreparationTimeoutMs，及时降级。
+  const codexBridgePreparationReadTimeoutMs = 8000;
 
   // 发送前只读取辅助配置；桥接无回包时及时降级，迟到的结果也不再应用。
   // 写 RPC（尤其 thread/resume）不能这样竞速，否则会在 turn/start 后迟到修改会话。
-  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexAppServerPreparationTimeoutMs) {
+  async function readCodexAppServerPreparation(path, payload, timeoutMs = codexBridgePreparationReadTimeoutMs) {
     let timeoutId;
     try {
       return await Promise.race([
@@ -12316,6 +12320,8 @@
     loadedAt: codexModelCatalogLoadedAt,
     source: previousCodexModelCatalogRuntime?.source || "",
     settingsKey: previousCodexModelCatalogRuntime?.settingsKey || "",
+    // 当前成功快照是在哪套供应商 / 目录指纹下读到的；判断不出归属时为空。
+    catalogIdentity: previousCodexModelCatalogRuntime?.catalogIdentity || "",
     retryAt: previousCodexModelCatalogRuntime?.retryAt || 0,
     failure: previousCodexModelCatalogRuntime?.failure || null,
     modelListRequests: previousCodexModelCatalogRuntime?.modelListRequests || new Map(),
@@ -12437,6 +12443,10 @@
       (aggregate?.members || []).map((member) => fields(profiles.find((entry) => entry?.id === member.relayId)))]);
   }
 
+  function codexModelCatalogIdentity(settings) {
+    return JSON.stringify([codexModelSettingsSource(settings), codexModelSettingsKey(settings)]);
+  }
+
   function refreshCodexModelCatalogForSettings(previous, next) {
     if (window.__codexPlusModelCatalogRuntime !== codexModelCatalogRuntime) return;
     const source = codexModelSettingsSource(next);
@@ -12455,6 +12465,7 @@
     if (sourceChanged) {
       codexModelCatalog = { status: "loading", model: "", default_model: "", models: [], sources: [] };
       codexModelCatalogRuntime.catalog = codexModelCatalog;
+      codexModelCatalogRuntime.catalogIdentity = "";
       window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.({ sourceChanged: true });
     }
     codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = 0;
@@ -12505,9 +12516,11 @@
     const revision = ++codexModelCatalogRevision;
     const current = () => revision === codexModelCatalogRevision
       && window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime;
+    let identity = "";
     if (codexPlusBackendSettingsLoaded) {
       codexModelCatalogRuntime.source = codexModelSettingsSource(codexPlusBackendSettings);
       codexModelCatalogRuntime.settingsKey = codexModelSettingsKey(codexPlusBackendSettings);
+      identity = codexModelCatalogIdentity(codexPlusBackendSettings);
     }
     let failedCatalog = null;
     const request = readCodexAppServerPreparation("/codex-model-catalog", {})
@@ -12546,6 +12559,7 @@
           model.startsWith("group/") && metadata?.displayName !== previousMetadata[model]?.displayName);
         window.__codexPlusModelPickerGroupsRuntime?.catalogChanged?.(previousCatalog, nextCatalog);
         codexModelCatalog = codexModelCatalogRuntime.catalog = nextCatalog;
+        codexModelCatalogRuntime.catalogIdentity = identity;
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
@@ -13316,8 +13330,20 @@
     }
   }
 
+  // 强制刷新失败（如桥接迟回超时，#3137）时，只有成功快照与当前供应商、目录指纹完全一致才退回它；
+  // 设置未加载、快照归属不明、换过供应商或改过目录配置，一律返回原失败，绝不混用别家的目录。
+  function codexModelCatalogSnapshotAfterFailure(failure) {
+    const snapshot = codexModelCatalog;
+    if (failure?.status !== "failed" || snapshot === failure || snapshot?.status !== "ok"
+        || !codexPlusBackendSettingsLoaded) return failure;
+    const identity = codexModelCatalogRuntime.catalogIdentity;
+    if (!identity || identity !== codexModelCatalogIdentity(codexPlusBackendSettings)) return failure;
+    sendCodexPlusDiagnostic("model_catalog_snapshot_fallback", { message: String(failure.message || "") });
+    return snapshot;
+  }
+
   async function codexThreadRuntimeContext(params) {
-    const catalog = await loadCodexModelCatalog(true);
+    const catalog = codexModelCatalogSnapshotAfterFailure(await loadCodexModelCatalog(true));
     const runtime = catalog.runtimeContext;
     if (!runtime && catalog.status === "failed") {
       throw new Error(catalog.message || "读取上下文配置失败，请稍后重新发送");
