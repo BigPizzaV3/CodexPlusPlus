@@ -12996,7 +12996,7 @@ pub(crate) struct ResponsesSseTransformer {
     apply_patch_declared_as_function: bool,
     /// 从 `response.completed` 里抓到的 usage，供请求日志使用。
     usage: Option<crate::request_log::RequestUsage>,
-    final_response_usage: Option<crate::request_log::RequestUsage>,
+    final_response_usage: Option<crate::request_log::FinalResponseUsage>,
     final_response_invalid: bool,
     /// 终态失败事件里的 code/message 摘要。只进请求日志与诊断日志，
     /// 不拼进 failure 原因（原因会随 SSE 回给客户端，不能泄露上游 payload）。
@@ -13298,7 +13298,7 @@ impl ResponsesSseTransformer {
         self.usage.take()
     }
 
-    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::RequestUsage> {
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::FinalResponseUsage> {
         (self.completed
             && !self.failed
             && !self.final_response_invalid
@@ -14021,7 +14021,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
             final_stream.push_bytes(chunk);
         }
         assert_eq!(
-            final_stream.final_response_usage().unwrap().input_tokens,
+            final_stream.final_response_usage().unwrap().usage.input_tokens,
             12
         );
         assert!(final_stream.finish().is_none());
@@ -14043,7 +14043,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
         let mut done = ResponsesSseTransformer::default();
         done.push_bytes(completed);
         done.push_bytes(b"data: [DONE]\n\n");
-        assert_eq!(done.final_response_usage().unwrap().input_tokens, 12);
+        assert_eq!(done.final_response_usage().unwrap().usage.input_tokens, 12);
         for body in [
             &completed[..completed.len() - 2],
             &b"data: [DONE]\n\n"[..],
@@ -14070,6 +14070,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
             returned_attempt
                 .final_response_usage()
                 .unwrap()
+                .usage
                 .input_tokens,
             12
         );
