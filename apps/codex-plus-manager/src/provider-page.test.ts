@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 // Codex 页面「供应商」页：42 分片（与管理器共用的编辑函数打包）+ 43 分片（页面）。
 const root = new URL("../../../", import.meta.url);
@@ -27,7 +28,8 @@ function pureProfile(id: string, baseUrl: string, key: string) {
 
 describe("供应商编辑函数打包（42 分片）", () => {
   it("与 relay-profile-editing.ts 保持一致", () => {
-    execFileSync(process.execPath, [new URL("scripts/assemble-provider-editing.mjs", root).pathname, "--check"], { stdio: "pipe" });
+    // 用 fileURLToPath 而不是 .pathname：Windows 上 pathname 是 /D:/…，node 找不到脚本。
+    execFileSync(process.execPath, [fileURLToPath(new URL("scripts/assemble-provider-editing.mjs", root)), "--check"], { stdio: "pipe" });
   });
 
   it("不挂全局、不访问浏览器存储", () => {
