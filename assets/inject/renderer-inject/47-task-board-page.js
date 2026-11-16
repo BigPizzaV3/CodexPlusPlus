@@ -32,6 +32,8 @@
     view: "board",
     showCancelled: false,
     selectedId: null,
+    // 详情里的状态菜单是否展开。
+    statusMenu: false,
     expanded: new Set(),
     refocusQuickAdd: "",
     // 鼠标按下期间不重画：失焦保存触发的重画会把正要点的按钮换掉，这一下点击就丢了。
@@ -42,6 +44,22 @@
     pollTimer: null,
     onFocus: null,
     onRelease: null,
+  };
+
+  /** 页面里用到的小图标（线框，跟随文字颜色）。 */
+  const codexPlusTaskIcon = (paths, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${extra}>${paths}</svg>`;
+  const codexPlusTaskIcons = {
+    search: codexPlusTaskIcon('<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>'),
+    plus: codexPlusTaskIcon('<path d="M12 5v14M5 12h14"/>'),
+    board: codexPlusTaskIcon('<rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M9.5 4v16M15 4v9"/>'),
+    list: codexPlusTaskIcon('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r=".6"/><circle cx="4.5" cy="12" r=".6"/><circle cx="4.5" cy="18" r=".6"/>'),
+    folder: codexPlusTaskIcon('<path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2.2h7.4a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'),
+    check: codexPlusTaskIcon('<rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="m8.5 12.2 2.4 2.4 4.8-5"/>'),
+    play: codexPlusTaskIcon('<path d="M8 5.5v13l10.5-6.5z"/>', ' data-fill="true"'),
+    chevron: codexPlusTaskIcon('<path d="m7 10 5 5 5-5"/>'),
+    trash: codexPlusTaskIcon('<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l.9 12.5h9.2l.9-12.5"/>'),
+    close: codexPlusTaskIcon('<path d="M6 6l12 12M18 6 6 18"/>'),
+    chat: codexPlusTaskIcon('<path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/>'),
   };
 
   const codexPlusTaskKey = (id) => `T-${id}`;
@@ -70,6 +88,26 @@
     if (!words.length) return true;
     const haystack = [codexPlusTaskKey(task.id), String(task.id), task.title, task.body, task.project || ""].join("\n").toLowerCase();
     return words.every((word) => haystack.includes(word));
+  }
+
+  /** 卡片上的正文摘要：去掉 Markdown 标记，几行拼成一句。 */
+  function codexPlusTaskExcerpt(body) {
+    return String(body || "")
+      .split(/\r?\n/)
+      .map((line) => line
+        .replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/, "")
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/[*_`~]+/g, "")
+        .trim())
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, 200);
+  }
+
+  /** 正文里 `- [ ]` / `- [x]` 清单的完成数。 */
+  function codexPlusTaskChecklist(body) {
+    const items = String(body || "").match(/^[ \t]*[-*+][ \t]+\[[ xX]\]/gm) || [];
+    return { done: items.filter((item) => /\[[xX]\]$/.test(item)).length, total: items.length };
   }
 
   /** 按状态分列；每列里最近改过状态的在前（刚拖进来的在最上面）。 */
@@ -127,17 +165,29 @@
 
   // ---------- 渲染 ----------
 
-  function codexPlusTaskCard(task) {
-    const selected = task.id === codexPlusTaskBoardState.selectedId;
-    const project = task.project ? `<span class="codex-plus-task-card-project" title="${escapeHtml(task.project)}">${escapeHtml(codexPlusTaskProjectName(task.project))}</span>` : "";
+  /** 卡片 / 列表行上的小标签：项目、清单进度、对话进展。 */
+  function codexPlusTaskTags(task) {
     const runs = codexPlusTaskRunsFor(task.id);
     const running = runs.filter((run) => run.state === "running").length;
-    const runBadge = running
-      ? `<span class="codex-plus-task-run-badge" data-tone="running" title="${running} 个 Codex 对话正在跑">运行中</span>`
-      : runs.length ? `<span class="codex-plus-task-run-badge" title="${runs.length} 个 Codex 对话">${runs.length} 个对话</span>` : "";
-    return `<button type="button" class="codex-plus-task-card" draggable="true" data-codex-task-open="${task.id}" data-selected="${String(selected)}">
+    const checklist = codexPlusTaskChecklist(task.body);
+    return [
+      task.project ? `<span class="codex-plus-task-chip" data-kind="project" title="${escapeHtml(task.project)}">${codexPlusTaskIcons.folder}<span>${escapeHtml(codexPlusTaskProjectName(task.project))}</span></span>` : "",
+      checklist.total ? `<span class="codex-plus-task-chip" data-complete="${String(checklist.done === checklist.total)}" title="清单完成 ${checklist.done} / ${checklist.total}">${codexPlusTaskIcons.check}<span>${checklist.done}/${checklist.total}</span></span>` : "",
+      running
+        ? `<span class="codex-plus-task-run-badge" data-tone="running" title="${running} 个 Codex 对话正在跑"><i aria-hidden="true"></i>运行中</span>`
+        : runs.length ? `<span class="codex-plus-task-chip" title="${runs.length} 个 Codex 对话">${codexPlusTaskIcons.chat}<span>${runs.length}</span></span>` : "",
+    ].join("");
+  }
+
+  function codexPlusTaskCard(task) {
+    const selected = task.id === codexPlusTaskBoardState.selectedId;
+    const excerpt = codexPlusTaskExcerpt(task.body);
+    const tags = codexPlusTaskTags(task);
+    return `<button type="button" class="codex-plus-task-card" draggable="true" data-codex-task-open="${task.id}" data-selected="${String(selected)}" data-status="${escapeHtml(task.status)}">
+      <span class="codex-plus-task-card-head"><code>${codexPlusTaskKey(task.id)}</code><span title="进入这一列：${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">${codexPlusTaskAgo(task.statusAt)}</span></span>
       <span class="codex-plus-task-card-title">${escapeHtml(task.title)}</span>
-      <span class="codex-plus-task-card-meta"><code>${codexPlusTaskKey(task.id)}</code>${project}<span title="进入这一列：${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">${codexPlusTaskAgo(task.statusAt)}</span>${runBadge}</span>
+      ${excerpt ? `<span class="codex-plus-task-card-excerpt">${escapeHtml(excerpt)}</span>` : ""}
+      ${tags ? `<span class="codex-plus-task-card-tags">${tags}</span>` : ""}
     </button>`;
   }
 
@@ -146,11 +196,11 @@
     const canAdd = entry.id === "backlog" || entry.id === "todo";
     const shown = state.expanded.has(entry.id) ? tasks : tasks.slice(0, codexPlusTaskColumnLimit);
     const quickAdd = canAdd ? `<label class="codex-plus-task-quick-add">
-        <span aria-hidden="true">+</span>
+        ${codexPlusTaskIcons.plus}
         <input type="text" data-codex-task-quick-add="${entry.id}" placeholder="${entry.id === "backlog" ? "记一件事，回车保存" : "加一件要做的事"}" title="回车保存；⌘/Ctrl+回车保存并打开详情" aria-label="${escapeHtml(entry.label)}：新建任务">
       </label>` : "";
     const more = tasks.length > shown.length ? `<button type="button" class="codex-plus-task-more" data-codex-task-expand="${entry.id}">显示全部 ${tasks.length} 个</button>` : "";
-    const empty = !tasks.length && !canAdd ? `<p class="codex-plus-task-column-empty">${escapeHtml(entry.hint)}</p>` : "";
+    const empty = !tasks.length && !canAdd ? `<div class="codex-plus-task-column-empty">${escapeHtml(entry.hint)}</div>` : "";
     return `<section class="codex-plus-task-column" data-codex-task-column="${entry.id}" aria-label="${escapeHtml(entry.label)}">
       <header title="${escapeHtml(entry.hint)}"><span class="codex-plus-task-dot" data-status="${entry.id}"></span><h3>${escapeHtml(entry.label)}</h3><span class="codex-plus-task-count">${tasks.length}</span></header>
       <div class="codex-plus-task-cards">${quickAdd}${shown.map(codexPlusTaskCard).join("")}${more}${empty}</div>
@@ -160,14 +210,18 @@
   function codexPlusTaskListView(groups, statuses) {
     const sections = statuses.filter((entry) => groups[entry.id].length).map((entry) => `<section class="codex-plus-task-list-group">
       <header><span class="codex-plus-task-dot" data-status="${entry.id}"></span><h3>${escapeHtml(entry.label)}</h3><span class="codex-plus-task-count">${groups[entry.id].length}</span></header>
-      ${groups[entry.id].map((task) => `<button type="button" class="codex-plus-task-list-row" data-codex-task-open="${task.id}" data-selected="${String(task.id === codexPlusTaskBoardState.selectedId)}">
+      ${groups[entry.id].map((task) => `<button type="button" class="codex-plus-task-list-row" data-codex-task-open="${task.id}" data-selected="${String(task.id === codexPlusTaskBoardState.selectedId)}" data-status="${escapeHtml(task.status)}">
+        <span class="codex-plus-task-dot" data-status="${escapeHtml(task.status)}"></span>
         <code>${codexPlusTaskKey(task.id)}</code>
         <span class="codex-plus-task-list-title">${escapeHtml(task.title)}</span>
-        <span class="codex-plus-task-list-project" title="${escapeHtml(task.project || "")}">${escapeHtml(codexPlusTaskProjectName(task.project))}</span>
-        <span class="codex-plus-task-list-time" title="${escapeHtml(codexPlusTaskFullTime(task.updatedAt))}">${codexPlusTaskAgo(task.updatedAt)}</span>
+        <span class="codex-plus-task-list-tags">${codexPlusTaskTags(task)}</span>
+        <span class="codex-plus-task-list-time" title="更新于 ${escapeHtml(codexPlusTaskFullTime(task.updatedAt))}">${codexPlusTaskAgo(task.updatedAt)}</span>
       </button>`).join("")}
     </section>`).join("");
-    return `<div class="codex-plus-task-list">${sections || '<p class="codex-plus-task-empty">还没有任务。切到看板，在「收集」列顶上写一句就能记下。</p>'}</div>`;
+    const empty = codexPlusTaskBoardState.query.trim()
+      ? `<div class="codex-plus-task-empty">${codexPlusTaskIcons.search}<strong>没有匹配的任务</strong><span>换个关键词试试，编号写 T-12 或 12 都行。</span></div>`
+      : `<div class="codex-plus-task-empty">${codexPlusTaskIcons.board}<strong>还没有任务</strong><span>切到看板，在「收集」列顶上写一句就能记下。</span></div>`;
+    return `<div class="codex-plus-task-list">${sections || empty}</div>`;
   }
 
   function renderCodexPlusTaskMain() {
@@ -225,26 +279,51 @@
     aside.dataset.taskId = String(task.id);
     const projects = [...new Set(codexPlusTasks().map((item) => item.project).filter(Boolean))];
     const runs = codexPlusTaskRunsFor(task.id);
+    const current = codexPlusTaskStatuses.find((entry) => entry.id === task.status) || codexPlusTaskStatuses[0];
+    const checklist = codexPlusTaskChecklist(task.body);
     aside.innerHTML = `<header>
-        <code>${codexPlusTaskKey(task.id)}</code><span class="codex-plus-task-spacer"></span>
-        <button type="button" class="codex-plus-task-icon-button" data-codex-task-action="delete" title="删除任务" aria-label="删除任务">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></button>
-        <button type="button" class="codex-plus-task-icon-button" data-codex-task-action="closeDetail" title="关闭（Esc）" aria-label="关闭（Esc）">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        <span class="codex-plus-task-dot" data-status="${current.id}"></span><code>${codexPlusTaskKey(task.id)}</code><span class="codex-plus-task-spacer"></span>
+        <button type="button" class="codex-plus-task-icon-button" data-codex-task-action="delete" title="删除任务" aria-label="删除任务">${codexPlusTaskIcons.trash}</button>
+        <button type="button" class="codex-plus-task-icon-button" data-codex-task-action="closeDetail" title="关闭（Esc）" aria-label="关闭（Esc）">${codexPlusTaskIcons.close}</button>
       </header>
       <div class="codex-plus-task-detail-body">
-        <input type="text" class="codex-plus-task-title-input" data-codex-task-field="title" value="${escapeHtml(task.title)}" aria-label="标题">
+        <textarea class="codex-plus-task-title-input" data-codex-task-field="title" rows="1" aria-label="标题" placeholder="标题">${escapeHtml(task.title)}</textarea>
+        <div class="codex-plus-task-props">
+          <span class="codex-plus-task-prop-label">状态</span>
+          <div class="codex-plus-task-prop-value codex-plus-task-status-field">
+            <button type="button" class="codex-plus-task-select" data-codex-task-action="statusMenu" aria-haspopup="menu" aria-expanded="${String(state.statusMenu)}" title="${escapeHtml(current.hint)}">
+              <span class="codex-plus-task-dot" data-status="${current.id}"></span><span>${escapeHtml(current.label)}</span>${codexPlusTaskIcons.chevron}</button>
+            <span class="codex-plus-task-prop-note" title="${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">${codexPlusTaskAgo(task.statusAt)}进入</span>
+            ${state.statusMenu ? codexPlusTaskStatusMenu(task) : ""}
+          </div>
+          <label class="codex-plus-task-prop-label" for="codex-plus-task-project">项目</label>
+          <div class="codex-plus-task-prop-value">
+            <input type="text" id="codex-plus-task-project" class="codex-plus-task-ghost-input" data-codex-task-field="project" list="codex-plus-task-projects" value="${escapeHtml(task.project || "")}" placeholder="项目目录，可不填" spellcheck="false">
+            <datalist id="codex-plus-task-projects">${projects.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist>
+          </div>
+          <span class="codex-plus-task-prop-label">时间</span>
+          <div class="codex-plus-task-prop-value codex-plus-task-prop-note">
+            <span title="${escapeHtml(codexPlusTaskFullTime(task.createdAt))}">${codexPlusTaskAgo(task.createdAt)}创建</span><span aria-hidden="true">·</span><span title="${escapeHtml(codexPlusTaskFullTime(task.updatedAt))}">${codexPlusTaskAgo(task.updatedAt)}更新</span>
+          </div>
+        </div>
         ${codexPlusTaskStartSection(task, runs)}
-        <div class="codex-plus-task-field-label">状态 <span title="${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">· ${codexPlusTaskAgo(task.statusAt)}进入</span></div>
-        <div class="codex-plus-task-status-picker" role="radiogroup" aria-label="状态">${codexPlusTaskStatuses.map((entry) => `<button type="button" role="radio" aria-checked="${String(entry.id === task.status)}" data-codex-task-status="${entry.id}" title="${escapeHtml(entry.hint)}"><span class="codex-plus-task-dot" data-status="${entry.id}"></span>${escapeHtml(entry.label)}</button>`).join("")}</div>
-        <label class="codex-plus-task-field-label" for="codex-plus-task-project">项目</label>
-        <input type="text" id="codex-plus-task-project" class="codex-plus-provider-input" data-codex-task-field="project" list="codex-plus-task-projects" value="${escapeHtml(task.project || "")}" placeholder="项目目录，可不填">
-        <datalist id="codex-plus-task-projects">${projects.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist>
-        <label class="codex-plus-task-field-label" for="codex-plus-task-body">内容</label>
-        <textarea id="codex-plus-task-body" class="codex-plus-provider-input codex-plus-task-body-input" data-codex-task-field="body" placeholder="要做什么、为什么、做到什么程度算完（Markdown）">${escapeHtml(task.body)}</textarea>
+        <div class="codex-plus-task-section-head"><label for="codex-plus-task-body">描述</label>${checklist.total ? `<span title="正文里的 - [ ] 清单">清单 ${checklist.done}/${checklist.total}</span>` : ""}</div>
+        <textarea id="codex-plus-task-body" class="codex-plus-task-body-input" data-codex-task-field="body" placeholder="要做什么、为什么、做到什么程度算完。支持 Markdown，- [ ] 写清单。">${escapeHtml(task.body)}</textarea>
         ${codexPlusTaskRunList(runs)}
-        <p class="codex-plus-task-times"><span title="${escapeHtml(codexPlusTaskFullTime(task.createdAt))}">创建于 ${codexPlusTaskAgo(task.createdAt)}</span><span title="${escapeHtml(codexPlusTaskFullTime(task.updatedAt))}">更新于 ${codexPlusTaskAgo(task.updatedAt)}</span></p>
       </div>`;
+  }
+
+  /** 详情里的状态菜单：每项一个状态，带说明；当前状态打勾。 */
+  function codexPlusTaskStatusMenu(task) {
+    return `<div class="codex-plus-task-menu" role="menu" aria-label="改状态">${codexPlusTaskStatuses.map((entry) => `<button type="button" role="menuitemradio" aria-checked="${String(entry.id === task.status)}" data-codex-task-status="${entry.id}">
+        <span class="codex-plus-task-dot" data-status="${entry.id}"></span><span class="codex-plus-task-menu-label">${escapeHtml(entry.label)}</span><span class="codex-plus-task-menu-hint">${escapeHtml(entry.hint)}</span></button>`).join("")}</div>`;
+  }
+
+  /** 收起状态菜单：只摘掉菜单节点，不重画详情（正在编辑的输入框不被打断）。 */
+  function codexPlusTaskCloseMenu() {
+    codexPlusTaskBoardState.statusMenu = false;
+    document.querySelector(".codex-plus-task-menu")?.remove();
+    document.querySelector('[data-codex-task-action="statusMenu"]')?.setAttribute("aria-expanded", "false");
   }
 
   /** 「在 Codex 中开始」：新开一个对话，输入框里填好 `[T-N] 标题` 和正文，由用户确认后发送。 */
@@ -254,7 +333,7 @@
       : "没填项目，用 Codex 当前选中的项目";
     const label = runs.length ? "再开一个 Codex 对话" : "在 Codex 中开始";
     return `<div class="codex-plus-task-start">
-        <button type="button" class="codex-plus-action-button" data-codex-task-action="start">${label}</button>
+        <button type="button" class="codex-plus-task-primary" data-codex-task-action="start">${codexPlusTaskIcons.play}${label}</button>
         <span class="codex-plus-task-start-hint" title="新对话的输入框里会填好任务内容，你确认后发送。对话开始跑，任务进「进行中」；跑完进「待验收」。">${where}，发送后自动跟进状态</span>
       </div>`;
   }
@@ -272,7 +351,7 @@
           <span class="codex-plus-task-run-title">${escapeHtml(run.title || run.threadId)}</span>${when}${last}
         </button>`;
     }).join("");
-    return `<div class="codex-plus-task-field-label">Codex 对话 <span>· ${runs.length}</span></div><div class="codex-plus-task-runs">${rows}</div>`;
+    return `<div class="codex-plus-task-section-head"><span>Codex 对话</span><span>${runs.length}</span></div><div class="codex-plus-task-runs">${rows}</div>`;
   }
 
   function renderCodexPlusTaskStatus() {
@@ -369,6 +448,7 @@
 
   function codexPlusTaskSelect(id) {
     codexPlusTaskBoardState.selectedId = id;
+    codexPlusTaskBoardState.statusMenu = false;
     codexPlusTaskBoardState.revealId = id;
     renderCodexPlusTaskBoard();
   }
@@ -390,6 +470,8 @@
   async function codexPlusTaskHandleClick(event) {
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const state = codexPlusTaskBoardState;
+    // 状态菜单开着时，点菜单和触发按钮以外的地方先收起菜单，这一下点击照常生效。
+    if (state.statusMenu && !target?.closest('.codex-plus-task-menu, [data-codex-task-action="statusMenu"]')) codexPlusTaskCloseMenu();
     const open = target?.closest("[data-codex-task-open]");
     if (open) {
       codexPlusTaskSelect(Number(open.getAttribute("data-codex-task-open")));
@@ -404,7 +486,9 @@
     if (statusButton && state.selectedId != null) {
       const status = statusButton.getAttribute("data-codex-task-status");
       const task = codexPlusTasks().find((item) => item.id === state.selectedId);
+      codexPlusTaskCloseMenu();
       if (task && task.status !== status) codexPlusTaskUpdate(task.id, { status });
+      document.querySelector('[data-codex-task-action="statusMenu"]')?.focus({ preventScroll: true });
       return;
     }
     const expand = target?.closest("[data-codex-task-expand]");
@@ -437,6 +521,15 @@
         return;
       case "closeDetail":
         codexPlusTaskSelect(null);
+        return;
+      case "statusMenu":
+        if (state.statusMenu) {
+          codexPlusTaskCloseMenu();
+          return;
+        }
+        state.statusMenu = true;
+        renderCodexPlusTaskDetail();
+        document.querySelector('.codex-plus-task-menu [aria-checked="true"]')?.focus({ preventScroll: true });
         return;
       case "start": {
         const task = codexPlusTasks().find((item) => item.id === state.selectedId);
@@ -496,7 +589,22 @@
       target.blur();
       return;
     }
+    // 状态菜单里上下键换项。
+    const menu = target?.closest(".codex-plus-task-menu");
+    if (menu && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      const items = Array.from(menu.querySelectorAll("button"));
+      const index = items.indexOf(target.closest("button"));
+      items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+      return;
+    }
     if (event.key !== "Escape") return;
+    // Esc：先收起状态菜单。
+    if (codexPlusTaskBoardState.statusMenu) {
+      codexPlusTaskCloseMenu();
+      codexPlusTaskParkFocus('[data-codex-task-action="statusMenu"]');
+      return;
+    }
     // Esc：详情里正在打字时先离开输入框（失焦即保存），再按一次才关详情。
     if (target?.closest("[data-codex-task-detail]") && target.matches("input, textarea")) {
       target.blur();
@@ -537,6 +645,7 @@
       if (!card || !event.dataTransfer) return;
       event.dataTransfer.setData(codexPlusTaskDragType, card.getAttribute("data-codex-task-open"));
       event.dataTransfer.effectAllowed = "move";
+      card.setAttribute("data-dragging", "true");
     });
     overlay.addEventListener("dragover", (event) => {
       const column = event.target instanceof Element ? event.target.closest("[data-codex-task-column]") : null;
@@ -547,7 +656,10 @@
     overlay.addEventListener("dragleave", (event) => {
       if (!overlay.contains(event.relatedTarget)) setOver(null);
     });
-    overlay.addEventListener("dragend", () => setOver(null));
+    overlay.addEventListener("dragend", () => {
+      setOver(null);
+      overlay.querySelectorAll("[data-dragging]").forEach((node) => node.removeAttribute("data-dragging"));
+    });
     overlay.addEventListener("drop", (event) => {
       const column = event.target instanceof Element ? event.target.closest("[data-codex-task-column]") : null;
       setOver(null);
@@ -587,13 +699,14 @@
       <div class="codex-plus-task-shell" data-codex-task-shell="true" tabindex="-1">
         <div class="codex-plus-task-toolbar">
           <h2 class="codex-plus-task-heading">任务面板</h2>
-          <input type="search" class="codex-plus-provider-input codex-plus-task-search" data-codex-task-search="true" placeholder="搜索编号、标题、内容、项目" aria-label="搜索任务" value="${escapeHtml(state.query)}">
-          <label class="codex-plus-task-check"><input type="checkbox" data-codex-task-cancelled="true" ${state.showCancelled ? "checked" : ""}>显示已取消</label>
-          <div class="codex-plus-remote-segmented" role="radiogroup" aria-label="视图">
-            <button type="button" role="radio" data-codex-task-view="board" aria-checked="${String(state.view === "board")}">看板</button>
-            <button type="button" role="radio" data-codex-task-view="list" aria-checked="${String(state.view === "list")}">列表</button>
+          <span class="codex-plus-task-spacer"></span>
+          <label class="codex-plus-task-search">${codexPlusTaskIcons.search}<input type="search" data-codex-task-search="true" placeholder="搜索编号、标题、内容、项目" aria-label="搜索任务" value="${escapeHtml(state.query)}" spellcheck="false"></label>
+          <label class="codex-plus-task-toggle" title="把「已取消」的任务也列出来"><input type="checkbox" data-codex-task-cancelled="true" ${state.showCancelled ? "checked" : ""}>显示已取消</label>
+          <div class="codex-plus-task-segmented" role="radiogroup" aria-label="视图">
+            <button type="button" role="radio" data-codex-task-view="board" aria-checked="${String(state.view === "board")}">${codexPlusTaskIcons.board}看板</button>
+            <button type="button" role="radio" data-codex-task-view="list" aria-checked="${String(state.view === "list")}">${codexPlusTaskIcons.list}列表</button>
           </div>
-          <button type="button" class="codex-plus-action-button codex-plus-task-new" data-codex-task-action="new">新建任务</button>
+          <button type="button" class="codex-plus-task-primary" data-codex-task-action="new">${codexPlusTaskIcons.plus}新建任务</button>
         </div>
         <div class="codex-plus-remote-banner" data-tone="warn" role="alert" data-codex-task-banner="true" hidden></div>
         <div class="codex-plus-task-body">
@@ -669,7 +782,7 @@
       const editing = document.activeElement;
       if (editing instanceof Element && editing.matches("[data-codex-task-field]")) codexPlusTaskCommitField(editing);
     };
-    Object.assign(state, { error: "", expanded: new Set(), refocusQuickAdd: "", pointerDown: false, renderPending: false });
+    Object.assign(state, { error: "", statusMenu: false, expanded: new Set(), refocusQuickAdd: "", pointerDown: false, renderPending: false });
     renderCodexPlusTaskBoard();
     void codexPlusTaskRun("list");
   }

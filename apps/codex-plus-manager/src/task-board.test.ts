@@ -20,7 +20,9 @@ type Run = { taskId: number; threadId: string; state: string; updatedAt: number;
 /** 分片顶层只有常量和函数声明，直接求值拿出纯函数。 */
 async function loadShard() {
   const source = await read(shardPath);
-  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates };`)() as {
+  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist };`)() as {
+    codexPlusTaskExcerpt: (body: string) => string;
+    codexPlusTaskChecklist: (body: string) => { done: number; total: number };
     codexPlusTaskStatuses: Array<{ id: string; label: string }>;
     codexPlusTaskGroups: (tasks: Task[]) => Record<string, Task[]>;
     codexPlusTaskMatches: (task: Task, query: string) => boolean;
@@ -56,6 +58,22 @@ test("按状态分列，每列最近改过状态的在前；搜索命中编号�
   assert.equal(shard.codexPlusTaskProjectName("D:\\work\\Codex++\\"), "Codex++");
   assert.equal(shard.codexPlusTaskProjectName("/Users/me/repo"), "repo");
   assert.equal(shard.codexPlusTaskProjectName(null), "");
+});
+
+test("卡片摘要去掉 Markdown 标记；清单进度按 - [ ] / - [x] 计数", async () => {
+  const shard = await loadShard();
+  const body = "## 背景\n登录页 **偶发** 报错，见 [日志](https://x/y)\n\n- [x] 复现\n- [ ] 修 `token` 刷新\n  * [X] 嵌套也算\n1. 第一步\n```\ncode\n```";
+  assert.equal(shard.codexPlusTaskExcerpt(body), "背景 登录页 偶发 报错，见 日志 复现 修 token 刷新 嵌套也算 第一步 code");
+  assert.equal(shard.codexPlusTaskExcerpt(""), "");
+  assert.deepEqual(shard.codexPlusTaskChecklist(body), { done: 2, total: 3 });
+  assert.deepEqual(shard.codexPlusTaskChecklist("没有清单\n[ ] 不是列表项"), { done: 0, total: 0 });
+});
+
+test("详情里的状态改成下拉菜单：触发按钮不占用 data-codex-task-status，Esc 先收菜单", async () => {
+  const page = await read(shardPath);
+  assert.match(page, /data-codex-task-action="statusMenu" aria-haspopup="menu"/);
+  assert.match(page, /role="menuitemradio" aria-checked="\$\{String\(entry\.id === task\.status\)\}" data-codex-task-status=/);
+  assert.match(page, /if \(codexPlusTaskBoardState\.statusMenu\) \{\n\s*codexPlusTaskCloseMenu\(\);/, "Esc 先收起菜单，不直接关详情");
 });
 
 test("Codex 左侧图标栏的「任务面板」入口：登记进所有写死内置 id 的地方", async () => {
