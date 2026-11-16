@@ -487,6 +487,12 @@
       "group": "chat"
     },
     {
+      "id": "context-tuning",
+      "title": "上下文与压缩",
+      "description": "在 Codex 设置页改压缩提示词、回合结束后压缩、工具输出上限，并能给第三方模型精简系统提示",
+      "group": "chat"
+    },
+    {
       "id": "session-title-hook",
       "title": "会话标题中间件",
       "description": "首轮结束后按拓展的 session/title 中间件改会话标题",

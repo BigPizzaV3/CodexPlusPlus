@@ -465,6 +465,23 @@ pub async fn handle_bridge_request(
         "/hooks/test-run" => {
             crate::hooks_editor::test_run(&crate::codex_home::default_codex_home_dir(), &payload).await
         }
+        // Codex++ 设置页「上下文与压缩」（96-context-tuning.js）：把压缩 / 精简系统提示等键同步进通用配置。
+        // 不在拓展路由白名单里：会改 Codex++ 设置。
+        "/session-tuning/read" => tokio::task::spawn_blocking(|| {
+            crate::session_tuning::read(&crate::settings::SettingsStore::default())
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result),
+        "/session-tuning/write" => {
+            let payload = payload.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::session_tuning::write(&crate::settings::SettingsStore::default(), &payload)
+            })
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+        }
         // Codex 页面里的「供应商」页（43-provider-page.js）。不在拓展路由白名单里：会改供应商、带 Key。
         "/providers/list" => crate::provider_page::route_list(),
         // 保存 / 切换走管理器的同步命令（文件锁、live 文件读写），放到阻塞线程池里跑。

@@ -221,9 +221,14 @@
       "lines": 267
     },
     {
+      "name": "96-context-tuning.js",
+      "description": "内置拓展「上下文与压缩」：压缩提示词、回合后压缩、工具输出上限、精简系统提示，写 live 并同步通用配置",
+      "lines": 480
+    },
+    {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 443
+      "lines": 444
     },
     {
       "name": "96-paste-fix.js",

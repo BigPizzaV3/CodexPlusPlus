@@ -139,6 +139,7 @@ mod responses_exec_compatibility;
 mod retired_layout;
 mod rice_maid_pet;
 mod script_market;
+mod session_tuning;
 mod settings_load_recursion;
 mod side_chat;
 mod skill_github_live;

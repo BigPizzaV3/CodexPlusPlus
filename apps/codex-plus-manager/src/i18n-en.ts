@@ -451,6 +451,8 @@ export const EN_PLAIN: Record<string, string> = {
   "在 Codex 设置页按模板新建、编辑、启停 hooks.json 里的 hook，并能喂示例事件试运行": "Create hooks from templates, edit and toggle the hooks in hooks.json from Codex settings, and test-run them with a sample event",
   "Hooks 编辑器": "Hooks editor",
   "! 命令": "! commands",
+  "上下文与压缩": "Context & compaction",
+  "在 Codex 设置页改压缩提示词、回合结束后压缩、工具输出上限，并能给第三方模型精简系统提示": "Edit the compaction prompt, post-turn compaction, tool output limit and trim the system prompt for third-party models from Codex settings",
   "输入框里输入 !命令 回车，在当前会话目录直接运行（不经沙箱），输出显示在输入框上方并加入会话上下文": "Type !command in the composer and press Enter to run it in the current chat folder (outside the sandbox); the output shows above the composer and is added to the chat context",
   "在 Codex 设置页列出原生实验开关（阶段 / 默认值 / 说明），可直接启停": "Lists native experimental features in Codex settings, with stage, default value and description, and lets you toggle them",
   "输入框旁的麦克风按钮，录音转写成文字": "A microphone button next to the composer that transcribes speech",
