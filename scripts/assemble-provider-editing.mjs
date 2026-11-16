@@ -69,7 +69,10 @@ const fragment = [
 
 if (process.argv.includes("--check")) {
   const current = await readFile(output, "utf8").catch(() => "");
-  if (current !== fragment) {
+  // Windows runner 默认 core.autocrlf=true，*.js / *.mjs 没在 .gitattributes 里钉 LF，
+  // 检出的分片和 shim 都是 CRLF，esbuild 产物却是 LF；只比内容，不比换行符。
+  const lf = (text) => text.replace(/\r\n/g, "\n");
+  if (lf(current) !== lf(fragment)) {
     throw new Error("42-provider-editing.generated.js 与 relay-profile-editing.ts 不一致，请运行 node scripts/assemble-provider-editing.mjs");
   }
   console.log("provider editing fragment up to date");
