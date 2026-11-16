@@ -1,6 +1,7 @@
 use codex_plus_core::task_board::{
-    apply_auto_status, auto_status, bridge_route, create_task, delete_task, dispatch, linked_runs, list_tasks, new_thread_link,
-    parse_rollout_timestamp, parse_task, read_task, render_task, rollout_run_state, set_codex_home_for_tests, set_tasks_dir_for_tests,
+    apply_auto_status, auto_status, bridge_route, create_task, delete_task, dispatch, is_scratch_dir, linked_runs, list_tasks,
+    new_thread_link, parse_rollout_timestamp, parse_task, read_task, recent_projects, render_task, rollout_run_state,
+    set_codex_home_for_tests, set_picked_folder_for_tests, set_tasks_dir_for_tests,
     take_opened_links_for_tests, task_marker_id, task_prompt, update_task, NewTask, RunState, Task, TaskPatch, TaskRun, TaskStatus,
 };
 use std::path::Path;
@@ -302,6 +303,88 @@ fn linked_runs_reads_marked_threads_from_the_codex_database() {
     assert_eq!(runs[0].title, "[T-2] 修登录", "没有标题时用首行");
     assert_eq!(runs[0].updated_at, 1_793_614_137_000, "秒转毫秒");
     assert_eq!(runs[1].state, RunState::Idle, "rollout 读不到时当作还没开始");
+}
+
+#[test]
+fn scratch_dirs_are_not_offered_as_projects() {
+    for path in [
+        "/tmp",
+        "/tmp/jj-exp",
+        "/private/var/folders/x/T/abc",
+        "/Users/me/Documents/Codex/2026-11-16/new-chat",
+        "C:\\Users\\me\\Documents\\Codex\\2026-11-16\\1",
+        "/Users/me/.codex/worktrees/ab12/repo",
+    ] {
+        assert!(is_scratch_dir(path), "{path}");
+    }
+    for path in ["/Users/me/code/CodexPlusPlus", "/Users/me/Codex/notes", "/Users/me/tmpfiles", "D:\\work\\repo"] {
+        assert!(!is_scratch_dir(path), "{path}");
+    }
+}
+
+#[test]
+fn recent_projects_come_from_thread_working_dirs() {
+    let _lock = crate::common::global_state_lock();
+    // 不放系统临时目录：那里的目录会被当成临时目录过滤掉。
+    let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let home = temp.path().join("codex-home");
+    assert!(recent_projects(&home).is_empty(), "没有数据库时为空");
+
+    let repo_a = temp.path().join("repo-a");
+    let repo_b = temp.path().join("repo-b");
+    let archived_only = temp.path().join("archived-only");
+    for dir in [&repo_a, &repo_b, &archived_only] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::create_dir_all(&home).unwrap();
+    let connection = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+    connection
+        .execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, updated_at INTEGER, archived INTEGER);")
+        .unwrap();
+    let gone = temp.path().join("deleted-repo");
+    let rows: [(&str, String, i64, i64); 7] = [
+        ("1", format!("{}/", repo_b.display()), 50, 0),
+        ("2", repo_a.display().to_string(), 40, 0),
+        ("3", repo_b.display().to_string(), 30, 0),
+        ("4", gone.display().to_string(), 60, 0),
+        ("5", "/tmp".into(), 70, 0),
+        ("6", archived_only.display().to_string(), 80, 1),
+        ("7", String::new(), 90, 0),
+    ];
+    for (id, cwd, updated_at, archived) in rows {
+        connection.execute("INSERT INTO threads VALUES (?1, '', ?2, ?3, ?4)", rusqlite::params![id, cwd, updated_at, archived]).unwrap();
+    }
+    drop(connection);
+    assert_eq!(
+        recent_projects(&home),
+        [repo_b.display().to_string(), repo_a.display().to_string()],
+        "最近的在前、去重（末尾斜杠不算不同）；不存在的、临时目录、已归档、空的都不算"
+    );
+}
+
+#[test]
+fn pick_project_writes_the_chosen_folder_and_cancel_changes_nothing() {
+    let _lock = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    set_tasks_dir_for_tests(Some(temp.path().join("tasks")));
+    set_codex_home_for_tests(Some(temp.path().join("codex-home")));
+    dispatch("create", &json!({ "task": { "title": "选项目" } })).unwrap();
+
+    set_picked_folder_for_tests(Some(None));
+    let cancelled = dispatch("pickProject", &json!({ "id": 1 })).unwrap();
+    assert!(cancelled["picked"].is_null());
+    assert!(cancelled["tasks"][0].get("project").is_none_or(|value| value.is_null()), "取消时不改");
+
+    set_picked_folder_for_tests(Some(Some("/Users/me/code/repo".into())));
+    let picked = dispatch("pickProject", &json!({ "id": 1 })).unwrap();
+    assert_eq!(picked["picked"], "/Users/me/code/repo");
+    assert_eq!(picked["tasks"][0]["project"], "/Users/me/code/repo");
+    assert!(picked["projects"].is_array(), "面板数据里带最近项目");
+    assert!(dispatch("pickProject", &json!({ "id": 9 })).is_err(), "任务不存在");
+
+    set_picked_folder_for_tests(None);
+    set_tasks_dir_for_tests(None);
+    set_codex_home_for_tests(None);
 }
 
 #[test]

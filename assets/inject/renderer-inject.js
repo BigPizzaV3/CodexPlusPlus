@@ -2573,18 +2573,22 @@
       .codex-plus-task-prop-label { color: var(--codex-plus-text-tertiary); font-size: 12px; }
       .codex-plus-task-prop-value { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; }
       .codex-plus-task-prop-note { gap: 6px; color: var(--codex-plus-text-tertiary); font-size: 12px; white-space: nowrap; }
-      .codex-plus-task-select { display: inline-flex; align-items: center; gap: 7px; height: 28px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; cursor: pointer; }
+      .codex-plus-task-select { display: inline-flex; max-width: calc(100% + 8px); min-width: 0; align-items: center; gap: 7px; height: 28px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; cursor: pointer; }
       .codex-plus-task-select:is(:hover, [aria-expanded="true"]) { background: var(--codex-plus-bg-hover); }
       .codex-plus-task-select:focus-visible { outline: 2px solid var(--codex-plus-task-accent); outline-offset: 0; }
       .codex-plus-task-select svg { width: 13px; height: 13px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-task-ghost-input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; margin-left: -8px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; }
-      .codex-plus-task-ghost-input:hover { border-color: var(--codex-plus-task-line); }
-      .codex-plus-task-ghost-input:focus { border-color: var(--codex-plus-task-accent); outline: none; }
       .codex-plus-task-menu { position: absolute; top: calc(100% + 4px); left: -8px; z-index: 5; display: flex; flex-direction: column; width: 280px; padding: 4px; border: 1px solid var(--codex-plus-task-line-strong); border-radius: 9px; background: var(--codex-plus-bg-elevated); box-shadow: 0 12px 32px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.14); }
       .codex-plus-task-menu button { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); align-items: center; gap: 8px; height: 30px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
       .codex-plus-task-menu button:is(:hover, :focus-visible) { background: var(--codex-plus-bg-hover); outline: none; }
       .codex-plus-task-menu button[aria-checked="true"] { background: var(--codex-plus-task-selected); font-weight: 550; }
       .codex-plus-task-menu-hint { overflow: hidden; color: var(--codex-plus-text-tertiary); font-size: 11.5px; font-weight: 400; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-task-menu svg { width: 13px; height: 13px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-task-project-menu { width: min(360px, calc(100vw - 80px)); max-height: 320px; overflow-y: auto; }
+      .codex-plus-task-menu-separator { flex: none; height: 1px; margin: 4px 6px; background: var(--codex-plus-task-line); }
+      .codex-plus-task-menu-empty { padding: 8px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-task-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-task-select > svg:first-child { color: var(--codex-plus-text-secondary); }
+      .codex-plus-task-placeholder { color: var(--codex-plus-text-tertiary); }
       .codex-plus-task-primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; box-sizing: border-box; padding: 0 12px; border: 0; border-radius: 7px; background: var(--codex-plus-task-accent); color: #fff; font: inherit; font-size: 12.5px; font-weight: 550; white-space: nowrap; cursor: pointer; transition: filter .12s; }
       .codex-plus-task-primary:hover { filter: brightness(1.1); }
       .codex-plus-task-primary:focus-visible { outline: 2px solid var(--codex-plus-task-accent); outline-offset: 2px; }
@@ -16822,8 +16826,9 @@ ${key} = ${value}`]);
     // 侧栏选中的分类：open 或某个状态 id。
     filter: "open",
     selectedId: null,
-    // 详情里的状态菜单是否展开。
+    // 详情里的状态菜单、项目菜单是否展开。
     statusMenu: false,
+    projectMenu: false,
     showAll: false,
     refocusQuickAdd: false,
     // 鼠标按下期间不重画：失焦保存触发的重画会把正要点的按钮换掉，这一下点击就丢了。
@@ -17081,7 +17086,6 @@ ${key} = ${value}`]);
       return;
     }
     aside.dataset.taskId = String(task.id);
-    const projects = [...new Set(codexPlusTasks().map((item) => item.project).filter(Boolean))];
     const runs = codexPlusTaskRunsFor(task.id);
     const current = codexPlusTaskStatuses.find((entry) => entry.id === task.status) || codexPlusTaskStatuses[0];
     const checklist = codexPlusTaskChecklist(task.body);
@@ -17100,10 +17104,11 @@ ${key} = ${value}`]);
             <span class="codex-plus-task-prop-note" title="${escapeHtml(codexPlusTaskFullTime(task.statusAt))}">${codexPlusTaskAgo(task.statusAt)}进入</span>
             ${state.statusMenu ? codexPlusTaskStatusMenu(task) : ""}
           </div>
-          <label class="codex-plus-task-prop-label" for="codex-plus-task-project">项目</label>
+          <span class="codex-plus-task-prop-label">项目</span>
           <div class="codex-plus-task-prop-value">
-            <input type="text" id="codex-plus-task-project" class="codex-plus-task-ghost-input" data-codex-task-field="project" list="codex-plus-task-projects" value="${escapeHtml(task.project || "")}" placeholder="项目目录，可不填" spellcheck="false">
-            <datalist id="codex-plus-task-projects">${projects.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist>
+            <button type="button" class="codex-plus-task-select" data-codex-task-action="projectMenu" aria-haspopup="menu" aria-expanded="${String(state.projectMenu)}" title="${escapeHtml(task.project || "没填项目时，用 Codex 当前选中的项目")}">
+              ${codexPlusTaskIcons.folder}<span${task.project ? "" : ' class="codex-plus-task-placeholder"'}>${escapeHtml(task.project ? codexPlusTaskProjectName(task.project) : "不指定")}</span>${codexPlusTaskIcons.chevron}</button>
+            ${state.projectMenu ? codexPlusTaskProjectMenu(task) : ""}
           </div>
           <span class="codex-plus-task-prop-label">时间</span>
           <div class="codex-plus-task-prop-value codex-plus-task-prop-note">
@@ -17123,11 +17128,46 @@ ${key} = ${value}`]);
         <span class="codex-plus-task-dot" data-status="${entry.id}"></span><span class="codex-plus-task-menu-label">${escapeHtml(entry.label)}</span><span class="codex-plus-task-menu-hint">${escapeHtml(entry.hint)}</span></button>`).join("")}</div>`;
   }
 
-  /** 收起状态菜单：只摘掉菜单节点，不重画详情（正在编辑的输入框不被打断）。 */
+  /**
+   * 项目候选：本任务当前的项目、其它任务用过的项目、core 给的最近在 Codex 里用过的项目（`projects`），去重。
+   * 已经选中的排最前；其余按「任务里用过的」在前、最近对话的在后。
+   */
+  function codexPlusTaskProjectChoices(task, data = codexPlusTaskBoardState.data) {
+    const key = (path) => String(path).replace(/[\\/]+$/, "");
+    const seen = new Set();
+    const list = [];
+    const add = (path) => {
+      if (!path || typeof path !== "string" || seen.has(key(path))) return;
+      seen.add(key(path));
+      list.push(path);
+    };
+    add(task?.project);
+    const tasks = Array.isArray(data?.tasks) ? [...data.tasks].sort((a, b) => b.updatedAt - a.updatedAt) : [];
+    tasks.forEach((item) => add(item.project));
+    (Array.isArray(data?.projects) ? data.projects : []).forEach(add);
+    return list;
+  }
+
+  /** 详情里的项目菜单：候选项目、「不指定」、「选择其他文件夹…」。 */
+  function codexPlusTaskProjectMenu(task) {
+    const choices = codexPlusTaskProjectChoices(task);
+    const current = task.project ? String(task.project).replace(/[\\/]+$/, "") : "";
+    const rows = choices.map((path) => `<button type="button" role="menuitemradio" aria-checked="${String(path.replace(/[\\/]+$/, "") === current)}" data-codex-task-project="${escapeHtml(path)}" title="${escapeHtml(path)}">
+        ${codexPlusTaskIcons.folder}<span class="codex-plus-task-menu-label">${escapeHtml(codexPlusTaskProjectName(path))}</span><span class="codex-plus-task-menu-hint">${escapeHtml(path)}</span></button>`).join("");
+    return `<div class="codex-plus-task-menu codex-plus-task-project-menu" role="menu" aria-label="选择项目">
+        ${rows || '<p class="codex-plus-task-menu-empty">还没有在 Codex 里用过的项目</p>'}
+        <div class="codex-plus-task-menu-separator" role="separator"></div>
+        <button type="button" role="menuitemradio" aria-checked="${String(!current)}" data-codex-task-project="">${codexPlusTaskIcons.close}<span class="codex-plus-task-menu-label">不指定</span><span class="codex-plus-task-menu-hint">用 Codex 当前选中的项目</span></button>
+        <button type="button" role="menuitem" data-codex-task-action="pickProject">${codexPlusTaskIcons.plus}<span class="codex-plus-task-menu-label">选择其他文件夹…</span><span class="codex-plus-task-menu-hint"></span></button>
+      </div>`;
+  }
+
+  /** 收起状态 / 项目菜单：只摘掉菜单节点，不重画详情（正在编辑的输入框不被打断）。 */
   function codexPlusTaskCloseMenu() {
     codexPlusTaskBoardState.statusMenu = false;
-    document.querySelector(".codex-plus-task-menu")?.remove();
-    document.querySelector('[data-codex-task-action="statusMenu"]')?.setAttribute("aria-expanded", "false");
+    codexPlusTaskBoardState.projectMenu = false;
+    document.querySelectorAll(".codex-plus-task-menu").forEach((node) => node.remove());
+    document.querySelectorAll('[data-codex-task-action="statusMenu"], [data-codex-task-action="projectMenu"]').forEach((node) => node.setAttribute("aria-expanded", "false"));
   }
 
   /** 「在 Codex 中开始」：新开一个对话，输入框里填好 `[T-N] 标题` 和正文，由用户确认后发送。 */
@@ -17243,8 +17283,6 @@ ${key} = ${value}`]);
       const title = value.trim();
       if (!title) { input.value = task.title; return; }
       if (title !== task.title) codexPlusTaskUpdate(id, { title });
-    } else if (field === "project") {
-      if (value.trim() !== (task.project || "")) codexPlusTaskUpdate(id, { project: value.trim() });
     } else if (field === "body") {
       if (value.trimEnd() !== task.body) codexPlusTaskUpdate(id, { body: value });
     }
@@ -17253,6 +17291,7 @@ ${key} = ${value}`]);
   function codexPlusTaskSelect(id) {
     codexPlusTaskBoardState.selectedId = id;
     codexPlusTaskBoardState.statusMenu = false;
+    codexPlusTaskBoardState.projectMenu = false;
     codexPlusTaskBoardState.revealId = id;
     renderCodexPlusTaskBoard();
   }
@@ -17267,6 +17306,7 @@ ${key} = ${value}`]);
     const visible = selected && (state.filter === "open" ? codexPlusTaskIsOpen(selected) : selected.status === state.filter);
     if (!visible) state.selectedId = null;
     state.statusMenu = false;
+    state.projectMenu = false;
     document.querySelector("[data-codex-task-main]")?.scrollTo({ top: 0 });
     renderCodexPlusTaskBoard();
   }
@@ -17284,8 +17324,8 @@ ${key} = ${value}`]);
   async function codexPlusTaskHandleClick(event) {
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const state = codexPlusTaskBoardState;
-    // 状态菜单开着时，点菜单和触发按钮以外的地方先收起菜单，这一下点击照常生效。
-    if (state.statusMenu && !target?.closest('.codex-plus-task-menu, [data-codex-task-action="statusMenu"]')) codexPlusTaskCloseMenu();
+    // 菜单开着时，点菜单和触发按钮以外的地方先收起菜单，这一下点击照常生效。
+    if ((state.statusMenu || state.projectMenu) && !target?.closest('.codex-plus-task-menu, [data-codex-task-action="statusMenu"], [data-codex-task-action="projectMenu"]')) codexPlusTaskCloseMenu();
     const open = target?.closest("[data-codex-task-open]");
     if (open) {
       codexPlusTaskSelect(Number(open.getAttribute("data-codex-task-open")));
@@ -17310,6 +17350,15 @@ ${key} = ${value}`]);
       document.querySelector('[data-codex-task-action="statusMenu"]')?.focus({ preventScroll: true });
       return;
     }
+    const projectButton = target?.closest("[data-codex-task-project]");
+    if (projectButton && state.selectedId != null) {
+      const project = projectButton.getAttribute("data-codex-task-project") || "";
+      const task = codexPlusTasks().find((item) => item.id === state.selectedId);
+      codexPlusTaskCloseMenu();
+      if (task && project !== (task.project || "")) codexPlusTaskUpdate(task.id, { project });
+      document.querySelector('[data-codex-task-action="projectMenu"]')?.focus({ preventScroll: true });
+      return;
+    }
     const button = target?.closest("[data-codex-task-action]");
     if (!button) return;
     switch (button.getAttribute("data-codex-task-action")) {
@@ -17329,14 +17378,26 @@ ${key} = ${value}`]);
         codexPlusTaskSelect(null);
         return;
       case "statusMenu":
-        if (state.statusMenu) {
-          codexPlusTaskCloseMenu();
-          return;
-        }
-        state.statusMenu = true;
+      case "projectMenu": {
+        const key = button.getAttribute("data-codex-task-action");
+        const wasOpen = state[key];
+        codexPlusTaskCloseMenu();
+        if (wasOpen) return;
+        state[key] = true;
         renderCodexPlusTaskDetail();
-        document.querySelector('.codex-plus-task-menu [aria-checked="true"]')?.focus({ preventScroll: true });
+        const menu = document.querySelector(".codex-plus-task-menu");
+        (menu?.querySelector('[aria-checked="true"]') || menu?.querySelector("button"))?.focus({ preventScroll: true });
         return;
+      }
+      case "pickProject": {
+        const task = codexPlusTasks().find((item) => item.id === state.selectedId);
+        codexPlusTaskCloseMenu();
+        if (!task) return;
+        // 系统窗口开着期间别的操作照常；选好后 core 直接写进任务，返回整个面板。
+        await state.lastWrite;
+        await codexPlusTaskRun("pickProject", { id: task.id });
+        return;
+      }
       case "start": {
         const task = codexPlusTasks().find((item) => item.id === state.selectedId);
         if (!task || button.disabled) return;
@@ -17390,7 +17451,7 @@ ${key} = ${value}`]);
       }
       return;
     }
-    if (target?.matches('[data-codex-task-field="title"], [data-codex-task-field="project"]') && event.key === "Enter") {
+    if (target?.matches('[data-codex-task-field="title"]') && event.key === "Enter") {
       event.preventDefault();
       target.blur();
       return;
@@ -17411,10 +17472,11 @@ ${key} = ${value}`]);
       return;
     }
     if (event.key !== "Escape") return;
-    // Esc：先收起状态菜单。
-    if (codexPlusTaskBoardState.statusMenu) {
+    // Esc：先收起状态 / 项目菜单，焦点回到打开它的按钮。
+    if (codexPlusTaskBoardState.statusMenu || codexPlusTaskBoardState.projectMenu) {
+      const trigger = codexPlusTaskBoardState.projectMenu ? "projectMenu" : "statusMenu";
       codexPlusTaskCloseMenu();
-      codexPlusTaskParkFocus('[data-codex-task-action="statusMenu"]');
+      codexPlusTaskParkFocus(`[data-codex-task-action="${trigger}"]`);
       return;
     }
     // Esc：详情里正在打字时先离开输入框（失焦即保存），再按一次才取消选中。
@@ -17595,7 +17657,7 @@ ${key} = ${value}`]);
       const editing = document.activeElement;
       if (editing instanceof Element && editing.matches("[data-codex-task-field]")) codexPlusTaskCommitField(editing);
     };
-    Object.assign(state, { error: "", statusMenu: false, showAll: false, refocusQuickAdd: false, pointerDown: false, renderPending: false });
+    Object.assign(state, { error: "", statusMenu: false, projectMenu: false, showAll: false, refocusQuickAdd: false, pointerDown: false, renderPending: false });
     renderCodexPlusTaskBoard();
     void codexPlusTaskRun("list");
   }

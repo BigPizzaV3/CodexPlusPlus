@@ -594,6 +594,130 @@ pub fn apply_auto_status(dir: &Path, tasks: &[Task], runs: &[TaskRun]) -> usize 
         .count()
 }
 
+// ---------- 项目 ----------
+//
+// 详情里的「项目」从列表里选，不手打路径。新版 Codex 把项目存在 app-server 里，本地只有项目 ID，
+// 所以候选取自线程表里最近对话的工作目录（`cwd`），去掉 Codex 自己生成的目录；列表外的用系统窗口选文件夹。
+
+/// 最多列这么多个最近项目。
+const MAX_RECENT_PROJECTS: usize = 20;
+/// 往回扫这么多条对话找工作目录。
+const RECENT_PROJECT_SCAN_THREADS: usize = 2000;
+
+/// 不当作项目的工作目录：系统临时目录、Codex 给无项目对话建的 `Documents/Codex/<日期>/…`、Codex 的 worktree。
+pub fn is_scratch_dir(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_lowercase();
+    let temp = std::env::temp_dir().to_string_lossy().replace('\\', "/").to_lowercase();
+    let in_dir = |root: &str| {
+        let root = root.trim_end_matches('/');
+        !root.is_empty() && (lower == root || lower.starts_with(&format!("{root}/")))
+    };
+    if in_dir("/tmp") || in_dir("/private/tmp") || in_dir("/var/folders") || in_dir("/private/var/folders") || in_dir(&temp) {
+        return true;
+    }
+    if lower.contains("/.codex/worktrees/") {
+        return true;
+    }
+    // `…/Codex/2026-11-16/new-chat`：Codex 给无项目对话自动建的目录。
+    let parts: Vec<&str> = normalized.split('/').filter(|part| !part.is_empty()).collect();
+    parts.windows(2).any(|pair| {
+        pair[0].eq_ignore_ascii_case("codex")
+            && pair[1].len() == 10
+            && pair[1].bytes().enumerate().all(|(index, byte)| if index == 4 || index == 7 { byte == b'-' } else { byte.is_ascii_digit() })
+    })
+}
+
+/// 最近在 Codex 里用过的项目目录，最近的在前；目录已经不存在的、临时目录不算。读不到数据库时为空。
+pub fn recent_projects(home: &Path) -> Vec<String> {
+    let Ok((connection, columns)) = crate::extension_history::thread_db(home) else { return Vec::new() };
+    let has = |column: &str| columns.iter().any(|existing| existing == column);
+    if !has("cwd") {
+        return Vec::new();
+    }
+    let archived = if has("archived") { " AND (archived = 0 OR archived IS NULL)" } else { "" };
+    let order = if has("updated_at") { " ORDER BY updated_at DESC" } else { "" };
+    let sql = format!("SELECT cwd FROM threads WHERE cwd IS NOT NULL AND cwd != ''{archived}{order} LIMIT {RECENT_PROJECT_SCAN_THREADS}");
+    let Ok(mut statement) = connection.prepare(&sql) else { return Vec::new() };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) else { return Vec::new() };
+    let mut seen = std::collections::HashSet::new();
+    let mut projects = Vec::new();
+    for cwd in rows.filter_map(Result::ok) {
+        let cwd = cwd.trim().trim_end_matches(['/', '\\']).to_string();
+        if cwd.is_empty() || !seen.insert(cwd.clone()) || is_scratch_dir(&cwd) || !Path::new(&cwd).is_dir() {
+            continue;
+        }
+        projects.push(cwd);
+        if projects.len() >= MAX_RECENT_PROJECTS {
+            break;
+        }
+    }
+    projects
+}
+
+/// 用系统自己的窗口选一个文件夹；用户取消时为 None。
+fn pick_folder(initial: Option<&str>) -> anyhow::Result<Option<String>> {
+    let initial = initial.filter(|path| Path::new(path).is_dir());
+    #[cfg(target_os = "macos")]
+    {
+        // 先 activate：osascript 自己到前台，窗口才不会被 Codex 挡在后面。
+        let mut script = String::from("activate\nset chosen to choose folder with prompt \"选择任务的项目目录\"");
+        if let Some(path) = initial {
+            script.push_str(&format!(" default location (POSIX file {})", serde_json::to_string(path)?));
+        }
+        script.push_str("\nPOSIX path of chosen");
+        let output = std::process::Command::new("osascript").arg("-e").arg(&script).output().context("打开选择文件夹窗口失败")?;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr);
+            // -128：用户点了取消。
+            if message.contains("-128") {
+                return Ok(None);
+            }
+            bail!("选择文件夹失败：{}", message.trim());
+        }
+        let path = String::from_utf8_lossy(&output.stdout).trim().trim_end_matches('/').to_string();
+        Ok((!path.is_empty()).then_some(path))
+    }
+    #[cfg(windows)]
+    {
+        let mut script = String::from(
+            "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '选择任务的项目目录'; $d.UseDescriptionForTitle = $true;",
+        );
+        if let Some(path) = initial {
+            script.push_str(&format!(" $d.SelectedPath = '{}';", path.replace('\'', "''")));
+        }
+        script.push_str(" $owner = New-Object System.Windows.Forms.Form -Property @{TopMost=$true}; if ($d.ShowDialog($owner) -eq 'OK') { [Console]::OutputEncoding = [Text.Encoding]::UTF8; Write-Output $d.SelectedPath }");
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args(["-NoProfile", "-STA", "-Command", &script]);
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let output = command.output().context("打开选择文件夹窗口失败")?;
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!path.is_empty()).then_some(path))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let start = initial.map(|path| format!("{path}/")).unwrap_or_default();
+        let attempts: [(&str, Vec<String>); 2] = [
+            ("zenity", vec!["--file-selection".into(), "--directory".into(), "--title=选择任务的项目目录".into(), format!("--filename={start}")]),
+            ("kdialog", vec!["--getexistingdirectory".into(), if start.is_empty() { ".".into() } else { start.clone() }]),
+        ];
+        for (program, args) in attempts {
+            let Ok(output) = std::process::Command::new(program).args(&args).output() else { continue };
+            let path = String::from_utf8_lossy(&output.stdout).trim().trim_end_matches('/').to_string();
+            return Ok((output.status.success() && !path.is_empty()).then_some(path));
+        }
+        bail!("没有找到 zenity 或 kdialog，没法弹出选择文件夹窗口")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
+    {
+        let _ = initial;
+        bail!("当前平台不支持选择文件夹")
+    }
+}
+
 fn open_link(url: &str) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
@@ -626,10 +750,12 @@ struct Overrides {
     codex_home: Option<PathBuf>,
     /// 测试里把要打开的链接记下来，不真的打开。
     opened: Option<Vec<String>>,
+    /// 测试里「选择文件夹」直接返回这个，不弹窗（外层 None 表示没设置）。
+    picked: Option<Option<String>>,
 }
 
 fn overrides() -> std::sync::MutexGuard<'static, Overrides> {
-    static OVERRIDES: Mutex<Overrides> = Mutex::new(Overrides { tasks_dir: None, codex_home: None, opened: None });
+    static OVERRIDES: Mutex<Overrides> = Mutex::new(Overrides { tasks_dir: None, codex_home: None, opened: None, picked: None });
     OVERRIDES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -643,6 +769,11 @@ pub fn set_codex_home_for_tests(home: Option<PathBuf>) {
     let mut overrides = overrides();
     overrides.opened = home.as_ref().map(|_| Vec::new());
     overrides.codex_home = home;
+}
+
+/// 测试用：「选择文件夹」不弹窗，直接返回给定结果（`Some(None)` 表示用户取消，`None` 恢复真实窗口）。
+pub fn set_picked_folder_for_tests(picked: Option<Option<String>>) {
+    overrides().picked = picked;
 }
 
 /// 测试用：取走记下的链接。
@@ -669,7 +800,7 @@ fn board_payload(dir: &Path) -> Value {
     }
     // 只回传认得出任务的对话。
     let runs: Vec<&TaskRun> = runs.iter().filter(|run| tasks.iter().any(|task| task.id == run.task_id)).collect();
-    json!({ "dir": dir.display().to_string(), "tasks": tasks, "runs": runs })
+    json!({ "dir": dir.display().to_string(), "tasks": tasks, "runs": runs, "projects": recent_projects(&codex_home()) })
 }
 
 /// Codex 页面（`47-task-board-page.js`）经 bridge 路由 `/task-board` 调用：`{ action, ...args }`。
@@ -709,6 +840,22 @@ pub fn dispatch(action: &str, args: &Value) -> anyhow::Result<Value> {
             if !recorded {
                 open_link(&link)?;
             }
+        }
+        // 用系统窗口给任务选项目目录，选好直接写进任务；取消时什么都不改。
+        "pickProject" => {
+            let id = id()?;
+            let task = read_task(&dir, id)?;
+            let fake = overrides().picked.clone();
+            let picked = match fake {
+                Some(picked) => picked,
+                None => pick_folder(task.project.as_deref())?,
+            };
+            if let Some(path) = &picked {
+                update_task(&dir, id, TaskPatch { project: Some(path.clone()), ..Default::default() })?;
+            }
+            let mut payload = board_payload(&dir);
+            payload["picked"] = json!(picked);
+            return Ok(payload);
         }
         other => bail!("未知的任务面板动作：{other}"),
     }

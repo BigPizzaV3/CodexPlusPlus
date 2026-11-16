@@ -20,7 +20,8 @@ type Run = { taskId: number; threadId: string; state: string; updatedAt: number;
 /** 分片顶层只有常量和函数声明，直接求值拿出纯函数。 */
 async function loadShard() {
   const source = await read(shardPath);
-  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist, codexPlusTaskSections };`)() as {
+  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist, codexPlusTaskSections, codexPlusTaskProjectChoices };`)() as {
+    codexPlusTaskProjectChoices: (task: Task | null, data: { tasks?: Task[]; projects?: string[] }) => string[];
     codexPlusTaskSections: (tasks: Task[], filter: string, query: string) => Array<{ status: string; tasks: Task[] }>;
     codexPlusTaskExcerpt: (body: string) => string;
     codexPlusTaskChecklist: (body: string) => { done: number; total: number };
@@ -85,6 +86,25 @@ test("侧栏分类和拖放目标不占用 data-codex-task-status；只有状态
   assert.match(page, /localStorage\.setItem\("codex-plus-task-board-filter", state\.filter\)/, "记住上次选的分类");
 });
 
+test("项目从菜单里选：候选是当前项目、其它任务用过的、Codex 最近用过的，去重；不再有手填输入框", async () => {
+  const shard = await loadShard();
+  const page = await read(shardPath);
+  const core = await read("../../../crates/codex-plus-core/src/task_board.rs");
+  const current = task(1, { project: "/code/a/", updatedAt: 1 });
+  const data = {
+    tasks: [current, task(2, { project: "/code/b", updatedAt: 9 }), task(3, { project: null, updatedAt: 5 }), task(4, { project: "/code/c", updatedAt: 7 })],
+    projects: ["/code/a", "/code/d", "/code/b"],
+  };
+  assert.deepEqual(shard.codexPlusTaskProjectChoices(current, data), ["/code/a/", "/code/b", "/code/c", "/code/d"], "当前的在最前；末尾斜杠不算不同");
+  assert.deepEqual(shard.codexPlusTaskProjectChoices(task(5), {}), []);
+
+  assert.doesNotMatch(page, /data-codex-task-field="project"/, "项目不再是手填输入框");
+  assert.match(page, /data-codex-task-action="pickProject"/, "菜单里能用系统窗口选其他文件夹");
+  assert.match(page, /codexPlusTaskRun\("pickProject", \{ id: task\.id \}\)/);
+  assert.ok(core.includes(`"pickProject" =>`), "后端有 pickProject 动作");
+  assert.match(core, /"projects": recent_projects\(&codex_home\(\)\)/, "面板数据带最近项目");
+});
+
 test("卡片摘要去掉 Markdown 标记；清单进度按 - [ ] / - [x] 计数", async () => {
   const shard = await loadShard();
   const body = "## 背景\n登录页 **偶发** 报错，见 [日志](https://x/y)\n\n- [x] 复现\n- [ ] 修 `token` 刷新\n  * [X] 嵌套也算\n1. 第一步\n```\ncode\n```";
@@ -98,7 +118,7 @@ test("详情里的状态改成下拉菜单：触发按钮不占用 data-codex-ta
   const page = await read(shardPath);
   assert.match(page, /data-codex-task-action="statusMenu" aria-haspopup="menu"/);
   assert.match(page, /role="menuitemradio" aria-checked="\$\{String\(entry\.id === task\.status\)\}" data-codex-task-status=/);
-  assert.match(page, /if \(codexPlusTaskBoardState\.statusMenu\) \{\n\s*codexPlusTaskCloseMenu\(\);/, "Esc 先收起菜单，不直接关详情");
+  assert.match(page, /if \(codexPlusTaskBoardState\.statusMenu \|\| codexPlusTaskBoardState\.projectMenu\) \{\n[^\n]*\n\s*codexPlusTaskCloseMenu\(\);/, "Esc 先收起菜单，不直接关详情");
 });
 
 test("Codex 左侧图标栏的「任务面板」入口：登记进所有写死内置 id 的地方", async () => {

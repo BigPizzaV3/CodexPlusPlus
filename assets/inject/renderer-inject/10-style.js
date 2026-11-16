@@ -1819,18 +1819,22 @@
       .codex-plus-task-prop-label { color: var(--codex-plus-text-tertiary); font-size: 12px; }
       .codex-plus-task-prop-value { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 28px; }
       .codex-plus-task-prop-note { gap: 6px; color: var(--codex-plus-text-tertiary); font-size: 12px; white-space: nowrap; }
-      .codex-plus-task-select { display: inline-flex; align-items: center; gap: 7px; height: 28px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; cursor: pointer; }
+      .codex-plus-task-select { display: inline-flex; max-width: calc(100% + 8px); min-width: 0; align-items: center; gap: 7px; height: 28px; margin-left: -8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; cursor: pointer; }
       .codex-plus-task-select:is(:hover, [aria-expanded="true"]) { background: var(--codex-plus-bg-hover); }
       .codex-plus-task-select:focus-visible { outline: 2px solid var(--codex-plus-task-accent); outline-offset: 0; }
       .codex-plus-task-select svg { width: 13px; height: 13px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-task-ghost-input { flex: 1; min-width: 0; height: 28px; box-sizing: border-box; margin-left: -8px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; }
-      .codex-plus-task-ghost-input:hover { border-color: var(--codex-plus-task-line); }
-      .codex-plus-task-ghost-input:focus { border-color: var(--codex-plus-task-accent); outline: none; }
       .codex-plus-task-menu { position: absolute; top: calc(100% + 4px); left: -8px; z-index: 5; display: flex; flex-direction: column; width: 280px; padding: 4px; border: 1px solid var(--codex-plus-task-line-strong); border-radius: 9px; background: var(--codex-plus-bg-elevated); box-shadow: 0 12px 32px rgba(0,0,0,.28), 0 2px 6px rgba(0,0,0,.14); }
       .codex-plus-task-menu button { display: grid; grid-template-columns: 12px auto minmax(0, 1fr); align-items: center; gap: 8px; height: 30px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--codex-plus-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
       .codex-plus-task-menu button:is(:hover, :focus-visible) { background: var(--codex-plus-bg-hover); outline: none; }
       .codex-plus-task-menu button[aria-checked="true"] { background: var(--codex-plus-task-selected); font-weight: 550; }
       .codex-plus-task-menu-hint { overflow: hidden; color: var(--codex-plus-text-tertiary); font-size: 11.5px; font-weight: 400; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-task-menu svg { width: 13px; height: 13px; color: var(--codex-plus-text-secondary); }
+      .codex-plus-task-project-menu { width: min(360px, calc(100vw - 80px)); max-height: 320px; overflow-y: auto; }
+      .codex-plus-task-menu-separator { flex: none; height: 1px; margin: 4px 6px; background: var(--codex-plus-task-line); }
+      .codex-plus-task-menu-empty { padding: 8px; color: var(--codex-plus-text-tertiary); font-size: 12px; }
+      .codex-plus-task-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-task-select > svg:first-child { color: var(--codex-plus-text-secondary); }
+      .codex-plus-task-placeholder { color: var(--codex-plus-text-tertiary); }
       .codex-plus-task-primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; box-sizing: border-box; padding: 0 12px; border: 0; border-radius: 7px; background: var(--codex-plus-task-accent); color: #fff; font: inherit; font-size: 12.5px; font-weight: 550; white-space: nowrap; cursor: pointer; transition: filter .12s; }
       .codex-plus-task-primary:hover { filter: brightness(1.1); }
       .codex-plus-task-primary:focus-visible { outline: 2px solid var(--codex-plus-task-accent); outline-offset: 2px; }
