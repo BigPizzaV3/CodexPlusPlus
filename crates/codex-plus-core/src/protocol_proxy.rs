@@ -1017,6 +1017,33 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
 
+/// WS 升级前置能力判断（#3135）：只有当「全部供应商配置」和「全部已启用的网关
+/// 供应商」都是原生 Responses 协议时，WS 才可能在路由阶段被服务；否则应在握手
+/// 阶段就拒绝（426），让客户端按既有逻辑回落 HTTP，而不是先回 101 再在路由层
+/// 把整轮打成 local_responses_websocket_error。
+pub fn websocket_upgrade_serves_all_routes(
+    settings: &crate::settings::BackendSettings,
+) -> bool {
+    let native = |relay: &crate::settings::RelayProfile| {
+        relay.protocol == crate::settings::RelayProtocol::Responses
+    };
+    if !settings.relay_profiles.iter().all(native) {
+        return false;
+    }
+    // 网关成员各自有协议；池里只要有一位不是 Responses，升级成功也可能在路由
+    // 阶段失败。store 读不到时按无网关供应商处理（路由同样不会用到它）。
+    crate::gateway::store::GatewayStore::default()
+        .load()
+        .map(|store| {
+            store
+                .providers
+                .iter()
+                .filter(|provider| provider.enabled)
+                .all(|provider| native(&provider.relay))
+        })
+        .unwrap_or(true)
+}
+
 pub(crate) fn exec_retry_after_duration(
     headers: &reqwest::header::HeaderMap,
     now: SystemTime,

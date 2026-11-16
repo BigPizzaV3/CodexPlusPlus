@@ -727,6 +727,26 @@ pub(crate) async fn handle(
         return Ok(());
     };
     use tokio::io::AsyncWriteExt;
+    // 握手阶段先做能力判断（#3135）：混合协议供应商池（存在非原生 Responses 成员）
+    // 时本轮迟早会在路由层被拒，此时不能先回 101 —— 客户端已建立 WS 就不会再回落
+    // HTTP，整轮只能报 local_responses_websocket_error。这里直接 426，让客户端走
+    // 既有 HTTP/SSE 逻辑自愈。
+    let settings = crate::settings::SettingsStore::default().load().unwrap_or_default();
+    if !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "responses_websocket_upgrade_required",
+            serde_json::json!({ "reason": "mixed_protocol_relays", "path": path }),
+        );
+        crate::launcher::write_http_response(
+            stream,
+            "426 Upgrade Required",
+            "application/json; charset=utf-8",
+            br#"{"status":"upgrade_required","message":"WebSocket transport requires native Responses upstreams; retry with HTTP."}"#,
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let mut wire = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
     for (name, value) in response.headers() {
         wire.push_str(&format!("{}: {}\r\n", name, value.to_str()?));
