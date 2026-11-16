@@ -2533,6 +2533,20 @@ ${key} = ${value}`]);
       if (!left) return { state: "cooling", text: quota ? "额度耗尽" : "被限流", args: [] };
       return { state: "cooling", text: quota ? "额度耗尽 · {0} 后恢复" : "被限流 · {0} 后恢复", args: [left] };
     }
+    if (entry?.account && entry.quota) {
+      const quota = entry.quota;
+      const maxAge = entry.subscriptionPolicy?.maxAgeSeconds ?? 600;
+      const exhausted = quota.windows.filter((window) => quotaWindowFresh(quota, window, nowMs, maxAge) && window.usedPercent >= 100);
+      if (exhausted.length) {
+        const resets = exhausted.map((window) => window.resetsAtMs).filter((reset) => reset !== null);
+        const left = resets.length === exhausted.length ? formatRemaining(Math.max(...resets) - nowMs) : "";
+        return left ? { state: "cooling", text: "额度耗尽 · {0} 后恢复", args: [left] } : { state: "cooling", text: "额度耗尽", args: [] };
+      }
+      const fresh = quota.updatedAtMs <= nowMs && nowMs - quota.updatedAtMs <= maxAge * 1e3;
+      if (fresh && (quota.officialAllowed === false || quota.officialLimitReached === true && quota.officialAllowed !== true)) {
+        return { state: "cooling", text: "订阅额度受限", args: [] };
+      }
+    }
     const answered = activity.filter((agent) => agent.last?.result === "answered" && agent.last.steps.at(-1)?.relayId === relayId && nowMs - agent.last.finishedAtMs < RECENT_USE_MS).sort((left, right) => (right.last?.finishedAtMs ?? 0) - (left.last?.finishedAtMs ?? 0))[0];
     if (answered) return { state: "answered", text: "{0} 刚用过", args: [agentName(answered.agent)] };
     if (unhealthy.length) return { state: "idle", text: "{0} 个 Key · {1} 个冷却中", args: [keyCount, unhealthy.length] };
