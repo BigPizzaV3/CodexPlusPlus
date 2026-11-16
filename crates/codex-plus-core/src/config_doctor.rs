@@ -265,15 +265,6 @@ pub fn presets() -> Vec<DoctorPreset> {
             docs_url: "https://bailian.console.aliyun.com/",
         },
         DoctorPreset {
-            id: "ergou",
-            label: "二狗 API",
-            base_url: "https://ergouapi.com/v1",
-            model: "gpt-6-astra",
-            needs_key: true,
-            note: "第三方中转，Bearer Key 鉴权；可用模型以 Key 查 /v1/models 为准，Codex 走 Responses",
-            docs_url: "https://ergouapi.com/docs/codex",
-        },
-        DoctorPreset {
             id: "custom",
             label: "自定义（任意 OpenAI 兼容）",
             base_url: "",
