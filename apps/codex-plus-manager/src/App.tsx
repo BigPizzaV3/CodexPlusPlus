@@ -10386,28 +10386,6 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                 <ToggleVisual />
               </label>
             </SettingRow>
-            <SettingRow title={t("切换模型后旧会话跟随新默认")} description={t("切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。")}>
-              <label className="relay-bare-switch">
-                <input
-                  aria-label={t("切换模型后旧会话跟随新默认")}
-                  checked={Boolean(form.threadModelFollowSwitchEnabled)}
-                  onChange={(event) => onFormChange({ ...form, threadModelFollowSwitchEnabled: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <ToggleVisual />
-              </label>
-            </SettingRow>
-            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
-              <label className="relay-bare-switch">
-                <input
-                  aria-label={t("非官方登录时保留本地项目")}
-                  checked={Boolean(form.keepProjectsWithoutAccount)}
-                  onChange={(event) => onFormChange({ ...form, keepProjectsWithoutAccount: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <ToggleVisual />
-              </label>
-            </SettingRow>
             <SettingRow title={t("同步目标")}>
               <AppSelect
                 disabled={providerSyncProgress.active || !providerTargets.length}
@@ -11307,15 +11285,6 @@ function AgentSettingsScreen({
   return (
     <>
       <TopbarActions><SettingsAutoSave className="cx-set-autosave" dirty={dirty} form={form} actions={actions} /></TopbarActions>
-      <CxSection id="codex-settings-usage-history" title={t("本机用量历史")}>
-        <CxRow title={t("启用本机用量历史")} detail={t("允许扩展按需读取本机用量元数据，默认关闭。")}>
-          <Switch
-            label={t("启用本机用量历史")}
-            on={form.usageHistoryEnabled}
-            onToggle={() => onFormChange({ ...form, usageHistoryEnabled: !form.usageHistoryEnabled })}
-          />
-        </CxRow>
-      </CxSection>
       {/* 放在「高级」卡片里，默认收起；填了参数时标题旁显示条数，不用展开也知道有没有设。 */}
       <details className="cx-set-disclosure cx-set-disclosure-first" open={count > 0 || undefined}>
         <summary>

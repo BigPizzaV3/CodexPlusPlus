@@ -93,8 +93,9 @@ export const EN_PLAIN: Record<string, string> = {
   "HTTP 代理": "HTTP proxy",
   "名称不能为空": "Name is required",
   "本机用量历史": "Local usage history",
-  "启用本机用量历史": "Enable local usage history",
-  "允许扩展按需读取本机用量元数据，默认关闭。": "Allow extensions to read local usage metadata on demand. Disabled by default.",
+  "拓展权限": "Extension permissions",
+  "允许拓展读取的本机数据。默认都关闭，按需打开。": "Local data extensions may read. All off by default; turn on only what you need.",
+  "允许拓展按需读取本机用量元数据。关闭时会清空已记录的用量历史。": "Allow extensions to read local usage metadata on demand. Turning it off clears the recorded usage history.",
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
   "每秒读取一次新请求": "Reads new requests every second",
   "还没有请求日志": "No request logs yet",
@@ -2534,8 +2535,11 @@ export const EN_PLAIN: Record<string, string> = {
   "v2 需上游支持加密子代理载荷，转 Chat 协议的中转请选 v1；仅新会话生效。":
     "v2 requires an upstream that supports encrypted sub-agent payloads; pick v1 for Chat-completions relays. New sessions only.",
   "切换模型后旧会话跟随新默认": "Existing sessions follow the new default model",
-  "切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。":
-    "After switching provider or default model, sessions still on the previous default move to the new default before the next launch. Sessions with a manually chosen model are untouched. Takes effect after saving settings.",
+  "切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。":
+    "After switching provider or default model, sessions still on the previous default move to the new default before the next launch. Sessions with a manually chosen model are untouched.",
+  "非官方登录时保留本地项目": "Keep local projects without the official sign-in",
+  "登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。":
+    "After signing in to ChatGPT and then switching to an API key, gateway or aggregated provider, Codex clears the project list on every launch. When on, Codex++ carries the last account's projects into the current mode before launch and hands them back when you sign in officially again; a backup is made before writing.",
   "启用": "Enable",
   "启用内置拓展": "Enable built-in extensions",
   "独立模式": "Standalone mode",
