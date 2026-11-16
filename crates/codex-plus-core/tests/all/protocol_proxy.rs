@@ -1246,6 +1246,79 @@ async fn responses_compaction_v2_falls_back_when_trigger_is_rejected() {
     );
 }
 
+/// #3101：「ChatGPT API」上游（ChatGPT 订阅共享）不收 compaction_trigger，报错只列白名单、
+/// 不点名 trigger。按错误码认出后要降级成摘要压缩，而不是把 400 交回 Codex。
+#[tokio::test]
+async fn responses_compaction_v2_falls_back_when_subscription_sharing_rejects_trigger() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = if index == 0 {
+                listener.accept().await.unwrap()
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .expect("fallback request should arrive")
+                    .unwrap()
+            };
+            requests.push(
+                String::from_utf8_lossy(&read_async_http_request(&mut stream).await).to_string(),
+            );
+            if index == 0 {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":{"message":"User subscription sharing currently supports only text, image, and file messages, item references, additional tools, compaction summaries, reasoning items, Web Search call items, developer function and custom tool call items, and programmatic tool calling items. Remove unsupported input items or use an API key instead.","type":"invalid_request_error","param":"input","code":"subscription_sharing_unsupported_capability"}}"#,
+                )
+                .await;
+            } else {
+                write_remote_compaction_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"SHARING_SUMMARY"}]}]}"#,
+                )
+                .await;
+            }
+        }
+        requests
+    });
+
+    let mut result = open_responses_proxy_request_with_settings(
+        &json!({
+            "model": "gpt-6.1-sol",
+            "stream": true,
+            "input": [
+                { "type": "message", "role": "user", "content": "history" },
+                { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "call_1", "output": "ok" },
+                { "type": "compaction_trigger" }
+            ]
+        })
+        .to_string(),
+        remote_compaction_settings(&format!("http://{address}/v1"), RelayProtocol::Responses),
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+
+    assert_eq!(requests.len(), 2, "被订阅共享拒收后应降级重发一次");
+    assert!(requests[0].contains("compaction_trigger"));
+    assert!(!requests[1].contains("compaction_trigger"), "降级请求不再带 trigger");
+    assert!(requests[1].contains("CONTEXT CHECKPOINT COMPACTION"));
+    assert!(requests[1].contains("call_1"), "历史里的工具调用原样保留");
+    assert_eq!(result.status_code, 200);
+    assert!(result.compaction);
+    assert!(
+        String::from_utf8(result.read_body().await.unwrap())
+            .unwrap()
+            .contains("SHARING_SUMMARY")
+    );
+}
+
 #[tokio::test]
 async fn responses_compaction_v2_empty_output_falls_back_to_summary() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
