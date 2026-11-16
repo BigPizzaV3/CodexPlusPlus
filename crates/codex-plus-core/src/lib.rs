@@ -114,6 +114,7 @@ pub mod status;
 pub mod stepwise;
 pub mod newapi;
 pub mod sub2api;
+pub mod task_board;
 pub mod tools;
 pub mod update;
 pub mod extension_backend;
