@@ -1,11 +1,11 @@
+  /**
+   * 装上 / 换掉样式表。版本 = 手写版本号前缀 + 样式全文的哈希：改了任何 CSS，重新注入（不刷新页面）时
+   * 都会换成新样式表。以前只比手写版本号，改样式忘了 +1 时新 JS 配旧样式，新界面全没样式。
+   * 样式全文与哈希每次注入只算一次（挂在函数上）：installStyle 在每轮轻量扫描里都会调。
+   */
   function installStyle() {
-    const existingStyle = document.getElementById(styleId);
-    if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
-    existingStyle?.remove();
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
-    style.textContent = `
+    if (!installStyle.sheet) {
+      const text = `
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);
@@ -2412,6 +2412,22 @@
         .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
       }
     `;
+      // 32 位 FNV-1a，只用来区分样式表内容。
+      let hash = 0x811c9dc5;
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      installStyle.sheet = { text, version: `${codexDeleteStyleVersion}-${(hash >>> 0).toString(36)}` };
+    }
+    const { text, version } = installStyle.sheet;
+    const existingStyle = document.getElementById(styleId);
+    if (existingStyle?.dataset.codexDeleteStyleVersion === version) return;
+    existingStyle?.remove();
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.dataset.codexDeleteStyleVersion = version;
+    style.textContent = text;
     document.documentElement.appendChild(style);
   }
 

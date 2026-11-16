@@ -238,7 +238,9 @@ it("replaces version 31 styles with bounded panel geometry and keeps reinjection
   };
   const install = new Function("document", `${declarations}\n${styleSource}\nreturn installStyle;`)(document);
   install();
-  assert.ok(Number(existing?.dataset.codexDeleteStyleVersion) >= 32);
+  // 版本 = 手写前缀 + 样式全文哈希（改 CSS 不必手动 +1）。
+  assert.match(existing?.dataset.codexDeleteStyleVersion ?? "", /^\d+-[0-9a-z]+$/);
+  assert.ok(Number.parseInt(existing?.dataset.codexDeleteStyleVersion ?? "", 10) >= 32);
   const pageRules = existing!.textContent!.match(/\.codex-plus-page-overlay\s*\{([^}]+)\}/)![1];
   assert.match(pageRules, /right: var\(--codex-plus-page-right, 0px\)/);
   assert.match(pageRules, /bottom: var\(--codex-plus-page-bottom, 0px\)/);
@@ -248,4 +250,11 @@ it("replaces version 31 styles with bounded panel geometry and keeps reinjection
   assert.match(modalRules, /height: calc\(100vh \/ var\(--codex-plus-zoom, 1\)\)/);
   install();
   assert.equal(appended, 1);
+  // 手写前缀没变、只是 CSS 内容变了（旧注入留下的样式表）：照样换新，不能让新 JS 配旧样式。
+  const prefix = existing!.dataset.codexDeleteStyleVersion.split("-")[0];
+  existing!.dataset.codexDeleteStyleVersion = `${prefix}-stale`;
+  install();
+  assert.equal(appended, 2);
+  install();
+  assert.equal(appended, 2);
 });

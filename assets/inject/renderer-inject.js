@@ -394,8 +394,8 @@
   const upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog";
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
   const styleId = "codex-delete-style";
-  // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
-  // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
+  // 样式表版本的前缀。installStyle 会再拼上样式全文的哈希，改 CSS 不用再手动 +1；
+  // 只有样式表结构本身要强制换新（与内容无关）时才动它。
   const codexDeleteStyleVersion = "41";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
@@ -752,14 +752,14 @@
     window.__codexPlusExtensionFailures.push({ script_key: scriptKey, message, at: Date.now() });
     if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
   }
+  /**
+   * 装上 / 换掉样式表。版本 = 手写版本号前缀 + 样式全文的哈希：改了任何 CSS，重新注入（不刷新页面）时
+   * 都会换成新样式表。以前只比手写版本号，改样式忘了 +1 时新 JS 配旧样式，新界面全没样式。
+   * 样式全文与哈希每次注入只算一次（挂在函数上）：installStyle 在每轮轻量扫描里都会调。
+   */
   function installStyle() {
-    const existingStyle = document.getElementById(styleId);
-    if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
-    existingStyle?.remove();
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
-    style.textContent = `
+    if (!installStyle.sheet) {
+      const text = `
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);
@@ -3166,6 +3166,22 @@
         .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
       }
     `;
+      // 32 位 FNV-1a，只用来区分样式表内容。
+      let hash = 0x811c9dc5;
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      installStyle.sheet = { text, version: `${codexDeleteStyleVersion}-${(hash >>> 0).toString(36)}` };
+    }
+    const { text, version } = installStyle.sheet;
+    const existingStyle = document.getElementById(styleId);
+    if (existingStyle?.dataset.codexDeleteStyleVersion === version) return;
+    existingStyle?.remove();
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.dataset.codexDeleteStyleVersion = version;
+    style.textContent = text;
     document.documentElement.appendChild(style);
   }
 

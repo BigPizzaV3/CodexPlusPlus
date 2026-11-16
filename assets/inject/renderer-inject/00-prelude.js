@@ -394,8 +394,8 @@
   const upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog";
   const upstreamBranchOptionAttribute = "data-codex-upstream-branch-option";
   const styleId = "codex-delete-style";
-  // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
-  // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
+  // 样式表版本的前缀。installStyle 会再拼上样式全文的哈希，改 CSS 不用再手动 +1；
+  // 只有样式表结构本身要强制换新（与内容无关）时才动它。
   const codexDeleteStyleVersion = "41";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
