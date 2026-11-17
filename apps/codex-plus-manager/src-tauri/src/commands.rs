@@ -2896,6 +2896,39 @@ fn multi_instance_user_data_dir_with_root(
     legacy_multi_instance_user_data_dir(slug)
 }
 
+/// 多开实例用户数据所在的根目录：当前布局的根，加上历史默认布局的根（布局切换前开的多开窗口仍在那里）。
+/// 主实例的用户数据不会落在这些目录下（多开根与主实例 userData 同级）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn multi_instance_user_data_roots() -> Vec<PathBuf> {
+    multi_instance_user_data_roots_with(
+        std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").map(PathBuf::from),
+        codex_plus_core::paths::state_dir_override(),
+    )
+}
+
+fn multi_instance_user_data_roots_with(
+    electron_root: Option<PathBuf>,
+    state: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    // 用占位实例名推出布局，再取到实例名那一级的上一层，与 multi_instance_user_data_dir_with_root 同源。
+    const PROBE: &str = "codex-plus-root-probe";
+    let root_of = |path: PathBuf| -> Option<PathBuf> {
+        path.ancestors()
+            .find(|ancestor| ancestor.file_name().is_some_and(|name| name == PROBE))
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    };
+    let mut roots: Vec<PathBuf> = [
+        multi_instance_user_data_dir_with_root(PROBE, electron_root, state),
+        legacy_multi_instance_user_data_dir(PROBE),
+    ]
+    .into_iter()
+    .filter_map(root_of)
+    .collect();
+    roots.dedup();
+    roots
+}
+
 fn legacy_multi_instance_user_data_dir(slug: &str) -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| {
@@ -3378,10 +3411,12 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
         });
         let app_dir = app_dir.ok_or_else(|| anyhow::anyhow!("无法核实 Codex 应用路径"))?;
         let executable = codex_plus_core::app_paths::build_codex_executable(&app_dir);
-        return codex_plus_core::watcher::stop_windows_main_codex_processes_with_args_and_wait(
+        // 多开窗口与主实例同一入口，按用户数据目录跳过它们（#3160）。
+        return codex_plus_core::watcher::stop_windows_main_codex_processes_excluding_and_wait(
             &executable,
             owned_debug_port,
             launch_extra_args,
+            &multi_instance_user_data_roots(),
         );
     }
     #[cfg(not(windows))]
@@ -3455,6 +3490,8 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Ok(guard) => guard,
         Err(message) => return failed(&message, json!({})),
     };
+    // 停止失败时要放回原状态，否则界面一直停在「正在停止」（#3160）。
+    let previous_status = StatusStore::default().load_latest().ok().flatten();
     let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
         &request,
         "stopping",
@@ -3496,6 +3533,9 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
                 "manager.stop_failed",
                 json!({"debug_port": request.debug_port, "message": message}),
             );
+            if let Some(previous) = previous_status.filter(|status| status.status != "stopping") {
+                let _ = StatusStore::default().save_latest(&previous);
+            }
             failed(&message, json!({}))
         }
     }
@@ -11629,6 +11669,33 @@ mod tests {
             expected
         );
         assert!(!state.exists());
+    }
+
+    #[test]
+    fn multi_instance_roots_cover_every_layout_and_never_the_main_user_data() {
+        // #3160：停止主实例时按这些根跳过多开窗口；三种布局下每个实例目录都要落在某个根之下。
+        let temp = tempfile::tempdir().unwrap();
+        let electron = temp.path().join("Codex");
+        let state = temp.path().join("state");
+        for (electron_root, state_root) in [
+            (Some(electron.clone()), None),
+            (None, Some(state.clone())),
+            (None, None),
+        ] {
+            let roots =
+                multi_instance_user_data_roots_with(electron_root.clone(), state_root.clone());
+            let dir = multi_instance_user_data_dir_with_root("relay-a", electron_root, state_root);
+            assert!(
+                roots.iter().any(|root| dir.starts_with(root) && dir != *root),
+                "{dir:?} 不在 {roots:?} 之下"
+            );
+            // 主实例 userData 与多开根同级，不能被当成多开。
+            assert!(roots.iter().all(|root| !electron.starts_with(root)), "{roots:?}");
+        }
+        assert!(
+            multi_instance_user_data_roots_with(Some(electron.clone()), None)
+                .contains(&temp.path().join("Codex-multi"))
+        );
     }
 
     #[test]

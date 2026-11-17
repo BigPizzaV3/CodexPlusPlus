@@ -22,6 +22,9 @@ struct StopContext {
     owner: StopProcessOwner,
     app_data: String,
     owned_debug_port: Option<u16>,
+    /// Codex++ 多开实例的用户数据根目录（已归一化）。落在其下的进程是多开窗口，不是主实例，
+    /// 直接跳过，不能当成「用户数据目录不一致的主进程」拒绝停止（#3160）。
+    isolated_user_data_roots: Vec<String>,
 }
 
 trait HeldMainProcess {
@@ -63,6 +66,23 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
     owned_debug_port: Option<u16>,
     launch_extra_args: Option<&[String]>,
 ) -> Result<usize> {
+    stop_windows_main_codex_processes_excluding_and_wait(
+        expected_executable,
+        owned_debug_port,
+        launch_extra_args,
+        &[],
+    )
+}
+
+/// 同 [`stop_windows_main_codex_processes_with_args_and_wait`]；`isolated_user_data_roots` 是
+/// Codex++ 多开实例的用户数据根目录，用户数据落在其下的 Codex 进程是多开窗口，不参与主实例停止。
+#[cfg(windows)]
+pub fn stop_windows_main_codex_processes_excluding_and_wait(
+    expected_executable: &Path,
+    owned_debug_port: Option<u16>,
+    launch_extra_args: Option<&[String]>,
+    isolated_user_data_roots: &[PathBuf],
+) -> Result<usize> {
     use crate::windows_integration::{VerifiedStopProcess, bounded_process_snapshot};
 
     let expected_name = expected_executable
@@ -79,6 +99,7 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         manager.stop_environment()?,
         owned_debug_port,
     )?;
+    context.isolated_user_data_roots = isolated_roots(isolated_user_data_roots);
     // 接管会话没有目录快照时，绑定真实监听者的持有身份，不按相同端口参数批量匹配。
     let listener = if let Some(port) = owned_debug_port {
         let listener =
@@ -239,6 +260,29 @@ fn stop_context(
                 .ok_or_else(|| anyhow::anyhow!("无法核实管理器 APPDATA"))?,
         )?,
         owned_debug_port,
+        isolated_user_data_roots: Vec::new(),
+    })
+}
+
+/// 归一化多开根目录；无法归一化（相对路径等）的跳过，不扩大跳过范围。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn isolated_roots(roots: &[PathBuf]) -> Vec<String> {
+    let mut normalized: Vec<String> = roots
+        .iter()
+        .filter_map(|root| normalized_path(root).ok())
+        // 盘符根不能当多开根，否则会把整个盘上的进程都当成多开。
+        .filter(|root| root.trim_end_matches('\\').len() > 2)
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn under_isolated_root(user_data: &str, roots: &[String]) -> bool {
+    roots.iter().any(|root| {
+        user_data
+            .strip_prefix(root.as_str())
+            .is_some_and(|rest| rest.starts_with('\\') && rest.len() > 1)
     })
 }
 
@@ -584,6 +628,12 @@ fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<Target
         return Ok(TargetClassification::Child);
     }
     let effective = effective_user_data(arguments.user_data, environment)?;
+    if effective
+        .as_deref()
+        .is_some_and(|user_data| under_isolated_root(user_data, &context.isolated_user_data_roots))
+    {
+        return Ok(TargetClassification::Irrelevant("Codex++ 多开实例"));
+    }
     if environment
         .agent_run_id
         .as_deref()
@@ -820,6 +870,7 @@ mod tests {
             },
             app_data: normalized_path_text(APP_DATA).unwrap(),
             owned_debug_port: None,
+            isolated_user_data_roots: Vec::new(),
         }
     }
 
@@ -1006,6 +1057,49 @@ mod tests {
             .collect();
         assert!(stop(processes, &context(None)).is_err());
         assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn multi_instance_windows_are_skipped_instead_of_blocking_main_stop() {
+        // #3160：主 Codex 没在跑，只开着一个多开窗口。
+        const MULTI_ROOT: &str = r"C:\Users\test\AppData\Local\CodexPlusPlus\multi";
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut isolated = context(None);
+        isolated.isolated_user_data_roots = isolated_roots(&[
+            PathBuf::from(MULTI_ROOT),
+            // 盘符根不能当多开根。
+            PathBuf::from(r"C:\"),
+        ]);
+        assert_eq!(isolated.isolated_user_data_roots.len(), 1);
+        let by_argument = facts(&[&format!(r"--user-data-dir={MULTI_ROOT}\relay-mw74pmxo")]);
+        let mut by_environment = facts(&[]);
+        by_environment.environment.user_data = Some(format!(r"{MULTI_ROOT}\relay-b"));
+        for multi in [by_argument.clone(), by_environment] {
+            assert_eq!(
+                classify_target(&multi, &isolated).unwrap(),
+                TargetClassification::Irrelevant("Codex++ 多开实例")
+            );
+        }
+        // 只有多开窗口：按「没有在运行」处理，不报安全校验失败。
+        assert_eq!(
+            stop(vec![fake(1, vec![by_argument.clone()], &events)], &isolated).unwrap(),
+            0
+        );
+        // 多开窗口与主实例同时在：只停主实例。
+        let main = fake(2, vec![facts(&[])], &events);
+        assert_eq!(
+            stop(vec![fake(1, vec![by_argument], &events), main], &isolated).unwrap(),
+            1
+        );
+        assert_eq!(*events.borrow(), vec![2]);
+        // 根目录本身、同名前缀的兄弟目录不算多开，仍按用户数据不一致拒绝。
+        for other in [MULTI_ROOT.to_string(), format!("{MULTI_ROOT}-other\\x")] {
+            let process = facts(&[&format!("--user-data-dir={other}")]);
+            assert_eq!(
+                classify_target(&process, &isolated).unwrap(),
+                TargetClassification::Mismatch("用户数据目录")
+            );
+        }
     }
 
     #[test]
@@ -1640,6 +1734,7 @@ mod tests {
             owner,
             app_data: normalized_path(&app_data).unwrap(),
             owned_debug_port: None,
+            isolated_user_data_roots: Vec::new(),
         };
         let count = capture_and_stop(
             [main.0.id(), isolated.0.id()],
