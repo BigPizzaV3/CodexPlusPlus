@@ -1724,6 +1724,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
             let child = Command::new(executable)
                 .args(&command[1..])
+                // `open` 会把自身环境带给新启动的应用：回环地址不走系统代理（issue #3131）。
+                .envs(crate::proxy::codex_launch_no_proxy_env())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -1755,6 +1757,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         if let Some(state_dir) = instance.state_dir.as_deref() {
             child_command.env(crate::paths::STATE_DIR_ENV, state_dir);
         }
+        // 发往本地网关 / 协议代理的请求不能被系统代理拦走（issue #3131）。
+        child_command.envs(crate::proxy::codex_launch_no_proxy_env());
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
         let child = child_command
