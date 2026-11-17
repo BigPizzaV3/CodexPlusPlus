@@ -120,8 +120,10 @@ export type GatewayPoolEntry = {
   upstreamGone?: string[];
   /** 这个 ChatGPT 账号正借给 Codex 登录。 */
   lentToCodex?: boolean;
-  /** 订阅账号的剩余额度；查不到或普通供应商为空。 */
+  /** 订阅账号（或 OpenCode Go、Command Code 等套餐）的剩余额度；查不到或普通供应商为空。 */
   quota?: ProviderQuota | null;
+  /** 有额度可查（订阅账号，或按地址认出的 API Key 套餐，#3084）。旧版后端没有。 */
+  quotaApi?: boolean;
   /** 已保存的 Key（打码，#2782）：订阅账号等不用 Key 的为空。旧版后端没有。 */
   keys?: ProviderKeyView[];
   /** 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额。旧版后端没有。 */
@@ -1033,6 +1035,17 @@ export function quotaWindowLabel(window: QuotaWindow): { text: string; args: num
   if (minutes % 1440 === 0) return { text: "{0} 天", args: [minutes / 1440] };
   if (minutes % 60 === 0) return { text: "{0} 小时", args: [minutes / 60] };
   return { text: "{0} 分钟", args: [minutes] };
+}
+
+/** 这家供应商有没有额度可查：后端按账号类型和地址判断（OpenCode Go、Command Code 等套餐也算，#3084）；
+ * 旧版后端没给标志时按账号类型：ChatGPT 订阅、Copilot、SuperGrok（ChatGPT API 账号按量计费，没有额度窗口）。 */
+export function quotaSupported(entry: GatewayPoolEntry): boolean {
+  return entry.quotaApi ?? (entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok");
+}
+
+/** 「用量」页的额度一节：打开的、有额度可查的供应商（和供应商池卡片同一份缓存）。 */
+export function quotaEntries(pool: GatewayPoolEntry[] | undefined): GatewayPoolEntry[] {
+  return (pool ?? []).filter((entry) => entry.enabled !== false && quotaSupported(entry));
 }
 
 /** 已重置但未重新查询的窗口不假定恢复。 */

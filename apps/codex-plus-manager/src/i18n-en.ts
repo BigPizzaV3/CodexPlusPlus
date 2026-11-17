@@ -78,6 +78,7 @@ export const EN_PLAIN: Record<string, string> = {
   "额度待刷新": "Usage awaiting refresh",
   "待刷新": "Awaiting refresh",
   "尚未取得官方用量": "Official usage is not available yet",
+  "尚未取得套餐用量": "Plan usage is not available yet",
   "官方未返回时间窗口": "No time windows returned by the provider",
   "订阅额度受限": "Subscription allowance restricted",
   "不登录": "Not signed in",

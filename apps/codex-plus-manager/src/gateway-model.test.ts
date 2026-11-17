@@ -51,6 +51,8 @@ import {
   validateDraft,
   validateProviderDraft,
   imageModelLabel,
+  quotaEntries,
+  quotaSupported,
   type GatewayAgentView,
   type GatewayPayload,
 } from "./gateway-model.ts";
@@ -537,6 +539,23 @@ test("供应商表单：自定义请求头读回、敏感头不回显，没改�
   assert.equal(validateProviderDraft(draft, true), null);
   // 新添加时没碰请求头就不带这个字段（后端按空处理）。
   assert.equal("customHeaders" in providerInput(providerDraftFromPreset(null)), false);
+});
+
+test("额度：后端标志优先，OpenCode Go / Command Code 首次查询前就显示；旧后端按账号类型（#3084）", () => {
+  const base = payload().pool[0];
+  assert.equal(quotaSupported({ ...base, quotaApi: true }), true);
+  assert.equal(quotaSupported({ ...base, quotaApi: false, account: "" }), false);
+  // 旧版后端没有标志：只有订阅账号算。
+  assert.equal(quotaSupported({ ...base, account: "copilot" }), true);
+  assert.equal(quotaSupported({ ...base, account: "chatgpt-api" }), false);
+  assert.equal(quotaSupported({ ...base, account: "" }), false);
+  const pool = [
+    { ...base, id: "go", quotaApi: true },
+    { ...base, id: "off", quotaApi: true, enabled: false },
+    { ...base, id: "plain", quotaApi: false },
+  ];
+  assert.deepEqual(quotaEntries(pool).map((entry) => entry.id), ["go"]);
+  assert.deepEqual(quotaEntries(undefined), []);
 });
 
 test("网关页接入导航，命令已注册", () => {

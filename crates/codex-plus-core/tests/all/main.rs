@@ -66,6 +66,7 @@ mod gateway_apply;
 mod gateway_auto_compact;
 mod gateway_breaker;
 mod gateway_codex_identity;
+mod gateway_coding_plan_quota;
 mod gateway_compaction_model;
 mod gateway_custom_headers;
 mod gateway_diagnostics;

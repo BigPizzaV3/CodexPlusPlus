@@ -34,6 +34,7 @@ import {
   providerEnabled,
   providerInput,
   skippedAgents,
+  quotaSupported,
   subscriptionBlockReason,
   maskAccountText,
   type GatewayAgentId,
@@ -670,8 +671,8 @@ function PoolRow({
     if (await run(`models:${entry.id}`, "save_gateway_provider_models", { id: entry.id, models, defaultModel }, t("保存模型列表"))) setModelsOpen(false);
   };
   const price = priceSummary(entry);
-  // ChatGPT 订阅账号、Copilot 和 SuperGrok 能查额度（ChatGPT API 账号按量计费，没有额度窗口）。
-  const quotaSupported = entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok";
+  // 订阅账号和 OpenCode Go、Command Code 等 API Key 套餐能查额度（#3084）；后端给标志，首次查询前就显示这一行。
+  const hasQuota = quotaSupported(entry);
   const testBlocked = subscriptionBlockReason(entry);
   const saveExtras = async (nextPrice: ProviderPrice | null, modelPrices: Record<string, ProviderPrice> | null, proxy: string) => {
     const title = extrasOpen === "proxy" ? t("保存代理") : t("保存价格");
@@ -709,7 +710,7 @@ function PoolRow({
         <div className="gw-pool-main">
           <strong>{maskAccountName(entry.name)}</strong>
           <small>{sub}</small>
-          {quotaSupported ? entry.quota
+          {hasQuota ? entry.quota
             ? <QuotaWindows compact maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} />
             : <small>{t("额度待刷新")}</small> : null}
         </div>
@@ -831,11 +832,11 @@ function PoolRow({
               </span>
             </div>
           ) : null}
-          {quotaSupported ? (
+          {hasQuota ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{t("尚未取得官方用量")}</span>}
+                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{entry.account ? t("尚未取得官方用量") : t("尚未取得套餐用量")}</span>}
               </div>
               <span className="gw-detail-actions">
                 <button

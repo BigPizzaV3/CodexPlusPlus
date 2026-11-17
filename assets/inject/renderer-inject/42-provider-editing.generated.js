@@ -1715,7 +1715,9 @@ ${key} = ${value}`]);
     proxyAddressError: () => proxyAddressError,
     qualifiedProvider: () => qualifiedProvider,
     queueWaitMs: () => queueWaitMs,
+    quotaEntries: () => quotaEntries,
     quotaRemaining: () => quotaRemaining,
+    quotaSupported: () => quotaSupported,
     quotaWindowFresh: () => quotaWindowFresh,
     quotaWindowLabel: () => quotaWindowLabel,
     relativeTime: () => relativeTime,
@@ -2567,6 +2569,12 @@ ${key} = ${value}`]);
     if (minutes % 1440 === 0) return { text: "{0} 天", args: [minutes / 1440] };
     if (minutes % 60 === 0) return { text: "{0} 小时", args: [minutes / 60] };
     return { text: "{0} 分钟", args: [minutes] };
+  }
+  function quotaSupported(entry) {
+    return entry.quotaApi ?? (entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok");
+  }
+  function quotaEntries(pool) {
+    return (pool ?? []).filter((entry) => entry.enabled !== false && quotaSupported(entry));
   }
   function quotaRemaining(quota, nowMs) {
     if (quota.officialAllowed === false) return 0;

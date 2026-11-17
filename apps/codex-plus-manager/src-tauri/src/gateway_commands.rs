@@ -77,6 +77,9 @@ pub struct GatewayPoolEntry {
     pub upstream_gone: Vec<String>,
     /// 订阅账号的额度（ChatGPT 5 小时 / 每周、Copilot 本月高级请求）；查不到或普通供应商为空。
     pub quota: Option<codex_plus_core::gateway::quota::ProviderQuota>,
+    /// 有额度可查（订阅账号，或 OpenCode Go、Command Code 等 API Key 套餐，#3084）：
+    /// 界面据此在首次查询返回前就显示额度一行和刷新按钮。
+    pub quota_api: bool,
     pub subscription_policy:
         Option<codex_plus_core::gateway::store::SubscriptionPolicy>,
     pub subscription_block_reason: Option<String>,
@@ -267,6 +270,7 @@ fn pool_entry(
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
         quota: codex_plus_core::gateway::quota::quota_for_relay(relay),
+        quota_api: codex_plus_core::gateway::quota::supports(relay),
         subscription_policy: None,
         subscription_block_reason: None,
         balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),

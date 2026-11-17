@@ -8,7 +8,7 @@
 //! - [`route`]：绑定 → 模型 → 候选上游；
 //! - [`key_pool`]：多 Key 冷却与熔断；[`accounts`]：在网关里登录订阅账号；
 //! - [`subscriptions`]：私有接口订阅（Cursor、Kiro 等）包成本地 Chat Completions 上游（`/sub/<供应商>`）；
-//! - [`quota`]：订阅账号的剩余额度；[`speed`]：各上游的响应速度（模型组「额度优先」「速度优先」用）；
+//! - [`quota`]：订阅账号的剩余额度（[`coding_plan`]：OpenCode Go、Command Code 等 API Key 套餐）；[`speed`]：各上游的响应速度（模型组「额度优先」「速度优先」用）；
 //! - [`activity`]：路由动态（最近一次请求怎么走的、计数），供界面实时展示；
 //! - [`images`]：生图请求（`/images/generations`、`/images/edits`）发给哪家；
 //! - [`model_sync`]：重新拉上游模型、补公开价格、定期检查新模型；
@@ -34,6 +34,7 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod coding_plan;
 pub mod compaction_model;
 pub mod connection_generation;
 pub mod diagnostics;
