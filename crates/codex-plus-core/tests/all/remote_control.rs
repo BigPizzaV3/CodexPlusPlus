@@ -524,7 +524,16 @@ fn server_starts_serves_page_and_stops() {
     assert!(get("/api/status", "evil.example", Some(&token)).starts_with("HTTP/1.1 421"));
     assert!(get("/api/nothing", &host, Some(&token)).starts_with("HTTP/1.1 400"));
 
+    // 同进程的微信连接经登记的弱引用直接用服务：拿得到服务和它的运行时，活能派到那个运行时上跑。
+    let (service, runtime) = codex_plus_core::remote_control::hosted_service().expect("运行中要登记服务");
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    runtime.spawn(async move {
+        let _ = done_tx.send(service.jiajia().cursor());
+    });
+    assert!(done_rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok());
+
     codex_plus_core::remote_control::stop();
+    assert!(codex_plus_core::remote_control::hosted_service().is_none(), "停掉后清掉登记");
     assert_eq!(codex_plus_core::remote_control::running_port(), None);
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "停掉后端口要释放");
 }

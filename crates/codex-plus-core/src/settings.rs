@@ -1432,6 +1432,18 @@ pub struct BackendSettings {
     pub weixin_connect_sandbox: String,
     #[serde(rename = "weixinConnectCodexPath", default)]
     pub weixin_connect_codex_path: String,
+    /// 扫码绑定的本人（微信 ilink_user_id）：只有本人能在微信里用加加、审批。
+    #[serde(rename = "weixinConnectLinkedUserId", default)]
+    pub weixin_connect_linked_user_id: String,
+    /// 微信联系人没自己选过模式时用哪种：`jiajia`（加加，默认）或 `direct`（直连 Codex 会话）。
+    #[serde(
+        rename = "weixinConnectDefaultMode",
+        default = "default_weixin_connect_mode"
+    )]
+    pub weixin_connect_default_mode: String,
+    /// 加加的事件（等审批、出错、跑完）在没在对话时也推到微信。默认关。
+    #[serde(rename = "weixinConnectPushToWeixin", default)]
+    pub weixin_connect_push_to_weixin: bool,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
     pub relay_base_url: String,
     #[serde(rename = "relayApiKey", default)]
@@ -1642,6 +1654,9 @@ impl Default for BackendSettings {
             weixin_connect_project_id: String::new(),
             weixin_connect_sandbox: default_weixin_connect_sandbox(),
             weixin_connect_codex_path: String::new(),
+            weixin_connect_linked_user_id: String::new(),
+            weixin_connect_default_mode: default_weixin_connect_mode(),
+            weixin_connect_push_to_weixin: false,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
@@ -2131,6 +2146,10 @@ fn default_weixin_connect_base_url() -> String {
 
 fn default_weixin_connect_sandbox() -> String {
     "read-only".to_string()
+}
+
+fn default_weixin_connect_mode() -> String {
+    "jiajia".to_string()
 }
 
 pub fn default_active_relay_id() -> String {
@@ -3827,6 +3846,13 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     if crate::app_paths::is_windows_store_cli_path(&settings.weixin_connect_codex_path) {
         settings.weixin_connect_codex_path = String::new();
     }
+    settings.weixin_connect_linked_user_id =
+        settings.weixin_connect_linked_user_id.trim().to_string();
+    // 只认两种模式，其它值（含旧版本没有这个字段）都按默认的加加。
+    settings.weixin_connect_default_mode =
+        crate::connect::jiajia_bridge::PeerMode::parse(&settings.weixin_connect_default_mode)
+            .as_str()
+            .to_string();
     settings.codex_app_stepwise_max_items =
         clamp_stepwise_max_items(settings.codex_app_stepwise_max_items);
     settings.codex_app_stepwise_max_input_chars =

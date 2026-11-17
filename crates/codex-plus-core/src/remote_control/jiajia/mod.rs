@@ -235,6 +235,25 @@ impl Jiajia {
         self.store().page_before(before, limit.clamp(1, 200))
     }
 
+    /// 聊天记录当前的位置：(变更序号, 最后一条的 id)。微信转发从这里开始，不重放旧记录。
+    pub fn cursor(&self) -> (u64, u64) {
+        let store = self.store();
+        (store.rev(), store.messages.back().map(|message| message.id).unwrap_or(0))
+    }
+
+    /// 第一次选过模型（没选过时 `send` 会拒绝）。
+    pub fn is_configured(&self) -> bool {
+        self.store().settings.configured
+    }
+
+    /// 在别处（微信）处理了审批卡片：标成已处理，网页上跟着灰掉。
+    pub fn resolve_card(&self, id: u64) {
+        let changed = self.store().update(id, |message| message.resolved = true);
+        if changed {
+            self.touch();
+        }
+    }
+
     pub fn mark_read(&self, upto: u64) {
         self.store().mark_read(upto);
         self.touch();

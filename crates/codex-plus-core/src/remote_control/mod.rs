@@ -225,6 +225,46 @@ fn running_slot() -> &'static Mutex<Option<Running>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+/// 同一进程里的其它模块（微信连接里的加加）直接用远程控制服务，不绕 HTTP。
+///
+/// 服务对象只活在监听线程自己的 tokio 运行时里：这里登记它的弱引用和那个运行时的句柄，
+/// 调用方把要做的事 `spawn` 到这个运行时上跑（加加内部会 `tokio::spawn` 后台任务，
+/// 必须落在服务自己的运行时里，否则调用方的运行时一停这些任务就跟着没了）。
+/// 服务启动时登记、停止时清掉；只存弱引用，不会拖住服务的释放。
+#[derive(Clone)]
+struct HostedService {
+    service: std::sync::Weak<service::RemoteService>,
+    runtime: tokio::runtime::Handle,
+}
+
+fn hosted_slot() -> &'static Mutex<Option<HostedService>> {
+    static SLOT: OnceLock<Mutex<Option<HostedService>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// 在当前运行时（监听线程里）登记服务。
+fn register_hosted(service: &Arc<service::RemoteService>) {
+    *hosted_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(HostedService {
+        service: Arc::downgrade(service),
+        runtime: tokio::runtime::Handle::current(),
+    });
+}
+
+/// 只清掉自己登记的那一份：重启时新服务可能已经登记上了。
+fn unregister_hosted(service: &Arc<service::RemoteService>) {
+    let mut slot = hosted_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|hosted| std::ptr::eq(hosted.service.as_ptr(), Arc::as_ptr(service))) {
+        *slot = None;
+    }
+}
+
+/// 正在运行的远程控制服务和它所在的运行时；没开（或正在停）时返回 None。
+pub fn hosted_service() -> Option<(Arc<service::RemoteService>, tokio::runtime::Handle)> {
+    let slot = hosted_slot().lock().unwrap_or_else(|e| e.into_inner());
+    let hosted = slot.as_ref()?;
+    Some((hosted.service.upgrade()?, hosted.runtime.clone()))
+}
+
 fn last_error_slot() -> &'static Mutex<Option<String>> {
     static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
@@ -306,6 +346,7 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                 let jiajia = service.jiajia();
                 jiajia.set_port(port);
                 jiajia.start();
+                register_hosted(&service);
                 let local = Arc::new(server::ServerContext {
                     service: service.clone(),
                     token: options.token.clone(),
@@ -332,6 +373,7 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                     _ = lan_task => {}
                     _ = stop_rx => {}
                 }
+                unregister_hosted(&service);
                 service.shutdown().await;
             });
         })
