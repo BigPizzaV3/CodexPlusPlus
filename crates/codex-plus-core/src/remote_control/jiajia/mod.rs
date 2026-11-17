@@ -38,6 +38,10 @@ pub const MCP_FLAG: &str = "--codex-plus-jiajia-mcp";
 pub const ENV_URL: &str = "CODEX_PLUS_JIAJIA_URL";
 pub const ENV_TOKEN: &str = "CODEX_PLUS_JIAJIA_TOKEN";
 pub const MCP_SERVER_ID: &str = "jiajia";
+/// 微信里发给加加时记的发送方（网页上显示「微信」）：微信桥和 `focus_thread` 工具都靠它认出「本人在微信里说的话」。
+pub const WEIXIN_SENDER: &str = "微信";
+/// `focus_thread` 发出的请求过了这么久还没被微信桥取走就作废（微信连接没开着）。
+pub const FOCUS_REQUEST_TTL_MS: i64 = 2 * 60 * 1000;
 
 /// 后台循环的节拍；看会话的间隔。
 const TICK: Duration = Duration::from_secs(2);
@@ -50,6 +54,14 @@ const WATCH_BATCH: usize = 12;
 const ROTATE_RATIO: f64 = 0.7;
 /// 推送给网页时带多少条最近的记录。
 const STATE_MESSAGES: usize = 80;
+
+/// 加加让微信进入专注的请求（`focus_thread` 工具发出，微信桥取走后切到这个会话）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusRequest {
+    pub thread_id: String,
+    pub title: String,
+    pub at: i64,
+}
 
 /// 交给加加的一条输入。
 #[derive(Debug, Clone)]
@@ -104,6 +116,10 @@ pub struct Jiajia {
     sender_role: Mutex<Role>,
     /// 加加用 read_thread 看过的每个会话的最后一轮：这一轮的跑完 / 出错不用再告诉它（它已经知道了）。
     seen_ends: Mutex<HashMap<String, String>>,
+    /// 最近一条用户消息是从哪儿来的（`by`）：`focus_thread` 只在用户是从微信说话时有效。
+    last_sender: Mutex<Option<String>>,
+    /// 等微信桥取走的「进入专注」请求。
+    focus_request: Mutex<Option<FocusRequest>>,
     changed: watch::Sender<u64>,
     tool_token: String,
     port: AtomicU16,
@@ -121,6 +137,8 @@ impl Jiajia {
             status: Mutex::new((false, None)),
             sender_role: Mutex::new(Role::Message),
             seen_ends: Mutex::new(HashMap::new()),
+            last_sender: Mutex::new(None),
+            focus_request: Mutex::new(None),
             changed: watch::channel(0).0,
             tool_token: super::generate_token(),
             port: AtomicU16::new(0),
@@ -158,6 +176,22 @@ impl Jiajia {
 
     pub fn sender_role(&self) -> Role {
         *self.sender_role.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 最近一条用户消息是不是本人从微信发的。
+    pub fn last_sender_is_weixin(&self) -> bool {
+        self.last_sender.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(WEIXIN_SENDER)
+    }
+
+    /// 微信桥取走「进入专注」请求（取一次就没了；过期的丢掉）。
+    pub fn take_focus_request(&self) -> Option<FocusRequest> {
+        let request = self.focus_request.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        (now_ms() - request.at <= FOCUS_REQUEST_TTL_MS).then_some(request)
+    }
+
+    fn request_focus(&self, thread_id: &str, title: &str) {
+        *self.focus_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(FocusRequest { thread_id: thread_id.to_string(), title: title.to_string(), at: now_ms() });
+        self.touch();
     }
 
     /// 加加读过这个会话：记下它看到的最后一轮。
@@ -419,6 +453,7 @@ impl Jiajia {
             bail!("先选一个模型");
         }
         *self.sender_role.lock().unwrap_or_else(|e| e.into_inner()) = role;
+        *self.last_sender.lock().unwrap_or_else(|e| e.into_inner()) = by.clone();
         let id = self.store().push(ChatMessage {
             id: 0,
             at: 0,
@@ -911,7 +946,7 @@ impl Jiajia {
     }
 
     /// 某个会话当前的状态（工具列会话时用；没看过的返回 None）。
-    async fn known_phase(&self, thread_id: &str) -> Option<(Phase, Option<String>)> {
+    pub(crate) async fn known_phase(&self, thread_id: &str) -> Option<(Phase, Option<String>)> {
         let watcher = self.watcher.lock().await;
         watcher.tracked.get(thread_id).map(|tracked| (tracked.snapshot.phase, tracked.snapshot.last_end.as_ref().map(|end| end.status.clone())))
     }

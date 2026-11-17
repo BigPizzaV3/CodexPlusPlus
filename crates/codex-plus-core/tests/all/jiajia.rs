@@ -327,6 +327,34 @@ fn weixin_bridge_helpers_report_cursor_and_resolve_cards() {
     assert!(Store::open(dir.path()).messages[1].resolved, "写回了文件");
 }
 
+/// focus_thread 是网页和微信共用的加加工具：只有用户最近一句是从微信说的才往下走，网页上调用直接说明。
+#[test]
+fn focus_thread_tool_only_works_when_the_user_spoke_from_weixin() {
+    use codex_plus_core::remote_control::devices::Role;
+    use codex_plus_core::remote_control::jiajia::tools::activity_label;
+    use codex_plus_core::remote_control::jiajia::{Jiajia, WEIXIN_SENDER};
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let jiajia = Jiajia::new(dir.path().to_path_buf(), std::sync::Weak::new());
+        let args = json!({ "thread": "11111111" });
+        let error = jiajia.call_tool("focus_thread", &args).await.unwrap_err().to_string();
+        assert!(error.contains("只在微信里有效"), "{error}");
+
+        jiajia.update_settings(&json!({ "configured": true })).await.unwrap();
+        jiajia.send("进入重构登录那个会话", Some(WEIXIN_SENDER.into()), Role::Full).await.unwrap();
+        assert!(jiajia.last_sender_is_weixin());
+        let error = jiajia.call_tool("focus_thread", &args).await.unwrap_err().to_string();
+        assert!(!error.contains("只在微信里有效"), "微信里说的话照常往下走（这里远程控制没开）：{error}");
+
+        jiajia.send("网页上问一句", Some("本机浏览器".into()), Role::Full).await.unwrap();
+        let error = jiajia.call_tool("focus_thread", &args).await.unwrap_err().to_string();
+        assert!(error.contains("只在微信里有效"), "{error}");
+        assert!(jiajia.take_focus_request().is_none());
+        assert_eq!(activity_label("focus_thread"), "正在切换微信专注");
+    });
+}
+
 #[test]
 fn thread_views_are_summarized_for_the_model() {
     use codex_plus_core::remote_control::jiajia::tools::{relative_time, summarize_view};
@@ -373,7 +401,7 @@ fn mcp_proxy_lists_tools_and_forwards_calls() {
     let listed = handle_request(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }), never).unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-    for name in ["list_threads", "read_thread", "send_to_thread", "new_thread", "stop_thread", "set_thread_settings", "watch", "later", "remember", "recent_events"] {
+    for name in ["list_threads", "read_thread", "send_to_thread", "new_thread", "focus_thread", "stop_thread", "set_thread_settings", "watch", "later", "remember", "recent_events"] {
         assert!(names.contains(&name), "缺少工具 {name}");
     }
     let mut unique = names.clone();

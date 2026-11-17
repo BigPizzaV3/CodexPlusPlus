@@ -44,6 +44,11 @@ pub fn tool_definitions() -> Value {
             }, "required": ["project", "text"] }
         },
         {
+            "name": "focus_thread",
+            "description": "让用户的微信进入「专注」这个会话：之后用户在微信里发的消息直接交给它，它的回复直接转回微信，不经过你；用户发 /退出 回到你这里。只在用户是从微信和你说话时有效（网页上会返回错误）。",
+            "inputSchema": { "type": "object", "properties": { "thread": thread }, "required": ["thread"] }
+        },
+        {
             "name": "stop_thread",
             "description": "停止会话正在跑的这一轮。",
             "inputSchema": { "type": "object", "properties": { "thread": thread }, "required": ["thread"] }
@@ -111,6 +116,7 @@ pub fn activity_label(tool: &str) -> &'static str {
         "send_to_thread" => "正在给会话发消息",
         "new_thread" => "正在新开会话",
         "stop_thread" => "正在停止会话",
+        "focus_thread" => "正在切换微信专注",
         "set_thread_settings" | "list_models" => "正在改会话设置",
         "remember" => "正在记下来",
         "later" => "正在安排回访",
@@ -217,6 +223,10 @@ fn text_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 impl Jiajia {
     /// 执行一个工具，返回给模型读的文本。
     pub async fn call_tool(&self, name: &str, args: &Value) -> anyhow::Result<String> {
+        // 工具清单是加加会话共用的（网页和微信是同一个加加），所以 focus_thread 不按入口隐藏，而是看这句话是谁说的。
+        if name == "focus_thread" && !self.last_sender_is_weixin() {
+            bail!("这个操作只在微信里有效：用户现在是在网页上和你说话，网页上点会话卡片就能进去");
+        }
         let service = self.service()?;
         match name {
             "list_threads" => self.tool_list_threads(args).await,
@@ -247,6 +257,12 @@ impl Jiajia {
                 self.store().watch(&id, &title, "加加新开的");
                 self.touch();
                 Ok(format!("已在 {} 新开会话 {}「{title}」并发出第一条消息，正在后台跑。已自动盯着。", project_name(&cwd), short_id(&id)))
+            }
+            "focus_thread" => {
+                self.require_role(Role::Message)?;
+                let (id, title) = self.resolve_thread(text_arg(args, "thread").context("缺少 thread")?).await?;
+                self.request_focus(&id, &title);
+                Ok(format!("已让微信进入专注：会话 {}「{title}」。之后用户在微信里发的消息直接交给它，回复也直接转回微信，不经过你；用户发 /退出 会回到你这里。", short_id(&id)))
             }
             "stop_thread" => {
                 self.require_role(Role::Message)?;
