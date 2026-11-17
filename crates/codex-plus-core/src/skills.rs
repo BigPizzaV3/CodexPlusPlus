@@ -32,6 +32,8 @@ pub use in_place_update::SkillInPlaceUpdatePreview;
 pub use backup_usage::SkillBackupUsage;
 
 mod archive;
+mod local_versions;
+pub use local_versions::LocalSkillVersion;
 
 /// 在锁外检查过的 Agent 副本；提交只核验路径身份与代次，不再重读内容。
 struct AgentCopiesSnapshot {
@@ -2088,6 +2090,17 @@ impl SkillsManager {
                     agent => agent,
                 }).collect::<BTreeSet<_>>().into_iter().all(|agent| distinct_owners.insert(agent))
             });
+            if entry.managed_source_status.as_deref() == Some("different")
+                && comparison_error.is_none() && hashes.len() == 1 && sources.len() <= 1
+                && originals.is_empty() && !state.instance_records.contains_key(&entry.id)
+                && self.unclaimed_managed_source(&entry.id, &state).is_some()
+                && entry.locations.iter().all(|location| location.managed && !location.selectable)
+            {
+                entry.managed_source_status = Some("needs-sync".into());
+                entry.update_available = false;
+                visible.push(entry);
+                continue;
+            }
             if comparison_error.is_none() && hashes.len() <= 1 && sources.len() <= 1
                 && !associated_originals && !separate_agents
             {
@@ -2690,6 +2703,12 @@ impl SkillsManager {
             _ => {}
         }
         if let Some(record) = installed.as_ref().filter(|_| !install_only) {
+            if state.instance_records.get(id).is_some_and(|records| records.values().any(|instance|
+                instance.installed.repo_key == LOCAL_IMPORT_REPO_KEY && instance.installed.update_owner.is_empty()
+                && skill_path_identity(&instance.target.path).ok() == Some(instance.target.identity)))
+            {
+                anyhow::bail!("此 Skill 包含独立保留的本地版本，请从详情按安装位置更新");
+            }
             let source = self.source_dir.join(id).canonicalize().ok();
             let original = record.original_dir.as_ref().and_then(|path| path.canonicalize().ok());
             let mut roots = vec![self.linked_dir()];
@@ -3928,7 +3947,7 @@ impl SkillsManager {
         }
         if let Some(origin) = current.backup_origins.get(backup_id).cloned() {
             anyhow::ensure!(origin.purpose != "update", "此旧版更新备份缺少完整的备份组记录，不能自动恢复");
-            if matches!(origin.purpose.as_str(), "disabled" | "managed-source") {
+            if matches!(origin.purpose.as_str(), "disabled" | "managed-source" | "local-version") {
                 self.ensure_duplicate_has_no_discovered_references(&backup)?;
             }
             let installed = current.installed.get(&skill_id);
@@ -3937,6 +3956,8 @@ impl SkillsManager {
             let allowed = match origin.purpose.as_str() {
                 "duplicate" => origin.path == self.linked_dir().join(&skill_id),
                 "disabled" => agent_copy,
+                "local-version" => agent_copy || self.shared_skills_dir()
+                    .is_some_and(|root| origin.path == root.join(&skill_id)),
                 "managed-source" => origin.path == self.source_dir.join(&skill_id),
                 "update" => installed.is_some() && (
                     installed.and_then(|item| item.original_dir.as_ref()) == Some(&origin.path)

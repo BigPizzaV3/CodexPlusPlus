@@ -8001,13 +8001,47 @@ pub fn uninstall_skill(id: String) -> CommandResult<SkillsPayload> {
 }
 
 #[tauri::command]
+pub async fn list_skill_versions(id: String) -> Result<Vec<codex_plus_core::skills::LocalSkillVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || default_skills_manager().local_versions(&id).map_err(|e| format!("{e:#}")))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SkillVersionAction {
+    Archive { id: String, root: String, revision: String },
+    Enable { id: String, root: String, revision: String, agent: String },
+    Reconcile { id: String, root: String, revisions: BTreeMap<String, String> },
+    SyncCopies { id: String, revisions: BTreeMap<String, String> },
+    KeepLocal { id: String, revisions: BTreeMap<String, String> },
+    Export { backup: String, directory: PathBuf },
+}
+
+#[tauri::command]
+pub async fn manage_skill_version(action: SkillVersionAction) -> Result<CommandResult<SkillsPayload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let result = match action {
+            SkillVersionAction::Archive { id, root, revision } => manager.archive_local_version(&id, &root, &revision),
+            SkillVersionAction::Enable { id, root, revision, agent } => manager.enable_local_version(&id, &root, &revision, &agent),
+            SkillVersionAction::Reconcile { id, root, revisions } => manager.reconcile_managed_versions(&id, &root, revisions),
+            SkillVersionAction::SyncCopies { id, revisions } => manager.sync_installed_copies(&id, revisions),
+            SkillVersionAction::KeepLocal { id, revisions } => manager.keep_local_versions(&id, revisions),
+            SkillVersionAction::Export { backup, directory } => manager.export_skill_backup(&backup, &directory),
+        };
+        let payload = current_skills_payload(&manager);
+        match result { Ok(()) => ok("Skill 版本操作已完成。", payload), Err(e) => failed(&format!("Skill 版本操作失败：{e:#}"), payload) }
+    }).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn restore_skill_backup(backup_id: String) -> Result<CommandResult<SkillsPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = default_skills_manager();
         match manager.restore_backup(backup_id.trim()) {
             Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
             Err(error) => failed(
-                &format!("从备份恢复失败：{error}"),
+                &format!("从备份恢复失败：{error:#}"),
                 current_skills_payload(&manager),
             ),
         }
@@ -8015,10 +8049,7 @@ pub async fn restore_skill_backup(backup_id: String) -> Result<CommandResult<Ski
 }
 
 #[tauri::command]
-pub async fn delete_skill_backup(
-    backup_id: String,
-    missing_only: Option<bool>,
-) -> Result<CommandResult<SkillsPayload>, String> {
+pub async fn delete_skill_backup(backup_id: String, missing_only: Option<bool>) -> Result<CommandResult<SkillsPayload>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let manager = default_skills_manager();
         let missing_only = missing_only.unwrap_or(false);
@@ -8033,7 +8064,7 @@ pub async fn delete_skill_backup(
                 current_skills_payload(&manager),
             ),
             Err(error) => failed(
-                &format!("删除备份失败：{error}"),
+                &format!("删除备份失败：{error:#}"),
                 current_skills_payload(&manager),
             ),
         }
@@ -8211,21 +8242,6 @@ fn skills_payload(
 ) -> SkillsPayload {
     let repos = manager.list_repos();
     let all_remote = all_cached_repo_skills();
-    let repo_counts = repo_skill_cache()
-        .lock()
-        .ok()
-        .map(|cache| {
-            repos
-                .iter()
-                .filter_map(|repo| {
-                    cache
-                        .entries
-                        .get(&repo.key())
-                        .map(|skills| (repo.key(), skills.len()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let remote: Vec<_> = remote
         .iter()
         .filter(|skill| {
@@ -8241,10 +8257,13 @@ fn skills_payload(
     } else {
         match manager.try_merge_entries(&all_remote) {
             Ok(entries) => {
-                let repository = entries.iter().filter(|skill|
-                    all_remote.iter().any(|r| r.id == skill.id && r.repo_key == skill.repo_key)
-                ).cloned().collect();
-                if remote == all_remote { reused_inventory = Some(Ok(entries)); }
+                let identities = all_remote.iter().map(|r| (r.id.as_str(), r.repo_key.as_str())).collect::<std::collections::HashSet<_>>();
+                let repository = entries.iter()
+                    .filter(|skill| identities.contains(&(skill.id.as_str(), skill.repo_key.as_str())))
+                    .cloned().collect();
+                if remote == all_remote {
+                    reused_inventory = Some(Ok(entries));
+                }
                 repository
             }
             Err(error) => {
@@ -8257,15 +8276,36 @@ fn skills_payload(
             }
         }
     };
+    let repo_counts = repo_skill_cache()
+        .lock()
+        .ok()
+        .map(|cache| {
+            repos
+                .iter()
+                .filter_map(|repo| {
+                    cache
+                        .entries
+                        .get(&repo.key())
+                        .map(|skills| (repo.key(), skills.len()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let skills = reused_inventory.unwrap_or_else(|| {
-        if remote.is_empty() { manager.try_local_inventory() } else { manager.try_merge_entries(&remote) }
+        if remote.is_empty() {
+            manager.try_local_inventory()
+        } else {
+            manager.try_merge_entries(&remote)
+        }
     });
     let inventory_ok = skills.is_ok();
     let skills = match skills {
         Ok(skills) => skills,
         Err(error) => {
             let message = format!("读取 Skill 状态失败：{error:#}");
-            if !repo_errors.contains(&message) { repo_errors.push(message); }
+            if !repo_errors.contains(&message) {
+                repo_errors.push(message);
+            }
             Vec::new()
         }
     };
@@ -8359,7 +8399,7 @@ pub async fn set_skill_enabled_for(
                 payload,
             ),
         }
-    }).await.map_err(|error| format!("Skill 启停任务失败：{error}"))
+    }).await.map_err(|error| format!("Skill 启停失败：{error}"))
 }
 
 /// 上一次成功拉取的远端清单，按仓库 key 存。
@@ -11858,6 +11898,47 @@ mod tests {
                 .skills
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn skills_payload_distinguishes_local_read_errors_from_repository_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("skills.json");
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            &state_path,
+            temp.path().join("home"),
+        );
+        let partial = skills_payload(&manager, &[], vec!["仓库读取失败".into()]);
+        assert!(partial.inventory_ok);
+        assert!(partial.backups_ok);
+        assert!(partial.skills.is_empty());
+
+        std::fs::write(state_path, "{invalid").unwrap();
+        let failed = skills_payload(&manager, &[], Vec::new());
+        assert!(!failed.inventory_ok);
+        assert!(!failed.backups_ok);
+        assert!(!failed.repo_errors.is_empty());
+    }
+
+    #[test]
+    fn optional_skill_payload_keeps_the_existing_flattened_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = codex_plus_core::skills::SkillsManager::new(
+            temp.path().join("skills"),
+            temp.path().join("backups"),
+            temp.path().join("skills.json"),
+            temp.path().join("home"),
+        );
+        let full = serde_json::to_value(ok("done", Some(skills_payload(&manager, &[], Vec::new())))).unwrap();
+        assert_eq!(full["status"], "ok");
+        assert!(full["skills"].is_array());
+        assert_eq!(full["inventoryOk"], true);
+        assert!(full.get("payload").is_none());
+
+        let light = serde_json::to_value(ok("done", None::<SkillsPayload>)).unwrap();
+        assert_eq!(light, serde_json::json!({ "status": "ok", "message": "done" }));
     }
 
     /// 进程级全局状态的测试锁。

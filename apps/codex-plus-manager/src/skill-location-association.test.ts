@@ -19,7 +19,7 @@ test("each Agent installation associates its own repository path", () => {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
     fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "本地",
     skillChannelLabel: () => "本地安装", SkillFileTimes: "SkillFileTimes", CloudDownload: "CloudDownload",
-    ManagementDrawer: "ManagementDrawer", Button: "Button", Edit3: "Edit3", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", Edit3: "Edit3", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight", Trash2: "Trash2",
   };
   vm.createContext(context);
   vm.runInContext(code, context);
