@@ -132,7 +132,8 @@ try {
   // 找不到证书，沿用 ad-hoc
 }
 console.log(`签名身份：${signingId === "-" ? "ad-hoc（TCC 授权在重建后会失效）" : signingId}`);
-run("codesign", ["--force", "--deep", "--sign", signingId, stagingBundle]);
+// 本地实例不公证，不需要苹果的安全时间戳；带上它时苹果时间戳服务一抽风整个重启就失败。
+run("codesign", ["--force", "--deep", "--timestamp=none", "--sign", signingId, stagingBundle]);
 
 // 停掉固定目录里的旧实例（只匹配固定路径，不要误杀 /Applications 里的正式版）。
 //
