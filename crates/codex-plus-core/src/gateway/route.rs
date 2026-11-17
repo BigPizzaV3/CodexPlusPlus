@@ -262,7 +262,7 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
 /// 但成员的供应商全被这个 Agent 的『挑选』排除」时才不列（#2969），否则选了也只会报错。
 /// 本来就展开不了的组（成员模型没人提供等）保持原样列出，由默认模型等环节各自处理。
 /// `advance = false`：只看能不能展开，不推进轮换进度。
-fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
+pub(crate) fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
     if group.disabled || group.members.is_empty() {
         return false;
     }

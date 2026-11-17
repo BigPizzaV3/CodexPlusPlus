@@ -170,14 +170,34 @@ fn upstream_for(
     }
 }
 
+/// 「Agent 接入」页里 Claude Desktop 那一行的绑定 id（用户看得见、能「挑选」供应商的那份）。
+const DESKTOP_AGENT_ID: &str = "claude-desktop";
+
+/// 用户在「Agent 接入」的 Claude Desktop 行「挑选」里取消勾选的供应商（#3158）。
+///
+/// 完整功能模式用的是另一份 `claude-desktop-local` 绑定，3p 模式每次启动也会重写模型清单；
+/// 两边都要按这份排除项来，否则用户只勾了几家，Claude 里仍列出池里全部供应商的模型。
+fn desktop_pool_exclude(gateway: &GatewaySettings) -> Vec<String> {
+    gateway
+        .binding(&ToolId::Unknown(DESKTOP_AGENT_ID.into()))
+        .map(|binding| binding.pool_exclude.clone())
+        .unwrap_or_default()
+}
+
+/// 交给 Claude 的全部聊天模型：只取用户给 Claude Desktop 勾选的供应商，每家各列 `<供应商 id>/<模型>`，
+/// 再加上这些供应商能展开的模型组。
 fn available_models(gateway: &GatewaySettings) -> Vec<String> {
+    let scope = AgentBinding {
+        pool_exclude: desktop_pool_exclude(gateway),
+        ..AgentBinding::default()
+    };
     let mut models = Vec::new();
-    for provider in gateway.providers.iter().filter(|provider| provider.enabled) {
-        for model in crate::gateway::route::chat_models(&provider.relay) {
+    for relay in crate::gateway::route::binding_pool_relays(gateway, &scope) {
+        for model in crate::gateway::route::chat_models(relay) {
             if is_internal_review_model(&model) {
                 continue;
             }
-            let model = format!("{}/{model}", provider.relay.id);
+            let model = format!("{}/{model}", relay.id);
             if !models.contains(&model) {
                 models.push(model);
             }
@@ -186,7 +206,7 @@ fn available_models(gateway: &GatewaySettings) -> Vec<String> {
     for group in gateway
         .groups
         .iter()
-        .filter(|group| !group.members.is_empty())
+        .filter(|group| crate::gateway::route::group_listed_for_binding(gateway, &scope, group))
     {
         models.push(group.model_id());
     }
@@ -317,7 +337,7 @@ fn chosen_model(
     // 「Agent 接入」页里 Claude Desktop 那一行写的是 `claude-desktop` 绑定；本地模式用的是
     // `claude-desktop-local`。用户只看得见前者，所以以它为准，本地绑定自己的值退到第二位。
     let sibling = gateway
-        .binding(&ToolId::Unknown("claude-desktop".into()))
+        .binding(&ToolId::Unknown(DESKTOP_AGENT_ID.into()))
         .map(|binding| binding.model.trim().to_string())
         .unwrap_or_default();
     let bound = binding.model.trim();
@@ -341,7 +361,8 @@ fn chosen_model(
 fn local_binding(gateway: &GatewaySettings, config: &ClaudeLocalSettings) -> Result<AgentBinding> {
     let agent = ToolId::Unknown(AGENT_ID.into());
     let mut binding = gateway.binding(&agent).cloned().unwrap_or_default();
-    binding.pool_exclude.clear();
+    // 供应商范围跟「Agent 接入」的 Claude Desktop 行走，不再清空成整个池（#3158）。
+    binding.pool_exclude = desktop_pool_exclude(gateway);
     binding.extra_models = available_models(gateway);
     // 模型以「Agent 接入」里这份绑定的选择为准：那边一处选好，Codex / Claude / Grok 都按它走。
     // 配置里的 `model` 只是老版本的遗留值，绑定还没选过模型时才拿来兜底。
@@ -377,10 +398,11 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     let port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
     crate::resident_helper::ensure_resident_helper(port)?;
     let context = crate::gateway::apply::ApplyContext::default_paths(port);
-    let agent = ToolId::Unknown("claude-desktop".into());
+    let agent = ToolId::Unknown(DESKTOP_AGENT_ID.into());
     let gateway = context.gateway.load()?.with_extension_providers();
     let mut binding = gateway.binding(&agent).cloned().unwrap_or_default();
-    binding.pool_exclude.clear();
+    // 这就是用户在「Agent 接入」里配的那份绑定：保留它「挑选」的供应商（#3158）。
+    // 以前在这里清空 pool_exclude 再经 enable_binding 存回去，用户的勾选每启动一次就被抹掉一次。
     binding.extra_models = available_models(&gateway);
     // 与完整功能模式同一条规则：绑定里选过就用它，配置里的旧值只作兜底。
     binding.model = chosen_model(&gateway, &binding, config);
@@ -481,6 +503,59 @@ mod tests {
         let mut gateway = GatewaySettings::default();
         gateway.providers = vec![provider("openai", "gpt-6\ncodex-auto-review")];
         assert_eq!(available_models(&gateway), vec!["openai/gpt-6"]);
+    }
+
+    #[test]
+    fn claude_models_follow_the_desktop_binding_provider_selection() {
+        // #3158：用户在「Agent 接入」的 Claude Desktop 行只勾了 relay，Claude 里不能再列出其它供应商的模型。
+        let mut gateway = GatewaySettings::default();
+        gateway.providers = vec![
+            provider("anthropic", "claude-sonnet-4-6"),
+            provider("relay", "gpt-6-astra\ngpt-6.1-sol"),
+        ];
+        gateway.groups = vec![
+            serde_json::from_value(json!({
+                "id": "only-anthropic",
+                "name": "only-anthropic",
+                "members": [{"model": "claude-sonnet-4-6"}],
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "id": "mixed",
+                "name": "mixed",
+                "members": [{"model": "gpt-6-astra"}],
+            }))
+            .unwrap(),
+        ];
+        gateway.bindings.insert(
+            "claude-desktop".into(),
+            AgentBinding {
+                model: "relay/gpt-6.1-sol".into(),
+                pool_exclude: vec!["anthropic".into()],
+                ..AgentBinding::default()
+            },
+        );
+        assert_eq!(
+            available_models(&gateway),
+            vec!["relay/gpt-6-astra", "relay/gpt-6.1-sol", "group/mixed"],
+            "排除的供应商及只靠它展开的模型组都不交给 Claude"
+        );
+
+        // 完整功能模式的合成绑定也按同一份排除项路由，排除的供应商的模型选不到。
+        let binding = local_binding(&gateway, &ClaudeLocalSettings::default()).unwrap();
+        assert_eq!(binding.pool_exclude, vec!["anthropic".to_string()]);
+        assert_eq!(binding.model, "relay/gpt-6.1-sol");
+        let (visible, _) = exposed_models(&gateway, &binding, true);
+        assert!(visible.iter().all(|model| !model.starts_with("anthropic/")));
+        assert!(!crate::gateway::route::model_is_routable(
+            &gateway,
+            &binding,
+            "anthropic/claude-sonnet-4-6"
+        ));
+
+        // 没有排除项时保持原样：池里所有打开的供应商都列出。
+        gateway.bindings.remove("claude-desktop");
+        assert_eq!(available_models(&gateway).len(), 5);
     }
 
     #[test]
