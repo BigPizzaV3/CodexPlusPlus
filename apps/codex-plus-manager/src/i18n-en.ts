@@ -3680,6 +3680,12 @@ export const EN_PLAIN: Record<string, string> = {
   "缺少 Node.js，无法启动本地服务": "Node.js is missing, so the local service cannot start",
   "Claude 本地模式": "Claude local mode",
   "操作失败": "The action failed",
+  "本地网关端口": "Local gateway port",
+  "保存本地网关端口失败": "Failed to save local gateway port",
+  "本地网关端口已保存": "Local gateway port saved",
+  "完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。": "Takes effect after fully quitting Codex++ (including the tray) and reopening it. Agents on the gateway switch to the new port at startup; reconnect any that don't on the Agents page.",
+  "待重启": "Restart pending",
+  "Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。": "Agent configs point at this port. Saving checks whether the port is in use; old ports are remembered so addresses in old configs are still recognized as Codex++'s.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4330,6 +4336,10 @@ export const EN_TEMPLATE: Record<string, string> = {
   "最近一次网关错误：{0}": "Last gateway error: {0}",
   "上下文窗口 {0}（供应商声明）": "Context window {0} (declared by provider)",
   "另有 {0} 个模型窗口比默认模型小，没有列给 Claude（在那里切换会按 {1} 压缩）：{2}": "{0} more models have smaller windows than the default model and are not listed for Claude (switching there compacts against {1}): {2}",
+  "已由环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 指定为 {0}，这里不能修改。": "Set to {0} by the CODEX_PLUS_PROTOCOL_PROXY_PORT environment variable; it can't be changed here.",
+  "端口要在 {0}–{1} 之间。": "Port must be between {0} and {1}.",
+  "已改为 {0}，当前仍在 {1} 上监听：需要重启 Codex++ 并重新接入 Agent 后生效。": "Changed to {0} but still listening on {1}: restart Codex++ and reconnect Agents for it to take effect.",
+  "和其它程序端口冲突时换一个（默认 {0}）。保存后需要重启 Codex++ 并重新接入 Agent 后生效。": "Change it if another program uses the same port (default {0}). Takes effect after restarting Codex++ and reconnecting Agents.",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated

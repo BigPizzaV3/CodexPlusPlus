@@ -178,6 +178,119 @@ fn read_protocol_proxy_port_history(path: &std::path::Path) -> BTreeSet<u16> {
         .collect()
 }
 
+/// 界面里能填的最小端口（#3082）：1024 以下是特权端口，普通进程绑不上。
+pub const MIN_CUSTOM_PROTOCOL_PROXY_PORT: u16 = 1024;
+
+/// 管理器「本地网关端口」一行要显示的状态。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolProxyPortState {
+    /// 下次启动使用的端口：环境变量 > 持久化文件 > 默认值。
+    pub configured: u16,
+    /// 内置默认端口。
+    pub default_port: u16,
+    /// 设置了 `CODEX_PLUS_PROTOCOL_PROXY_PORT` 时的值；此时界面不能改端口。
+    pub env_override: Option<u16>,
+}
+
+pub fn protocol_proxy_port_state() -> ProtocolProxyPortState {
+    protocol_proxy_port_state_at(
+        &persisted_protocol_proxy_port_path(),
+        env_protocol_proxy_port(),
+    )
+}
+
+fn protocol_proxy_port_state_at(
+    path: &std::path::Path,
+    env_override: Option<u16>,
+) -> ProtocolProxyPortState {
+    ProtocolProxyPortState {
+        configured: env_override
+            .or_else(|| read_persisted_protocol_proxy_port(path))
+            .unwrap_or(DEFAULT_PROTOCOL_PROXY_PORT),
+        default_port: DEFAULT_PROTOCOL_PROXY_PORT,
+        env_override,
+    }
+}
+
+/// 校验界面填的端口：只接受 1024–65535。
+pub fn validate_custom_protocol_proxy_port(port: u32) -> anyhow::Result<u16> {
+    match u16::try_from(port) {
+        Ok(port) if port >= MIN_CUSTOM_PROTOCOL_PROXY_PORT => Ok(port),
+        _ => anyhow::bail!("端口要在 {MIN_CUSTOM_PROTOCOL_PROXY_PORT}–65535 之间，{port} 不可用。"),
+    }
+}
+
+/// 端口当前能不能给本地网关用：有人在监听、或系统禁止绑定（Windows 保留区间）都算不能用。
+pub fn ensure_loopback_port_free(port: u16) -> anyhow::Result<()> {
+    // 先连一下：macOS 上别人监听 0.0.0.0 时，带 SO_REUSEADDR 的 127.0.0.1 bind 仍可能成功。
+    if crate::ports::can_connect_loopback_port(port) {
+        anyhow::bail!("端口 {port} 已被其他程序占用，请换一个端口。");
+    }
+    match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(error) if crate::ports::port_bind_forbidden(&error) => {
+            anyhow::bail!("端口 {port} 在系统保留范围内，无法监听，请换一个端口。")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            anyhow::bail!("端口 {port} 已被其他程序占用，请换一个端口。")
+        }
+        Err(error) => Err(error).with_context(|| format!("检测端口 {port} 失败")),
+    }
+}
+
+/// 在界面里改本地网关端口（#3082），写进持久化端口文件，下次启动 Codex++ 生效。
+///
+/// - 环境变量指定了端口时拒绝修改（环境变量优先，改了文件也不会生效）；
+/// - `running` 是本进程正在监听的端口：改回它不用检测占用（占着它的就是自己）；
+/// - 复用 [`persist_protocol_proxy_port`]，旧端口进历史，旧配置里的地址仍被认作受管地址。
+///
+/// 返回是否真的改了（填的就是当前端口时什么都不写）。
+pub fn set_custom_protocol_proxy_port(port: u32, running: Option<u16>) -> anyhow::Result<bool> {
+    let previous = protocol_proxy_port();
+    let changed = set_custom_protocol_proxy_port_at(
+        &persisted_protocol_proxy_port_path(),
+        port,
+        env_protocol_proxy_port(),
+        running,
+        ensure_loopback_port_free,
+    )?;
+    if changed {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "manager.protocol_proxy_port_changed",
+            serde_json::json!({ "from": previous, "to": port }),
+        );
+    }
+    Ok(changed)
+}
+
+fn set_custom_protocol_proxy_port_at(
+    path: &std::path::Path,
+    port: u32,
+    env_override: Option<u16>,
+    running: Option<u16>,
+    probe: impl Fn(u16) -> anyhow::Result<()>,
+) -> anyhow::Result<bool> {
+    if let Some(env_port) = env_override {
+        anyhow::bail!(
+            "端口已由环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 指定为 {env_port}，界面里改不了；请先去掉该环境变量。"
+        );
+    }
+    let port = validate_custom_protocol_proxy_port(port)?;
+    let current = read_persisted_protocol_proxy_port(path).unwrap_or(DEFAULT_PROTOCOL_PROXY_PORT);
+    if port == current {
+        return Ok(false);
+    }
+    if running != Some(port) {
+        probe(port)?;
+    }
+    persist_protocol_proxy_port(path, port)?;
+    Ok(true)
+}
+
 pub(crate) fn managed_protocol_proxy_base_urls() -> Vec<String> {
     let path = persisted_protocol_proxy_port_path();
     let mut ports = read_protocol_proxy_port_history(&path.with_file_name(PROTOCOL_PROXY_PORT_HISTORY_FILE));
@@ -241,6 +354,102 @@ mod managed_port_history_tests {
             read_protocol_proxy_port_history(&dir.path().join(PROTOCOL_PROXY_PORT_HISTORY_FILE)),
             BTreeSet::from([58077, 58088, 58099]),
         );
+    }
+
+    fn free(_: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn custom_port_validation_accepts_only_1024_to_65535() {
+        for bad in [0u32, 80, 1023, 65536, 70000] {
+            assert!(validate_custom_protocol_proxy_port(bad).is_err(), "{bad}");
+        }
+        assert_eq!(validate_custom_protocol_proxy_port(1024).unwrap(), 1024);
+        assert_eq!(validate_custom_protocol_proxy_port(65535).unwrap(), 65535);
+    }
+
+    #[test]
+    fn custom_port_is_persisted_and_old_ports_stay_managed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROTOCOL_PROXY_PORT_FILE);
+        std::fs::write(&path, "58077\n").unwrap();
+        assert!(set_custom_protocol_proxy_port_at(&path, 58123, None, Some(58077), free).unwrap());
+        assert_eq!(read_persisted_protocol_proxy_port(&path), Some(58123));
+        assert_eq!(protocol_proxy_port_state_at(&path, None).configured, 58123);
+        // 旧端口进历史：旧配置里 58077 的地址仍被认作本工具写入的受管地址。
+        assert_eq!(
+            read_protocol_proxy_port_history(&dir.path().join(PROTOCOL_PROXY_PORT_HISTORY_FILE)),
+            BTreeSet::from([58077, 58123]),
+        );
+    }
+
+    #[test]
+    fn custom_port_rejects_invalid_env_override_and_occupied_ports_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROTOCOL_PROXY_PORT_FILE);
+        assert!(set_custom_protocol_proxy_port_at(&path, 80, None, None, free).is_err());
+        let error = set_custom_protocol_proxy_port_at(&path, 58123, Some(59000), None, free)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("CODEX_PLUS_PROTOCOL_PROXY_PORT"), "{error}");
+        let occupied = |port: u16| -> anyhow::Result<()> {
+            anyhow::bail!("端口 {port} 已被其他程序占用")
+        };
+        assert!(set_custom_protocol_proxy_port_at(&path, 58123, None, None, occupied).is_err());
+        assert!(!path.exists(), "校验失败不能写端口文件");
+        assert!(!dir.path().join(PROTOCOL_PROXY_PORT_HISTORY_FILE).exists());
+
+        let state = protocol_proxy_port_state_at(&path, Some(59000));
+        assert_eq!(state.configured, 59000);
+        assert_eq!(state.env_override, Some(59000));
+        assert_eq!(
+            protocol_proxy_port_state_at(&path, None).configured,
+            DEFAULT_PROTOCOL_PROXY_PORT
+        );
+    }
+
+    #[test]
+    fn custom_port_same_as_current_is_noop_and_running_port_skips_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROTOCOL_PROXY_PORT_FILE);
+        let never = |_: u16| -> anyhow::Result<()> { panic!("不该检测占用") };
+        assert!(
+            !set_custom_protocol_proxy_port_at(
+                &path,
+                u32::from(DEFAULT_PROTOCOL_PROXY_PORT),
+                None,
+                None,
+                never
+            )
+            .unwrap()
+        );
+        assert!(!path.exists());
+        // 改到别处后再改回正在监听的端口：占着它的就是本进程，不检测占用。
+        set_custom_protocol_proxy_port_at(&path, 58200, None, None, free).unwrap();
+        assert!(
+            set_custom_protocol_proxy_port_at(
+                &path,
+                u32::from(DEFAULT_PROTOCOL_PROXY_PORT),
+                None,
+                Some(DEFAULT_PROTOCOL_PROXY_PORT),
+                never,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            read_persisted_protocol_proxy_port(&path),
+            Some(DEFAULT_PROTOCOL_PROXY_PORT)
+        );
+    }
+
+    #[test]
+    fn listening_port_is_reported_as_occupied() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let error = ensure_loopback_port_free(port).unwrap_err().to_string();
+        assert!(error.contains("占用"), "{error}");
+        drop(listener);
     }
 }
 

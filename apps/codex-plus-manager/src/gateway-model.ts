@@ -929,6 +929,26 @@ export function parseWeight(text: string): number | null {
   return Math.max(1, Math.floor(value));
 }
 
+/** 「本地网关端口」（#3082）：与后端 `load_gateway_port` / `save_gateway_port` 的返回一致。 */
+export type GatewayPortInfo = {
+  configuredPort: number;
+  defaultPort: number;
+  envPort?: number | null;
+  runningPort?: number | null;
+  restartRequired: boolean;
+};
+
+export const MIN_GATEWAY_PORT = 1024;
+export const MAX_GATEWAY_PORT = 65535;
+
+/** 界面填的端口：只接受 1024–65535 的整数，其它返回 null（后端会再校验一次并检测占用）。 */
+export function parseGatewayPort(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d{1,5}$/.test(trimmed)) return null;
+  const value = Number(trimmed);
+  return value >= MIN_GATEWAY_PORT && value <= MAX_GATEWAY_PORT ? value : null;
+}
+
 /** 通配符成员：带 `*`，按 `<供应商 id>/<模型>` 或裸模型名匹配池里现有的模型。 */
 export function isPattern(model: string): boolean {
   return model.includes("*");

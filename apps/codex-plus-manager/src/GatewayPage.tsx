@@ -37,6 +37,10 @@ import {
   type MemberStatus,
   memberTarget,
   type AutoGroupEntry,
+  type GatewayPortInfo,
+  MAX_GATEWAY_PORT,
+  MIN_GATEWAY_PORT,
+  parseGatewayPort,
 } from "./gateway-model";
 import { AgentsView, Floating, ModelList, type CodexRunControls } from "./GatewayAgents";
 import { AppSelect } from "./AppSelect";
@@ -235,7 +239,7 @@ export function GatewayPage({
         {tab === "providers" ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "routing" ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
         {tab === "usage" ? <UsageView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "gateway" ? <GatewayView busy={busy} payload={payload} run={run} /> : null}
+        {tab === "gateway" ? <GatewayView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "gateway" && extraSettings ? extraSettings : null}
       </div>
       </GatewayNavContext.Provider>
@@ -727,7 +731,93 @@ function GroupEditor({
 
 /* —————————————————————— 网关 —————————————————————— */
 
-function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
+type GatewayPortResult = { status: string; message: string } & Partial<GatewayPortInfo>;
+
+/**
+ * 「本地网关端口」（#3082）：端口和别的程序冲突时在这里换。只写持久化端口文件，
+ * 重启 Codex++ 后才按新端口监听（运行中换端口会让连着旧端口的 Agent 一起断）。
+ * 环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 优先，设了就禁用输入。
+ */
+function GatewayPortRow({ notify }: { notify: Notify }) {
+  const [info, setInfo] = useState<GatewayPortInfo | null>(null);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const accept = (result: GatewayPortResult) => {
+    if (typeof result.configuredPort !== "number") return;
+    setInfo(result as GatewayPortInfo);
+    setText(String(result.configuredPort));
+  };
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<GatewayPortResult>("load_gateway_port")
+      .then((result) => {
+        if (!cancelled) accept(result);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!info) return null;
+  const envLocked = info.envPort != null;
+  const parsed = parseGatewayPort(text);
+  const invalid = !envLocked && parsed === null;
+  const dirty = parsed !== null && parsed !== info.configuredPort;
+  const save = async () => {
+    if (!dirty || saving || envLocked) return;
+    setSaving(true);
+    try {
+      const result = await invoke<GatewayPortResult>("save_gateway_port", { port: parsed });
+      if (result.status !== "ok") {
+        await notify(t("保存本地网关端口失败"), result.message, "failed");
+        return;
+      }
+      accept(result);
+      await notify(t("本地网关端口已保存"), t("完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。"), "ok");
+    } catch (error) {
+      await notify(t("调用失败"), String(error), "failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const detail = envLocked
+    ? tf("已由环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 指定为 {0}，这里不能修改。", [info.envPort ?? ""])
+    : invalid
+      ? tf("端口要在 {0}–{1} 之间。", [MIN_GATEWAY_PORT, MAX_GATEWAY_PORT])
+      : info.restartRequired && info.runningPort
+        ? tf("已改为 {0}，当前仍在 {1} 上监听：需要重启 Codex++ 并重新接入 Agent 后生效。", [info.configuredPort, info.runningPort])
+        : tf("和其它程序端口冲突时换一个（默认 {0}）。保存后需要重启 Codex++ 并重新接入 Agent 后生效。", [info.defaultPort]);
+  return (
+    <CxRow
+      badges={info.restartRequired ? <CxBadge tone="warn">{t("待重启")}</CxBadge> : null}
+      detail={detail}
+      title={t("本地网关端口")}
+      tooltip={t("Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。")}
+    >
+      <Input
+        aria-invalid={invalid || undefined}
+        aria-label={t("本地网关端口")}
+        className="cx-set-input-port"
+        disabled={envLocked || saving}
+        inputMode="numeric"
+        maxLength={5}
+        onChange={(event) => setText(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void save();
+          }
+        }}
+        value={text}
+      />
+      <button className="cx-secondary" disabled={!dirty || saving || envLocked} onClick={() => void save()} type="button">
+        {saving ? t("保存中") : t("保存")}
+      </button>
+    </CxRow>
+  );
+}
+
+function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
   const agentFocus = useAgentFocus();
   // 刚复制的那一行，图标短暂换成对勾。
   const [copied, setCopied] = useState<string | null>(null);
@@ -801,6 +891,7 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
 
       <CxSection title={t("网关选项")}>
         <CxCard>
+          <GatewayPortRow notify={notify} />
           <CxRow detail={keyRotationHint} title={t("多 Key 轮换")} tooltip={keyRotationHint}>
             <AppSelect
               className="cx-set-select"

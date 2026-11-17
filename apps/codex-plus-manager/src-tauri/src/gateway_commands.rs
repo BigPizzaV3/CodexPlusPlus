@@ -1146,6 +1146,64 @@ pub fn save_gateway_model_suffix(enabled: bool) -> CommandResult<Option<GatewayP
     )
 }
 
+/// 「本地网关端口」一行的数据（#3082）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayPortPayload {
+    /// 下次启动使用的端口。
+    pub configured_port: u16,
+    pub default_port: u16,
+    /// 环境变量 `CODEX_PLUS_PROTOCOL_PROXY_PORT` 指定的端口；有值时界面禁用输入。
+    pub env_port: Option<u16>,
+    /// 本进程常驻本地服务正在监听的端口；没在跑时为空。
+    pub running_port: Option<u16>,
+    /// 改过端口、还没重启 Codex++：正在监听的端口和下次启动的端口不一样。
+    pub restart_required: bool,
+}
+
+fn gateway_port_payload() -> GatewayPortPayload {
+    let state = codex_plus_core::protocol_proxy::protocol_proxy_port_state();
+    let running_port = codex_plus_core::resident_helper::resident_helper_port();
+    GatewayPortPayload {
+        configured_port: state.configured,
+        default_port: state.default_port,
+        env_port: state.env_override,
+        running_port,
+        restart_required: running_port.is_some_and(|port| port != state.configured),
+    }
+}
+
+#[tauri::command]
+pub fn load_gateway_port() -> CommandResult<GatewayPortPayload> {
+    ok("", gateway_port_payload())
+}
+
+/// 改本地网关端口：只写持久化端口文件，不动正在监听的服务。
+///
+/// 不当场切换：Codex、Claude 等 Agent 的配置里写着旧端口，正在跑的会话也连着旧端口，
+/// 运行中换端口会让它们一起断。重启 Codex++ 后常驻服务按新端口监听，
+/// 启动流程（`start_from_saved_state` → `reapply_if_port_changed`）会把走网关的 Agent 改到新端口。
+#[tauri::command]
+pub async fn save_gateway_port(port: u32) -> CommandResult<GatewayPortPayload> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let running = codex_plus_core::resident_helper::resident_helper_port();
+        codex_plus_core::protocol_proxy::set_custom_protocol_proxy_port(port, running)
+    })
+    .await;
+    match result {
+        Ok(Ok(true)) => ok(
+            "本地网关端口已保存。完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。",
+            gateway_port_payload(),
+        ),
+        Ok(Ok(false)) => ok("端口没有变化。", gateway_port_payload()),
+        Ok(Err(error)) => failed(&format!("{error:#}"), gateway_port_payload()),
+        Err(error) => failed(
+            &format!("保存本地网关端口失败：{error}"),
+            gateway_port_payload(),
+        ),
+    }
+}
+
 /// 某个 Agent 的生图模型：空串是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。
 #[tauri::command]
 pub fn save_gateway_image_model(
