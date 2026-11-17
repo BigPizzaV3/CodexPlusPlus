@@ -881,9 +881,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     const conflict = Boolean(s.conflict) || conflictIds.has(s.id);
     const guarded = conflict || guardedIds.has(s.id);
     const needsSync = s.managedSourceStatus === "needs-sync";
-    const syncCopiesHint = t("将当前各 Agent 中内容一致的已安装 Skill 同步到 Codex++ 工作副本，供后续更新和启用到其他 Agent 使用。旧工作副本会备份；此操作不会下载 GitHub 更新。");
+    const syncCopiesHint = t("把各 Agent 中内容一致的 Skill 同步到 Codex++ 保存的副本中。旧副本会先备份，不会从 GitHub 下载更新。");
     const syncCopies = async () => {
-      if (!await appConfirm(t("以当前一致的本地安装同步工作副本。旧内容会备份，不下载 GitHub 更新。"), { title: t("同步工作副本") })) return false;
+      if (!await appConfirm(syncCopiesHint, { title: t("同步工作副本") })) return false;
       try {
         const rows = await invoke<{root: string; revision: string}[]>("list_skill_versions", {id: s.id});
         return await run("manage_skill_version", {action: {kind: "syncCopies", id: s.id, revisions: Object.fromEntries(rows.map(v => [v.root, v.revision]))}});

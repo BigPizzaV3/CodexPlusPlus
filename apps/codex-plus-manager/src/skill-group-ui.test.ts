@@ -205,9 +205,9 @@ test("working copy sync actions explain direction, backup and GitHub behavior on
   const actions = row.filter((node) => ["Button", "MenuItem"].includes(node.type) && node.children.includes("同步工作副本"));
   assert.equal(actions.length, 2);
   for (const action of actions) {
-    assert.match(action.props.title, /各 Agent 中内容一致的已安装 Skill 同步到 Codex\+\+ 工作副本/);
-    assert.match(action.props.title, /旧工作副本会备份/);
-    assert.match(action.props.title, /不会下载 GitHub 更新/);
+    assert.match(action.props.title, /各 Agent 中内容一致的 Skill 同步到 Codex\+\+ 保存的副本中/);
+    assert.match(action.props.title, /旧副本会先备份/);
+    assert.match(action.props.title, /不会从 GitHub 下载更新/);
   }
   ui.unmount();
 });
