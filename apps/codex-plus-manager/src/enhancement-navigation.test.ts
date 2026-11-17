@@ -25,3 +25,8 @@ test("plugin market navigation opens its own page", () => {
   assert.deepEqual(managerNavigationDestination({ page: "pluginMarket" }), { route: "pluginMarket" });
   assert.deepEqual(managerNavigationDestination({ page: "pluginMarket", section: "dictation" }), { route: "pluginMarket" });
 });
+
+test("Codex 里的微信连接页跳到管理器的微信页", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "weixin" }), { route: "weixin" });
+  assert.deepEqual(managerNavigationDestination({ page: "weixin", section: "dictation" }), { route: "weixin" });
+});

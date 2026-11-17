@@ -8,12 +8,19 @@ import { readFile } from "node:fs/promises";
  */
 const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("远程控制页挂在工具分组里，并在路由表中渲染", async () => {
+test("远程控制页挂在侧栏 Codex 下面、紧跟「微信连接」，⌘K 仍能搜到，并在路由表中渲染", async () => {
   const app = await read("./App.tsx");
   assert.match(app, /\| "remoteControl" \|/, "Route 类型里要有 remoteControl");
-  assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, badge: "实验" \}/);
-  assert.match(app, /const toolNavigationRoutes: Route\[\] = \[[^\]]*"remoteControl"[^\]]*\];/);
-  assert.match(app, /const globalNavigationRoutes: Route\[\] = \[[^\]]*"remoteControl"[^\]]*\];/);
+  // 属于 Codex：只在 Codex 的子项里出现，切到别的 Agent 时不跟过去。
+  assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, badge: "实验", tool: "codex" \}/);
+  // 侧栏 Codex 子项来自 navigationSections：放在「微信连接」后面（两者都是「在手机上用 Codex」）。
+  const sections = app.slice(app.indexOf("const navigationSections"), app.indexOf("const routeTool"));
+  assert.match(sections, /"weixin", "remoteControl"/);
+  // 不再是全局页：打开它时 Codex 那一行保持展开，子项选中态才看得见；也不再在「工具」里重复出现。
+  assert.doesNotMatch(app, /const globalNavigationRoutes: Route\[\] = \[[^\]]*"remoteControl"[^\]]*\];/);
+  assert.doesNotMatch(app, /const toolNavigationRoutes: Route\[\] = \[[^\]]*"remoteControl"[^\]]*\];/);
+  // ⌘K：Codex 的全部子页面（agentRoutes）都会进命令面板。
+  assert.match(app, /agentRoutes\(tool\.id\)\.forEach\(\(routeId\) => pushCommand\(routeCommand\(routeId, tool\.name,/);
   assert.match(app, /\{route === "remoteControl" \? <RemoteControlPage \/> : null\}/);
   assert.match(app, /remoteControl: t\("/, "页面要有副标题");
 });
@@ -73,7 +80,7 @@ test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死�
   assert.match(renderer, /\[codexPlusRailRemoteId, "remote"\],/, "选中态");
   assert.match(renderer, /if \(tab === codexPlusRemoteControlTab\) return "remote";/);
   // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
-  assert.equal(renderer.split("#${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);
+  assert.equal(renderer.split("#${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);
   assert.match(renderer, /#\$\{codexPlusRailRemoteId\} > button/, "扫描调度排除自己的节点");
   assert.match(pageSource, /data-codex-plus-active-tab="\$\{codexPlusRemoteControlTab\}"/);
   assert.match(pageSource, /postJson\("\/remote-control", \{ action, \.\.\.args \}\)/);
