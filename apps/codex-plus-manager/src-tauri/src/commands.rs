@@ -4300,6 +4300,10 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
         {
             patch["weixinConnectAllowFrom"] = json!(qr_status.ilink_user_id);
         }
+        // 记下扫码的本人：只有本人能在微信里用加加、审批（白名单里可能还有别人）。
+        if !qr_status.ilink_user_id.trim().is_empty() {
+            patch["weixinConnectLinkedUserId"] = json!(qr_status.ilink_user_id);
+        }
         let settings = match store.update(patch) {
             Ok(settings) => settings,
             Err(error) => {
@@ -4636,6 +4640,9 @@ fn spawn_weixin_connect(
         project_id: settings.weixin_connect_project_id,
         sandbox: settings.weixin_connect_sandbox,
         codex_path: settings.weixin_connect_codex_path,
+        linked_user_id: settings.weixin_connect_linked_user_id,
+        default_mode: settings.weixin_connect_default_mode,
+        push_to_weixin: settings.weixin_connect_push_to_weixin,
     }
     .normalized();
     if config.token.is_empty() {
@@ -4901,6 +4908,8 @@ pub fn save_settings(
                     project_id: settings.weixin_connect_project_id.clone(),
                     work_dir: settings.weixin_connect_work_dir.clone(),
                     sandbox: settings.weixin_connect_sandbox.clone(),
+                    default_mode: settings.weixin_connect_default_mode.clone(),
+                    push_to_weixin: settings.weixin_connect_push_to_weixin,
                 });
             }
             // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。

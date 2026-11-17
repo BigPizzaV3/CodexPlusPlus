@@ -168,7 +168,7 @@ import { AgentDashboard, type DashboardAgent, type DashboardStat, type Dashboard
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
-import { RemoteControlPage } from "./RemoteControlPage";
+import { RemoteControlPage, remoteControlRequest } from "./RemoteControlPage";
 import { announceBackendSettingsChanged } from "./settings-events";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
@@ -660,6 +660,9 @@ export type BackendSettings = WhaleBalanceSettings & {
   weixinConnectProjectId: string;
   weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
   weixinConnectCodexPath: string;
+  weixinConnectLinkedUserId: string;
+  weixinConnectDefaultMode: "jiajia" | "direct";
+  weixinConnectPushToWeixin: boolean;
   relayBaseUrl: string;
   relayApiKey: string;
   relayProfiles: RelayProfile[];
@@ -1735,6 +1738,9 @@ const defaultSettings: BackendSettings = {
   weixinConnectProjectId: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
+  weixinConnectLinkedUserId: "",
+  weixinConnectDefaultMode: "jiajia",
+  weixinConnectPushToWeixin: false,
   relayBaseUrl: "",
   relayApiKey: "",
   relayProfiles: [
@@ -6167,6 +6173,18 @@ function WeixinConnectScreen({
   const [resetPeerId, setResetPeerId] = useState("");
   const [resetPending, setResetPending] = useState(false);
   const [resetMessage, setResetMessage] = useState("");
+  // 加加跑在远程控制里：没开时微信里的加加不可用，这里提示一下（null = 还没读到）。
+  const [remoteControlRunning, setRemoteControlRunning] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    remoteControlRequest("status")
+      .then((value) => { if (!disposed) setRemoteControlRunning(Boolean(value.running)); })
+      .catch(() => { if (!disposed) setRemoteControlRunning(null); });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -6437,6 +6455,41 @@ function WeixinConnectScreen({
                 <RefreshCw className={catalogLoading ? "animate-spin" : ""} />
               </button>
             </div>
+          </SettingRow>
+        </CxCard>
+      </CxSection>
+
+      {/* 加加：没自己选过模式的联系人默认交给加加（远程控制没开时自动退回直连）；推送默认关。 */}
+      <CxSection
+        aside={remoteControlRunning === null ? null : (
+          <CxBadge tone={remoteControlRunning ? "ok" : "neutral"}>{remoteControlRunning ? t("远程控制已开") : t("远程控制未开")}</CxBadge>
+        )}
+        id="weixin-section-jiajia"
+        title={t("加加")}
+      >
+        <CxCard className="weixin-settings-card">
+          <SettingRow
+            description={remoteControlRunning === false
+              ? t("加加需要先打开远程控制；没开时消息先按直连处理")
+              : t("没单独选过的联系人用这个模式；在微信里发 /加加 或 /直连 可单独切换")}
+            title={t("微信默认模式")}
+          >
+            <AppSelect
+              ariaLabel={t("微信默认模式")}
+              onChange={(next) => onFormChange({ ...form, weixinConnectDefaultMode: next })}
+              options={[
+                { value: "jiajia", label: t("加加") },
+                { value: "direct", label: t("直连") },
+              ]}
+              value={form.weixinConnectDefaultMode}
+            />
+          </SettingRow>
+          <SettingRow description={t("没在对话时，加加的审批卡片和提醒也发到微信；回复数字即可审批")} title={t("推送到微信")}>
+            <Switch
+              label={t("推送到微信")}
+              on={form.weixinConnectPushToWeixin}
+              onToggle={() => onFormChange({ ...form, weixinConnectPushToWeixin: !form.weixinConnectPushToWeixin })}
+            />
           </SettingRow>
         </CxCard>
       </CxSection>

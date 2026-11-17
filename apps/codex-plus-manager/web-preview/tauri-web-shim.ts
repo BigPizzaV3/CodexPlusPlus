@@ -96,6 +96,9 @@ const demoSettings = {
   weixinConnectModel: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
+  weixinConnectLinkedUserId: "",
+  weixinConnectDefaultMode: "jiajia",
+  weixinConnectPushToWeixin: false,
   relayBaseUrl: "",
   relayApiKey: "",
   relayProfiles: [{
