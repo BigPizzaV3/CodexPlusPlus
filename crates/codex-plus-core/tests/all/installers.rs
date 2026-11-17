@@ -230,6 +230,61 @@ fn windows_installer_waits_for_normal_exit_and_cancels_without_writing_apps() {
 }
 
 #[test]
+fn windows_installer_ignores_mcp_children_owned_by_other_apps() {
+    // issue #3153：Codex / Claude 拉起的 `codex-plus-plus.exe --codex-plus-*-mcp` 子进程
+    // 在 Codex++ 退出后仍在跑，按进程名等待会一直要求「从托盘退出」，取消就中止更新。
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi")
+        .unwrap()
+        .replace("\r\n", "\n");
+    let wait = nsi
+        .split_once("!macro WAIT_FOR_PROCESS_EXIT")
+        .unwrap()
+        .1
+        .split_once("!macroend")
+        .unwrap()
+        .0;
+    let probe = wait.find("powershell.exe").expect("先按命令行判断");
+    assert!(wait.contains("Get-CimInstance Win32_Process -Filter 'Name=''$1'''"));
+    assert!(wait.contains("-notmatch '--codex-plus-[a-z0-9-]*-mcp'"));
+    // NSIS 里 $ 是变量前缀，PowerShell 的变量必须写成 $$。
+    assert!(wait.contains("$$_.CommandLine") && !wait.contains(" $_.CommandLine"));
+    // PowerShell 不可用（退出码非 0 / 没有标记）时退回原来的 tasklist 判断，不能直接当成已退出。
+    assert!(wait.contains("StrCmp $0 \"0\" 0 wait_tasklist"));
+    assert!(wait.contains("StrCmp $8 \"\" wait_tasklist 0"));
+    assert!(wait.contains("IntCmp $8 0 wait_done wait_done wait_running"));
+    let fallback = wait.find("wait_tasklist:\n").unwrap();
+    assert!(probe < fallback);
+    assert!(wait[fallback..].contains("tasklist.exe /FI \"IMAGENAME eq $1\" /NH"));
+
+    // MCP 子进程占着旧 exe：删不掉就改名挪开再写新文件，不能卡在「文件被占用」。
+    let install = nsi
+        .split_once("Section \"Install\"")
+        .unwrap()
+        .1
+        .split_once("SectionEnd")
+        .unwrap()
+        .0;
+    let loop_body = install
+        .split_once("main_binary_delete_loop:\n")
+        .unwrap()
+        .1
+        .split_once("main_binary_delete_failed:")
+        .unwrap()
+        .0;
+    let rename = loop_body
+        .find(r#"Rename "$INSTDIR\codex-plus-plus.exe" "$INSTDIR\codex-plus-plus.exe.$LegacyDeleteTries.old""#)
+        .expect("删不掉时改名挪开");
+    assert!(loop_body.find(r#"Delete "$INSTDIR\codex-plus-plus.exe""#).unwrap() < rename);
+    let cleanup = install.find(r#"Delete "$INSTDIR\codex-plus-plus.exe.*.old""#).unwrap();
+    assert!(cleanup < install.find("main_binary_delete_loop:").unwrap());
+    assert!(nsi
+        .split_once("Section \"Uninstall\"")
+        .unwrap()
+        .1
+        .contains(r#"Delete "$INSTDIR\codex-plus-plus.exe.*.old""#));
+}
+
+#[test]
 fn windows_uninstaller_restores_proxy_config_before_deleting_main_exe() {
     // issue #406：卸载后 config.toml 仍指向本机代理，官方 Codex 一直 502。
     // 卸载器必须在进程退出后、删除主程序前让主程序清理一次。
