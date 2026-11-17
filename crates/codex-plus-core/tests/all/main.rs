@@ -71,6 +71,7 @@ mod gateway_forced_relay;
 mod gateway_key_limits;
 mod gateway_jsonc;
 mod gateway_meta_sync;
+mod gateway_official_window;
 mod gateway_model_sync;
 mod gateway_newapi_access;
 mod gateway_own_models;

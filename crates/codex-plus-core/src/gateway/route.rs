@@ -469,6 +469,35 @@ pub fn model_entry_window(
         .min()
 }
 
+/// 这一项只发给官方账号供应商时，本机 Codex 官方缓存给这些模型的窗口（取最小）。
+/// 有一家不是官方账号、或缓存里没有这个模型时返回 None，不替别家猜窗口（#3161）。
+pub fn official_native_window(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<u64> {
+    let members = model_entry_members(gateway, binding, model);
+    if members.is_empty() {
+        return None;
+    }
+    members
+        .iter()
+        .map(|(relay, upstream)| {
+            // 只看是不是官方账号供应商（Responses、没有另配 API 地址），不看此刻是否登录：
+            // 目录不能随登录状态来回变。
+            let official = crate::official_login::is_official_login_profile(relay)
+                && relay.protocol == crate::settings::RelayProtocol::Responses
+                && !(!relay.base_url.trim().is_empty()
+                    && (!relay.api_key.trim().is_empty() || relay.uses_no_auth()));
+            official
+                .then(|| crate::model_suffix::native_cache_context_window(upstream))
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
+}
+
 /// Agent 模型列表里一项的自动压缩百分比（#3100）：它会发给的各家里单独设过的取最小值
 /// （与窗口取最小一致，宁早勿晚）；都没设返回 None，交给 Agent 默认。
 pub fn model_entry_auto_compact(

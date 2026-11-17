@@ -220,8 +220,9 @@ fn agent_gateway_model_list(
     models
         .iter()
         .filter(|model| !model.is_empty())
-        // 窗口依次取供应商池、绑定声明的后缀、Agent 默认窗口；都没有就不带，
-        // 交给 Agent 自带的模型资料。
+        // 窗口依次取供应商池、绑定声明的后缀、Agent 默认窗口；都没有时，只发给官方账号的
+        // Codex 模型用本机官方缓存的窗口（#3161：内置兼容资料是给中转的，会把 500000 压成 272000）；
+        // 再没有就不带，交给 Agent 自带的模型资料。
         .map(|model| {
             let declared_window = std::iter::once(&binding.model)
                 .chain([
@@ -238,6 +239,11 @@ fn agent_gateway_model_list(
             match route::model_entry_window(gateway, binding, model)
                 .or(declared_window)
                 .or(binding.context_window)
+                .or_else(|| {
+                    (*agent == ToolId::Codex)
+                        .then(|| route::official_native_window(gateway, binding, model))
+                        .flatten()
+                })
             {
                 Some(window) => format!("{model}[{window}]"),
                 None => model.clone(),

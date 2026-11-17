@@ -834,6 +834,15 @@ fn model_template_entry(slug: &str) -> (Value, bool) {
     )
 }
 
+/// 本机官方缓存（`models_cache.json`）给这个模型的上下文窗口，即登录账号实际拿到的窗口。
+/// 不经过兼容层：兼容层的窗口是给第三方中转的，官方账号以原生资料为准（#3161）。
+pub fn native_cache_context_window(slug: &str) -> Option<u64> {
+    runtime_models_cache_entry(&normalized_model_slug(slug))?
+        .get("context_window")?
+        .as_u64()
+        .filter(|window| *window > 0)
+}
+
 /// 从用户本机 codex 官方缓存读取同 slug 条目。
 /// 缓存由官方 App 登录态维护，这里只读不写；文件缺失或解析失败时静默回落静态资产。
 fn runtime_models_cache_entry(slug: &str) -> Option<Value> {
