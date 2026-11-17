@@ -25,7 +25,7 @@ import { SkillInPlaceUpdateDrawer } from "./SkillInPlaceUpdateDrawer";
 import { SkillBackupUsage } from "./SkillBackupUsage";
 import { TopbarActions } from "./TopbarActions";
 import { SkillFileTimes } from "./SkillFileTimes";
-import { SkillVersionPicker, type VersionTask } from "./SkillVersionPicker";
+import { SkillVersionPicker, type LocalSkillVersion, type VersionTask } from "./SkillVersionPicker";
 
 type Result = { status: string; message: string };
 type Notify = (title: string, message: string, status?: "ok" | "failed") => Promise<void>;
@@ -247,8 +247,8 @@ function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete, onExp
     {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDelete} onExport={onExport}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
   </ManagementDrawer>;
 }
-function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onManageSource, onExport, onArchive, onLocal, showLocations, dates, onExpand }: {
-  dates?: Record<string, number>; onExpand: () => void;
+function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onManageSource, onExport, onArchive, onLocal, showLocations, dates, comparisonErrors, onExpand }: {
+  dates?: Record<string, number>; comparisonErrors?: Record<string, string>; onExpand: () => void;
   showLocations: boolean; onLocal: () => void; onArchive: () => void; onExport: (backup: SkillBackup) => void;
   skill: Skill; count?: number; backups: SkillBackup[]; busy: boolean; onClose: () => void; onOpenUrl: (url: string) => void;
   onOpenRepo: () => void; onMatch: (localPath?: string, context?: SkillMatchContext) => void; onRestore: (backup: SkillBackup) => void; onDeleteBackup: (backup: SkillBackup) => void; onUpdate: (repoKey: string, localPath?: string) => void; onManageSource: () => void;
@@ -293,6 +293,7 @@ function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, on
           (item.selectable && item.originalPath ? item.originalPath : item.associationPath) === associationPath).length > 1;
         return [<dt key={`${location.manifestPath}:label`}>{rootLabel[location.rootKind] || location.rootKind}</dt>, <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}
           {dates?.[location.rootKind] !== undefined && <small>{t("最近修改")} · <time>{new Date(dates[location.rootKind]).toLocaleString()}</time></small>}<SkillFileTimes id={skill.id} rootKind={location.rootKind}/>
+          {comparisonErrors?.[location.rootKind] && <small role="alert">{t("无法比较")}：{t(comparisonErrors[location.rootKind])}</small>}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
           {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
           {(instance || associationPath) && <><br/>{t(hasRepo ? "上游来源" : "来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")}
@@ -376,7 +377,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [detail, setDetail] = useState<Skill | null>(null);
   const [showLocations, setShowLocations] = useState(false);
   const [versionTask, setVersionTask] = useState<VersionTask | null>(null);
-  const [detailDates, setDetailDates] = useState<{ id: string; dates: Record<string, number> } | null>(null);
+  const [detailDates, setDetailDates] = useState<{ id: string; dates: Record<string, number>; errors: Record<string, string> } | null>(null);
   const exportBackup = (backup: SkillBackup) => setVersionTask({ id: backup.skillId, mode: "export", backup: backup.id });
   const [matchTarget, setMatchTarget] = useState<({ id?: string; localPath?: string } & SkillMatchContext) | null>(null);
   const [duplicatesOpen, setDuplicatesOpen] = useState(false);
@@ -888,7 +889,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     const syncCopies = async () => {
       if (!await appConfirm(syncCopiesHint, { title: t("同步工作副本") })) return false;
       try {
-        const rows = await invoke<{root: string; revision: string}[]>("list_skill_versions", {id: s.id});
+        const rows = await invoke<LocalSkillVersion[]>("list_skill_versions", {id: s.id});
+        if (rows.some((v) => v.comparisonError)) throw new Error(t("部分安装位置无法比较，请先处理后重试。"));
         return await run("manage_skill_version", {action: {kind: "syncCopies", id: s.id, revisions: Object.fromEntries(rows.map(v => [v.root, v.revision]))}});
       } catch (e) { await notify("Skills", String(e), "failed"); return false; }
     };
@@ -1042,8 +1044,12 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     </div>
     {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} updates={updates} conflictIds={guardedIds} onClose={() => setRepoOpen(false)} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(command, args) => { queueUpdate(command, args); }} />}
     {currentDetail && <SkillDetailDrawer skill={conflictIds.has(currentDetail.id) && !currentDetail.conflict ? { ...currentDetail, conflict: t("同名 Skill 内容存在冲突，请先确认各安装位置。") } : currentDetail}
-      dates={detailDates?.id === currentDetail.id ? detailDates.dates : undefined} onExpand={() => { const id = currentDetail.id;
-        void invoke<Array<{ root: string; modifiedAtMs: number }>>("list_skill_versions", { id }).then(rows => setDetailDates({ id, dates: Object.fromEntries(rows.map(row => [row.root, row.modifiedAtMs])) }), e => notify("Skills", String(e), "failed")); }}
+      dates={detailDates?.id === currentDetail.id ? detailDates.dates : undefined} comparisonErrors={detailDates?.id === currentDetail.id ? detailDates.errors : undefined}
+      onExpand={() => { const id = currentDetail.id;
+        void invoke<LocalSkillVersion[]>("list_skill_versions", { id }).then(rows => setDetailDates({ id,
+          dates: Object.fromEntries(rows.flatMap(row => row.modifiedAtMs === null ? [] : [[row.root, row.modifiedAtMs]])),
+          errors: Object.fromEntries(rows.flatMap(row => row.comparisonError ? [[row.root, row.comparisonError]] : [])),
+        }), e => notify("Skills", String(e), "failed")); }}
       showLocations={showLocations} onArchive={() => setVersionTask({ id: currentDetail.id, mode: "archive" })} onExport={exportBackup}
       onLocal={() => setVersionTask({ id: currentDetail.id, mode: "local" })}
       count={data?.repoCounts?.[currentDetail.repoKey]} backups={(data?.backups || []).filter((backup) => backup.skillId === currentDetail.id)} busy={busy}

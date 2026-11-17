@@ -5,8 +5,9 @@ use super::*;
 pub struct LocalSkillVersion {
     pub root: String,
     path: PathBuf,
-    modified_at_ms: u128,
-    pub revision: String,
+    modified_at_ms: Option<u128>,
+    pub revision: Option<String>,
+    comparison_error: Option<String>,
     linked: bool,
     managed: bool,
 }
@@ -30,8 +31,9 @@ impl SkillsManager {
         let files = self.skill_file_times(id, root, None)?;
         let modified_at_ms = files.iter().filter(|f| f.path != MANAGED_COPY_MARKER)
             .map(|f| f.modified_at_ms).max().context("Skill 目录为空")?.max(0) as u128;
-        Ok(LocalSkillVersion { root: root.into(), revision: format!("{identity:?}:{digest:x?}"),
-            linked: metadata_is_link(&std::fs::symlink_metadata(&path)?), managed: is_managed_copy(&path), path, modified_at_ms })
+        Ok(LocalSkillVersion { root: root.into(), revision: Some(format!("{identity:?}:{digest:x?}")),
+            linked: metadata_is_link(&std::fs::symlink_metadata(&path)?), managed: is_managed_copy(&path),
+            path, modified_at_ms: Some(modified_at_ms), comparison_error: None })
     }
 
     pub fn local_versions(&self, id: &str) -> anyhow::Result<Vec<LocalSkillVersion>> {
@@ -41,8 +43,18 @@ impl SkillsManager {
         roots.extend(self.agent_dirs.iter().map(|(agent, _)| agent.as_str()));
         let mut versions = Vec::new();
         for root in roots {
-            if self.version_root(root)?.join(id).join(SKILL_MANIFEST_FILE).try_exists()? {
-                versions.push(self.local_version(id, root)?);
+            let path = self.version_root(root)?.join(id);
+            let result = (|| -> anyhow::Result<Option<LocalSkillVersion>> {
+                if !path.join(SKILL_MANIFEST_FILE).try_exists()? { return Ok(None); }
+                self.local_version(id, root).map(Some)
+            })();
+            match result {
+                Ok(Some(version)) => versions.push(version),
+                Ok(None) => {}
+                Err(error) => versions.push(LocalSkillVersion {
+                    root: root.into(), path, modified_at_ms: None, revision: None,
+                    linked: false, managed: false, comparison_error: Some(format!("{error:#}")),
+                }),
             }
         }
         Ok(versions)
@@ -55,7 +67,7 @@ impl SkillsManager {
         let mut state = self.load_state_checked_unlocked()?;
         self.ensure_skill_name_not_aliased(id, &state)?;
         let version = self.local_version(id, root)?;
-        anyhow::ensure!(!version.linked && version.revision == revision, "版本已改变或是目录链接，请重新选择");
+        anyhow::ensure!(!version.linked && version.revision.as_deref() == Some(revision), "版本已改变或是目录链接，请重新选择");
         self.ensure_duplicate_has_no_discovered_references(&version.path)?;
         let identity = skill_path_identity(&version.path)?;
         let backup = self.backup_directory_checked(id, &version.path, identity)?;
@@ -88,7 +100,12 @@ impl SkillsManager {
         let mut state = self.load_state_checked_unlocked()?;
         self.ensure_skill_name_not_aliased(id, &state)?;
         let versions = self.local_versions(id)?;
-        anyhow::ensure!(versions.len() == revisions.len() && versions.iter().all(|v| revisions.get(&v.root) == Some(&v.revision)), "版本列表已改变，请重新选择");
+        for version in &versions {
+            if let Some(error) = &version.comparison_error {
+                anyhow::bail!("无法比较 {}：{error}", version.path.display());
+            }
+        }
+        anyhow::ensure!(versions.len() == revisions.len() && versions.iter().all(|v| revisions.get(&v.root) == v.revision.as_ref()), "版本列表已改变，请重新选择");
         let source = self.source_dir.join(id);
         let managed = self.unclaimed_managed_source(id, &state).is_some() && !state.instance_records.contains_key(id) && versions.iter().all(|v| v.root == "source" || v.root != "shared" && (is_managed_copy(&v.path) || is_managed_link(&v.path, &source)));
         let selected = if let Some(root) = choice {
@@ -123,13 +140,14 @@ impl SkillsManager {
             if let Err(error) = result {
                 let mut failures = Vec::new();
                 for (p, b, ident) in moved.iter().rev() { if let Err(e) = restore_skill_backup(b, p, *ident) { failures.push(format!("{}: {e:#}", b.display())); } }
-                anyhow::bail!("{error:#}{}", failures.join("；"));
+                failures.insert(0, format!("{error:#}"));
+                anyhow::bail!("{}", failures.join("；"));
             }
             coordination.changed_nested_skill(self.coordination_scope(), id);
             return Ok(());
         }
         let mut installed = state.installed[id].clone();
-        installed.content_hash = format!("local:{}", selected.revision);
+        installed.content_hash = format!("local:{}", selected.revision.as_ref().unwrap());
         let staging = self.staging_dir(id);
         std::fs::create_dir(&staging)?;
         let result = (|| -> anyhow::Result<()> {
@@ -149,11 +167,10 @@ impl SkillsManager {
         let mut coordination = skills_coordination();
         let mut state = self.load_state_checked_unlocked()?;
         self.ensure_skill_name_not_aliased(id, &state)?;
-        let versions = self.local_versions(id)?;
         let mut markers = Vec::new();
         for (root, revision) in revisions {
-            let v = versions.iter().find(|v| v.root == root).context("安装位置已消失")?;
-            anyhow::ensure!(root != "source" && v.revision == revision && !v.linked, "版本已改变或为共享链接，请重新选择");
+            let v = self.local_version(id, &root)?;
+            anyhow::ensure!(root != "source" && v.revision.as_deref() == Some(revision.as_str()) && !v.linked, "版本已改变或为共享链接，请重新选择");
             let path = v.path.canonicalize()?;
             let identity = skill_path_identity(&path)?;
             if v.managed {
@@ -191,7 +208,32 @@ impl SkillsManager {
         if directory == self.linked_dir() || self.agent_dirs.iter().any(|(_, root)| root == directory) {
             std::fs::create_dir_all(directory)?;
         }
-        publish_local_version(&backup, directory, &id)
+        let directory = directory.canonicalize()?;
+        let protected = std::iter::once(self.source_dir.clone())
+            .chain(self.backup_roots().into_iter().map(|(_, root)| root))
+            .chain(self.shared_skills_dir().map(Path::to_path_buf))
+            .chain(backup.parent().map(Path::to_path_buf));
+        for root in protected {
+            // 首次使用时根目录可能尚未创建，仍解析其现存祖先，避免通过目录别名绕过限制。
+            let mut ancestor = root.as_path();
+            let mut missing = Vec::new();
+            let resolved = loop {
+                match ancestor.canonicalize() {
+                    Ok(mut resolved) => {
+                        for name in missing.iter().rev() { resolved.push(name); }
+                        break resolved;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        missing.push(ancestor.file_name().context("无法解析 Skill 管理目录")?.to_owned());
+                        ancestor = ancestor.parent().context("无法解析 Skill 管理目录")?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            anyhow::ensure!(!directory.starts_with(&resolved) && !resolved.starts_with(directory.join(&id)),
+                "不能另存到受控源、备份或共享目录，请选择 Agent 安装目录或其他目录");
+        }
+        publish_local_version(&backup, &directory, &id)
     }
 
     pub fn enable_local_version(&self, id: &str, root: &str, revision: &str, agent: &str) -> anyhow::Result<()> {
@@ -199,7 +241,7 @@ impl SkillsManager {
         let mut coordination = skills_coordination();
         self.ensure_skill_name_not_aliased(id, &self.load_state_checked_unlocked()?)?;
         let chosen = self.local_version(id, root)?;
-        anyhow::ensure!(chosen.revision == revision, "版本已改变，请重新选择");
+        anyhow::ensure!(chosen.revision.as_deref() == Some(revision), "版本已改变，请重新选择");
         let target = if agent == "codex" { self.linked_dir() } else { self.agent_dir(agent)? };
         if agent == "codex" {
             anyhow::ensure!(!self.shared_skills_dir().is_some_and(|dir| dir.join(id).join(SKILL_MANIFEST_FILE).is_file()), "Codex 已有共享安装，请先处理共享位置");
