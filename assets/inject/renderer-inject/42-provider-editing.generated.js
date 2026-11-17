@@ -1630,11 +1630,15 @@ ${key} = ${value}`]);
   var gateway_model_exports = {};
   __export(gateway_model_exports, {
     BUILTIN_GATEWAY_AGENTS: () => BUILTIN_GATEWAY_AGENTS,
+    COMPACTION_FALLBACK_REASON_PREFIX: () => COMPACTION_FALLBACK_REASON_PREFIX,
+    COMPACTION_MODEL_REASON_PREFIX: () => COMPACTION_MODEL_REASON_PREFIX,
     DIRECT_PROXY: () => DIRECT_PROXY,
     FOREIGN_COMPACTION_DROPPED_REASON: () => FOREIGN_COMPACTION_DROPPED_REASON,
     GATEWAY_AGENT_NAMES: () => GATEWAY_AGENT_NAMES,
     GATEWAY_CLAUDE_PROVIDER_ID: () => GATEWAY_CLAUDE_PROVIDER_ID,
     GROUP_MODEL_PREFIX: () => GROUP_MODEL_PREFIX,
+    MAX_GATEWAY_PORT: () => MAX_GATEWAY_PORT,
+    MIN_GATEWAY_PORT: () => MIN_GATEWAY_PORT,
     QUEUE_REASON_PREFIX: () => QUEUE_REASON_PREFIX,
     RECENT_USE_MS: () => RECENT_USE_MS,
     SPONSORS: () => SPONSORS,
@@ -1648,6 +1652,7 @@ ${key} = ${value}`]);
     bindingFromDraft: () => bindingFromDraft,
     blankBinding: () => blankBinding,
     cacheHitRate: () => cacheHitRate,
+    compactionNote: () => compactionNote,
     connectedAgents: () => connectedAgents,
     costText: () => costText,
     currencySymbol: () => currencySymbol,
@@ -1689,7 +1694,9 @@ ${key} = ${value}`]);
     modelRoutable: () => modelRoutable,
     niceCeiling: () => niceCeiling,
     ownPickerSection: () => ownPickerSection,
+    parseCompactionNote: () => parseCompactionNote,
     parseContextWindow: () => parseContextWindow,
+    parseGatewayPort: () => parseGatewayPort,
     parseKeyLimit: () => parseKeyLimit,
     parseWeight: () => parseWeight,
     patternMatches: () => patternMatches,
@@ -2031,6 +2038,8 @@ ${key} = ${value}`]);
       unknownModel: source.unknownModel,
       autoReviewModel: source.autoReviewModel ?? "",
       titleModel: source.titleModel ?? "",
+      compactionModel: source.compactionModel ?? "",
+      compactionReasoningEffort: source.compactionReasoningEffort ?? "",
       contextWindow: source.contextWindow ? String(source.contextWindow) : "",
       claudeEnableEffort: source.claudeEnableEffort,
       poolExclude: [...source.poolExclude ?? []],
@@ -2066,6 +2075,26 @@ ${key} = ${value}`]);
   }
   var QUEUE_REASON_PREFIX = "local_rate_limit_wait_ms:";
   var FOREIGN_COMPACTION_DROPPED_REASON = "foreign_compaction_dropped";
+  var COMPACTION_MODEL_REASON_PREFIX = "compaction_model:";
+  var COMPACTION_FALLBACK_REASON_PREFIX = "compaction_fallback:";
+  function parseCompactionNote(reason) {
+    if (reason.startsWith(COMPACTION_MODEL_REASON_PREFIX)) {
+      return { kind: "model", model: reason.slice(COMPACTION_MODEL_REASON_PREFIX.length) };
+    }
+    if (reason.startsWith(COMPACTION_FALLBACK_REASON_PREFIX)) {
+      const rest = reason.slice(COMPACTION_FALLBACK_REASON_PREFIX.length);
+      const at = rest.indexOf(":");
+      return at < 0 ? { kind: "fallback", reason: rest, model: "" } : { kind: "fallback", reason: rest.slice(0, at), model: rest.slice(at + 1) };
+    }
+    return null;
+  }
+  function compactionNote(reasons) {
+    for (const reason of reasons ?? []) {
+      const note = parseCompactionNote(reason);
+      if (note) return note;
+    }
+    return null;
+  }
   function foreignCompactionDropped(reasons) {
     return (reasons ?? []).includes(FOREIGN_COMPACTION_DROPPED_REASON);
   }
@@ -2104,6 +2133,8 @@ ${key} = ${value}`]);
       unknownModel: draft.unknownModel,
       autoReviewModel: draft.autoReviewModel.trim(),
       titleModel: draft.titleModel.trim(),
+      compactionModel: draft.compactionModel.trim(),
+      compactionReasoningEffort: draft.compactionReasoningEffort.trim(),
       contextWindow: window && Number.isFinite(window) ? window : null,
       claudeEnableEffort: draft.claudeEnableEffort,
       poolExclude: [...draft.poolExclude],
@@ -2438,6 +2469,14 @@ ${key} = ${value}`]);
     const value = Number(trimmed);
     if (!Number.isFinite(value)) return null;
     return Math.max(1, Math.floor(value));
+  }
+  var MIN_GATEWAY_PORT = 1024;
+  var MAX_GATEWAY_PORT = 65535;
+  function parseGatewayPort(text) {
+    const trimmed = text.trim();
+    if (!/^\d{1,5}$/.test(trimmed)) return null;
+    const value = Number(trimmed);
+    return value >= MIN_GATEWAY_PORT && value <= MAX_GATEWAY_PORT ? value : null;
   }
   function isPattern(model) {
     return model.includes("*");
