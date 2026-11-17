@@ -878,6 +878,9 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const renderSkillRow = (s: Skill) => {
     const update = s.bundled ? undefined : updates.find((item) => item.id === s.id);
     const inPlaceUpdate = Boolean(s.originalDir && s.updateOwner !== "manager");
+    // 与分组更新（updateTargets）一致：共享位置、未授权渠道的 Skill 后端会拒绝，不显示必然失败的按钮。
+    const managerUpdate = (!s.originalDir && !(s.updateOwner === "" && s.installChannel)) || s.updateOwner === "manager";
+    const canUpdate = inPlaceUpdate || (managerUpdate && !s.locations?.some((location) => location.rootKind === "shared"));
     const conflict = Boolean(s.conflict) || conflictIds.has(s.id);
     const guarded = conflict || guardedIds.has(s.id);
     const needsSync = s.managedSourceStatus === "needs-sync";
@@ -907,7 +910,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       detail={<span title={detail}>{detail}</span>}
       onClick={() => openDetails(s)}>
       {needsSync && <Button title={syncCopiesHint} disabled={busy || !!update} onClick={() => void syncCopies()}>{t("同步工作副本")}</Button>}
-      {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button disabled={guarded} onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable && !guarded ? <Button onClick={() => { if (inPlaceUpdate) setUpdateTarget({ id: s.id, repoKey: s.repoKey, localPath: s.originalDir || undefined }); else queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
+      {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button disabled={guarded} onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable && !guarded && canUpdate ? <Button onClick={() => { if (inPlaceUpdate) setUpdateTarget({ id: s.id, repoKey: s.repoKey, localPath: s.originalDir || undefined }); else queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
       <div className="cx-agent-toggles" role="group" aria-label={t("启用到 Agent")}>
         {agentColumns.map((agent) => {
           const safeDisable = guarded && s.conflictKind === "managed-modified"
