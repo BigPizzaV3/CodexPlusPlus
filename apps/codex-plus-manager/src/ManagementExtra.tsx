@@ -385,6 +385,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [initialLocalLoaded, setInitialLocalLoaded] = useState(false);
   const [refreshingCatalog, setRefreshingCatalog] = useState(() => !!skillPageCache.catalogPending);
   // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
   const focus = useAgentFocus();
@@ -444,7 +445,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
           try {
             const result = await requestPayload("list_installed_skills");
             if (!mounted.current) return;
-            if (request === dataRequest.current) startTransition(() => applyCurrentPayload(request, result));
+            if (request === dataRequest.current) applyCurrentPayload(request, result);
             if (!ok(result)) await notify("Skills", result.message, "failed");
           } catch (error) {
             if (mounted.current) await notify("Skills", String(error), "failed");
@@ -478,9 +479,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     if (automatic && local && skillPageCache.value && skillBatchRegistry.getSnapshot().length) return;
     if (automatic && !skillPageCache[pendingKey] && skillPageCache.value
       && (local ? Date.now() - skillPageCache[startedKey] < 30_000 : skillPageCache.catalogStartedAt > 0)) return;
-    loadingRequests.current++;
-    setLoading(true);
-    if (!local) {
+    if (local) {
+      loadingRequests.current++;
+      setLoading(true);
+    } else {
       catalogRequests.current++;
       setRefreshingCatalog(true);
     }
@@ -489,6 +491,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       const r = await requestPayload(command);
       if (local && !skillPageCache.localStartedAt) {
         if (mounted.current) void reloadLocal();
+      } else if (local) {
+        applyCurrentPayload(request, r, false);
       } else {
         startTransition(() => applyCurrentPayload(request, r, !local));
       }
@@ -496,9 +500,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     } catch (e) {
       if (mounted.current) await notify("Skills", String(e), "failed");
     } finally {
-      loadingRequests.current--;
-      if (mounted.current && !loadingRequests.current) setLoading(false);
-      if (!local) {
+      if (local) {
+        loadingRequests.current--;
+        if (mounted.current && !loadingRequests.current) setLoading(false);
+      } else {
         catalogRequests.current--;
         if (mounted.current && !catalogRequests.current) setRefreshingCatalog(false);
       }
@@ -518,10 +523,19 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         try { await pending; }
         catch (error) { if (mounted.current) await notify("Skills", String(error), "failed"); }
       }
-      if (active && !catalogPending) await load("refresh_skill_catalog", true);
+      if (active && !catalogPending) setInitialLocalLoaded(true);
     })();
     return () => { active = false; mounted.current = false; skillPageCache.mounted--; dataRequest.current++; };
   }, []);
+  useEffect(() => {
+    if (!initialLocalLoaded) return;
+    // 本地结果提交并绘制后再启动首次发现，避免新请求使尚未提交的本地结果失效。
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
+      timer = setTimeout(() => void load("refresh_skill_catalog", true), 0);
+    });
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
+  }, [initialLocalLoaded]);
   useEffect(() => skillBatchRegistry.subscribeSettled((owner, batchProgress) => {
     if (mounted.current && owner !== batchOwner.current && !batchProgress) return reloadLocal();
   }), []);
@@ -959,12 +973,13 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   };
   const discoverCount = (data?.skills || []).filter((s) => !s.installed || s.bundled).length;
   const installedCount = aggregateSkillGroupItems((data?.skills || []).filter((s) => s.installed)).length;
+  const pageLoading = tab === "installed" ? loading : refreshingCatalog || (!data && loading);
   const sortLabel = `${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`;
   const currentDetail = detail ? allGroups.flatMap((group) => group.items).find((skill) => skillIdentityKey(skill) === skillIdentityKey(detail))
     || (detail.installed || guardedIds.has(detail.id) ? null : detail) : null;
   return <div className="mg-page cx-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
-      <Button onClick={() => void load(tab === "installed" ? "list_installed_skills" : "refresh_skill_catalog")} disabled={busy || loading || refreshingCatalog}><RefreshCw size={14}/>{t(refreshingCatalog ? "刷新目录中" : "刷新目录")}</Button>
+      <Button onClick={() => void load(tab === "installed" ? "list_installed_skills" : "refresh_skill_catalog")} disabled={busy || pageLoading}><RefreshCw size={14}/>{t(pageLoading ? "刷新目录中" : "刷新目录")}</Button>
       <Menu>
         <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
         <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>
@@ -1001,8 +1016,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       <button type="button" className="mg-icon-button" aria-label={t("关闭 Skill 失败摘要")} title={t("关闭 Skill 失败摘要")} onClick={skillBatchRegistry.clearFailures}><X size={16}/></button>
     </CxBanner>}
     {data?.repoErrors?.length ? <CxBanner tone="warn" icon={<Link />} title={t(data.inventoryOk && data.backupsOk ? "部分仓库读取失败" : "Skill 数据读取失败")} detail={<span className="cx-skill-repo-errors">{data.repoErrors.map((e) => <span key={e}>{e}</span>)}</span>} /> : null}
-    <div className="cx-skill-groups" aria-busy={loading} data-columns={agentColumns.length}>
-      {!groups.length ? <CxCard><CxEmpty title={loading ? t("正在扫描…") : t("没有匹配的 Skill")} /></CxCard> :
+    <div className="cx-skill-groups" aria-busy={pageLoading} data-columns={agentColumns.length}>
+      {!groups.length ? <CxCard><CxEmpty title={pageLoading ? t("正在扫描…") : t("没有匹配的 Skill")} /></CxCard> :
         <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
           <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
         const collapsed = !expandedGroups.has(group.key) && !query.trim();

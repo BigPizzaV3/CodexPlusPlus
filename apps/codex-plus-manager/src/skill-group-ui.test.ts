@@ -224,7 +224,14 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const calls: string[] = [];
   const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
   const notices: Array<{ title: string; message: string; status: string }> = [];
-  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: (message: string) => Promise<boolean> } = {};
+  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: (message: string) => Promise<boolean>; deferTransitions?: boolean; holdFrames?: boolean } = {};
+  const transitions: Array<() => void> = [];
+  const frames = new Map<number, () => void>();
+  let frameId = 0;
+  let inTransition = false;
+  let renderQueued = false;
+  let autoCommit = true;
+  let unmounted = false;
   const server = shared?.server ?? { status: "ok", message: "ok", skills: [skill("builtin", "", true), skill("alpha", "a/repo@main"), skill("zeta", "z/repo@main")],
     inventoryOk: true, repos: [] as FixtureRepo[], repositorySkills: [], repoCounts: {} as Record<string, number>, repoErrors: [], skillsDir: "", codexSkillsDir: "", backups: [] as FixtureBackup[], backupsOk: true };
   const registry = shared?.registry ?? new SkillBatchRegistry();
@@ -236,7 +243,19 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     useState: (initial: any) => {
       const index = cursor++;
       if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
-      return [slots[index], (value: any) => { slots[index] = typeof value === "function" ? value(slots[index]) : value; }];
+      return [slots[index], (value: any) => {
+        const update = () => {
+          const next = typeof value === "function" ? value(slots[index]) : value;
+          if (Object.is(next, slots[index])) return;
+          slots[index] = next;
+          if (!renderQueued) {
+            renderQueued = true;
+            queueMicrotask(() => { renderQueued = false; if (autoCommit && !unmounted) render(); });
+          }
+        };
+        if (inTransition && hooks.deferTransitions) transitions.push(update);
+        else update();
+      }];
     },
     useEffect: (run: () => void, deps?: any[]) => {
       const index = cursor++;
@@ -249,7 +268,11 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
       });
       slots[index] = deps;
     },
-    useMemo: (run: () => any) => run(), useDeferredValue: (value: any) => value, startTransition: (run: () => void) => run(),
+    useMemo: (run: () => any) => run(), useDeferredValue: (value: any) => value,
+    startTransition: (run: () => void) => { inTransition = true; try { run(); } finally { inTransition = false; } },
+    requestAnimationFrame: (run: () => void) => { const id = ++frameId; if (hooks.holdFrames) frames.set(id, run); else run(); return id; },
+    cancelAnimationFrame: (id: number) => frames.delete(id),
+    setTimeout: (run: () => void) => { run(); return 0; }, clearTimeout: () => {},
     useRef: (value: any) => { const index = cursor++; return slots[index] ??= { current: value }; },
     useSyncExternalStore: (_subscribe: any, snapshot: () => any) => { cursor++; return snapshot(); },
     useSensors: (...values: any[]) => values, useSensor: () => null, PointerSensor: "pointer", KeyboardSensor: "keyboard",
@@ -287,12 +310,13 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     // 骨架组件把一部分内容放在属性里：页面操作、筛选条尾部按钮、行标题旁的小标签与说明。
     for (const key of ["actions", "trailing", "badges", "detail"]) if (node.props?.[key]) collect(node.props[key], result);
   };
-  const flushEffects = () => effects.splice(0).forEach((run) => run());
-  const render = (flush = true) => {
+  const flushEffects = () => { autoCommit = true; effects.splice(0).forEach((run) => run()); };
+  function render(flush = true) {
+    autoCommit = flush;
     cursor = 0; elements = []; effects.length = 0;
     collect(context.exports.SkillsPage({ notify: async (title: string, message: string, status: string) => { notices.push({ title, message, status }); } }), elements);
     if (flush) flushEffects();
-  };
+  }
   const find = (predicate: (node: Element) => boolean) => {
     const result = elements.find(predicate);
     assert.ok(result);
@@ -341,9 +365,70 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const search = (value: string) => { find((node) => node.type === "CxToolbar").props.onQuery(value); render(); };
   const drag = (from: string, to: string) => { find((node) => node.type === "DndContext").props.onDragEnd({ active: { id: from }, over: { id: to } }); render(); };
   const savedState = () => JSON.parse(storage.get("codex-plus-plus.skill-groups.v1")!);
-  const unmount = () => { for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
-  return { render, flushEffects, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, cache, calls, requests, notices, hooks };
+  const unmount = () => { unmounted = true; for (const cleanup of cleanups.values()) cleanup(); cleanups.clear(); };
+  const paint = () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(run => run()); };
+  const flushTransitions = () => transitions.splice(0).forEach(run => run());
+  return { render, flushEffects, unmount, find, group, groupHead, groupButton, groupSelect, rowElements, sort, order, selectTab, activeTab, search, drag, savedState, prompts, storage, server, registry, cache, calls, requests, notices, hooks, paint, flushTransitions };
 }
+
+test("installed inventory commits before discovery starts even when transition renders are delayed", async () => {
+  const ui = createHarness();
+  ui.hooks.deferTransitions = true;
+  ui.hooks.holdFrames = true;
+  let finishLocal!: (result: FixtureServer) => void;
+  let finishCatalog!: (result: FixtureServer) => void;
+  ui.hooks.list = (command) => new Promise(resolve => {
+    if (command === "list_installed_skills") finishLocal = resolve;
+    else finishCatalog = resolve;
+  });
+  ui.render();
+  assert.deepEqual(ui.calls, ["list_installed_skills"]);
+  finishLocal(structuredClone(ui.server));
+  await tick(); ui.render();
+  assert.ok(ui.order().includes("repo:a/repo"), "installed rows must not wait for a transition or catalog result");
+  assert.deepEqual(ui.calls, ["list_installed_skills"], "discovery must wait until the local view has painted");
+  ui.paint(); ui.render();
+  assert.deepEqual(ui.calls, ["list_installed_skills", "refresh_skill_catalog"]);
+  assert.ok(ui.order().includes("repo:a/repo"));
+  assert.equal(ui.find(node => node.props.className === "cx-skill-groups").props["aria-busy"], false);
+  finishCatalog(structuredClone(ui.server));
+  await tick(); ui.flushTransitions(); ui.render();
+  assert.ok(ui.order().includes("repo:a/repo"));
+  ui.unmount();
+});
+
+test("leaving before the first local paint cancels discovery and reopening starts it once", async () => {
+  const first = createHarness();
+  first.hooks.holdFrames = true;
+  first.render(); await tick(); first.render();
+  assert.deepEqual(first.calls, ["list_installed_skills"]);
+  first.unmount(); first.paint();
+  assert.deepEqual(first.calls, ["list_installed_skills"]);
+  const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
+  reopened.hooks.holdFrames = true;
+  reopened.render(); await tick(); reopened.render();
+  assert.deepEqual(reopened.calls, []);
+  reopened.paint(); await tick(); reopened.render();
+  assert.deepEqual(reopened.calls, ["refresh_skill_catalog"]);
+  reopened.unmount();
+});
+
+test("switching to discovery during the first local scan cannot bypass installed-first loading", async () => {
+  const ui = createHarness();
+  ui.hooks.holdFrames = true;
+  let finishLocal!: (result: FixtureServer) => void;
+  ui.hooks.list = () => new Promise(resolve => { finishLocal = resolve; });
+  ui.render();
+  ui.selectTab("发现");
+  assert.equal(ui.find(node => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(ui.find(node => node.props.className === "cx-skill-groups").props["aria-busy"], true);
+  assert.deepEqual(ui.calls, ["list_installed_skills"]);
+  finishLocal(structuredClone(ui.server));
+  await tick(); ui.render(); ui.selectTab("已安装");
+  assert.ok(ui.order().includes("repo:a/repo"));
+  assert.deepEqual(ui.calls, ["list_installed_skills"]);
+  ui.unmount();
+});
 
 test("reopening shows the last committed inventory until the background scan completes", async () => {
   const first = createHarness();
@@ -482,9 +567,12 @@ test("catalog refresh shows progress without confusing a local scan, and clears 
     else finishCatalog = resolve;
   });
   ui.render(); ui.render();
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, true);
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
   finishLocal(structuredClone(ui.server));
   await tick(); ui.render();
+  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(ui.find((node) => node.props.className === "cx-skill-groups").props["aria-busy"], false);
+  ui.selectTab("发现");
   assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
   finishCatalog(structuredClone(ui.server));
   await tick(); ui.render();
@@ -514,6 +602,8 @@ test("a catalog refresh remains visible when reopening the page", async () => {
 
   const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
   reopened.render();
+  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  reopened.selectTab("发现");
   assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
   assert.deepEqual(reopened.calls, []);
   finishRefresh(structuredClone(first.server));
@@ -533,13 +623,39 @@ test("a refresh settling before mount effects does not leave its progress stuck"
 
   const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
   reopened.render(false);
-  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
   finishRefresh(structuredClone(first.server));
   await tick();
   reopened.flushEffects();
   await tick(); reopened.render();
+  reopened.selectTab("发现");
   assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
   reopened.unmount();
+});
+
+test("installed skills can refresh while first discovery is pending without starting another catalog request", async () => {
+  const ui = createHarness();
+  let finishCatalog!: (result: FixtureServer) => void;
+  ui.hooks.list = command => command === "list_installed_skills"
+    ? Promise.resolve(structuredClone(ui.server))
+    : new Promise(resolve => { finishCatalog = resolve; });
+  ui.render(); await tick(); ui.render();
+  assert.deepEqual(ui.calls, ["list_installed_skills", "refresh_skill_catalog"]);
+  ui.server.skills = [skill("new", "new/repo@main")];
+  const refresh = ui.find(node => node.type === "Button" && node.children.includes("刷新目录"));
+  assert.equal(refresh.props.disabled, false);
+  refresh.props.onClick();
+  await tick(); ui.render();
+  assert.ok(ui.order().includes("repo:new/repo"));
+  assert.deepEqual(ui.calls, ["list_installed_skills", "refresh_skill_catalog", "list_installed_skills"]);
+  ui.selectTab("发现");
+  assert.equal(ui.find(node => node.props.className === "cx-skill-groups").props["aria-busy"], true);
+  ui.selectTab("已安装");
+  assert.equal(ui.find(node => node.props.className === "cx-skill-groups").props["aria-busy"], false);
+  finishCatalog(structuredClone(ui.server));
+  await tick(); ui.render();
+  assert.equal(ui.calls.filter(command => command === "refresh_skill_catalog").length, 1);
+  ui.unmount();
 });
 
 test("local scans and repository refreshes have independent intervals", async () => {
