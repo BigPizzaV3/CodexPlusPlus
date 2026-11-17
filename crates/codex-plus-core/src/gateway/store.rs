@@ -412,6 +412,11 @@ pub struct GatewayGroup {
     /// 手动模式下选中的成员（成员的模型名）；空串表示第一个成员。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pick: String,
+    /// 图像输入模型（#3150）：请求上下文里带图片时整次改发给它，没图片时照常按组路由。
+    /// 写法同成员（`<供应商 id>/<模型>`、裸模型名或 `group/<组 id>`），可以不是组里的成员。
+    /// 空串表示跟随默认：目录里组的图片能力取各成员交集，路由不看图片。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image_input_model: String,
     /// 不认识的字段原样保留。
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1589,6 +1594,31 @@ mod tests {
         );
         std::fs::write(&store.path, r#"{"subagentModelFollowRequest":true}"#).unwrap();
         assert!(store.load().unwrap().subagent_model_follow_request);
+    }
+
+    /// #3150：旧文件的组没有 imageInputModel，读成跟随默认；没设时不落键，设了能原样读回。
+    #[test]
+    fn group_image_model_is_optional_and_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        std::fs::write(
+            &store.path,
+            r#"{"groups":[{"id":"g","name":"G","members":[{"model":"a/m"}]}]}"#,
+        )
+        .unwrap();
+        let mut settings = store.load().unwrap();
+        assert_eq!(settings.groups[0].image_input_model, "");
+        store.save(&settings).unwrap();
+        let text = fs::read_to_string(&store.path).unwrap();
+        assert!(!text.contains("imageInputModel"), "默认值不落键：{text}");
+
+        settings.groups[0].image_input_model = "vision/gpt-6-vision".into();
+        store.save(&settings).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&fs::read_to_string(&store.path).unwrap()).unwrap();
+        assert_eq!(saved["groups"][0]["imageInputModel"], "vision/gpt-6-vision");
+        let again = store.load().unwrap();
+        assert_eq!(again.groups[0].image_input_model, "vision/gpt-6-vision");
+        assert!(again.groups[0].extra.is_empty(), "认识的字段不进未知字段");
     }
 
     #[test]

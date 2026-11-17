@@ -603,6 +603,19 @@ fn codex_model_metadata(
             }
             // 组里轮到不收图的那家就会失败：图片能力取各成员的交集。
             narrow_image_capability(&mut fields, &member_fields);
+            // 设了图像输入模型（#3150）：带图片的请求只发给它，组就能收图，原图细节按图像输入模型的算。
+            if !group.image_input_model.trim().is_empty() {
+                let image_fields: Vec<Map<String, Value>> =
+                    route::group_image_input_members(gateway, binding, group)
+                        .iter()
+                        .filter_map(|(relay, upstream)| {
+                            let index = relays.iter().position(|candidate| candidate.id == relay.id)?;
+                            member_catalog_entry(&mut member_catalogs, &relays, index, upstream)
+                        })
+                        .map(|entry| catalog_ui_fields(&entry))
+                        .collect();
+                open_image_capability(&mut fields, &image_fields);
+            }
             fields.insert("display_name".into(), json!(group.name));
             fields.insert(
                 "description".into(),
@@ -947,6 +960,36 @@ fn narrow_image_capability(fields: &mut Map<String, Value>, members: &[Map<Strin
         })
         .collect();
     if !originals.is_empty() {
+        fields.insert(
+            "supports_image_detail_original".into(),
+            json!(originals.iter().all(|original| *original)),
+        );
+    }
+}
+
+/// 模型组设了图像输入模型时（#3150）：`input_modalities` 补上 image——带图片的请求不会落到不收图的成员，
+/// Codex 不该再拦着贴图。用户明确指定了图像输入模型，就算它的目录条目没声明收图也照样打开：
+/// 图像输入模型真不可用时由网关路由给出明确错误，而不是让 Codex 笼统地报「不支持图像输入」。
+/// `supports_image_detail_original` 只看图像输入模型（它们都声明支持才是 true），都没声明就不写。
+fn open_image_capability(fields: &mut Map<String, Value>, image_members: &[Map<String, Value>]) {
+    if let Some(modalities) = fields
+        .get_mut("input_modalities")
+        .and_then(Value::as_array_mut)
+        && !modalities.iter().any(|modality| modality == "image")
+    {
+        modalities.push(json!("image"));
+    }
+    let originals: Vec<bool> = image_members
+        .iter()
+        .filter_map(|member| {
+            member
+                .get("supports_image_detail_original")
+                .and_then(Value::as_bool)
+        })
+        .collect();
+    if originals.is_empty() {
+        fields.remove("supports_image_detail_original");
+    } else {
         fields.insert(
             "supports_image_detail_original".into(),
             json!(originals.iter().all(|original| *original)),
@@ -4150,6 +4193,12 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
             group
                 .members
                 .retain(|member| route::member_outlives_provider(remaining, id, &member.model));
+            // 图像输入模型指向它的也清掉，回到跟随默认（#3150）。
+            if !group.image_input_model.is_empty()
+                && !route::member_outlives_provider(remaining, id, &group.image_input_model)
+            {
+                group.image_input_model.clear();
+            }
         }
         // Agent 绑定里指向它的模型也清掉（#2897）：默认模型、附加模型、分档模型、审批 / 标题模型
         // 留着 `<id>/…` 会让请求带着这个前缀落到别家上游。清空的单值字段回落到池里的默认。
@@ -4256,6 +4305,9 @@ pub struct GroupInput {
     /// 手动模式下选中的成员。
     #[serde(default)]
     pub pick: String,
+    /// 图像输入模型（#3150）：省略时保留已有组的设置（旧界面不认这个字段），空串表示跟随默认。
+    #[serde(default)]
+    pub image_input_model: Option<String>,
 }
 
 /// 保存模型组。成员去空、去重；不能直接包含自己。返回组 id。
@@ -4322,8 +4374,18 @@ fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::R
         members,
         hide_members: input.hide_members,
         pick: input.pick.trim().to_string(),
+        image_input_model: match &input.image_input_model {
+            Some(model) => model.trim().to_string(),
+            None => gateway
+                .group(&id)
+                .map(|existing| existing.image_input_model.clone())
+                .unwrap_or_default(),
+        },
         extra: Default::default(),
     };
+    if group.image_input_model.eq_ignore_ascii_case(&own) {
+        bail!("图像输入模型不能是这个组自己");
+    }
     match gateway.groups.iter_mut().find(|known| known.id == id) {
         Some(existing) => {
             // 更新版本写的未知字段跟着原来的组走。
@@ -4404,6 +4466,9 @@ pub fn delete_group(store: &GatewayStore, id: &str) -> anyhow::Result<GatewaySet
         let reference = format!("{GROUP_MODEL_PREFIX}{id}");
         for group in &mut gateway.groups {
             group.members.retain(|member| member.model != reference);
+            if group.image_input_model.eq_ignore_ascii_case(&reference) {
+                group.image_input_model.clear();
+            }
         }
         Ok(())
     })?;

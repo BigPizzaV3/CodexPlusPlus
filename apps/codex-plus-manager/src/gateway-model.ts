@@ -156,6 +156,8 @@ export type GatewayGroupEntry = {
   hideMembers?: boolean;
   /** 手动模式下选中的成员（成员的模型名）。 */
   pick?: string;
+  /** 图像输入模型（#3150）：请求带图片时改发给它；空表示跟随默认（图片能力取各成员交集）。 */
+  imageInputModel?: string;
 };
 
 /** 自动组：池里多家都有的模型各一个，`name` 是模型名，`id` 是 `auto:<小写模型名>`。 */

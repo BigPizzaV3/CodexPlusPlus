@@ -270,7 +270,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {
     const next = { ...group, ...patch };
     void run(`group:${group.id}`, "save_gateway_group", {
-      group: { id: next.id, name: next.name, mode: next.mode, sticky: next.sticky ?? "cache", members: next.members, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "" },
+      group: { id: next.id, name: next.name, mode: next.mode, sticky: next.sticky ?? "cache", members: next.members, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "", imageInputModel: next.imageInputModel ?? "" },
     }, t("保存组"), true);
   };
   const saveAuto = (group: AutoGroupEntry, patch: Partial<AutoGroupEntry>) => {
@@ -423,6 +423,9 @@ function GroupCard({
           <strong>{auto ? prettyModelName(group.name) : group.name}</strong>
           <code className="gw-chip" title={auto ? t("Agent 里选这个名字就走这个组") : t("模型组")}>{auto ? group.name : `${GROUP_MODEL_PREFIX}${group.name}`}</code>
           {auto ? <span className="gw-pill gw-pill-outline">{t("自动")}</span> : null}
+          {!auto && group.imageInputModel ? (
+            <span className="gw-pill gw-pill-outline" title={tf("请求里带图片时改发给 {0}", [modelDisplay(payload, group.imageInputModel).title])}>{t("图像输入")}</span>
+          ) : null}
         </div>
         <div className="gw-route-group-controls">
           <AppSelect
@@ -529,7 +532,26 @@ function RouteMember({
 }
 
 
-/** 新建 / 编辑模型组：名称、模式、成员（池里的模型或别的组）。 */
+/** 图像输入下拉里「选择其他模型…」这一项的值（不会被存下）。 */
+const IMAGE_INPUT_PICK = "\u0000pick";
+
+/** 图像输入下拉的选项：跟随默认、组里的成员（通配符除外）、已选的非成员模型、从池里另选。 */
+function imageInputOptions(payload: GatewayPayload | null, members: GroupMember[], current: string) {
+  const option = (model: string, hint: string) => {
+    const view = modelDisplay(payload, model);
+    return { value: model, label: view.title, hint: view.sub ? `${view.sub} · ${hint}` : hint };
+  };
+  const listed = members.filter((member) => !isPattern(member.model));
+  const options = [
+    { value: "", label: t("跟随默认"), hint: t("图片能力取各成员的交集") },
+    ...listed.map((member) => option(member.model, t("组内成员"))),
+  ];
+  if (current && !listed.some((member) => member.model === current)) options.push(option(current, t("不在组里")));
+  options.push({ value: IMAGE_INPUT_PICK, label: t("选择其他模型…"), hint: t("从供应商池里选一个收图的模型") });
+  return options;
+}
+
+/** 新建 / 编辑模型组：名称、模式、成员（池里的模型或别的组）、图像输入。 */
 function GroupEditor({
   payload,
   group,
@@ -540,7 +562,7 @@ function GroupEditor({
   payload: GatewayPayload | null;
   group: GatewayGroupEntry | null;
   busy: string | null;
-  onSave: (input: { id: string; name: string; mode: GroupMode; sticky: GroupSticky; members: GroupMember[] }) => void;
+  onSave: (input: { id: string; name: string; mode: GroupMode; sticky: GroupSticky; members: GroupMember[]; imageInputModel: string }) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(group?.name ?? "");
@@ -550,6 +572,10 @@ function GroupEditor({
   const [members, setMembers] = useState<GroupMember[]>(group?.members.map((member) => ({ ...member })) ?? []);
   const [picking, setPicking] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
+  // 图像输入（#3150）：空串跟随默认；可以选成员，也可以从池里另选一个收图的模型。
+  const [imageInputModel, setImageInputModel] = useState(group?.imageInputModel ?? "");
+  const [pickingImage, setPickingImage] = useState(false);
+  const imageRef = useRef<HTMLDivElement>(null);
   // Esc 栈：「添加成员」浮层、模式下拉开着时 Esc 先关它们。
   useEscapeLayer(true, onCancel);
   // 权重输入框正在编辑的原始文字（允许暂时为空），失焦时再规范成 ≥ 1 的整数。
@@ -577,6 +603,7 @@ function GroupEditor({
     if (!members.some((member) => member.model === patternText)) setMembers([...members, { model: patternText, weight: 1 }]);
     setPattern("");
   };
+  const imageOptions = imageInputOptions(payload, members, imageInputModel);
   const memberHint = mode === "inOrder"
     ? t("从上到下依次尝试")
     : mode === "usage" || mode === "fast"
@@ -588,7 +615,7 @@ function GroupEditor({
         className="gw-modal gw-group-modal"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!error) onSave({ id: group?.id ?? "", name: name.trim(), mode, sticky, members });
+          if (!error) onSave({ id: group?.id ?? "", name: name.trim(), mode, sticky, members, imageInputModel });
         }}
       >
         <header>
@@ -716,6 +743,39 @@ function GroupEditor({
                 />
               </Floating>
             </div>
+          </div>
+          <div className="gw-field">
+            <span>{t("图像输入")}</span>
+            <div ref={imageRef}>
+              <AppSelect
+                label={t("图像输入")}
+                menuWidth={280}
+                onChange={(value) => {
+                  if (value === IMAGE_INPUT_PICK) setPickingImage(true);
+                  else setImageInputModel(value);
+                }}
+                options={imageOptions}
+                size="sm"
+                value={imageInputModel}
+              />
+            </div>
+            <small className="gw-muted">
+              {imageInputModel
+                ? t("请求里带图片（包括历史消息里的图片）时只发给它，它不可用就直接报错、不改发给其它成员；没有图片时照常按上面的方式路由。")
+                : t("组的图片能力取各成员的交集：有一个成员不收图，Codex 就不让贴图。指定一个收图的模型后，带图片的请求改发给它。")}
+            </small>
+            <Floating anchorRef={imageRef} className="gw-model-popover" onClose={() => setPickingImage(false)} open={pickingImage} width={520}>
+              <ModelList
+                exclude={NO_EXCLUDE}
+                onPick={(item) => {
+                  setPickingImage(false);
+                  setImageInputModel(item.model);
+                }}
+                payload={payload}
+                selectedModel={imageInputModel}
+                skipGroup={group?.id}
+              />
+            </Floating>
           </div>
         </div>
         <footer>

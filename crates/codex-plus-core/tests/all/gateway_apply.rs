@@ -3787,6 +3787,168 @@ fn gateway_catalog_forwards_declared_image_input_capability() {
     }
 }
 
+/// #3150：模型组指定了图像输入模型，带图片的请求只发给它，目录里这一组就该收图；
+/// 原图细节按图像输入模型算。没指定的组照旧取各成员交集。编辑组时不带这个字段保留原值。
+#[test]
+fn gateway_catalog_opens_image_input_for_groups_with_image_model() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fixture = fixture(57437);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let (_, ark) = create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Ark".into(),
+            model: "ark-vision".into(),
+            model_list: "ark-vision\nark-text\nark-text-2".into(),
+            ..deepseek_input()
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    set_provider_metadata(
+        &ctx.gateway,
+        &ark,
+        &json!({
+            "ark-vision": {"input_modalities": ["text", "image"], "supports_image_detail_original": true},
+            "ark-text": {"input_modalities": ["text"], "supports_image_detail_original": false},
+            "ark-text-2": {"input_modalities": ["text"]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let text_members = vec![
+        GroupMember { model: format!("{ark}/ark-text"), weight: 1 },
+        GroupMember { model: format!("{ark}/ark-text-2"), weight: 1 },
+    ];
+    let (_, plain) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Plain".into(),
+            members: text_members.clone(),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    // 图像输入模型不是组成员（池里另一个收图的模型）也可以。
+    let (_, visual) = save_group(
+        &ctx.gateway,
+        &GroupInput {
+            name: "Visual".into(),
+            members: text_members.clone(),
+            image_input_model: Some(format!("{ark}/ark-vision")),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+
+    let plain_model = format!("group/{plain}");
+    let visual_model = format!("group/{visual}");
+    let metadata = |ctx: &ApplyContext| -> Value {
+        let settings = ctx.settings.load().unwrap();
+        let profile = settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == "codex-plus-gateway")
+            .unwrap()
+            .clone();
+        serde_json::from_str(&profile.model_metadata).unwrap()
+    };
+    let meta = metadata(ctx);
+    assert_eq!(meta[plain_model.as_str()]["input_modalities"], json!(["text"]), "{meta}");
+    assert_eq!(meta[plain_model.as_str()]["supports_image_detail_original"], false);
+    assert_eq!(meta[visual_model.as_str()]["input_modalities"], json!(["text", "image"]), "{meta}");
+    assert_eq!(meta[visual_model.as_str()]["supports_image_detail_original"], true);
+    let catalog = codex_catalog(ctx);
+    let entry = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["slug"] == visual_model.as_str())
+        .cloned()
+        .unwrap();
+    assert_eq!(entry["input_modalities"], json!(["text", "image"]), "{entry}");
+
+    // 旧界面编辑组时不带 imageModel：保留原值；显式传空串才回到跟随默认。
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: visual.clone(),
+            name: "Visual".into(),
+            members: text_members.clone(),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ctx.gateway.load().unwrap().group(&visual).unwrap().image_input_model,
+        format!("{ark}/ark-vision")
+    );
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: visual.clone(),
+            name: "Visual".into(),
+            members: text_members.clone(),
+            image_input_model: Some(String::new()),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ctx.gateway.load().unwrap().group(&visual).unwrap().image_input_model, "");
+    // 不能把组自己设成图像输入模型。
+    assert!(
+        save_group(
+            &ctx.gateway,
+            &GroupInput {
+                id: visual.clone(),
+                name: "Visual".into(),
+                members: text_members.clone(),
+                image_input_model: Some(visual_model.clone()),
+                ..GroupInput::default()
+            },
+        )
+        .is_err()
+    );
+
+    // 图像输入模型指向的组被删掉：回到跟随默认。
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: visual.clone(),
+            name: "Visual".into(),
+            members: text_members.clone(),
+            image_input_model: Some(plain_model.clone()),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    delete_group(&ctx.gateway, &plain).unwrap();
+    assert_eq!(ctx.gateway.load().unwrap().group(&visual).unwrap().image_input_model, "");
+    // 图像输入模型所在的供应商被删掉：同样清掉。
+    save_group(
+        &ctx.gateway,
+        &GroupInput {
+            id: visual.clone(),
+            name: "Visual".into(),
+            members: vec![GroupMember { model: "deepseek-v4-pro".into(), weight: 1 }],
+            image_input_model: Some(format!("{ark}/ark-vision")),
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    delete_provider(&ctx.gateway, &ark).unwrap();
+    assert_eq!(ctx.gateway.load().unwrap().group(&visual).unwrap().image_input_model, "");
+}
+
 #[test]
 fn gateway_catalog_tracks_disabled_auto_groups_for_declared_and_default_models() {
     use codex_plus_core::gateway::apply::set_auto_group_enabled;
