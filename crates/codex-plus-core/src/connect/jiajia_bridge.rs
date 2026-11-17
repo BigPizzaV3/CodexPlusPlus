@@ -16,6 +16,8 @@
 //!
 //! 微信连接和远程控制在同一个进程：经 [`crate::remote_control::hosted_service`] 直接调用，不走 HTTP。
 //! 对加加的调用都隔着 [`JiajiaPort`]，测试里换成假的。
+//!
+//! 另有「专注模式」（[`focus`]）：本人钉住桌面上的一个会话，消息原样发给它、回复原样转回来，不经过加加。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::future::Future;
@@ -37,7 +39,7 @@ use crate::remote_control::jiajia::store::ChatMessage;
 use crate::remote_control::service::RemoteService;
 
 /// 微信里发给加加时记的发送方（网页上显示「微信」），转发时也靠它认出「本人在微信里说的话」。
-pub const SENDER_NAME: &str = "微信";
+pub const SENDER_NAME: &str = crate::remote_control::jiajia::WEIXIN_SENDER;
 /// 本人在微信里和加加说过话后，多长时间内算「正在对话」：这段时间里网页上和加加的对话、卡片也同步到微信。
 const CONVERSATION_WINDOW_MS: i64 = 10 * 60 * 1000;
 /// 发不出去的推送最多存多少条、每条最多多少字。
@@ -104,23 +106,76 @@ pub fn owner_peer(linked_user_id: &str, allow_from: &str) -> Option<String> {
 
 // ---------- 命令与审批回复 ----------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Jiajia,
     Direct,
     Status,
+    /// 专注模式：列最近的会话。
+    Sessions,
+    /// 专注到列表里的第 N 个（或会话 ID 前几位）。参数可能为空（回用法）。
+    Focus(String),
+    /// 换到另一个会话（同 Focus）。
+    Switch(String),
+    /// 新开会话并专注：`[项目] 任务`。
+    NewSession(String),
+    /// 退出专注。
+    Exit,
 }
 
-/// `/加加` `/直连` `/状态`（也认英文 `/jiajia` `/direct` `/status` 和全角斜杠）。命令不发给模型。
+/// 命令字 → 是否带参数。中文命令带数字参数时可以不加空格（`/进入3`）。
+const COMMANDS: &[(&str, bool)] = &[
+    ("加加", false),
+    ("jiajia", false),
+    ("直连", false),
+    ("direct", false),
+    ("状态", false),
+    ("status", false),
+    ("会话", false),
+    ("sessions", false),
+    ("进入", true),
+    ("focus", true),
+    ("切换", true),
+    ("switch", true),
+    ("新会话", true),
+    ("new", true),
+    ("退出", false),
+    ("exit", false),
+];
+
+/// `/加加` `/直连` `/状态` `/会话` `/进入 N` `/切换 N` `/新会话 [项目] 任务` `/退出`
+/// （也认英文 `/jiajia` `/direct` `/status` `/sessions` `/focus` `/switch` `/new` `/exit` 和全角斜杠）。命令不发给模型。
+/// 不带参数的命令后面跟了别的字就不算命令（「/加加 帮我看看」照常当消息）。
 pub fn parse_command(text: &str) -> Option<Command> {
     let text = text.trim();
-    let rest = text.strip_prefix('/').or_else(|| text.strip_prefix('／'))?;
-    match rest.trim().to_lowercase().as_str() {
-        "加加" | "jiajia" => Some(Command::Jiajia),
-        "直连" | "direct" => Some(Command::Direct),
-        "状态" | "status" => Some(Command::Status),
-        _ => None,
+    let rest = text.strip_prefix('/').or_else(|| text.strip_prefix('／'))?.trim();
+    for (word, takes_arg) in COMMANDS {
+        // 命令字按 ASCII 忽略大小写比较；参数保留原文。
+        let Some(head) = rest.get(..word.len()).filter(|head| head.eq_ignore_ascii_case(word)) else { continue };
+        let after = &rest[head.len()..];
+        let arg = if after.is_empty() {
+            ""
+        } else if after.starts_with(char::is_whitespace) || (*takes_arg && !word.is_ascii() && after.starts_with(|c: char| c.is_ascii_digit())) {
+            after.trim()
+        } else {
+            continue;
+        };
+        if !takes_arg && !arg.is_empty() {
+            return None;
+        }
+        let arg = arg.to_string();
+        return Some(match *word {
+            "加加" | "jiajia" => Command::Jiajia,
+            "直连" | "direct" => Command::Direct,
+            "状态" | "status" => Command::Status,
+            "会话" | "sessions" => Command::Sessions,
+            "进入" | "focus" => Command::Focus(arg),
+            "切换" | "switch" => Command::Switch(arg),
+            "新会话" | "new" => Command::NewSession(arg),
+            _ => Command::Exit,
+        });
     }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +254,9 @@ pub struct CardRef {
     pub title: String,
     pub request_id: Value,
     pub options: Vec<CardOption>,
+    /// 专注会话的卡片：微信里不显示编号（回个数字就是答它），也不在加加的聊天记录里（`message_id` 为 0）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focus: bool,
 }
 
 fn decision_label(decision: &str) -> &str {
@@ -265,10 +323,11 @@ pub fn card_text(card: &CardRef, request: &Value, others: usize) -> String {
     let title = if card.title.is_empty() { "未命名会话" } else { card.title.as_str() };
     let summary = events::request_summary(request);
     let is_question = request.get("method").and_then(Value::as_str) == Some("item/tool/requestUserInput");
+    let tag = if card.focus { String::new() } else { format!("#{} ", card.no) };
     let mut text = if is_question {
-        format!("❓ #{} 会话「{title}」{summary}", card.no)
+        format!("❓ {tag}会话「{title}」{summary}")
     } else {
-        format!("⚠️ #{} 会话「{title}」等你审批：{summary}", card.no)
+        format!("⚠️ {tag}会话「{title}」等你审批：{summary}")
     };
     if card.options.is_empty() {
         text.push_str("\n这类请求要在桌面或远程控制网页上处理。");
@@ -276,7 +335,7 @@ pub fn card_text(card: &CardRef, request: &Value, others: usize) -> String {
     }
     text.push_str("\n回复 ");
     text.push_str(&options_line(&card.options));
-    if others > 0 {
+    if others > 0 && !card.focus {
         text.push_str(&format!("\n同时还有 {others} 张待处理，回复时带上编号，如「1 #{}」", card.no));
     }
     text
@@ -316,6 +375,12 @@ pub struct BridgeState {
     pub pending: VecDeque<PendingPush>,
     /// 已发到微信、还没处理的卡片。
     pub cards: Vec<CardRef>,
+    /// 专注模式：联系人钉住的会话。
+    pub focus: BTreeMap<String, focus::FocusState>,
+    /// 专注模式：联系人最近一次 /会话 列出的编号（/进入 N 用）。
+    pub session_lists: BTreeMap<String, focus::SessionList>,
+    /// 专注模式：联系人上次专注 / 新开会话用的项目目录（/新会话 不写项目时用）。
+    pub last_projects: BTreeMap<String, String>,
 }
 
 // ---------- 加加的接口 ----------
@@ -338,6 +403,10 @@ pub trait JiajiaPort: Send + Sync {
     async fn respond(&self, thread_id: &str, request_id: &Value, body: &Value) -> anyhow::Result<()>;
     /// 把聊天记录里的卡片标成已处理。
     fn resolve_card(&self, message_id: u64);
+    /// 加加（`focus_thread` 工具）要微信进入专注的请求，取一次就没了。
+    fn take_focus_request(&self) -> Option<crate::remote_control::jiajia::FocusRequest> {
+        None
+    }
 }
 
 /// 同进程里正在跑的远程控制服务上的加加。
@@ -418,6 +487,10 @@ impl JiajiaPort for LiveJiajia {
             jiajia.resolve_card(message_id);
         }
     }
+
+    fn take_focus_request(&self) -> Option<crate::remote_control::jiajia::FocusRequest> {
+        Self::jiajia()?.take_focus_request()
+    }
 }
 
 // ---------- 桥 ----------
@@ -493,10 +566,18 @@ struct Inner {
     /// 微信里最近显示的是审批卡片（之后本人还没说别的）：这时回个光秃秃的数字才算审批。
     /// 加加回了话、本人发了别的消息之后，数字可能是在回答别的问题，要带 `#编号` 才算。
     card_prompt: bool,
+    /// 专注会话上次查看的时间、上次本人发消息的时间、上次看到时它是不是在忙（决定多久看一次）。
+    focus_polled_at: i64,
+    focus_sent_at: i64,
+    focus_busy: bool,
 }
 
 pub struct JiajiaBridge {
     port: Arc<dyn JiajiaPort>,
+    /// 专注模式用的会话操作（远程控制的会话），测试里换成假的。
+    sessions: Arc<dyn focus::SessionPort>,
+    /// 微信连接配置的工作目录（/新会话 没写项目、也没用过项目时用）。
+    work_dir: String,
     client: WeixinClient,
     path: PathBuf,
     owner: Option<String>,
@@ -520,6 +601,8 @@ impl JiajiaBridge {
         let state = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
             port,
+            sessions: Arc::new(focus::LiveSessions),
+            work_dir: String::new(),
             client,
             path,
             owner,
@@ -534,8 +617,18 @@ impl JiajiaBridge {
                 cursor: None,
                 typing: None,
                 card_prompt: false,
+                focus_polled_at: 0,
+                focus_sent_at: 0,
+                focus_busy: false,
             }),
         }
+    }
+
+    /// 专注模式用的会话操作和默认工作目录。
+    pub fn with_focus(mut self, sessions: Arc<dyn focus::SessionPort>, work_dir: &str) -> Self {
+        self.sessions = sessions;
+        self.work_dir = work_dir.trim().to_string();
+        self
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -625,6 +718,10 @@ impl JiajiaBridge {
             self.reply(peer, token, &answer).await;
             return Inbound::Handled;
         }
+        // 专注中：本人的消息直接交给钉住的会话（不管原来是加加还是直连）。
+        if is_owner && let Some(focus) = self.focus_of(peer) {
+            return self.send_to_focus(peer, token, message, text, &focus).await;
+        }
         let settings = self.settings();
         let mode = {
             let inner = self.inner();
@@ -700,6 +797,7 @@ impl JiajiaBridge {
                 }
             }
             Command::Status => self.status_text(peer).await,
+            command => self.run_focus_command(peer, command).await,
         }
     }
 
@@ -714,6 +812,7 @@ impl JiajiaBridge {
     async fn status_text(&self, peer: &str) -> String {
         let settings = self.settings();
         let unavailable = self.port.unavailable_reason().await;
+        let focus_line = if self.is_owner(peer) { Some(self.focus_status_line(peer).await) } else { None };
         let inner = self.inner();
         let explicit = inner.state.peer_modes.get(peer).copied();
         let mode = explicit.unwrap_or(settings.default_mode);
@@ -731,6 +830,7 @@ impl JiajiaBridge {
             Some(reason) => format!("加加：不可用（{reason}）"),
         });
         lines.push(format!("推送到微信：{}", if settings.push { "开" } else { "关（在 Codex++ 管理器的微信设置里打开）" }));
+        lines.extend(focus_line);
         if self.is_owner(peer) {
             let cards = &inner.state.cards;
             if !cards.is_empty() {
@@ -741,7 +841,7 @@ impl JiajiaBridge {
                 lines.push(format!("还有 {} 条推送没送达，你发消息时会补发", inner.state.pending.len()));
             }
         }
-        lines.push("命令：/加加 /直连 /状态".to_string());
+        lines.push(if self.is_owner(peer) { "命令：/加加 /直连 /状态 /会话 /进入 编号 /新会话 任务 /退出".to_string() } else { "命令：/加加 /直连 /状态".to_string() });
         lines.join("\n")
     }
 
@@ -752,12 +852,16 @@ impl JiajiaBridge {
             let inner = self.inner();
             let cards = &inner.state.cards;
             let numbers = || cards.iter().map(|card| format!("#{}", card.no)).collect::<Vec<_>>().join(" ");
+            let focused = self.focused_thread(&inner);
+            let focus_cards: Vec<&CardRef> = cards.iter().filter(|card| Some(&card.thread_id) == focused.as_ref()).collect();
             match reply.card {
                 Some(no) => match cards.iter().find(|card| card.no == no) {
                     Some(card) => card.clone(),
                     None => return format!("没有编号 #{no} 的待处理卡片。现在待处理的是：{}", numbers()),
                 },
                 None if cards.len() == 1 => cards[0].clone(),
+                // 专注会话的卡片不带编号：它只有一张时，光秃秃的数字就是答它。
+                None if focus_cards.len() == 1 => focus_cards[0].clone(),
                 None => {
                     let last = cards.last().map(|card| card.no).unwrap_or(1);
                     return format!("现在有 {} 张待处理的卡片（{}），回复时带上编号，例如「1 #{last}」。", cards.len(), numbers());
@@ -777,7 +881,7 @@ impl JiajiaBridge {
         // 和网页端一样，先核对这张卡片的请求还是当前待处理的请求：已处理 / 过期的不再发。
         match self.port.live_requests(&card.thread_id).await {
             Ok(live) if !live.contains(&card.request_id.to_string()) => {
-                self.finish_card(card.message_id);
+                self.finish_card(&card);
                 return "这个请求已经处理过了。".into();
             }
             Ok(_) => {}
@@ -785,26 +889,32 @@ impl JiajiaBridge {
         }
         match self.port.respond(&card.thread_id, &card.request_id, &option.body).await {
             Ok(()) => {
-                self.finish_card(card.message_id);
+                self.finish_card(&card);
                 let title = if card.title.is_empty() { "未命名会话" } else { card.title.as_str() };
-                format!("已回复「{}」：#{} 会话「{title}」。", option.label, card.no)
+                if card.focus {
+                    format!("已回复「{}」：会话「{title}」。", option.label)
+                } else {
+                    format!("已回复「{}」：#{} 会话「{title}」。", option.label, card.no)
+                }
             }
             Err(error) if format!("{error:#}").contains("已经处理过") => {
-                self.finish_card(card.message_id);
+                self.finish_card(&card);
                 "这个请求已经处理过了。".into()
             }
             Err(error) => format!("没发出去：{}", events::clip(&format!("{error:#}"), 120)),
         }
     }
 
-    /// 卡片处理完：从待处理里拿掉，聊天记录里标成已处理。
-    fn finish_card(&self, message_id: u64) {
+    /// 卡片处理完：从待处理里拿掉，聊天记录里标成已处理（专注会话的卡片不在聊天记录里）。
+    fn finish_card(&self, card: &CardRef) {
         {
             let mut inner = self.inner();
-            inner.state.cards.retain(|card| card.message_id != message_id);
+            inner.state.cards.retain(|existing| existing.no != card.no);
             self.save(&inner.state);
         }
-        self.port.resolve_card(message_id);
+        if card.message_id != 0 {
+            self.port.resolve_card(card.message_id);
+        }
     }
 
     // ---------- 转发加加的消息 ----------
@@ -813,6 +923,8 @@ impl JiajiaBridge {
     pub async fn run_forwarder(self: Arc<Self>, stop: Arc<AtomicBool>) {
         while !stop.load(Ordering::SeqCst) {
             self.forward_once().await;
+            self.take_focus_request().await;
+            self.poll_focus(false).await;
             self.expire_typing().await;
             self.port.wait_changed(FORWARD_POLL).await;
         }
@@ -875,6 +987,11 @@ impl JiajiaBridge {
                         if (kind == Kind::Card && message.resolved) || !self.should_deliver(&inner, kind, &settings, now) {
                             continue;
                         }
+                        // 专注会话的审批由专注那边直接发（不带编号），这里不重复发。
+                        let card_thread = message.request.as_ref().and_then(|info| info.get("threadId")).and_then(Value::as_str);
+                        if kind == Kind::Card && card_thread.is_some() && card_thread.map(str::to_string) == self.focused_thread(&inner) {
+                            continue;
+                        }
                         match kind {
                             Kind::Card => {
                                 if let Some((text, card)) = register_card(&mut inner.state, &message) {
@@ -913,7 +1030,9 @@ impl JiajiaBridge {
             return true;
         }
         // 加加模式下正在对话：网页上和加加的对话、卡片、提醒都同步到微信（共用一份聊天记录）。
+        // 专注中不算在和加加对话（消息没经过加加）。
         let conversing = self.mode_of(inner, owner, settings) == PeerMode::Jiajia
+            && !inner.state.focus.contains_key(owner)
             && inner.last_weixin_at.is_some_and(|at| now - at < CONVERSATION_WINDOW_MS);
         if conversing {
             return true;
@@ -1047,6 +1166,7 @@ fn register_card(state: &mut BridgeState, message: &ChatMessage) -> Option<(Stri
         title,
         request_id: request.get("id").cloned().unwrap_or(Value::Null),
         options,
+        focus: false,
     };
     let text = card_text(&card, &request, state.cards.len());
     if card.options.is_empty() || card.thread_id.is_empty() || card.request_id.is_null() {
@@ -1062,6 +1182,11 @@ fn register_card(state: &mut BridgeState, message: &ChatMessage) -> Option<(Stri
 fn now_ms() -> i64 {
     crate::remote_control::jiajia::store::now_ms()
 }
+
+#[path = "jiajia_focus.rs"]
+pub mod focus;
+
+pub use focus::{LiveSessions, SessionPort, ThreadSummary};
 
 #[cfg(test)]
 #[path = "jiajia_bridge_tests.rs"]

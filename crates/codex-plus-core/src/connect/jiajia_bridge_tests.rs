@@ -18,6 +18,8 @@ struct MockState {
     live: HashMap<String, Vec<String>>,
     responded: Vec<(String, Value, Value)>,
     resolved: Vec<u64>,
+    /// 加加的 focus_thread 留下的请求。
+    focus_request: Option<crate::remote_control::jiajia::FocusRequest>,
 }
 
 struct MockJiajia(Mutex<MockState>);
@@ -125,6 +127,10 @@ impl JiajiaPort for MockJiajia {
     fn resolve_card(&self, message_id: u64) {
         self.lock().resolved.push(message_id);
     }
+
+    fn take_focus_request(&self) -> Option<crate::remote_control::jiajia::FocusRequest> {
+        self.lock().focus_request.take()
+    }
 }
 
 // ---------- 假的微信网关 ----------
@@ -180,7 +186,8 @@ impl Gateway {
     }
 
     fn client(&self) -> WeixinClient {
-        WeixinClient::new(&self.server.uri(), "fixture-token", "").unwrap()
+        // 附件也从假网关下载（专注模式转附件的用例）。
+        WeixinClient::new(&self.server.uri(), "fixture-token", "").unwrap().with_media_base_url(&self.server.uri()).unwrap()
     }
 
     fn texts(&self) -> Vec<String> {
@@ -193,6 +200,7 @@ type Logs = Arc<Mutex<Vec<(String, Value)>>>;
 struct Fixture {
     gateway: Gateway,
     jiajia: Arc<MockJiajia>,
+    sessions: Arc<focus_tests::MockSessions>,
     dir: tempfile::TempDir,
     logs: Logs,
     settings: WeixinCodexPath,
@@ -203,6 +211,7 @@ impl Fixture {
         Self {
             gateway: Gateway::start().await,
             jiajia: MockJiajia::new(),
+            sessions: focus_tests::MockSessions::new(),
             dir: tempfile::tempdir().unwrap(),
             logs: Arc::new(Mutex::new(Vec::new())),
             settings: WeixinCodexPath::new(""),
@@ -224,6 +233,7 @@ impl Fixture {
             BridgeSettings { default_mode, push },
             Arc::new(move |event, detail| logs.lock().unwrap().push((event.to_string(), detail))),
         )
+        .with_focus(self.sessions.clone(), &self.dir.path().display().to_string())
     }
 
     fn bridge(&self) -> JiajiaBridge {
@@ -302,7 +312,7 @@ fn owner_is_linked_user_or_the_single_allowlisted_peer() {
 fn card_text_lists_the_options_the_request_supports() {
     let request = command_request(json!(7), json!(["accept", "acceptForSession", "decline"]));
     let options = card_options(&request);
-    let card = CardRef { no: 2, message_id: 9, thread_id: "t".into(), title: "修 bug".into(), request_id: json!(7), options };
+    let card = CardRef { no: 2, message_id: 9, thread_id: "t".into(), title: "修 bug".into(), request_id: json!(7), options, focus: false };
     let text = card_text(&card, &request, 0);
     assert!(text.starts_with("⚠️ #2 会话「修 bug」等你审批：要运行命令 `cargo test`"), "{text}");
     assert!(text.ends_with("回复 1 同意 · 2 本会话都同意 · 3 拒绝"), "{text}");
@@ -695,3 +705,6 @@ async fn connect_loop_routes_owner_messages_to_jiajia_and_forwards_replies() {
     assert_eq!(fixture.gateway.tokens.lock().unwrap().as_slice(), ["loop-ctx"]);
     assert_eq!(status.lock().unwrap().processed_messages, 1);
 }
+
+#[path = "jiajia_focus_tests.rs"]
+mod focus_tests;

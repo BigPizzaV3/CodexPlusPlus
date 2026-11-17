@@ -201,6 +201,12 @@ impl WeixinCodexPath {
         })
     }
 
+    /// 管理器保存过的工作目录（专注模式 /新会话 的默认项目）；没保存过时 None。
+    fn work_dir(&self) -> Option<String> {
+        let saved = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        saved.1.as_ref().map(|defaults| defaults.work_dir.trim().to_string())
+    }
+
     fn apply(&self, config: &mut AppServerConfig) -> bool {
         let path = self.0.lock().unwrap_or_else(|error| error.into_inner());
         if config.executable == path.0 {
@@ -310,7 +316,8 @@ async fn run_weixin_connect_with_jiajia(
         codex_path.clone(),
         config.bridge_settings(),
         push_log,
-    ));
+    )
+    .with_focus(Arc::new(jiajia_bridge::LiveSessions), &config.work_dir));
     bridge.seed_tokens(&state.context_tokens);
     let _forwarder = AbortOnDrop(tokio::spawn(Arc::clone(&bridge).run_forwarder(Arc::clone(&stop))));
     let mut app_config = AppServerConfig {
