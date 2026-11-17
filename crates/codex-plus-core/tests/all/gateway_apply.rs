@@ -4524,6 +4524,176 @@ fn reasoning_levels_are_edited_per_model_and_survive_provider_edits() {
     );
 }
 
+#[test]
+fn opencode_go_deepseek_metadata_drops_unsupported_medium_on_load() {
+    fn reasoning_efforts<'a>(metadata: &'a Value, model: &str) -> Vec<&'a str> {
+        metadata[model]["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect()
+    }
+
+    let fixture = fixture(57399);
+    let ctx = &fixture.ctx;
+    let stale = json!({
+        "deepseek-v4.1-flash": {
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "medium", "description": "Balances speed and reasoning depth"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+            ],
+            "default_reasoning_level": "medium"
+        }
+    })
+    .to_string();
+    let valid_subset = json!({
+        "deepseek-v4.1-flash": {
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+            ],
+            "default_reasoning_level": "high"
+        }
+    })
+    .to_string();
+    let opencode = ProviderInput {
+        name: "OpenCode Go".into(),
+        base_url: "https://opencode.ai/zen/go/v1".into(),
+        protocol: RelayProtocol::ChatCompletions,
+        keys: vec!["oc_sk_test".into()],
+        model: "deepseek-v4.1-flash".into(),
+        model_list: "deepseek-v4.1-flash".into(),
+        price: None,
+        model_prices: None,
+        proxy: None,
+        strip_image_generation_tool: None,
+        subscription_policy: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+        custom_headers: None,
+    };
+    let (_, opencode_id) =
+        create_provider(&ctx.gateway, &opencode, "preset:opencode-go", None).unwrap();
+    let opencode_subset = ProviderInput {
+        name: "OpenCode Go Subset".into(),
+        ..opencode.clone()
+    };
+    let (_, opencode_subset_id) =
+        create_provider(&ctx.gateway, &opencode_subset, "preset:opencode-go", None).unwrap();
+    let zen = ProviderInput {
+        name: "OpenCode Zen".into(),
+        base_url: "https://opencode.ai/zen/v1".into(),
+        ..opencode.clone()
+    };
+    let (_, zen_id) = create_provider(&ctx.gateway, &zen, "preset:opencode", None).unwrap();
+    let other = ProviderInput {
+        name: "Generic DeepSeek".into(),
+        base_url: "https://api.deepseek.test/v1".into(),
+        model_list: "deepseek-v4.1-flash".into(),
+        ..opencode.clone()
+    };
+    let (_, other_id) = create_provider(&ctx.gateway, &other, "custom", None).unwrap();
+
+    let mut gateway = ctx.gateway.load().unwrap();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == opencode_id)
+        .unwrap()
+        .relay
+        .model_metadata = stale.clone();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == opencode_subset_id)
+        .unwrap()
+        .relay
+        .model_metadata = valid_subset.clone();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == zen_id)
+        .unwrap()
+        .relay
+        .model_metadata = stale.clone();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == other_id)
+        .unwrap()
+        .relay
+        .model_metadata = stale.clone();
+    ctx.gateway.save(&gateway).unwrap();
+
+    let gateway = ctx.gateway.load().unwrap();
+    let provider_metadata = |id: &str| {
+        let relay = &gateway
+            .providers
+            .iter()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay;
+        serde_json::from_str::<Value>(&relay.model_metadata).unwrap()
+    };
+    let opencode_metadata = provider_metadata(&opencode_id);
+    assert_eq!(
+        reasoning_efforts(&opencode_metadata, "deepseek-v4.1-flash"),
+        ["low", "high", "max"]
+    );
+    assert_eq!(
+        opencode_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "high"
+    );
+    let subset_metadata = provider_metadata(&opencode_subset_id);
+    assert_eq!(
+        reasoning_efforts(&subset_metadata, "deepseek-v4.1-flash"),
+        ["low", "high"]
+    );
+    assert_eq!(
+        subset_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "high"
+    );
+    let zen_metadata = provider_metadata(&zen_id);
+    assert_eq!(
+        reasoning_efforts(&zen_metadata, "deepseek-v4.1-flash"),
+        ["low", "medium", "high"]
+    );
+    assert_eq!(
+        zen_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "medium"
+    );
+    let other_metadata = provider_metadata(&other_id);
+    assert_eq!(
+        reasoning_efforts(&other_metadata, "deepseek-v4.1-flash"),
+        ["low", "medium", "high"]
+    );
+    assert_eq!(
+        other_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "medium"
+    );
+
+    let opencode_model = format!("{opencode_id}/deepseek-v4.1-flash");
+    let other_model = format!("{other_id}/deepseek-v4.1-flash");
+    let binding = AgentBinding {
+        model: opencode_model.clone(),
+        ..AgentBinding::default()
+    };
+    let catalog = codex_plus_core::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+    let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+    assert_eq!(
+        reasoning_efforts(&metadata, &opencode_model),
+        ["low", "high", "max"]
+    );
+    assert_eq!(metadata[&opencode_model]["default_reasoning_level"], "high");
+    assert_eq!(
+        reasoning_efforts(&metadata, &other_model),
+        ["low", "medium", "high"]
+    );
+    assert_eq!(metadata[&other_model]["default_reasoning_level"], "medium");
+}
+
 /// #228：网关供应商的「移除托管生图工具」随新建写入，编辑时不传沿用原值，传了才改。
 #[test]
 fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {

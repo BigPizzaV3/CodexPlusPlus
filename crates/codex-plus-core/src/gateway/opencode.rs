@@ -75,6 +75,102 @@ pub fn plan_of(base_url: &str) -> Option<Plan> {
     }
 }
 
+fn source_base_url(relay: &RelayProfile) -> &str {
+    if relay.upstream_base_url.trim().is_empty() {
+        &relay.base_url
+    } else {
+        &relay.upstream_base_url
+    }
+}
+
+/// OpenCode Go 的 DeepSeek 旧元数据可能带上游已不支持的 `medium`。
+/// 只有发现不受支持的档位时才换成内置能力表，保留用户自定义的有效子集。
+pub(crate) fn normalize_deepseek_reasoning_metadata(relay: &mut RelayProfile) {
+    if plan_of(source_base_url(relay)) != Some(Plan::Go) {
+        return;
+    }
+    let Ok(mut metadata) = serde_json::from_str::<Value>(&relay.model_metadata) else {
+        return;
+    };
+    let Some(models) = metadata.as_object_mut() else {
+        return;
+    };
+    let mut changed = false;
+    for (model, entry) in models.iter_mut() {
+        let (slug, _) = crate::model_suffix::parse_model_suffix(model);
+        if !slug.to_ascii_lowercase().starts_with("deepseek") {
+            continue;
+        }
+        let Some(canonical) = crate::model_suffix::model_ui_metadata(&slug) else {
+            continue;
+        };
+        let canonical_levels: Vec<Value> = canonical["supportedReasoningEfforts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|level| {
+                let effort = level["reasoningEffort"].as_str()?.trim();
+                (!effort.is_empty()).then(|| {
+                    serde_json::json!({
+                        "effort": effort,
+                        "description": level["description"].as_str().unwrap_or("")
+                    })
+                })
+            })
+            .collect();
+        if canonical_levels.is_empty() {
+            continue;
+        }
+        let Some(entry) = entry.as_object_mut() else {
+            continue;
+        };
+        let supported = |effort: &str| {
+            canonical_levels.iter().any(|level| {
+                level["effort"]
+                    .as_str()
+                    .is_some_and(|known| known.eq_ignore_ascii_case(effort))
+            })
+        };
+        let has_unsupported_level = entry
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+            .is_some_and(|levels| {
+                levels.iter().any(|level| {
+                    level
+                        .get("effort")
+                        .and_then(Value::as_str)
+                        .is_none_or(|effort| !supported(effort))
+                })
+            });
+        if has_unsupported_level {
+            entry.insert(
+                "supported_reasoning_levels".into(),
+                Value::Array(canonical_levels.clone()),
+            );
+            changed = true;
+        }
+        let Some(canonical_default) = canonical["defaultReasoningEffort"]
+            .as_str()
+            .filter(|default| supported(default))
+        else {
+            continue;
+        };
+        let current_default = entry
+            .get("default_reasoning_level")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !supported(current_default) {
+            entry.insert("default_reasoning_level".into(), canonical_default.into());
+            changed = true;
+        }
+    }
+    if changed {
+        if let Ok(text) = serde_json::to_string(&metadata) {
+            relay.model_metadata = text;
+        }
+    }
+}
+
 /// 一个模型在 OpenCode 网关上的去处。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
@@ -334,12 +430,7 @@ pub fn session_id(seed: Option<&str>) -> String {
 
 /// 发往 OpenCode 网关前：按模型换成它所在的协议和地址，并带上会话头。不是 OpenCode 的地址原样返回。
 pub fn prepare(relay: &mut RelayProfile, model: &str, seed: Option<&str>) -> Result<(), String> {
-    let base = if relay.upstream_base_url.trim().is_empty() {
-        relay.base_url.clone()
-    } else {
-        relay.upstream_base_url.clone()
-    };
-    let Some(plan) = plan_of(&base) else {
+    let Some(plan) = plan_of(source_base_url(relay)) else {
         return Ok(());
     };
     let route = route_for(plan, model)?;
