@@ -2174,6 +2174,37 @@
         color: var(--codex-plus-text) !important;
       }
       .${codexPlusPageClass} .codex-plus-modal-content { border-color: transparent; }
+      /*
+       * 梦皮（Dream Skin）壁纸模式（#3152）：原生设置页在梦皮下是一层半透明遮罩叠在壁纸上，
+       * 我们的页面却是实色底，整块盖住壁纸。页面是盖在内容区上的独立 fixed 层，底下不是同一页，
+       * 不能直接透明；这里照梦皮给原生设置页的画法，在页面根节点自己画「遮罩 + 壁纸」，
+       * 内层的页面底、左栏、内容区改透明。变量都由梦皮定义（--dream-skin-art / --ds-*），
+       * 每个都带兜底：缺了就退回原来的实色底，不会变成全透明。
+       * full 模式对应梦皮的 --ds-immersive-*，ambient / banner 对应更重的 --ds-task-immersive-*；
+       * off 模式梦皮自己也不画壁纸，这里不管。
+       */
+      html[data-dream-skin="active"][data-dream-art-ready="true"]:is([data-dream-task-mode="full"], [data-dream-art-task-mode="full"]) .${codexPlusPageClass} {
+        --codex-plus-dream-veil: linear-gradient(90deg, var(--ds-immersive-edge, transparent), var(--ds-immersive-mid, transparent) 64%, var(--ds-immersive-far, transparent));
+      }
+      html[data-dream-skin="active"][data-dream-art-ready="true"]:is([data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"]) .${codexPlusPageClass} {
+        --codex-plus-dream-veil: linear-gradient(90deg, var(--ds-task-immersive-edge, transparent), var(--ds-task-immersive-mid, transparent) 64%, var(--ds-task-immersive-far, transparent));
+      }
+      html[data-dream-skin="active"][data-dream-art-ready="true"]:is([data-dream-task-mode="full"], [data-dream-art-task-mode="full"], [data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"]) .${codexPlusPageClass} {
+        --codex-plus-settings-page-bg: transparent !important;
+        --codex-plus-nav-bg: transparent !important;
+        background:
+          var(--codex-plus-dream-veil, linear-gradient(transparent, transparent)),
+          var(--dream-skin-art, none) var(--ds-art-position, center) / cover no-repeat fixed,
+          var(--ds-bg, var(--codex-plus-bg-primary)) !important;
+      }
+      html[data-dream-skin="active"][data-dream-art-ready="true"]:is([data-dream-task-mode="full"], [data-dream-art-task-mode="full"], [data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"]) .${codexPlusPageClass} .codex-plus-modal-content {
+        background: transparent !important;
+      }
+      /* 吸顶标题底下会滚过正文：透明后改成梦皮面板色的半透明磨砂，正文不会从标题后面透出来。 */
+      html[data-dream-skin="active"][data-dream-art-ready="true"]:is([data-dream-task-mode="full"], [data-dream-art-task-mode="full"], [data-dream-task-mode="ambient"], [data-dream-art-task-mode="ambient"], [data-dream-task-mode="banner"], [data-dream-art-task-mode="banner"]) .${codexPlusPageClass} :is(.codex-plus-provider-detail > .codex-plus-provider-detail-header, .codex-plus-task-group-head) {
+        background: color-mix(in srgb, var(--ds-panel, var(--codex-plus-bg-primary)) 72%, transparent);
+        backdrop-filter: blur(18px) saturate(1.1);
+      }
       .codex-plus-modal-body { scrollbar-color: var(--codex-plus-text-tertiary) transparent; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--codex-plus-text-tertiary) 45%, transparent); background-clip: padding-box; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: var(--codex-plus-text-tertiary); background-clip: padding-box; }

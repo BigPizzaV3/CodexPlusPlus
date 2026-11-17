@@ -1086,6 +1086,36 @@ describe("renderer injection header compatibility", () => {
     assert.ok(!themeBody.includes('textSecondary: "#a1a1aa"'), "主题函数里残留硬编码的次要色");
   });
 
+  it("梦皮壁纸模式下，注入页自己画遮罩 + 壁纸，不再用实色底盖住（#3152）", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const scope = 'html[data-dream-skin="active"][data-dream-art-ready="true"]';
+    const rules = renderer.split("\n").filter((line) => line.includes(scope));
+    assert.ok(rules.some((line) => line.includes('[data-dream-task-mode="full"]') && line.includes(".codex-plus-modal-content {")),
+      "内容区要在梦皮下透明");
+    const start = renderer.indexOf("--codex-plus-settings-page-bg: transparent !important;");
+    assert.ok(start > 0, "页面底色变量要在梦皮下改透明");
+    const block = renderer.slice(start, renderer.indexOf("}", start));
+    assert.match(block, /--codex-plus-nav-bg: transparent !important;/);
+    assert.match(block, /var\(--dream-skin-art, none\) var\(--ds-art-position, center\) \/ cover no-repeat fixed/);
+    // 变量缺失时必须退回实色底：遮罩、底色都要带兜底，否则整条 background 失效变成全透明。
+    assert.match(block, /var\(--codex-plus-dream-veil, linear-gradient\(transparent, transparent\)\)/);
+    assert.match(block, /var\(--ds-bg, var\(--codex-plus-bg-primary\)\) !important;/);
+
+    // 引用的梦皮变量与根节点属性必须真实存在于内置梦皮（Windows / macOS 两份），改名时这里先红。
+    for (const platform of ["windows", "macos"]) {
+      const css = await readFile(new URL(`../../../assets/inject/upstream/dream-skin/${platform}/dream-skin.css`, import.meta.url), "utf8");
+      const script = await readFile(new URL(`../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url), "utf8");
+      for (const name of ["--ds-immersive-edge", "--ds-immersive-mid", "--ds-immersive-far", "--ds-task-immersive-edge",
+        "--ds-task-immersive-mid", "--ds-task-immersive-far", "--ds-art-position", "--ds-bg", "--ds-panel"]) {
+        assert.ok(css.includes(`${name}:`), `${platform} 梦皮缺少 ${name}`);
+      }
+      assert.match(script, /"--dream-skin-art"/);
+      for (const attribute of ["data-dream-art-ready", "data-dream-task-mode", "data-dream-art-task-mode"]) {
+        assert.ok(script.includes(`"${attribute}"`), `${platform} 梦皮不再设置 ${attribute}`);
+      }
+    }
+  });
+
   it("各分片的顶层函数不重名（同一 IIFE 里后声明的会静默覆盖前面的）", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     // 10-31 拓展主题的 applyCodexPlusTheme() 覆盖了 40 分片的 applyCodexPlusTheme(overlay)，
