@@ -490,6 +490,9 @@ struct Inner {
     cursor: Option<Cursor>,
     /// 正在显示的「正在输入」：(联系人, typing_ticket, 开始时间)。
     typing: Option<(String, String, i64)>,
+    /// 微信里最近显示的是审批卡片（之后本人还没说别的）：这时回个光秃秃的数字才算审批。
+    /// 加加回了话、本人发了别的消息之后，数字可能是在回答别的问题，要带 `#编号` 才算。
+    card_prompt: bool,
 }
 
 pub struct JiajiaBridge {
@@ -530,6 +533,7 @@ impl JiajiaBridge {
                 last_input: LastInput::None,
                 cursor: None,
                 typing: None,
+                card_prompt: false,
             }),
         }
     }
@@ -588,6 +592,11 @@ impl JiajiaBridge {
         let token = message.context_token.as_str();
         self.note_token(peer, token);
         let is_owner = self.is_owner(peer);
+        let approval = (is_owner && !message.has_attachments()).then(|| parse_approval(text)).flatten();
+        if approval.is_none() && parse_command(text).is_none() {
+            // 本人说了别的：之后光秃秃的数字不再默认指卡片。
+            self.inner().card_prompt = false;
+        }
         if is_owner {
             self.flush_pending(peer).await;
         }
@@ -602,12 +611,15 @@ impl JiajiaBridge {
         if text.trim_start().starts_with("/reset") {
             return Inbound::Direct;
         }
-        // 有卡片等着时，本人回的数字 / 「同意」就是审批（直连模式开了推送也一样）。
-        let has_cards = !self.inner().state.cards.is_empty();
-        if is_owner
-            && has_cards
-            && !message.has_attachments()
-            && let Some(reply) = parse_approval(text)
+        // 有卡片等着时，本人回的数字 / 「同意」就是审批（直连模式开了推送也一样）：
+        // 带 `#编号` 的总算；不带的只在微信里最近显示的就是卡片时才算。
+        let (has_cards, card_prompt) = {
+            let inner = self.inner();
+            (!inner.state.cards.is_empty(), inner.card_prompt)
+        };
+        if has_cards
+            && let Some(reply) = approval
+            && (reply.card.is_some() || card_prompt)
         {
             let answer = self.approve(reply).await;
             self.reply(peer, token, &answer).await;
@@ -931,6 +943,7 @@ impl JiajiaBridge {
         let token_age_ms = received_at.map(|at| now_ms() - at);
         match self.client.send_text_chunks(&owner, &text, &token).await {
             Ok(()) => {
+                self.inner().card_prompt = kind == Kind::Card;
                 (self.log)("weixin.jiajia_push", json!({ "kind": kind.id(), "ok": true, "tokenAgeMs": token_age_ms }));
             }
             Err(error) => {
@@ -960,27 +973,23 @@ impl JiajiaBridge {
 
     /// 本人发来消息时先补发存着的推送（已经处理掉的卡片跳过）。
     async fn flush_pending(&self, peer: &str) {
-        let (entries, taken, token) = {
+        let (entries, taken, token, has_card) = {
             let mut inner = self.inner();
             if inner.state.pending.is_empty() {
                 return;
             }
             let Some(token) = inner.tokens.get(peer).map(|info| info.token.clone()) else { return };
             let cards: Vec<u64> = inner.state.cards.iter().map(|card| card.message_id).collect();
-            let entries: Vec<String> = inner
-                .state
-                .pending
-                .iter()
-                .filter(|entry| entry.card.is_none_or(|id| cards.contains(&id)))
-                .map(|entry| entry.text.clone())
-                .collect();
+            let kept: Vec<&PendingPush> = inner.state.pending.iter().filter(|entry| entry.card.is_none_or(|id| cards.contains(&id))).collect();
+            let has_card = kept.iter().any(|entry| entry.card.is_some());
+            let entries: Vec<String> = kept.iter().map(|entry| entry.text.clone()).collect();
             let taken = inner.state.pending.len();
             if entries.is_empty() {
                 inner.state.pending.clear();
                 self.save(&inner.state);
                 return;
             }
-            (entries, taken, token)
+            (entries, taken, token, has_card)
         };
         let text = format!("你不在时：\n\n{}", entries.join("\n\n"));
         match self.client.send_text_chunks(peer, &text, &token).await {
@@ -988,6 +997,8 @@ impl JiajiaBridge {
                 let mut inner = self.inner();
                 let taken = taken.min(inner.state.pending.len());
                 inner.state.pending.drain(..taken);
+                // 补发里有卡片：接下来回的数字就是审批。
+                inner.card_prompt = has_card;
                 self.save(&inner.state);
                 (self.log)("weixin.jiajia_backlog", json!({ "ok": true, "count": entries.len() }));
             }

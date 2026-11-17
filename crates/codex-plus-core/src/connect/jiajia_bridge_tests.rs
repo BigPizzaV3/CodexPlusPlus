@@ -517,6 +517,31 @@ async fn several_pending_cards_are_told_apart_by_number() {
     assert_eq!(responded[1], ("thread-1".to_string(), json!(1), json!({ "decision": "accept" })), "只剩一张时不用带编号");
 }
 
+/// 卡片之后加加又说了话（比如问「选 1 还是 2」）：光秃秃的数字是在回答加加，要带编号才算审批。
+#[tokio::test]
+async fn bare_digits_only_approve_right_after_a_card() {
+    let fixture = Fixture::new().await;
+    let bridge = fixture.bridge();
+    bridge.forward_once().await;
+    say(&bridge, "me", "开始").await;
+    fixture.jiajia.push_card("thread-1", "一号", command_request(json!(1), json!(["accept", "decline"])));
+    fixture.jiajia.push("bot", "另外，你想先修 1 还是 2？", None, None);
+    bridge.forward_once().await;
+    assert_eq!(say(&bridge, "me", "2").await, Inbound::Handled);
+    assert_eq!(fixture.jiajia.sent().last().unwrap().0, "2", "数字交给加加");
+    assert!(fixture.jiajia.lock().responded.is_empty());
+    assert_eq!(say(&bridge, "me", "1 #1").await, Inbound::Handled);
+    assert_eq!(fixture.jiajia.lock().responded, [("thread-1".to_string(), json!(1), json!({ "decision": "accept" }))]);
+
+    // 本人说了别的之后也一样。
+    fixture.jiajia.push_card("thread-2", "二号", command_request(json!(2), json!(["accept", "decline"])));
+    bridge.forward_once().await;
+    say(&bridge, "me", "先别管它").await;
+    say(&bridge, "me", "1").await;
+    assert_eq!(fixture.jiajia.lock().responded.len(), 1);
+    assert_eq!(fixture.jiajia.sent().last().unwrap().0, "1");
+}
+
 #[tokio::test]
 async fn cards_handled_on_the_web_are_dropped_from_weixin() {
     let fixture = Fixture::new().await;
