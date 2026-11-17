@@ -147,7 +147,13 @@ fn windows_installer_carries_product_version_resource() {
     let languages = nsi.find("!insertmacro MUI_LANGUAGE \"English\"").unwrap();
     let product_version = nsi.find("VIProductVersion").unwrap();
     assert!(languages < product_version, "版本键要在语言加载之后");
-    assert!(nsi.contains("!searchparse /noerrors \"${VERSION}-\""), "预发布后缀要去掉");
+    assert!(nsi.contains("VIProductVersion \"${VI_VERSION}\""), "{nsi}");
+    assert!(nsi.contains("!define VI_VERSION \"0.0.0.0\""), "没传时要有兜底");
+    for workflow in ["pr-build.yml", "release-assets.yml"] {
+        let text =
+            std::fs::read_to_string(format!("../../.github/workflows/{workflow}")).unwrap();
+        assert!(text.contains("\"/DVI_VERSION=$viVersion\""), "{workflow} 要传数字版本");
+    }
     for key in ["ProductName\" \"Codex++\"", "ProductVersion\" \"${VERSION}\"", "FileVersion\" \"${VERSION}\""] {
         assert!(nsi.contains(key), "{key}");
     }

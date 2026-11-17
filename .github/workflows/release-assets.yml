@@ -191,7 +191,9 @@ jobs:
           }
           Push-Location scripts/installer/windows
           try {
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
+            # 版本资源只收 X.X.X.X：去掉预发布后缀；手动在分支上跑（版本是分支名）时用 0.0.0.0。
+            $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location

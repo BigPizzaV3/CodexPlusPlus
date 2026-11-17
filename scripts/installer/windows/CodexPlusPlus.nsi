@@ -35,10 +35,13 @@ Var LegacyDeleteTries
 
 ; 安装包的版本资源（#3148）：没有它时文件属性里产品名、版本都是空的，
 ; 按产品名放行软件的企业管控会把新版本安装包拦下。
-; VIProductVersion 只收 X.X.X.X，预发布后缀（如 2.8.0-beta.1）去掉；末尾补一个 "-" 保证分隔符存在。
-!searchparse /noerrors "${VERSION}-" "" VI_MAJOR "." VI_MINOR "." VI_PATCH "-"
-VIProductVersion "${VI_MAJOR}.${VI_MINOR}.${VI_PATCH}.0"
-VIFileVersion "${VI_MAJOR}.${VI_MINOR}.${VI_PATCH}.0"
+; VIProductVersion 只收 X.X.X.X：由构建脚本按 VERSION 算好传 VI_VERSION（去掉预发布后缀），
+; 没传（本地手动编译）时用 0.0.0.0，不让版本资源挡住编译。
+!ifndef VI_VERSION
+  !define VI_VERSION "0.0.0.0"
+!endif
+VIProductVersion "${VI_VERSION}"
+VIFileVersion "${VI_VERSION}"
 !macro CODEX_PLUS_VERSION_KEYS LANG
   VIAddVersionKey /LANG=${LANG} "ProductName" "Codex++"
   VIAddVersionKey /LANG=${LANG} "FileDescription" "Codex++ Setup"
