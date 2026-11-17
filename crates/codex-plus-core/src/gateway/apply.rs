@@ -3014,7 +3014,8 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
-    })?;
+        custom_headers: None,
+    }, Vec::new())?;
     if bearer {
         profile.anthropic_auth_header =
             crate::anthropic_bridge::ANTHROPIC_AUTH_HEADER_BEARER.to_string();
@@ -3071,7 +3072,8 @@ pub fn copy_grok_profile(
         subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
-    })?;
+        custom_headers: None,
+    }, Vec::new())?;
     if !windows.is_empty() {
         relay.model_windows = serde_json::to_string(&windows)?;
     }
@@ -3402,6 +3404,9 @@ pub struct ProviderInput {
     /// 不向该上游发送 `tool_search` 托管工具（#2868）；不传表示不改。
     #[serde(default)]
     pub disable_tool_search: Option<bool>,
+    /// 自定义请求头（#3075）；不传表示不改（编辑时保留原来的）。敏感头没改时回传 `keep`。
+    #[serde(default)]
+    pub custom_headers: Option<Vec<crate::gateway::provider_headers::ProviderHeaderInput>>,
 }
 
 /// 代理地址只接受 http / https / socks5，空串表示不单独走代理。
@@ -3434,7 +3439,11 @@ fn clean_keys(keys: &[String]) -> Vec<String> {
 }
 
 /// 按输入组装上游配置：多个 Key 写成命名 Key，参与多 Key 轮换。
-fn build_relay(input: &ProviderInput) -> anyhow::Result<RelayProfile> {
+/// `custom_headers` 是已经按 [`crate::gateway::provider_headers::resolve`] 换好值的请求头。
+fn build_relay(
+    input: &ProviderInput,
+    custom_headers: Vec<crate::settings::RelayHeaderKeyValue>,
+) -> anyhow::Result<RelayProfile> {
     if input.base_url.contains("/gw/") {
         bail!("不能把网关自己加进供应商池");
     }
@@ -3455,6 +3464,8 @@ fn build_relay(input: &ProviderInput) -> anyhow::Result<RelayProfile> {
     relay.strip_image_generation_tool = input.strip_image_generation_tool.unwrap_or(false);
     relay.strip_responses_image_detail = input.strip_responses_image_detail.unwrap_or(false);
     relay.disable_tool_search = input.disable_tool_search.unwrap_or(false);
+    // 存盘前的规范化会再按 relay_headers 校验一次。
+    relay.custom_headers = custom_headers;
     if keys.len() > 1 {
         relay.api_keys = keys
             .iter()
@@ -3557,9 +3568,16 @@ pub fn create_provider(
     skip_agents: Option<&[String]>,
 ) -> anyhow::Result<(GatewaySettings, String)> {
     let proxy = clean_proxy(input.proxy.as_deref().unwrap_or_default())?;
+    // 新供应商没有已保存的头可沿用。
+    let headers = crate::gateway::provider_headers::resolve(
+        &[],
+        "",
+        &input.base_url,
+        input.custom_headers.as_deref().unwrap_or_default(),
+    )?;
     add_provider_with(
         store,
-        build_relay(input)?,
+        build_relay(input, headers)?,
         source,
         skip_agents,
         |provider| {
@@ -3660,7 +3678,19 @@ fn update_provider_in(
             vec![provider.relay.api_key.clone()]
         };
     }
-    let mut relay = build_relay(&input)?;
+    // 自定义请求头（#3075）：传了就按表单换值（敏感头没改时沿用，换站点不沿用），没传就保留原来的。
+    let headers = match &input.custom_headers {
+        Some(rows) if crate::gateway::provider_headers::editable(&provider.relay) => {
+            crate::gateway::provider_headers::resolve(
+                &provider.relay.custom_headers,
+                &provider.relay.base_url,
+                &input.base_url,
+                rows,
+            )?
+        }
+        _ => provider.relay.custom_headers.clone(),
+    };
+    let mut relay = build_relay(&input, headers)?;
     relay.id = id.to_string();
     // 沿用原来的 Key 时连标识一起沿用：Key 池按标识记的冷却、会话固定不会错位到别的 Key 上（#2782）。
     if keep_keys && !provider.relay.api_keys.is_empty() {
@@ -3668,8 +3698,7 @@ fn update_provider_in(
         relay.active_api_key_id = provider.relay.active_api_key_id.clone();
         relay.api_key = provider.relay.api_key.clone();
     }
-    // 原来的请求头、User-Agent、Anthropic 鉴权方式这些高级设置保留。
-    relay.custom_headers = provider.relay.custom_headers.clone();
+    // 原来的 User-Agent、Anthropic 鉴权方式这些高级设置保留（请求头见上面）。
     relay.user_agent = provider.relay.user_agent.clone();
     relay.anthropic_auth_header = provider.relay.anthropic_auth_header.clone();
     // 按模型的思考等级等模型资料也保留（在供应商池详情里单独编辑）。
@@ -4653,6 +4682,7 @@ mod tests {
                 subscription_policy: None,
                 strip_responses_image_detail: None,
                 disable_tool_search: None,
+                custom_headers: None,
             },
             "",
             None,
@@ -4700,6 +4730,7 @@ mod tests {
                 subscription_policy: None,
                 strip_responses_image_detail: None,
                 disable_tool_search: None,
+                custom_headers: None,
             },
             "",
             None,

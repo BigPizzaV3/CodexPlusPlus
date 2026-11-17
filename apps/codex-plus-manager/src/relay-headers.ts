@@ -77,3 +77,43 @@ export function hasCustomAuthorization(rows: RelayHeaderRow[]): boolean {
     (row) => row.key.toLowerCase() === "authorization" && row.value.length > 0,
   );
 }
+
+/* —————————————— 网关供应商池（#3075） —————————————— */
+
+/** 后端给的一条已保存请求头：敏感头的 `value` 为空、只有打码后的 `masked`（原文不出后端）。 */
+export type ProviderHeaderView = { key: string; value: string; masked?: string | null };
+
+/** 编辑中的一行：`masked` / `savedKey` 记着它对应哪条已保存的敏感头。 */
+export type ProviderHeaderRow = RelayHeaderRow & { masked?: string | null; savedKey?: string };
+
+/** 提交给后端的一行：`keep` 表示敏感头没改，沿用已保存的值。 */
+export type ProviderHeaderInput = { key: string; value: string; keep: boolean };
+
+export function providerHeaderRows(headers: ProviderHeaderView[] | undefined): ProviderHeaderRow[] {
+  return (headers ?? []).map((header) =>
+    header.masked ? { key: header.key, value: "", masked: header.masked, savedKey: header.key } : { key: header.key, value: header.value },
+  );
+}
+
+/** 敏感头没重新填值、名字也没改：沿用已保存的值。 */
+function keepsSaved(row: ProviderHeaderRow): boolean {
+  return Boolean(row.masked && row.savedKey) && row.value.trim() === "" && row.key.trim().toLowerCase() === (row.savedKey ?? "").trim().toLowerCase();
+}
+
+export function providerHeaderInputs(rows: ProviderHeaderRow[]): ProviderHeaderInput[] {
+  return rows
+    .map((row) => ({ key: row.key.trim(), value: row.value.trim(), keep: keepsSaved(row) }))
+    .filter((row) => row.key.length > 0 || row.value.length > 0);
+}
+
+/** 与直连模式同一套校验；另外：改了敏感头的名字就要重新填值（旧值只按原名沿用）。 */
+export function providerHeadersValidationMessage(rows: ProviderHeaderRow[]): string | null {
+  const renamed = rows.find((row) => row.masked && row.savedKey && row.value.trim() === "" && row.key.trim() && !keepsSaved(row));
+  if (renamed) return `改了请求头「${renamed.key.trim()}」的名称，请重新填写它的值`;
+  return relayHeadersValidationMessage(rows);
+}
+
+/** 供应商详情里的一行摘要：只列头名称（值可能是凭据）。 */
+export function providerHeadersSummary(headers: ProviderHeaderView[] | undefined): string {
+  return (headers ?? []).map((header) => header.key).filter(Boolean).join(" · ");
+}

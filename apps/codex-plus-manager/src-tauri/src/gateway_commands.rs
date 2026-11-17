@@ -84,6 +84,8 @@ pub struct GatewayPoolEntry {
     pub balance_api: bool,
     /// new-api 访问令牌（打码，#2793）；没配置为空。令牌原文不传给界面。
     pub newapi_access: Option<apply::NewApiAccessView>,
+    /// 自定义请求头（#3075）：敏感头只给打码后的样子；订阅账号、官方登录等不开放编辑的为空。
+    pub custom_headers: Vec<codex_plus_core::gateway::provider_headers::ProviderHeaderView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -269,6 +271,7 @@ fn pool_entry(
         subscription_block_reason: None,
         balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
         newapi_access: None,
+        custom_headers: codex_plus_core::gateway::provider_headers::view(relay),
     }
 }
 
@@ -1961,6 +1964,7 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
+        custom_headers: None,
     };
     apply::create_provider(
         &GatewayStore::default(),
@@ -3366,6 +3370,7 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
                 arg(&args, "protocol")?,
                 arg::<Option<String>>(&args, "apiKey")?.unwrap_or_default(),
                 arg(&args, "providerId")?,
+                arg(&args, "customHeaders")?,
             ))),
             "save_gateway_binding" => to_value(save_gateway_binding(
                 arg(&args, "agent")?,

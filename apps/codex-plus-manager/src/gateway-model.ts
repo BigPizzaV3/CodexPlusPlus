@@ -6,6 +6,7 @@
 import { PRESETS } from "./presets.ts";
 import { modelSlugFromRowName } from "./model-metadata.ts";
 import { normalizeSubscriptionPolicy, type SubscriptionPolicy, type SubscriptionPolicyInput } from "./subscription-policy.ts";
+import { providerHeaderInputs, providerHeaderRows, providerHeadersValidationMessage, type ProviderHeaderRow, type ProviderHeaderView } from "./relay-headers.ts";
 
 /** 内置三个之外，通用 Agent 的 id 由后端的规格表决定（如 "opencode"）。 */
 export type GatewayAgentId = "codex" | "claude" | "grok" | (string & {});
@@ -127,6 +128,8 @@ export type GatewayPoolEntry = {
   balanceApi?: boolean;
   /** new-api 访问令牌（打码，#2793）：只用来查账户余额；没配置为空。令牌原文不出后端。 */
   newapiAccess?: NewApiAccessView | null;
+  /** 自定义请求头（#3075）：敏感头只有打码后的 `masked`；订阅账号等不开放编辑的为空。旧版后端没有。 */
+  customHeaders?: ProviderHeaderView[];
 };
 
 /** 已保存的 new-api 访问令牌：只有打码后的样子和用户 ID。 */
@@ -1411,6 +1414,8 @@ export type ProviderDraft = {
   stripResponsesImageDetail?: boolean;
   /** 不向上游发送 `tool_search`：上游 400 时开启（#2868）。 */
   disableToolSearch?: boolean;
+  /** 自定义请求头（#3075）：测试、拉模型、实际请求都带上；不带表示不改。 */
+  customHeaders?: ProviderHeaderRow[];
 };
 
 const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false, stripResponsesImageDetail: false, disableToolSearch: false };
@@ -1446,6 +1451,7 @@ export function providerDraftFromEntry(entry: GatewayPoolEntry): ProviderDraft {
     subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
     stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
     disableToolSearch: entry.disableToolSearch === true,
+    customHeaders: providerHeaderRows(entry.customHeaders),
   };
 }
 
@@ -1465,6 +1471,7 @@ export function providerInput(draft: ProviderDraft) {
     ...(draft.subscriptionPolicy !== undefined ? { subscriptionPolicy: draft.subscriptionPolicy } : {}),
     stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
     disableToolSearch: draft.disableToolSearch === true,
+    ...(draft.customHeaders !== undefined ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}),
   };
 }
 
@@ -1499,7 +1506,7 @@ export function validateProviderDraft(draft: ProviderDraft, editing = false): st
   if (!/^https?:\/\/\S+$/i.test(draft.baseUrl.trim())) return "地址要以 http:// 或 https:// 开头";
   if (!editing && !draft.keys.trim()) return "请填写 API Key";
   if (!draft.model.trim() && splitModels(draft.modelList).length === 0) return "至少填一个模型";
-  return proxyAddressError(draft.proxy);
+  return proxyAddressError(draft.proxy) ?? providerHeadersValidationMessage(draft.customHeaders ?? []);
 }
 
 /* —————————————— 用量 —————————————— */

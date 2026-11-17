@@ -37,6 +37,8 @@ import { windowSummary } from "./ProviderWindowsDialog";
 import { filterModels, pickerOutcome, pickerRows, type PickerRow } from "./provider-sync-model";
 import "./ProviderFormDialog.css";
 import { SubscriptionPolicyFields } from "./SubscriptionPolicyFields";
+import { RelayHeaderRows } from "./RelayHeaderRows";
+import { providerHeaderInputs } from "./relay-headers";
 
 export type ProviderFormState = { mode: "preset"; preset: GatewayPreset } | { mode: "custom" } | { mode: "edit"; entry: GatewayPoolEntry };
 
@@ -87,6 +89,7 @@ export function ProviderFormDialog({
   const models = draftModels(draft);
   const chosenModel = defaultModel(draft);
   const firstKey = keys.map((key) => key.trim()).find(Boolean) ?? "";
+  const headerCount = (draft.customHeaders ?? []).filter((row) => row.key.trim()).length;
   const canFetch = (subscriptionEditing || (Boolean(draft.baseUrl.trim()) && (Boolean(firstKey) || editing))) && !fetching;
 
   // Esc 栈：「从上游获取」的勾选列表开着时 Esc 先收起列表。
@@ -117,6 +120,8 @@ export function ProviderFormDialog({
         protocol: draft.protocol,
         apiKey: firstKey,
         providerId: form.mode === "edit" ? form.entry.id : null,
+        // 弹窗里正在编辑的请求头（#3075）：有的中转不带指定头连模型列表都不给。
+        customHeaders: subscriptionEditing ? null : providerHeaderInputs(draft.customHeaders ?? []),
       });
       const fetched = result.models ?? [];
       if (result.status !== "ok" || !fetched.length) {
@@ -317,6 +322,16 @@ export function ProviderFormDialog({
                   <small>{t("上游不认 Codex 的 tool_search 工具（实际聊天会返回 400）时开启：模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。默认关闭。")}</small>
                 </span>
               </label>
+            </section>
+          ) : null}
+          {/* 自定义请求头（#3075）：和直连模式「高级兼容选项」里的同一套编辑行与规则；订阅账号的请求头由 Codex++ 自己定，不开放。 */}
+          {!subscriptionEditing ? (
+            <section className="pf-section">
+              <h4>{t("自定义请求头")}{headerCount ? <em>{headerCount}</em> : null}</h4>
+              <div className="relay-custom-headers">
+                <RelayHeaderRows onChange={(customHeaders) => update({ customHeaders })} rows={draft.customHeaders ?? []} />
+              </div>
+              <p className="pf-hint">{t("测试连接、获取模型和实际请求都会带上。Host、Content-Length 等传输头不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}</p>
             </section>
           ) : null}
           {subscriptionEditing ? (

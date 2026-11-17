@@ -277,6 +277,7 @@ import {
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { NativeAuthControl, SavedAuthAccountField } from "./NativeAuthControls";
+import { RelayHeaderRows } from "./RelayHeaderRows";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
@@ -14018,58 +14019,7 @@ function RelayProfileEditor({
             {showApiFields ? (
               <Field className="relay-field-custom-headers" label={t("自定义请求头")}>
                 <div className="relay-custom-headers">
-                  {(profile.customHeaders || []).map((row, index) => (
-                    <div className="relay-custom-header-row" key={`custom-header-${index}`}>
-                      <Input
-                        aria-label={t("请求头名称")}
-                        value={row.key}
-                        onChange={(event) => {
-                          const next = (profile.customHeaders || []).slice();
-                          next[index] = { ...next[index], key: event.currentTarget.value };
-                          updateDraft({ customHeaders: next });
-                        }}
-                        placeholder="X-Tenant"
-                      />
-                      <Input
-                        aria-label={t("请求头值")}
-                        value={row.value}
-                        onChange={(event) => {
-                          const next = (profile.customHeaders || []).slice();
-                          next[index] = { ...next[index], value: event.currentTarget.value };
-                          updateDraft({ customHeaders: next });
-                        }}
-                        placeholder={t("请求头值")}
-                      />
-                      <Button
-                        aria-label={t("删除这一项")}
-                        onClick={() =>
-                          updateDraft({
-                            customHeaders: (profile.customHeaders || []).filter((_, i) => i !== index),
-                          })
-                        }
-                        size="sm"
-                        type="button"
-                        variant="secondary"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                  <div className="relay-custom-headers-actions">
-                    <Button
-                      onClick={() =>
-                        updateDraft({
-                          customHeaders: [...(profile.customHeaders || []), { key: "", value: "" }],
-                        })
-                      }
-                      size="sm"
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Plus className="h-4 w-4" />
-                      {t("添加请求头")}
-                    </Button>
-                  </div>
+                  <RelayHeaderRows onChange={(customHeaders) => updateDraft({ customHeaders })} rows={profile.customHeaders || []} />
                   <span className="hint-line">
                     {t("自定义请求头会同时用于测试连接、模型列表与实际代理请求。")}
                   </span>

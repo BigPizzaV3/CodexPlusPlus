@@ -14,6 +14,7 @@ import { t, tf } from "./i18n";
 import { providerPoolSections, reorderProviderSlots } from "./provider-pool-layout";
 import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
+import { providerHeadersSummary } from "./relay-headers";
 import {
   glanceAgents,
   defaultProviderAgents,
@@ -677,6 +678,7 @@ function PoolRow({
     if (await run(`extras:${entry.id}`, "save_gateway_provider_extras", { id: entry.id, price: nextPrice, modelPrices, proxy }, title)) setExtrasOpen(null);
   };
   const keyLimits = keyLimitSummary(entry);
+  const headersSummary = providerHeadersSummary(entry.customHeaders);
   const saveLimits = async (rpm: number | null, concurrency: number | null) => {
     if (await run(`limits:${entry.id}`, "save_gateway_provider_limits", { id: entry.id, rpm, concurrency }, t("保存限速"))) setLimitsOpen(false);
   };
@@ -862,7 +864,7 @@ function PoolRow({
             <summary>
               <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
               {t("更多设置")}
-              <span className="gw-pool-more-hint">{t("价格、上下文窗口、思考等级、代理、限速")}</span>
+              <span className="gw-pool-more-hint">{entry.account ? t("价格、上下文窗口、思考等级、代理、限速") : t("价格、上下文窗口、思考等级、代理、限速、请求头")}</span>
             </summary>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("价格")}</span>
@@ -938,6 +940,18 @@ function PoolRow({
               <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
             </span>
           </div>
+          {/* 自定义请求头（#3075）：只列名称（值可能是凭据），在编辑弹窗里改；订阅账号不开放。 */}
+          {!entry.account ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("请求头")}</span>
+              <div className="gw-detail-value gw-chip-row">
+                {headersSummary ? <code className="gw-chip" title={t("测试连接、获取模型和实际请求都会带上")}>{headersSummary}</code> : <span className="gw-muted">{t("未设置")}</span>}
+              </div>
+              <span className="gw-detail-actions">
+                <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={onEdit} />
+              </span>
+            </div>
+          ) : null}
           </details>
           <div className="gw-detail-row gw-detail-foot">
             <span className="gw-detail-label" />

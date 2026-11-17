@@ -266,6 +266,12 @@ export const EN_PLAIN: Record<string, string> = {
   "可用": "Available",
   "先打开上面的「启用 Codex 皮肤」": "Turn on \"Enable Codex skin\" above first",
   "价格、上下文窗口、思考等级、代理、限速": "Pricing, context windows, reasoning, proxy, rate limits",
+  "价格、上下文窗口、思考等级、代理、限速、请求头": "Pricing, context windows, reasoning, proxy, rate limits, headers",
+  "编辑自定义请求头": "Edit custom request headers",
+  "测试连接、获取模型和实际请求都会带上": "Sent with connection tests, model fetches, and real requests",
+  "测试连接、获取模型和实际请求都会带上。Host、Content-Length 等传输头不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。":
+    "Sent with connection tests, model fetches, and real requests. Transport headers such as Host and Content-Length cannot be overridden; a configured Authorization header replaces the API key.",
+  "已保存 {0}，留空不改": "Saved {0}; leave blank to keep",
   "手动停止": "Stopped by user",
   "下载中…": "Downloading…",
   "就绪": "Ready",

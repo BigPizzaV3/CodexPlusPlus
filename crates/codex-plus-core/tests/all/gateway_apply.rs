@@ -60,6 +60,7 @@ fn deepseek_input() -> ProviderInput {
         subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
+        custom_headers: None,
     }
 }
 
@@ -82,6 +83,7 @@ fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
         subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
+        custom_headers: None,
     };
     create_provider(&ctx.gateway, &kimi, "preset:kimi", None).unwrap();
     std::fs::create_dir_all(&ctx.codex_home).unwrap();
@@ -1649,6 +1651,7 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
             subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
+            custom_headers: None,
         },
         "",
         None,
@@ -1848,6 +1851,7 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 subscription_policy: None,
                 strip_responses_image_detail: None,
                 disable_tool_search: None,
+                custom_headers: None,
             },
             "",
             None,
@@ -4795,6 +4799,7 @@ fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
             subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
+            custom_headers: None,
         },
         "",
         None,

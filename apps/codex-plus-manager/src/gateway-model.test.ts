@@ -494,6 +494,7 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     stripImageGenerationTool: false,
     stripResponsesImageDetail: false,
     disableToolSearch: false,
+    customHeaders: [],
   });
   // #228：「移除托管生图工具」从池条目读回、原样提交。
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripImageGenerationTool: true }).stripImageGenerationTool, true);
@@ -506,6 +507,36 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
   assert.equal(validateProviderDraft({ ...editing, proxy: "127.0.0.1:7890" }, true), "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）");
   assert.equal(validateProviderDraft({ ...editing, proxy: "socks5://127.0.0.1:1080" }, true), null);
   assert.deepEqual(providerInput({ ...editing, priceInput: "2", priceCached: "0.5", priceOutput: "abc" }).price, { currency: "CNY", input: 2, cachedInput: 0.5, output: 0 });
+});
+
+test("供应商表单：自定义请求头读回、敏感头不回显，没改就沿用（#3075）", () => {
+  const entry = {
+    ...payload().pool[0],
+    customHeaders: [
+      { key: "X-Tenant", value: "acme", masked: null },
+      { key: "X-Relay-Key", value: "", masked: "relay-…cdef" },
+    ],
+  };
+  const draft = providerDraftFromEntry(entry);
+  assert.deepEqual(draft.customHeaders, [
+    { key: "X-Tenant", value: "acme" },
+    { key: "X-Relay-Key", value: "", masked: "relay-…cdef", savedKey: "X-Relay-Key" },
+  ]);
+  // 没改：敏感头回传 keep，不带值。
+  assert.deepEqual(providerInput(draft).customHeaders, [
+    { key: "X-Tenant", value: "acme", keep: false },
+    { key: "X-Relay-Key", value: "", keep: true },
+  ]);
+  // 重新填了值：按新值保存。
+  const rows = draft.customHeaders!.map((row) => (row.masked ? { ...row, value: " new-secret " } : row));
+  assert.deepEqual(providerInput({ ...draft, customHeaders: rows }).customHeaders?.[1], { key: "X-Relay-Key", value: "new-secret", keep: false });
+  // 改了敏感头的名字又没填值：要求重填；传输头照直连模式的规则拒绝。
+  const renamed = draft.customHeaders!.map((row) => (row.masked ? { ...row, key: "X-Other-Key" } : row));
+  assert.match(validateProviderDraft({ ...draft, customHeaders: renamed }, true) ?? "", /X-Other-Key/);
+  assert.match(validateProviderDraft({ ...draft, customHeaders: [{ key: "Host", value: "evil" }] }, true) ?? "", /Host/);
+  assert.equal(validateProviderDraft(draft, true), null);
+  // 新添加时没碰请求头就不带这个字段（后端按空处理）。
+  assert.equal("customHeaders" in providerInput(providerDraftFromPreset(null)), false);
 });
 
 test("网关页接入导航，命令已注册", () => {

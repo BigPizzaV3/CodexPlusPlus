@@ -13729,6 +13729,66 @@ ${key} = ${value}`]);
     };
   }
 
+  // apps/codex-plus-manager/src/relay-headers.ts
+  var FORBIDDEN_RELAY_HEADERS = [
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "upgrade",
+    "expect"
+  ];
+  function normalizeRelayHeaders(rows) {
+    return rows.map((row) => ({ key: row.key.trim(), value: row.value.trim() })).filter((row) => row.key.length > 0 || row.value.length > 0);
+  }
+  function isToken(name) {
+    return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name);
+  }
+  function relayHeadersValidationMessage(rows) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const row of normalizeRelayHeaders(rows)) {
+      const name = row.key;
+      if (!name) {
+        return "自定义请求头存在空的名称";
+      }
+      if (!isToken(name)) {
+        return `自定义请求头「${name}」不是合法的 HTTP 头名称`;
+      }
+      const lowered = name.toLowerCase();
+      if (FORBIDDEN_RELAY_HEADERS.includes(lowered)) {
+        return `自定义请求头「${name}」由协议层掌控，不允许覆盖（Host、Content-Length 等传输头）`;
+      }
+      if (seen.has(lowered)) {
+        return `自定义请求头「${name}」重复配置`;
+      }
+      seen.add(lowered);
+      if (/[\r\n]/.test(row.value)) {
+        return `自定义请求头「${name}」的值不能包含换行`;
+      }
+    }
+    return null;
+  }
+  function providerHeaderRows(headers) {
+    return (headers ?? []).map(
+      (header) => header.masked ? { key: header.key, value: "", masked: header.masked, savedKey: header.key } : { key: header.key, value: header.value }
+    );
+  }
+  function keepsSaved(row) {
+    return Boolean(row.masked && row.savedKey) && row.value.trim() === "" && row.key.trim().toLowerCase() === (row.savedKey ?? "").trim().toLowerCase();
+  }
+  function providerHeaderInputs(rows) {
+    return rows.map((row) => ({ key: row.key.trim(), value: row.value.trim(), keep: keepsSaved(row) })).filter((row) => row.key.length > 0 || row.value.length > 0);
+  }
+  function providerHeadersValidationMessage(rows) {
+    const renamed = rows.find((row) => row.masked && row.savedKey && row.value.trim() === "" && row.key.trim() && !keepsSaved(row));
+    if (renamed) return `改了请求头「${renamed.key.trim()}」的名称，请重新填写它的值`;
+    return relayHeadersValidationMessage(rows);
+  }
+
   // apps/codex-plus-manager/src/gateway-model.ts
   function keyLabel(keys, keyId) {
     const list = keys ?? [];
@@ -14525,7 +14585,8 @@ ${key} = ${value}`]);
       stripImageGenerationTool: entry.stripImageGenerationTool === true,
       subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
       stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
-      disableToolSearch: entry.disableToolSearch === true
+      disableToolSearch: entry.disableToolSearch === true,
+      customHeaders: providerHeaderRows(entry.customHeaders)
     };
   }
   function providerInput(draft) {
@@ -14542,7 +14603,8 @@ ${key} = ${value}`]);
       stripImageGenerationTool: draft.stripImageGenerationTool === true,
       ...draft.subscriptionPolicy !== void 0 ? { subscriptionPolicy: draft.subscriptionPolicy } : {},
       stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
-      disableToolSearch: draft.disableToolSearch === true
+      disableToolSearch: draft.disableToolSearch === true,
+      ...draft.customHeaders !== void 0 ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}
     };
   }
   function priceNumber(text) {
@@ -14567,7 +14629,7 @@ ${key} = ${value}`]);
     if (!/^https?:\/\/\S+$/i.test(draft.baseUrl.trim())) return "地址要以 http:// 或 https:// 开头";
     if (!editing && !draft.keys.trim()) return "请填写 API Key";
     if (!draft.model.trim() && splitModels(draft.modelList).length === 0) return "至少填一个模型";
-    return proxyAddressError(draft.proxy);
+    return proxyAddressError(draft.proxy) ?? providerHeadersValidationMessage(draft.customHeaders ?? []);
   }
   function usageRangeStart(range, now = /* @__PURE__ */ new Date()) {
     const days = range === "today" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 0;
