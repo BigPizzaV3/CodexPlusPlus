@@ -3004,12 +3004,22 @@ fn write_multi_instance_codex_home(
         }
     }
     let profile = codex_plus_core::relay_config::pure_api_profile_for_isolated_instance(profile)?;
+    // 写入前的实例 config：主实例没有 `[windows]` 时，用它区分「实例自己的沙箱设置」
+    // 与「profile 快照带进来的旧值」（#3144）。
+    let instance_live_before =
+        std::fs::read_to_string(codex_home.join("config.toml")).unwrap_or_default();
     codex_plus_core::relay_config::apply_relay_profile_with_preservation(
         codex_home,
         &profile,
         common_config,
         helper_port,
         preserve_nonprovider,
+    )?;
+    // Windows 沙箱实现是本机设置，沿用主实例当前的选择，不用 profile 快照里的旧值（#3144）。
+    codex_plus_core::relay_config::align_isolated_instance_windows_settings(
+        codex_home,
+        default_home,
+        &instance_live_before,
     )?;
     if profile.id == codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID
         && let Some(catalog) = codex_plus_core::model_catalog::gateway_catalog_path(default_home)
@@ -14457,6 +14467,40 @@ model_reasoning_effort = "high"
             serde_json::from_str(&std::fs::read_to_string(instance_home.join("auth.json")).unwrap())
                 .unwrap();
         assert_eq!(auth["tokens"]["account_id"], json!("acct-main"));
+    }
+
+    #[test]
+    fn multi_instance_windows_sandbox_follows_main_not_profile_snapshot() {
+        // issue #3144：profile 快照里存着回填时的 `[windows] sandbox = "elevated"`，
+        // 主实例现在是 unelevated；多开实例要跟主实例走，主实例自己不被改动。
+        let temp = tempfile::tempdir().unwrap();
+        let main_home = temp.path().join("main-codex");
+        let instance_home = temp.path().join("instance/codex-home");
+        std::fs::create_dir_all(&main_home).unwrap();
+        std::fs::create_dir_all(&instance_home).unwrap();
+        let main_config = "model = \"gpt-5.5\"\n\n[windows]\nsandbox = \"unelevated\"\n";
+        std::fs::write(main_home.join("config.toml"), main_config).unwrap();
+        let profile = RelayProfile {
+            id: "relay".into(),
+            name: "中转".into(),
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            config_contents: "model_provider = \"custom\"\nmodel = \"gpt-5.5\"\n\n[model_providers.custom]\nname = \"中转\"\nwire_api = \"responses\"\nbase_url = \"https://relay.example.com/v1\"\n\n[windows]\nsandbox = \"elevated\"\n".into(),
+            api_key: "sk-relay".into(),
+            ..RelayProfile::default()
+        };
+
+        for _ in 0..2 {
+            write_multi_instance_codex_home(&instance_home, &main_home, &profile, "", 61235, false)
+                .unwrap();
+            let config = std::fs::read_to_string(instance_home.join("config.toml")).unwrap();
+            let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+            assert_eq!(doc["windows"]["sandbox"].as_str(), Some("unelevated"), "{config}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(main_home.join("config.toml")).unwrap(),
+            main_config
+        );
     }
 
     #[test]

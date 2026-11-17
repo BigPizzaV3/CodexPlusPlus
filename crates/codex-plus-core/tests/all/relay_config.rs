@@ -2219,6 +2219,105 @@ fn apply_relay_files_preserves_live_windows_sandbox_across_profile_switches() {
     assert_eq!(parsed["windows"]["sandbox_private_desktop"].as_bool(), Some(false));
 }
 
+/// #3144 用：在 home 下写 config.toml 并返回 home 路径。
+fn home_with_config(root: &std::path::Path, name: &str, config: &str) -> std::path::PathBuf {
+    let home = root.join(name);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.toml"), config).unwrap();
+    home
+}
+
+fn windows_sandbox_of(home: &std::path::Path) -> Option<String> {
+    let parsed: toml::Value = std::fs::read_to_string(home.join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    parsed
+        .get("windows")
+        .and_then(|windows| windows.get("sandbox"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+#[test]
+fn isolated_instance_windows_settings_follow_main_instance() {
+    // #3144：profile 快照带进来的 elevated 被主实例当前的 unelevated 整段替换。
+    let temp = tempfile::tempdir().unwrap();
+    let main_config = "[windows]\nsandbox = \"unelevated\"\nsandbox_private_desktop = false\n";
+    let main = home_with_config(temp.path(), "main", main_config);
+    let instance = home_with_config(
+        temp.path(),
+        "instance",
+        "model = \"m\"\n\n[windows]\nsandbox = \"elevated\"\nsandbox_private_desktop = true\n",
+    );
+
+    let changed = codex_plus_core::relay_config::align_isolated_instance_windows_settings(
+        &instance, &main, "",
+    )
+    .unwrap();
+
+    assert!(changed);
+    let parsed: toml::Value = std::fs::read_to_string(instance.join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(parsed["windows"]["sandbox"].as_str(), Some("unelevated"));
+    assert_eq!(parsed["windows"]["sandbox_private_desktop"].as_bool(), Some(false));
+    assert_eq!(parsed["model"].as_str(), Some("m"));
+    // 主实例不动；再对齐一次不再改写。
+    assert_eq!(std::fs::read_to_string(main.join("config.toml")).unwrap(), main_config);
+    assert!(
+        !codex_plus_core::relay_config::align_isolated_instance_windows_settings(
+            &instance, &main, "",
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn isolated_instance_windows_settings_keep_instance_choice_when_main_has_none() {
+    // 主实例没有 `[windows]`：实例写入前自己的设置保留，快照里的旧值不生效。
+    let temp = tempfile::tempdir().unwrap();
+    let main = home_with_config(temp.path(), "main", "model = \"m\"\n");
+    let instance = home_with_config(
+        temp.path(),
+        "instance",
+        "model = \"m\"\n\n[windows]\nsandbox = \"elevated\"\n",
+    );
+
+    codex_plus_core::relay_config::align_isolated_instance_windows_settings(
+        &instance,
+        &main,
+        "[windows]\nsandbox = \"unelevated\"\n",
+    )
+    .unwrap();
+
+    assert_eq!(windows_sandbox_of(&instance).as_deref(), Some("unelevated"));
+}
+
+#[test]
+fn isolated_instance_windows_settings_drop_snapshot_value_when_nobody_set_one() {
+    // 主实例和实例原先都没有：去掉 profile 快照带进来的 `[windows]`，交给 Codex 自己决定。
+    let temp = tempfile::tempdir().unwrap();
+    let main = home_with_config(temp.path(), "main", "");
+    let instance = home_with_config(
+        temp.path(),
+        "instance",
+        "model = \"m\"\n\n[windows]\nsandbox = \"elevated\"\n",
+    );
+
+    assert!(
+        codex_plus_core::relay_config::align_isolated_instance_windows_settings(
+            &instance, &main, "model = \"m\"\n",
+        )
+        .unwrap()
+    );
+
+    assert_eq!(windows_sandbox_of(&instance), None);
+    let config = std::fs::read_to_string(instance.join("config.toml")).unwrap();
+    assert!(config.contains("model = \"m\""), "{config}");
+}
+
 #[test]
 fn apply_relay_files_preserves_live_desktop_personalization_settings() {
     let temp = tempfile::tempdir().unwrap();

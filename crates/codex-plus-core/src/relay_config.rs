@@ -3876,6 +3876,56 @@ fn preserve_missing_table_keys(
     }
 }
 
+/// 多开实例（#3144）：`[windows]`（Windows 沙箱实现 elevated / unelevated 等）以主实例
+/// **当前** live config 为准。
+///
+/// 供应商 profile 的 `config_contents` 是回填时整份 live config 的快照，会连带当时的
+/// `[windows]` 一起存下来。主实例切换时 live 优先（[`preserve_live_app_settings`]），这份
+/// 旧值从不生效；但多开实例的 codex-home 第一次写入时没有 live，快照里的旧值（例如主实例
+/// 早已改成 unelevated、快照里还是 elevated）就原样落进实例，之后又被当成实例自己的
+/// live 一直保留。结果同一台机器上主实例与多开实例的沙箱实现不一致。
+///
+/// 规则：
+/// - 主实例有 `[windows]`：整段沿用主实例的（只改多开实例，不碰主实例）；
+/// - 主实例没有：保留多开实例写入前自己的 `[windows]`（`instance_live_before` 是写入
+///   前读到的实例 config.toml 文本，没有就传空串）；
+/// - 两边都没有：去掉写入时从 profile 快照带进来的 `[windows]`，交给 Codex 自己决定。
+///
+/// 返回是否改写了实例的 config.toml。
+pub fn align_isolated_instance_windows_settings(
+    instance_home: &Path,
+    main_home: &Path,
+    instance_live_before: &str,
+) -> anyhow::Result<bool> {
+    fn windows_table(text: &str) -> Option<Item> {
+        let doc = parse_toml_document(&normalize_duplicate_toml_text(text)).ok()?;
+        doc.get("windows")
+            .filter(|item| item.is_table_like())
+            .cloned()
+    }
+    let main_live = read_optional_text(&main_home.join("config.toml")).unwrap_or_default();
+    let desired = windows_table(&main_live).or_else(|| windows_table(instance_live_before));
+    let config_path = instance_home.join("config.toml");
+    let current = read_optional_text(&config_path)?;
+    let mut doc = parse_toml_document(&current)?;
+    let changed = match desired {
+        Some(windows) => {
+            let same = doc
+                .get("windows")
+                .is_some_and(|existing| existing.to_string() == windows.to_string());
+            if !same {
+                doc["windows"] = windows;
+            }
+            !same
+        }
+        None => doc.as_table_mut().remove("windows").is_some(),
+    };
+    if changed {
+        crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
+    }
+    Ok(changed)
+}
+
 /// Normal-user launches cannot complete the elevated native Windows sandbox
 /// setup. Downgrade only that case; an elevated process keeps the user's mode.
 pub fn ensure_windows_sandbox_usable_for_current_user(home: &Path) -> anyhow::Result<bool> {
