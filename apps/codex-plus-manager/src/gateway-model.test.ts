@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  compactionNote,
+  parseCompactionNote,
   ownPickerSection,
   visibleOwnModels,
   defaultProviderAgents,
@@ -641,6 +643,26 @@ test("起名模型随绑定草稿往返，空值和旧版后端缺字段都当�
   assert.equal(binding.titleModel, "kimi/kimi-k3");
   assert.equal(draftFromBinding(binding).titleModel, "kimi/kimi-k3");
   assert.equal(bindingFromDraft({ ...draft, titleModel: "  " }, binding).titleModel, "");
+});
+
+test("压缩模型（#3142）随绑定草稿往返，旧版后端缺字段当成跟随当前模型", () => {
+  const legacy = { ...blankBinding(), enabled: true, model: "gpt-5.5" };
+  assert.equal(draftFromBinding(legacy).compactionModel, "");
+  assert.equal(draftFromBinding(legacy).compactionReasoningEffort, "");
+  const draft = { ...draftFromBinding(legacy), compactionModel: " deepseek/deepseek-v4-flash ", compactionReasoningEffort: "low" };
+  const binding = bindingFromDraft(draft, legacy);
+  assert.equal(binding.compactionModel, "deepseek/deepseek-v4-flash");
+  assert.equal(binding.compactionReasoningEffort, "low");
+  assert.equal(draftFromBinding(binding).compactionModel, "deepseek/deepseek-v4-flash");
+  assert.equal(bindingFromDraft({ ...draft, compactionModel: "  " }, binding).compactionModel, "");
+});
+
+test("请求日志里的压缩模型说明（#3142）", () => {
+  assert.deepEqual(parseCompactionNote("compaction_model:deepseek/deepseek-v4-flash"), { kind: "model", model: "deepseek/deepseek-v4-flash" });
+  assert.deepEqual(parseCompactionNote("compaction_fallback:window:kimi/k3:mini"), { kind: "fallback", reason: "window", model: "kimi/k3:mini" });
+  assert.equal(parseCompactionNote("local_rate_limit_wait_ms:300"), null);
+  assert.deepEqual(compactionNote(["upstream_5xx", "compaction_fallback:failed:m"]), { kind: "fallback", reason: "failed", model: "m" });
+  assert.equal(compactionNote(undefined), null);
 });
 
 test("主动限速：留空不限，只认正整数", () => {

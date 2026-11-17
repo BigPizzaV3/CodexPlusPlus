@@ -58,7 +58,7 @@ impl GatewayUpstream {
         }
     }
 
-    fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         self.status_code()
             .is_some_and(|status| (200..300).contains(&status))
     }
@@ -603,6 +603,11 @@ fn estimate_tokens(request: &GatewayRequest<'_>) -> u64 {
         .anthropic
         .as_ref()
         .map_or(&request.responses_body, |passthrough| passthrough.body);
+    estimate_body_tokens(body)
+}
+
+/// 同 [`estimate_tokens`]，直接按一个请求体估。
+pub(crate) fn estimate_body_tokens(body: &Value) -> u64 {
     text_bytes(body) / 4
 }
 

@@ -4175,6 +4175,7 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
             for field in [
                 &mut binding.auto_review_model,
                 &mut binding.title_model,
+                &mut binding.compaction_model,
                 &mut roles.opus,
                 &mut roles.sonnet,
                 &mut roles.haiku,

@@ -150,7 +150,7 @@ import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -7104,7 +7104,21 @@ function requestLogRetryLabel(entry: RequestLogEntry) {
   const queue = queued === null ? "" : tf("限速排队 {0}", [formatQueueWait(queued)]);
   // 换上游后去掉了别家签发的压缩上下文：较早的对话内容上游已看不到，必须让用户看得见。
   const compaction = foreignCompactionDropped(entry.retryReasons) ? t("已去掉别家压缩上下文") : "";
-  return [base, queue, compaction].filter(Boolean).join(" · ") || "-";
+  // 压缩请求改发到了压缩模型，或回退到了原模型（#3142）。
+  const note = compactionNote(entry.retryReasons);
+  const compactModel = note ? (note.kind === "model" ? t("压缩模型") : t("压缩回退原模型")) : "";
+  return [base, queue, compaction, compactModel].filter(Boolean).join(" · ") || "-";
+}
+
+/** 压缩模型说明的展示文字（#3142）。 */
+function compactionNoteText(note: CompactionNote): string {
+  if (note.kind === "model") return tf("压缩改用 {0}", [note.model]);
+  const reason = note.reason === "unavailable" ? t("压缩模型不可用")
+    : note.reason === "incompatible" ? t("压缩形态与压缩模型的上游不兼容")
+    : note.reason === "window" ? t("压缩模型的窗口装不下待压缩内容")
+    : note.reason === "failed" ? t("压缩模型的上游拒绝或出错")
+    : note.reason;
+  return tf("压缩模型 {0} 未使用（{1}），已用原模型", [note.model, reason]);
 }
 
 /** 重试原因的展示：网关记的限速排队换成「限速排队 Xs」，去掉别家压缩上下文换成说明，其它原样。 */
@@ -7114,6 +7128,8 @@ function requestLogRetryReasons(entry: RequestLogEntry): string {
       if (reason === FOREIGN_COMPACTION_DROPPED_REASON) {
         return t("已去掉别家签发的压缩上下文，较早的对话内容不可用");
       }
+      const note = parseCompactionNote(reason);
+      if (note) return compactionNoteText(note);
       if (!reason.startsWith(QUEUE_REASON_PREFIX)) return reason;
       const queued = queueWaitMs([reason]);
       return queued === null ? reason : tf("限速排队 {0}", [formatQueueWait(queued)]);
@@ -7472,7 +7488,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                       ) : null}
                     </span>
                     <span
-                      className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) ? "request-log-retry" : "request-log-muted"}
+                      className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) || compactionNote(entry.retryReasons)?.kind === "fallback" ? "request-log-retry" : "request-log-muted"}
                       title={requestLogRetryReasons(entry)}
                     >
                       {requestLogRetryLabel(entry)}

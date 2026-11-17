@@ -66,6 +66,7 @@ mod gateway_apply;
 mod gateway_auto_compact;
 mod gateway_breaker;
 mod gateway_codex_identity;
+mod gateway_compaction_model;
 mod gateway_diagnostics;
 mod gateway_forced_relay;
 mod gateway_key_limits;

@@ -14,6 +14,7 @@
 //! - [`model_sync`]：重新拉上游模型、补公开价格、定期检查新模型；
 //! - [`meta_sync`]：从上游 `/models` 的元数据同步上下文窗口和思考等级（先列差异，确认后写入）；
 //! - [`usage`]：按天汇总的用量统计；[`balance`]：供应商余额；[`sessions`]：各 Agent 的本地会话；
+//! - [`compaction_model`]：Codex 的上下文压缩请求改发到单独指定的压缩模型，失败回退原模型；
 //! - [`pipeline`]：候选循环；[`probe`]：供应商池的「测试」（单发一条短请求，不计入路由与统计）；
 //! - [`anthropic_inbound`] / [`anthropic_outbound`]：Claude Code 的协议转换；
 //! - [`chat_inbound`] / [`chat_outbound`]：OpenAI Chat Completions 客户端的协议转换；
@@ -32,6 +33,7 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod compaction_model;
 pub mod connection_generation;
 pub mod diagnostics;
 pub mod disconnect_preview;

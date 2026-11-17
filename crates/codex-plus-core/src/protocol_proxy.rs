@@ -1277,7 +1277,8 @@ const COMPACTION_OUTPUT_TYPE: &str = "compaction";
 /// 后缀为 JSON string，不依赖客户端可能丢弃的 item id 或额外字段。
 const LOCAL_COMPACTION_PREFIX: &str = "codexplusplus:summary:v1:";
 /// 本地代理生成摘要时注入的 user 指令（对齐 openai/codex prompts/templates/compact/prompt.md）。
-const COMPACTION_SUMMARY_INSTRUCTION: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.";
+/// Codex 内联压缩发的也是这段，网关按它认压缩请求（见 [`is_inline_compaction_request`]）。
+pub const COMPACTION_SUMMARY_INSTRUCTION: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.";
 /// 历史回放时 `compaction` item 展开成的文本前缀（对齐 codex SUMMARY_PREFIX 语义）。
 const COMPACTION_REPLAY_PREFIX: &str = "Another language model started to solve this problem and produced a summary of its thinking process. Here is the summary produced by the other language model:\n";
 
@@ -1291,6 +1292,26 @@ pub fn request_has_compaction_trigger(body: &Value) -> bool {
                 item.get("type").and_then(Value::as_str) == Some(COMPACTION_TRIGGER_TYPE)
             })
         })
+}
+
+/// Codex 自己的内联压缩请求（非 OpenAI 供应商时）：普通 `/responses` 请求，
+/// 末尾是压缩提示词（或 turn 元数据标明 `request_kind: compaction`）。答复是普通的文字摘要。
+pub fn is_inline_compaction_request(body: &Value) -> bool {
+    !request_has_compaction_trigger(body)
+        && local_compaction::is_summary_request(body, COMPACTION_SUMMARY_INSTRUCTION)
+}
+
+/// input 里是否有上游签发的原生压缩项（不是 Codex++ 本地摘要）：这种密文只有签发它的那家读得懂。
+pub fn input_has_upstream_compaction(body: &Value) -> bool {
+    let upstream = |item: &Value| {
+        item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE)
+            && expand_compaction_item(item).is_none()
+    };
+    match body.get("input") {
+        Some(Value::Array(items)) => items.iter().any(upstream),
+        Some(input @ Value::Object(_)) => upstream(input),
+        _ => false,
+    }
 }
 
 /// 从请求 input 中剥离全部 compaction_trigger 控制项。

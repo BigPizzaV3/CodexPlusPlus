@@ -2889,6 +2889,7 @@ fn providers_live_only_in_the_gateway_store() {
             ];
             binding.auto_review_model = "deepseek-2/deepseek-v4-pro".into();
             binding.title_model = "deepseek/deepseek-v4-flash".into();
+            binding.compaction_model = "deepseek-2/deepseek-v4-flash".into();
             Ok(())
         })
         .unwrap();
@@ -2904,6 +2905,7 @@ fn providers_live_only_in_the_gateway_store() {
     assert_eq!(binding.extra_models, vec!["deepseek/deepseek-v4-flash".to_string()]);
     assert_eq!(binding.auto_review_model, "");
     assert_eq!(binding.title_model, "deepseek/deepseek-v4-flash", "指向别家的不动");
+    assert_eq!(binding.compaction_model, "", "压缩模型指向它时清空，回到跟随当前模型");
     assert!(delete_provider(store, "deepseek-2").is_err());
 }
 

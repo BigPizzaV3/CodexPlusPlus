@@ -30,6 +30,10 @@ export type AgentBinding = {
   autoReviewModel?: string;
   /** 起名模型（Codex 用）：Codex 给会话起名的请求改发到这个模型；空或没有是不改（旧版后端没有）。 */
   titleModel?: string;
+  /** 压缩模型（#3142，Codex 用）：上下文压缩请求改发到这个模型；空或没有是跟随当前模型（旧版后端没有）。 */
+  compactionModel?: string;
+  /** 改发到压缩模型时用的推理强度；空或没有是沿用原请求。 */
+  compactionReasoningEffort?: string;
   contextWindow?: number | null;
   claudeEnableEffort: boolean;
   /** 这个 Agent 不用的池内供应商（「挑选」里取消勾选的）。 */
@@ -350,6 +354,8 @@ export type BindingDraft = {
   unknownModel: UnknownModelPolicy;
   autoReviewModel: string;
   titleModel: string;
+  compactionModel: string;
+  compactionReasoningEffort: string;
   contextWindow: string;
   claudeEnableEffort: boolean;
   poolExclude: string[];
@@ -381,6 +387,8 @@ export function draftFromBinding(binding: AgentBinding | undefined): BindingDraf
     unknownModel: source.unknownModel,
     autoReviewModel: source.autoReviewModel ?? "",
     titleModel: source.titleModel ?? "",
+    compactionModel: source.compactionModel ?? "",
+    compactionReasoningEffort: source.compactionReasoningEffort ?? "",
     contextWindow: source.contextWindow ? String(source.contextWindow) : "",
     claudeEnableEffort: source.claudeEnableEffort,
     poolExclude: [...(source.poolExclude ?? [])],
@@ -436,6 +444,37 @@ export const QUEUE_REASON_PREFIX = "local_rate_limit_wait_ms:";
  */
 export const FOREIGN_COMPACTION_DROPPED_REASON = "foreign_compaction_dropped";
 
+/** 请求日志「重试原因」里的说明（#3142）：这次压缩改发到了压缩模型，`compaction_model:<模型>`。 */
+export const COMPACTION_MODEL_REASON_PREFIX = "compaction_model:";
+/** 请求日志「重试原因」里的说明（#3142）：配了压缩模型但回退到原模型，`compaction_fallback:<原因>:<压缩模型>`。 */
+export const COMPACTION_FALLBACK_REASON_PREFIX = "compaction_fallback:";
+
+export type CompactionNote =
+  | { kind: "model"; model: string }
+  | { kind: "fallback"; reason: string; model: string };
+
+/** 解析压缩模型的说明；不是这类说明返回 null。 */
+export function parseCompactionNote(reason: string): CompactionNote | null {
+  if (reason.startsWith(COMPACTION_MODEL_REASON_PREFIX)) {
+    return { kind: "model", model: reason.slice(COMPACTION_MODEL_REASON_PREFIX.length) };
+  }
+  if (reason.startsWith(COMPACTION_FALLBACK_REASON_PREFIX)) {
+    const rest = reason.slice(COMPACTION_FALLBACK_REASON_PREFIX.length);
+    const at = rest.indexOf(":");
+    return at < 0 ? { kind: "fallback", reason: rest, model: "" } : { kind: "fallback", reason: rest.slice(0, at), model: rest.slice(at + 1) };
+  }
+  return null;
+}
+
+/** 这次请求的压缩模型说明（没有返回 null）。 */
+export function compactionNote(reasons: string[] | null | undefined): CompactionNote | null {
+  for (const reason of reasons ?? []) {
+    const note = parseCompactionNote(reason);
+    if (note) return note;
+  }
+  return null;
+}
+
 /** 这次请求是否去掉过别家签发的压缩上下文。 */
 export function foreignCompactionDropped(reasons: string[] | null | undefined): boolean {
   return (reasons ?? []).includes(FOREIGN_COMPACTION_DROPPED_REASON);
@@ -487,6 +526,8 @@ export function bindingFromDraft(draft: BindingDraft, previous: AgentBinding | u
     unknownModel: draft.unknownModel,
     autoReviewModel: draft.autoReviewModel.trim(),
     titleModel: draft.titleModel.trim(),
+    compactionModel: draft.compactionModel.trim(),
+    compactionReasoningEffort: draft.compactionReasoningEffort.trim(),
     contextWindow: window && Number.isFinite(window) ? window : null,
     claudeEnableEffort: draft.claudeEnableEffort,
     poolExclude: [...draft.poolExclude],

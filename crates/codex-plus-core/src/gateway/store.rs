@@ -553,6 +553,15 @@ pub struct AgentBinding {
     /// 填了就把识别出的起名请求改发到这个模型（写法同审批模型）；空串表示不改，保持原有行为。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title_model: String,
+    /// 压缩模型（#3142，目前只有 Codex 用）：Codex 的上下文压缩请求改发到这个模型（写法同审批模型），
+    /// 普通对话、工具调用仍用主模型。空串表示跟随当前模型，保持原有行为。
+    /// 只在能安全换模型的压缩形态生效；不可用、协议不兼容、窗口装不下或上游拒绝时回退原模型
+    /// （见 [`crate::gateway::compaction_model`]）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub compaction_model: String,
+    /// 改发到压缩模型时单独用的推理强度（如 low）；空串表示沿用原请求的推理强度。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub compaction_reasoning_effort: String,
     /// 写给 Agent 的上下文窗口（Claude Code 的 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
@@ -588,6 +597,8 @@ impl Default for AgentBinding {
             unknown_model: UnknownModelPolicy::default(),
             auto_review_model: String::new(),
             title_model: String::new(),
+            compaction_model: String::new(),
+            compaction_reasoning_effort: String::new(),
             context_window: None,
             claude_enable_effort: false,
             pool_exclude: Vec::new(),
