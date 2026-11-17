@@ -81,8 +81,8 @@ export function Menu({ label = t("更多操作"), children }: { label?: string; 
   return <div className="mg-menu-wrap" ref={ref}><button type="button" className="mg-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); setOpen(!open); }}><MoreHorizontal size={17} /></button>{menu && portal ? createPortal(<div className="shell-portal">{menu}</div>, document.body) : menu}</div>;
 }
 /** 菜单项；传了 `checked` 就是单选项（例如 Skill 的分组），选中的项右侧打勾。 */
-export function MenuItem({ children, onClick, disabled, danger, checked }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean }) {
-  return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick}>{children}</button>;
+export function MenuItem({ children, onClick, disabled, danger, checked, title }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean; title?: string }) {
+  return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick} title={title}>{children}</button>;
 }
 export function ManagementDrawer({ title, onClose, children, footer, wide = false, dismissOnBackdrop = true }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; dismissOnBackdrop?: boolean }) {
   const ref = useRef<HTMLElement>(null);

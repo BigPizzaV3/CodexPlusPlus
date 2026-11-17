@@ -1,6 +1,15 @@
 .mg-source-add { display:flex; gap:8px; align-items:center; }
 .mg-source-add input { flex:1; min-width:0; }
 .mg-source-search { width:100%; min-width:0; }
+.mg-version-section { border-top:1px solid hsl(var(--border)); margin-top:14px; }
+.mg-version-section summary { padding:12px 2px; cursor:pointer; font-weight:600; }
+.mg-version-section summary small { margin-inline-start:8px; font-weight:400; color:hsl(var(--muted-foreground)); }
+.mg-version-list { margin-top:12px; display:grid; gap:2px; }
+.mg-version-list button { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 10px; padding:9px 10px; text-align:start; border-bottom:1px solid hsl(var(--border)); background:transparent; color:inherit; }
+.mg-version-list button:enabled:hover { background:hsl(var(--muted)); }
+.mg-version-list button:disabled { opacity:.55; }
+.mg-version-list small { grid-column:1/-1; overflow-wrap:anywhere; }
+.mg-version-list small,.mg-version-list time { color:hsl(var(--muted-foreground)); font-size:12px; font-variant-numeric:tabular-nums; }
 .mg-source-warnings { font-size:12px; overflow-wrap:anywhere; }
 .mg-source-list { display:flex; flex-direction:column; border-top:1px solid hsl(var(--border)); }
 .mg-source-row { display:grid; grid-template-columns:minmax(125px, .7fr) minmax(0, 1fr); gap:12px; padding:12px 0; border-bottom:1px solid hsl(var(--border)); }

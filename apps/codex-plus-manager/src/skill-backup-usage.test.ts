@@ -174,7 +174,7 @@ test("a missing backup can be cleared but cannot be restored", () => {
   }).outputText;
   const context: Record<string, any> = {
     exports: {}, fragment: "fragment", jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    Button: "Button", SkillFileTimes: "SkillFileTimes", Trash2: "Trash2", t: (value: string) => value,
+    Button: "Button", SkillFileTimes: "SkillFileTimes", Trash2: "Trash2", FolderOpen: "FolderOpen", t: (value: string) => value,
   };
   vm.createContext(context);
   vm.runInContext(compiled, context);

@@ -844,6 +844,7 @@ impl SkillsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn fixture() -> (tempfile::TempDir, SkillsManager, SkillRepo) {
         let temp = tempfile::tempdir().unwrap();
@@ -1249,6 +1250,28 @@ mod tests {
 
         assert!(manager.capture_download_guard("alpha", &repo.key(), false).is_err());
         assert_eq!(std::fs::read_to_string(copy.join("details.txt")).unwrap(), "modified");
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("repo-main/skills/alpha/SKILL.md", options).unwrap();
+        writer.write_all(b"---\nname: alpha\n---\nnew").unwrap();
+        writer.start_file("repo-main/skills/alpha/details.txt", options).unwrap();
+        writer.write_all(b"new details").unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+        let next = parse_skills_from_zip(&repo, &zip, &BTreeMap::new()).unwrap()
+            .into_iter().find(|item| item.repo_path == "skills/alpha").unwrap();
+        let preview = manager.preview_skill_in_place_update_for_instance("alpha", &original, next.clone(), zip.clone()).unwrap();
+        assert!(preview.conflicts.iter().any(|item| item.contains("受控副本内容已修改")));
+        std::fs::write(copy.join("details.txt"), "whole tree").unwrap();
+        let preview = manager.preview_skill_in_place_update_for_instance("alpha", &original, next.clone(), zip).unwrap();
+        assert!(preview.conflicts.is_empty(), "{:?}", preview.conflicts);
+        assert!(preview.managed_paths.contains(&source));
+        assert!(preview.managed_paths.contains(&copy));
+        assert!(preview.managed_paths.contains(&later));
+        assert!(preview.skipped_paths.contains(&independent));
+        manager.execute_skill_in_place_update(&preview.preview_id, &next).unwrap();
+        for path in [&original, &source, &copy, &later] {
+            assert_eq!(std::fs::read_to_string(path.join("details.txt")).unwrap(), "new details");
+        }
         assert_eq!(std::fs::read_to_string(independent.join("details.txt")).unwrap(), "whole tree");
     }
 
