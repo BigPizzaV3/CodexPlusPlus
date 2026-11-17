@@ -1353,6 +1353,9 @@
 /* 用骨架重排过的页面：一列，块与块之间统一 16px。 */
 :root .shell .cx-page {
   display: flex;
+  /* 页面是 .screen（grid）的子项：不写 min-width:0 时最小宽度取内容的 min-content，
+     一行不换行的长文字（如微信页状态栏里的联系人 ID）会把整页撑出窗口，右侧控件被裁掉。 */
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
   gap: 16px;
