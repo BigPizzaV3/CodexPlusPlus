@@ -15,7 +15,7 @@
    */
   function isExtensionUiNode(node) {
     if (!node?.closest) return false;
-    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailProviderId}, #${codexPlusRailRemoteId}, #${codexPlusRailTasksId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, #${codexPlusRailProviderId} > button, #${codexPlusRailRemoteId} > button, #${codexPlusRailTasksId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
+    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailProviderId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, #${codexPlusRailProviderId} > button, #${codexPlusRailRemoteId} > button, #${codexPlusRailWeixinId} > button, #${codexPlusRailTasksId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
       return true;
     }
     return isCodexPlusExtensionNode(node);

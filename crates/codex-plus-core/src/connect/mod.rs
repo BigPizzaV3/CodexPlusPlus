@@ -5,6 +5,7 @@ mod inbox;
 pub mod jiajia_bridge;
 pub mod media;
 pub mod outbound;
+pub mod page;
 pub mod projects;
 pub mod session_store;
 pub mod weixin;

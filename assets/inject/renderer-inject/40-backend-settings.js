@@ -1288,6 +1288,7 @@
     if (tab === codexPlusPluginMarketTab) return "plugin-market";
     if (tab === codexPlusProviderTab) return "provider";
     if (tab === codexPlusRemoteControlTab) return "remote";
+    if (tab === codexPlusWeixinConnectTab) return "weixin";
     if (tab === codexPlusTaskBoardTab) return "tasks";
     return "home";
   }
@@ -1307,6 +1308,7 @@
       [codexPlusRailSponsorId, "sponsor"],
       [codexPlusRailProviderId, "provider"],
       [codexPlusRailRemoteId, "remote"],
+      [codexPlusRailWeixinId, "weixin"],
       [codexPlusRailTasksId, "tasks"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
@@ -2656,7 +2658,7 @@
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
@@ -2896,7 +2898,7 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailTasksId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;
         // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
@@ -2916,6 +2918,8 @@
       sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
       // Lucide 的 smartphone：同一套 24 格线性风格。
       remote: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>',
+      // Lucide 的 message-circle：同一套 24 格线性风格（管理器微信页的状态图标也是它）。
+      weixin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
       // Lucide 的 square-kanban：同一套 24 格线性风格。
       tasks: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/></svg>',
     };
@@ -2924,6 +2928,8 @@
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailProviderId, label: "供应商", iconMarkup: icons.provider, withStatus: false, onActivate: openCodexPlusProviderPage },
       { id: codexPlusRailRemoteId, label: "远程控制", iconMarkup: icons.remote, withStatus: false, onActivate: openCodexPlusRemoteControlPage },
+      // 和远程控制相邻：两者都是「在手机上用 Codex」，都由管理器托管、Codex 没开也能用。
+      { id: codexPlusRailWeixinId, label: "微信连接", iconMarkup: icons.weixin, withStatus: false, onActivate: openCodexPlusWeixinConnectPage },
       { id: codexPlusRailTasksId, label: "任务面板", iconMarkup: icons.tasks, withStatus: false, onActivate: openCodexPlusTaskBoardPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },

@@ -2306,3 +2306,25 @@ async fn host_routes_dispatch_registered_handlers_and_map_errors() {
     assert_eq!(failed["status"], "failed");
     assert!(failed["message"].as_str().unwrap_or_default().contains("gh 未登录"));
 }
+
+/// Codex 里「微信连接」页的路由：连接本体在管理器进程里，由管理器登记宿主路由；
+/// 没登记（bridge 不在管理器进程里）时照实提示「管理器未运行」，而不是「未知路径」。登记后照常分发。
+#[tokio::test]
+async fn weixin_connect_route_needs_the_manager_host_route() {
+    use codex_plus_core::connect::page::BRIDGE_ROUTE;
+    use codex_plus_core::routes::{HostRouteHandler, register_host_route};
+    let ctx = test_context();
+    let missing = handle_bridge_request(ctx.clone(), BRIDGE_ROUTE, json!({ "action": "state" })).await;
+    assert_eq!(missing["status"], "failed");
+    assert!(
+        missing["message"].as_str().unwrap_or_default().contains("Codex++ 管理器未运行"),
+        "{missing}"
+    );
+
+    let echo: HostRouteHandler = Arc::new(|payload| Box::pin(async move { Ok(json!({ "status": "ok", "echo": payload })) }));
+    register_host_route(BRIDGE_ROUTE, echo);
+    let ok = handle_bridge_request(ctx, BRIDGE_ROUTE, json!({ "action": "save", "settings": { "weixinConnectSandbox": "read-only" } })).await;
+    assert_eq!(ok["status"], "ok");
+    assert_eq!(ok["echo"]["action"], "save");
+    assert_eq!(ok["echo"]["settings"]["weixinConnectSandbox"], "read-only");
+}

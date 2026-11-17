@@ -1807,6 +1807,40 @@
       .codex-plus-remote-qrs figure { margin: 0; display: grid; gap: 6px; justify-items: center; color: var(--codex-plus-text-secondary); font-size: 12px; }
       .codex-plus-remote-qr { width: 180px; padding: 8px; border-radius: 8px; background: #fff; }
       .codex-plus-remote-qr svg { display: block; width: 100%; height: auto; }
+      /* 「微信连接」页（45-weixin-connect-page.js）：版式同远程控制页；账号、联系人 ID、登录链接这类长文本省略号截断，不撑破布局。 */
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] {
+        background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
+        container: codex-plus-weixin-page / inline-size;
+      }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body {
+        box-sizing: border-box;
+        padding: 72px 32px 64px;
+      }
+      @container codex-plus-weixin-page (max-width: 800px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body { padding: 48px 24px; }
+      }
+      .codex-plus-weixin-page .codex-plus-row > :not(:first-child) { max-width: 60%; min-width: 0; }
+      .codex-plus-weixin-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+      .codex-plus-weixin-controls .codex-plus-action-button { padding: 0 12px; white-space: nowrap; }
+      .codex-plus-weixin-page .codex-plus-action-button[data-primary="true"]:not(:disabled) { background: var(--codex-plus-text); color: var(--codex-plus-bg-primary); }
+      .codex-plus-weixin-page .codex-plus-action-button:disabled { cursor: default; opacity: .55; }
+      .codex-plus-weixin-ellipsis { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-weixin-meta-line { display: flex; flex-wrap: wrap; gap: 2px 12px; min-width: 0; margin-top: 2px; }
+      .codex-plus-weixin-meta { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; white-space: nowrap; }
+      .codex-plus-weixin-meta code, .codex-plus-weixin-qr-link { font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 12px; }
+      .codex-plus-weixin-meta code { flex: 0 1 auto; max-width: 220px; }
+      .codex-plus-weixin-input { width: 280px; max-width: 100%; min-width: 0; text-overflow: ellipsis; }
+      .codex-plus-weixin-menu { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
+      .codex-plus-weixin-menu .codex-plus-menu-trigger { max-width: 100%; }
+      .codex-plus-weixin-menu .codex-plus-menu-trigger:disabled { cursor: default; opacity: .55; }
+      .codex-plus-weixin-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .codex-plus-weixin-menu-popover { top: calc(100% + 4px); right: 0; max-width: min(360px, 80vw); max-height: 320px; overflow-y: auto; }
+      .codex-plus-weixin-title-badge { margin-left: 8px; font-weight: 400; }
+      .codex-plus-weixin-qr-card { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; padding: 16px; }
+      .codex-plus-weixin-qr { flex: none; }
+      .codex-plus-weixin-qr-side { display: grid; flex: 1 1 220px; gap: 10px; min-width: 0; }
+      .codex-plus-weixin-qr-side .codex-plus-weixin-controls { justify-content: flex-start; }
+      .codex-plus-weixin-qr-link { display: block; min-width: 0; overflow: hidden; color: var(--codex-plus-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
       @container codex-plus-settings (max-width: 560px) {
         .codex-plus-settings .codex-plus-row { gap: 16px; }
       }

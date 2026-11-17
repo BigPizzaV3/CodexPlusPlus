@@ -84,7 +84,7 @@
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailTasksId}`)) return;
+      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;
       if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
@@ -190,7 +190,7 @@
     const template = codexPlusRailTemplateButton(rail);
     let cursor = anchor;
     // 内置几项先占位，第三方从它们之后开始排（按图标栏上的顺序列）。
-    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
+    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
       const node = document.getElementById(id);
       if (node) cursor = node;
     });

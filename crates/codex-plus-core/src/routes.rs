@@ -539,6 +539,15 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
+        // Codex 页面里的「微信连接」页（45-weixin-connect-page.js）。不在拓展路由白名单里：能扫码登录、启停连接、改微信设置。
+        // 扫码会话和运行中的连接都在管理器进程内存里，由管理器启动时登记成宿主路由（与它的 Tauri 命令共用实现）；
+        // bridge 不在管理器进程里时没有登记，照实提示，而不是报「未知路径」。
+        crate::connect::page::BRIDGE_ROUTE => match host_route(path) {
+            Some(handler) => handler(payload.clone()).await,
+            None => Err(anyhow::anyhow!(
+                "Codex++ 管理器未运行，暂时不能在 Codex 里操作微信连接；请先打开 Codex++。"
+            )),
+        },
         // Codex 页面里的「任务面板」（47-task-board-page.js）。不在拓展路由白名单里：能新建、改、删任务文件。
         "/task-board" => {
             let payload = payload.clone();

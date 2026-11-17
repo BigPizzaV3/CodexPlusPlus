@@ -411,6 +411,8 @@
   const codexPlusRailProviderId = "codex-plus-rail-provider";
   // 「远程控制」：在 Codex 里开关远程控制、给手机配对、管理设备（45-remote-control-page.js）。
   const codexPlusRailRemoteId = "codex-plus-rail-remote";
+  // 「微信连接」：在 Codex 里扫码登录、启停微信连接、改常用设置（45-weixin-connect-page.js）。
+  const codexPlusRailWeixinId = "codex-plus-rail-weixin";
   // 「任务面板」：记下要做什么、看清每件事到了哪一步（47-task-board-page.js）。
   const codexPlusRailTasksId = "codex-plus-rail-tasks";
   const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
@@ -422,6 +424,7 @@
   const codexPlusSponsorTab = "sponsor";
   const codexPlusProviderTab = "provider";
   const codexPlusRemoteControlTab = "remote-control";
+  const codexPlusWeixinConnectTab = "weixin-connect";
   const codexPlusTaskBoardTab = "task-board";
   // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
   // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。

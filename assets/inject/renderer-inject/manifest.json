@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 563
+      "lines": 566
     },
     {
       "name": "01-registry.js",
@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3538
+      "lines": 3572
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2960
+      "lines": 2966
     },
     {
       "name": "41-extension-detail.js",
@@ -84,6 +84,11 @@
       "name": "45-remote-control-page.js",
       "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
       "lines": 318
+    },
+    {
+      "name": "45-weixin-connect-page.js",
+      "description": "左侧图标栏「微信连接」页：在 Codex 里扫码登录、启停微信连接、改常用设置（经 /weixin-connect 走管理器登记的宿主路由，与管理器微信页共用命令）",
+      "lines": 597
     },
     {
       "name": "46-service-settings.js",

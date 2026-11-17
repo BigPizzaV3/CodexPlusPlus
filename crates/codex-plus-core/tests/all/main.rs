@@ -166,6 +166,7 @@ mod usage_history_routes;
 mod usage_status_line_settings;
 mod user_scripts_reload;
 mod watcher;
+mod weixin_connect_page;
 mod whale_settings;
 mod windows_console_spawn;
 mod zed_remote;
