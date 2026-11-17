@@ -3875,7 +3875,7 @@ async fn open_responses_proxy_request_once(
         let has_more_candidates = attempt + 1 < relay_count;
         validate_upstream(&relay)?;
         if crate::responses_websocket::active() && relay.protocol != crate::settings::RelayProtocol::Responses {
-            return Err(crate::responses_websocket::Unsupported("此 WS 路径只支持原生 Responses 上游；HTTP/SSE 兼容路由请继续使用 HTTP").into());
+            return Err(crate::responses_websocket::RequiresHttp("此 WS 路径只支持原生 Responses 上游；HTTP/SSE 兼容路由请继续使用 HTTP").into());
         }
         // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
         let official_member =
@@ -4167,7 +4167,7 @@ async fn open_responses_proxy_request_once(
         }
         if crate::responses_websocket::active() {
             if compaction || experimental_local_compaction || forced_adapted || local_exec_adapted {
-                return Err(crate::responses_websocket::Unsupported("此 WS 路径不执行 HTTP 压缩或 exec 协议转换，请继续使用 HTTP").into());
+                return Err(crate::responses_websocket::RequiresHttp("此 WS 路径不执行 HTTP 压缩或 exec 协议转换，请继续使用 HTTP").into());
             }
             let builder = build_responses_upstream_request(
                 &relay, &endpoint, &upstream_body, wire_api, false,
@@ -4207,7 +4207,7 @@ async fn open_responses_proxy_request_once(
                     // HTTP 200 不是升级成功，不能在网关中当成成功候选。
                     (None, Some(response), if (200..300).contains(&status) { 502 } else { status })
                 }
-                Err(error) if error.is::<crate::responses_websocket::Unsupported>() => return Err(error),
+                Err(error) if error.is::<crate::responses_websocket::Unsupported>() || error.is::<crate::responses_websocket::RequiresHttp>() => return Err(error),
                 Err(error) => {
                     if !strict_aggregate_model { crate::relay_rotation::record_relay_request_failure(&settings); }
                     if has_more_candidates {

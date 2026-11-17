@@ -368,14 +368,98 @@ async fn helper_ws_http_200_is_rejected_and_never_posts_a_generation() {
                 .is_err()
         );
     });
-    let (url, task) = helper(1).await;
+    let (url, task) = helper(2).await;
     let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
     send(&mut ws, create("")).await;
-    assert_eq!(next(&mut ws).await["status"], 502);
-    ws.close(None).await.unwrap();
+    // 上游不接受 WS：不让客户端按 WS 错误重试到预算耗尽（#3154），直接关连接……
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("上游拒绝 WS 后下游连接应被关闭");
+    assert!(
+        matches!(frame, Some(Ok(Message::Close(_))) | None | Some(Err(_))),
+        "{frame:?}"
+    );
+    drop(ws);
+    // ……客户端重连时在握手阶段拿到 426，立即改走 HTTP。
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    finish(task).await;
+    finish(upstream).await;
+}
+
+#[tokio::test]
+async fn gateway_ws_http_fallback_waits_for_other_active_lanes_before_closing() {
+    if isolated("gateway_ws_http_fallback_waits_for_other_active_lanes_before_closing").await {
+        return;
+    }
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let native = profile(listener.local_addr().unwrap());
+    // 第二个供应商不接受 WS（握手回 404），按「供应商/模型」路由到它。
+    let plain = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut http_only = profile(plain.local_addr().unwrap());
+    http_only["id"] = json!("ws-http-only");
+    http_only["name"] = json!("HTTP only");
+    let fixture = Fixture::new(native.clone());
+    fixture.gateway_profiles(vec![native, http_only]);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let event = next(&mut ws).await;
+        assert_eq!(event["stream_id"], "a");
+        release_rx.await.unwrap();
+        send(&mut ws, completed("a1", "a")).await;
+        let _ = ws.next().await;
+    });
+    let plain_upstream = tokio::spawn(async move {
+        let (mut socket, _) = plain.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        while !bytes.ends_with(b"\r\n\r\n") {
+            bytes.push(socket.read_u8().await.unwrap());
+        }
+        socket
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+    });
+    let (url, task) = helper(1).await;
+    let mut ws = client(
+        &format!("{url}/gw/codex/v1/responses"),
+        &[("authorization", "Bearer local-test".into())],
+    )
+    .await;
+    let mut first = create("a");
+    first["model"] = json!("ws-test/ws-model");
+    send(&mut ws, first).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut other = create("b");
+    other["model"] = json!("ws-http-only/ws-model");
+    send(&mut ws, other).await;
+    // 还有进行中的响应：失败的流先收到错误，连接不立即关闭。
+    let error = next(&mut ws).await;
+    assert_eq!(error["stream_id"], "b", "{error}");
+    assert_eq!(error["type"], "error");
+    // 排空期间新的请求直接拒绝，不再发往上游。
+    send(&mut ws, create("c")).await;
+    let rejected = next(&mut ws).await;
+    assert_eq!(rejected["stream_id"], "c", "{rejected}");
+    assert_eq!(rejected["status"], 503);
+    release_tx.send(()).unwrap();
+    assert_eq!(next(&mut ws).await["response"]["id"], "a1");
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("进行中的响应结束后应关闭连接");
+    assert!(
+        matches!(frame, Some(Ok(Message::Close(_))) | None | Some(Err(_))),
+        "{frame:?}"
+    );
     drop(ws);
     finish(task).await;
     finish(upstream).await;
+    finish(plain_upstream).await;
 }
 
 /// 升级请求直接打在本地 WS 入口上，只看握手状态行：拒绝必须发生在 101 之前。

@@ -27,10 +27,31 @@ const MAX_CALL_ID: usize = 64;
 
 /// 整理请求体。`codex_prompt` 是该模型的官方指令（读不到时为 None，保留客户端自己的指令）。
 pub fn adapt_request(body: &mut Value, codex_prompt: Option<&str>) {
+    adapt_request_for_transport(body, codex_prompt, false);
+}
+
+/// WS 请求带 `previous_response_id` 时是增量续接：上游按同一连接上的上一响应接前文，
+/// 本次 input 只有新增项（常见的只有工具结果）。这类请求必须保留续接 ID，
+/// 也不能把「调用在上一响应里」的工具输出当成孤立输出改写（#3151 / #3155）。
+fn websocket_continuation(object: &Map<String, Value>, websocket: bool) -> bool {
+    websocket
+        && object
+            .get("previous_response_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty())
+}
+
+/// `websocket` 为 true 时按 WS 传输整理：增量续接保留续接 ID 与工具输出原样。
+/// HTTP 每轮都是完整历史，仍按原规则整理。
+pub fn adapt_request_for_transport(body: &mut Value, codex_prompt: Option<&str>, websocket: bool) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
+    let continuation = websocket_continuation(object, websocket);
     for key in REJECTED_FIELDS {
+        if continuation && *key == "previous_response_id" {
+            continue;
+        }
         object.remove(*key);
     }
     // 只保留 Codex 快速档会发的服务等级。
@@ -48,7 +69,7 @@ pub fn adapt_request(body: &mut Value, codex_prompt: Option<&str>) {
         Some(Value::Array(items)) => items,
         _ => Vec::new(),
     };
-    input = adapt_input(input);
+    input = adapt_input(input, continuation);
 
     let own = object
         .get("instructions")
@@ -65,16 +86,19 @@ pub fn adapt_request(body: &mut Value, codex_prompt: Option<&str>) {
 
     // 指令用该模型的官方指令；客户端自己的指令作为第一条 developer 消息放进 input。
     // 客户端本来就是 Codex（指令第一行一致）时保持原样。
+    // 增量续接的前文里已经有首轮插入的那条 developer 消息，不再重复插入。
     if let Some(prompt) = codex_prompt.filter(|prompt| !prompt.trim().is_empty()) {
         if !own.trim().is_empty() && first_line(&own) != first_line(prompt) {
-            input.insert(
-                0,
-                json!({
-                    "type": "message",
-                    "role": "developer",
-                    "content": [{ "type": "input_text", "text": own }],
-                }),
-            );
+            if !continuation {
+                input.insert(
+                    0,
+                    json!({
+                        "type": "message",
+                        "role": "developer",
+                        "content": [{ "type": "input_text", "text": own }],
+                    }),
+                );
+            }
             object.insert(
                 "instructions".to_string(),
                 Value::String(prompt.to_string()),
@@ -142,7 +166,8 @@ pub fn bound_call_id(id: &str) -> String {
 
 /// 整理输入项：不引用已存的项、不带 id（以及跟着 id 的 status）、调用 id 不超长、
 /// 找不到调用的工具输出改成一条说明、`system` 角色改成 `developer`。
-fn adapt_input(input: Vec<Value>) -> Vec<Value> {
+/// `continuation`（WS 增量续接）时调用可能在上一响应里，工具输出保持原样交给上游配对。
+fn adapt_input(input: Vec<Value>, continuation: bool) -> Vec<Value> {
     const CALL_TYPES: &[&str] = &[
         "function_call",
         "function_call_output",
@@ -228,7 +253,7 @@ fn adapt_input(input: Vec<Value>) -> Vec<Value> {
             let want = calls.get(&call_id).copied();
             let paired = want == Some(kind)
                 || (kind == "function_call_output" && want == Some("local_shell_call_output"));
-            if !paired {
+            if !paired && !continuation {
                 object = orphan_output(&object, &call_id);
             }
         }
@@ -436,10 +461,19 @@ const API_HOSTED_TOOLS: &[&str] = &[
 /// 发往 api.openai.com 的 ChatGPT API 订阅请求：不存储、只流式，去掉不接受的字段和托管工具，
 /// `system` 消息改成 `developer`。与 Codex 订阅不同，指令保留 Agent 自己的。
 pub fn adapt_api_request(body: &mut Value) {
+    adapt_api_request_for_transport(body, false);
+}
+
+/// 同 [`adapt_api_request`]；WS 增量续接保留 `previous_response_id`（同一连接上的前文由上游保留）。
+pub fn adapt_api_request_for_transport(body: &mut Value, websocket: bool) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
+    let continuation = websocket_continuation(object, websocket);
     for key in API_REJECTED_FIELDS {
+        if continuation && *key == "previous_response_id" {
+            continue;
+        }
         object.remove(*key);
     }
     object.insert("store".to_string(), Value::Bool(false));
@@ -685,6 +719,55 @@ mod tests {
                 .unwrap()
                 .contains("data")
         );
+    }
+
+    #[test]
+    fn websocket_continuations_keep_previous_response_and_tool_outputs() {
+        // WS 增量续接：只带续接 ID 和上一响应里那次调用的结果（#3151 / #3155）。
+        let continuation = || {
+            json!({
+                "model": "gpt-6.1-sol",
+                "instructions": "You are Grok.",
+                "previous_response_id": "resp_with_task",
+                "input": [
+                    { "type": "function_call_output", "call_id": "call_read", "output": "listing" },
+                    { "type": "custom_tool_call_output", "call_id": "call_patch", "output": "done" }
+                ],
+                "temperature": 0.2
+            })
+        };
+        let mut body = continuation();
+        adapt_request_for_transport(&mut body, Some("You are Codex.\nOfficial."), true);
+        assert_eq!(body["previous_response_id"], "resp_with_task");
+        assert!(body.get("temperature").is_none(), "其它被拒字段照样去掉");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "前文已有 developer 指令，续接不再插入");
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[0]["call_id"], "call_read");
+        assert_eq!(input[1]["type"], "custom_tool_call_output");
+        assert_eq!(input[1]["call_id"], "call_patch");
+        assert_eq!(body["instructions"], "You are Codex.\nOfficial.");
+
+        // HTTP 每轮是完整历史：仍去掉续接 ID，孤立输出照旧改写。
+        let mut http = continuation();
+        adapt_request_for_transport(&mut http, Some("You are Codex.\nOfficial."), false);
+        assert!(http.get("previous_response_id").is_none());
+        assert!(http["input"].as_array().unwrap().iter().all(|item| item["type"] == "message"));
+
+        // WS 但没有续接 ID（首轮 / 完整上下文）：与 HTTP 相同。
+        let mut fresh = continuation();
+        fresh.as_object_mut().unwrap().remove("previous_response_id");
+        adapt_request_for_transport(&mut fresh, Some("You are Codex.\nOfficial."), true);
+        assert_eq!(fresh["input"][0]["role"], "developer");
+        assert_eq!(fresh["input"][1]["type"], "message");
+
+        // ChatGPT API 订阅通道同理。
+        let mut api = continuation();
+        adapt_api_request_for_transport(&mut api, true);
+        assert_eq!(api["previous_response_id"], "resp_with_task");
+        let mut api_http = continuation();
+        adapt_api_request_for_transport(&mut api_http, false);
+        assert!(api_http.get("previous_response_id").is_none());
     }
 
     #[test]

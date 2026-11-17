@@ -676,7 +676,12 @@ async fn attempt_pipeline(
             &candidate.upstream_model,
         );
         body["model"] = Value::String(candidate.upstream_model.clone());
-        crate::gateway::chatgpt_backend::adapt_request(&mut body, prompt.as_deref());
+        // WS 增量续接要保留续接 ID 与跨响应的工具配对（#3151）。
+        crate::gateway::chatgpt_backend::adapt_request_for_transport(
+            &mut body,
+            prompt.as_deref(),
+            crate::responses_websocket::active(),
+        );
         let version = crate::gateway::chatgpt_backend::codex_version(&home);
         relay.user_agent = crate::gateway::chatgpt_backend::codex_user_agent(&version);
         for (key, value) in [
@@ -709,7 +714,10 @@ async fn attempt_pipeline(
     if chatgpt_api {
         body["model"] = Value::String(candidate.upstream_model.clone());
         if shaping {
-            crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+            crate::gateway::chatgpt_backend::adapt_api_request_for_transport(
+                &mut body,
+                crate::responses_websocket::active(),
+            );
         }
         cache_key = body
             .get("prompt_cache_key")
@@ -874,6 +882,7 @@ fn conversation_seed(request: &GatewayRequest<'_>) -> Option<String> {
 /// 这些错误是请求内容本身不被支持（附件、加密内容、原生搜索、缺视觉配置），换上游也一样。
 fn is_request_rejection(error: &anyhow::Error) -> bool {
     error.is::<crate::responses_websocket::Unsupported>()
+        || error.is::<crate::responses_websocket::RequiresHttp>()
         || error
         .downcast_ref::<crate::protocol_proxy::UnsupportedEncryptedAgentContent>()
         .is_some()

@@ -23,6 +23,34 @@ type UpstreamSocket = WebSocketStream<reqwest::Upgraded>;
 #[error("{0}")]
 pub(crate) struct Unsupported(pub(crate) &'static str);
 
+/// 这次请求只能走 HTTP（HTTP 专用的压缩 / exec 转换）。与 [`Unsupported`] 不同，
+/// 它说明的是传输选择而不是请求本身有误：下游连接会被关掉，让客户端重连时拿到 426 改走 HTTP。
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct RequiresHttp(pub(crate) &'static str);
+
+/// 101 之后才知道上游不接受 WS：此时已不能回 426，客户端只会按 WS 错误重试，
+/// 重试预算耗尽（实测 5 次）才切 HTTP（#3154 / #3149 / #3145）。所以一旦遇到，
+/// 本进程在这段时间内对新的升级直接回 426；误判的代价只是退回 2.6 的 HTTP 行为。
+const HTTP_FALLBACK_WINDOW: Duration = Duration::from_secs(30 * 60);
+static HTTP_FALLBACK_UNTIL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+fn require_http_for_a_while(reason: &str) {
+    *HTTP_FALLBACK_UNTIL.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(std::time::Instant::now() + HTTP_FALLBACK_WINDOW);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "helper.responses_websocket_http_fallback",
+        json!({ "reason": reason, "windowSecs": HTTP_FALLBACK_WINDOW.as_secs() }),
+    );
+}
+
+fn http_fallback_active() -> bool {
+    HTTP_FALLBACK_UNTIL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_some_and(|until| std::time::Instant::now() < until)
+}
+
 #[derive(Clone)]
 struct Affinity {
     connection: String,
@@ -364,6 +392,14 @@ struct Opened {
     response: ActiveResponse,
 }
 
+/// 准备失败。`http` 为 true 表示上游 / 请求只能走 HTTP：调用方要让客户端尽快改走 HTTP。
+struct OpenFailure {
+    lane: String,
+    status: u16,
+    message: String,
+    http: bool,
+}
+
 struct Reservation {
     slot: Option<crate::gateway::key_pool::KeySlot>,
     submitted: bool,
@@ -547,7 +583,7 @@ async fn open_request(
     path: String,
     opener: crate::launcher::ProxyOpener,
     registry: Arc<Mutex<Registry>>,
-) -> Result<Opened, (String, u16, String)> {
+) -> Result<Opened, OpenFailure> {
     if registry
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -555,11 +591,12 @@ async fn open_request(
         .len()
         >= 4096
     {
-        return Err((
+        return Err(OpenFailure {
             lane,
-            429,
-            "本地 WS 响应亲和记录已达上限，请重新连接并发送完整上下文".into(),
-        ));
+            status: 429,
+            message: "本地 WS 响应亲和记录已达上限，请重新连接并发送完整上下文".into(),
+            http: false,
+        });
     }
     let previous = body
         .get("previous_response_id")
@@ -590,12 +627,18 @@ async fn open_request(
         let (mut upstream, slot) = match result {
             Ok(result) => result,
             Err(error) => {
+                if let Some(error) = error.downcast_ref::<RequiresHttp>() {
+                    let message = error.to_string();
+                    require_http_for_a_while(&message);
+                    log.record_error("400", message.clone());
+                    return Err(OpenFailure { lane, status: 400, message, http: true });
+                }
                 let (status, message) = match error.downcast_ref::<Unsupported>() {
                     Some(error) => (400, error.to_string()),
                     None => (502, "WS 上游连接或请求准备失败".to_string()),
                 };
                 log.record_error(&status.to_string(), message.clone());
-                return Err((lane, status, message));
+                return Err(OpenFailure { lane, status, message, http: false });
             }
         };
         let reservation = Reservation { slot, submitted: false };
@@ -605,7 +648,8 @@ async fn open_request(
             let status = if upstream.status_code == 200 { 502 } else { upstream.status_code };
             let message = "选中的上游未接受标准 Responses WebSocket，请为此配置使用 HTTP".to_string();
             log.record_error(&status.to_string(), message.clone());
-            return Err((lane, status, message));
+            require_http_for_a_while(&format!("upstream rejected WebSocket upgrade with HTTP {}", upstream.status_code));
+            return Err(OpenFailure { lane, status, message, http: true });
         };
         let phase = crate::settings::SettingsStore::default().load().unwrap_or_default().codex_app_third_party_reasoning_collapse;
         let transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(Some(&body))
@@ -615,6 +659,19 @@ async fn open_request(
         response.filter = crate::extension_gateway::ResponseFilter::start(&path, Some(&body)).await;
         Ok(Opened { lane, response })
     })).await
+}
+
+const HTTP_FALLBACK_MESSAGE: &str = "上游需要使用 HTTP，本连接即将关闭；请重连并改用 HTTP";
+
+async fn close_for_http_fallback<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+) {
+    use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+    let frame = CloseFrame {
+        code: CloseCode::Again,
+        reason: "retry with HTTP".into(),
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(5), ws.close(Some(frame))).await;
 }
 
 async fn send_message<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
@@ -731,7 +788,8 @@ pub(crate) async fn handle(
     let settings = crate::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    if !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+    let http_fallback = http_fallback_active();
+    if http_fallback || !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
         crate::launcher::write_http_response(
             stream,
             "426 Upgrade Required",
@@ -745,7 +803,7 @@ pub(crate) async fn handle(
                 "method": "GET",
                 "path": path,
                 "status": "426 Upgrade Required",
-                "reason": "mixed_protocol_relays",
+                "reason": if http_fallback { "upstream_requires_http" } else { "mixed_protocol_relays" },
             }),
         );
         return Ok(());
@@ -785,7 +843,14 @@ pub(crate) async fn handle(
         }
     }
     let mut preparing = PreparationTasks(HashMap::new());
+    // 有请求发现只能走 HTTP 后，不再接新的 response.create；手上的响应收尾后关掉连接，
+    // 客户端重连时在握手阶段拿到 426，立即改走 HTTP。
+    let mut draining = false;
     loop {
+        if draining && active.is_empty() && preparing.0.is_empty() {
+            close_for_http_fallback(&mut ws).await;
+            return Ok(());
+        }
         while active.len() + preparing.0.len() < 16 {
             let Some(index) = queue.iter().position(|(lane, _, _)| {
                 !active.contains_key(lane) && !preparing.0.contains_key(lane)
@@ -814,6 +879,9 @@ pub(crate) async fn handle(
         tokio::select! {
             message = ws.next() => match message {
                 Some(Ok(Message::Text(text))) => match parse_create(&text) {
+                    Ok((lane, _)) if draining => {
+                        send_message(&mut ws, error_event(&lane, 503, HTTP_FALLBACK_MESSAGE)).await?;
+                    }
                     Ok((lane, body)) => {
                         if (!lane.is_empty() && !lanes.contains(&lane) && lanes.len() >= 32)
                             || queue.len() >= 64 || queued_bytes.saturating_add(text.len()) > 32 * 1024 * 1024
@@ -834,9 +902,20 @@ pub(crate) async fn handle(
             },
             result = opened_rx.recv(), if !preparing.0.is_empty() => {
                 match result.context("WS 请求准备任务退出")? {
-                    Err((lane, status, message)) => {
+                    Err(OpenFailure { lane, status, message, http }) => {
                         preparing.0.remove(&lane);
-                        send_message(&mut ws, error_event(&lane, status, &message)).await?;
+                        if http {
+                            draining = true;
+                            queue.clear();
+                            queued_bytes = 0;
+                            // 没有其它进行中的响应时不发错误事件，直接关连接：客户端把断线当作可重试，
+                            // 重连拿到 426 就改走 HTTP。还有别的响应时先回错误，等它们收尾再关。
+                            if !active.is_empty() || !preparing.0.is_empty() {
+                                send_message(&mut ws, error_event(&lane, status, &message)).await?;
+                            }
+                        } else {
+                            send_message(&mut ws, error_event(&lane, status, &message)).await?;
+                        }
                     }
                     Ok(opened) => {
                         let Opened { lane, mut response } = opened;
