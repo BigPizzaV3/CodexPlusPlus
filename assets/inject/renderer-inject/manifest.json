@@ -32,8 +32,8 @@
     },
     {
       "name": "32-fork-readiness-fallback.js",
-      "description": "无账号时原生 Fork 放置门控读不到、启动时没联网 Statsig 无数据的兜底（#2826 #2898）",
-      "lines": 121
+      "description": "无账号时原生 Fork 放置门控读不到、Statsig 无数据或缓存数据原生不认的兜底（#2826 #2898 #3162）",
+      "lines": 136
     },
     {
       "name": "32-thread-goal.js",
@@ -43,7 +43,7 @@
     {
       "name": "33-offline-auto-review.js",
       "description": "拿不到远程功能开关时补开「替我审批」（#2817），及 Statsig 离线补数据的通用部分",
-      "lines": 108
+      "lines": 162
     },
     {
       "name": "34-statsig-overrides.js",

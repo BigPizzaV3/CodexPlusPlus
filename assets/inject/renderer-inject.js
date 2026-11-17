@@ -6714,6 +6714,18 @@
   // 补一份空数据（见 33-offline-auto-review.js 的 codexPlusOfflineStatsigPatch）。所有闸门仍是「没下发 = 关」，
   // 和没数据时读到的值一样，只是原生能据此发布执行配置（permissionRefresh = false，即旧版权限选择方式），
   // 等同于启动时连着网的纯 API Key 会话。只写内存，拿到真实数据就不碰，登录用户保持原生行为。
+  //
+  // Codex 26.1111（#3162）：Statsig 评估挪到了主进程。渲染进程把自己的 Statsig 数据发布过去，主进程据此
+  // 建一个只读 Statsig 客户端；分支对话的放置门控在主进程读 useAppServerCustomSections =
+  // 「这个客户端的 codex-app-server-custom-sections 闸门」，没有客户端就是 undefined，于是 thread/fork
+  // 之前就判 not-ready / execution-config-loading。渲染进程只在数据确实属于当前用户时才发布数据，
+  // 否则发布「无数据」，主进程按缺省给执行配置（所以 permissionRefresh 能读到 false），却不建客户端。
+  // 除了上面的完全没数据，还有一种常见情形：Statsig 拉不到，但本地缓存里有以前拉到的数据——渲染进程
+  // 照常用这份缓存，原生却因为 user 哈希对不上（每次启动都变的会话字段）不认它，上面「只在没数据时补」
+  // 的兜底也不触发。这时原样沿用缓存数据，只补上当前 user（闸门值一个不改），原生就认作当前用户的数据，
+  // 主进程随之建出客户端，放置门控读到真实的闸门值。
+  // 上面的放置门控兜底（#2826）在 26.1106 起的 Rspack 版本里找不到 app-initial 模块、不会生效，
+  // 那里渲染进程的放置门控本来就恒有值；它只对更早的 Codex 版本有用。
   function codexForkStatsigFallbackActive() {
     if (typeof codexPlusBackendSettingsLoaded === "undefined" || codexPlusBackendSettingsLoaded !== true) return false;
     return !(typeof codexPlusBackendSettings !== "undefined" && codexPlusBackendSettings?.enhancementsEnabled === false);
@@ -6732,10 +6744,13 @@
     if (!codexForkStatsigFallbackActive()) return;
     for (const client of codexPlusOfflineStatsigClients()) {
       try {
-        if (!codexForkStatsigWithoutAccount(client) || !codexPlusOfflineStatsigPatch(client)) continue;
+        if (!codexForkStatsigWithoutAccount(client)) continue;
+        const hadValues = client.getContext()?.values != null;
+        if (!codexPlusOfflineStatsigPatch(client, {}, { adoptUnverified: true })) continue;
         if (!codexForkReadinessState.statsigReported) {
           codexForkReadinessState.statsigReported = true;
-          try { sendCodexPlusDiagnostic("fork_statsig_offline_fallback", {}); } catch {}
+          // cache：沿用了原生不认的缓存数据（#3162）；empty：完全没数据，补了空数据（#2898）。
+          try { sendCodexPlusDiagnostic("fork_statsig_offline_fallback", { source: hadValues ? "cache" : "empty" }); } catch {}
         }
       } catch {}
     }
@@ -6799,12 +6814,59 @@
   // 认得出是自己补的，才能在「分支对话兜底」（#2898）和「替我审批」先后补数据时合并闸门，而不是谁先补谁说了算。
   const codexPlusOfflineStatsigMarker = "codex_plus_offline";
 
+  // 与 Statsig SDK 的 _DJB2Object 同算法（键排序后的 JSON 做 DJB2），用来复算数据适配器里的 fullUserHash。
+  function codexPlusStatsigSortedObject(value) {
+    if (value == null) return null;
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) {
+      const item = value[key];
+      sorted[key] = item !== null && typeof item === "object" && !Array.isArray(item) ? codexPlusStatsigSortedObject(item) : item;
+    }
+    return sorted;
+  }
+
+  function codexPlusStatsigUserHash(user) {
+    if (!user) return null;
+    const text = JSON.stringify(codexPlusStatsigSortedObject(user));
+    let hash = 0;
+    for (let index = 0; index < text.length; index++) {
+      hash = (hash << 5) - hash + text.charCodeAt(index);
+      hash &= hash;
+    }
+    return String(hash >>> 0);
+  }
+
+  /**
+   * 现有远程数据原生认不认（#3162）。Codex 26.1111 起渲染进程只在数据「确实属于当前用户」时
+   * 才把执行配置发布给主进程：数据自带 user 时按 user 比对；否则要求数据适配器里这份数据的
+   * fullUserHash 等于当前 user 的哈希。Statsig 拉不到、从本地缓存读出旧数据时，user 里每次启动
+   * 都变的字段（如 codex_app_session_id）让哈希对不上，原生就当作「没有远程数据」处理。
+   * 返回 true = 有数据但原生不认；数据自带 user、或判断不了时一律返回 false（不碰）。
+   */
+  function codexPlusOfflineStatsigValuesUnverified(client, context) {
+    const values = context?.values;
+    if (values == null || typeof values !== "object" || values.user != null) return false;
+    const adapter = client?.dataAdapter;
+    if (typeof adapter?.getDataSync !== "function") return false;
+    let entry;
+    try {
+      entry = adapter.getDataSync(context.user);
+    } catch {
+      return false;
+    }
+    if (entry == null) return true;
+    const expected = codexPlusStatsigUserHash(context.user);
+    return typeof entry.fullUserHash === "string" && expected != null && entry.fullUserHash !== expected;
+  }
+
   /**
    * 客户端 Ready 但完全没有远程数据（启动时没联网 / 拉不到 Statsig）时，补一份只含指定闸门的最小数据；
    * 已经是自己补的数据时只合并缺的闸门。拿到了真实数据就完全不碰。真的写了返回 true。
    * gates：{ 闸门名: 布尔值 }，可以为空——空数据也能让原生把 Statsig 视为「已就绪、全部按关处理」。
+   * options.adoptUnverified：有数据但原生不认（缓存里的旧数据，见上）时，原样沿用这份数据，
+   * 只补上当前 user 并打标记，原生据此认作当前用户的数据（#3162）。闸门值一个不改。
    */
-  function codexPlusOfflineStatsigPatch(client, gates = {}) {
+  function codexPlusOfflineStatsigPatch(client, gates = {}, options = {}) {
     if (!client || client.loadingStatus !== "Ready") return false;
     let context;
     try {
@@ -6815,12 +6877,17 @@
     if (!context) return false;
     const current = context.values;
     const owned = current != null && current[codexPlusOfflineStatsigMarker] === true;
-    if (current != null && !owned) return false;
-    const featureGates = owned && current.feature_gates && typeof current.feature_gates === "object"
-      ? { ...current.feature_gates }
+    if (current != null && !owned
+      && !(options.adoptUnverified === true && codexPlusOfflineStatsigValuesUnverified(client, context))) return false;
+    // 自己补的、或沿用的缓存数据保留原有字段；完全没数据时从空数据起步。
+    const base = current != null && typeof current === "object" ? current : null;
+    const featureGates = base?.feature_gates && typeof base.feature_gates === "object"
+      ? { ...base.feature_gates }
       : {};
     let changed = !owned;
-    for (const [name, value] of Object.entries(gates)) {
+    // init-v2 格式的闸门结构不同，不往里写；沿用这类数据时只补 user。
+    const gatesWritable = base?.response_format !== "init-v2";
+    for (const [name, value] of gatesWritable ? Object.entries(gates) : []) {
       if (featureGates[name]?.value === value) continue;
       featureGates[name] = {
         name,
@@ -6835,13 +6902,15 @@
     const adapter = client.dataAdapter;
     if (typeof adapter?.setData !== "function" || typeof client.updateUserSync !== "function") return false;
     const values = {
-      feature_gates: featureGates,
       dynamic_configs: {},
       layer_configs: {},
       param_stores: {},
       time: Date.now(),
-      has_updates: true,
       hash_used: "none",
+      ...base,
+      feature_gates: featureGates,
+      // Statsig 只接受 has_updates 为 true 的数据。
+      has_updates: true,
       user: context.user,
       [codexPlusOfflineStatsigMarker]: true,
     };
