@@ -452,6 +452,7 @@ mod tests {
             }),
             cache_hit_ratio: None,
             final_response_evidence: None,
+            final_response_id: None,
             agent: agent.map(str::to_string),
         }
     }
