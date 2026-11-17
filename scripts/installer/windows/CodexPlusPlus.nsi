@@ -33,6 +33,24 @@ Var LegacyDeleteTries
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
+; 安装包的版本资源（#3148）：没有它时文件属性里产品名、版本都是空的，
+; 按产品名放行软件的企业管控会把新版本安装包拦下。
+; VIProductVersion 只收 X.X.X.X，预发布后缀（如 2.8.0-beta.1）去掉；末尾补一个 "-" 保证分隔符存在。
+!searchparse /noerrors "${VERSION}-" "" VI_MAJOR "." VI_MINOR "." VI_PATCH "-"
+VIProductVersion "${VI_MAJOR}.${VI_MINOR}.${VI_PATCH}.0"
+VIFileVersion "${VI_MAJOR}.${VI_MINOR}.${VI_PATCH}.0"
+!macro CODEX_PLUS_VERSION_KEYS LANG
+  VIAddVersionKey /LANG=${LANG} "ProductName" "Codex++"
+  VIAddVersionKey /LANG=${LANG} "FileDescription" "Codex++ Setup"
+  VIAddVersionKey /LANG=${LANG} "CompanyName" "BigPizzaV3"
+  VIAddVersionKey /LANG=${LANG} "LegalCopyright" "Copyright (c) BigPizzaV3"
+  VIAddVersionKey /LANG=${LANG} "ProductVersion" "${VERSION}"
+  VIAddVersionKey /LANG=${LANG} "FileVersion" "${VERSION}"
+  VIAddVersionKey /LANG=${LANG} "OriginalFilename" "CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+!macroend
+!insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_SIMPCHINESE}
+!insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_ENGLISH}
+
 ; 主程序退出时负责恢复系统浏览器及清理后台服务，安装器不能强制结束进程。
 ; 每 500ms 检查一次；10 秒仍未退出时提示从托盘退出，再重试或取消安装/卸载。
 ; 确认进程退出后再补 500ms 文件锁释放缓冲，避免 File/Delete 撞上残留锁（issue #2362）。

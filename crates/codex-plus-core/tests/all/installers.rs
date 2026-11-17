@@ -141,6 +141,22 @@ fn windows_workflows_verify_nsis_and_support_both_program_files_directories() {
 }
 
 #[test]
+fn windows_installer_carries_product_version_resource() {
+    // #3148：按产品名放行的企业管控要求安装包带版本资源。
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi").unwrap();
+    let languages = nsi.find("!insertmacro MUI_LANGUAGE \"English\"").unwrap();
+    let product_version = nsi.find("VIProductVersion").unwrap();
+    assert!(languages < product_version, "版本键要在语言加载之后");
+    assert!(nsi.contains("!searchparse /noerrors \"${VERSION}-\""), "预发布后缀要去掉");
+    for key in ["ProductName\" \"Codex++\"", "ProductVersion\" \"${VERSION}\"", "FileVersion\" \"${VERSION}\""] {
+        assert!(nsi.contains(key), "{key}");
+    }
+    for language in ["${LANG_SIMPCHINESE}", "${LANG_ENGLISH}"] {
+        assert!(nsi.contains(&format!("CODEX_PLUS_VERSION_KEYS {language}")), "{language}");
+    }
+}
+
+#[test]
 fn windows_installer_writes_the_same_uninstall_key_as_the_runtime() {
     let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi").unwrap();
     assert!(nsi.contains(r"Uninstall\CodexPlusPlus"));
