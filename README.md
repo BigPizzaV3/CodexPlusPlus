@@ -136,6 +136,14 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
     </td>
     <td><a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS"><strong>ccccccAPI</strong></a><br>感谢 ccccccAPI 赞助本项目！ccccccAPI 量贩式中转站 —— 实惠 Token，一站式接入。ccccccAPI 是一家专注服务开发者与企业的 AI API 中转站，主打「量贩式」定价：ChatGPT、Claude、Kimi、Grok、Gemini 等主流模型基本全覆盖，一个 API Key、一套兼容 OpenAI 的接口，改一行 base_url 就能自由切换，不用再分别注册、分别充值。目标很朴素：让更多人用上实惠的 Token——用 ccccccAPI，不烧钱、不烧心。通过<a href="https://dzhsmartai.com/register?promo=CODEXPLUSPLUS">此链接注册</a>，即得 1 美元使用额度。</td>
   </tr>
+  <tr>
+    <td align="center">
+      <a href="https://vegaapi.com/">
+        <img src="docs/images/sponsor-vegaapi.png" alt="VegaAPI" width="96">
+      </a>
+    </td>
+    <td><a href="https://vegaapi.com/"><strong>VegaAPI</strong></a><br>感谢 VegaAPI 赞助本项目！VegaAPI 提供稳定高速的 AI API 服务，一个 API Key 即可接入 GPT、Claude、Gemini、Grok 等主流模型，兼容 OpenAI、Anthropic 和 Gemini 接口，改一下 base_url 就能用。按量计费，支持支付宝和微信充值，10 元起充。欢迎<a href="https://vegaapi.com/">注册使用</a>。</td>
+  </tr>
 </table>
 
 想支持项目或展示品牌？[联系维护者](mailto:1727532@qq.com)。
