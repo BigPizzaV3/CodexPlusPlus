@@ -1059,3 +1059,214 @@ fn model_ui_metadata_forwards_image_input_modalities() {
     assert_eq!(ui["input_modalities"], serde_json::json!(["text"]));
     assert_eq!(ui["supportsImageDetailOriginal"], serde_json::json!(true));
 }
+
+/// 取 catalog 里某个 slug 的条目（测试辅助）。
+fn catalog_model<'a>(catalog: &'a serde_json::Value, slug: &str) -> &'a serde_json::Value {
+    catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == slug)
+        .unwrap_or_else(|| panic!("catalog 缺少 {slug}"))
+}
+
+fn build_catalog_for(model_list: &str) -> serde_json::Value {
+    let entries = collect_catalog_entries(model_list, &HashMap::new(), &HashMap::new(), "");
+    serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap()
+}
+
+#[test]
+fn gpt62_models_without_exact_entry_use_gpt6_family_identity() {
+    // #3180：gpt-6.2-astra / gpt-6.2-sol 没有精确条目，旧逻辑回退 bundled 首条（gpt-5.5），
+    // base_instructions 与 instructions_template 都带着 "based on GPT-5"，模型会自认 GPT-5。
+    // 隔离 CODEX_HOME，避免本机 models_cache.json 影响选择。
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let catalog = build_catalog_for("gpt-6.2-astra\ngpt-6.2-sol");
+
+    for slug in ["gpt-6.2-astra", "gpt-6.2-sol"] {
+        let model = catalog_model(&catalog, slug);
+        let base = model["base_instructions"].as_str().expect("base_instructions 必须是字符串");
+        let template = model["model_messages"]["instructions_template"]
+            .as_str()
+            .expect("应继承家族模板的 instructions_template");
+        for (field, text) in [("base_instructions", base), ("instructions_template", template)] {
+            assert!(!text.contains("based on GPT-5"), "{slug} 的 {field} 仍是 GPT-5 身份文案");
+            assert!(text.contains("based on GPT-6"), "{slug} 的 {field} 应是 GPT-6 身份文案");
+        }
+        // 家族回退仍然是回退：展示名按列表条目生成，不冒用家族模板的名字和描述。
+        assert_eq!(model["slug"], slug);
+        assert_eq!(model["display_name"], slug);
+        assert_eq!(model["description"], slug);
+        // 借用模板不能证明并行工具调用，保持保守。
+        assert_eq!(model["supports_parallel_tool_calls"], false);
+        // 继承 GPT-6 家族能力字段，而不是 gpt-5.5 的。
+        assert!(
+            model["model_messages"].get("confirmation_policies").is_some(),
+            "{slug} 应继承 GPT-6 家族的 model_messages"
+        );
+    }
+}
+
+#[test]
+fn unknown_gpt5_models_keep_the_generic_fallback_template() {
+    // 家族回退只修跨代（#3180）；未知 gpt-5.x 仍用 bundled 首条（gpt-5.5），
+    // 不改借更新的 gpt-5.2 等模板（shell_type、截断策略、自我介绍都会跟着变）。
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let catalog = build_catalog_for("gpt-5\ngpt-5.1\ngpt-5-codex\ngpt-5.1-codex-max");
+    let fallback = codex_plus_core::model_suffix::fallback_template_info().unwrap().0;
+    let fallback_template = builtin_model_metadata(&fallback).unwrap().entry["model_messages"]
+        ["instructions_template"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for slug in ["gpt-5", "gpt-5.1", "gpt-5-codex", "gpt-5.1-codex-max"] {
+        assert_eq!(
+            catalog_model(&catalog, slug)["model_messages"]["instructions_template"]
+                .as_str()
+                .unwrap(),
+            fallback_template,
+            "{slug}"
+        );
+    }
+}
+
+#[test]
+fn gpt62_family_template_prefers_same_series_and_closest_known_version() {
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let catalog = build_catalog_for("gpt-6.2-astra\ngpt-6.2-sol\ngpt-6.2-luna\ngpt-6.2-terra");
+    let template_of = |slug: &str| {
+        catalog_model(&catalog, slug)["model_messages"]["instructions_template"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let bundled_template = |slug: &str| {
+        builtin_model_metadata(slug).unwrap().entry["model_messages"]["instructions_template"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // 同系列、版本最接近：astra 只有 gpt-6-astra；sol 取 gpt-6.1-sol 而非 gpt-6-sol。
+    assert_eq!(template_of("gpt-6.2-astra"), bundled_template("gpt-6-astra"));
+    assert_eq!(template_of("gpt-6.2-sol"), bundled_template("gpt-6.1-sol"));
+    assert_eq!(template_of("gpt-6.2-luna"), bundled_template("gpt-6-luna"));
+    assert_eq!(template_of("gpt-6.2-terra"), bundled_template("gpt-6.1-terra"));
+    assert_ne!(bundled_template("gpt-6.1-sol"), bundled_template("gpt-6-sol"));
+
+    // 没有同系列时退到同主版本（gpt-6*），而不是另一代的 gpt-5.5。
+    let catalog = build_catalog_for("gpt-6.2-nova\ngpt-6.2");
+    for slug in ["gpt-6.2-nova", "gpt-6.2"] {
+        let model = catalog_model(&catalog, slug);
+        let template = model["model_messages"]["instructions_template"].as_str().unwrap();
+        assert!(template.contains("based on GPT-6"), "{slug} 应回退同主版本模板");
+        assert!(!template.contains("based on GPT-5"), "{slug} 不应继承 GPT-5 文案");
+    }
+}
+
+#[test]
+fn gpt62_family_template_also_covers_runtime_cache_entries() {
+    // 运行时官方缓存里的同家族条目与 bundled 一起参与挑选：
+    // 缓存里更接近的 gpt-6.1-luna 要胜过 bundled 的 gpt-6-luna。
+    let _lock = runtime_cache_env_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let cache = serde_json::json!({
+        "models": [{
+            "slug": "gpt-6.1-luna",
+            "display_name": "runtime luna",
+            "context_window": 272000u64,
+            "base_instructions": "You are Codex, an agent based on GPT-6 (runtime luna).",
+            "model_messages": {
+                "instructions_template": "You are Codex, an agent based on GPT-6 (runtime luna)."
+            }
+        }, {
+            "slug": "gpt-6.2-sol",
+            "display_name": "runtime sol",
+            "context_window": 272000u64,
+            "base_instructions": "You are Codex, an agent based on GPT-6 (runtime exact).",
+            "model_messages": {
+                "instructions_template": "You are Codex, an agent based on GPT-6 (runtime exact)."
+            }
+        }]
+    });
+    std::fs::write(temp.path().join("models_cache.json"), cache.to_string()).unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let catalog = build_catalog_for("gpt-6.2-sol\ngpt-6.2-luna");
+    // 缓存里有精确条目时仍走精确匹配，不受家族回退影响。
+    let exact = catalog_model(&catalog, "gpt-6.2-sol");
+    assert_eq!(exact["base_instructions"], "You are Codex, an agent based on GPT-6 (runtime exact).");
+    assert_eq!(exact["display_name"], "runtime sol");
+    // gpt-6.2-luna 没有精确条目：同系列且版本更近的缓存条目作为模板，但仍算回退。
+    let luna = catalog_model(&catalog, "gpt-6.2-luna");
+    assert_eq!(luna["base_instructions"], "You are Codex, an agent based on GPT-6 (runtime luna).");
+    assert_eq!(luna["display_name"], "gpt-6.2-luna");
+    assert_eq!(luna["supports_parallel_tool_calls"], false);
+}
+
+#[test]
+fn exact_builtin_models_keep_their_own_prompts_after_family_fallback() {
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let catalog = build_catalog_for("gpt-5.4\ngpt-5.5\ngpt-6-astra\ngpt-6.1-sol\ngpt-6-sol");
+    for slug in ["gpt-5.4", "gpt-5.5", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol"] {
+        let built = catalog_model(&catalog, slug);
+        let expected = builtin_model_metadata(slug).unwrap().entry;
+        assert_eq!(
+            built["model_messages"]["instructions_template"],
+            expected["model_messages"]["instructions_template"],
+            "{slug} 的 instructions_template 不应被回退逻辑改动"
+        );
+        if expected.get("base_instructions").is_some_and(|value| value.is_string()) {
+            assert_eq!(built["base_instructions"], expected["base_instructions"], "{slug}");
+        }
+    }
+    // 精确命中仍然使用自己的展示名，说明没有被当成回退。
+    assert_eq!(catalog_model(&catalog, "gpt-6-astra")["display_name"], "GPT-6-Astra");
+    assert_eq!(catalog_model(&catalog, "gpt-5.4")["display_name"], "gpt-5.4");
+    assert!(catalog_model(&catalog, "gpt-5.4")["base_instructions"]
+        .as_str()
+        .unwrap()
+        .contains("based on GPT-5"));
+}
+
+#[test]
+fn family_fallback_is_not_reported_as_builtin_metadata() {
+    use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
+
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    // 家族模板只是 clone 底板，不算该 slug 自己的内置元数据。
+    for slug in ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.2-sol[1M]"] {
+        assert!(builtin_model_metadata(slug).is_none(), "{slug}");
+        assert!(!requires_bundled_metadata_catalog(slug), "{slug}");
+    }
+}
+
+#[test]
+fn unrelated_unknown_slugs_still_fall_back_to_first_bundled_template() {
+    // 末级回退保持不变：不属于任何 gpt-N 家族的自定义模型继续克隆 bundled 首条，不 panic。
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let first_template = builtin_model_metadata("gpt-5.5").unwrap().entry["model_messages"]
+        ["instructions_template"]
+        .clone();
+    let catalog = build_catalog_for(
+        "my-custom-model\ngpt-oss-120b-custom\ngpt-reserve-x\ngpt-9.1-zeta\ngpt-\ngpt-6.x-sol",
+    );
+    for slug in [
+        "my-custom-model",
+        "gpt-oss-120b-custom",
+        "gpt-reserve-x",
+        "gpt-9.1-zeta",
+        "gpt-",
+        "gpt-6.x-sol",
+    ] {
+        let model = catalog_model(&catalog, slug);
+        assert_eq!(model["model_messages"]["instructions_template"], first_template, "{slug}");
+        assert_eq!(model["display_name"], slug);
+        assert!(!model["base_instructions"].as_str().unwrap().is_empty(), "{slug}");
+    }
+}
