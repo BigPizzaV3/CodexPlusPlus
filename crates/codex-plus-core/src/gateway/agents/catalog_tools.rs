@@ -551,9 +551,30 @@ fn write_hermes(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
         "api_mode": "chat_completions",
         "models": wiring.model_ids().collect::<Vec<_>>(),
     });
-    yaml_set_child(doc, "providers", PROVIDER_ID, Some(&provider));
-    yaml_set_child(doc, "model", "provider", Some(&json!(PROVIDER_ID)));
-    yaml_set_child(doc, "model", "default", Some(&json!(wiring.default_model)));
+    let source = doc.render();
+    let mut desired = YamlDoc::mapping(&source)?;
+    let mut owned_paths = Vec::new();
+    let mut block_style = true;
+    for (parent, child, value) in [
+        ("providers", PROVIDER_ID, provider),
+        ("model", "provider", json!(PROVIDER_ID)),
+        ("model", "default", json!(wiring.default_model)),
+    ] {
+        let map = desired.as_object_mut().expect("已校验映射").entry(parent)
+            .or_insert_with(|| Value::Object(Map::new())).as_object_mut()
+            .with_context(|| format!("Hermes 的 {parent} 不是映射，无法安全接入"))?;
+        if map.get(child) == Some(&value) { continue; }
+        if let Some(block) = doc.block(parent) {
+            block_style &= block.lines().next().is_some_and(|line| line_value(line).is_empty());
+        }
+        if block_style { yaml_set_child(doc, parent, child, Some(&value)); }
+        map.insert(child.to_owned(), value);
+        owned_paths.push(vec![parent.to_owned(), child.to_owned()]);
+    }
+    if !block_style || YamlDoc::mapping(&doc.render()).ok().as_ref() != Some(&desired) {
+        *doc = YamlDoc::patch_mapping(&source, &desired)?;
+    }
+    doc.owned_paths = owned_paths;
     Ok(())
 }
 

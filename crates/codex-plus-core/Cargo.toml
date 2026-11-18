@@ -14,6 +14,9 @@ async-trait = "0.1"
 base64.workspace = true
 directories.workspace = true
 ecb = { version = "0.1", features = ["alloc"] }
+edikt-jsonc = "0.5.1"
+edikt-yaml = "0.6.2"
+json5 = "1.3"
 # Gzip for Connect frames. Rust backend only, so this does not link a system zlib.
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 futures-util = "0.3"
@@ -26,6 +29,7 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde-saphyr = { version = "2.2", default-features = false, features = ["deserialize", "serialize"] }
 sha2.workspace = true
 sha1 = "0.10"
 sherpa-onnx.workspace = true

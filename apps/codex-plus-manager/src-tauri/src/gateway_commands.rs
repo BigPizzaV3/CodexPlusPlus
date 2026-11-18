@@ -10,6 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
+use codex_plus_core::gateway::agents::editor::{self, ConfigSnapshot, ConfigView};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
 use codex_plus_core::gateway::key_pool::{self, PoolSnapshot};
 use codex_plus_core::gateway::meta_sync;
@@ -2125,13 +2126,13 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
 }
 
 #[tauri::command]
-pub fn read_agent_config(agent: String) -> Result<codex_plus_core::gateway::agents::editor::ConfigView, String> {
-    codex_plus_core::gateway::agents::editor::config(&context(), &agent, None).map_err(|error| format!("{error:#}"))
+pub fn read_agent_config(agent: String) -> Result<ConfigView, String> {
+    editor::config(&context(), &agent, None).map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
-pub fn save_agent_config(agent: String, original: String, contents: String) -> Result<codex_plus_core::gateway::agents::editor::ConfigView, String> {
-    codex_plus_core::gateway::agents::editor::config(&context(), &agent, Some((&original, &contents))).map_err(|error| format!("{error:#}"))
+pub fn save_agent_config(agent: String, original: ConfigSnapshot, contents: String) -> Result<ConfigView, String> {
+    editor::config(&context(), &agent, Some((&original, &contents))).map_err(|error| format!("{error:#}"))
 }
 
 /// 在访达 / 资源管理器里显示网关改动的 Agent 配置文件。

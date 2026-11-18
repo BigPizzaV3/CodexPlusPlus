@@ -3088,7 +3088,6 @@ export const EN_PLAIN: Record<string, string> = {
   "选择应用目录": "Select app directory",
   "通用配置文件": "Common config file",
   "编辑配置": "Edit configuration",
-  "编辑 {0} 配置": "Edit {0} configuration",
   "配置来源": "Configuration source",
   "可编辑字段": "Editable fields",
   "保存不会接入网关。只修改列出的用户设置。": "Saving does not connect this agent to the gateway. Only the listed user settings are changed.",
@@ -3723,6 +3722,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "编辑 {0} 配置": "Edit {0} configuration",
+  "输入格式：{0}": "Input format: {0}",
   "备份数量：{0}": "Backups: {0}",
   "已统计 {0}/{1} 份，文件大小：{2}": "Calculated {0}/{1} backups; file size: {2}",
   "文件大小：{0}": "File size: {0}",

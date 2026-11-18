@@ -6,7 +6,7 @@ import { t, tf } from "./i18n";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalFocus } from "./use-modal-focus";
 
-type ConfigView = { source: string; contents: string; keys: string[]; editable: boolean };
+type ConfigView = { source: string; inputFormat: string; contents: string; keys: string[]; editable: boolean };
 
 export type ConfigTarget = { agent: string; name: string };
 export const OpenAgentConfig = createContext<((target: ConfigTarget, navigate: boolean) => void) | null>(null);
@@ -41,7 +41,11 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & { onC
     setSaving(true);
     setError("");
     try {
-      await invoke<ConfigView>("save_agent_config", { agent, original: view.contents, contents: draft });
+      await invoke<ConfigView>("save_agent_config", {
+        agent,
+        original: { source: view.source, contents: view.contents },
+        contents: draft,
+      });
       onClose();
     } catch (reason) { setError(String(reason)); } finally { setSaving(false); }
   };
@@ -55,6 +59,7 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & { onC
           <p>{t("配置来源")}：<code>{view.source}</code></p>
           {view.editable ? <>
             <p>{t("保存不会接入网关。只修改列出的用户设置。")}</p>
+            <p>{tf("输入格式：{0}", [view.inputFormat])}</p>
             <details><summary>{t("可编辑字段")}</summary><code>{view.keys.join(", ")}</code></details>
             <textarea aria-label={title} className="relay-file-textarea" rows={12} spellCheck={false} disabled={saving} value={draft} onChange={event => setDraft(event.currentTarget.value)} />
           </> : <p>{t("此适配器没有已登记的可编辑字段。模型、路由和凭据仍由原入口管理。")}</p>}

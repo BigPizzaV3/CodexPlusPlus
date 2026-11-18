@@ -15,7 +15,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { AgentConfigButton, AgentConfigDialog, OpenAgentConfig, type ConfigTarget } from "./AgentConfigEditor";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -131,6 +130,7 @@ import {
 } from "./context-config-text";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
+import { AgentConfigButton, AgentConfigDialog, OpenAgentConfig, type ConfigTarget } from "./AgentConfigEditor";
 import { DshPluginsPanel } from "./DshPluginsPanel";
 import { ConfigDoctorPanel } from "./ConfigDoctorPanel";
 import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
@@ -5250,7 +5250,10 @@ export function App() {
         ) : null;
 
   return (
-    <OpenAgentConfig.Provider value={(target, openPage) => { if (openPage) void navigate("gateway"); setConfigTarget(target); }}>
+    <OpenAgentConfig.Provider value={(target, openPage) => {
+      if (openPage) void navigate("gateway");
+      setConfigTarget(target);
+    }}>
     <div className={`shell ${theme}`}>
       <AppSidebar
         setupCard={setupCard}
@@ -15143,7 +15146,7 @@ function RelayFileEditors({
               <Download className="h-4 w-4" />
               {t("提取当前供应商配置")}
             </Button>
-          <AgentConfigButton agent="codex" name="Codex" />
+        <AgentConfigButton agent="codex" name="Codex" />
       </RelayFold>
       <RelayFold className="relay-file-panel relay-auth-preview" defaultOpen sectionId="auth-preview" title="auth.json">
         <p className="relay-fold-description">
