@@ -352,21 +352,28 @@ pub fn codex_prompt_from_models(value: &Value, model: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 旧缓存不能降低官方请求的兼容版本；更新的有效缓存仍优先。
+/// 严格的 `主.次.修订` 三段数字；其余形态（预发布后缀、缺段、多段、空段）都不认。
+fn version_parts(text: &str) -> Option<[u64; 3]> {
+    let values = text
+        .split('.')
+        .map(|part| {
+            (!part.is_empty() && part.bytes().all(|ch| ch.is_ascii_digit()))
+                .then(|| part.parse::<u64>().ok())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    values.try_into().ok()
+}
+
+/// 官方目录请求的客户端版本：内置基线、`models_cache.json` 里的版本、本机已装 Codex CLI 的版本，取最高的。
+/// 旧缓存不能降低兼容版本，也不能压住更新的已装客户端（#3178）。
 pub fn codex_version(codex_home: &Path) -> String {
+    select_codex_version(codex_home, installed_codex_cli_version())
+}
+
+fn select_codex_version(codex_home: &Path, installed: Option<[u64; 3]>) -> String {
     let builtin = crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION;
-    let parts = |text: &str| -> Option<[u64; 3]> {
-        let values = text
-            .split('.')
-            .map(|part| {
-                (!part.is_empty() && part.bytes().all(|ch| ch.is_ascii_digit()))
-                    .then(|| part.parse::<u64>().ok())
-                    .flatten()
-            })
-            .collect::<Option<Vec<_>>>()?;
-        values.try_into().ok()
-    };
-    std::fs::read_to_string(codex_home.join("models_cache.json"))
+    let cached = std::fs::read_to_string(codex_home.join("models_cache.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|value| {
@@ -375,10 +382,109 @@ pub fn codex_version(codex_home: &Path) -> String {
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .filter(|version| {
-            parts(version).is_some_and(|value| value >= parts(builtin).unwrap())
+        .and_then(|version| Some((version_parts(&version)?, version)));
+    let installed = installed
+        .map(|[major, minor, patch]| ([major, minor, patch], format!("{major}.{minor}.{patch}")));
+    let mut best = (version_parts(builtin).unwrap(), builtin.to_string());
+    for candidate in [cached, installed].into_iter().flatten() {
+        if candidate.0 > best.0 {
+            best = candidate;
+        }
+    }
+    best.1
+}
+
+/// 取 `codex --version` 输出里的版本，只留 `主.次.修订`：
+/// `codex-cli 0.169.0-alpha.11.1` 按 `0.169.0` 算，与缓存里 `client_version` 的形态一致。
+fn parse_cli_version(output: &str) -> Option<[u64; 3]> {
+    output.split_whitespace().find_map(|token| {
+        let token = token.trim_start_matches('v');
+        version_parts(token.split(['-', '+']).next()?)
+    })
+}
+
+/// 跑一次 `<cli> --version`（最多等 3 秒）。
+fn probe_cli_version(cli: &Path) -> Option<[u64; 3]> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut command = Command::new(cli);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // 网关跑在图形进程里：不加这个标志，Windows 上每次探测都会闪一下控制台窗口。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::windows_create_no_window());
+    }
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(Some(_)) => return None,
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    parse_cli_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn newest_cli_version(candidates: &[std::path::PathBuf]) -> Option<[u64; 3]> {
+    candidates
+        .iter()
+        .filter_map(|cli| probe_cli_version(cli))
+        .max()
+}
+
+/// 本机会被用到的 Codex CLI：桌面版自带的那份，和 PATH 里排第一的 `codex`。
+fn installed_cli_candidates() -> Vec<std::path::PathBuf> {
+    let app_dir = crate::app_paths::resolve_codex_app_dir(None);
+    let mut found = Vec::from_iter(crate::remote_control::sidecar::resolve_codex_cli(
+        app_dir.as_deref(),
+    ));
+    let names: &[&str] = if cfg!(windows) {
+        &["codex.exe", "codex.cmd"]
+    } else {
+        &["codex"]
+    };
+    found.extend(std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            names
+                .iter()
+                .map(|name| dir.join(name))
+                .find(|path| path.is_file())
         })
-        .unwrap_or_else(|| builtin.to_string())
+    }));
+    found
+}
+
+/// 本机已装 Codex CLI 的目录版本。每个网关请求都会问一次，所以探测结果在进程里留 60 秒；
+/// 探测失败（没装、跑不起来）也留，避免每次请求都去拉进程。
+fn installed_codex_cli_version() -> Option<[u64; 3]> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, Option<[u64; 3]>)>> = Mutex::new(None);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((probed_at, version)) = *cache {
+        if probed_at.elapsed() < Duration::from_secs(60) {
+            return version;
+        }
+    }
+    let version = newest_cli_version(&installed_cli_candidates());
+    *cache = Some((Instant::now(), version));
+    version
 }
 
 /// Codex CLI 的 User-Agent：`codex_cli_rs/0.159.0 (Mac OS 26.0.0; arm64) Apple_Terminal/455`。
@@ -805,9 +911,9 @@ mod tests {
         assert_eq!(codex_prompt_from_models(&cache, "x"), None);
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("models_cache.json"), cache.to_string()).unwrap();
-        assert_eq!(codex_version(temp.path()), "0.170.2");
+        assert_eq!(select_codex_version(temp.path(), None), "0.170.2");
         assert_eq!(
-            codex_version(&temp.path().join("missing")),
+            select_codex_version(&temp.path().join("missing"), None),
             crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION
         );
         assert!(codex_user_agent("0.170.2").starts_with("codex_cli_rs/0.170.2 ("));
@@ -823,7 +929,7 @@ mod tests {
         ] {
             let cache = json!({"client_version": version}).to_string();
             std::fs::write(temp.path().join("models_cache.json"), &cache).unwrap();
-            assert_eq!(codex_version(temp.path()), builtin, "{version}");
+            assert_eq!(select_codex_version(temp.path(), None), builtin, "{version}");
             assert_eq!(
                 std::fs::read_to_string(temp.path().join("models_cache.json")).unwrap(),
                 cache,
@@ -835,10 +941,92 @@ mod tests {
                 temp.path().join("models_cache.json"),
                 json!({"client_version": version}).to_string(),
             ).unwrap();
-            assert_eq!(codex_version(temp.path()), version);
+            assert_eq!(select_codex_version(temp.path(), None), version);
         }
         std::fs::write(temp.path().join("models_cache.json"), "{invalid").unwrap();
-        assert_eq!(codex_version(temp.path()), builtin);
+        assert_eq!(select_codex_version(temp.path(), None), builtin);
+    }
+
+    #[test]
+    fn stale_cache_cannot_hold_back_a_newer_installed_cli() {
+        // #3178：缓存停在 0.164.0，本机已装 0.169.x；官方目录按版本放出新模型。
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("models_cache.json"),
+            json!({"client_version": "0.164.0", "fetched_at": "2026-10-24T03:09:17Z"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(select_codex_version(temp.path(), None), "0.164.0");
+        assert_eq!(
+            select_codex_version(temp.path(), Some([0, 169, 1])),
+            "0.169.1"
+        );
+        // 缓存更新或一样新时仍用缓存；已装的更旧、旧到低于内置基线时都不降版本。
+        assert_eq!(
+            select_codex_version(temp.path(), Some([0, 164, 0])),
+            "0.164.0"
+        );
+        assert_eq!(
+            select_codex_version(temp.path(), Some([0, 150, 0])),
+            "0.164.0"
+        );
+        std::fs::write(
+            temp.path().join("models_cache.json"),
+            json!({"client_version": "0.170.2"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            select_codex_version(temp.path(), Some([0, 169, 1])),
+            "0.170.2"
+        );
+        // 没有缓存时，已装版本也高于内置基线。
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            select_codex_version(empty.path(), Some([0, 169, 1])),
+            "0.169.1"
+        );
+        assert_eq!(
+            select_codex_version(empty.path(), Some([0, 100, 0])),
+            crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION
+        );
+    }
+
+    #[test]
+    fn cli_version_output_is_reduced_to_the_catalog_version() {
+        assert_eq!(parse_cli_version("codex-cli 0.169.1\n"), Some([0, 169, 1]));
+        // 预发布按去掉后缀的版本算，与 Codex 写进缓存的 client_version 一致。
+        assert_eq!(
+            parse_cli_version("codex-cli 0.169.0-alpha.11.1"),
+            Some([0, 169, 0])
+        );
+        assert_eq!(parse_cli_version("codex v0.170.2+build"), Some([0, 170, 2]));
+        assert_eq!(parse_cli_version("no version here"), None);
+        assert_eq!(parse_cli_version(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_cli_version_is_read_from_the_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = temp.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let old = script("old", "echo 'codex-cli 0.164.0'");
+        let new = script("new", "echo 'codex-cli 0.169.0-alpha.11.1'");
+        let broken = script("broken", "echo 'codex-cli 9.9.9'; exit 1");
+        let missing = temp.path().join("missing");
+        assert_eq!(probe_cli_version(&new), Some([0, 169, 0]));
+        assert_eq!(probe_cli_version(&broken), None, "启动失败的 CLI 不算");
+        assert_eq!(probe_cli_version(&missing), None);
+        assert_eq!(
+            newest_cli_version(&[old, missing, new, broken]),
+            Some([0, 169, 0])
+        );
+        assert_eq!(newest_cli_version(&[]), None);
     }
 
     #[test]

@@ -545,7 +545,9 @@ async fn official_catalog_and_probe_negotiate_one_version_despite_an_old_native_
         if cached_version == "0.124.0" {
             assert_ne!(version, cached_version);
         } else {
-            assert_eq!(version, cached_version);
+            // 本机若装了更新的 Codex CLI，会取更新的那个（#3178）；不会比缓存更低。
+            let parts = |text: &str| text.split('.').map(|part| part.parse::<u64>().unwrap()).collect::<Vec<_>>();
+            assert!(parts(&version) >= parts(cached_version), "{version}");
         }
         assert!(seen[0].request_line.contains(&format!("client_version={version}")));
         for request in &seen {
