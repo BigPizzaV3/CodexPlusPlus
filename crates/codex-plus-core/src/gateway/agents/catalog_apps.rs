@@ -1609,7 +1609,7 @@ fn openclaw_path(env: &AgentEnv) -> PathBuf {
 }
 
 fn openclaw_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
-    let root = set.json(&openclaw_path(env))?;
+    let root = set.json5(&openclaw_path(env))?;
     let provider = object_entry(
         object_entry(object_entry(root, "models"), "providers"),
         PROVIDER_ID,

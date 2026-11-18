@@ -1,20 +1,35 @@
 use std::path::Path;
 
 use anyhow::{Context, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
-use super::{files, jsonc_edit, spec};
+use super::{editor_format::Format, files, jsonc_edit, spec};
 use crate::gateway::{apply::ApplyContext, restore};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigView {
-    pub source: String,
-    pub contents: String,
+    #[serde(flatten)]
+    pub snapshot: ConfigSnapshot,
+    pub input_format: &'static str,
     pub keys: Vec<String>,
     pub editable: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ConfigSnapshot {
+    pub source: String,
+    pub contents: String,
+}
+
+impl ConfigSnapshot {
+    fn check(&self, source: &str, contents: &str) -> anyhow::Result<()> {
+        ensure!(self.source == source, "配置来源已变更，请重新打开");
+        ensure!(self.contents == contents, "配置已变更，请重新打开");
+        Ok(())
+    }
 }
 
 const COMMON_KEYS: &[&str] = &[
@@ -44,15 +59,16 @@ fn common_doc(text: &str) -> anyhow::Result<DocumentMut> {
         .map_err(|_: toml_edit::TomlError| anyhow::anyhow!("通用配置不是合法的 TOML"))
 }
 
-fn codex(ctx: &ApplyContext, edit: Option<(&str, &str)>) -> anyhow::Result<ConfigView> {
-    let mut settings = ctx.settings.load()?;
+fn codex(ctx: &ApplyContext, edit: Option<(&ConfigSnapshot, &str)>) -> anyhow::Result<ConfigView> {
+    let source = "Codex++ · relayCommonConfigContents (TOML)";
+    let settings = ctx.settings.load()?;
     let mut full = common_doc(&settings.relay_common_config_contents)?;
     let mut visible = full.clone();
     visible
         .as_table_mut()
         .retain(|key, _| COMMON_KEYS.contains(&key));
     if let Some((original, next)) = edit {
-        ensure!(visible.to_string() == original, "配置已变更，请重新打开");
+        original.check(source, &visible.to_string())?;
         let draft = common_doc(next)?;
         for (key, item) in draft.iter() {
             ensure!(COMMON_KEYS.contains(&key), "此处不支持修改 {key}");
@@ -107,8 +123,10 @@ fn codex(ctx: &ApplyContext, edit: Option<(&str, &str)>) -> anyhow::Result<Confi
                 full[key] = item.clone();
             }
         }
-        settings.relay_common_config_contents = full.to_string();
-        ctx.settings.save(&settings)?;
+        ctx.settings.update(serde_json::json!({
+            "revision": settings.settings_revision,
+            "relayCommonConfigContents": full.to_string(),
+        }))?;
         crate::settings::notify_external_settings_change();
         visible = full;
         visible
@@ -116,8 +134,11 @@ fn codex(ctx: &ApplyContext, edit: Option<(&str, &str)>) -> anyhow::Result<Confi
             .retain(|key, _| COMMON_KEYS.contains(&key));
     }
     Ok(ConfigView {
-        source: "Codex++ · relayCommonConfigContents (TOML)".into(),
-        contents: visible.to_string(),
+        snapshot: ConfigSnapshot {
+            source: source.into(),
+            contents: visible.to_string(),
+        },
+        input_format: "TOML",
         keys: COMMON_KEYS.iter().map(|key| key.to_string()).collect(),
         editable: true,
     })
@@ -152,11 +173,17 @@ const DISPLAY_FIELDS: &[(&str, Kind)] = &[
     ("showTimestamps", Kind::Bool),
 ];
 
-fn source_only(source: String, edit: Option<(&str, &str)>) -> anyhow::Result<ConfigView> {
+fn source_only(
+    source: String,
+    edit: Option<(&ConfigSnapshot, &str)>,
+) -> anyhow::Result<ConfigView> {
     ensure!(edit.is_none(), "此配置没有可在这里修改的字段");
     Ok(ConfigView {
-        source,
-        contents: String::new(),
+        snapshot: ConfigSnapshot {
+            source,
+            contents: String::new(),
+        },
+        input_format: "",
         keys: vec![],
         editable: false,
     })
@@ -164,57 +191,62 @@ fn source_only(source: String, edit: Option<(&str, &str)>) -> anyhow::Result<Con
 
 fn preferences(
     path: &Path,
+    agent: &str,
     section: Option<&str>,
     declared: &[(&str, Kind)],
-    edit: Option<(&str, &str)>,
+    edit: Option<(&ConfigSnapshot, &str)>,
 ) -> anyhow::Result<ConfigView> {
     let source = match section {
         Some(key) => format!("{} · {key}", path.display()),
+        None if matches!(agent, "vscode" | "vscode-insiders" | "vscodium") => {
+            format!(
+                "{} · 默认 User/settings.json（不跟随当前 profile）",
+                path.display()
+            )
+        }
         None => path.display().to_string(),
+    };
+    let extension = if agent == "openclaw" {
+        Some("json5")
+    } else {
+        path.extension().and_then(|ext| ext.to_str())
+    };
+    let native = match extension {
+        Some("yaml" | "yml") => Some(Format::Yaml),
+        Some("json5") => Some(Format::Json5),
+        Some("json" | "jsonc" | "toml") => None,
+        _ => return source_only(source, edit),
     };
     let before = restore::read_optional(path)?;
     let raw = before.as_deref().unwrap_or_default();
-    let extension = path.extension().and_then(|ext| ext.to_str());
-    let mut doc =
-        match extension {
-            Some("toml") => restore::toml_value(before.as_deref())?,
-            Some("yaml" | "yml") => {
-                let doc = files::YamlDoc::parse(raw);
-                let mut values = Map::new();
-                for &(key, _) in declared.iter().chain(DISPLAY_FIELDS) {
-                    if let Some(text) = doc.scalar(key) {
-                        let block = doc.block(key).expect("scalar comes from this block");
-                        if block.lines().skip(1).all(|line| {
-                            line.trim().is_empty() || line.trim_start().starts_with('#')
-                        }) && !text.starts_with(['[', '{', '&', '*', '!', '|', '>'])
-                        {
-                            values.insert(
-                                key.into(),
-                                serde_json::from_str(&text).unwrap_or(Value::String(text)),
-                            );
-                        } else if declared.iter().any(|(name, _)| *name == key) {
-                            anyhow::bail!("{key} 不是可编辑的标量");
-                        }
-                    } else if doc.has(key) && declared.iter().any(|(name, _)| *name == key) {
-                        anyhow::bail!("{key} 不是可编辑的标量");
-                    }
-                }
-                Value::Object(values)
-            }
-            Some("json" | "jsonc" | "json5") => files::parse_jsonc(raw)?,
-            _ => return source_only(source, edit),
-        };
-    let root = doc
+    let mut initial = raw.to_owned();
+    if native.is_some()
+        && (raw.trim().is_empty()
+            || matches!(native, Some(Format::Yaml))
+                && raw
+                    .lines()
+                    .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#')))
+    {
+        if !initial.is_empty() && !initial.ends_with('\n') {
+            initial.push('\n');
+        }
+        initial.push_str("{}\n");
+    }
+    let mut doc = match extension {
+        Some("toml") => restore::toml_value(before.as_deref())?,
+        Some("json" | "jsonc") => jsonc_edit::read_preferences(raw)?,
+        _ => native.context("未知配置格式")?.read(&initial)?,
+    };
+    let mut root = doc
         .as_object_mut()
         .context("配置根节点必须是对象，未改动文件")?;
-    let root = match section {
-        Some(key) => root
+    for key in section.into_iter().flat_map(|key| key.split('.')) {
+        root = root
             .entry(key)
             .or_insert_with(|| Value::Object(Map::new()))
             .as_object_mut()
-            .with_context(|| format!("{key} 不是配置对象，未改动文件"))?,
-        None => root,
-    };
+            .with_context(|| format!("{key} 不是配置对象，未改动文件"))?;
+    }
     for &(key, kind) in declared {
         ensure!(
             root.get(key).is_none_or(|value| kind.accepts(value)),
@@ -236,73 +268,105 @@ fn preferences(
         .iter()
         .filter_map(|(key, _)| root.get(*key).map(|value| (key.to_string(), value.clone())))
         .collect();
-    let mut contents = serde_json::to_string_pretty(&visible)?;
+    let format_view = |values: &Map<String, Value>| -> anyhow::Result<String> {
+        if extension == Some("toml") {
+            Ok(toml::to_string_pretty(values)?)
+        } else if matches!(native, Some(Format::Yaml)) {
+            Ok(serde_saphyr::to_string(values)?)
+        } else {
+            Ok(serde_json::to_string_pretty(values)?)
+        }
+    };
+    let mut contents = format_view(&visible)?;
     if let Some((original, next)) = edit {
-        ensure!(original == contents, "配置已变更，请重新打开");
-        let draft: Map<String, Value> =
-            serde_json::from_str(next).context("请输入合法的 JSON 对象")?;
-        for (key, value) in &draft {
+        original.check(&source, &contents)?;
+        let parsed = match extension {
+            Some("toml") => restore::toml_value(Some(next))?,
+            Some("json" | "jsonc") => Value::Object(jsonc_edit::preference_draft(next)?),
+            _ => native.context("未知配置格式")?.read(next)?,
+        };
+        let draft = parsed.as_object().context("设置必须是键值对象")?;
+        for (key, value) in draft {
             let (_, kind) = fields
                 .iter()
                 .find(|(name, _)| *name == key.as_str())
                 .with_context(|| format!("此处不支持修改 {key}"))?;
             ensure!(kind.accepts(value), "{key} 的值无效");
         }
-        if draft != visible {
+        if draft != &visible {
             let text = match extension {
                 Some("toml") => {
-                    let mut doc: DocumentMut = raw.parse().context("无法解析 TOML 配置")?;
+                    let mut doc = common_doc(raw)?;
+                    let table = if let Some(section) = section {
+                        doc.as_table_mut()
+                            .entry(section)
+                            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+                            .as_table_like_mut()
+                            .context("目标不是 TOML 表，未改动文件")?
+                    } else {
+                        doc.as_table_mut()
+                    };
                     for &(key, _) in &fields {
                         if draft.get(key) == visible.get(key) {
                             continue;
                         }
-                        match draft.get(key) {
-                            Some(Value::String(text)) => doc[key] = toml_edit::value(text.as_str()),
-                            Some(Value::Bool(value)) => doc[key] = toml_edit::value(*value),
-                            Some(Value::Number(value)) => {
-                                doc[key] = if let Some(integer) = value.as_i64() {
-                                    toml_edit::value(integer)
-                                } else {
-                                    toml_edit::value(value.as_f64().context("数字超出范围")?)
+                        let mut value = match draft.get(key) {
+                            Some(Value::String(text)) => toml_edit::Value::from(text.as_str()),
+                            Some(Value::Bool(value)) => toml_edit::Value::from(*value),
+                            Some(Value::Number(value)) => match value.as_i64() {
+                                Some(integer) => toml_edit::Value::from(integer),
+                                None => {
+                                    toml_edit::Value::from(value.as_f64().context("数字超出范围")?)
                                 }
-                            }
+                            },
                             None => {
-                                doc.remove(key);
+                                table.remove(key);
+                                continue;
                             }
                             _ => anyhow::bail!("{key} 的值无效"),
+                        };
+                        if let Some(previous) =
+                            table.get_mut(key).and_then(toml_edit::Item::as_value_mut)
+                        {
+                            *value.decor_mut() = previous.decor().clone();
+                            *previous = value;
+                        } else {
+                            table.insert(key, toml_edit::Item::Value(value));
                         }
                     }
                     doc.to_string()
-                }
-                Some("yaml" | "yml") => {
-                    let mut doc = files::YamlDoc::parse(raw);
-                    for &(key, _) in &fields {
-                        if draft.get(key) == visible.get(key) {
-                            continue;
-                        }
-                        if let Some(value) = draft.get(key) {
-                            doc.set(key, value);
-                        } else {
-                            doc.remove(key);
-                        }
-                    }
-                    doc.render()
                 }
                 _ => {
                     for key in visible.keys() {
                         root.remove(key);
                     }
                     root.extend(draft.clone());
-                    jsonc_edit::render(before.as_deref(), &doc)?
+                    match native {
+                        Some(Format::Yaml) if initial != raw => {
+                            let separator = if raw.is_empty() || raw.ends_with('\n') {
+                                ""
+                            } else {
+                                "\n"
+                            };
+                            format!("{raw}{separator}{}", serde_saphyr::to_string(&doc)?)
+                        }
+                        Some(format) => format.patch(&initial, &doc)?,
+                        None => jsonc_edit::render(before.as_deref(), &doc)?,
+                    }
                 }
             };
             files::write_file(path, Some(&text))?;
-            contents = serde_json::to_string_pretty(&draft)?;
+            contents = format_view(draft)?;
         }
     }
     Ok(ConfigView {
-        source,
-        contents,
+        snapshot: ConfigSnapshot { source, contents },
+        input_format: match extension {
+            Some("toml") => "TOML",
+            Some("json5") => "JSON5",
+            Some("yaml" | "yml") => "YAML",
+            _ => "JSON / JSONC",
+        },
         keys: fields.iter().map(|(key, _)| key.to_string()).collect(),
         editable: true,
     })
@@ -311,7 +375,7 @@ fn preferences(
 pub fn config(
     ctx: &ApplyContext,
     agent: &str,
-    edit: Option<(&str, &str)>,
+    edit: Option<(&ConfigSnapshot, &str)>,
 ) -> anyhow::Result<ConfigView> {
     let _guard = crate::gateway::apply::AGENT_CONFIG_LOCK
         .lock()
@@ -340,6 +404,22 @@ pub fn config(
             &[("theme", Kind::Text), ("hideBanner", Kind::Bool)]
         }
         "omp" => &[("theme", Kind::Text)],
+        "openclaw" => {
+            section = Some("ui.prefs");
+            &[
+                ("locale", Kind::Text),
+                ("chatShowThinking", Kind::Bool),
+                ("chatShowToolCalls", Kind::Bool),
+            ]
+        }
+        "hermes" => {
+            section = Some("display");
+            &[("skin", Kind::Text), ("language", Kind::Text)]
+        }
+        "jcode" => {
+            section = Some("ui");
+            &[("theme", Kind::Text)]
+        }
         "droid" => &[("includeCoAuthoredByDroid", Kind::Bool)],
         "jetbrains-air" => {
             path = super::catalog_apps::air_opencode_config(&ctx.agent_env);
@@ -350,8 +430,9 @@ pub fn config(
             &[]
         }
         "openchamber" if path.exists() => {
+            let source = path.display().to_string();
             let before = restore::read_optional(&path)?.context("偏好文件已移动，请重新打开")?;
-            let mut doc = files::parse_jsonc(&before)?;
+            let mut doc = jsonc_edit::read_preferences(&before)?;
             ensure!(
                 doc.get("version") == Some(&Value::from(1)),
                 "不支持此偏好文件版本"
@@ -370,9 +451,8 @@ pub fn config(
             }
             let mut contents = serde_json::to_string_pretty(&view)?;
             if let Some((original, next)) = edit {
-                ensure!(original == contents, "配置已变更，请重新打开");
-                let draft: Map<String, Value> =
-                    serde_json::from_str(next).context("请输入合法的 JSON 对象")?;
+                original.check(&source, &contents)?;
+                let draft = jsonc_edit::preference_draft(next)?;
                 ensure!(
                     draft
                         .iter()
@@ -390,9 +470,9 @@ pub fn config(
                 }
             }
             return Ok(ConfigView {
-                source: path.display().to_string(),
+                snapshot: ConfigSnapshot { source, contents },
+                input_format: "JSON / JSONC",
                 keys: vec!["theme".into()],
-                contents,
                 editable: true,
             });
         }
@@ -422,5 +502,5 @@ pub fn config(
         }
         _ => &[],
     };
-    preferences(&path, section, fields, edit)
+    preferences(&path, agent, section, fields, edit)
 }

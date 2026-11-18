@@ -306,7 +306,7 @@ fn generic_preview(
     }
     for (path, record) in &saved.files {
         let before = sources.read(path)?;
-        let after = match agents::files::restored_text(record, before.as_deref()) {
+        let after = match agents::connect::restored_config_text(spec, record, before.as_deref()) {
             Ok(after) => after,
             Err(_) => {
                 result.can_disconnect = false;
@@ -915,6 +915,35 @@ mod tests {
             result.files[0].diff,
             text_diff(Some(&current), Some(&actual))
         );
+    }
+
+    #[test]
+    fn legacy_openclaw_preview_matches_disconnect_after_json5_edits() {
+        let fixture = fixture();
+        let ctx = &fixture.ctx;
+        let spec = agents::spec("openclaw").unwrap();
+        let agent = ToolId::Unknown(spec.id.into());
+        let path = (spec.config_path)(&ctx.agent_env);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"label":"before"}"#).unwrap();
+        enable_binding(ctx, &agent, binding()).unwrap();
+        let stash_path = agents::connect::stash_path(ctx, spec.id);
+        let mut saved: AgentStash = restore::load_stash(&stash_path).unwrap();
+        saved.files.get_mut(&path).unwrap().format = agents::files::FileFormat::Json;
+        restore::save_stash(&stash_path, &saved).unwrap();
+        let current = fs::read_to_string(&path).unwrap().replace(r#""before""#, "'after'");
+        fs::write(&path, &current).unwrap();
+
+        let before_preview = snapshot(fixture.temp.path());
+        let settings = BackendSettings::default();
+        let result = preview(ctx, &settings, &agent).unwrap();
+        assert!(result.can_disconnect, "{:?}", result.warnings);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(snapshot(fixture.temp.path()), before_preview);
+        apply::disable_binding(ctx, &settings, &agent).unwrap();
+        let actual = fs::read_to_string(&path).unwrap();
+        assert!(actual.contains("'after'") && !actual.contains("/gw/openclaw"));
+        assert_eq!(result.files[0].diff, text_diff(Some(&current), Some(&actual)));
     }
 
     #[test]
