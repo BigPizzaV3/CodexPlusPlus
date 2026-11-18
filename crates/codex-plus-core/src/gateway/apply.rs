@@ -53,7 +53,7 @@ pub struct ApplyContext {
 pub const CODEX_GATEWAY_RELAY_ID: &str = "codex-plus-gateway";
 
 // Agent 配置与 gateway.json 需要作为一组顺序更新；gateway.json 自身的锁不能跨配置写入持有。
-static AGENT_CONFIG_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static AGENT_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 /// Codex 当前在用网关托管的供应商：本地代理收到的 Codex 请求只是转给网关的一跳。
 pub fn codex_hops_through_gateway() -> bool {

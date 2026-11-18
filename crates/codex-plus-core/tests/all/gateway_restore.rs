@@ -305,6 +305,36 @@ fn seed_codex_direct(ctx: &ApplyContext) {
     .unwrap();
 }
 
+#[test]
+fn codex_editor_saves_the_shared_template_without_switching_provider() {
+    use codex_plus_core::gateway::agents::editor::config;
+    let fixture = fixture(57417);
+    let ctx = &fixture.ctx;
+    seed_codex_direct(ctx);
+    let mut settings = ctx.settings.load().unwrap();
+    settings.relay_common_config_contents = "[projects.'local']\ntrust_level = 'trusted'\n".into();
+    ctx.settings.save(&settings).unwrap();
+    let before = config(ctx, "codex", None).unwrap();
+    assert!(!before.contents.contains("projects"));
+    for invalid in ["[invalid", "model = 'other'", "[mcp_servers.test]\ncommand='test'"] {
+        assert!(config(ctx, "codex", Some((&before.contents, invalid))).is_err());
+        assert_eq!(ctx.settings.load().unwrap().relay_common_config_contents, settings.relay_common_config_contents);
+    }
+    config(ctx, "codex", Some((&before.contents, "developer_instructions = 'fixture note'"))).unwrap();
+    let saved = ctx.settings.load().unwrap();
+    assert!(saved.relay_common_config_contents.contains("projects"));
+    assert_eq!(saved.active_relay_id, settings.active_relay_id);
+    assert!(ctx.gateway.load().unwrap().binding(&ToolId::Codex).is_none());
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let connected = config(ctx, "codex", None).unwrap();
+    config(ctx, "codex", Some((&connected.contents, "developer_instructions = 'connected note'"))).unwrap();
+    assert_eq!(codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap(), 1);
+    let live = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+    assert!(live.contains("connected note"));
+    disable_binding(ctx, &ctx.settings.load().unwrap(), &ToolId::Codex).unwrap();
+    assert!(config(ctx, "codex", None).unwrap().contents.contains("connected note"));
+}
+
 fn append(path: &std::path::Path, text: &str) {
     let mut current = read(path);
     current.push_str(text);

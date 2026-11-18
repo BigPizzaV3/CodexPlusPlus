@@ -344,6 +344,7 @@ test("选择模型或修改详情保存失败时保持已保存的显示", async
     CxStatusIcon: "CxStatusIcon", AgentIcon: "AgentIcon", CxBadge: "CxBadge",
     ModelPicker: "ModelPicker", Switch: "Switch", ChevronRight: "ChevronRight",
     ResetModelSelections: "ResetModelSelections",
+    AgentConfigButton: "AgentConfigButton",
     AgentDetail: "AgentDetail", AgentDisconnectDialog: "AgentDisconnectDialog",
   });
   const render = () => {
@@ -408,6 +409,7 @@ test("已接入和已断开的 Agent 都能确认重置历史模型选择", asyn
     CxStatusIcon: "CxStatusIcon", AgentIcon: "AgentIcon", CxBadge: "CxBadge",
     ModelPicker: "ModelPicker", Switch: "Switch", ChevronRight: "ChevronRight",
     AgentDetail: "AgentDetail", AgentDisconnectDialog: "AgentDisconnectDialog", RotateCcw: "RotateCcw",
+    AgentConfigButton: "AgentConfigButton",
   });
   const render = (enabled: boolean, hasBinding = true, busy: string | null = null) => exports.AgentRow({
     agent: { agent: "codex", name: "Codex", enabled },
