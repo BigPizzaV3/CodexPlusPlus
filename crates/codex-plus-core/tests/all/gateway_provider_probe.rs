@@ -542,10 +542,15 @@ async fn official_catalog_and_probe_negotiate_one_version_despite_an_old_native_
         assert!(result.ok, "{result:?}");
         let seen = tokio::time::timeout(Duration::from_secs(5), upstream).await.unwrap().unwrap();
         let version = codex_plus_core::gateway::chatgpt_backend::codex_version(temp.path());
+        // 本机安装的 Codex 更新时会取安装版本（#3178），所以缓存版本只是下限。
         if cached_version == "0.124.0" {
             assert_ne!(version, cached_version);
         } else {
-            assert_eq!(version, cached_version);
+            assert_ne!(
+                codex_plus_core::codex_cli_version::compare(&version, cached_version),
+                Some(std::cmp::Ordering::Less),
+                "{version}"
+            );
         }
         assert!(seen[0].request_line.contains(&format!("client_version={version}")));
         for request in &seen {

@@ -22,6 +22,7 @@ pub mod claude_hooks;
 pub mod claude_local_backend;
 pub mod claude_localization;
 pub mod codex_app_state;
+pub mod codex_cli_version;
 pub mod config_doctor;
 pub mod codex_home;
 pub mod custom_prompts;
