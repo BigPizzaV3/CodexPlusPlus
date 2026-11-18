@@ -1350,6 +1350,7 @@ export const SPONSORS: Array<{ id: string; expiresAt: string }> = [
   { id: "apikeyfun", expiresAt: "2026-11-22" },
   { id: "cccccc-api", expiresAt: "2026-12-01" },
   { id: "tokenmy", expiresAt: "2026-11-20" },
+  { id: "vegaapi", expiresAt: "2027-03-18" },
 ];
 
 /** 本地日期（YYYY-MM-DD），与到期日按天比较。 */

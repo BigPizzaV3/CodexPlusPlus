@@ -13734,6 +13734,17 @@ ${key} = ${value}`]);
       model: ""
     },
     {
+      id: "vegaapi",
+      name: "VegaAPI",
+      websiteUrl: "https://vegaapi.com",
+      apiKeyUrl: "https://vegaapi.com/register",
+      category: "aggregator",
+      baseUrl: "https://vegaapi.com/v1",
+      protocol: "responses",
+      // 模型留空：添加时「从上游获取」或手填。
+      model: ""
+    },
+    {
       id: "novita",
       name: "Novita AI",
       category: "aggregator",
@@ -14566,7 +14577,8 @@ ${key} = ${value}`]);
     { id: "runapi", expiresAt: "2026-12-07" },
     { id: "apikeyfun", expiresAt: "2026-11-22" },
     { id: "cccccc-api", expiresAt: "2026-12-01" },
-    { id: "tokenmy", expiresAt: "2026-11-20" }
+    { id: "tokenmy", expiresAt: "2026-11-20" },
+    { id: "vegaapi", expiresAt: "2027-03-18" }
   ];
   function localDay(now) {
     const pad = (value) => String(value).padStart(2, "0");
