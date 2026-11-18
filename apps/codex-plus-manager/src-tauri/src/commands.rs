@@ -8924,6 +8924,7 @@ pub fn load_request_logs(
     since_ms: Option<u64>,
     agent: Option<String>,
     relay_id: Option<String>,
+    relay_unknown: Option<bool>,
     model: Option<String>,
 ) -> CommandResult<Value> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
@@ -8932,6 +8933,7 @@ pub fn load_request_logs(
         since_ms,
         agent: present(agent),
         relay_id: present(relay_id),
+        relay_unknown: relay_unknown.unwrap_or(false),
         model: present(model),
     };
     match codex_plus_core::request_log::read_request_log_page(limit, &filter) {

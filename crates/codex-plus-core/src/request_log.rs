@@ -411,6 +411,8 @@ pub struct RequestLogFilter {
     pub since_ms: Option<u64>,
     pub agent: Option<String>,
     pub relay_id: Option<String>,
+    /// 只要没有供应商归属（`relay_id` 为空）的请求：对应用量统计「按供应商」里的「未知」行，和不筛供应商是两回事。
+    pub relay_unknown: bool,
     /// 按用量统计的模型名（[`RequestLogEntry::usage_model`]）筛，忽略大小写。
     pub model: Option<String>,
 }
@@ -425,6 +427,7 @@ impl RequestLogFilter {
         self.since_ms.is_none_or(|since| started >= since)
             && self.agent.as_deref().is_none_or(|agent| entry.agent_id() == agent)
             && self.relay_id.as_deref().is_none_or(|relay| entry.relay_id == relay)
+            && (!self.relay_unknown || entry.relay_id.trim().is_empty())
             && self
                 .model
                 .as_deref()
@@ -836,6 +839,35 @@ mod tests {
         assert_eq!(ids(&limited), vec!["e3", "e2"]);
         assert!(limited.more, "符合条件的不止这些");
         assert_eq!(limited.oldest_ms, Some(1_000), "最早一条按整个文件算");
+    }
+
+    #[test]
+    fn page_unknown_provider_filter_only_keeps_requests_without_relay() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("request-log.jsonl");
+        for (index, relay) in ["relay-a", "", "relay-b", "  ", ""].into_iter().enumerate() {
+            let mut row = entry(&format!("e{index}"));
+            row.started_at_ms = 1_000 * (index as u64 + 1);
+            row.relay_id = relay.to_string();
+            row.relay_name = if relay.is_empty() { String::new() } else { format!("name-{relay}") };
+            append_request_log_at(&path, &row).unwrap();
+        }
+        let ids = |filter: &RequestLogFilter| {
+            read_request_log_page_at(&path, 10, filter)
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>()
+        };
+
+        let unknown = RequestLogFilter { relay_unknown: true, ..Default::default() };
+        assert_eq!(ids(&unknown), vec!["e4", "e3", "e1"], "「未知」只留没有供应商的请求");
+        let ranged = RequestLogFilter { relay_unknown: true, since_ms: Some(3_500), ..Default::default() };
+        assert_eq!(ids(&ranged), vec!["e4", "e3"], "时间段照常生效");
+        assert_eq!(ids(&RequestLogFilter::default()).len(), 5, "不筛供应商仍是全部");
+        let named = RequestLogFilter { relay_id: Some("relay-b".to_string()), ..Default::default() };
+        assert_eq!(ids(&named), vec!["e2"], "普通供应商 id 筛选不变");
     }
 
     #[test]

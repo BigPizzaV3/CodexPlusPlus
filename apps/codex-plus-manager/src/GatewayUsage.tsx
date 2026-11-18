@@ -221,7 +221,9 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
                 onClick={() => openRequestLog(split === "agent"
                   ? { agent: group.key === "claude" || group.key === "grok" ? group.key : "codex", range }
                   : split === "provider"
-                    ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
+                    ? group.key
+                      ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
+                      : { relayUnknown: true, relayLabel: t("未知"), range }
                     : { model: group.key, range })}
                 onKeyDown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLElement).click(); }}
                 role="button"
