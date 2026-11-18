@@ -1563,6 +1563,20 @@ export function usageRangeStart(range: UsageRange, now: Date = new Date()): numb
   return start.getTime();
 }
 
+/** 请求页的供应商筛选：`unknown` 为真表示「未知」（没有供应商归属的请求），和 null（全部供应商）是两种状态。 */
+export type RelayFilter = { id: string; label: string; unknown?: boolean };
+
+/** 统计表点一行带进来的供应商筛选：空 id 是「未知」行，不能当成没有筛选。 */
+export function relayFilterFromFocus(focus: { relayId?: string; relayLabel?: string; relayUnknown?: boolean }): RelayFilter | null {
+  if (focus.relayUnknown) return { id: "", label: focus.relayLabel || "", unknown: true };
+  return focus.relayId ? { id: focus.relayId, label: focus.relayLabel || focus.relayId } : null;
+}
+
+/** 读请求日志时的供应商参数：「未知」单独传 relayUnknown，普通供应商仍按 id 精确筛。 */
+export function relayFilterArgs(filter: RelayFilter | null): { relayId: string | null; relayUnknown: boolean } {
+  return filter?.unknown ? { relayId: null, relayUnknown: true } : { relayId: filter?.id || null, relayUnknown: false };
+}
+
 /** 一条请求的费用：不到一分钱时多留几位，免得都显示成 0.00。 */
 export function formatRequestCost(cost: UsageCost): string {
   if (cost.amount <= 0) return "—";
