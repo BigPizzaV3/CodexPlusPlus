@@ -985,6 +985,15 @@ fn effective_model_detailed(
     {
         return (requested_slug, false);
     }
+    // `<供应商 id>/<模型>` 的供应商不在这个 Agent 的池里（删了 / 关了 / 被排除）时，不按「未知模型」
+    // 改写成默认模型（#3179：`<直连供应商>/gpt-6.1-sol` 被静默换成默认的 gpt-6-astra）。
+    // 池里有别家提供同名模型的，原样交给 expand_model 去掉前缀路由（#2897）；前缀是网关里
+    // 还在的供应商、池里又没人提供同名模型的，原样留着，由 resolve_plan 明确报错。
+    if unpooled_qualified_bare(gateway, binding, &requested_slug).is_some()
+        || unpooled_provider_prefix(gateway, binding, &requested_slug).is_some()
+    {
+        return (requested_slug, false);
+    }
     match binding.unknown_model {
         UnknownModelPolicy::MapToDefault if !default_model.is_empty() => {
             let mapped = !default_model.eq_ignore_ascii_case(&requested_slug);
@@ -1090,6 +1099,52 @@ fn qualified_in<'a>(
         .copied()
         .find(|relay| relay.id.eq_ignore_ascii_case(prefix))
         .map(|relay| (relay, rest.trim().to_string()))
+}
+
+/// `<前缀>/<模型>` 形式、前缀不是池内供应商、整串也没人当模型名声明时，拆出 (前缀, 模型)。
+fn unpooled_qualified<'m>(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &'m str,
+) -> Option<(&'m str, &'m str)> {
+    if model.starts_with(GROUP_MODEL_PREFIX) || is_pattern(model) {
+        return None;
+    }
+    let (prefix, rest) = model.split_once('/')?;
+    let rest = rest.trim();
+    if rest.is_empty()
+        || qualified_provider(gateway, binding, model).is_some()
+        || declared_by_any(&binding_pool_relays(gateway, binding), model)
+    {
+        return None;
+    }
+    Some((prefix, rest))
+}
+
+/// 池外供应商的限定名，池里有别家提供去掉前缀的同名模型时，返回那个模型名（expand_model 的 #2897 规则）。
+fn unpooled_qualified_bare<'m>(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &'m str,
+) -> Option<&'m str> {
+    let (_, rest) = unpooled_qualified(gateway, binding, model)?;
+    binding_pool_relays(gateway, binding)
+        .iter()
+        .any(|relay| serves(relay, rest))
+        .then_some(rest)
+}
+
+/// 限定名的前缀是网关里还在、但这个 Agent 用不了（关了 / 被排除）的供应商时返回它。
+fn unpooled_provider_prefix<'a>(
+    gateway: &'a GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<&'a GatewayProvider> {
+    let (prefix, _) = unpooled_qualified(gateway, binding, model)?;
+    gateway
+        .providers
+        .iter()
+        .find(|provider| provider.relay.id.eq_ignore_ascii_case(prefix))
 }
 
 /// 列表里有没有供应商把这个完整名字当模型名声明。
@@ -1727,6 +1782,23 @@ fn resolve_plan_with(
         && let Some(remembered) = recall_answer(group, conversation, Instant::now())
     {
         prefer_remembered(&mut relays, &remembered);
+    }
+    if relays.is_empty()
+        && group_id.is_none()
+        && let Some(provider) = unpooled_provider_prefix(gateway, binding, &model)
+    {
+        // 显式指定了某家供应商的模型：那家用不了、池里也没人提供同名模型时明确报错，
+        // 不改发到默认模型，也不把带前缀的名字原样发给别家（#3179）。
+        let reason = if !provider.enabled {
+            "已关闭".to_string()
+        } else {
+            format!("不在 {} 的网关供应商池里", agent.as_str())
+        };
+        let rest = model.split_once('/').map(|(_, rest)| rest.trim()).unwrap_or_default();
+        bail!(
+            "模型 {model} 指定的供应商「{}」{reason}，池里也没有其它供应商提供 {rest}；为避免换成别的模型，这次请求没有发出。请在网关里打开该供应商或把它加回供应商池，或改选其它模型",
+            provider.relay.name
+        );
     }
     if relays.is_empty() && group_id.is_none() {
         // 原样转发的未知模型：交给默认模型所在的供应商。
@@ -2527,8 +2599,11 @@ mod tests {
             routed(&gateway, "kimi/kimi-k3-preview"),
             vec![pair("kimi", "kimi-k3-preview")]
         );
-        // 关掉的供应商不能用前缀绕过。
-        assert_eq!(routed(&gateway, "off/off-model")[0].1, "deepseek-v4-pro");
+        // 关掉的供应商不能用前缀绕过；也不静默换成默认模型，明确报错（#3179）。
+        let error = resolve_plan(&gateway, &ToolId::Claude, "off/off-model", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("已关闭"), "{error}");
     }
 
     #[test]
@@ -2774,6 +2849,85 @@ mod tests {
                 .iter()
                 .all(|(_, model)| !model.starts_with("gone/")),
             "前缀不能原样发给上游"
+        );
+    }
+
+    /// #3179：`<池外供应商>/<模型>` 不能按「未知模型」静默换成默认模型。
+    #[test]
+    fn qualified_model_of_an_unpooled_provider_is_never_swapped_for_the_default() {
+        let codex_gateway = |policy: UnknownModelPolicy| {
+            let mut gateway = GatewaySettings {
+                providers: vec![
+                    provider("pool-astra", "gpt-6-astra\ngpt-6.1-terra"),
+                    provider("direct-cpa", "gpt-6.1-sol"),
+                ],
+                ..GatewaySettings::default()
+            };
+            gateway.bindings.insert(
+                "codex".to_string(),
+                AgentBinding {
+                    enabled: true,
+                    model: "gpt-6-astra".to_string(),
+                    unknown_model: policy,
+                    ..AgentBinding::default()
+                },
+            );
+            gateway
+        };
+        let routed_codex = |gateway: &GatewaySettings, model: &str| {
+            resolve_plan(gateway, &ToolId::Codex, model, None).map(|plan| {
+                plan.candidates
+                    .into_iter()
+                    .map(|candidate| (candidate.relay.id, candidate.upstream_model))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // 供应商在池里：照常发给它。
+        let gateway = codex_gateway(UnknownModelPolicy::MapToDefault);
+        assert_eq!(
+            routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap(),
+            vec![pair("direct-cpa", "gpt-6.1-sol")]
+        );
+
+        for policy in [UnknownModelPolicy::MapToDefault, UnknownModelPolicy::Passthrough] {
+            // 被排除出 Codex 的池：池里没人提供 gpt-6.1-sol → 明确报错，不改发到 gpt-6-astra。
+            let mut gateway = codex_gateway(policy);
+            gateway
+                .bindings
+                .get_mut("codex")
+                .unwrap()
+                .pool_exclude
+                .push("direct-cpa".to_string());
+            let binding = gateway.active_binding(&ToolId::Codex).unwrap();
+            assert_eq!(
+                effective_model_detailed(&gateway, binding, "gpt-6-astra", "direct-cpa/gpt-6.1-sol"),
+                ("direct-cpa/gpt-6.1-sol".to_string(), false),
+                "{policy:?}"
+            );
+            let error = routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap_err().to_string();
+            assert!(error.contains("direct-cpa") && error.contains("不在 codex 的网关供应商池里"), "{error}");
+
+            // 关掉的供应商同理。
+            let mut gateway = codex_gateway(policy);
+            gateway.providers[1].enabled = false;
+            let error = routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap_err().to_string();
+            assert!(error.contains("已关闭"), "{error}");
+
+            // 池里有别家提供同名模型：去掉前缀交给它，仍是 gpt-6.1-sol。
+            gateway.providers.push(provider("official", "gpt-6.1-sol"));
+            assert_eq!(
+                routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap(),
+                vec![pair("official", "gpt-6.1-sol")],
+                "{policy:?}"
+            );
+        }
+
+        // 真正的未知模型仍按策略改写成默认模型（#2874 不受影响）。
+        let gateway = codex_gateway(UnknownModelPolicy::MapToDefault);
+        assert_eq!(
+            routed_codex(&gateway, "gpt-unknown").unwrap(),
+            vec![pair("pool-astra", "gpt-6-astra")]
         );
     }
 
