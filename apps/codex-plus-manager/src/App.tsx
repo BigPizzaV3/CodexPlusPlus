@@ -15,6 +15,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { AgentConfigButton, AgentConfigDialog, OpenAgentConfig, type ConfigTarget } from "./AgentConfigEditor";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -1792,6 +1793,7 @@ const defaultSettings: BackendSettings = {
 };
 
 export function App() {
+  const [configTarget, setConfigTarget] = useState<ConfigTarget | null>(null);
   useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => loadThemePreference());
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
@@ -5248,6 +5250,7 @@ export function App() {
         ) : null;
 
   return (
+    <OpenAgentConfig.Provider value={(target, openPage) => { if (openPage) void navigate("gateway"); setConfigTarget(target); }}>
     <div className={`shell ${theme}`}>
       <AppSidebar
         setupCard={setupCard}
@@ -5639,6 +5642,7 @@ export function App() {
           </>)}
         </section>
       </main>
+      {configTarget ? <AgentConfigDialog key={configTarget.agent} {...configTarget} onClose={() => setConfigTarget(null)} /> : null}
       {updatePrompt && !agentFocusOpen && !tourOpen ? (
         <UpdateDialog
           update={updatePrompt}
@@ -5739,6 +5743,7 @@ export function App() {
         />
       ) : null}
     </div>
+    </OpenAgentConfig.Provider>
   );
 }
 
@@ -8340,6 +8345,7 @@ function RelayScreen({
         )}
       />
       {connection}
+      <AgentConfigButton agent="codex" name="Codex" navigate />
       <NativeAuthControl onRestart={() => actions.restart()} />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
@@ -8573,6 +8579,7 @@ function CodexMultiLaunchScreen({
           </button>
         )}
       />
+      <AgentConfigButton agent="codex" name="Codex" navigate />
       <CxSection count={instances.length} title={t("运行中的实例")}>
         <CxCard className="multi-launch-running-panel">
           {instances.length ? instances.map((instance) => {
@@ -15104,7 +15111,7 @@ function RelayFileEditors({
         title={t("通用配置文件")}
       >
         <p className="relay-fold-description">
-          {t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。点此展开编辑。")}
+          {t("跨供应商的用户设置保存在 Codex 通用配置中。")}
         </p>
             <Button
               onClick={async () => {
@@ -15136,11 +15143,7 @@ function RelayFileEditors({
               <Download className="h-4 w-4" />
               {t("提取当前供应商配置")}
             </Button>
-          <SyncedTextarea
-            className="relay-file-textarea"
-            value={form.relayCommonConfigContents}
-            onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
-          />
+          <AgentConfigButton agent="codex" name="Codex" />
       </RelayFold>
       <RelayFold className="relay-file-panel relay-auth-preview" defaultOpen sectionId="auth-preview" title="auth.json">
         <p className="relay-fold-description">

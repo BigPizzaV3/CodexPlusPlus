@@ -16,6 +16,7 @@ pub mod catalog_cli;
 pub mod catalog_core;
 pub mod catalog_tools;
 pub mod connect;
+pub mod editor;
 pub mod env;
 pub mod files;
 mod jsonc_edit;

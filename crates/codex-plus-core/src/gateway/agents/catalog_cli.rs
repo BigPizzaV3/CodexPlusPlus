@@ -448,7 +448,7 @@ fn openchamber_provider_id() -> String {
 }
 
 /// OpenChamber 偏好项：`{ "value": …, "updatedAt": <毫秒> }`，值没变时不动时间戳。
-fn set_openchamber_pref(fields: &mut Map<String, Value>, key: &str, value: Value) {
+pub(super) fn set_openchamber_pref(fields: &mut Map<String, Value>, key: &str, value: Value) {
     if fields.get(key).and_then(|field| field.get("value")) == Some(&value) {
         return;
     }

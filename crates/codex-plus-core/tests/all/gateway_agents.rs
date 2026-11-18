@@ -93,6 +93,84 @@ fn snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
 }
 
 #[test]
+fn editor_preserves_user_fields_through_gateway_refresh_and_disconnect() {
+    use agents::editor::config;
+    for (id, key, value, forbidden) in [
+        ("pi", "theme", serde_json::json!("light"), "defaultProvider"),
+        ("opencode", "autoupdate", serde_json::json!(false), "provider"),
+    ] {
+        let fixture = fixture();
+        let ctx = &fixture.ctx;
+        let agent = ToolId::Unknown(id.to_owned());
+        let path = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
+        let original_gateway = ctx.gateway.load().unwrap();
+        let initial = config(ctx, id, None).unwrap();
+        assert!(!path.exists());
+        let draft = serde_json::json!({(key): value});
+        let saved = config(ctx, id, Some((&initial.contents, &draft.to_string()))).unwrap();
+        assert_eq!(ctx.gateway.load().unwrap().bindings, original_gateway.bindings);
+        enable_binding(ctx, &agent, binding()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        for invalid in ["[".to_owned(), serde_json::json!({(forbidden): "override"}).to_string()] {
+            assert!(config(ctx, id, Some((&saved.contents, &invalid))).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        let changed_value = if id == "pi" { serde_json::json!("dark") } else { serde_json::json!(true) };
+        let changed = serde_json::json!({(key): changed_value});
+        let bindings = ctx.gateway.load().unwrap().bindings;
+        config(ctx, id, Some((&saved.contents, &changed.to_string()))).unwrap();
+        assert!(config(ctx, id, Some((&saved.contents, "{}"))).is_err());
+        assert_eq!(ctx.gateway.load().unwrap().bindings, bindings);
+        codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap();
+        assert!(agents::connect::points_at_gateway(ctx, agents::spec(id).unwrap()));
+        let read = || agents::files::parse_jsonc(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(read()[key], changed_value);
+        disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
+        assert_eq!(read(), changed);
+    }
+}
+
+#[test]
+fn editor_opens_every_adapter_without_connecting_or_creating_files() {
+    let fixture = fixture();
+    let before = snapshot(&fixture.home);
+    let ctx = &fixture.ctx;
+    let bindings = ctx.gateway.load().unwrap().bindings;
+    for id in agents::all().iter().map(|spec| spec.id).chain(["codex", "claude", "grok", "claude-desktop-local"]) {
+        let view = agents::editor::config(ctx, id, None).unwrap_or_else(|error| panic!("{id}: {error:#}"));
+        assert!(!view.source.is_empty(), "{id}");
+        if !view.editable { assert!(agents::editor::config(ctx, id, Some(("", "{}"))).is_err()); }
+    }
+    assert_eq!(bindings, ctx.gateway.load().unwrap().bindings);
+    assert_eq!(before, snapshot(&fixture.home));
+}
+
+#[test]
+fn editor_keeps_unrelated_toml_yaml_and_nested_json_fields() {
+    let fixture = fixture();
+    let ctx = &fixture.ctx;
+    for (id, input, draft, excluded, expected) in [
+        ("stepcode", "# setup\ntheme = 'dark'\n[providers.mine]\napi_key = 'fixture'\n", r#"{"theme":"light"}"#, "api_key", "light"),
+        ("omp", "# setup\ntheme: dark\nmodelRoles:\n  default: fixture\n", r#"{"theme":"light"}"#, "modelRoles", "light"),
+        ("gemini-cli", "{\n// setup\n\"security\":{\"fixture\":true},\"ui\":{\"hideBanner\":false}}", r#"{"hideBanner":true}"#, "security", "true"),
+        ("openchamber", r#"{"version":1,"fields":{"theme":{"value":"dark","updatedAt":1},"defaultModel":{"value":"fixture"}}}"#, r#"{"theme":"light"}"#, "defaultModel", "light"),
+    ] {
+        let path = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, input).unwrap();
+        let view = agents::editor::config(ctx, id, None).unwrap();
+        assert!(!view.contents.contains(excluded));
+        assert!(agents::editor::config(ctx, id, Some((&view.contents, r#"{"model":"x"}"#))).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), input);
+        agents::editor::config(ctx, id, Some((&view.contents, draft))).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(excluded) && text.contains("fixture"));
+        if input.contains("setup") { assert!(text.contains("setup")); }
+        assert!(agents::editor::config(ctx, id, None).unwrap().contents.contains(expected));
+    }
+}
+
+#[test]
 fn every_generic_agent_connects_and_restores_exactly() {
     for spec in agents::all() {
         let fixture = fixture();

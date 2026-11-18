@@ -2124,6 +2124,16 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
     )
 }
 
+#[tauri::command]
+pub fn read_agent_config(agent: String) -> Result<codex_plus_core::gateway::agents::editor::ConfigView, String> {
+    codex_plus_core::gateway::agents::editor::config(&context(), &agent, None).map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+pub fn save_agent_config(agent: String, original: String, contents: String) -> Result<codex_plus_core::gateway::agents::editor::ConfigView, String> {
+    codex_plus_core::gateway::agents::editor::config(&context(), &agent, Some((&original, &contents))).map_err(|error| format!("{error:#}"))
+}
+
 /// 在访达 / 资源管理器里显示网关改动的 Agent 配置文件。
 #[tauri::command]
 pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<GatewayPayload>> {
