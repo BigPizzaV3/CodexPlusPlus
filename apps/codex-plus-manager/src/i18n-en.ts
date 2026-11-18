@@ -1834,6 +1834,8 @@ export const EN_PLAIN: Record<string, string> = {
   "用哪些供应商": "Providers used",
   "模型名后带供应商": "Show provider after model names",
   "发现本机已登录的订阅账号": "Discover subscription accounts signed in on this computer",
+  "Codex 用 WebSocket 连接": "Use WebSocket for Codex",
+  "Codex 与 Codex++ 之间改用 WebSocket 长连接，延迟更低。只建议上游是 ChatGPT 官方账号或 OpenAI API 时打开；第三方中转常不保留连接内的上下文，会导致工具调用后丢上下文。关着时走 HTTP，与 2.6 一致。新连接生效。": "Codex talks to Codex++ over a long-lived WebSocket for lower latency. Only recommended when the upstream is a ChatGPT account or the OpenAI API; third-party relays often don't keep per-connection context, which loses context after tool calls. When off, Codex uses HTTP as in 2.6. Applies to new connections.",
   "读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。": "Reads the local sign-in files of Kiro, Cursor, Gemini CLI, Devin, Droid and Command Code, and offers to import them on the Providers page. The Keychain is never read, and nothing joins the provider pool until you import it.",
   "关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。": "While off, other clients' sign-in files are not read. Turn it on to have accounts already signed in here (Kiro, Cursor and others) offered for import on the Providers page.",
   "来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关」页关掉「发现本机已登录的订阅账号」。": "Found in these official clients' sign-in files. Importing copies the sign-in into the gateway. To stop this notice, turn off \"Discover subscription accounts signed in on this computer\" on the Gateway page.",

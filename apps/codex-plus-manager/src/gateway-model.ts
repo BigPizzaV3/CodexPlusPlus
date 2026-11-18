@@ -58,6 +58,8 @@ export type GatewaySettings = {
   modelSuffix?: boolean;
   /** 发现本机已登录的订阅账号，供应商页提示导入（旧版后端没有，视为关）。 */
   localLoginDiscovery?: boolean;
+  /** Codex 与 Codex++ 之间用 Responses WebSocket（默认关，走 HTTP/SSE）。 */
+  responsesWebsocket?: boolean;
   /** 模型收藏（管理器模型下拉里的星标），Codex 的选择器里也显示。 */
   favoriteModels?: string[];
   /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */

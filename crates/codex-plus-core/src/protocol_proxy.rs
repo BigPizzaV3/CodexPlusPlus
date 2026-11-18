@@ -304,28 +304,34 @@ pub(crate) fn managed_protocol_proxy_base_urls() -> Vec<String> {
 /// 本地 WS 入口只能把 `response.create` 转给原生 Responses 上游；Chat Completions /
 /// Anthropic 兼容路由只能走 HTTP/SSE。混合协议池一律在握手阶段回 426，让客户端继续
 /// 用 HTTP，而不是升级成功后在路由阶段把整轮请求打成失败（#2963 的能力边界）。
-pub(crate) fn websocket_upgrade_serves_all_routes(
+/// 不允许 WS 升级的原因（诊断日志用）；`None` 表示可以升级。
+pub(crate) fn websocket_upgrade_block_reason(
     settings: &crate::settings::BackendSettings,
-) -> bool {
+) -> Option<&'static str> {
+    // 读不到网关配置时不能假定可以用 WS，否则会把错误推迟到 101 之后。
+    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
+        return Some("gateway_settings_unreadable");
+    };
+    // 默认关：Codex 走 HTTP/SSE，与 2.6 一致（见 `GatewaySettings::responses_websocket`）。
+    if !gateway.responses_websocket {
+        return Some("websocket_disabled");
+    }
     let native_responses = |relay: &crate::settings::RelayProfile| {
         relay.protocol == crate::settings::RelayProtocol::Responses
     };
     if settings.relay_profiles_enabled
         && !settings.relay_profiles.iter().all(native_responses)
     {
-        return false;
+        return Some("mixed_protocol_relays");
     }
     // 网关成员各自有协议；池里只要有一位是 Chat / Anthropic，升级成功也可能在路由阶段失败。
-    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
-        // 读不到网关配置时不能假定全部是原生 Responses，否则会把错误推迟到 101 之后。
-        return false;
-    };
-    gateway
+    let all_native = gateway
         .with_extension_providers()
         .providers
         .iter()
         .filter(|provider| provider.enabled)
-        .all(|provider| native_responses(&provider.relay))
+        .all(|provider| native_responses(&provider.relay));
+    (!all_native).then_some("mixed_protocol_relays")
 }
 
 pub(crate) fn is_managed_protocol_proxy_base_url(value: &str) -> bool {
@@ -4024,7 +4030,7 @@ async fn open_responses_proxy_request_once(
         (route.relay.clone(), vec![route.relay.clone()])
     } else if let Some(id) = crate::responses_websocket::pinned_relay() {
         let relay = settings.relay_profiles.iter().find(|relay| relay.id == id)
-            .cloned().ok_or(crate::responses_websocket::Unsupported("WS 续接的原供应商已移除，请使用完整上下文开始新响应"))?;
+            .cloned().ok_or(crate::responses_websocket::ContinuationLost("WS 续接的原供应商已移除，请使用完整上下文开始新响应"))?;
         (relay.clone(), vec![relay])
     } else {
         let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
@@ -4437,7 +4443,7 @@ async fn open_responses_proxy_request_once(
                     // HTTP 200 不是升级成功，不能在网关中当成成功候选。
                     (None, Some(response), if (200..300).contains(&status) { 502 } else { status })
                 }
-                Err(error) if error.is::<crate::responses_websocket::Unsupported>() || error.is::<crate::responses_websocket::RequiresHttp>() => return Err(error),
+                Err(error) if error.is::<crate::responses_websocket::Unsupported>() || error.is::<crate::responses_websocket::RequiresHttp>() || error.is::<crate::responses_websocket::ContinuationLost>() => return Err(error),
                 Err(error) => {
                     if !strict_aggregate_model { crate::relay_rotation::record_relay_request_failure(&settings); }
                     if has_more_candidates {

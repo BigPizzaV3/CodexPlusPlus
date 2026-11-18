@@ -886,6 +886,8 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
   const localDiscovery = payload.gateway.localLoginDiscovery === true;
+  const responsesWebsocket = payload.gateway.responsesWebsocket === true;
+  const websocketHint = t("Codex 与 Codex++ 之间改用 WebSocket 长连接，延迟更低。只建议上游是 ChatGPT 官方账号或 OpenAI API 时打开；第三方中转常不保留连接内的上下文，会导致工具调用后丢上下文。关着时走 HTTP，与 2.6 一致。新连接生效。");
   const subagentFollow = payload.gateway.subagentModelFollowRequest === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
   const listen = `http://127.0.0.1:${payload.port}`;
@@ -975,6 +977,14 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               label={t("模型名后带供应商")}
               on={modelSuffix}
               onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+          <CxRow detail={websocketHint} title={t("Codex 用 WebSocket 连接")} tooltip={websocketHint}>
+            <Switch
+              pending={busy !== null}
+              label={t("Codex 用 WebSocket 连接")}
+              on={responsesWebsocket}
+              onToggle={() => void run("responses-websocket", "save_gateway_responses_websocket", { enabled: !responsesWebsocket }, t("保存网关选项"), true)}
             />
           </CxRow>
           <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")} tooltip={discoveryHint}>

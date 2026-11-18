@@ -1109,6 +1109,16 @@ pub fn save_gateway_local_login_discovery(enabled: bool) -> CommandResult<Option
     respond("网关选项已保存。", "保存网关选项失败", result)
 }
 
+/// 「Codex 用 WebSocket 连接」开关（默认关）：只改握手判断，已建立的 WS 连接用到断开为止。
+#[tauri::command]
+pub fn save_gateway_responses_websocket(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.responses_websocket = enabled;
+        Ok(())
+    });
+    respond("网关选项已保存。", "保存网关选项失败", result)
+}
+
 /// 本机已登录、还没进池的订阅账号（供应商页提示导入）。开关关着时不扫描，返回空。
 /// 单独一条命令、不放进 [`GatewayPayload`]：读 sqlite / 登录文件不便宜，payload 每次改动都会重建。
 #[tauri::command]

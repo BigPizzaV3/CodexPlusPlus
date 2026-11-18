@@ -258,7 +258,8 @@ async fn changed_oauth_account_cannot_reuse_cached_continuation() {
     let error = continuation_after_auth_change(Some("account-a"), Some("account-b"))
         .await
         .unwrap_err();
-    assert!(error.is::<Unsupported>());
+    // 换了身份不能续接旧连接：要求客户端用完整上下文重来（标准错误码，Codex 会自动重发）。
+    assert!(error.is::<ContinuationLost>());
 }
 
 #[tokio::test]
@@ -266,7 +267,8 @@ async fn changed_api_key_cannot_reuse_cached_continuation() {
     let error = continuation_after_auth_change(None, None)
         .await
         .unwrap_err();
-    assert!(error.is::<Unsupported>());
+    // 换了身份不能续接旧连接：要求客户端用完整上下文重来（标准错误码，Codex 会自动重发）。
+    assert!(error.is::<ContinuationLost>());
 }
 
 #[tokio::test]
@@ -274,7 +276,8 @@ async fn unknown_oauth_account_keeps_credentials_in_connection_identity() {
     let error = continuation_after_auth_change(Some(""), Some(""))
         .await
         .unwrap_err();
-    assert!(error.is::<Unsupported>());
+    // 换了身份不能续接旧连接：要求客户端用完整上下文重来（标准错误码，Codex 会自动重发）。
+    assert!(error.is::<ContinuationLost>());
 }
 
 #[tokio::test]
@@ -295,7 +298,7 @@ async fn gateway_ws_temporary_member_failover_preserves_group_sticky() {
     relay_b["activeApiKeyId"] = json!("group-b-key");
     let _fixture = Fixture::new(relay_a.clone());
     let gateway: GatewaySettings = serde_json::from_value(json!({
-        "version":3,
+        "version":3,"responsesWebsocket":true,
         "bindings":{"codex":{"enabled":true,"model":"group/ws-sticky-group","token":"local-test"}},
         "providers":[{"relay":relay_a,"keyConcurrency":1},{"relay":relay_b,"keyConcurrency":1}],
         "groups":[{"id":"ws-sticky-group","name":"Sticky group","mode":"rotate","sticky":"session","members":[{"model":"ws-test/ws-model"},{"model":"group-b/ws-model"}]}],
