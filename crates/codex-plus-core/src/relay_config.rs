@@ -4417,6 +4417,79 @@ fn apply_external_catalog_fallback(
     normalize_optional_toml(doc)
 }
 
+/// 顶层 `model_context_window` / `model_auto_compact_token_limit` 与托管目录里逐模型值的取舍（#3168）。
+///
+/// Codex 里这两个顶层键对所有模型生效，并且压过目录里每个模型自己的 `context_window` /
+/// `auto_compact_token_limit`（真实 Codex 实测：目录写 1M、顶层 128000，显示「共 128k」）。
+/// 顶层值可能来自通用配置，也可能来自供应商级「上下文大小」「压缩上下文大小」。
+/// 只要有模型单独设了窗口（或压缩阈值），就把顶层值折进目录、作为其余模型的值，再从顶层去掉，
+/// 逐模型设置才生效；没有逐模型设置时保持原样（顶层单值行为不变）。
+struct TopLevelContextLimits {
+    /// 有模型单独设了不同的窗口时为顶层窗口值（要折进目录并去掉顶层键）。
+    window: Option<u64>,
+    /// 有模型单独设了压缩阈值时为顶层压缩值（要折进目录并去掉顶层键）。
+    compact: Option<u64>,
+}
+
+impl TopLevelContextLimits {
+    fn for_entries(config_text: &str, entries: &[crate::model_suffix::ModelCatalogEntry]) -> Self {
+        let read = |key: &str| {
+            root_positive_int_string(config_text, key).and_then(|value| value.parse::<u64>().ok())
+        };
+        let top_window = read("model_context_window");
+        let top_compact = read("model_auto_compact_token_limit");
+        let window = top_window.filter(|top| {
+            entries
+                .iter()
+                .any(|entry| entry.suffix_window.is_some_and(|window| window != *top))
+        });
+        let compact = top_compact
+            .filter(|_| entries.iter().any(|entry| entry.auto_compact_percent.is_some()));
+        Self { window, compact }
+    }
+
+    /// 没单独设窗口的模型用顶层窗口（与原先顶层对它们生效的结果一致）。
+    fn fallback_window(&self) -> Option<u64> {
+        self.window
+    }
+
+    /// 没单独设压缩阈值的模型写上顶层压缩值（原先顶层同样作用在它们身上）。
+    fn fold_compact_limit_into_catalog(
+        &self,
+        catalog_json: &str,
+        entries: &[crate::model_suffix::ModelCatalogEntry],
+    ) -> anyhow::Result<String> {
+        let Some(limit) = self.compact else {
+            return Ok(catalog_json.to_string());
+        };
+        let mut catalog: Value = serde_json::from_str(catalog_json)?;
+        let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+            return Ok(catalog_json.to_string());
+        };
+        for model in models.iter_mut() {
+            let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+                continue;
+            };
+            let has_own_percent = entries.iter().any(|entry| {
+                entry.slug.eq_ignore_ascii_case(slug) && entry.auto_compact_percent.is_some()
+            });
+            if !has_own_percent {
+                model["auto_compact_token_limit"] = json!(limit);
+            }
+        }
+        Ok(serde_json::to_string_pretty(&catalog)?)
+    }
+
+    fn remove_folded_keys(&self, doc: &mut DocumentMut) {
+        if self.window.is_some() {
+            doc.remove("model_context_window");
+        }
+        if self.compact.is_some() {
+            doc.remove("model_auto_compact_token_limit");
+        }
+    }
+}
+
 fn apply_model_catalog_to_config(
     home: &Path,
     profile: &RelayProfile,
@@ -4807,16 +4880,18 @@ fn apply_model_catalog_to_config_with_live_policy(
     if let Some(parent) = catalog_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let top_level = TopLevelContextLimits::for_entries(&config_text, &entries);
     // Lite 线格式跟随上游能力：仅官方登录态 + ChatGPT 后端保留模板原值，
     // 公开 API / 第三方中转一律关闭（标准 Responses），不再以 provider id 近似判断。
     let catalog_json = crate::model_suffix::build_model_catalog_json_with_capabilities(
         &entries,
-        fallback,
+        fallback.or(top_level.fallback_window()),
         None,
         (!lite_supported).then_some(false),
         official_deepseek_responses,
         provider_multi_agent,
     );
+    let catalog_json = top_level.fold_compact_limit_into_catalog(&catalog_json, &entries)?;
     let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
     let catalog_json = if upstream_rejects_tool_search(profile) {
         disable_search_tool_in_catalog(&catalog_json)?
@@ -4827,6 +4902,7 @@ fn apply_model_catalog_to_config_with_live_policy(
     crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
     let mut doc = parse_toml_document(&config_text)?;
     doc["model_catalog_json"] = toml_edit::value(catalog_pointer);
+    top_level.remove_folded_keys(&mut doc);
     // #2683 验收 2：显式 v1 时必须压下 [features] multi_agent_v2——上游 schema 明言
     // 「An enabled features.multi_agent_v2 setting takes precedence」，闸门开着会单向
     // 覆盖目录里的经典协议声明，只写目录不够。这里写显式 false（false 不属于
