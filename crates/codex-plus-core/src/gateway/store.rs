@@ -719,6 +719,12 @@ pub struct GatewaySettings {
     /// 开着时供应商页提示可以导入。默认关（opt-in）：关着时不读这些登录文件。
     #[serde(default)]
     pub local_login_discovery: bool,
+    /// Codex 与 Codex++（直连本地代理和网关）之间用 Responses WebSocket（2.7.0 起支持）。
+    /// 默认关（opt-in）：握手阶段回 426，Codex 改走 HTTP/SSE，与 2.6 一致。WS 续接依赖上游保留
+    /// 连接内状态：第三方中转接受了升级却不保留状态时续接请求会丢推理和上下文（#3175），
+    /// 闲置后上游断开也会让续接失败（#3169）。需要更低延迟、上游确实支持时在网关选项里打开。
+    #[serde(default)]
+    pub responses_websocket: bool,
     /// 自动组上改过的设置（键是小写模型名）。没改过的自动组不落盘，跟着供应商池自动变化。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub auto_groups: BTreeMap<String, AutoGroupSettings>,
@@ -770,6 +776,7 @@ impl Default for GatewaySettings {
             auto_models: true,
             model_suffix: true,
             local_login_discovery: false,
+            responses_websocket: false,
             auto_groups: BTreeMap::new(),
             favorite_models: Vec::new(),
             image_models: BTreeMap::new(),

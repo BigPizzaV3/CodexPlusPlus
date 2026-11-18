@@ -254,6 +254,25 @@ test("a conflicting unclaimed managed source has a path and file dates without a
   assert.equal(collect(source).some((item) => item.type === "Button" && item.children.includes("关联受控源")), false);
 });
 
+test("details display a comparison error at its installation without inventing a modification date", () => {
+  const context: Record<string, any> = {
+    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
+    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes",
+  };
+  vm.createContext(context);
+  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  const elements = collect(context.SkillDetailDrawer({
+    skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
+      locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", rootKind: "claude", managed: false, enabled: true }] },
+    dates: {}, comparisonErrors: { claude: "nested link" }, backups: [], busy: false,
+  }));
+  const location = elements.find(item => item.type === "dd" && item.children.includes("C:/claude/alpha/SKILL.md"))!;
+  assert.ok(collect(location).some(item => item.props.role === "alert" && item.children.includes("nested link")));
+  assert.equal(collect(location).some(item => item.type === "time"), false);
+});
+
 test("a managed source directory is visible without a conflict", () => {
   const matched: Array<string | undefined> = [];
   const context: Record<string, any> = {

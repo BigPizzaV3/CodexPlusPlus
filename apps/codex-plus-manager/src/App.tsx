@@ -151,7 +151,7 @@ import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -7233,9 +7233,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const [query, setQuery] = useState("");
   // 时间段、供应商、模型在后端筛：日志只读最近 REQUEST_LOG_LIMIT 条，先截再筛会漏。
   const [range, setRange] = useState<UsageRange>(initialFocus.range ?? "all");
-  const [relayFilter, setRelayFilter] = useState<{ id: string; label: string } | null>(
-    initialFocus.relayId ? { id: initialFocus.relayId, label: initialFocus.relayLabel || initialFocus.relayId } : null,
-  );
+  const [relayFilter, setRelayFilter] = useState<RelayFilter | null>(() => relayFilterFromFocus(initialFocus));
   const [modelFilter, setModelFilter] = useState(initialFocus.model ?? "");
   const [more, setMore] = useState(false);
   const [oldestMs, setOldestMs] = useState<number | null>(null);
@@ -7264,7 +7262,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
     limit: REQUEST_LOG_LIMIT,
     sinceMs: sinceMs ?? null,
     agent: agentScope === "all" ? null : agentScope,
-    relayId: relayFilter?.id ?? null,
+    ...relayFilterArgs(relayFilter),
     model: modelFilter || null,
   };
   // 自动刷新的定时器拿最新的筛选条件；序号保证只认最后一次读取。
@@ -7295,7 +7293,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, agentScope, relayFilter?.id, modelFilter]);
+  }, [range, agentScope, filterArgs.relayId, filterArgs.relayUnknown, modelFilter]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -7475,7 +7473,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         <div className="request-log-chips">
           {relayFilter ? (
             <button className="request-log-chip" onClick={() => setRelayFilter(null)} title={t("去掉这个筛选")} type="button">
-              {tf("供应商：{0}", [relayFilter.label])}
+              {tf("供应商：{0}", [relayFilter.unknown ? t("未知") : relayFilter.label])}
               <X aria-hidden="true" className="h-3 w-3" />
             </button>
           ) : null}

@@ -465,6 +465,7 @@ pub fn run() {
             gateway_commands::reset_gateway_model_selections,
             gateway_commands::save_gateway_model_suffix,
             gateway_commands::save_gateway_local_login_discovery,
+            gateway_commands::save_gateway_responses_websocket,
             gateway_commands::scan_gateway_local_logins,
             gateway_commands::save_gateway_auto_group,
             gateway_commands::set_gateway_auto_group_enabled,

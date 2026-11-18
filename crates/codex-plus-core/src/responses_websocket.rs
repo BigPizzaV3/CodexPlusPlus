@@ -23,6 +23,18 @@ type UpstreamSocket = WebSocketStream<reqwest::Upgraded>;
 #[error("{0}")]
 pub(crate) struct Unsupported(pub(crate) &'static str);
 
+/// WS 续接（带 `previous_response_id`）接不上：原连接已关（上游闲置断开等）、模型变了、
+/// 原供应商或 Key 已不在路由里，或本连接根本没有这个响应。回给客户端 OpenAI 的标准错误码
+/// `previous_response_not_found`：Codex 收到后自己重连并发送完整上下文（0.169 实测），
+/// 用户看不到报错；以前回自定义错误码，Codex 把它当失败显示出来（#3169 / #3176 / #3183）。
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct ContinuationLost(pub(crate) &'static str);
+
+/// 客户端据此重发完整上下文的错误码（OpenAI Responses WebSocket 的约定）。
+const CONTINUATION_LOST_CODE: &str = "previous_response_not_found";
+const LOCAL_ERROR_CODE: &str = "local_responses_websocket_error";
+
 /// 这次请求只能走 HTTP（HTTP 专用的压缩 / exec 转换）。与 [`Unsupported`] 不同，
 /// 它说明的是传输选择而不是请求本身有误：下游连接会被关掉，让客户端重连时拿到 426 改走 HTTP。
 #[derive(Debug, thiserror::Error)]
@@ -97,7 +109,7 @@ pub(crate) fn pinned_relay() -> Option<String> {
 /// 原 Key 必须在路由收集阶段筛选，保留它的冷却候选，再由既有队列等名额。
 pub(crate) fn restrict_plan(plan: &mut RoutePlan) -> anyhow::Result<()> {
     if pinned_key().is_some() && plan.candidates.is_empty() && plan.waiting.is_empty() {
-        return Err(Unsupported(
+        return Err(ContinuationLost(
             "WS 续接的原供应商或 Key 已不在当前模型路由中；请使用完整上下文开始新响应",
         )
         .into());
@@ -212,7 +224,7 @@ pub(crate) async fn prepare(
                 if current.as_deref() != Some(&previous.connection)
                     || body.get("model").and_then(Value::as_str) != Some(&previous.model)
                 {
-                    return Err(Unsupported(
+                    return Err(ContinuationLost(
                         "WS 续接的原连接已关闭或模型已变更；请使用完整上下文开始新响应",
                     )
                     .into());
@@ -398,6 +410,8 @@ struct OpenFailure {
     status: u16,
     message: String,
     http: bool,
+    /// 错误事件里的 `error.code`：续接接不上时是 [`CONTINUATION_LOST_CODE`]。
+    code: &'static str,
 }
 
 struct Reservation {
@@ -540,7 +554,14 @@ fn start_connection(
 }
 
 fn error_event(lane: &str, status: u16, message: &str) -> Message {
-    let mut value = json!({"type":"error","status":status,"error":{"type":"invalid_request_error","code":"local_responses_websocket_error","message":message}});
+    error_event_with_code(lane, status, LOCAL_ERROR_CODE, message)
+}
+
+fn error_event_with_code(lane: &str, status: u16, code: &str, message: &str) -> Message {
+    let mut value = json!({"type":"error","status":status,"error":{"type":"invalid_request_error","code":code,"message":message}});
+    if code == CONTINUATION_LOST_CODE {
+        value["error"]["param"] = json!("previous_response_id");
+    }
     if !lane.is_empty() {
         value["stream_id"] = json!(lane);
     }
@@ -596,19 +617,27 @@ async fn open_request(
             status: 429,
             message: "本地 WS 响应亲和记录已达上限，请重新连接并发送完整上下文".into(),
             http: false,
+            code: LOCAL_ERROR_CODE,
         });
     }
-    let previous = body
+    let previous_id = body
         .get("previous_response_id")
         .and_then(Value::as_str)
-        .and_then(|id| {
-            registry
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .responses
-                .get(id)
-                .cloned()
-        });
+        .filter(|id| !id.trim().is_empty());
+    let previous = previous_id.and_then(|id| {
+        registry
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .responses
+            .get(id)
+            .cloned()
+    });
+    // 本连接没见过这个响应：不能把它当新请求发给某个上游（那边没有前文，增量输入会丢上下文），
+    // 让客户端重发完整上下文。
+    if previous_id.is_some() && previous.is_none() {
+        let message = ContinuationLost("WS 续接引用的响应不在本连接上；请使用完整上下文开始新响应").to_string();
+        return Err(OpenFailure { lane, status: 400, message, http: false, code: CONTINUATION_LOST_CODE });
+    }
     let context = RequestContext { registry, previous };
     REQUEST.scope(context, crate::extension_gateway::with_codex_response_plan(async {
         let mut log = crate::launcher::ProxyRequestLog::begin("GET", &path, Some(&body), headers.thread.clone().or(headers.session.clone()));
@@ -631,14 +660,19 @@ async fn open_request(
                     let message = error.to_string();
                     require_http_for_a_while(&message);
                     log.record_error("400", message.clone());
-                    return Err(OpenFailure { lane, status: 400, message, http: true });
+                    return Err(OpenFailure { lane, status: 400, message, http: true, code: LOCAL_ERROR_CODE });
+                }
+                if let Some(error) = error.downcast_ref::<ContinuationLost>() {
+                    let message = error.to_string();
+                    log.record_error("400", message.clone());
+                    return Err(OpenFailure { lane, status: 400, message, http: false, code: CONTINUATION_LOST_CODE });
                 }
                 let (status, message) = match error.downcast_ref::<Unsupported>() {
                     Some(error) => (400, error.to_string()),
                     None => (502, "WS 上游连接或请求准备失败".to_string()),
                 };
                 log.record_error(&status.to_string(), message.clone());
-                return Err(OpenFailure { lane, status, message, http: false });
+                return Err(OpenFailure { lane, status, message, http: false, code: LOCAL_ERROR_CODE });
             }
         };
         let reservation = Reservation { slot, submitted: false };
@@ -649,7 +683,7 @@ async fn open_request(
             let message = "选中的上游未接受标准 Responses WebSocket，请为此配置使用 HTTP".to_string();
             log.record_error(&status.to_string(), message.clone());
             require_http_for_a_while(&format!("upstream rejected WebSocket upgrade with HTTP {}", upstream.status_code));
-            return Err(OpenFailure { lane, status, message, http: true });
+            return Err(OpenFailure { lane, status, message, http: true, code: LOCAL_ERROR_CODE });
         };
         let phase = crate::settings::SettingsStore::default().load().unwrap_or_default().codex_app_third_party_reasoning_collapse;
         let transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(Some(&body))
@@ -788,8 +822,12 @@ pub(crate) async fn handle(
     let settings = crate::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    let http_fallback = http_fallback_active();
-    if http_fallback || !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+    let blocked = if http_fallback_active() {
+        Some("upstream_requires_http")
+    } else {
+        crate::protocol_proxy::websocket_upgrade_block_reason(&settings)
+    };
+    if let Some(reason) = blocked {
         crate::launcher::write_http_response(
             stream,
             "426 Upgrade Required",
@@ -803,7 +841,7 @@ pub(crate) async fn handle(
                 "method": "GET",
                 "path": path,
                 "status": "426 Upgrade Required",
-                "reason": if http_fallback { "upstream_requires_http" } else { "mixed_protocol_relays" },
+                "reason": reason,
             }),
         );
         return Ok(());
@@ -902,7 +940,7 @@ pub(crate) async fn handle(
             },
             result = opened_rx.recv(), if !preparing.0.is_empty() => {
                 match result.context("WS 请求准备任务退出")? {
-                    Err(OpenFailure { lane, status, message, http }) => {
+                    Err(OpenFailure { lane, status, message, http, code }) => {
                         preparing.0.remove(&lane);
                         if http {
                             draining = true;
@@ -914,7 +952,7 @@ pub(crate) async fn handle(
                                 send_message(&mut ws, error_event(&lane, status, &message)).await?;
                             }
                         } else {
-                            send_message(&mut ws, error_event(&lane, status, &message)).await?;
+                            send_message(&mut ws, error_event_with_code(&lane, status, code, &message)).await?;
                         }
                     }
                     Ok(opened) => {

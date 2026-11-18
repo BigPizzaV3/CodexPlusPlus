@@ -11,6 +11,8 @@ import {
   modelDispatch,
   modelDisplay,
   parseWeight,
+  relayFilterArgs,
+  relayFilterFromFocus,
   type GatewayPayload,
 } from "./gateway-model.ts";
 import { hubAgents, hubFeed, hubPoolState } from "./hub-overview-model.ts";
@@ -325,6 +327,33 @@ test("用量与请求日志并成一页：两个页签各是一条路由，统�
   assert.match(app, /invoke<RequestLogsResult>\("load_request_logs", filterRef\.current\)/, "时间段、供应商、模型在后端筛，先截 300 条再筛会漏");
   assert.match(app, /entry\.statusCode \|\| \(entry\.success \? "OK" : "ERR"\)/);
   assert.match(read("GatewayPage.tsx"), /<TopbarActions>\{tab === "usage" \? null : refreshButton\}<\/TopbarActions>/, "用量页签只留一个刷新");
+});
+
+test("统计里点「未知」供应商：请求页按「无供应商」筛，不退化成不筛（null）", () => {
+  // 「全部供应商」：没有筛选，后端不收到任何供应商条件。
+  assert.equal(relayFilterFromFocus({}), null);
+  assert.deepEqual(relayFilterArgs(null), { relayId: null, relayUnknown: false });
+
+  // 「未知」行的 relayId 是空串：必须得到一个筛选状态，而不是 null。
+  const unknown = relayFilterFromFocus({ relayUnknown: true, relayLabel: "未知" });
+  assert.notEqual(unknown, null, "「未知」和「全部供应商」是两种筛选状态");
+  assert.equal(unknown?.unknown, true);
+  assert.deepEqual(relayFilterArgs(unknown), { relayId: null, relayUnknown: true });
+  assert.notDeepEqual(relayFilterArgs(unknown), relayFilterArgs(null));
+  // 即使带着空 relayId 进来也一样，不能被 `relayId ? … : null` 吞掉。
+  assert.notEqual(relayFilterFromFocus({ relayId: "", relayUnknown: true }), null);
+
+  // 普通供应商仍按 id 精确筛，不带「未知」标记。
+  const named = relayFilterFromFocus({ relayId: "relay-a", relayLabel: "供应商 A" });
+  assert.deepEqual(named, { id: "relay-a", label: "供应商 A" });
+  assert.deepEqual(relayFilterArgs(named), { relayId: "relay-a", relayUnknown: false });
+
+  const usage = read("GatewayUsage.tsx");
+  assert.match(usage, /\{ relayUnknown: true, relayLabel: t\("未知"\), range \}/, "空 key 的供应商行点击带「未知」标记");
+  const app = read("App.tsx");
+  assert.match(app, /useState<RelayFilter \| null>\(\(\) => relayFilterFromFocus\(initialFocus\)\)/);
+  assert.match(app, /\.\.\.relayFilterArgs\(relayFilter\),/, "「未知」要把 relayUnknown 传给 load_request_logs");
+  assert.doesNotMatch(app, /relayId: relayFilter\?\.id \?\? null/, "不能再用 relayFilter?.id 拼参数，空 id 会变成不筛");
 });
 
 test("启动落在首页（赞助商推荐），不落在上次那个 Agent 的概览", () => {

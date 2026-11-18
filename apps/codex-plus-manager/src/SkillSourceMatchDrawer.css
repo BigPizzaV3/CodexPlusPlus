@@ -8,6 +8,8 @@
 .mg-version-list button { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 10px; padding:9px 10px; text-align:start; border-bottom:1px solid hsl(var(--border)); background:transparent; color:inherit; }
 .mg-version-list button:enabled:hover { background:hsl(var(--muted)); }
 .mg-version-list button:disabled { opacity:.55; }
+.mg-version-list button.mg-version-unavailable:disabled { opacity:1; cursor:default; }
+.mg-version-list .mg-version-unavailable [role="alert"] { color:hsl(var(--foreground)); }
 .mg-version-list small { grid-column:1/-1; overflow-wrap:anywhere; }
 .mg-version-list small,.mg-version-list time { color:hsl(var(--muted-foreground)); font-size:12px; font-variant-numeric:tabular-nums; }
 .mg-source-warnings { font-size:12px; overflow-wrap:anywhere; }

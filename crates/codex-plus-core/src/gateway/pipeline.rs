@@ -888,6 +888,7 @@ fn conversation_seed(request: &GatewayRequest<'_>) -> Option<String> {
 fn is_request_rejection(error: &anyhow::Error) -> bool {
     error.is::<crate::responses_websocket::Unsupported>()
         || error.is::<crate::responses_websocket::RequiresHttp>()
+        || error.is::<crate::responses_websocket::ContinuationLost>()
         || error
         .downcast_ref::<crate::protocol_proxy::UnsupportedEncryptedAgentContent>()
         .is_some()

@@ -10,6 +10,8 @@ export type RequestLogFocus = {
   agent?: "codex" | "claude" | "grok";
   relayId?: string;
   relayLabel?: string;
+  /** 点的是「未知」供应商行（请求没有供应商归属）；relayId 为空时靠它区分于「全部供应商」。 */
+  relayUnknown?: boolean;
   model?: string;
   range?: UsageRange;
 };

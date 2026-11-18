@@ -1399,6 +1399,8 @@ async fn fetch_official_login_model_ids(
     let credential = crate::official_login::resolve_official_credential(profile, false).await?;
     let base = crate::official_login::official_base_url();
     let endpoint = format!("{}/models", base.trim().trim_end_matches('/'));
+    // 先在阻塞线程里探测本机安装的 Codex 版本（有缓存），旧 models_cache 不再把目录限制在旧客户端上（#3178）。
+    let _ = tokio::task::spawn_blocking(crate::codex_cli_version::installed_codex_version).await;
     let version = crate::gateway::chatgpt_backend::codex_version(
         &crate::codex_home::default_codex_home_dir(),
     );

@@ -58,6 +58,8 @@ export type GatewaySettings = {
   modelSuffix?: boolean;
   /** 发现本机已登录的订阅账号，供应商页提示导入（旧版后端没有，视为关）。 */
   localLoginDiscovery?: boolean;
+  /** Codex 与 Codex++ 之间用 Responses WebSocket（默认关，走 HTTP/SSE）。 */
+  responsesWebsocket?: boolean;
   /** 模型收藏（管理器模型下拉里的星标），Codex 的选择器里也显示。 */
   favoriteModels?: string[];
   /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
@@ -1559,6 +1561,20 @@ export function usageRangeStart(range: UsageRange, now: Date = new Date()): numb
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   start.setDate(start.getDate() - (days - 1));
   return start.getTime();
+}
+
+/** 请求页的供应商筛选：`unknown` 为真表示「未知」（没有供应商归属的请求），和 null（全部供应商）是两种状态。 */
+export type RelayFilter = { id: string; label: string; unknown?: boolean };
+
+/** 统计表点一行带进来的供应商筛选：空 id 是「未知」行，不能当成没有筛选。 */
+export function relayFilterFromFocus(focus: { relayId?: string; relayLabel?: string; relayUnknown?: boolean }): RelayFilter | null {
+  if (focus.relayUnknown) return { id: "", label: focus.relayLabel || "", unknown: true };
+  return focus.relayId ? { id: focus.relayId, label: focus.relayLabel || focus.relayId } : null;
+}
+
+/** 读请求日志时的供应商参数：「未知」单独传 relayUnknown，普通供应商仍按 id 精确筛。 */
+export function relayFilterArgs(filter: RelayFilter | null): { relayId: string | null; relayUnknown: boolean } {
+  return filter?.unknown ? { relayId: null, relayUnknown: true } : { relayId: filter?.id || null, relayUnknown: false };
 }
 
 /** 一条请求的费用：不到一分钱时多留几位，免得都显示成 0.00。 */
