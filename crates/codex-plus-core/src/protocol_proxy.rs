@@ -11674,6 +11674,18 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str, s
     let Some(reasoning_enabled) = reasoning_requested(body) else {
         return;
     };
+    // OpenCode Go 的 HY4 上游只接受 none/high 两档。Codex 选中的任何非零 effort
+    // 都映射成 high，避免 medium 等档位被静默丢弃、表现为完全不思考。
+    if crate::model_suffix::is_hy4_flash_model(model) {
+        if reasoning_enabled {
+            result["reasoning_effort"] = json!("high");
+        } else {
+            if let Some(object) = result.as_object_mut() {
+                object.remove("reasoning_effort");
+            }
+        }
+        return;
+    }
     let style = if standard {
         ChatReasoningStyle::Default
     } else {
