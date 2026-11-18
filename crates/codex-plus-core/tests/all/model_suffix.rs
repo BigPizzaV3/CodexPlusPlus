@@ -1109,6 +1109,30 @@ fn gpt62_models_without_exact_entry_use_gpt6_family_identity() {
 }
 
 #[test]
+fn unknown_gpt5_models_keep_the_generic_fallback_template() {
+    // 家族回退只修跨代（#3180）；未知 gpt-5.x 仍用 bundled 首条（gpt-5.5），
+    // 不改借更新的 gpt-5.2 等模板（shell_type、截断策略、自我介绍都会跟着变）。
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let catalog = build_catalog_for("gpt-5\ngpt-5.1\ngpt-5-codex\ngpt-5.1-codex-max");
+    let fallback = codex_plus_core::model_suffix::fallback_template_info().unwrap().0;
+    let fallback_template = builtin_model_metadata(&fallback).unwrap().entry["model_messages"]
+        ["instructions_template"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for slug in ["gpt-5", "gpt-5.1", "gpt-5-codex", "gpt-5.1-codex-max"] {
+        assert_eq!(
+            catalog_model(&catalog, slug)["model_messages"]["instructions_template"]
+                .as_str()
+                .unwrap(),
+            fallback_template,
+            "{slug}"
+        );
+    }
+}
+
+#[test]
 fn gpt62_family_template_prefers_same_series_and_closest_known_version() {
     let _lock = runtime_cache_env_lock();
     let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());

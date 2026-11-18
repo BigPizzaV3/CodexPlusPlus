@@ -955,6 +955,15 @@ fn parse_gpt_slug(slug: &str) -> Option<GptSlug> {
 /// 仍并列时按「运行时缓存在前、bundled 按目录顺序」取最先出现的。
 fn family_template_slug(slug: &str) -> Option<String> {
     let target = parse_gpt_slug(slug)?;
+    // 只修跨代的情况（#3180）：通用回退模板（bundled 首条）与目标同主版本时，身份文案本来就对，
+    // 保持原样——否则 gpt-5、gpt-5.1-codex-max 这类未知 gpt-5.x 会改借更新的 gpt-5.2 等模板，
+    // shell_type、截断策略和自我介绍都跟着变。
+    let fallback_major = first_bundled_template_entry()
+        .and_then(|entry| entry.get("slug")?.as_str().and_then(parse_gpt_slug))
+        .map(|parsed| parsed.major);
+    if fallback_major == Some(target.major) {
+        return None;
+    }
     fn slugs_of(models: &[Value]) -> Vec<String> {
         let slug_of = |entry: &Value| entry.get("slug")?.as_str().map(str::to_string);
         models.iter().filter_map(slug_of).collect()
