@@ -739,6 +739,8 @@ export type RelayProfile = {
   vlmApiKey: string;
   vlmModel: string;
   vlmBaseUrl: string;
+  /** 大图压缩：超过阈值的 base64 图片缩放转 JPEG（默认关闭）。 */
+  imageCompress?: boolean;
   userAgent: string;
   autoReviewModel?: string;
   /** Multi-Agent 子代理协议（#2683）：空串=自动，v1/v2=供应商级显式选择（目录每模型兜底）。 */
@@ -1771,6 +1773,7 @@ const defaultSettings: BackendSettings = {
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",
+      imageCompress: false,
       userAgent: "",
       customHeaders: [],
       sub2apiEnabled: false,
@@ -14054,6 +14057,10 @@ function RelayProfileEditor({
                     <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
                     <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
                   </label>
+                  <label className="switch-row compact relay-switch-row relay-field-image-compress">
+                    <input type="checkbox" checked={profile.imageCompress === true} onChange={(event) => updateDraft({ imageCompress: event.currentTarget.checked })} />
+                    <span><strong>{t("大图压缩")}</strong><small>{t("长任务里 Codex 自动截图可能把请求体撑过上游上限（413）。开启后转发前把超过 256KB 的 base64 图片缩放到最长边 1600px 并转成 JPEG（质量 60），压缩失败或非图片时原样放行；不影响外部图片 URL。仅 macOS 生效，其他平台忽略。默认关闭。")}</small></span><ToggleVisual />
+                  </label>
                   <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
                     <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />
                     <span><strong>{t("不发送 tool_search（上游不支持时开启）")}</strong><small>{t("部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。")}</small></span><ToggleVisual />
@@ -18345,6 +18352,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmApiKey: "",
             vlmModel: "",
             vlmBaseUrl: "",
+            imageCompress: false,
             userAgent: "",
             customHeaders: [],
             sub2apiEnabled: false,

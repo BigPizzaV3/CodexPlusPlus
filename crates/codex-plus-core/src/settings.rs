@@ -129,6 +129,10 @@ pub struct RelayProfile {
     pub vlm_model: String,
     #[serde(rename = "vlmBaseUrl", default)]
     pub vlm_base_url: String,
+    /// 大图压缩开关：开启后，超过阈值（256KB）的 base64 图片会缩放并转 JPEG 再发往上游，
+    /// 避免撑爆上游请求体上限（413）。默认关闭，行为与旧版一致。
+    #[serde(rename = "imageCompress", default)]
+    pub image_compress: bool,
     #[serde(
         rename = "userAgent",
         default,
@@ -402,6 +406,7 @@ impl Default for RelayProfile {
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
+            image_compress: false,
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
@@ -1736,6 +1741,7 @@ impl BackendSettings {
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
                 vlm_base_url: String::new(),
+                image_compress: false,
                 user_agent: String::new(),
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
@@ -1811,6 +1817,7 @@ impl BackendSettings {
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
+            image_compress: false,
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),

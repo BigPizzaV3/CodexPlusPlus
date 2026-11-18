@@ -6602,7 +6602,24 @@ async fn upstream_request_parts(
     if !model.is_empty() {
         use crate::vision::ImageHandling;
         match crate::vision::image_handling_mode(&model, &relay.model_vlm) {
-            ImageHandling::SendAsIs => { /* 不做任何处理 */ }
+            ImageHandling::SendAsIs => {
+                // 供应商开了大图压缩时，超过阈值的 base64 图片缩放转 JPEG，
+                // 避免撑爆上游请求体上限（413）。失败/不支持时原样放行。
+                if relay.image_compress {
+                    let mut replaced = 0;
+                    for key in &["messages", "input"] {
+                        if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
+                            replaced += crate::image_compress::compress_image_data_urls(arr);
+                        }
+                    }
+                    if replaced > 0 {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.image_compressed",
+                            json!({ "relayId": relay.id, "model": model, "count": replaced }),
+                        );
+                    }
+                }
+            }
             ImageHandling::Strip => {
                 for key in &["messages", "input"] {
                     if let Some(arr) = body.get_mut(key).and_then(Value::as_array_mut) {
