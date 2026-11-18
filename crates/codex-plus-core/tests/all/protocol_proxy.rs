@@ -2085,6 +2085,41 @@ fn responses_request_applies_ccswitch_reasoning_dialects() {
 }
 
 #[test]
+fn responses_request_maps_opencode_go_hy4_reasoning_to_upstream_binary_levels() {
+    for effort in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+        let converted = responses_to_chat_completions(json!({
+            "model": "hy4-flash-free",
+            "reasoning": { "effort": effort },
+            "input": "hi"
+        }))
+        .unwrap();
+        assert_eq!(converted["reasoning_effort"], "high", "{effort}");
+        assert!(converted.get("reasoning").is_none(), "{effort}");
+    }
+
+    let off = responses_to_chat_completions(json!({
+        "model": "hy4-flash-free",
+        "reasoning": { "effort": "none" },
+        "input": "hi"
+    }))
+    .unwrap();
+    assert!(off.get("reasoning_effort").is_none());
+    assert!(off.get("reasoning").is_none());
+
+    // 标准 OpenAI 协议线也不能丢掉 HY4 唯一支持的推理开关。
+    let standard = responses_to_chat_completions_with_options(
+        json!({
+            "model": "hy4-flash-free",
+            "reasoning": { "effort": "medium" },
+            "input": "hi"
+        }),
+        true,
+    )
+    .unwrap();
+    assert_eq!(standard["reasoning_effort"], "high");
+}
+
+#[test]
 fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
     // 官方映射 (kimi.com/code/docs): K3 接受 reasoning_effort low/high/max,
     // Codex 档位 minimal/low→low, medium/high→high, xhigh/max→max。

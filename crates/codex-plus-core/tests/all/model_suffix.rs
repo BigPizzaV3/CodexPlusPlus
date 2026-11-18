@@ -33,6 +33,22 @@ fn priority_only_unknown_metadata_never_fabricates_native_descriptor_defaults() 
 }
 
 #[test]
+fn hy4_metadata_uses_supported_binary_reasoning_levels() {
+    let metadata = model_ui_metadata("hy4-flash-free").unwrap();
+    let levels: Vec<&str> = metadata["supportedReasoningEfforts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|level| level["reasoningEffort"].as_str().unwrap())
+        .collect();
+    assert_eq!(levels, ["none", "high"]);
+    assert_eq!(metadata["defaultReasoningEffort"], "high");
+
+    let canonical = builtin_model_metadata("tencent/hy4-flash").unwrap();
+    assert_eq!(canonical.entry["default_reasoning_level"], "high");
+}
+
+#[test]
 fn custom_priority_declarations_preserve_other_tiers_and_explicitly_override_known_models() {
     let original = serde_json::json!({
         "description":"provider description", "service_tiers":[{"id":"flex", "name":"Flex", "description":"Existing tier"}],

@@ -4694,6 +4694,137 @@ fn opencode_go_deepseek_metadata_drops_unsupported_medium_on_load() {
     assert_eq!(metadata[&other_model]["default_reasoning_level"], "medium");
 }
 
+#[test]
+fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
+    fn reasoning_efforts<'a>(metadata: &'a Value, model: &str) -> Vec<&'a str> {
+        metadata[model]["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect()
+    }
+
+    let fixture = fixture(57401);
+    let ctx = &fixture.ctx;
+    let stale = json!({
+        "hy4-flash-free": {
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "medium", "description": "Balances speed and reasoning depth"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+                {"effort": "xhigh", "description": "Extra high reasoning depth"}
+            ],
+            "default_reasoning_level": "medium"
+        }
+    })
+    .to_string();
+    let valid_subset = json!({
+        "hy4-flash-free": {
+            "supported_reasoning_levels": [
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+            ],
+            "default_reasoning_level": "high"
+        }
+    })
+    .to_string();
+    let opencode = ProviderInput {
+        name: "OpenCode Go".into(),
+        base_url: "https://opencode.ai/zen/go/v1".into(),
+        protocol: RelayProtocol::ChatCompletions,
+        keys: vec!["oc_sk_test".into()],
+        model: "hy4-flash-free".into(),
+        model_list: "hy4-flash-free".into(),
+        price: None,
+        model_prices: None,
+        proxy: None,
+        strip_image_generation_tool: None,
+        subscription_policy: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+        custom_headers: None,
+    };
+    let (_, go_id) = create_provider(&ctx.gateway, &opencode, "preset:opencode-go", None).unwrap();
+    let subset = ProviderInput {
+        name: "OpenCode Go Subset".into(),
+        ..opencode.clone()
+    };
+    let (_, subset_id) =
+        create_provider(&ctx.gateway, &subset, "preset:opencode-go", None).unwrap();
+    let zen = ProviderInput {
+        name: "OpenCode Zen".into(),
+        base_url: "https://opencode.ai/zen/v1".into(),
+        ..opencode.clone()
+    };
+    let (_, zen_id) = create_provider(&ctx.gateway, &zen, "preset:opencode", None).unwrap();
+
+    let mut gateway = ctx.gateway.load().unwrap();
+    for (id, metadata) in [
+        (go_id.as_str(), &stale),
+        (subset_id.as_str(), &valid_subset),
+        (zen_id.as_str(), &stale),
+    ] {
+        gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay
+            .model_metadata = metadata.clone();
+    }
+    ctx.gateway.save(&gateway).unwrap();
+
+    let gateway = ctx.gateway.load().unwrap();
+    let provider_metadata = |id: &str| {
+        let relay = &gateway
+            .providers
+            .iter()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay;
+        serde_json::from_str::<Value>(&relay.model_metadata).unwrap()
+    };
+    let go_metadata = provider_metadata(&go_id);
+    assert_eq!(
+        reasoning_efforts(&go_metadata, "hy4-flash-free"),
+        ["none", "high"]
+    );
+    assert_eq!(
+        go_metadata["hy4-flash-free"]["default_reasoning_level"],
+        "high"
+    );
+
+    let subset_metadata = provider_metadata(&subset_id);
+    assert_eq!(
+        reasoning_efforts(&subset_metadata, "hy4-flash-free"),
+        ["high"]
+    );
+    assert_eq!(
+        subset_metadata["hy4-flash-free"]["default_reasoning_level"],
+        "high"
+    );
+
+    let zen_metadata = provider_metadata(&zen_id);
+    assert_eq!(
+        reasoning_efforts(&zen_metadata, "hy4-flash-free"),
+        ["low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(
+        zen_metadata["hy4-flash-free"]["default_reasoning_level"],
+        "medium"
+    );
+
+    let model = format!("{go_id}/hy4-flash-free");
+    let binding = AgentBinding {
+        model: model.clone(),
+        ..AgentBinding::default()
+    };
+    let catalog = codex_plus_core::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+    let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+    assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
+    assert_eq!(metadata[&model]["default_reasoning_level"], "high");
+}
+
 /// #228：网关供应商的「移除托管生图工具」随新建写入，编辑时不传沿用原值，传了才改。
 #[test]
 fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
