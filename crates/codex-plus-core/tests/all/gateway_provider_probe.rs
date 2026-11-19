@@ -472,7 +472,7 @@ async fn requests_go_through_the_providers_own_proxy() {
 }
 
 #[tokio::test]
-async fn first_official_probe_and_catalog_negotiate_one_version_despite_an_old_native_cache() {
+async fn official_catalog_and_probe_negotiate_one_version_despite_an_old_native_cache() {
     use base64::Engine;
     use codex_plus_core::gateway::apply;
     use codex_plus_core::settings::{RelayMode, RelayProfile};
@@ -533,16 +533,15 @@ async fn first_official_probe_and_catalog_negotiate_one_version_despite_an_old_n
         let mut relay = gateway.provider(&id).unwrap().relay.clone();
         relay.gateway_proxy = Some("direct".into());
         let upstream = tokio::spawn(serve(listener, vec![
-            reply(200, "text/event-stream", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"),
             reply(200, "application/json", json!({"models": [{"slug": "gpt-6.1-sol"}]}).to_string()),
+            reply(200, "text/event-stream", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"),
         ]));
-        // The first gateway request must not rely on model discovery to prepare the cache.
-        let result = probe_provider(&BackendSettings::default(), &gateway, &relay.id, "gpt-6.1-sol", None).await.unwrap();
-        assert!(result.ok, "{result:?}");
         let (models, _) = codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&relay).await.unwrap();
         assert_eq!(models, ["gpt-6.1-sol"]);
+        let result = probe_provider(&BackendSettings::default(), &gateway, &relay.id, "gpt-6.1-sol", None).await.unwrap();
+        assert!(result.ok, "{result:?}");
         let seen = tokio::time::timeout(Duration::from_secs(5), upstream).await.unwrap().unwrap();
-        let version = codex_plus_core::gateway::chatgpt_backend::codex_version(temp.path()).await;
+        let version = codex_plus_core::gateway::chatgpt_backend::codex_version(temp.path());
         // 本机安装的 Codex 更新时会取安装版本（#3178），所以缓存版本只是下限。
         if cached_version == "0.124.0" {
             assert_ne!(version, cached_version);
@@ -553,13 +552,13 @@ async fn first_official_probe_and_catalog_negotiate_one_version_despite_an_old_n
                 "{version}"
             );
         }
-        assert!(seen[1].request_line.contains(&format!("client_version={version}")));
+        assert!(seen[0].request_line.contains(&format!("client_version={version}")));
         for request in &seen {
             assert_eq!(request.header("version").as_deref(), Some(version.as_str()));
             assert!(request.header("user-agent").unwrap().starts_with(&format!("codex_cli_rs/{version} ")));
             assert_eq!(request.header("chatgpt-account-id").as_deref(), Some("synthetic-workspace"));
         }
-        assert_eq!(seen[0].body["model"], "gpt-6.1-sol");
+        assert_eq!(seen[1].body["model"], "gpt-6.1-sol");
         assert_eq!(
             std::fs::read_to_string(temp.path().join("models_cache.json")).unwrap(),
             cache

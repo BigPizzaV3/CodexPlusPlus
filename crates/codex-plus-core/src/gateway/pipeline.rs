@@ -687,7 +687,7 @@ async fn attempt_pipeline(
             prompt.as_deref(),
             crate::responses_websocket::active(),
         );
-        let version = crate::gateway::chatgpt_backend::codex_version(&home).await;
+        let version = crate::gateway::chatgpt_backend::codex_version(&home);
         relay.user_agent = crate::gateway::chatgpt_backend::codex_user_agent(&version);
         for (key, value) in [
             ("version", version.as_str()),
