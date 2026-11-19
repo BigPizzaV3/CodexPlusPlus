@@ -51,6 +51,8 @@ test("backend refresh notifies builtins and skips failed heartbeat reads", async
 test("heartbeat retries settings revisions after failed or overlapping reads", async () => {
   const source = fragment("40-backend-settings.js");
   let revision = "one";
+  let weixinRevision: string | null = null;
+  let weixinHeartbeats = 0;
   let reads = 0;
   const pending: Array<(value: boolean) => void> = [];
   const context = vm.createContext({
@@ -58,8 +60,12 @@ test("heartbeat retries settings revisions after failed or overlapping reads", a
     codexPlusBackendGeneration: 1, codexPlusBackendCheckInFlight: false,
     codexPlusBackendCheckSeq: 0, codexPlusBackendFailureCount: 0,
     codexPlusBackendSettingsRevision: "", codexPlusBackendSettingsLoaded: true,
+    codexPlusWeixinSyncRevision: null,
+    codexPlusWeixinSyncHeartbeat: () => { weixinHeartbeats++; },
     codexPlusBackendSettings: {}, CODEX_PLUS_BACKEND_FAILURE_THRESHOLD: 3,
-    postJson: async () => ({ status: "ok", settingsRevision: revision }),
+    postJson: async () => ({
+      status: "ok", settingsRevision: revision, weixinDesktopSyncRevision: weixinRevision,
+    }),
     loadBackendSettingsState: () => { reads++; return new Promise<boolean>(resolve => pending.push(resolve)); },
     syncOfficialUsagePolicy: () => {}, emitCodexPlusSettingsLoaded: () => {},
     syncCodexPlusBackendToggleButtons: () => {}, renderCodexPlusMenu: () => {},
@@ -89,13 +95,23 @@ test("heartbeat retries settings revisions after failed or overlapping reads", a
   await settle();
   await context.checkBackendStatus();
   assert.equal(reads, 3, "a successfully read revision should not trigger another read");
+  assert.equal(weixinHeartbeats, 1, "unchanged settings still let Weixin retry");
+
+  weixinRevision = "weixin-turn";
+  await context.checkBackendStatus();
+  assert.equal(reads, 4, "a Weixin turn refreshes the snapshot without a settings change");
+  pending.shift()!(true);
+  await settle();
+  await context.checkBackendStatus();
+  assert.equal(reads, 4);
+  assert.equal(weixinHeartbeats, 2);
 
   revision = "";
   await context.checkBackendStatus();
   pending.shift()!(true);
   await settle();
   await context.checkBackendStatus();
-  assert.equal(reads, 5, "old backends without a revision retain per-heartbeat reads");
+  assert.equal(reads, 6, "old backends without a revision retain per-heartbeat reads");
   pending.shift()!(true);
   await settle();
 });
