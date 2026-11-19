@@ -107,6 +107,8 @@ export type GatewayPoolEntry = {
   stripImageGenerationTool?: boolean;
   /** 转发前移除 Responses 图片 `detail`（#2870）。旧版后端没有。 */
   stripResponsesImageDetail?: boolean;
+  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`。旧版后端没有。 */
+  stripResponsesOutputEncryptedContent?: boolean;
   /** 不向该上游发送 `tool_search`（#2868）。旧版后端没有。 */
   disableToolSearch?: boolean;
   /** 登录得到的账号：chatgpt / copilot / grok；普通供应商为空。 */
@@ -1429,13 +1431,15 @@ export type ProviderDraft = {
   subscriptionPolicy?: SubscriptionPolicy | null;
   /** 转发前移除 Responses 图片 `detail`：不认 OpenAI detail 扩展的上游用（#2870）。 */
   stripResponsesImageDetail?: boolean;
+  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`。 */
+  stripResponsesOutputEncryptedContent?: boolean;
   /** 不向上游发送 `tool_search`：上游 400 时开启（#2868）。 */
   disableToolSearch?: boolean;
   /** 自定义请求头（#3075）：测试、拉模型、实际请求都带上；不带表示不改。 */
   customHeaders?: ProviderHeaderRow[];
 };
 
-const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false, stripResponsesImageDetail: false, disableToolSearch: false };
+const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false, stripResponsesImageDetail: false, stripResponsesOutputEncryptedContent: false, disableToolSearch: false };
 
 export function providerDraftFromPreset(preset: GatewayPreset | null): ProviderDraft {
   if (!preset) return { name: "", baseUrl: "", keys: "", protocol: "chatCompletions", model: "", modelList: "", ...NO_PRICE };
@@ -1467,6 +1471,7 @@ export function providerDraftFromEntry(entry: GatewayPoolEntry): ProviderDraft {
     stripImageGenerationTool: entry.stripImageGenerationTool === true,
     subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
     stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
+    stripResponsesOutputEncryptedContent: entry.stripResponsesOutputEncryptedContent === true,
     disableToolSearch: entry.disableToolSearch === true,
     customHeaders: providerHeaderRows(entry.customHeaders),
   };
@@ -1487,6 +1492,7 @@ export function providerInput(draft: ProviderDraft) {
     stripImageGenerationTool: draft.stripImageGenerationTool === true,
     ...(draft.subscriptionPolicy !== undefined ? { subscriptionPolicy: draft.subscriptionPolicy } : {}),
     stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
+    stripResponsesOutputEncryptedContent: draft.stripResponsesOutputEncryptedContent === true,
     disableToolSearch: draft.disableToolSearch === true,
     ...(draft.customHeaders !== undefined ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}),
   };

@@ -82,6 +82,7 @@ fn gateway_per_model_windows_win_over_common_config_top_level_limits() {
             strip_image_generation_tool: None,
             subscription_policy: None,
             strip_responses_image_detail: None,
+            strip_responses_output_encrypted_content: None,
             disable_tool_search: None,
             custom_headers: None,
         },

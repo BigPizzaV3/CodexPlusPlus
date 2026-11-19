@@ -495,6 +495,7 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     proxy: "",
     stripImageGenerationTool: false,
     stripResponsesImageDetail: false,
+    stripResponsesOutputEncryptedContent: false,
     disableToolSearch: false,
     customHeaders: [],
   });
@@ -503,6 +504,10 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
   assert.equal(providerInput({ ...editing, stripImageGenerationTool: true }).stripImageGenerationTool, true);
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripResponsesImageDetail: true }).stripResponsesImageDetail, true);
   assert.equal(providerInput({ ...editing, stripResponsesImageDetail: true }).stripResponsesImageDetail, true);
+  // 严格 Responses 上游：额外 include 项的开关也能读回、原样提交。
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripResponsesOutputEncryptedContent: true }).stripResponsesOutputEncryptedContent, true);
+  assert.equal(providerInput({ ...editing, stripResponsesOutputEncryptedContent: true }).stripResponsesOutputEncryptedContent, true);
+  assert.equal(providerInput({ ...editing, stripResponsesOutputEncryptedContent: false }).stripResponsesOutputEncryptedContent, false);
   // #2868：「不发送 tool_search」从池条目读回、原样提交。
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], disableToolSearch: true }).disableToolSearch, true);
   assert.equal(providerInput({ ...editing, disableToolSearch: true }).disableToolSearch, true);

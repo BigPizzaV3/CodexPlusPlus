@@ -59,6 +59,7 @@ fn deepseek_input() -> ProviderInput {
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     }
@@ -82,6 +83,7 @@ fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     };
@@ -1650,6 +1652,7 @@ fn codex_gateway_catalog_carries_display_names_reasoning_and_provider_groups() {
             strip_image_generation_tool: None,
             subscription_policy: None,
             strip_responses_image_detail: None,
+            strip_responses_output_encrypted_content: None,
             disable_tool_search: None,
             custom_headers: None,
         },
@@ -1850,6 +1853,7 @@ fn codex_group_offers_fast_only_when_every_member_supports_it() {
                 strip_image_generation_tool: None,
                 subscription_policy: None,
                 strip_responses_image_detail: None,
+                strip_responses_output_encrypted_content: None,
                 disable_tool_search: None,
                 custom_headers: None,
             },
@@ -4571,6 +4575,7 @@ fn opencode_go_deepseek_metadata_drops_unsupported_medium_on_load() {
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     };
@@ -4764,6 +4769,7 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     };
@@ -4972,6 +4978,51 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     let off = ProviderInput { strip_image_generation_tool: Some(false), ..input };
     update_provider(&store, &id, &off).unwrap();
     assert!(!relay(&store).strip_image_generation_tool);
+}
+
+/// 「不发送 output.encrypted_content」随新建写入；编辑时能保留、关闭并再次打开。
+#[test]
+fn gateway_provider_roundtrips_strip_output_encrypted_content_across_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GatewayStore::at(temp.path().join("gateway.json"));
+    let input = ProviderInput {
+        protocol: RelayProtocol::Responses,
+        strip_responses_output_encrypted_content: Some(true),
+        ..deepseek_input()
+    };
+    let (_, id) = create_provider(&store, &input, "", None).unwrap();
+    let relay = |store: &GatewayStore| {
+        store
+            .load()
+            .unwrap()
+            .providers
+            .into_iter()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay
+    };
+    assert!(relay(&store).strips_responses_output_encrypted_content());
+
+    let keep = ProviderInput {
+        strip_responses_output_encrypted_content: None,
+        ..input.clone()
+    };
+    update_provider(&store, &id, &keep).unwrap();
+    assert!(relay(&store).strips_responses_output_encrypted_content());
+
+    let off = ProviderInput {
+        strip_responses_output_encrypted_content: Some(false),
+        ..input.clone()
+    };
+    update_provider(&store, &id, &off).unwrap();
+    assert!(!relay(&store).strip_responses_output_encrypted_content);
+
+    let on = ProviderInput {
+        strip_responses_output_encrypted_content: Some(true),
+        ..input
+    };
+    update_provider(&store, &id, &on).unwrap();
+    assert!(relay(&store).strips_responses_output_encrypted_content());
 }
 
 #[test]
@@ -5214,6 +5265,7 @@ fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
             strip_image_generation_tool: None,
             subscription_policy: None,
             strip_responses_image_detail: None,
+            strip_responses_output_encrypted_content: None,
             disable_tool_search: None,
             custom_headers: None,
         },

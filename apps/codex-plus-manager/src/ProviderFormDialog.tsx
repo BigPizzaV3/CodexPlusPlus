@@ -313,6 +313,17 @@ export function ProviderFormDialog({
               </label>
               <label className="pf-switch">
                 <input
+                  checked={draft.stripResponsesOutputEncryptedContent === true}
+                  onChange={(event) => update({ stripResponsesOutputEncryptedContent: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("不发送 output.encrypted_content")}</strong>
+                  <small>{t("严格 Responses 上游可能只接受 reasoning.encrypted_content，遇到 output.encrypted_content 会整条返回 400。开启后只删除这一项，Kimi 地址或模型名仍会自动处理。默认关闭。")}</small>
+                </span>
+              </label>
+              <label className="pf-switch">
+                <input
                   checked={draft.disableToolSearch === true}
                   onChange={(event) => update({ disableToolSearch: event.currentTarget.checked })}
                   type="checkbox"

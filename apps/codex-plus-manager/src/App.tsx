@@ -240,6 +240,7 @@ import {
   requestCompatibilityEnabled,
   stripImageGenerationToolEnabled,
   stripResponsesImageDetailEnabled,
+  stripResponsesOutputEncryptedContentEnabled,
   pureApiImageGenerationEnabled,
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
@@ -762,6 +763,8 @@ export type RelayProfile = {
   stripImageGenerationTool?: boolean;
   /** #2870：转发前移除 Responses 图片 `detail`，默认关闭。 */
   stripResponsesImageDetail?: boolean;
+  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`，默认关闭。 */
+  stripResponsesOutputEncryptedContent?: boolean;
   /** #2868：不向上游发送 tool_search，默认关闭。 */
   disableToolSearch?: boolean;
   /** #1433：纯 API 下让 Codex 注册原生生图工具，生图请求经本地代理发给本供应商，默认关闭。 */
@@ -12491,6 +12494,7 @@ function RelayProfileEditor({
     profile.strictResponsesReasoning === true,
     profile.stripImageGenerationTool === true,
     profile.stripResponsesImageDetail === true,
+    profile.stripResponsesOutputEncryptedContent === true,
     profile.disableToolSearch === true,
     profile.pureApiImageGeneration === true,
   ].filter(Boolean).length;
@@ -14085,6 +14089,10 @@ function RelayProfileEditor({
                   <label className="switch-row compact relay-switch-row relay-field-strip-responses-image-detail">
                     <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
                     <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
+                  </label>
+                  <label className="switch-row compact relay-switch-row relay-field-strip-responses-output-encrypted-content">
+                    <input type="checkbox" checked={profile.stripResponsesOutputEncryptedContent === true} onChange={(event) => updateDraft({ stripResponsesOutputEncryptedContent: event.currentTarget.checked })} />
+                    <span><strong>{t("不发送 output.encrypted_content（上游不支持时开启）")}</strong><small>{t("部分严格 Responses 上游不接受 Codex 请求 include 里的 output.encrypted_content，会整条返回 400。开启后只删除这一项，保留 reasoning.encrypted_content 和其他项，请求改走本地代理。Kimi 地址或模型名会自动处理。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                   <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
                     <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />

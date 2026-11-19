@@ -317,6 +317,7 @@ pub fn relay_profile_from_ccs(
         strict_responses_reasoning: false,
         strip_image_generation_tool: false,
         strip_responses_image_detail: false,
+        strip_responses_output_encrypted_content: false,
         disable_tool_search: false,
         pure_api_image_generation: false,
         auto_review_model: String::new(),
