@@ -1987,6 +1987,19 @@ export const EN_PLAIN: Record<string, string> = {
   "本地后台模式不限系统版本": "Local background mode on any macOS version",
   "Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定":
     "Claude says background mode isn't supported on newer macOS. Turning this on lifts the version limit; Claude hasn't validated it there, so it may be unstable.",
+  "本地 Cowork": "Local Cowork",
+  "关掉后按 Claude 自己的开关，新版 Claude 通常只剩 Chat / Code。系统条件（Windows 需商店版、虚拟化可用）仍由 Claude 检查":
+    "When off, Claude's own switch applies, and newer Claude versions usually show only Chat / Code. System requirements (the Store version on Windows, virtualization available) are still checked by Claude.",
+  "合并式主页（实验）": "Combined home (experimental)",
+  "本地合并式主页": "Local combined home",
+  "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。关着时用有切换的经典主页":
+    "A home layout Claude is testing with a small group: chat and Cowork share one input box, without the Chat | Cowork switch. When off, the classic home with the switch is used.",
+  "系统证书": "System certificate",
+  "安装系统证书": "Install system certificate",
+  "Cowork 虚拟机以系统服务运行，只读取系统级根证书；安装需要管理员授权。": "The Cowork VM runs as a system service and only reads machine-level root certificates; installing one needs administrator approval.",
+  "界面版本": "Interface version",
+  "录制 claude.ai 界面时的版本。新版本有问题时可以换回旧的；前端代码按所选版本从 Anthropic 下载。":
+    "The claude.ai version the interface was recorded from. Switch back to an older one if a newer one misbehaves; front-end code for the chosen version is downloaded from Anthropic.",
   "启动 Claude 前，把终端、BaoCode 等命令行里建的会话加进左侧列表（已在列表里的、删过的不会重复加）。": "Before launching Claude, add sessions created in the terminal, BaoCode and other CLIs to the sidebar (sessions already listed or deleted are skipped).",
   "Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。": "The Code tab shares ~/.claude with the Claude Code CLI: same sessions, MCP servers and plugins. API settings (env) in ~/.claude/settings.json take precedence over the gateway. Takes effect the next time Claude is launched from here.",
   "Code 页签用独立目录，请求走 Codex++ 网关；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。": "The Code tab uses its own folder and goes through the Codex++ gateway; sessions created in the CLI or 3p mode need session sync to open.",
@@ -4198,6 +4211,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "可清理 {0}": "Cleanable: {0}",
   "已选择 {0}": "Selected: {0}",
   "确认移动 {0} 个会话": "Move {0} sessions",
+  "最新（{0}）": "Latest ({0})",
   "{0} 个会话不处理": "{0} sessions are left as they are",
   "新目录是 Codex 项目「{0}」的文件夹，这些会话会归到这个项目下。": "The new folder belongs to the Codex project \"{0}\"; these sessions will be listed under it.",
   "目录明细（{0}）": "Directory details ({0})",
