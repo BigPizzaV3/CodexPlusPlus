@@ -129,6 +129,10 @@ pub struct RelayProfile {
     pub vlm_model: String,
     #[serde(rename = "vlmBaseUrl", default)]
     pub vlm_base_url: String,
+    /// 大图压缩开关：开启后，超过阈值（256KB）的 base64 图片会缩放并转 JPEG 再发往上游，
+    /// 避免撑爆上游请求体上限（413）。默认关闭，行为与旧版一致。
+    #[serde(rename = "imageCompress", default)]
+    pub image_compress: bool,
     #[serde(
         rename = "userAgent",
         default,
@@ -402,6 +406,7 @@ impl Default for RelayProfile {
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
+            image_compress: false,
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
@@ -477,6 +482,14 @@ impl RelayProfile {
     pub fn strips_responses_image_detail(&self) -> bool {
         self.strip_responses_image_detail
             && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否在转发前压缩过大的 base64 图片；只对经本地代理转发的第三方上游生效
+    /// （官方登录、聚合模式不在此处理）。压缩在图片处理为 send-as-is 时进行。
+    pub fn compresses_large_images(&self) -> bool {
+        self.image_compress
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
     }
@@ -1736,6 +1749,7 @@ impl BackendSettings {
                 vlm_api_key: String::new(),
                 vlm_model: String::new(),
                 vlm_base_url: String::new(),
+                image_compress: false,
                 user_agent: String::new(),
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
@@ -1811,6 +1825,7 @@ impl BackendSettings {
             vlm_api_key: String::new(),
             vlm_model: String::new(),
             vlm_base_url: String::new(),
+            image_compress: false,
             user_agent: String::new(),
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
@@ -1896,6 +1911,7 @@ impl BackendSettings {
             || self.active_relay_profile().strips_image_generation_tool()
             || self.active_relay_profile().enables_pure_api_image_generation()
             || self.active_relay_profile().strips_responses_image_detail()
+            || self.active_relay_profile().compresses_large_images()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
