@@ -118,6 +118,25 @@ fn push_env_scrub_lines(script: &mut String) {
     }
 }
 
+/// wrapper 里给 Codex 设 `NO_PROXY`（issue #3131）：包上下文里的 Codex 读的是 MSIX 包视图的
+/// WinINET 代理，那里残留的失效代理会把发往本地网关的请求也拦走。值见
+/// [`crate::proxy::codex_launch_no_proxy`]（保留用户原有排除项，补上回环地址）。
+///
+/// cmd 的环境变量名不分大小写，`NO_PROXY` 与 `no_proxy` 是同一个，设一次即可。`%` 写成
+/// `%%`；带双引号或换行的条目没法安全放进 `set "..."`，直接丢掉（正常的主机名 / 网段不会有）。
+fn push_no_proxy_line(script: &mut String, no_proxy: &str) {
+    let value = no_proxy
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty() && !entry.contains(['"', '\r', '\n', '\0']))
+        .collect::<Vec<_>>()
+        .join(",")
+        .replace('%', "%%");
+    if !value.is_empty() {
+        script.push_str(&format!("set \"NO_PROXY={value}\"\r\n"));
+    }
+}
+
 /// Chromium「提权启动时自动降权重启」的豁免开关（issue #2789 #2764）。
 ///
 /// Chromium 在 Windows 上发现浏览器进程以「拆分令牌的提权部分」运行（UAC 开启、管理员
@@ -330,6 +349,7 @@ fn build_wrapper_script_for_port(
     // 只 setlocal，不开 delayedexpansion：路径里的 `!` 在 delayedexpansion 下会被吃掉。
     script.push_str("setlocal\r\n");
     push_env_scrub_lines(&mut script);
+    push_no_proxy_line(&mut script, &crate::proxy::codex_launch_no_proxy());
     script.push_str(&format!("set \"CODEX_HOME={codex_home_literal}\"\r\n"));
     script.push_str(&format!(
         "set \"CODEX_SQLITE_HOME={sqlite_home_literal}\"\r\n"
@@ -437,7 +457,8 @@ pub const MAIN_WRAPPER_FILE_NAME: &str = "packaged-launch-main.cmd";
 ///   默认数据目录与实例身份；
 /// - 参数原样取自 AUMID 激活要用的那份（调试端口 + 用户附加参数），保证两条路径启动出的
 ///   实例一致；
-/// - 只清掉 [`SCRUBBED_CODEX_ENV_VARS`]（issue #2764），其余环境原样保留。
+/// - 只清掉 [`SCRUBBED_CODEX_ENV_VARS`]（issue #2764），并给 `NO_PROXY` 补上回环地址
+///   （issue #3131，读当前进程环境与 WinINET 设置），其余环境原样保留。
 pub fn build_main_instance_wrapper_script(
     executable: &Path,
     args: &[String],
@@ -464,6 +485,7 @@ pub fn build_main_instance_wrapper_script(
         ">\"%~dpn0{MAIN_WRAPPER_TRACE_SUFFIX}\" echo [%DATE% %TIME%] wrapper started\r\n"
     ));
     push_env_scrub_lines(&mut script);
+    push_no_proxy_line(&mut script, &crate::proxy::codex_launch_no_proxy());
     if let Some(dir) = executable_dir {
         // 与多开 wrapper 一致：尽力切到 exe 所在目录，失败时 cmd 继续执行下一行。
         script.push_str(&format!("cd /d \"{dir}\"\r\n"));
@@ -1297,7 +1319,9 @@ fn direct_launch_command(executable: &Path, args: &[String], state_dir: &Path) -
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env(STATE_DIR_ENV, state_dir)
-        .env("CODEX_PLUS_MULTI_INSTANCE", "1");
+        .env("CODEX_PLUS_MULTI_INSTANCE", "1")
+        // 与 wrapper 一致：回环地址不走系统代理（issue #3131）。
+        .envs(crate::proxy::codex_launch_no_proxy_env());
     if let Some(user_data_dir) = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--user-data-dir="))
@@ -1966,6 +1990,47 @@ mod tests {
                 assert!(clear < start, "{name} 必须在 start 之前清掉");
             }
         }
+    }
+
+    #[test]
+    fn both_wrappers_bypass_proxies_for_loopback_before_starting_codex() {
+        // issue #3131：包视图里的失效系统代理不能拦走发往本地网关的请求。
+        let main = build_main_instance_wrapper_script(
+            Path::new(r"C:\app\ChatGPT.exe"),
+            &["--remote-debugging-port=9229".to_string()],
+        )
+        .unwrap();
+        let multi = build_wrapper_script_for_port(
+            Path::new(r"C:\state"),
+            Path::new(r"C:\app\ChatGPT.exe"),
+            Path::new(r"C:\home"),
+            Path::new(r"C:\home"),
+            Path::new(r"C:\user-data"),
+            9333,
+        )
+        .unwrap();
+        for script in [&main, &multi] {
+            let start = script.find("start \"\" /b").unwrap();
+            let set = script
+                .find("set \"NO_PROXY=")
+                .unwrap_or_else(|| panic!("缺少 NO_PROXY：{script}"));
+            assert!(set < start, "NO_PROXY 必须在 start 之前设置");
+            let line = script[set..].lines().next().unwrap();
+            // 继承的 NO_PROXY 因测试环境而异，只要求回环三项都在。
+            for host in ["localhost", "127.0.0.1", "::1"] {
+                assert!(line.split(['=', ',', '"']).any(|entry| entry == host), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_proxy_line_escapes_percent_and_drops_unsafe_entries() {
+        let mut script = String::new();
+        push_no_proxy_line(&mut script, "a%b, bad\"entry ,10.0.0.0/8,localhost,127.0.0.1,::1");
+        assert_eq!(script, "set \"NO_PROXY=a%%b,10.0.0.0/8,localhost,127.0.0.1,::1\"\r\n");
+        let mut empty = String::new();
+        push_no_proxy_line(&mut empty, " , ");
+        assert!(empty.is_empty());
     }
 
     #[test]

@@ -265,10 +265,12 @@
     const market = marketItem ? table("市场", [
       ["作者", marketItem.author || ""],
       ["最新版本", marketItem.version ? `v${marketItem.version}` : ""],
-      ["更新时间", marketItem.updated_at || ""],
+      ["更新时间", String(marketItem.updatedAt || marketItem.updated_at || "").slice(0, 10)],
+      ...(marketItem.kind === "package" ? [["锁定提交", String(marketItem.sha || "").slice(0, 7)]] : []),
     ]) : "";
     const links = [
       [marketItem?.homepage || local?.homepage, "主页"],
+      ...(marketItem?.repo ? [[`https://github.com/${marketItem.repo}`, "仓库"]] : []),
       [local?.source_url || marketItem?.script_url, "源文件"],
     ].filter(([url]) => /^https?:\/\//i.test(String(url || "")));
     const resources = links.length

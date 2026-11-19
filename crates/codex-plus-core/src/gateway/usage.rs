@@ -453,6 +453,7 @@ mod tests {
             }),
             cache_hit_ratio: None,
             final_response_evidence: None,
+            final_response_id: None,
             agent: agent.map(str::to_string),
         }
     }
@@ -507,6 +508,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             relay: RelayProfile {
                 id: "ds".to_string(),
                 ..RelayProfile::default()

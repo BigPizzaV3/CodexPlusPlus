@@ -65,6 +65,12 @@ fn query_param(path: &str, name: &str) -> Option<String> {
     })
 }
 
+/// Anthropic 官方客户端（Claude Desktop）的连通性探针：`HEAD|GET /api/hello`。
+/// 这类请求不带认证头，按 liveness 放行（见 `handle` 里的 #3096 注释）。
+fn is_unauthenticated_health_probe(method: &str, tail: &str) -> bool {
+    matches!(method, "HEAD" | "GET") && tail == "/api/hello"
+}
+
 fn client_token(headers: &str) -> Option<String> {
     if let Some(key) = header_value_from_headers(headers, "x-api-key")
         .map(|value| value.trim().to_string())
@@ -109,6 +115,7 @@ pub(crate) async fn handle(
     path: &str,
     headers: &str,
     body: &[u8],
+    read_ahead: Vec<u8>,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     // `path` 带查询串：取出 Gemini 的 `?key=` 后去掉，后面的日志、路由都只用路径。
@@ -130,6 +137,22 @@ pub(crate) async fn handle(
         );
         return write_error(stream, &agent, 503, &message).await;
     };
+    // Anthropic 官方客户端（Claude Desktop）的连通性探针：`HEAD|GET /api/hello`
+    // 不带任何认证。它在真实推理请求之前发出，回 401 会被客户端当成「网关不可达」，
+    // 造成明明 POST /v1/messages 正常、连接状态却偶发显示断线的误报（#3096）。
+    // 按 liveness 处理：直接回 200 空响应，不泄露任何配置或 token 信息。
+    if is_unauthenticated_health_probe(method, &tail) {
+        log_helper_response(
+            "gateway.health_probe",
+            method,
+            path,
+            "200 OK",
+            remote_addr_text,
+        );
+        write_http_response(stream, "200 OK", JSON, &[]).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     // Gemini 客户端把 Key 放在 `x-goog-api-key` 或查询串 `?key=` 里。
     let provided = client_token(headers)
         .or_else(|| header_value_from_headers(headers, "x-goog-api-key"))
@@ -170,6 +193,9 @@ pub(crate) async fn handle(
         .await;
     }
     match (&agent, method, tail.as_str()) {
+        (ToolId::Grok | ToolId::Codex | ToolId::Unknown(_), "GET", "/responses") => {
+            crate::responses_websocket::handle(stream, headers, read_ahead, path, ProxyOpener::Gateway(agent)).await
+        }
         (ToolId::Unknown(_), "POST", "/chat/completions") => {
             handle_claude_messages(
                 stream,
@@ -455,6 +481,10 @@ async fn handle_images(
     write_error(stream, agent, 502, &message).await
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("所选网关模型 {0} 已不可用，请重新选择模型")]
+pub(crate) struct RetiredCodexModel(pub String);
+
 /// Grok 等 Responses 客户端：按 Agent 绑定选上游，返回值交给 Codex 代理的输出链路。
 ///
 /// 第二项是成功时占着的限速名额：调用方要持有到响应转发完（流式读完、出错或客户端断开）再放掉。
@@ -472,24 +502,42 @@ pub(crate) async fn open_responses_for_agent(
     let mut request: Value = serde_json::from_str(request_body)?;
     // 起名模型：Codex 给会话起名的请求改发到绑定指定的模型，不落到订阅额度上。
     let title_model = route::title_model_override(&gateway, agent, &request);
-    if title_model.is_none()
+    let conversation_request = title_model.is_none()
         && !route::is_codex_title_request(&request)
-        && request["model"] != crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL
-    {
+        && request["model"] != crate::aggregate_catalog::CODEX_AUTO_REVIEW_MODEL;
+    if conversation_request {
         super::subagent_models::prepare(&gateway, agent, &mut request, session_headers).await?;
     }
     let model = title_model
         .as_deref()
         .unwrap_or_else(|| request.get("model").and_then(Value::as_str).unwrap_or(""));
+    if *agent == ToolId::Codex && conversation_request
+        && let Some(binding) = gateway.active_binding(agent)
+    {
+        let (slug, _) = crate::model_suffix::parse_model_suffix(model.trim());
+        if route::retired_codex_model(&gateway, binding, &slug) || route::is_disabled_group_model(&gateway, &slug) {
+            return Err(RetiredCodexModel(slug).into());
+        }
+    }
     let conversation = session_headers.session_id.map(str::to_string).or_else(|| {
         request
             .get("prompt_cache_key")
             .and_then(Value::as_str)
             .map(str::to_string)
     });
-    let plan = route::resolve_plan(&gateway, agent, model, conversation.as_deref())?;
-    let outcome = pipeline::open(
+    let mut plan = route::resolve_plan_for_request(
+        &gateway,
+        agent,
+        model,
+        conversation.as_deref(),
+        &request,
+    )?;
+    crate::responses_websocket::restrict_plan(&mut plan)?;
+    // 压缩模型（#3142）：压缩请求先改发到绑定里的压缩模型，失败回退原模型；没配置时照原样走。
+    let (outcome, compaction_notes) = super::compaction_model::open(
         &settings,
+        &gateway,
+        agent,
         &plan,
         GatewayRequest {
             responses_body: request,
@@ -507,6 +555,7 @@ pub(crate) async fn open_responses_for_agent(
             client,
             queue_timeout: key_pool::LIMIT_QUEUE_TIMEOUT,
         },
+        conversation.as_deref(),
     )
     .await?;
     let trace = outcome.trace;
@@ -521,6 +570,8 @@ pub(crate) async fn open_responses_for_agent(
                 merged.relay_name = trace.relay_name;
                 merged.upstream_model = trace.upstream_model;
             }
+            // 请求日志标出这次压缩用了哪个模型、有没有回退（只是说明，不算重试）。
+            merged.retry_reasons.extend(compaction_notes);
             response.request_trace = Some(merged);
             Ok((response, slot))
         }
@@ -555,6 +606,7 @@ fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: None,
     }
 }
@@ -876,7 +928,13 @@ async fn handle_claude_messages(
     request_log.set_agent(&agent);
     let live_request_id = request_log.entry.id.clone();
 
-    let plan = match route::resolve_plan(gateway, &agent, &client_model, session.as_deref()) {
+    let plan = match route::resolve_plan_for_request(
+        gateway,
+        &agent,
+        &client_model,
+        session.as_deref(),
+        &request,
+    ) {
         Ok(plan) => plan,
         Err(error) => {
             let message = crate::protocol_proxy::error_chain(&error);
@@ -1303,7 +1361,7 @@ async fn handle_claude_count_tokens(
         .unwrap_or_default()
         .to_string();
     // 只是数 token，不真正发请求：用预览，别推进模型组轮换和 Key 轮询的进度。
-    if let Ok(plan) = route::preview_plan(gateway, &agent, &model, None)
+    if let Ok(plan) = route::preview_plan_for_request(gateway, &agent, &model, None, &request)
         && let Some(candidate) = plan.candidates.first()
         && candidate.relay.protocol == crate::settings::RelayProtocol::AnthropicMessages
     {
@@ -1378,6 +1436,13 @@ async fn handle_models(
                     });
                     if id != *model {
                         row["description"] = json!("经 Codex++ 网关转发");
+                    }
+                    // #3107：报真实窗口；Desktop 只按 supports_1m 区分 200k / 1M，不到 1M 显式写 false。
+                    if let Some((window, supports_1m)) = binding
+                        .and_then(|binding| route::claude_desktop_window(gateway, binding, model))
+                    {
+                        row["max_input_tokens"] = json!(window);
+                        row["supports_1m"] = json!(supports_1m);
                     }
                     row
                 })
@@ -1530,6 +1595,67 @@ mod tests {
         }
     }
 
+    /// #3107：Claude Desktop 的模型列表按池里配置的窗口报 `max_input_tokens`，到 1M 才 `supports_1m: true`；
+    /// id 保持原别名不加 `[1m]` 后缀，没配窗口的模型两个字段都不写。
+    #[tokio::test]
+    async fn claude_desktop_models_declare_window_and_1m_only_from_one_million() {
+        let relay = crate::settings::RelayProfile {
+            id: "up".to_string(),
+            name: "up".to_string(),
+            relay_mode: crate::settings::RelayMode::PureApi,
+            base_url: "https://up.test/v1".to_string(),
+            api_key: "sk-up".to_string(),
+            model_list: "kimi-k3\nglm-5.3\nplain-model".to_string(),
+            ..Default::default()
+        };
+        let mut provider: crate::gateway::store::GatewayProvider =
+            serde_json::from_value(json!({ "relay": relay })).unwrap();
+        provider.model_windows.insert("kimi-k3".into(), 1_000_000);
+        provider.model_windows.insert("glm-5.3".into(), 400_000);
+        let mut gateway = GatewaySettings {
+            providers: vec![provider],
+            ..GatewaySettings::default()
+        };
+        gateway.bindings.insert(
+            "claude-desktop".to_string(),
+            AgentBinding {
+                enabled: true,
+                model: "kimi-k3".to_string(),
+                ..AgentBinding::default()
+            },
+        );
+        let agent = ToolId::Unknown("claude-desktop".to_string());
+        let response = models_response(&gateway, &agent, false).await;
+        let rows = response["data"].as_array().unwrap();
+        let row = |model: &str| {
+            rows.iter()
+                .find(|row| row["display_name"] == model)
+                .unwrap_or_else(|| panic!("{model}: {rows:?}"))
+        };
+
+        let kimi = row("kimi-k3");
+        assert!(!kimi["id"].as_str().unwrap().contains('['), "{kimi}");
+        assert_eq!(kimi["max_input_tokens"], 1_000_000);
+        assert_eq!(kimi["supports_1m"], true);
+
+        let glm = row("glm-5.3");
+        assert!(!glm["id"].as_str().unwrap().contains('['), "{glm}");
+        assert_eq!(glm["max_input_tokens"], 400_000);
+        assert_eq!(glm["supports_1m"], false);
+
+        let plain = row("plain-model");
+        assert!(plain.get("max_input_tokens").is_none(), "{plain}");
+        assert!(plain.get("supports_1m").is_none(), "{plain}");
+
+        // 选了 1M 选项后发回来的 `<别名>[1m]` 仍还原成原模型。
+        let binding = gateway.binding(&agent).unwrap();
+        let id = format!("{}[1m]", kimi["id"].as_str().unwrap());
+        assert_eq!(
+            route::effective_model(&gateway, binding, "glm-5.3", &id),
+            "kimi-k3"
+        );
+    }
+
     #[test]
     fn gateway_paths_split_into_agent_and_tail() {
         assert_eq!(
@@ -1568,6 +1694,17 @@ mod tests {
             ))
         );
         assert_eq!(split_gateway_path("/v1/messages"), None);
+    }
+
+    #[test]
+    fn unauthenticated_health_probe_matches_liveness_paths_only() {
+        assert!(is_unauthenticated_health_probe("HEAD", "/api/hello"));
+        assert!(is_unauthenticated_health_probe("GET", "/api/hello"));
+        // 真实推理端点必须继续走认证，不能被探针放行误伤。
+        assert!(!is_unauthenticated_health_probe("POST", "/api/hello"));
+        assert!(!is_unauthenticated_health_probe("HEAD", "/messages"));
+        assert!(!is_unauthenticated_health_probe("HEAD", "/v1/messages"));
+        assert!(!is_unauthenticated_health_probe("GET", "/api/hello/x"));
     }
 
     #[test]

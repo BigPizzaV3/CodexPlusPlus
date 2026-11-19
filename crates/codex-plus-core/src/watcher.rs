@@ -11,6 +11,7 @@ mod windows_main_stop;
 #[cfg(windows)]
 pub use windows_main_stop::{
     stop_windows_main_codex_processes_and_wait,
+    stop_windows_main_codex_processes_excluding_and_wait,
     stop_windows_main_codex_processes_with_args_and_wait,
 };
 

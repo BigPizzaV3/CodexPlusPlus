@@ -41,7 +41,7 @@ fn table_columns(connection: &Connection) -> anyhow::Result<Vec<String>> {
     Ok(columns)
 }
 
-fn thread_db(home: &Path) -> anyhow::Result<(Connection, Vec<String>)> {
+pub(crate) fn thread_db(home: &Path) -> anyhow::Result<(Connection, Vec<String>)> {
     for path in crate::codex_sqlite::codex_session_db_paths_from_home(home) {
         if !path.exists() {
             continue;

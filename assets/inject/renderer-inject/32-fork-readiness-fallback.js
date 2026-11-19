@@ -85,6 +85,18 @@
   // 补一份空数据（见 33-offline-auto-review.js 的 codexPlusOfflineStatsigPatch）。所有闸门仍是「没下发 = 关」，
   // 和没数据时读到的值一样，只是原生能据此发布执行配置（permissionRefresh = false，即旧版权限选择方式），
   // 等同于启动时连着网的纯 API Key 会话。只写内存，拿到真实数据就不碰，登录用户保持原生行为。
+  //
+  // Codex 26.1111（#3162）：Statsig 评估挪到了主进程。渲染进程把自己的 Statsig 数据发布过去，主进程据此
+  // 建一个只读 Statsig 客户端；分支对话的放置门控在主进程读 useAppServerCustomSections =
+  // 「这个客户端的 codex-app-server-custom-sections 闸门」，没有客户端就是 undefined，于是 thread/fork
+  // 之前就判 not-ready / execution-config-loading。渲染进程只在数据确实属于当前用户时才发布数据，
+  // 否则发布「无数据」，主进程按缺省给执行配置（所以 permissionRefresh 能读到 false），却不建客户端。
+  // 除了上面的完全没数据，还有一种常见情形：Statsig 拉不到，但本地缓存里有以前拉到的数据——渲染进程
+  // 照常用这份缓存，原生却因为 user 哈希对不上（每次启动都变的会话字段）不认它，上面「只在没数据时补」
+  // 的兜底也不触发。这时原样沿用缓存数据，只补上当前 user（闸门值一个不改），原生就认作当前用户的数据，
+  // 主进程随之建出客户端，放置门控读到真实的闸门值。
+  // 上面的放置门控兜底（#2826）在 26.1106 起的 Rspack 版本里找不到 app-initial 模块、不会生效，
+  // 那里渲染进程的放置门控本来就恒有值；它只对更早的 Codex 版本有用。
   function codexForkStatsigFallbackActive() {
     if (typeof codexPlusBackendSettingsLoaded === "undefined" || codexPlusBackendSettingsLoaded !== true) return false;
     return !(typeof codexPlusBackendSettings !== "undefined" && codexPlusBackendSettings?.enhancementsEnabled === false);
@@ -103,10 +115,13 @@
     if (!codexForkStatsigFallbackActive()) return;
     for (const client of codexPlusOfflineStatsigClients()) {
       try {
-        if (!codexForkStatsigWithoutAccount(client) || !codexPlusOfflineStatsigPatch(client)) continue;
+        if (!codexForkStatsigWithoutAccount(client)) continue;
+        const hadValues = client.getContext()?.values != null;
+        if (!codexPlusOfflineStatsigPatch(client, {}, { adoptUnverified: true })) continue;
         if (!codexForkReadinessState.statsigReported) {
           codexForkReadinessState.statsigReported = true;
-          try { sendCodexPlusDiagnostic("fork_statsig_offline_fallback", {}); } catch {}
+          // cache：沿用了原生不认的缓存数据（#3162）；empty：完全没数据，补了空数据（#2898）。
+          try { sendCodexPlusDiagnostic("fork_statsig_offline_fallback", { source: hadValues ? "cache" : "empty" }); } catch {}
         }
       } catch {}
     }

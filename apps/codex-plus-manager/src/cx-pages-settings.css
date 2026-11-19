@@ -1278,3 +1278,8 @@
   width: 16px;
   height: 16px;
 }
+
+/* 「切换时保留」行：说明要列清哪些字段保留，允许换行（#3115）。 */
+:root .shell .cx-preserve-row .cx-row-detail {
+  white-space: normal;
+}

@@ -54,6 +54,7 @@ fn fixture() -> Fixture {
             subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
+            custom_headers: None,
         },
         "",
         None,
