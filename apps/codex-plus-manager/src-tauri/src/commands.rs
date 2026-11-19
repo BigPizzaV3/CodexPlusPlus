@@ -6248,6 +6248,107 @@ fn archive_one_local_session(path: &Path, session_id: &str, archived: bool) -> a
     Ok(())
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRelocationPreviewPayload {
+    #[serde(flatten)]
+    plan: codex_plus_data::SessionRelocationPlan,
+    /// 目标目录在本机是否存在。
+    target_exists: bool,
+    /// Codex 桌面端在运行时不能执行：它会覆盖全局状态，正在写的 rollout 也不能替换。
+    codex_running: bool,
+}
+
+fn session_relocation_target(request: &codex_plus_data::SessionRelocationRequest) -> &str {
+    match request {
+        codex_plus_data::SessionRelocationRequest::Remap { to, .. }
+        | codex_plus_data::SessionRelocationRequest::Move { to, .. } => to.trim(),
+    }
+}
+
+/// 预览会话目录重定位（#1085）：只读，列出会改到新目录的会话和跟着改的项目根路径。
+#[tauri::command]
+pub async fn preview_session_relocation(
+    request: codex_plus_data::SessionRelocationRequest,
+) -> CommandResult<SessionRelocationPreviewPayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        match codex_plus_data::plan_session_relocation(&home, &request) {
+            Ok(plan) => ok(
+                &format!("将把 {} 个会话改到新目录。", plan.items.len()),
+                SessionRelocationPreviewPayload {
+                    plan,
+                    target_exists: Path::new(session_relocation_target(&request)).is_dir(),
+                    codex_running: !codex_plus_core::watcher::find_session_index_cleanup_blocking_processes()
+                        .is_empty(),
+                },
+            ),
+            Err(error) => failed(&format!("无法移动会话：{error:#}"), Default::default()),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| failed(&format!("预览会话移动失败：{error}"), Default::default()))
+}
+
+/// 执行会话目录重定位（#1085）：会话库、侧边栏目录库、rollout 和全局状态一起改，改动前的值写进备份目录。
+#[tauri::command]
+pub async fn apply_session_relocation(
+    request: codex_plus_data::SessionRelocationRequest,
+) -> CommandResult<codex_plus_data::SessionRelocationReport> {
+    tauri::async_runtime::spawn_blocking(move || apply_session_relocation_blocking(request))
+        .await
+        .unwrap_or_else(|error| failed(&format!("移动会话的后台任务失败：{error}"), Default::default()))
+}
+
+fn apply_session_relocation_blocking(
+    request: codex_plus_data::SessionRelocationRequest,
+) -> CommandResult<codex_plus_data::SessionRelocationReport> {
+    let running = codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+    if !running.is_empty() {
+        return failed("Codex 仍在运行，请完全退出 Codex 后再移动会话。", Default::default());
+    }
+    let target = session_relocation_target(&request);
+    if !Path::new(target).is_dir() {
+        return failed(&format!("目标文件夹不存在：{target}"), Default::default());
+    }
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let backups = codex_plus_core::paths::default_app_state_dir().join("backups");
+    let report = match codex_plus_data::apply_session_relocation(&home, &request, &backups) {
+        Ok(report) => report,
+        Err(error) => return failed(&format!("移动会话失败：{error:#}"), Default::default()),
+    };
+    log_manager_event(
+        "manager.session_relocation.finish",
+        json!({
+            "moved": report.moved,
+            "rollouts_rewritten": report.rollouts_rewritten,
+            "rollouts_missing": report.rollouts_missing,
+            "project_roots_updated": report.project_roots_updated,
+            "failures": report.failures.len(),
+            "backup_dir": report.backup_dir,
+        }),
+    );
+    if report.moved == 0 && report.project_roots_updated == 0 && report.failures.is_empty() {
+        return ok("没有需要移动的会话。", report);
+    }
+    let mut message = format!("已把 {} 个会话改到新目录", report.moved);
+    if report.rollouts_missing > 0 {
+        message.push_str(&format!("（其中 {} 个找不到会话文件，只更新了索引）", report.rollouts_missing));
+    }
+    if report.project_roots_updated > 0 {
+        message.push_str(&format!("，更新了 {} 处项目根路径", report.project_roots_updated));
+    }
+    if let Some(backup) = &report.backup_dir {
+        message.push_str(&format!("。改动前的记录已备份到 {backup}"));
+    }
+    if report.failures.is_empty() {
+        ok(&format!("{message}。"), report)
+    } else {
+        let details = report.failures.iter().take(3).cloned().collect::<Vec<_>>().join("；");
+        failed(&format!("{message}；{} 项未完成：{details}", report.failures.len()), report)
+    }
+}
+
 /// 归一化「Codex 应用路径」。**无效路径一律丢弃，不落库。**
 ///
 /// 之前的写法是 normalize 成功才覆盖、失败就原样保留，于是误选的路径会被存进
@@ -7893,6 +7994,83 @@ fn import_local_skills_blocking(path: &str) -> CommandResult<SkillsPayload> {
             payload,
         )
     }
+}
+
+/// 把选中的 Skill 连同分组、各 Agent 的启用状态导出成迁移包（#2852）。
+#[tauri::command]
+pub async fn export_skill_bundle(
+    path: String,
+    skills: Vec<codex_plus_core::skills::SkillBundleSelection>,
+    groups: Vec<String>,
+) -> CommandResult<codex_plus_core::skills::SkillBundleExport> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let destination = std::path::PathBuf::from(path.trim());
+        match default_skills_manager().export_skill_bundle(&skills, &groups, &destination) {
+            Ok(outcome) if outcome.errors.is_empty() => ok(
+                &format!("已导出 {} 个 Skill：{}", outcome.exported.len(), destination.display()),
+                outcome,
+            ),
+            Ok(outcome) => failed(
+                &format!(
+                    "已导出 {} 个 Skill，{} 个未导出：{}",
+                    outcome.exported.len(),
+                    outcome.errors.len(),
+                    outcome.errors.join("；")
+                ),
+                outcome,
+            ),
+            Err(error) => failed(&format!("导出 Skill 迁移包失败：{error:#}"), Default::default()),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| failed(&format!("导出 Skill 迁移包失败：{error}"), Default::default()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillBundleImportPayload {
+    #[serde(flatten)]
+    skills: SkillsPayload,
+    bundle: codex_plus_core::skills::SkillBundleImport,
+}
+
+/// 导入 Skill 迁移包（#2852）。本机已有的同名 Skill 不覆盖文件；分组由界面按返回的清单恢复。
+#[tauri::command]
+pub async fn import_skill_bundle(path: String) -> CommandResult<SkillBundleImportPayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let result = manager.import_skill_bundle(std::path::Path::new(path.trim()));
+        let skills = current_skills_payload(&manager);
+        match result {
+            Ok(bundle) => {
+                let summary = format!(
+                    "已导入 {} 个 Skill，{} 个本机已有（未覆盖文件）",
+                    bundle.imported.len(),
+                    bundle.existing.len()
+                );
+                if bundle.errors.is_empty() {
+                    ok(&format!("{summary}。"), SkillBundleImportPayload { skills, bundle })
+                } else {
+                    let message = format!("{summary}；{} 项失败：{}", bundle.errors.len(), bundle.errors.join("；"));
+                    failed(&message, SkillBundleImportPayload { skills, bundle })
+                }
+            }
+            Err(error) => failed(
+                &format!("导入 Skill 迁移包失败：{error:#}"),
+                SkillBundleImportPayload { skills, bundle: Default::default() },
+            ),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        failed(
+            &format!("导入 Skill 迁移包失败：{error}"),
+            SkillBundleImportPayload {
+                skills: current_skills_payload(&default_skills_manager()),
+                bundle: Default::default(),
+            },
+        )
+    })
 }
 
 #[tauri::command]

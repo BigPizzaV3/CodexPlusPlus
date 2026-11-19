@@ -6567,7 +6567,7 @@ fn timestamp_expr(columns: &HashSet<String>, ms_column: &str, seconds_column: &s
     }
 }
 
-fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Value>)> {
+pub(crate) fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Value>)> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

@@ -13,6 +13,8 @@ import {
   isDirectProxy,
   proxyAddressError,
   agentModels,
+  appendGroupMembers,
+  batchMemberRows,
   bindingFromDraft,
   blankBinding,
   connectedAgents,
@@ -423,6 +425,38 @@ test("「模型」页矩阵：每个模型列出提供它的供应商，按池�
   assert.deepEqual(rows[0].providers.map((provider) => provider.id), ["glm", "bare"], "大小写不同算同一个模型；关掉的供应商不在里面");
   assert.deepEqual(rows[0].providers[1].excludedBy, ["claude"]);
   assert.deepEqual(rows[0].providers[0].excludedBy, []);
+});
+
+test("按模型批量添加（#2823）：多家都有的模型每家一份固定写法，已在组里的标出来，追加时不重复", () => {
+  const data = payload();
+  data.pool[2].models = ["glm-5.3", "bare-1"];
+  data.pool.push({ id: "off", name: "Off", baseUrl: "https://off.test/v1", protocol: "responses", official: false, models: ["glm-5.3"], keyCount: 1, enabled: false, source: "" });
+  // 组里已有：deepseek 的固定写法，以及当时只有一家时加的裸名 bare-1。
+  const members = [{ model: "deepseek/deepseek-v4-flash", weight: 3 }, { model: "bare-1", weight: 1 }];
+  const rows = batchMemberRows(data, members);
+  const row = (model: string) => rows.find((item) => item.model === model)!;
+  assert.deepEqual(
+    row("glm-5.3").candidates.map((candidate) => [candidate.providerId, candidate.member, candidate.added]),
+    [["glm", "glm/glm-5.3", false], ["bare", "bare/glm-5.3", false]],
+    "多家都有：写成 <供应商 id>/<模型>；关掉的供应商不列",
+  );
+  assert.deepEqual(
+    row("deepseek-v4-pro").candidates.map((candidate) => [candidate.member, candidate.added]),
+    [["deepseek-v4-pro", false]],
+    "只有一家：用裸名，与模型选择器一致",
+  );
+  assert.equal(row("deepseek-v4-flash").candidates[0].added, true, "固定写法指向这一家");
+  assert.equal(row("bare-1").candidates[0].added, true, "只有一家的裸名也算已在组里");
+
+  const next = appendGroupMembers(members, ["glm/glm-5.3", "BARE-1", "bare/glm-5.3", "glm/glm-5.3"]);
+  assert.deepEqual(next, [
+    { model: "deepseek/deepseek-v4-flash", weight: 3 },
+    { model: "bare-1", weight: 1 },
+    { model: "glm/glm-5.3", weight: 1 },
+    { model: "bare/glm-5.3", weight: 1 },
+  ]);
+  assert.equal(members.length, 2, "不改原数组");
+  assert.deepEqual(batchMemberRows(null, []), []);
 });
 
 test("上一个请求的路由说明：先列计划，再逐个尝试，最后谁回答", () => {

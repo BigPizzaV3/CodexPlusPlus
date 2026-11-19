@@ -34,6 +34,8 @@ pub use backup_usage::SkillBackupUsage;
 mod archive;
 mod local_versions;
 pub use local_versions::LocalSkillVersion;
+mod bundle;
+pub use bundle::{SkillBundleExport, SkillBundleImport, SkillBundleSelection, SkillBundleSkill};
 
 /// 在锁外检查过的 Agent 副本；提交只核验路径身份与代次，不再重读内容。
 struct AgentCopiesSnapshot {

@@ -1853,3 +1853,45 @@ export function memberTarget(payload: GatewayPayload | null, model: string): { e
   const serving = servingProviders(payload, model);
   return serving.length === 1 ? { entry: serving[0], model: model.trim() } : null;
 }
+
+/** 「按模型批量添加」里一个模型下的一家供应商：`member` 是加进组里的成员值，`added` 表示组里已经有它。 */
+export type BatchMemberCandidate = { providerId: string; name: string; baseUrl: string; member: string; added: boolean };
+export type BatchMemberRow = { model: string; candidates: BatchMemberCandidate[] };
+
+/**
+ * 「按模型批量添加」（#2823）：每个模型列出池里提供它的供应商，勾选后一次加成组成员。
+ * 成员值与模型选择器一致：多家都有的模型写成 `<供应商 id>/<模型>` 固定到这一家，只有一家的用裸名。
+ */
+export function batchMemberRows(payload: GatewayPayload | null, members: GroupMember[]): BatchMemberRow[] {
+  const taken = new Set<string>();
+  for (const member of members) {
+    const target = memberTarget(payload, member.model);
+    if (target) taken.add(`${target.entry.id}/${target.model}`.toLowerCase());
+  }
+  return modelDispatch(payload).map((row) => {
+    const pinned = row.providers.length > 1 || Boolean(disabledGroup(payload, row.model));
+    return {
+      model: row.model,
+      candidates: row.providers.map((provider) => ({
+        providerId: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        member: pinned ? `${provider.id}/${row.model}` : row.model,
+        added: taken.has(`${provider.id}/${row.model}`.toLowerCase()),
+      })),
+    };
+  });
+}
+
+/** 把勾选的成员追加到组里：已有的（按成员值，不分大小写）跳过，新成员权重为 1。 */
+export function appendGroupMembers(members: GroupMember[], models: string[]): GroupMember[] {
+  const seen = new Set(members.map((member) => member.model.toLowerCase()));
+  const next = [...members];
+  for (const model of models) {
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push({ model, weight: 1 });
+  }
+  return next;
+}

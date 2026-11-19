@@ -13441,8 +13441,10 @@ ${key} = ${value}`]);
     agentModels: () => agentModels,
     agentName: () => agentName,
     agentPoolProviders: () => agentPoolProviders,
+    appendGroupMembers: () => appendGroupMembers,
     averageDuration: () => averageDuration,
     axisLabelIndexes: () => axisLabelIndexes,
+    batchMemberRows: () => batchMemberRows,
     bindingFromDraft: () => bindingFromDraft,
     blankBinding: () => blankBinding,
     cacheHitRate: () => cacheHitRate,
@@ -14914,6 +14916,37 @@ ${key} = ${value}`]);
     if (qualified) return qualified;
     const serving = servingProviders(payload, model);
     return serving.length === 1 ? { entry: serving[0], model: model.trim() } : null;
+  }
+  function batchMemberRows(payload, members) {
+    const taken = /* @__PURE__ */ new Set();
+    for (const member of members) {
+      const target = memberTarget(payload, member.model);
+      if (target) taken.add(`${target.entry.id}/${target.model}`.toLowerCase());
+    }
+    return modelDispatch(payload).map((row) => {
+      const pinned = row.providers.length > 1 || Boolean(disabledGroup(payload, row.model));
+      return {
+        model: row.model,
+        candidates: row.providers.map((provider) => ({
+          providerId: provider.id,
+          name: provider.name,
+          baseUrl: provider.baseUrl,
+          member: pinned ? `${provider.id}/${row.model}` : row.model,
+          added: taken.has(`${provider.id}/${row.model}`.toLowerCase())
+        }))
+      };
+    });
+  }
+  function appendGroupMembers(members, models) {
+    const seen = new Set(members.map((member) => member.model.toLowerCase()));
+    const next = [...members];
+    for (const model of models) {
+      const key = model.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      next.push({ model, weight: 1 });
+    }
+    return next;
   }
 
   // apps/codex-plus-manager/src/gateway-agent-safety.ts

@@ -5443,6 +5443,19 @@ export function App() {
               onDeleteMany={actions.deleteLocalSessions}
               onArchiveMany={actions.archiveLocalSessions}
               onListProjectSessions={actions.listProjectSessions}
+              onPickFolder={async (title) => {
+                try {
+                  const selected = await open({ directory: true, multiple: false, title });
+                  return typeof selected === "string" && selected.trim() ? selected : null;
+                } catch (error) {
+                  showNotice(t("移动会话"), stringifyError(error), "failed");
+                  return null;
+                }
+              }}
+              onRelocated={async (message, ok) => {
+                showNotice(t("移动会话"), message, ok ? "ok" : "failed");
+                await actions.refreshLocalSessions(true, localSessions?.offset ?? 0);
+              }}
               repairPanel={<SessionRepairPanel dirty={settingsDirty} form={settingsForm} providerSyncProgress={providerSyncProgress}
                 sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport}
                 sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets}

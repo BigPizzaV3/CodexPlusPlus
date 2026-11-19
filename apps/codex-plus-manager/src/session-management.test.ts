@@ -51,6 +51,7 @@ function fixture(overrides: Record<string, any> = {}) {
     useMemo: (create: () => unknown) => create(),
     Archive: "Archive", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", ChevronDown: "ChevronDown", Copy: "Copy", History: "History", Info: "Info",
     RefreshCw: "RefreshCw", Search: "Search", Trash2: "Trash2", Check: "Check", ManagementDrawer: "ManagementDrawer",
+    FolderInput: "FolderInput", FolderSymlink: "FolderSymlink", SessionRelocateDrawer: "SessionRelocateDrawer",
     // 骨架组件（cx-layout）与顶栏挂载点在这里只当普通节点；搜索框是 CxToolbar 的 onQuery。
     TopbarActions: "TopbarActions", CxToolbar: "CxToolbar", CxCard: "CxCard", CxEmpty: "CxEmpty", CxRow: "CxRow",
     setTimeout,
@@ -59,7 +60,8 @@ function fixture(overrides: Record<string, any> = {}) {
   let props = {
     sessions: { sessions: [session("first", "/projects/alpha"), session("second", "/projects/beta")], totalCount: 4, hasMore: true, offset: 0, limit: 2 },
     onRefresh: async () => {}, onDelete: async () => true, onDeleteMany: async () => true,
-    onArchiveMany: async () => true, onListProjectSessions: async () => [], ...overrides,
+    onArchiveMany: async () => true, onListProjectSessions: async () => [],
+    onPickFolder: async () => null, onRelocated: async () => {}, ...overrides,
   };
   return { render: (update: Record<string, any> = {}) => { props = { ...props, ...update }; cursor = 0; return context.ProjectSessionPage(props) as Tree; } };
 }
@@ -139,6 +141,53 @@ test("whole-project selection includes sessions outside the page and archive rec
   await flushActions();
   assert.deepEqual(archived, [["first", "off-page"]]);
   assert.equal(button(f.render(), "删除已选 (0)").props.disabled, true);
+});
+
+test("moving selected sessions and relocating a project open the preview drawer only after a folder is picked (#1085)", async () => {
+  let picked: string | null = null; const titles: string[] = []; const notices: Array<[string, boolean]> = [];
+  const f = fixture({
+    onPickFolder: async (title: string) => { titles.push(title); return picked; },
+    onRelocated: async (message: string, ok: boolean) => { notices.push([message, ok]); },
+  });
+  const drawer = (root: Tree) => nodes(root).find((node) => node.type === "SessionRelocateDrawer");
+  // 请求对象来自 vm 上下文，原型不同，按 JSON 比较内容。
+  const request = (root: Tree) => JSON.parse(JSON.stringify(drawer(root)?.props.request ?? null));
+  const relocate = (root: Tree) => nodes(root).find((node) => node.type === "button" && node.props.className?.includes("cx-session-relocate") && node.props["aria-label"].includes("/projects/alpha"))!;
+
+  // 项目标题上的「重新定位目录」不需要先进入多选；取消选文件夹时什么都不发生。
+  let tree = f.render();
+  assert.equal(nodes(tree).filter((node) => node.props.className?.includes("cx-session-relocate")).length, 2);
+  relocate(tree).props.onClick(); await flushActions();
+  tree = f.render();
+  assert.equal(drawer(tree), undefined);
+  picked = "/moved/alpha";
+  relocate(tree).props.onClick(); await flushActions();
+  tree = f.render();
+  assert.deepEqual(request(tree), { kind: "remap", from: "/projects/alpha", to: "/moved/alpha" });
+  drawer(tree)!.props.onClose();
+  assert.equal(drawer(f.render()), undefined);
+
+  // 批量移动：选中的会话 id 连同目标目录交给预览；成功后清空选择并通知外层刷新。
+  button(f.render(), "选择多个…").props.onClick();
+  tree = f.render();
+  assert.equal(button(tree, "移动已选…").props.disabled, true);
+  button(tree, "全选当前列表").props.onClick();
+  tree = f.render(); button(tree, "移动已选…").props.onClick(); await flushActions();
+  tree = f.render();
+  assert.deepEqual(request(tree), { kind: "move", threadIds: ["first", "second"], to: "/moved/alpha" });
+  drawer(tree)!.props.onDone("没改成", false); await flushActions();
+  tree = f.render();
+  assert.equal(drawer(tree), undefined);
+  assert.equal(button(tree, "删除已选 (2)").props.disabled, false, "失败时保留选择");
+  button(tree, "移动已选…").props.onClick(); await flushActions();
+  drawer(f.render())!.props.onDone("已移动", true); await flushActions();
+  assert.equal(button(f.render(), "删除已选 (0)").props.disabled, true);
+  assert.deepEqual(notices, [["没改成", false], ["已移动", true]]);
+  assert.equal(titles.length, 4);
+
+  // 按时间查看时没有项目目录，不显示重新定位。
+  button(f.render(), "按时间").props.onClick();
+  assert.equal(nodes(f.render()).filter((node) => node.props.className?.includes("cx-session-relocate")).length, 0);
 });
 
 test("project headings expose their controlled region, start expanded and can collapse and expand independently", () => {

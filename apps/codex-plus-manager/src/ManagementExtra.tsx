@@ -3,7 +3,7 @@ import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, CloudDownload, Copy, Edit3, ExternalLink, FolderOpen, FolderPlus, GripVertical, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
@@ -17,10 +17,11 @@ import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
 import { SkillListViewport } from "./SkillListViewport";
-import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
+import { aggregateSkillGroupItems, applySkillBundleGroups, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillBundleExportGroups, skillBundleSelections, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillBundleSkill, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
 import { SkillSourceMatchDrawer, type SourceSelection } from "./SkillSourceMatchDrawer";
 import { SkillDuplicatesDrawer } from "./SkillDuplicatesDrawer";
+import { SkillBundleExportDrawer } from "./SkillBundleExportDrawer";
 import { SkillInPlaceUpdateDrawer } from "./SkillInPlaceUpdateDrawer";
 import { SkillBackupUsage } from "./SkillBackupUsage";
 import { TopbarActions } from "./TopbarActions";
@@ -56,6 +57,7 @@ type SkillBackup = { id: string; skillId: string; name: string; backedUpAt: stri
 type SkillPayload = Result & { skills: Skill[]; inventoryOk: boolean; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; agentSkillsDirs?: Record<string, string>; backups?: SkillBackup[]; backupsOk: boolean };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
 type SourceApplyResult = SkillPayload & { applied: Array<{ localId: string; fromRepoKey: string; toRepoKey: string; localPath?: string | null }> };
+type SkillBundleImportResult = SkillPayload & { bundle?: { groups: string[]; skills: SkillBundleSkill[] } };
 const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
 const skillBatchRegistry = new SkillBatchRegistry();
 const skillPageCache: {
@@ -382,6 +384,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [matchTarget, setMatchTarget] = useState<({ id?: string; localPath?: string } & SkillMatchContext) | null>(null);
   const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   const [backupsOpen, setBackupsOpen] = useState(false);
+  const [bundleExportOpen, setBundleExportOpen] = useState(false);
   const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -708,6 +711,67 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     // 导入的 Skill 是已安装状态，切到「已安装」才能看到。
     if (await run("import_local_skills", { path })) setTab("installed");
   };
+  // 迁移包（#2852）：选中的分组连同 Skill 文件、分组、各 Agent 的启用状态导出成一个 zip。
+  const exportSkillBundle = async (selected: ReadonlySet<string>) => {
+    const request = skillBundleSelections(bundleGroups, selected);
+    if (!request.skills.length) return;
+    let path: string | null;
+    try {
+      path = await saveDialog({ title: t("导出 Skill 迁移包"), defaultPath: "codex-plus-skills.zip", filters: [{ name: "ZIP", extensions: ["zip"] }] });
+    } catch (error) {
+      await notify("Skills", String(error), "failed");
+      return;
+    }
+    if (!path) return;
+    setBusy(true);
+    try {
+      const result = await invoke<Result>("export_skill_bundle", { path, skills: request.skills, groups: request.groups });
+      await notify("Skills", result.message, ok(result) ? "ok" : "failed");
+      if (ok(result)) setBundleExportOpen(false);
+    } catch (error) {
+      await notify("Skills", String(error), "failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 导入迁移包：后端装文件、恢复各 Agent 的启用状态；分组存在本窗口里，按返回的清单写回。
+  const importSkillBundle = async () => {
+    let picked: string | string[] | null;
+    try {
+      picked = await openDialog({ directory: false, multiple: false, title: t("选择 Skill 迁移包"), filters: [{ name: "ZIP", extensions: ["zip"] }] });
+    } catch (error) {
+      await notify("Skills", String(error), "failed");
+      return;
+    }
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (!path) return;
+    setBusy(true);
+    try {
+      const result = await skillBatchRegistry.run(async () => {
+        try {
+          const request = ++dataRequest.current;
+          const response = await invoke<SkillBundleImportResult>("import_skill_bundle", { path });
+          applyCurrentPayload(request, response);
+          return response;
+        } finally { skillBatchRegistry.notifySettled(batchOwner.current); }
+      });
+      const bundle = result.bundle;
+      if (bundle?.skills.length) {
+        // 三项各自只依赖自己的旧值，分开用函数式更新，不覆盖期间发生的其它分组改动。
+        const blank = { names: [], assignmentsByIdentity: {}, order: [] };
+        setCustomGroupNames((old) => applySkillBundleGroups(bundle, result.skills, { ...blank, names: old }).names);
+        setAssignmentsByIdentity((old) => applySkillBundleGroups(bundle, result.skills, { ...blank, assignmentsByIdentity: old }).assignmentsByIdentity);
+        setGroupOrder((old) => applySkillBundleGroups(bundle, result.skills, { ...blank, order: old }).order);
+        setTab("installed");
+      }
+      await notify("Skills", result.message, ok(result) ? "ok" : "failed");
+    } catch (error) {
+      await notify("Skills", String(error), "failed");
+      void reloadLocal();
+    } finally {
+      setBusy(false);
+    }
+  };
   const deleteRepo = async (repo: Repo) => { await run("delete_skill_repo", { key: repoKey(repo) }); };
   const inspectRepo = async (repo: Repo) => {
     const result = await invoke<RepoInspection>("inspect_skill_repo", { repo });
@@ -826,6 +890,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       .map((group) => ({ ...group, items: aggregateSkillGroupItems(group.items) }));
     return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
   }, [knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel]);
+  const bundleGroups = useMemo(() => skillBundleExportGroups(allGroups), [allGroups]);
   const groups = useMemo(() => {
     const result = groupSkills(items, knownSkills, customGroupNames, customGroupAssignments, groupOrder,
       { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, !query.trim(), groupAliases, assignmentsByIdentity, knownRepositories)
@@ -983,6 +1048,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       <Menu>
         <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
         <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>
+        <MenuItem onClick={() => void importSkillBundle()} disabled={busy} title={t("导入另一台电脑导出的迁移包，恢复 Skill、分组和各 Agent 的启用状态")}>{t("导入迁移包")}</MenuItem>
+        <MenuItem onClick={() => setBundleExportOpen(true)} disabled={busy || !data} title={t("把分组里的 Skill 连同分组、各 Agent 的启用状态导出成一个 zip，便于换电脑")}>{t("导出迁移包")}</MenuItem>
         <MenuItem onClick={() => setDuplicatesOpen(true)} disabled={busy}>{t("预览重复副本")}</MenuItem>
         <MenuItem onClick={() => setBackupsOpen(true)} disabled={busy}>{t("查看 Skill 备份")}</MenuItem>
       </Menu>
@@ -1081,6 +1148,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         && (!skill.repoPath || !skill.repoKey.includes("/"))).map((skill) => skill.id)}
       onClose={() => setMatchTarget(null)} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}
     {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => setDuplicatesOpen(false)} onArchive={(previewId, id, kind) => run("archive_skill_duplicate", { previewId, id, kind })}/>}
+    {bundleExportOpen && <SkillBundleExportDrawer groups={bundleGroups} busy={busy} onClose={() => setBundleExportOpen(false)} onExport={(selected) => void exportSkillBundle(selected)}/>}
     {backupsOpen && <SkillBackupsDrawer backups={data?.backups || []} busy={busy} onClose={() => setBackupsOpen(false)} onRestore={(backup) => void restoreBackup(backup)} onDelete={(backup) => void deleteBackup(backup)} onExport={exportBackup}/>}
     {versionTask && <SkillVersionPicker task={versionTask} roots={{ ...data?.agentSkillsDirs, ...(data?.codexSkillsDir && { codex: data.codexSkillsDir }) }} onClose={() => setVersionTask(null)} onRun={(action) => run("manage_skill_version", { action })}/>}
     {updateTarget && <SkillInPlaceUpdateDrawer id={updateTarget.id} repoKey={updateTarget.repoKey} localPath={updateTarget.localPath} onClose={() => setUpdateTarget(null)} onExecute={(previewId) => run("execute_skill_in_place_update", { previewId })}/>}
