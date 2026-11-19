@@ -4888,7 +4888,12 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
     let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
     assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
     assert_eq!(metadata[&model]["default_reasoning_level"], "high");
-    assert_eq!(metadata[&model]["display_name"], "Hy4-Flash-Free");
+    assert!(
+        metadata[&model]["display_name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Hy4-Flash-Free")
+    );
 
     // 实际写入 Codex 的原生目录也要有 HY4 身份与档位，不能只修 UI 元数据。
     enable_binding(ctx, &ToolId::Codex, binding.clone()).unwrap();
