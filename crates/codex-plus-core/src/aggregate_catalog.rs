@@ -869,7 +869,30 @@ pub(crate) fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Val
         false,
         None,
     );
-    let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
+    let mut metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
+    // 官方池成员同步的是模型 ID，不一定有同版本的本机目录。只补已知型号的
+    // 官方 Fast 档位，不把同家族旧模板的能力移给未知型号或第三方供应商。
+    if crate::official_login::member_uses_official_login_transport(profile) {
+        let fast_defaults = crate::relay_config::parse_model_metadata_map(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/gpt62-model-metadata-compat.json"
+        )))?;
+        for entry in &entries {
+            let slug = entry.slug.to_ascii_lowercase();
+            let Some(defaults) = fast_defaults.get(&slug) else {
+                continue;
+            };
+            if crate::model_suffix::requires_bundled_metadata_catalog(&slug) {
+                continue;
+            }
+            let fields = metadata.entry(slug).or_insert_with(|| json!({}));
+            if fields.get("service_tiers").is_none() && fields.get("additional_speed_tiers").is_none()
+            {
+                fields["service_tiers"] = defaults["service_tiers"].clone();
+                fields["additional_speed_tiers"] = defaults["additional_speed_tiers"].clone();
+            }
+        }
+    }
     let catalog_json =
         crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
     let catalog_json =
