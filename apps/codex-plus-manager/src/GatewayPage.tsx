@@ -37,6 +37,10 @@ import {
   type MemberStatus,
   memberTarget,
   type AutoGroupEntry,
+  type GatewayPortInfo,
+  MAX_GATEWAY_PORT,
+  MIN_GATEWAY_PORT,
+  parseGatewayPort,
 } from "./gateway-model";
 import { AgentsView, Floating, ModelList, type CodexRunControls } from "./GatewayAgents";
 import { AppSelect } from "./AppSelect";
@@ -235,7 +239,7 @@ export function GatewayPage({
         {tab === "providers" ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "routing" ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
         {tab === "usage" ? <UsageView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "gateway" ? <GatewayView busy={busy} payload={payload} run={run} /> : null}
+        {tab === "gateway" ? <GatewayView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "gateway" && extraSettings ? extraSettings : null}
       </div>
       </GatewayNavContext.Provider>
@@ -266,7 +270,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {
     const next = { ...group, ...patch };
     void run(`group:${group.id}`, "save_gateway_group", {
-      group: { id: next.id, name: next.name, mode: next.mode, sticky: next.sticky ?? "cache", members: next.members, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "" },
+      group: { id: next.id, name: next.name, mode: next.mode, sticky: next.sticky ?? "cache", members: next.members, hideMembers: next.hideMembers ?? false, pick: next.pick ?? "", imageInputModel: next.imageInputModel ?? "" },
     }, t("保存组"), true);
   };
   const saveAuto = (group: AutoGroupEntry, patch: Partial<AutoGroupEntry>) => {
@@ -419,6 +423,9 @@ function GroupCard({
           <strong>{auto ? prettyModelName(group.name) : group.name}</strong>
           <code className="gw-chip" title={auto ? t("Agent 里选这个名字就走这个组") : t("模型组")}>{auto ? group.name : `${GROUP_MODEL_PREFIX}${group.name}`}</code>
           {auto ? <span className="gw-pill gw-pill-outline">{t("自动")}</span> : null}
+          {!auto && group.imageInputModel ? (
+            <span className="gw-pill gw-pill-outline" title={tf("请求里带图片时改发给 {0}", [modelDisplay(payload, group.imageInputModel).title])}>{t("图像输入")}</span>
+          ) : null}
         </div>
         <div className="gw-route-group-controls">
           <AppSelect
@@ -525,7 +532,26 @@ function RouteMember({
 }
 
 
-/** 新建 / 编辑模型组：名称、模式、成员（池里的模型或别的组）。 */
+/** 图像输入下拉里「选择其他模型…」这一项的值（不会被存下）。 */
+const IMAGE_INPUT_PICK = "\u0000pick";
+
+/** 图像输入下拉的选项：跟随默认、组里的成员（通配符除外）、已选的非成员模型、从池里另选。 */
+function imageInputOptions(payload: GatewayPayload | null, members: GroupMember[], current: string) {
+  const option = (model: string, hint: string) => {
+    const view = modelDisplay(payload, model);
+    return { value: model, label: view.title, hint: view.sub ? `${view.sub} · ${hint}` : hint };
+  };
+  const listed = members.filter((member) => !isPattern(member.model));
+  const options = [
+    { value: "", label: t("跟随默认"), hint: t("图片能力取各成员的交集") },
+    ...listed.map((member) => option(member.model, t("组内成员"))),
+  ];
+  if (current && !listed.some((member) => member.model === current)) options.push(option(current, t("不在组里")));
+  options.push({ value: IMAGE_INPUT_PICK, label: t("选择其他模型…"), hint: t("从供应商池里选一个收图的模型") });
+  return options;
+}
+
+/** 新建 / 编辑模型组：名称、模式、成员（池里的模型或别的组）、图像输入。 */
 function GroupEditor({
   payload,
   group,
@@ -536,7 +562,7 @@ function GroupEditor({
   payload: GatewayPayload | null;
   group: GatewayGroupEntry | null;
   busy: string | null;
-  onSave: (input: { id: string; name: string; mode: GroupMode; sticky: GroupSticky; members: GroupMember[] }) => void;
+  onSave: (input: { id: string; name: string; mode: GroupMode; sticky: GroupSticky; members: GroupMember[]; imageInputModel: string }) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(group?.name ?? "");
@@ -546,6 +572,10 @@ function GroupEditor({
   const [members, setMembers] = useState<GroupMember[]>(group?.members.map((member) => ({ ...member })) ?? []);
   const [picking, setPicking] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
+  // 图像输入（#3150）：空串跟随默认；可以选成员，也可以从池里另选一个收图的模型。
+  const [imageInputModel, setImageInputModel] = useState(group?.imageInputModel ?? "");
+  const [pickingImage, setPickingImage] = useState(false);
+  const imageRef = useRef<HTMLDivElement>(null);
   // Esc 栈：「添加成员」浮层、模式下拉开着时 Esc 先关它们。
   useEscapeLayer(true, onCancel);
   // 权重输入框正在编辑的原始文字（允许暂时为空），失焦时再规范成 ≥ 1 的整数。
@@ -573,6 +603,7 @@ function GroupEditor({
     if (!members.some((member) => member.model === patternText)) setMembers([...members, { model: patternText, weight: 1 }]);
     setPattern("");
   };
+  const imageOptions = imageInputOptions(payload, members, imageInputModel);
   const memberHint = mode === "inOrder"
     ? t("从上到下依次尝试")
     : mode === "usage" || mode === "fast"
@@ -584,7 +615,7 @@ function GroupEditor({
         className="gw-modal gw-group-modal"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!error) onSave({ id: group?.id ?? "", name: name.trim(), mode, sticky, members });
+          if (!error) onSave({ id: group?.id ?? "", name: name.trim(), mode, sticky, members, imageInputModel });
         }}
       >
         <header>
@@ -713,6 +744,39 @@ function GroupEditor({
               </Floating>
             </div>
           </div>
+          <div className="gw-field">
+            <span>{t("图像输入")}</span>
+            <div ref={imageRef}>
+              <AppSelect
+                label={t("图像输入")}
+                menuWidth={280}
+                onChange={(value) => {
+                  if (value === IMAGE_INPUT_PICK) setPickingImage(true);
+                  else setImageInputModel(value);
+                }}
+                options={imageOptions}
+                size="sm"
+                value={imageInputModel}
+              />
+            </div>
+            <small className="gw-muted">
+              {imageInputModel
+                ? t("请求里带图片（包括历史消息里的图片）时只发给它，它不可用就直接报错、不改发给其它成员；没有图片时照常按上面的方式路由。")
+                : t("组的图片能力取各成员的交集：有一个成员不收图，Codex 就不让贴图。指定一个收图的模型后，带图片的请求改发给它。")}
+            </small>
+            <Floating anchorRef={imageRef} className="gw-model-popover" onClose={() => setPickingImage(false)} open={pickingImage} width={520}>
+              <ModelList
+                exclude={NO_EXCLUDE}
+                onPick={(item) => {
+                  setPickingImage(false);
+                  setImageInputModel(item.model);
+                }}
+                payload={payload}
+                selectedModel={imageInputModel}
+                skipGroup={group?.id}
+              />
+            </Floating>
+          </div>
         </div>
         <footer>
           <span className="gw-error">{error}</span>
@@ -727,7 +791,93 @@ function GroupEditor({
 
 /* —————————————————————— 网关 —————————————————————— */
 
-function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
+type GatewayPortResult = { status: string; message: string } & Partial<GatewayPortInfo>;
+
+/**
+ * 「本地网关端口」（#3082）：端口和别的程序冲突时在这里换。只写持久化端口文件，
+ * 重启 Codex++ 后才按新端口监听（运行中换端口会让连着旧端口的 Agent 一起断）。
+ * 环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 优先，设了就禁用输入。
+ */
+function GatewayPortRow({ notify }: { notify: Notify }) {
+  const [info, setInfo] = useState<GatewayPortInfo | null>(null);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const accept = (result: GatewayPortResult) => {
+    if (typeof result.configuredPort !== "number") return;
+    setInfo(result as GatewayPortInfo);
+    setText(String(result.configuredPort));
+  };
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<GatewayPortResult>("load_gateway_port")
+      .then((result) => {
+        if (!cancelled) accept(result);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!info) return null;
+  const envLocked = info.envPort != null;
+  const parsed = parseGatewayPort(text);
+  const invalid = !envLocked && parsed === null;
+  const dirty = parsed !== null && parsed !== info.configuredPort;
+  const save = async () => {
+    if (!dirty || saving || envLocked) return;
+    setSaving(true);
+    try {
+      const result = await invoke<GatewayPortResult>("save_gateway_port", { port: parsed });
+      if (result.status !== "ok") {
+        await notify(t("保存本地网关端口失败"), result.message, "failed");
+        return;
+      }
+      accept(result);
+      await notify(t("本地网关端口已保存"), t("完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。"), "ok");
+    } catch (error) {
+      await notify(t("调用失败"), String(error), "failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const detail = envLocked
+    ? tf("已由环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 指定为 {0}，这里不能修改。", [info.envPort ?? ""])
+    : invalid
+      ? tf("端口要在 {0}–{1} 之间。", [MIN_GATEWAY_PORT, MAX_GATEWAY_PORT])
+      : info.restartRequired && info.runningPort
+        ? tf("已改为 {0}，当前仍在 {1} 上监听：需要重启 Codex++ 并重新接入 Agent 后生效。", [info.configuredPort, info.runningPort])
+        : tf("和其它程序端口冲突时换一个（默认 {0}）。保存后需要重启 Codex++ 并重新接入 Agent 后生效。", [info.defaultPort]);
+  return (
+    <CxRow
+      badges={info.restartRequired ? <CxBadge tone="warn">{t("待重启")}</CxBadge> : null}
+      detail={detail}
+      title={t("本地网关端口")}
+      tooltip={t("Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。")}
+    >
+      <Input
+        aria-invalid={invalid || undefined}
+        aria-label={t("本地网关端口")}
+        className="cx-set-input-port"
+        disabled={envLocked || saving}
+        inputMode="numeric"
+        maxLength={5}
+        onChange={(event) => setText(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void save();
+          }
+        }}
+        value={text}
+      />
+      <button className="cx-secondary" disabled={!dirty || saving || envLocked} onClick={() => void save()} type="button">
+        {saving ? t("保存中") : t("保存")}
+      </button>
+    </CxRow>
+  );
+}
+
+function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
   const agentFocus = useAgentFocus();
   // 刚复制的那一行，图标短暂换成对勾。
   const [copied, setCopied] = useState<string | null>(null);
@@ -736,6 +886,8 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
   const localDiscovery = payload.gateway.localLoginDiscovery === true;
+  const responsesWebsocket = payload.gateway.responsesWebsocket === true;
+  const websocketHint = t("Codex 与 Codex++ 之间改用 WebSocket 长连接，延迟更低。只建议上游是 ChatGPT 官方账号或 OpenAI API 时打开；第三方中转常不保留连接内的上下文，会导致工具调用后丢上下文。关着时走 HTTP，与 2.6 一致。新连接生效。");
   const subagentFollow = payload.gateway.subagentModelFollowRequest === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
   const listen = `http://127.0.0.1:${payload.port}`;
@@ -801,6 +953,7 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
 
       <CxSection title={t("网关选项")}>
         <CxCard>
+          <GatewayPortRow notify={notify} />
           <CxRow detail={keyRotationHint} title={t("多 Key 轮换")} tooltip={keyRotationHint}>
             <AppSelect
               className="cx-set-select"
@@ -824,6 +977,14 @@ function GatewayView({ payload, busy, run }: { payload: GatewayPayload | null; b
               label={t("模型名后带供应商")}
               on={modelSuffix}
               onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
+            />
+          </CxRow>
+          <CxRow detail={websocketHint} title={t("Codex 用 WebSocket 连接")} tooltip={websocketHint}>
+            <Switch
+              pending={busy !== null}
+              label={t("Codex 用 WebSocket 连接")}
+              on={responsesWebsocket}
+              onToggle={() => void run("responses-websocket", "save_gateway_responses_websocket", { enabled: !responsesWebsocket }, t("保存网关选项"), true)}
             />
           </CxRow>
           <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")} tooltip={discoveryHint}>

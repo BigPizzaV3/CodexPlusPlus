@@ -266,9 +266,22 @@ test("单文件脚本和市场条目只有「细节」；切页签只改显隐�
 
 test("拓展包清单里的图标用在侧栏、卡片和详情头部，市场图标优先", () => {
   const list = readFileSync(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
-  assert.match(list, /codex-plus-page-nav-item-icon" aria-hidden="true">\$\{extensionIconMarkup\(marketItem\?\.icon \|\| entry\.script\?\.package\?\.icon\)\}/);
-  assert.match(list, /codex-plus-extension-card-icon" aria-hidden="true">\$\{extensionIconMarkup\(item\?\.icon \|\| entry\.script\?\.package\?\.icon\)\}/);
-  assert.match(list, /codex-plus-extensions-detail-icon" aria-hidden="true">\$\{extensionIconMarkup\(marketItem\?\.icon \|\| local\?\.package\?\.icon\)\}/);
+  // 侧栏、卡片、详情头部都走同一个取图标函数（与管理器一致）。
+  assert.match(list, /codex-plus-page-nav-item-icon" aria-hidden="true">\$\{extensionIconMarkup\(codexPlusExtensionIcon\(marketItem, entry\.script\)\)\}/);
+  assert.match(list, /codex-plus-extension-card-icon" aria-hidden="true">\$\{extensionIconMarkup\(codexPlusExtensionIcon\(item, entry\.script\)\)\}/);
+  assert.match(list, /codex-plus-extensions-detail-icon" aria-hidden="true">\$\{extensionIconMarkup\(codexPlusExtensionIcon\(marketItem, local\)\)\}/);
+  // 优先级：市场图标 → 本地拓展包清单的图标 → 拓展包仓库 / 主页仓库作者的 GitHub 头像（市场仓库本身不用头像）。
+  const start = list.indexOf("  const codexPlusScriptMarketRepo =");
+  const end = list.indexOf("  /** 「官方」徽标", start);
+  assert.ok(start >= 0 && end > start);
+  const icon = new Function(`${list.slice(start, end)}\nreturn codexPlusExtensionIcon;`)() as (item: unknown, local: unknown) => string;
+  const pkg = { package: { icon: "data:image/svg+xml,local" } };
+  assert.equal(icon({ icon: "https://example.test/market.png" }, pkg), "https://example.test/market.png");
+  assert.equal(icon({ kind: "package", repo: "alice/pet" }, pkg), "data:image/svg+xml,local");
+  assert.equal(icon({ kind: "package", repo: "alice/pet" }, null), "https://github.com/alice.png?size=64");
+  assert.equal(icon({ homepage: "https://github.com/bob/tool" }, null), "https://github.com/bob.png?size=64");
+  assert.equal(icon({ homepage: "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket" }, null), "");
+  assert.equal(icon(null, null), "");
   const manifest = JSON.parse(readFileSync(new URL("../../../assets/extensions/agent-pet/codexpp.json", import.meta.url), "utf8"));
   assert.equal(manifest.icon, "assets/icon.svg");
 });

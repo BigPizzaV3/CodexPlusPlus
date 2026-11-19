@@ -588,7 +588,13 @@ test("observer callback hides rebuilt rows of a deleted thread before the first 
   assert.match(f.styles.get("codex-plus-deleted-session-rows")!.textContent, new RegExp(`thread-id\\$="${uuid}" i\\]`));
   // 观察器回调先同步过滤，再排常规扫描。
   const startup = shard("99-startup.js");
-  assert.match(startup, /new MutationObserver\(\(mutations\) => \{[^}]*hideDeletedSessionRowsInMutations\(mutations\)[^}]*scheduleScan\(mutations\);/);
+  // 只断言先后顺序：#2791 要求先同步过滤再排常规扫描；观察器回调里后来加的步骤
+  // （阅读位置对齐）不改变这个顺序，不该因为多一行就让正则整体失效。
+  const observer = startup.slice(startup.indexOf("new MutationObserver((mutations) => {"));
+  const hideAt = observer.indexOf("hideDeletedSessionRowsInMutations(mutations)");
+  const scanAt = observer.indexOf("scheduleScan(mutations);");
+  assert.ok(hideAt > 0, "观察器回调里要同步过滤已删会话");
+  assert.ok(scanAt > hideAt, "过滤要在排常规扫描之前");
 });
 
 test("quick delete skips confirmation only for local sessions (#48)", async () => {

@@ -24,6 +24,7 @@ Var LegacyDeleteTries
 !define MUI_UNICON "${ROOT}\apps\codex-plus-manager\src-tauri\icons\icon.ico"
 
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryPageLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -32,16 +33,57 @@ Var LegacyDeleteTries
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
+; 安装包的版本资源（#3148）：没有它时文件属性里产品名、版本都是空的，
+; 按产品名放行软件的企业管控会把新版本安装包拦下。
+; VIProductVersion 只收 X.X.X.X：由构建脚本按 VERSION 算好传 VI_VERSION（去掉预发布后缀），
+; 没传（本地手动编译）时用 0.0.0.0，不让版本资源挡住编译。
+!ifndef VI_VERSION
+  !define VI_VERSION "0.0.0.0"
+!endif
+VIProductVersion "${VI_VERSION}"
+VIFileVersion "${VI_VERSION}"
+!macro CODEX_PLUS_VERSION_KEYS LANG
+  VIAddVersionKey /LANG=${LANG} "ProductName" "Codex++"
+  VIAddVersionKey /LANG=${LANG} "FileDescription" "Codex++ Setup"
+  VIAddVersionKey /LANG=${LANG} "CompanyName" "BigPizzaV3"
+  VIAddVersionKey /LANG=${LANG} "LegalCopyright" "Copyright (c) BigPizzaV3"
+  VIAddVersionKey /LANG=${LANG} "ProductVersion" "${VERSION}"
+  VIAddVersionKey /LANG=${LANG} "FileVersion" "${VERSION}"
+  VIAddVersionKey /LANG=${LANG} "OriginalFilename" "CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+!macroend
+!insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_SIMPCHINESE}
+!insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_ENGLISH}
+
 ; 主程序退出时负责恢复系统浏览器及清理后台服务，安装器不能强制结束进程。
 ; 每 500ms 检查一次；10 秒仍未退出时提示从托盘退出，再重试或取消安装/卸载。
 ; 确认进程退出后再补 500ms 文件锁释放缓冲，避免 File/Delete 撞上残留锁（issue #2362）。
-; 判据用 tasklist 输出 + 字符串包含，不用其退出码（实测 Win11 无匹配仍返回 0），
+;
+; 只等 Codex++ 自己（管理界面、多开实例）。Codex / Claude 等程序按各自配置拉起的
+; `codex-plus-plus.exe --codex-plus-<名称>-mcp` 子进程归那些程序管，Codex++ 退出后照样在跑，
+; 托盘里也找不到；按进程名一律等待会一直弹「请从托盘退出」，点取消又中止整次更新（issue #3153）。
+; 所以先用 PowerShell 按命令行排除这类 MCP 子进程；PowerShell 不可用时退回 tasklist 按进程名判断。
+; tasklist 判据用输出 + 字符串包含，不用其退出码（实测 Win11 无匹配仍返回 0），
 ; 也不用 cmd 管道 find（PATH 里的 Unix find.exe 会劫持、多层引号易变形）。
 !macro WAIT_FOR_PROCESS_EXIT UNFUNC UNSTR
   Function ${UNFUNC}
     Pop $1
     StrCpy $2 0
   wait_loop:
+    ; nsExec 直接 CreateProcess，不经 cmd；外层用反引号，里面的单双引号都不用转义，$$ 是字面 $。
+    nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop'; $$n=@(Get-CimInstance Win32_Process -Filter 'Name=''$1''' | Where-Object { $$_.CommandLine -notmatch '--codex-plus-[a-z0-9-]*-mcp' }).Count; 'CODEX_PLUS_RUNNING=' + $$n"`
+    Pop $0
+    Pop $9
+    StrCmp $0 "0" 0 wait_tasklist
+    !if "${UNSTR}" == ""
+      ${StrStr} $8 "$9" "CODEX_PLUS_RUNNING="
+    !else
+      ${UnStrStr} $8 "$9" "CODEX_PLUS_RUNNING="
+    !endif
+    StrCmp $8 "" wait_tasklist 0
+    StrCpy $8 $8 "" 19
+    IntOp $8 $8 + 0
+    IntCmp $8 0 wait_done wait_done wait_running
+  wait_tasklist:
     nsExec::ExecToStack '$SYSDIR\tasklist.exe /FI "IMAGENAME eq $1" /NH'
     Pop $0
     Pop $9
@@ -51,12 +93,13 @@ Var LegacyDeleteTries
       ${UnStrStr} $8 "$9" "$1"
     !endif
     StrCmp $8 "" wait_done 0
+  wait_running:
     IntOp $2 $2 + 1
     IntCmp $2 20 wait_prompt 0 wait_prompt
     Sleep 500
     Goto wait_loop
   wait_prompt:
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "请从系统托盘退出 Codex++，等待后台服务清理完成后重试。" IDRETRY wait_retry IDCANCEL wait_cancel
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Codex++ 仍在运行（$1）。请从系统托盘退出 Codex++、关闭多开实例，等待后台服务清理完成后点“重试”。$\n$\n点“取消”会中止本次安装。" IDRETRY wait_retry IDCANCEL wait_cancel
   wait_retry:
     StrCpy $2 0
     Goto wait_loop
@@ -68,6 +111,30 @@ Var LegacyDeleteTries
 !macroend
 !insertmacro WAIT_FOR_PROCESS_EXIT WaitForProcessExit ""
 !insertmacro WAIT_FOR_PROCESS_EXIT un.WaitForProcessExit un.
+
+; 安装目录若被手动改到 Program Files 等系统目录，普通权限写不进
+; codex-plus-plus.exe，安装时报“无权限操作”并要求提权（issue #3061）。
+; 默认目录在用户目录下无需提权；发现是系统目录时先提示，默认回到目录页改选，
+; 而不是装到一半失败。以管理员身份运行、确实要装到系统目录的用户仍可选「是」继续。
+Function DirectoryPageLeave
+  StrLen $3 "$PROGRAMFILES64"
+  StrCpy $4 "$INSTDIR" $3
+  StrCmp "$4" "$PROGRAMFILES64" 0 protected_dir_check_next
+    Call ProtectedDirWarn
+    Goto protected_dir_done
+  protected_dir_check_next:
+  StrLen $3 "$PROGRAMFILES"
+  StrCpy $4 "$INSTDIR" $3
+  StrCmp "$4" "$PROGRAMFILES" 0 protected_dir_done
+    Call ProtectedDirWarn
+  protected_dir_done:
+FunctionEnd
+
+Function ProtectedDirWarn
+  MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "所选安装目录位于系统目录（Program Files），普通权限无法替换其中的程序文件，安装时会报“无权限操作”。$\n$\n建议保持默认安装目录（用户目录下，无需管理员权限），或改选其他非系统目录。$\n$\n仍要安装到这里吗？（需要以管理员身份运行安装器）" IDYES protected_dir_confirmed
+    Abort
+  protected_dir_confirmed:
+FunctionEnd
 
 Section "Install"
   SetOutPath "$INSTDIR"
@@ -98,6 +165,34 @@ Section "Install"
     MessageBox MB_OK|MB_ICONSTOP "旧管理工具仍被占用。请退出 Codex++ 后重新安装。"
     Abort
   legacy_binary_removed:
+  ; 上次升级挪开的旧 exe（见下）：占着它的 MCP 子进程多半已经退出，这次顺手删掉，删不掉的留到下次。
+  Delete "$INSTDIR\codex-plus-plus.exe.*.old"
+  ; 主 exe 同样先轮询删除再 File：进程退出后文件锁未必立刻释放，且 Delete 静默
+  ; 失败会让 File 直接弹出系统级“无权限操作/无法写入”对话框，用户误以为缺权限
+  ; 去找管理员提权（issue #3061）。这里换成明确的中文提示，覆盖进程占用、杀软
+  ; 锁定与装进系统目录三种成因，可重试而不是一次失败就中止。
+  StrCpy $LegacyDeleteTries 0
+  main_binary_delete_loop:
+  Delete "$INSTDIR\codex-plus-plus.exe"
+  IfFileExists "$INSTDIR\codex-plus-plus.exe" 0 main_binary_removed
+    ; Codex / Claude 拉起的 MCP 子进程还在跑旧 exe（issue #3153）：运行中的 exe 删不掉，但能改名。
+    ; 挪到一边再写新文件，那些子进程继续用旧映像，宿主下次拉起时就是新版。
+    ; 改名目标带重试计数：上次留下、仍被占用的同名旧文件不会挡住这次。
+    Rename "$INSTDIR\codex-plus-plus.exe" "$INSTDIR\codex-plus-plus.exe.$LegacyDeleteTries.old"
+    IfFileExists "$INSTDIR\codex-plus-plus.exe" 0 main_binary_removed
+    IntOp $LegacyDeleteTries $LegacyDeleteTries + 1
+    IntCmp $LegacyDeleteTries 20 main_binary_delete_failed
+    Sleep 500
+    Goto main_binary_delete_loop
+  main_binary_delete_failed:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "无法替换 codex-plus-plus.exe：文件仍被占用或无写入权限。请确认已从系统托盘退出 Codex++（或在任务管理器结束 codex-plus-plus.exe）；若仍失败，请检查杀毒软件是否锁定该文件。若安装目录在 Program Files 等系统目录，普通权限无法写入，请改用默认安装目录或以管理员身份运行安装器。$\n$\n点“重试”继续等待，点“取消”中止安装。" IDRETRY main_binary_delete_retry IDCANCEL main_binary_abort
+  main_binary_delete_retry:
+    ; 重试要重新计数，否则计数已过 20，IntCmp 不再命中，会无提示地一直轮询。
+    StrCpy $LegacyDeleteTries 0
+    Goto main_binary_delete_loop
+  main_binary_abort:
+    Abort
+  main_binary_removed:
   File "${ROOT}\dist\windows\app\codex-plus-plus.exe"
 
   ; 只迁移确实存在的桌面入口，用户删掉的入口在升级时仍不补建（issue #2376）。
@@ -185,6 +280,7 @@ Section "Uninstall"
 
   Delete "$INSTDIR\codex-plus-plus.exe"
   Delete "$INSTDIR\codex-plus-plus-manager.exe"
+  Delete "$INSTDIR\codex-plus-plus.exe.*.old"
 
   ; NSIS 的 Delete 遇到被占用文件会静默失败，用户会误以为卸载干净。
   ; 残留检测提示用户先从托盘退出，避免“卸载后重装”继续失败（issue #2362）。

@@ -38,6 +38,9 @@ uuid.workspace = true
 zip.workspace = true
 zstd.workspace = true
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+# 远程控制的局域网 HTTPS（自签证书）：Cargo.lock 里已有（reqwest / tungstenite 带进来），这里只是直接用。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 time = "0.3"
 
 [target.'cfg(unix)'.dependencies]

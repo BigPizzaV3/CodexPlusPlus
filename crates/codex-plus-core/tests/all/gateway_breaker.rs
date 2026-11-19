@@ -108,6 +108,7 @@ fn provider(id: &str, base_url: &str) -> GatewayProvider {
         newapi_access: None,
             subscription_policy: None,
         upstream_meta: Default::default(),
+        auto_compact: Default::default(),
         relay: RelayProfile {
             id: id.to_string(),
             name: id.to_string(),

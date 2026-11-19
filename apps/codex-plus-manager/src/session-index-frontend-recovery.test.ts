@@ -159,7 +159,7 @@ test("hidden windows and unavailable native APIs return content-free diagnostic 
   assert.equal(completed.status, "completed"); assert.equal(completed.reason, null);
 });
 
-test("the default-off recovery switch is exposed in both settings UIs and uses the backend mapping", () => {
+test("the default-off recovery switch is exposed in the Codex settings page and uses the backend mapping", () => {
   const app = readFileSync(path.join(root, "apps/codex-plus-manager/src/App.tsx"), "utf8");
   const styles = readFileSync(path.join(fragments, "10-style.js"), "utf8");
   const backend = readFileSync(path.join(fragments, "40-backend-settings.js"), "utf8");
@@ -168,12 +168,12 @@ test("the default-off recovery switch is exposed in both settings UIs and uses t
   assert.equal(entries.length, 1);
   assert.equal(entries[0].group, "chat");
   assert.equal(entries[0].control, "bool");
-  assert.deepEqual(entries[0].surfaces, ["manager", "codex"]);
+  // 管理器只留增强总开关；这个开关只在 Codex 里的 Codex++ 设置页里。
+  assert.deepEqual(entries[0].surfaces, ["codex"]);
   assert.notEqual(entries[0].masterGated, false);
   assert.equal(entries[0].title, "历史轮次补载（实验）");
   assert.match(app, /codexAppHistoryTurnRecovery: boolean/);
   assert.match(app, /codexAppHistoryTurnRecovery: false/);
-  assert.match(app, /managerBuiltinCards\(group\.id, enhancementPlatform\)\.map\(renderBuiltin\)/);
   assert.match(styles, /historyTurnRecovery: false/);
   assert.match(styles, /historyTurnRecovery: "codexAppHistoryTurnRecovery"/);
   assert.match(backend, /renderCodexPlusSettingsCatalogSections\(\)/);
