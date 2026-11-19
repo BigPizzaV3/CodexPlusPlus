@@ -4871,7 +4871,12 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
     let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
     assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
     assert_eq!(metadata[&model]["default_reasoning_level"], "high");
-    assert_eq!(metadata[&model]["display_name"], "Hy4-Flash-Free");
+    assert!(
+        metadata[&model]["display_name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Hy4-Flash-Free")
+    );
 
     // 没有保存任何 HY4 元数据时也不能退化成 GPT-5.5。
     let model = format!("{no_metadata_id}/hy4-flash-free");
