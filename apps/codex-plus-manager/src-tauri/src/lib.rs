@@ -403,6 +403,7 @@ pub fn run() {
             commands::load_settings,
             config_doctor_commands::config_doctor_request,
             remote_control_commands::remote_control_request,
+            remote_control_commands::chat_robot_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,

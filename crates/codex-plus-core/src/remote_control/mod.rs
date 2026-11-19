@@ -12,6 +12,7 @@
 //! - 本机回环 `127.0.0.1:port`（HTTP），认主令牌与设备令牌；
 //! - 局域网 / Tailscale `0.0.0.0:lan_port`（自签 HTTPS，默认关），只认配对过的设备令牌。
 
+pub mod chat_notifications;
 pub mod devices;
 pub mod follower;
 pub mod headless;
@@ -345,7 +346,7 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                 // 加加的工具经本机入口转回来：先告诉它端口，再起后台循环（没配置过就什么也不做）。
                 let jiajia = service.jiajia();
                 jiajia.set_port(port);
-                jiajia.start();
+                jiajia.start_with_lan_port(lan_listener.as_ref().map(|(_, _, port)| *port));
                 register_hosted(&service);
                 let local = Arc::new(server::ServerContext {
                     service: service.clone(),

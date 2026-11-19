@@ -542,6 +542,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "hmac",
  "http",
  "httpdate",
  "libc",

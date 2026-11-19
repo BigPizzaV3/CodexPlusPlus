@@ -198,7 +198,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   </tr>
   <tr>
     <td valign="top"><strong>🖥️ 托盘快捷面板</strong><br>点托盘图标就能换模型、看用量和最近请求。</td>
-    <td valign="top"><strong>📱 微信连接</strong><br>扫码连接本机 Codex。</td>
+    <td valign="top"><strong>📱 微信连接与任务通知</strong><br>扫码连接本机 Codex。<a href="docs/guides/chat-robot-notifications.md">钉钉、飞书通知与手机审批</a>。</td>
   </tr>
   <tr>
     <td valign="top"><strong>🐳 Agent 桌宠</strong><br>点一下会压扁、带音效，图片随心换。</td>

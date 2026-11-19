@@ -102,6 +102,9 @@ struct Watcher {
     primed: bool,
     last_ms: i64,
     pacer: Pacer,
+    chat_worker: Option<super::chat_notifications::Worker>,
+    chat_routes: super::chat_notifications::Routes,
+    chat_started: HashMap<super::chat_notifications::Provider, i64>,
 }
 
 pub struct Jiajia {
@@ -209,6 +212,10 @@ impl Jiajia {
 
     /// 起后台循环（看会话、投递事件、回访）。重复调用无效。
     pub fn start(self: &Arc<Self>) {
+        self.start_with_lan_port(None);
+    }
+
+    pub(super) fn start_with_lan_port(self: &Arc<Self>, lan_port: Option<u16>) {
         if self.started.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -220,7 +227,7 @@ impl Jiajia {
                 if jiajia.service.upgrade().is_none() {
                     return;
                 }
-                jiajia.tick().await;
+                jiajia.tick(lan_port).await;
             }
         });
     }
@@ -713,8 +720,12 @@ impl Jiajia {
 
     // ---------- 后台：看会话、投递事件、回访 ----------
 
-    async fn tick(self: &Arc<Self>) {
-        if !self.store().settings.configured {
+    async fn tick(self: &Arc<Self>, lan_port: Option<u16>) {
+        let configured = self.store().settings.configured;
+        let routes = super::chat_notifications::routes();
+        if !configured && routes.is_empty() {
+            let mut watcher = self.watcher.lock().await;
+            watcher.chat_routes.clear();
             return;
         }
         let now = now_ms();
@@ -727,8 +738,9 @@ impl Jiajia {
             due
         };
         if due_watch {
-            let _ = self.watch_threads().await;
+            let _ = self.watch_threads(&routes, lan_port).await;
         }
+        if !configured { return; }
         self.fire_later(now);
         self.deliver_events(now).await;
         if !self.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
@@ -787,7 +799,7 @@ impl Jiajia {
     }
 
     /// 看一眼最近有动静的会话，比对前后状态得出事件。
-    async fn watch_threads(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn watch_threads(self: &Arc<Self>, routes: &super::chat_notifications::Routes, lan_port: Option<u16>) -> anyhow::Result<()> {
         let service = self.service()?;
         let list = service.list_threads(None).await?;
         let threads = list.get("threads").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -812,7 +824,7 @@ impl Jiajia {
                 .iter()
                 .filter_map(|(id, updated)| {
                     let previous = watcher.tracked.get(id);
-                    let unchanged = previous.is_some_and(|tracked| tracked.updated_at == *updated && tracked.snapshot.phase == Phase::Idle);
+                    let unchanged = routes == &watcher.chat_routes && previous.is_some_and(|tracked| tracked.updated_at == *updated && tracked.snapshot.phase == Phase::Idle);
                     (!unchanged).then(|| (id.clone(), *updated, previous.map(|tracked| tracked.snapshot.clone())))
                 })
                 .collect();
@@ -824,9 +836,20 @@ impl Jiajia {
             viewed.push((id, updated, previous, events::snapshot(&view)));
         }
         let mut watcher = self.watcher.lock().await;
+        let fresh: super::chat_notifications::Routes = routes.iter().filter(|route| !watcher.chat_routes.contains(route)).cloned().collect();
+        for (provider, _) in &fresh {
+            watcher.chat_started.insert(*provider, now_secs);
+        }
+        watcher.chat_routes = routes.clone();
         let mut found: Vec<Event> = Vec::new();
         let mut settled: Vec<(String, Vec<String>)> = Vec::new();
         for (id, updated, previous, next) in viewed {
+            for route in routes {
+                let notices = super::chat_notifications::changes(&id, previous.as_ref(), &next,
+                    fresh.contains(route), primed && updated >= watcher.chat_started[&route.0]);
+                let worker = watcher.chat_worker.get_or_insert_with(|| super::chat_notifications::Worker::start(lan_port));
+                for event in &notices { worker.push(route, event); }
+            }
             let is_watched = watched.iter().any(|watched| watched == &id);
             let mut changes = events::transitions(&id, previous.as_ref(), &next, is_watched && primed);
             if !primed {
@@ -846,7 +869,7 @@ impl Jiajia {
         watcher.primed = true;
         let now = now_ms();
         let settings = self.store().settings.clone();
-        for event in found {
+        for event in found.into_iter().filter(|_| settings.configured) {
             let routed = self.route(&event, &settings, &watched, &mut watcher.pacer, now);
             self.store().record_event(store::EventRecord {
                 at: now,

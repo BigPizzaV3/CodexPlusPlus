@@ -767,6 +767,8 @@
   const MASTER_KEY = "codexPlusRemoteToken";
   const DEVICE_KEY = "codexPlusRemoteDeviceToken";
   const params = new URLSearchParams(location.hash.slice(1));
+  const threadParam = params.get("thread") || "";
+  const linkedThread = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(threadParam) ? threadParam : "";
   const pairCode = params.get("pair") || "";
   if (params.get("token")) sessionStorage.setItem(MASTER_KEY, params.get("token"));
   if (params.get("token") || pairCode) history.replaceState(null, "", location.pathname);
@@ -3765,6 +3767,7 @@
         // 加加的会话卡片要用会话标题、运行状态。
         jjRender();
       },
+      openLinkedThread(id) { openChat(id, "list"); },
       onThreadsError(message) { $("mRows").replaceChildren(el("div", "m-empty", `读取会话失败：${message}`)); },
       onView() { renderChat(); },
       onRole() {
@@ -3828,6 +3831,12 @@
     applyRole();
     loadThreads();
     m.startJiajia();
+    if (linkedThread) {
+      if (document.documentElement.dataset.style === "mirror") m.setStyle(narrow ? "chat" : "codex");
+      if (document.documentElement.dataset.style === "chat") m.openLinkedThread(linkedThread);
+      else selectThread(linkedThread);
+      return;
+    }
     // 上次停在桌面镜像：有权限就接着连，否则退回自绘界面。
     if (document.documentElement.dataset.style === "mirror") {
       if (can("full")) mirror.start();

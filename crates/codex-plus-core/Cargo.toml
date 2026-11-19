@@ -17,6 +17,7 @@ ecb = { version = "0.1", features = ["alloc"] }
 # Gzip for Connect frames. Rust backend only, so this does not link a system zlib.
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 futures-util = "0.3"
+hmac = "0.12"
 http.workspace = true
 httpdate.workspace = true
 fs2.workspace = true

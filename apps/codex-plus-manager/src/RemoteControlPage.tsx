@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, Copy, ExternalLink, KeyRound, QrCode, Smartphone, Trash2, X } from "lucide-react";
 import { AppSelect } from "./AppSelect";
+import { ChatRobotSettings } from "./ChatRobotSettings";
 import { appConfirm } from "./app-dialog";
 import { PageHeader } from "./ManagementPages";
 import { Switch } from "./gateway-ui";
@@ -318,6 +319,7 @@ export function RemoteControlPage() {
           </CxCard>
         </CxSection>
       ) : null}
+      <ChatRobotSettings running={Boolean(status?.running)} lanRunning={Boolean(lan?.running)} />
       <CxSection title={t("使用说明")}>
         <CxCard>
           <CxRow
