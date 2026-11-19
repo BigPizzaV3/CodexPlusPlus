@@ -284,6 +284,7 @@ async fn deliver(client: &Client, provider: Provider, notice: Notice, lan_port: 
 pub(super) struct Worker {
     senders: Vec<(Provider, mpsc::Sender<Notice>)>,
     seen: VecDeque<(Provider, String, String)>,
+    _tasks: tokio::task::JoinSet<()>,
 }
 
 pub(super) type Routes = Vec<(Provider, String)>;
@@ -302,9 +303,10 @@ pub(super) fn routes() -> Routes {
 
 impl Worker {
     pub(super) fn start(lan_port: Option<u16>) -> Self {
+        let mut tasks = tokio::task::JoinSet::new();
         let senders = PROVIDERS.into_iter().map(|provider| {
             let (sender, mut receiver) = mpsc::channel::<Notice>(64);
-            tokio::spawn(async move {
+            tasks.spawn(async move {
                 let client = client();
                 while let Some(notice) = receiver.recv().await {
                     match &client {
@@ -315,7 +317,7 @@ impl Worker {
             });
             (provider, sender)
         }).collect();
-        Self { senders, seen: VecDeque::new() }
+        Self { senders, seen: VecDeque::new(), _tasks: tasks }
     }
 
     pub(super) fn push(&mut self, (provider, revision): &(Provider, String), event: &Event) {

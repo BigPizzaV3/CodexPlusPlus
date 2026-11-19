@@ -8,7 +8,7 @@
 //! - 后台转发任务定时看一眼钉住的会话：每一轮结束把最后一条 Codex 回复（附一行执行摘要）发回微信；
 //!   只转进入专注之后结束的轮次（按轮次 ID 记着，重启也不重发）。审批请求以文字卡片发出，不带编号，回个数字就能答。
 //! - 专注状态按联系人存在 `<账号>-jiajia.json`；会话没了就自动退出并说一次。
-//! - 只有扫码绑定的本人能用；远程控制没开时这些命令只回一句提示。
+//! - 只有识别为本人的微信联系人能用。会话操作不依赖网页监听。
 
 use std::path::Path;
 
@@ -32,7 +32,6 @@ const BUSY_AFTER_SEND_MS: i64 = 3 * 60 * 1000;
 const SEEN_LIMIT: usize = 64;
 /// 进入时附上的上一条回复最多多少字。
 const ENTRY_REPLY_LIMIT: usize = 300;
-const REMOTE_OFF: &str = "请先在 Codex++ 打开远程控制（专注模式用的是远程控制里的会话）。";
 
 // ---------- 数据 ----------
 
@@ -84,8 +83,6 @@ pub struct SessionList {
 /// 专注模式要用到的会话操作。真实实现是 [`LiveSessions`]（远程控制的 [`RemoteService`]），测试里换成假的。
 #[async_trait]
 pub trait SessionPort: Send + Sync {
-    /// 远程控制开着没有。
-    fn available(&self) -> bool;
     /// 最近的会话（最近更新的在前）。
     async fn list_threads(&self) -> anyhow::Result<Vec<ThreadSummary>>;
     /// 会话视图（结构同远程控制网页用的那份）；会话已经不存在时 `Ok(None)`。
@@ -96,7 +93,7 @@ pub trait SessionPort: Send + Sync {
     async fn create_thread(&self, cwd: &str, title: &str) -> anyhow::Result<String>;
 }
 
-/// 同进程里正在跑的远程控制服务。
+/// 同进程里的会话服务。
 pub struct LiveSessions;
 
 /// 远程控制报「会话不存在」的几种说法（侧车 `thread/read` 读不到 rollout 等）。
@@ -107,20 +104,20 @@ fn is_missing_thread(error: &str) -> bool {
 
 #[async_trait]
 impl SessionPort for LiveSessions {
-    fn available(&self) -> bool {
-        crate::remote_control::hosted_service().is_some()
-    }
-
     async fn list_threads(&self) -> anyhow::Result<Vec<ThreadSummary>> {
-        LiveJiajia::on_service(|service| async move {
+        with_sessions(|service| async move {
             let list = service.list_threads(None).await?;
-            let jiajia = service.jiajia();
+            let jiajia = LiveJiajia::jiajia();
             let mut threads = Vec::new();
             for thread in list.get("threads").and_then(Value::as_array).into_iter().flatten() {
                 let Some(id) = thread.get("id").and_then(Value::as_str) else { continue };
                 // 状态和加加的 list_threads 一致：加加看过的用它记的阶段，否则看列表里的运行状态。
                 let listed = thread.get("status").and_then(Value::as_str).unwrap_or_default();
-                let state = match jiajia.known_phase(id).await {
+                let known = match &jiajia {
+                    Some(jiajia) => jiajia.known_phase(id).await,
+                    None => None,
+                };
+                let state = match known {
                     Some((Phase::Waiting, _)) => "等你处理",
                     Some((Phase::Running, _)) => "运行中",
                     Some((Phase::Idle, Some(end))) if end == "failed" => "上一轮出错",
@@ -142,7 +139,7 @@ impl SessionPort for LiveSessions {
 
     async fn thread_view(&self, thread_id: &str) -> anyhow::Result<Option<Value>> {
         let thread_id = thread_id.to_string();
-        LiveJiajia::on_service(move |service| async move {
+        with_sessions(move |service| async move {
             match service.thread_view(&thread_id).await {
                 // 侧车读到空会话时视图里没有 ID。
                 Ok(view) if view.get("threadId").is_none_or(Value::is_null) => Ok(None),
@@ -156,7 +153,7 @@ impl SessionPort for LiveSessions {
 
     async fn send(&self, thread_id: &str, text: &str, attachments: &[Attachment]) -> anyhow::Result<bool> {
         let (thread_id, text, attachments) = (thread_id.to_string(), text.to_string(), attachments.to_vec());
-        LiveJiajia::on_service(move |service| async move {
+        with_sessions(move |service| async move {
             let result = service.send_with(&thread_id, &text, &attachments).await?;
             Ok(result.get("kind").and_then(Value::as_str) == Some("steer"))
         })
@@ -165,7 +162,7 @@ impl SessionPort for LiveSessions {
 
     async fn create_thread(&self, cwd: &str, title: &str) -> anyhow::Result<String> {
         let (cwd, title) = (cwd.to_string(), title.to_string());
-        LiveJiajia::on_service(move |service| async move { service.create_thread(&cwd, &title).await }).await
+        with_sessions(move |service| async move { service.create_thread(&cwd, &title).await }).await
     }
 }
 
@@ -364,9 +361,6 @@ impl JiajiaBridge {
         if command == Command::Exit {
             return self.exit_focus(peer);
         }
-        if !self.sessions.available() {
-            return REMOTE_OFF.into();
-        }
         match command {
             Command::Sessions => self.list_sessions(peer).await,
             Command::Focus(target) => self.focus_target(peer, &target, false).await,
@@ -560,14 +554,10 @@ impl JiajiaBridge {
     /// `/状态` 里的一行。
     pub(super) async fn focus_status_line(&self, peer: &str) -> String {
         let Some(focus) = self.focus_of(peer) else { return "未专注".into() };
-        let state = if !self.sessions.available() {
-            "远程控制没开"
-        } else {
-            match self.sessions.thread_view(&focus.thread_id).await {
-                Ok(Some(view)) => phase_label(events::snapshot(&view).phase),
-                Ok(None) => "会话已经不在了",
-                Err(_) => "读不到状态",
-            }
+        let state = match self.sessions.thread_view(&focus.thread_id).await {
+            Ok(Some(view)) => phase_label(events::snapshot(&view).phase),
+            Ok(None) => "会话已经不在了",
+            Err(_) => "读不到状态",
         };
         format!("当前专注：{}（{state}）", display_title(&focus.title))
     }
@@ -577,11 +567,6 @@ impl JiajiaBridge {
     /// 本人的消息（和附件）直接发给钉住的会话。
     pub(super) async fn send_to_focus(&self, peer: &str, token: &str, message: &WeixinMessage, text: &str, focus: &FocusState) -> Inbound {
         let title = display_title(&focus.title).to_string();
-        if !self.sessions.available() {
-            let back = self.back_label(peer);
-            self.reply(peer, token, &format!("这条没发给「{title}」：{REMOTE_OFF}\n发 /退出 回到{back}。")).await;
-            return Inbound::Handled;
-        }
         let (attachments, warnings, _inbox) = if message.has_attachments() { self.receive_attachments(message, &focus.cwd).await } else { (Vec::new(), Vec::new(), None) };
         let body = text.trim();
         if body.is_empty() && attachments.is_empty() {
@@ -653,9 +638,6 @@ impl JiajiaBridge {
     pub async fn take_focus_request(&self) {
         let Some(request) = self.port.take_focus_request() else { return };
         let Some(owner) = self.owner.clone() else { return };
-        if !self.sessions.available() {
-            return;
-        }
         let text = self.enter_focus(&owner, &request.thread_id, &request.title, true).await;
         self.deliver(Kind::Notice, text, None).await;
     }
@@ -675,9 +657,6 @@ impl JiajiaBridge {
             inner.focus_polled_at = now;
             focus
         };
-        if !self.sessions.available() {
-            return;
-        }
         let view = match self.sessions.thread_view(&focus.thread_id).await {
             Ok(Some(view)) => view,
             Ok(None) => {

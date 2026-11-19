@@ -11,7 +11,6 @@ const T2: &str = "22222222-bbbb-4000-8000-000000000002";
 
 #[derive(Default)]
 struct SessionsState {
-    off: bool,
     threads: Vec<ThreadSummary>,
     views: HashMap<String, Value>,
     /// (会话, 文字, 附件)
@@ -55,10 +54,6 @@ impl MockSessions {
 
 #[async_trait]
 impl SessionPort for MockSessions {
-    fn available(&self) -> bool {
-        !self.lock().off
-    }
-
     async fn list_threads(&self) -> anyhow::Result<Vec<ThreadSummary>> {
         Ok(self.lock().threads.clone())
     }
@@ -412,7 +407,7 @@ async fn focus_cards_have_no_number_and_bare_digits_approve_them() {
 // ---------- 权限、远程控制没开、会话没了 ----------
 
 #[tokio::test]
-async fn non_owners_and_remote_control_off_get_an_explanation() {
+async fn only_the_owner_can_use_focus() {
     let fixture = Fixture::new().await;
     fixture.add_login_thread();
     let bridge = fixture.bridge();
@@ -425,22 +420,22 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     say(&unknown, "me", "/会话").await;
     assert!(fixture.last_text().contains("重新扫码"));
 
-    say(&bridge, "me", "/进入 11111111").await;
-    fixture.sessions.lock().off = true;
-    for command in ["/会话", "/切换 1", "/新会话 修 bug"] {
-        say(&bridge, "me", command).await;
-        assert!(fixture.last_text().contains("请先在 Codex++ 打开远程控制"), "{command}");
-    }
-    // 专注中远程控制关了：说明没发出去，不悄悄交给别人。
+}
+
+#[tokio::test]
+async fn direct_focus_keeps_using_the_selected_session_when_jiajia_is_off() {
+    let fixture = Fixture::new().await;
+    fixture.add_login_thread();
+    fixture.jiajia.set_unavailable(Some("远程控制没开"));
+    let bridge = fixture.bridge_with(Some("me"), PeerMode::Direct, false);
+    assert_eq!(say(&bridge, "me", "/会话").await, Inbound::Handled);
+    assert!(fixture.last_text().contains("1. 重构登录"));
+    assert_eq!(say(&bridge, "me", "/进入 1").await, Inbound::Handled);
     assert_eq!(say(&bridge, "me", "继续").await, Inbound::Handled);
-    assert!(fixture.last_text().contains("这条没发给「重构登录」") && fixture.last_text().contains("请先在 Codex++ 打开远程控制"));
-    assert!(fixture.sessions.sent().is_empty() && fixture.jiajia.sent().is_empty());
-    say(&bridge, "me", "/状态").await;
-    assert!(fixture.last_text().contains("当前专注：重构登录（远程控制没开）"));
-    bridge.poll_focus(true).await;
-    assert!(bridge.state().focus.contains_key("me"), "远程控制没开不算会话没了");
+    assert_eq!(fixture.sessions.sent(), vec![(T1.into(), "继续".into(), 0)]);
+    assert!(fixture.jiajia.sent().is_empty());
     say(&bridge, "me", "/退出").await;
-    assert!(fixture.last_text().starts_with("已退出「重构登录」"), "退出不需要远程控制");
+    assert_eq!(say(&bridge, "me", "回到直连").await, Inbound::Direct);
 }
 
 #[tokio::test]

@@ -18,7 +18,7 @@ pub mod tools;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
@@ -126,7 +126,6 @@ pub struct Jiajia {
     changed: watch::Sender<u64>,
     tool_token: String,
     port: AtomicU16,
-    started: AtomicBool,
 }
 
 impl Jiajia {
@@ -145,7 +144,6 @@ impl Jiajia {
             changed: watch::channel(0).0,
             tool_token: super::generate_token(),
             port: AtomicU16::new(0),
-            started: AtomicBool::new(false),
         })
     }
 
@@ -210,26 +208,29 @@ impl Jiajia {
         self.seen_ends.lock().unwrap_or_else(|e| e.into_inner()).get(&event.thread_id) == Some(turn_id)
     }
 
-    /// 起后台循环（看会话、投递事件、回访）。重复调用无效。
-    pub fn start(self: &Arc<Self>) {
-        self.start_with_lan_port(None);
+    /// 网页在线时看会话、投递事件、回访。
+    pub(super) async fn monitor(self: &Arc<Self>, lan_port: Option<u16>) {
+        loop {
+            tokio::time::sleep(TICK).await;
+            self.tick(lan_port).await;
+        }
     }
 
-    pub(super) fn start_with_lan_port(self: &Arc<Self>, lan_port: Option<u16>) {
-        if self.started.swap(true, Ordering::SeqCst) {
-            return;
+    /// 关闭网页后释放加加的临时会话，保留侧车里由微信专注使用的会话。
+    pub(super) async fn stop(&self) {
+        *self.watcher.lock().await = Watcher::default();
+        let bot = self.bot.lock().await.take();
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.set_status(false, None);
+        if let Some(bot) = bot
+            && let Some(sidecar) = bot.sidecar.upgrade().filter(|sidecar| sidecar.is_alive())
+            && let Err(error) = sidecar.call("thread/unsubscribe", json!({ "threadId": bot.thread_id })).await
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "remote_control.jiajia_stop_failed",
+                json!({ "error": error.to_string() }),
+            );
         }
-        let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(TICK).await;
-                let Some(jiajia) = weak.upgrade() else { return };
-                if jiajia.service.upgrade().is_none() {
-                    return;
-                }
-                jiajia.tick(lan_port).await;
-            }
-        });
     }
 
     // ---------- 给网页的状态 ----------
@@ -502,6 +503,9 @@ impl Jiajia {
     /// 有输入就交给加加：没在回复就开新一轮（攒着的输入合成一条）；正在回复时用户的话插进去。
     async fn pump(self: &Arc<Self>) {
         let mut bot = self.bot.lock().await;
+        if self.port.load(Ordering::SeqCst) == 0 {
+            return;
+        }
         if bot.as_ref().is_some_and(|bot| bot.running) {
             let user: Vec<Input> = {
                 let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -655,6 +659,9 @@ impl Jiajia {
 
     /// 收到加加会话的一条推送。
     async fn on_bot_event(self: &Arc<Self>, message: &Value) {
+        if self.port.load(Ordering::SeqCst) == 0 {
+            return;
+        }
         let Some(method) = message.get("method").and_then(Value::as_str) else { return };
         let params = message.get("params").cloned().unwrap_or(Value::Null);
         match method {

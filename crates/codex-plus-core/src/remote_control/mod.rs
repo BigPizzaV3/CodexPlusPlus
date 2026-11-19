@@ -5,8 +5,7 @@
 //! - 侧车 app-server 只读会话列表与历史、新建会话（建完放掉写锁）；
 //! - 没在桌面打开的会话经 CDP 让桌面打开（`navigate-to-route`），桌面成为 owner 后再跟随。
 //!
-//! 本模块负责开关、端口、令牌的持久化与服务的启停。服务跑在独立线程的 tokio 运行时里，
-//! 由管理器进程托管：管理器开着、开关打开时在线。
+//! 管理器托管共享的会话服务。网页开关只控制监听入口，微信专注直接调用会话服务。
 //!
 //! 两个入口共用一个服务：
 //! - 本机回环 `127.0.0.1:port`（HTTP），认主令牌与设备令牌；
@@ -27,6 +26,7 @@ pub mod tls;
 pub mod uploads;
 pub mod versions;
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -218,7 +218,7 @@ struct Running {
     /// 局域网入口实际是否在听（端口被占时只有本机入口）。
     lan_listening: bool,
     stop: tokio::sync::oneshot::Sender<()>,
-    thread: std::thread::JoinHandle<()>,
+    done: std::sync::mpsc::Receiver<()>,
 }
 
 fn running_slot() -> &'static Mutex<Option<Running>> {
@@ -226,12 +226,42 @@ fn running_slot() -> &'static Mutex<Option<Running>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+struct SessionHost {
+    runtime: tokio::runtime::Runtime,
+    service: Arc<service::RemoteService>,
+}
+
+static SESSION_HOST: Mutex<Option<SessionHost>> = Mutex::new(None);
+
+/// 会话运行时独立于网页监听。微信和网页共用同一套桌面跟随与后台会话。
+pub fn session_service() -> anyhow::Result<(Arc<service::RemoteService>, tokio::runtime::Handle)> {
+    let mut slot = SESSION_HOST.lock().expect("session host lock");
+    if slot.is_none() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .thread_name(THREAD_NAME)
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .context("无法启动 Codex 会话服务")?;
+        *slot = Some(SessionHost { runtime, service: service::RemoteService::new(service::ServiceConfig::detect()) });
+    }
+    let host = slot.as_ref().expect("session host initialized");
+    Ok((host.service.clone(), host.runtime.handle().clone()))
+}
+
+pub(crate) async fn with_sessions<T, F, Fut>(work: F) -> anyhow::Result<T>
+where
+    F: FnOnce(Arc<service::RemoteService>) -> Fut,
+    Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    let (service, runtime) = session_service()?;
+    runtime.spawn(work(service)).await.context("Codex 会话服务已停止")?
+}
+
 /// 同一进程里的其它模块（微信连接里的加加）直接用远程控制服务，不绕 HTTP。
 ///
-/// 服务对象只活在监听线程自己的 tokio 运行时里：这里登记它的弱引用和那个运行时的句柄，
-/// 调用方把要做的事 `spawn` 到这个运行时上跑（加加内部会 `tokio::spawn` 后台任务，
-/// 必须落在服务自己的运行时里，否则调用方的运行时一停这些任务就跟着没了）。
-/// 服务启动时登记、停止时清掉；只存弱引用，不会拖住服务的释放。
+/// 加加的 MCP 工具走网页入口，所以只在监听成功后登记。
 #[derive(Clone)]
 struct HostedService {
     service: std::sync::Weak<service::RemoteService>,
@@ -243,7 +273,7 @@ fn hosted_slot() -> &'static Mutex<Option<HostedService>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
-/// 在当前运行时（监听线程里）登记服务。
+/// 在会话运行时登记已启用的网页入口。
 fn register_hosted(service: &Arc<service::RemoteService>) {
     *hosted_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(HostedService {
         service: Arc::downgrade(service),
@@ -302,83 +332,67 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
     if let Some(running) = slot.take() {
         stop_running(running);
     }
+    let (service, runtime) = session_service()?;
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<anyhow::Result<bool>>();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let thread_options = options.clone();
-    let thread = std::thread::Builder::new()
-        .name(THREAD_NAME.into())
-        .spawn(move || {
-            let options = thread_options;
-            let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let listen = options.clone();
+    runtime.spawn(async move {
+        let _done = done_tx;
+        let port = listen.port;
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = ready_tx.send(Err(anyhow::anyhow!("监听 127.0.0.1:{port} 失败：{error}")));
+                return;
+            }
+        };
+        let lan_listener = match &listen.lan {
+            Some(lan) => match tokio::net::TcpListener::bind(("0.0.0.0", lan.port)).await {
+                Ok(listener) => {
+                    set_lan_error(None);
+                    Some((listener, tokio_rustls::TlsAcceptor::from(lan.tls.clone()), lan.port))
+                }
                 Err(error) => {
-                    let _ = ready_tx.send(Err(error.into()));
-                    return;
+                    set_lan_error(Some(format!("监听局域网端口 {} 失败：{error}", lan.port)));
+                    None
                 }
-            };
-            runtime.block_on(async move {
-                let port = options.port;
-                let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        let _ = ready_tx.send(Err(anyhow::anyhow!("监听 127.0.0.1:{port} 失败：{error}")));
-                        return;
-                    }
-                };
-                let lan_listener = match &options.lan {
-                    Some(lan) => match tokio::net::TcpListener::bind(("0.0.0.0", lan.port)).await {
-                        Ok(listener) => {
-                            set_lan_error(None);
-                            Some((listener, tokio_rustls::TlsAcceptor::from(lan.tls.clone()), lan.port))
-                        }
-                        Err(error) => {
-                            set_lan_error(Some(format!("监听局域网端口 {} 失败：{error}", lan.port)));
-                            None
-                        }
-                    },
-                    None => None,
-                };
-                let service = service::RemoteService::new(service::ServiceConfig::detect());
-                // 加加的工具经本机入口转回来：先告诉它端口，再起后台循环（没配置过就什么也不做）。
-                let jiajia = service.jiajia();
-                jiajia.set_port(port);
-                jiajia.start_with_lan_port(lan_listener.as_ref().map(|(_, _, port)| *port));
-                register_hosted(&service);
-                let local = Arc::new(server::ServerContext {
-                    service: service.clone(),
-                    token: options.token.clone(),
-                    port,
-                    scope: server::Scope::Loopback,
-                });
-                let _ = ready_tx.send(Ok(lan_listener.is_some()));
-                let lan_task = async {
-                    match lan_listener {
-                        Some((listener, acceptor, lan_port)) => {
-                            let context = Arc::new(server::ServerContext {
-                                service: service.clone(),
-                                token: String::new(),
-                                port: lan_port,
-                                scope: server::Scope::Lan,
-                            });
-                            server::serve_tls(listener, acceptor, context).await
-                        }
-                        None => std::future::pending().await,
-                    }
-                };
-                tokio::select! {
-                    _ = server::serve(listener, local) => {}
-                    _ = lan_task => {}
-                    _ = stop_rx => {}
+            },
+            None => None,
+        };
+        let jiajia = service.jiajia();
+        jiajia.set_port(port);
+        register_hosted(&service);
+        let local = Arc::new(server::ServerContext { service: service.clone(), token: listen.token, port, scope: server::Scope::Loopback });
+        let lan_port = lan_listener.as_ref().map(|(_, _, port)| *port);
+        let _ = ready_tx.send(Ok(lan_listener.is_some()));
+        let mut local_connections = tokio::task::JoinSet::new();
+        let mut lan_connections = tokio::task::JoinSet::new();
+        let lan_task = async {
+            match lan_listener {
+                Some((listener, acceptor, lan_port)) => {
+                    let context = Arc::new(server::ServerContext {
+                        service: service.clone(),
+                        token: String::new(),
+                        port: lan_port,
+                        scope: server::Scope::Lan,
+                    });
+                    server::serve_tls_with_connections(listener, acceptor, context, &mut lan_connections).await
                 }
-                unregister_hosted(&service);
-                service.shutdown().await;
-            });
-        })
-        .context("无法创建远程控制线程")?;
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = server::serve_with_connections(listener, local, &mut local_connections) => {}
+            _ = lan_task => {}
+            _ = jiajia.monitor(lan_port) => {}
+            _ = stop_rx => {}
+        }
+        unregister_hosted(&service);
+        jiajia.set_port(0);
+        tokio::join!(local_connections.shutdown(), lan_connections.shutdown());
+        jiajia.stop().await;
+    });
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(lan_listening)) => {
             let lan_port = options.lan.as_ref().filter(|_| lan_listening).map(|lan| lan.port);
@@ -386,16 +400,16 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                 "remote_control.started",
                 json!({ "port": options.port, "lanPort": lan_port }),
             );
-            *slot = Some(Running { options, lan_listening, stop: stop_tx, thread });
+            *slot = Some(Running { options, lan_listening, stop: stop_tx, done });
             set_last_error(None);
             Ok(())
         }
         Ok(Err(error)) => {
-            let _ = thread.join();
-            set_last_error(Some(error.to_string()));
+            set_last_error(Some(format!("{error:#}")));
             Err(error)
         }
         Err(_) => {
+            let _ = stop_tx.send(());
             set_last_error(Some("远程控制服务启动超时".into()));
             anyhow::bail!("远程控制服务启动超时")
         }
@@ -404,14 +418,23 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
 
 fn stop_running(running: Running) {
     let _ = running.stop.send(());
-    let _ = running.thread.join();
+    let _ = running.done.recv();
     let _ = crate::diagnostic_log::append_diagnostic_log("remote_control.stopped", json!({ "port": running.options.port }));
 }
 
 pub fn stop() {
-    let running = running_slot().lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(running) = running {
+    let mut slot = running_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(running) = slot.take() {
         stop_running(running);
+    }
+}
+
+/// 管理器退出时结束共享的侧车与后台会话。
+pub fn shutdown() {
+    stop();
+    let host = SESSION_HOST.lock().expect("session host lock").take();
+    if let Some(host) = host {
+        host.runtime.block_on(host.service.shutdown());
     }
 }
 
