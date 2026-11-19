@@ -19,6 +19,7 @@ const DEFAULT_PROVIDER: &str = "openai";
 const MANAGED_SESSION_PROVIDER_ALIAS: &str = "codex_plus_managed";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const BACKUP_KEEP_COUNT: usize = 5;
+const THREAD_PROVIDER_BACKUP_KEEP_COUNT: usize = 100;
 const REMOTE_CONTROL_CREATION_WINDOW_SECS: i64 = 15 * 60;
 const PROVIDER_SYNC_PROGRESS_INTERVAL: usize = 32;
 /// 全局状态的旁路备份名；解析失败时指向它作为恢复来源（issue #2160）。
@@ -626,6 +627,228 @@ impl SqliteUpdateCounts {
 
 pub fn run_provider_sync(codex_home: Option<&Path>) -> ProviderSyncResult {
     run_provider_sync_with_target(codex_home, None)
+}
+
+/// 为原生会话续接对齐索引；调用方须先确认会话空闲，并在恢复前卸载仍使用旧供应商的运行对象。
+/// 不读取 rollout，也不覆盖原生保存的模型、推理强度或会话内容。
+pub fn prepare_thread_provider(
+    home: &Path,
+    provider_sync_enabled: bool,
+    request: &Value,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        request.get("host_id").and_then(Value::as_str) == Some("local")
+            && request.get("hostId").is_none_or(|host| host.as_str() == Some("local")),
+        "Thread provider preparation is local-only"
+    );
+    let thread_id = request.get("thread_id").and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Thread ID is required"))?;
+    anyhow::ensure!(
+        !thread_id.is_empty() && thread_id.trim() == thread_id
+            && !thread_id.chars().any(char::is_control),
+        "Invalid thread ID"
+    );
+    let source_provider = request.get("source_provider").and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Source provider is required"))?;
+    let target_provider = request.get("target_provider").and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Target provider is required"))?;
+    for provider in [source_provider, target_provider] {
+        anyhow::ensure!(
+            is_valid_explicit_provider_id(provider) && !is_provider_sync_internal_alias(provider),
+            "Invalid or internal thread provider identity"
+        );
+    }
+    if !provider_sync_enabled {
+        return Ok(json!({"status": "disabled", "changed": false}));
+    }
+
+    let _guard = try_acquire_provider_sync_lifecycle_guard(Some(home))?;
+    if let Some(path) = pending_recovery_journal(home) {
+        anyhow::bail!("Provider sync recovery is pending: {}", path.display());
+    }
+    let config_path = home.join("config.toml");
+    let snapshot = resolve_provider_sync_target_snapshot(&config_path, Some(target_provider))
+        .map_err(anyhow::Error::msg)?;
+
+    let mut canonical_path = None;
+    let mut catalog_path = None;
+    for path in provider_sync_db_paths(home) {
+        if !path.exists() {
+            continue;
+        }
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        if has_table(&db, "threads")? {
+            let count: i64 = db.query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = ?1",
+                [thread_id], |row| row.get(0),
+            )?;
+            if count != 0 {
+                anyhow::ensure!(count == 1 && canonical_path.is_none(), "Ambiguous canonical thread");
+                canonical_path = Some(path.clone());
+            }
+        }
+        if has_table(&db, "local_thread_catalog")?
+            && let Some(host) = local_catalog_host_id(&db)?
+        {
+            let count: i64 = db.query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE host_id = ?1 AND thread_id = ?2",
+                (&host, thread_id), |row| row.get(0),
+            )?;
+            if count != 0 {
+                anyhow::ensure!(count == 1 && catalog_path.is_none(), "Ambiguous local catalog thread");
+                catalog_path = Some(path.clone());
+            }
+        }
+    }
+    let database = canonical_path.ok_or_else(|| anyhow::anyhow!("Local canonical thread was not found"))?;
+    // catalog 作为 main，沿用已有 local-host 归属查询；分库只 ATTACH canonical。
+    let mut db = Connection::open_with_flags(
+        catalog_path.as_ref().unwrap_or(&database),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+    )?;
+    let canonical_table = if catalog_path.as_ref().is_some_and(|path| path != &database) {
+        db.execute("ATTACH DATABASE ?1 AS provider_canonical", [database.to_string_lossy().as_ref()])?;
+        "provider_canonical.threads"
+    } else {
+        "main.threads"
+    };
+    // 一个连接负责两侧错误回滚；WAL 跨库提交不保证掉电时的整体原子性。
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let indexed_provider: String = tx.query_row(
+        &format!("SELECT model_provider FROM {canonical_table} WHERE id = ?1"),
+        [thread_id], |row| row.get(0),
+    )?;
+    anyhow::ensure!(indexed_provider == source_provider, "Canonical thread source provider changed");
+    let mut catalog_host = None;
+    let mut catalog_needs_update = false;
+    if has_table(&tx, "local_thread_catalog")?
+        && let Some(host) = local_catalog_host_id(&tx)?
+    {
+        let provider: Option<String> = tx.query_row(
+            "SELECT model_provider FROM local_thread_catalog WHERE host_id = ?1 AND thread_id = ?2",
+            (&host, thread_id), |row| row.get(0),
+        ).optional()?;
+        if let Some(provider) = provider {
+            anyhow::ensure!(
+                provider == source_provider || provider == target_provider,
+                "Local catalog provider conflicts with source and target"
+            );
+            catalog_needs_update = provider != target_provider;
+            catalog_host = Some(host);
+        }
+    }
+    anyhow::ensure!(
+        catalog_path.is_none() || catalog_host.is_some(),
+        "Local catalog thread changed during preparation"
+    );
+    revalidate_provider_sync_target_snapshot(&config_path, Some(target_provider), &snapshot)
+        .map_err(anyhow::Error::msg)?;
+    if source_provider == target_provider {
+        return Ok(json!({
+            "status": "ok", "host_id": "local", "thread_id": thread_id,
+            "source_provider": source_provider, "target_provider": target_provider,
+            "changed": false, "sqlite_rows_updated": 0, "backup_path": null,
+        }));
+    }
+
+    let mut changes = vec![json!({
+        "database": fs::canonicalize(&database)?,
+        "table": "threads", "keys": {"id": thread_id},
+        "before": {"model_provider": source_provider},
+        "after": {"model_provider": target_provider},
+    })];
+    if catalog_needs_update && let Some(host) = &catalog_host {
+        changes.push(json!({
+            "database": fs::canonicalize(catalog_path.as_ref().unwrap_or(&database))?,
+            "table": "local_thread_catalog", "keys": {"host_id": host, "thread_id": thread_id},
+            "before": {"model_provider": source_provider},
+            "after": {"model_provider": target_provider},
+        }));
+    }
+    let backup_root = home.join("backups_state/thread-provider-prepare");
+    crate::backup::private_directory(&backup_root, false)?;
+    let backup_path = backup_root.join(format!("{}.json", uuid::Uuid::new_v4()));
+    let backup = json!({
+        "version": 1, "operation": "thread-provider-prepare",
+        "changes": changes,
+    });
+    let mut file = crate::backup::new_private_file(&backup_path)?;
+    file.write_all(&serde_json::to_vec_pretty(&backup)?)?;
+    file.sync_all()?;
+    drop(file);
+    crate::backup::sync_directory(&backup_root)?;
+
+    let update = (|| -> anyhow::Result<usize> {
+        let mut rows = tx.execute(
+            &format!("UPDATE {canonical_table} SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3"),
+            (target_provider, thread_id, source_provider),
+        )?;
+        anyhow::ensure!(rows == 1, "Canonical thread provider CAS conflict");
+        if catalog_needs_update && let Some(host) = &catalog_host {
+            let changed = tx.execute(
+                "UPDATE local_thread_catalog SET model_provider = ?1 WHERE host_id = ?2 AND thread_id = ?3 AND model_provider = ?4",
+                (target_provider, host, thread_id, source_provider),
+            )?;
+            anyhow::ensure!(changed == 1, "Local catalog provider CAS conflict");
+            rows += changed;
+        }
+        revalidate_provider_sync_target_snapshot(&config_path, Some(target_provider), &snapshot)
+            .map_err(anyhow::Error::msg)?;
+        Ok(rows)
+    })();
+    let rows = match update {
+        Ok(rows) => rows,
+        Err(error) => {
+            tx.rollback()?;
+            anyhow::bail!("{error}; preparation rolled back; backup: {}", backup_path.display());
+        }
+    };
+    tx.commit().map_err(|error| anyhow::anyhow!(
+        "Thread provider preparation commit failed: {error}; backup: {}", backup_path.display()
+    ))?;
+    // 清理不属于事务；不能将已经提交的供应商变更误报为失败。
+    let mut backup_retention_warnings = Vec::new();
+    let prune = (|| -> anyhow::Result<()> {
+        let mut previous_backups = Vec::new();
+        for entry in fs::read_dir(&backup_root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path == backup_path || !entry.file_type()?.is_file()
+                || path.extension().and_then(|ext| ext.to_str()) != Some("json")
+                || !path.file_stem().and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok())
+            {
+                continue;
+            }
+            let value: Value = match serde_json::from_slice(&fs::read(&path)?) {
+                Ok(value) => value,
+                Err(error) => {
+                    backup_retention_warnings.push(format!("Invalid backup {}: {error}", path.display()));
+                    continue;
+                }
+            };
+            if value.get("version").and_then(Value::as_u64) == Some(1)
+                && value.get("operation").and_then(Value::as_str) == Some("thread-provider-prepare")
+            {
+                previous_backups.push((entry.metadata()?.modified()?, path));
+            }
+        }
+        previous_backups.sort_unstable_by(|a, b| b.cmp(a));
+        for (_, path) in previous_backups.into_iter().skip(THREAD_PROVIDER_BACKUP_KEEP_COUNT - 1) {
+            fs::remove_file(&path)
+                .map_err(|error| anyhow::anyhow!("Cannot remove backup {}: {error}", path.display()))?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = prune {
+        backup_retention_warnings.push(format!("Backup retention failed: {error:#}"));
+    }
+    Ok(json!({
+        "status": "ok", "host_id": "local", "thread_id": thread_id,
+        "source_provider": source_provider, "target_provider": target_provider,
+        "changed": true, "sqlite_rows_updated": rows, "backup_path": backup_path,
+        "backup_retention_warnings": backup_retention_warnings,
+    }))
 }
 
 /// issue #240：只审计、不写盘的预览。

@@ -29,6 +29,14 @@ type ProfileSettings = {
   relayProfiles: { id: string; name: string; authContents: string; apiKey: string }[];
 };
 
+test("旧自动保存快照不能撤销独立命令更新的登录选择", () => {
+  const previous = { revision: "r1", nativeAuthSelection: { mode: "account", accountRef: "a" }, b: false };
+  const latest = { revision: "r2", nativeAuthSelection: { mode: "none" }, b: false };
+  const stale = { ...previous, b: true };
+  assert.deepEqual(rebaseSettingsEdits(stale, latest, latest), { ...latest, b: true });
+  assert.deepEqual(rebaseSettingsEdits(stale, previous, latest), { ...latest, b: true });
+});
+
 const profileBase = { id: "p1", name: "官方", authContents: "auth-old", apiKey: "sk-1" };
 
 test("外部只轮换 token 时，用户编辑的供应商列表采用最新 authContents", () => {

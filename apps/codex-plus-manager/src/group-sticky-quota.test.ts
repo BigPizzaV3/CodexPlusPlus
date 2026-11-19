@@ -68,7 +68,7 @@ test("模型组编辑器：五种模式、三种会话固定、通配符成员�
   assert.match(page, /\{ value: "usage", label: t\("额度优先"\) \}/);
   assert.match(page, /\{ value: "fast", label: t\("速度优先"\) \}/);
   assert.match(page, /const stickies: GroupSticky\[\] = \["cache", "session", "off"\]/);
-  assert.match(page, /onSave\(\{ id: group\?\.id \?\? "", name: name\.trim\(\), mode, sticky, members \}\)/);
+  assert.match(page, /onSave\(\{ id: group\?\.id \?\? "", name: name\.trim\(\), mode, sticky, members, imageInputModel \}\)/);
   assert.match(page, /patternMatches\(payload, member\.model\)/);
   const providers = read("GatewayProviders.tsx");
   assert.match(providers, /"refresh_gateway_quota", \{ id: entry\.id \}/);

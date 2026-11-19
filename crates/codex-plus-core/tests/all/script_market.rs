@@ -1,5 +1,6 @@
 use codex_plus_core::script_market::{
-    download_script, fetch_market_manifest, market_scripts_payload, parse_market_manifest,
+    download_script, fetch_market_manifest, market_package_request, market_scripts_payload,
+    parse_market_manifest,
 };
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::json;
@@ -152,4 +153,29 @@ fn curated_packages_blocked_list_and_official_owner_check() {
     assert_eq!(filter.curated_ids["word-count"], ("BigPizzaV3/codexpp-word-count".to_string(), true));
     let pinned = find("word-count").pinned();
     assert_eq!((pinned.repo.as_str(), pinned.sha.as_str(), pinned.channel.as_str()), ("BigPizzaV3/codexpp-word-count", sha.as_str(), "official"));
+}
+
+/// Codex 页内安装拓展包的桥接分发：参数校验，暂存与「已安装」判断用同一个配置目录（拓展目录的上一级）。
+#[tokio::test]
+async fn market_package_request_validates_and_discards_in_the_shared_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        temp.path().join("user_scripts.json"),
+    );
+    let missing = market_package_request(&manager, "prepare", &json!({})).await.unwrap_err();
+    assert!(format!("{missing:#}").contains("缺少参数 id"));
+    let unknown = market_package_request(&manager, "publish", &json!({})).await.unwrap_err();
+    assert!(format!("{unknown:#}").contains("未知操作"));
+    let invalid = market_package_request(&manager, "install", &json!({"token": "../evil"})).await.unwrap_err();
+    assert!(format!("{invalid:#}").contains("暂存令牌无效"));
+    let expired = market_package_request(&manager, "install", &json!({"token": "pkg-1"})).await.unwrap_err();
+    assert!(format!("{expired:#}").contains("已失效"));
+
+    let staged = temp.path().join(".extension_staging").join("pkg-1");
+    std::fs::create_dir_all(&staged).unwrap();
+    let discarded = market_package_request(&manager, "discard", &json!({"token": "pkg-1"})).await.unwrap();
+    assert_eq!(discarded["status"], "ok");
+    assert!(!staged.exists());
 }

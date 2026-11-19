@@ -47,3 +47,17 @@ test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池只�
   assert.match(providers, /placeholder=\{t\("查找供应商"\)\}/);
   assert.match(read("GatewayAgents.tsx"), /section\.key === "group" && nav\.openModelGroups \?/);
 });
+
+test("模型组编辑器有「图像输入」下拉（#3150）：跟随默认 / 组内成员 / 从池里另选，保存时带上 imageInputModel", () => {
+  const page = read("GatewayPage.tsx");
+  assert.match(page, /<span>\{t\("图像输入"\)\}<\/span>/);
+  assert.match(page, /\{ value: "", label: t\("跟随默认"\), hint: t\("图片能力取各成员的交集"\) \}/);
+  assert.match(page, /listed\.map\(\(member\) => option\(member\.model, t\("组内成员"\)\)\)/);
+  assert.match(page, /if \(value === IMAGE_INPUT_PICK\) setPickingImage\(true\);/);
+  assert.match(page, /onSave\(\{ id: group\?\.id \?\? "", name: name\.trim\(\), mode, sticky, members, imageInputModel \}\)/);
+  // 卡片上改路由方式等也把图像输入模型带回去，不会被清掉。
+  assert.match(page, /imageInputModel: next\.imageInputModel \?\? ""/);
+  assert.match(read("gateway-model.ts"), /imageInputModel\?: string;/);
+  const en = read("i18n-en.ts");
+  for (const key of ["图像输入", "跟随默认", "选择其他模型…", "请求里带图片时改发给 {0}"]) assert.ok(en.includes(`"${key}":`), key);
+});

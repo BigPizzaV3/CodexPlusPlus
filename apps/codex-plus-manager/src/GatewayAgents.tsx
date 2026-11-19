@@ -635,6 +635,38 @@ function AgentDetail({
             />
           </SetLine>
         ) : null}
+        {/* Codex 的上下文压缩（手动 /compact 与自动压缩）可单独用更便宜的模型（#3142）；不兼容、装不下或失败时回退原模型。 */}
+        {agent.agent === "codex" ? (
+          <SetLine hint={t("压缩上下文用；不指定时跟随当前模型")} title={t("压缩模型")} tooltip={t("Codex 压缩上下文（/compact 与自动压缩）的请求发给这个模型，普通对话仍用主模型。压缩模型不可用、协议不兼容、窗口装不下或上游拒绝时回退到原模型，请求日志里会标出来")}>
+            <TierPicker
+              emptyLabel={t("跟随当前模型")}
+              exclude={draft.poolExclude}
+              inactiveBlocksRequest
+              label=""
+              onPick={(model) => onSave({ ...draft, compactionModel: model })}
+              payload={payload}
+              value={draft.compactionModel}
+            />
+          </SetLine>
+        ) : null}
+        {agent.agent === "codex" && draft.compactionModel ? (
+          <SetLine hint={t("改发到压缩模型时用的推理强度")} title={t("压缩推理强度")}>
+            <AppSelect
+              disabled={busy !== null}
+              label={t("压缩推理强度")}
+              menuWidth={200}
+              onChange={(next) => onSave({ ...draft, compactionReasoningEffort: next })}
+              options={[
+                { value: "", label: t("沿用原请求") },
+                { value: "minimal", label: "minimal" },
+                { value: "low", label: "low" },
+                { value: "medium", label: "medium" },
+                { value: "high", label: "high" },
+              ]}
+              value={draft.compactionReasoningEffort}
+            />
+          </SetLine>
+        ) : null}
         {/* Codex「替我审批」固定请求 codex-auto-review：默认改写成主模型，可单独指定，避免落到 ChatGPT 订阅额度上（#2703）。 */}
         {agent.agent === "codex" ? (
           <SetLine hint={t("「替我审批」的请求发给它")} title={t("审批模型")} tooltip={t("Codex「替我审批」的请求（codex-auto-review）发给这个模型；同默认模型时按「未知模型名」规则处理")}>

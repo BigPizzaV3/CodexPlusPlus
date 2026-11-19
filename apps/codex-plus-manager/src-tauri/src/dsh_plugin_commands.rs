@@ -23,6 +23,14 @@ pub async fn dsh_plugins_request(action: String, payload: Option<Value>) -> Resu
         .map_err(|error| format!("{error:#}"))
 }
 
+/// Codex 拓展页「dsh 插件」分栏经桥接调用（`/extension-market/dsh`，payload 为 `{ action, payload }`），
+/// 与管理器同一套实现。
+pub(crate) async fn bridge_request(request: Value) -> anyhow::Result<Value> {
+    let action = request.get("action").and_then(Value::as_str).unwrap_or_default().to_string();
+    let payload = request.get("payload").cloned();
+    dsh_plugins_request(action, payload).await.map_err(anyhow::Error::msg)
+}
+
 fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
     let state_dir = codex_plus_core::paths::default_app_state_dir();
     let plugins = DshPlugins::new(&state_dir);

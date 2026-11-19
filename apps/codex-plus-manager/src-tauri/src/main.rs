@@ -17,6 +17,14 @@ fn main() {
         }
         return;
     }
+    // 加加（远程控制里的聊天机器人）的工具：只做转发，由侧车 app-server 给加加的会话拉起。
+    if args.get(1).is_some_and(|arg| arg == codex_plus_core::remote_control::jiajia::MCP_FLAG) {
+        if let Err(error) = codex_plus_core::remote_control::jiajia::mcp::serve() {
+            eprintln!("加加 MCP 退出：{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.get(1).is_some_and(|arg| arg == codex_plus_core::extension_claude::MCP_FLAG) {
         if let Err(error) = run_claude_extension_mcp(&args[2..]) {
             eprintln!("Claude 拓展 MCP 退出：{error:#}");

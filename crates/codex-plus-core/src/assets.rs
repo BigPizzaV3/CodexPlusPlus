@@ -564,18 +564,46 @@ pub fn force_chinese_locale_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_force_chinese_locale, "locale": "zh-CN" })
 }
 
+/// Statsig 已知开关清单（中文说明 + 默认是否覆盖），见 assets/statsig-gates.json。
+const STATSIG_GATES_JSON: &str = include_str!("../assets/statsig-gates.json");
+
+/// 已知开关清单：`[{ id, title, description, defaultOverride, risk, note? }]`。
+///
+/// Feature Lab 的「Statsig 开关」页签按它列出开关；`defaultOverride: true` 的项就是
+/// 总开关打开时默认强制打开的闸门。解析失败（只可能是改坏了 JSON）时返回空清单，测试会兜住。
+pub fn statsig_gate_catalog() -> Vec<Value> {
+    serde_json::from_str::<Value>(STATSIG_GATES_JSON)
+        .ok()
+        .and_then(|value| value.get("gates").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
 /// Statsig 界面增强的注入配置。
 ///
-/// 只包含「纯客户端」的远程开关：隐藏升级/额度推销、放宽网络与流式超时、补开记忆。
+/// 只包含「纯客户端」的远程开关：隐藏升级/额度推销、放宽网络与流式超时、补开记忆，
+/// 以及原生界面里已经存在但默认灰度不到的功能（消息队列、时间线、侧聊 attach）。
 /// 服务端校验的能力（云端任务、真实配额）不在这里，也改不动。
+///
+/// `gates` 只放默认覆盖项；用户在 Feature Lab 里逐项改的覆盖存在
+/// `codexAppStatsigGateOverrides`，页面从后端设置实时读、叠加在 `gates` 上，不用重新注入。
 pub fn statsig_overrides_config(settings: &BackendSettings) -> Value {
+    let catalog = statsig_gate_catalog();
+    let gates = catalog
+        .iter()
+        .filter(|entry| entry.get("defaultOverride") == Some(&Value::Bool(true)))
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+        .map(|id| (id.to_string(), Value::Bool(true)))
+        .collect::<serde_json::Map<String, Value>>();
     json!({
         "enabled": settings.codex_app_statsig_overrides,
-        // 布尔闸门：值为 true 时强制打开。
-        "gates": {
-            // 抑制升级 / 额度推销提示（ChatGPT 界面侧）
-            "1174206456": true
-        },
+        // 布尔闸门：值为 true 时强制打开（来自清单里 defaultOverride=true 的项）。
+        "gates": gates,
+        // Feature Lab 用的已知开关清单（中文说明、风险、默认值）。
+        "gateCatalog": catalog,
+        // 实验按 key 覆盖，未列出的 key 保持远端下发值。
+        "experiments": {},
+        // Layer 按 key 覆盖（例如 1574672957 的自定义指令层）。
+        "layers": {},
         // 动态配置：按 key 覆盖，未列出的 key 保持远端下发值。
         "dynamicConfigs": {
             // 网络重试：更耐心的退避，弱网下少断流

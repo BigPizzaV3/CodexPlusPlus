@@ -253,8 +253,11 @@
     return `${variables ? `:root{${variables}}\n` : ""}${typeof theme.css === "string" ? theme.css : ""}`;
   }
 
-  /** 把记住的主题画上去；主题没注册（拓展停用）时撤掉样式但保留选择，拓展回来后自动恢复。 */
-  function applyCodexPlusTheme() {
+  /**
+   * 把记住的拓展主题画上去；主题没注册（拓展停用）时撤掉样式但保留选择，拓展回来后自动恢复。
+   * 不能叫 applyCodexPlusTheme：那是 40 分片给各页面根节点写配色变量的函数，同一作用域里同名声明会把它覆盖掉。
+   */
+  function applyCodexPlusExtensionTheme() {
     const id = codexPlusCurrentThemeId();
     const theme = id ? codexPlusExtensionItems(codexPlusRegistry.themes).find((item) => item.themeId === id) : null;
     let style = document.getElementById("codex-plus-extension-theme");
@@ -279,10 +282,10 @@
     if (!/^[\w-]{1,48}$/.test(themeId)) throw new Error("主题 id 只能是字母、数字、_、-");
     if (!definition.variables && typeof definition.css !== "string") throw new Error(`主题 ${themeId} 需要 variables 或 css`);
     const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || `theme-${themeId}` });
-    applyCodexPlusTheme();
+    applyCodexPlusExtensionTheme();
     return () => {
       dispose();
-      applyCodexPlusTheme();
+      applyCodexPlusExtensionTheme();
     };
   }
 
@@ -300,7 +303,7 @@
           if (next) localStorage.setItem(codexPlusThemeStorageKey, next);
           else localStorage.removeItem(codexPlusThemeStorageKey);
         } catch {}
-        applyCodexPlusTheme();
+        applyCodexPlusExtensionTheme();
         codexPlusEmitExtensionEvent("theme/change", [{ id: next || null }]);
         return next || null;
       },
