@@ -59,6 +59,8 @@ pub struct GatewayPoolEntry {
     pub plan: String,
     /// 这个 ChatGPT 账号正借给 Codex 登录（Codex 以官方身份接入网关）。
     pub lent_to_codex: bool,
+    /// ChatGPT 账号手上的额度重置卡；只有订阅账号有，未查过时为 None。
+    pub reset_credits: Option<codex_plus_core::gateway::reset_credits::ResetCreditsView>,
     /// 网关供应商单独走的 HTTP 代理（空串表示不单独走代理）。
     pub proxy: String,
     /// 主动限速：每个 Key 每分钟最多请求数；None 表示不限。
@@ -261,6 +263,7 @@ fn pool_entry(
         account: account_kind(relay),
         plan: codex_plus_core::gateway::accounts::account_plan(relay),
         lent_to_codex: codex_plus_core::official_login::is_lent_to_codex(relay),
+        reset_credits: codex_plus_core::gateway::reset_credits::cached(&relay.id),
         proxy: relay.gateway_proxy.clone().unwrap_or_default(),
         key_rpm: None,
         key_concurrency: None,
@@ -1879,6 +1882,76 @@ pub fn start_model_watch() {
     tauri::async_runtime::spawn(codex_plus_core::gateway::quota::watch(
         GatewayStore::default(),
     ));
+}
+
+/// 按 id 取供应商池里的中转配置。
+fn pool_relay(id: &str) -> Option<codex_plus_core::settings::RelayProfile> {
+    GatewayStore::default()
+        .load()
+        .ok()
+        .and_then(|gateway| gateway.provider(id).map(|provider| provider.relay.clone()))
+}
+
+/// 刷新 ChatGPT 账号手上的额度重置卡。60 秒内查过就用缓存，避免展开详情时反复打上游。
+#[tauri::command]
+pub async fn refresh_gateway_reset_credits(id: String) -> CommandResult<Option<GatewayPayload>> {
+    let Some(relay) = pool_relay(&id) else {
+        return failed(&format!("供应商不存在：{id}"), current_payload());
+    };
+    match codex_plus_core::gateway::reset_credits::refresh_if_stale(&relay, 60_000).await {
+        Ok(Some(view)) => {
+            let message = match view.usable_count() {
+                Some(usable) => format!("重置卡已刷新：可用 {usable} 张。"),
+                None => "重置卡已刷新：可用张数未知。".to_string(),
+            };
+            ok(&message, current_payload())
+        }
+        Ok(None) => ok("重置卡已刷新。", current_payload()),
+        Err(error) => failed(&format!("查询重置卡失败：{error:#}"), current_payload()),
+    }
+}
+
+/// 用掉一张额度重置卡。
+///
+/// `requestId` 由界面持久保存；核心另按官方账号保存未确认操作，跨窗口也复用同一标识。
+#[tauri::command]
+pub async fn consume_gateway_reset_card(
+    id: String,
+    request_id: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let Some(relay) = pool_relay(&id) else {
+        return failed(&format!("供应商不存在：{id}"), current_payload());
+    };
+    match codex_plus_core::gateway::reset_credits::consume(&relay, &request_id).await {
+        Ok(
+            outcome @ (codex_plus_core::gateway::reset_credits::ConsumeOutcome::Reset
+            | codex_plus_core::gateway::reset_credits::ConsumeOutcome::AlreadyRedeemed),
+        ) => {
+            let quota_fresh = codex_plus_core::gateway::quota::refresh(&relay)
+                .await
+                .is_ok();
+            let cards_fresh = codex_plus_core::gateway::reset_credits::refresh_if_stale(&relay, 0)
+                .await
+                .is_ok();
+            let message =
+                if outcome == codex_plus_core::gateway::reset_credits::ConsumeOutcome::Reset {
+                    "已使用一张重置卡。"
+                } else {
+                    "这次重置此前已经生效，没有重复扣卡。"
+                };
+            let refresh = if quota_fresh && cards_fresh {
+                "额度与卡片读数已刷新。"
+            } else {
+                "部分读数尚未刷新，请稍后手动刷新；无需再次消费。"
+            };
+            ok(&format!("{message}{refresh}"), current_payload())
+        }
+        Ok(codex_plus_core::gateway::reset_credits::ConsumeOutcome::Unknown) => failed(
+            "重置结果未确认：请保留同一请求标识，先刷新额度再决定是否重试。",
+            current_payload(),
+        ),
+        Err(error) => failed(&format!("使用重置卡失败：{error:#}"), current_payload()),
+    }
 }
 
 /// 删除网关供应商（直连模式的数据不受影响）。

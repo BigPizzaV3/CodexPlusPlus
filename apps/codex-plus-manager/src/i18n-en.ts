@@ -3791,6 +3791,34 @@ export const EN_PLAIN: Record<string, string> = {
   "完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。": "Takes effect after fully quitting Codex++ (including the tray) and reopening it. Agents on the gateway switch to the new port at startup; reconnect any that don't on the Agents page.",
   "待重启": "Restart pending",
   "Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。": "Agent configs point at this port. Saving checks whether the port is in use; old ports are remembered so addresses in old configs are still recognized as Codex++'s.",
+
+  // ChatGPT quota reset credits.
+  "重置券": "Reset vouchers",
+  "尚未查询": "Not checked yet",
+  "不过期": "No expiry",
+  "刷新重置卡": "Refresh vouchers",
+  "已用或已失效": "Used or expired",
+  "这个账号没有可用的重置卡": "This account has no usable reset vouchers",
+  "上次结果未确认：再点一次会用同一请求标识重试": "The last attempt was not confirmed. Click again to retry with the same request id",
+  "使用一张": "Use one",
+  "没有可用的重置卡": "No usable reset vouchers",
+  "没有重置卡": "No reset vouchers",
+  "使用重置卡": "Use reset voucher",
+  "重置 Codex 配额": "Reset Codex quota",
+  "确认重置": "Confirm reset",
+  "将消耗 1 张重置卡，把 5 小时与每周额度一起重置。是否继续？": "This uses one reset voucher and resets both the 5-hour and weekly allowance. Continue?",
+  "消耗一张重置卡，重置 5 小时与每周额度": "Use one reset voucher to reset the 5-hour and weekly allowance",
+  "可用张数未知": "Available count unknown",
+  "尚无卡片明细，可用张数未知": "No card details; available count unknown",
+  "接口只返回汇总数": "Only summary counts returned",
+  "未提供到期时间": "Expiry not provided",
+  "无法读取上次重置操作，请先核实结果": "Cannot read the previous reset operation; verify its outcome first",
+  "重置操作未确认，请保留原操作并稍后重试": "Reset outcome unconfirmed; retain the operation and retry later",
+  "将消耗 1 张重置卡，请确认后重置账号额度。未确认的上次操作会优先核实。": "This uses one reset voucher to reset account quota. Any unresolved operation will be checked first. Continue?",
+  "核实上次重置操作": "Check the previous reset operation",
+  "核实上次操作": "Check previous operation",
+  "消耗一张重置卡，重置账号额度": "Use one reset voucher to reset account quota",
+  "已用、已失效或状态未知": "Used, expired, or status unknown",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4464,6 +4492,14 @@ export const EN_TEMPLATE: Record<string, string> = {
   "端口要在 {0}–{1} 之间。": "Port must be between {0} and {1}.",
   "已改为 {0}，当前仍在 {1} 上监听：需要重启 Codex++ 并重新接入 Agent 后生效。": "Changed to {0} but still listening on {1}: restart Codex++ and reconnect Agents for it to take effect.",
   "和其它程序端口冲突时换一个（默认 {0}）。保存后需要重启 Codex++ 并重新接入 Agent 后生效。": "Change it if another program uses the same port (default {0}). Takes effect after restarting Codex++ and reconnecting Agents.",
+
+  // ChatGPT quota reset credits.
+  "重置券 {0}": "{0} reset vouchers",
+  "{0} 张可用": "{0} usable",
+  "最近到期 {0}": "Earliest expiry {0}",
+  "最近一张 {0} 到期": "Next expires {0}",
+  "获得 {0}": "Granted {0}",
+  "到期 {0}": "Expires {0}",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
