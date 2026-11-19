@@ -28,8 +28,18 @@ concurrency:
 
 jobs:
   windows-artifacts:
-    name: Windows artifacts
-    runs-on: windows-latest
+    name: Windows artifacts (${{ matrix.windows_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            windows_arch: x64
+            artifact_suffix: ""
+          - runner: windows-11-arm
+            windows_arch: arm64
+            artifact_suffix: "-arm64"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,7 +184,7 @@ jobs:
           try {
             # 版本资源只收 X.X.X.X：去掉预发布后缀；手动在分支上跑（版本是分支名）时用 0.0.0.0。
             $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" "/DARCH=${{ matrix.windows_arch }}" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location
@@ -184,7 +194,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: codex-plus-plus-windows-binaries
+          name: codex-plus-plus-windows-binaries${{ matrix.artifact_suffix }}
           path: dist/windows/app/*
           if-no-files-found: error
 
@@ -192,7 +202,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: codex-plus-plus-windows-installer
+          name: codex-plus-plus-windows-installer${{ matrix.artifact_suffix }}
           path: dist/windows/*.exe
           if-no-files-found: error
 

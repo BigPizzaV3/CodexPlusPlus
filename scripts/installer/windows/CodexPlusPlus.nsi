@@ -7,10 +7,13 @@ ${Using:StrFunc} UnStrStr
 !ifndef VERSION
   !define VERSION "0.0.0"
 !endif
+!ifndef ARCH
+  !define ARCH "x64"
+!endif
 !define ROOT "..\..\.."
 
 Name "Codex++"
-OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-${ARCH}-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Codex++"
 ; 沿用旧安装目录登记，覆盖升级继续安装到原目录。
 InstallDirRegKey HKCU "Software\Codex++" "InstallDir"
@@ -49,7 +52,7 @@ VIFileVersion "${VI_VERSION}"
   VIAddVersionKey /LANG=${LANG} "LegalCopyright" "Copyright (c) BigPizzaV3"
   VIAddVersionKey /LANG=${LANG} "ProductVersion" "${VERSION}"
   VIAddVersionKey /LANG=${LANG} "FileVersion" "${VERSION}"
-  VIAddVersionKey /LANG=${LANG} "OriginalFilename" "CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+  VIAddVersionKey /LANG=${LANG} "OriginalFilename" "CodexPlusPlus-${VERSION}-windows-${ARCH}-setup.exe"
 !macroend
 !insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_SIMPCHINESE}
 !insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_ENGLISH}
