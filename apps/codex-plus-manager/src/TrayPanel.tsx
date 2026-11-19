@@ -773,7 +773,7 @@ function GatewayTab({
       <Section title={solo ? tf("{0} 用的模型", [agentName(solo)]) : t("各 Agent 用的模型")}>
         <div className="tp-card tp-list">
           {visibleAgents(focus, glanceAgents(payload?.agents)).map((agent) => (
-            <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} />
+            <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} onAddDirectProvider={() => void onOpenRoute("addDirectProvider")} />
           ))}
         </div>
         {message ? <p className="tp-error">{message}</p> : null}
@@ -886,10 +886,12 @@ function FlowTab({ today, payload, onOpenRoute }: { today: UsageSummary | null; 
 
 /** 一个 Agent：名字 + 当前模型下拉；选模型即接入，选「默认」即断开。 */
 function PanelAgentRow({
+  onAddDirectProvider,
   agent,
   payload,
   onRun,
 }: {
+  onAddDirectProvider: () => void;
   agent: GatewayAgentView;
   payload: GatewayPayload | null;
   onRun: (command: string, args: Record<string, unknown>) => Promise<boolean>;
@@ -976,6 +978,7 @@ function PanelAgentRow({
       </Floating>
       {disconnectTarget ? (
         <AgentDisconnectDialog
+          onAddDirectProvider={onAddDirectProvider}
           agent={agent}
           busy={false}
           onApply={(previewToken) => disconnectTarget === "disconnect"

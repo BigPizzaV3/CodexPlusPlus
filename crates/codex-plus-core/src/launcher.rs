@@ -132,6 +132,7 @@ const HELPER_BIND_RETRY_INTERVAL_MS: u64 = 200;
 /// 期间界面上一直停在「启动中」。改成按总时长收敛：预算耗尽即判失败并降级，
 /// 由上层写入 `running_degraded` 让用户知道增强没生效。
 const INJECTION_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+const INJECTION_ATTEMPT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 /// 两次注入尝试之间的间隔；失败很快时用它避免忙等。
 const INJECTION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// 注入失败日志的节流周期：只在第 1 次和之后每隔这么多次各记一条。
@@ -519,6 +520,7 @@ pub trait LaunchHooks: Send + Sync {
     async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
         let outcome = run_injection_attempts(
             INJECTION_TOTAL_BUDGET,
+            INJECTION_ATTEMPT_BUDGET,
             INJECTION_RETRY_INTERVAL,
             INJECTION_LOG_EVERY_ATTEMPTS,
             |attempt, message| {
@@ -672,6 +674,7 @@ struct InjectionOutcome {
 /// 而不必去动进程级的诊断日志路径（那是全局状态，并发测试会互相干扰）。
 async fn run_injection_attempts<F, Fut, L>(
     budget: std::time::Duration,
+    attempt_budget: std::time::Duration,
     retry_interval: std::time::Duration,
     log_every_attempts: u32,
     mut log_failure: L,
@@ -700,7 +703,8 @@ where
             };
         }
         attempts += 1;
-        match tokio::time::timeout(remaining, attempt(attempts)).await {
+        let attempt_timeout = remaining.min(attempt_budget);
+        match tokio::time::timeout(attempt_timeout, attempt(attempts)).await {
             Ok(Ok(())) => {
                 return InjectionOutcome {
                     ready: true,
@@ -711,19 +715,11 @@ where
                 };
             }
             Ok(Err(error)) => last_error = Some(error.to_string()),
-            // 单次尝试把剩余预算耗光：算超时，不再往下重试。
             Err(_) => {
                 last_error = Some(format!(
-                    "injection attempt timed out after {} ms of the total budget",
-                    budget.as_millis()
+                    "injection attempt timed out after {} ms",
+                    attempt_timeout.as_millis()
                 ));
-                return InjectionOutcome {
-                    ready: false,
-                    attempts,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    reason: InjectionStopReason::BudgetExhausted,
-                    last_error,
-                };
             }
         }
         // 首次失败立刻记一条，之后每隔 N 次记一条，避免 100+ 条同内容记录。
@@ -1154,7 +1150,7 @@ where
 
         // 注入降级或只启用协议代理也要固定身份；后台重注入不能为旧启动器换绑实例。
         hooks.capture_injected_launch_identity(debug_port).await;
-        if settings.enhancements_enabled && !injection_degraded {
+        if settings.enhancements_enabled {
             hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
@@ -7420,7 +7416,7 @@ async fn run_bridge_reinjector(
     }
 }
 
-async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+pub async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
@@ -10681,6 +10677,7 @@ mod injection_budget_tests {
         // 每次尝试都卡住：总预算耗尽后必须返回，而不是跑满次数上限（issue #2681）。
         let outcome = run_injection_attempts(
             Duration::from_millis(120),
+            Duration::from_millis(35),
             Duration::from_millis(10),
             10,
             |_attempt, _message| {},
@@ -10693,7 +10690,7 @@ mod injection_budget_tests {
 
         assert!(!outcome.ready);
         assert_eq!(outcome.reason, InjectionStopReason::BudgetExhausted);
-        assert_eq!(outcome.attempts, 1, "单次尝试吃光预算后不应再重试");
+        assert!(outcome.attempts >= 2);
         assert!(
             outcome
                 .last_error
@@ -10715,6 +10712,7 @@ mod injection_budget_tests {
         let mut calls = 0;
         let outcome = run_injection_attempts(
             Duration::from_secs(5),
+            Duration::from_millis(50),
             Duration::from_millis(1),
             10,
             |_attempt, _message| {},
@@ -10722,6 +10720,7 @@ mod injection_budget_tests {
                 calls += 1;
                 let attempt = calls;
                 async move {
+                    if attempt == 1 { std::future::pending::<()>().await; }
                     if attempt < 3 {
                         anyhow::bail!("cdp not ready yet");
                     }
@@ -10743,6 +10742,7 @@ mod injection_budget_tests {
 
         let outcome = run_injection_attempts(
             Duration::from_millis(400),
+            Duration::from_millis(100),
             Duration::from_millis(1),
             10,
             |attempt, message| {

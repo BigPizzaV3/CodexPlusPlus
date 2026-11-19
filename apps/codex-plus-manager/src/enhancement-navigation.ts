@@ -1,11 +1,11 @@
 export type ManagerNavigationIntent = {
-  page: "settings" | "enhance" | "pluginMarket" | "weixin";
+  page: "settings" | "enhance" | "pluginMarket" | "weixin" | "sessions";
   /** 旧版悬浮球 / Codex 设置页发出的分节（stepwise / dictation）。服务配置已搬进 Codex，管理器忽略它。 */
   section?: string;
 };
 
 export function managerNavigationDestination(intent: ManagerNavigationIntent): {
-  route: "settings" | "enhance" | "pluginMarket" | "weixin";
+  route: ManagerNavigationIntent["page"];
 } {
   if (intent.page === "pluginMarket") return { route: "pluginMarket" };
   // Codex 里「微信连接」页的「在 Codex++ 管理工具里打开更多设置」。

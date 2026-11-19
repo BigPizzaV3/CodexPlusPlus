@@ -92,7 +92,7 @@ export function GatewayPage({
   onTabChange?: (tab: Tab) => void;
   /** 「网关设置」末尾附加的内容：主窗口传进来的新旧共用本地服务设置。 */
   extraSettings?: ReactNode;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：主窗口传进来才显示，不传就只留模型选择与接入开关。 */
   codexRun?: CodexRunControls;
 }) {

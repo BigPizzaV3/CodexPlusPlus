@@ -1334,6 +1334,7 @@ fn settings_payload_value(
         match value {
             Value::Object(object) => {
                 object.remove("apiKeys");
+                object.remove("inactiveMixedApi");
                 for child in object.values_mut() {
                     remove_named_keys(child);
                 }

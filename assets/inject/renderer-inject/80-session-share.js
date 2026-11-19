@@ -112,6 +112,20 @@
         setTimeout(() => dismissCodexPlusToast(toast), 5000);
       });
       toast.appendChild(undo);
+    } else if (settings.actionLabel && typeof settings.onAction === "function") {
+      const action = document.createElement("button");
+      action.textContent = settings.actionLabel;
+      action.addEventListener("click", async () => {
+        action.disabled = true;
+        try {
+          await settings.onAction();
+          dismissCodexPlusToast(toast);
+        } catch (error) {
+          showToast(String(error?.message || error), { type: "warn" });
+          action.disabled = false;
+        }
+      });
+      toast.appendChild(action);
     }
     document.body.appendChild(toast);
     // append 之后统一重排：此时这条才进入 DOM，索引才是它真实的层号。

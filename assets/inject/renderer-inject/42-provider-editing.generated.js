@@ -494,6 +494,15 @@ var codexPlusProviderEditing = (() => {
     const compatibleSession = sessionProviderForProtocol(sessionProvider, protocol);
     const normalizedPatch = compatibleSession === sessionProvider ? patch : { ...patch, sessionProvider: compatibleSession };
     let next = { ...profile, ...normalizedPatch };
+    if (profile.relayMode === "official" && profile.officialMixApiKey && next.relayMode === "official" && !next.officialMixApiKey) {
+      next.inactiveMixedApi = {
+        configContents: profile.configContents || withGeneratedRelayFiles(profile).configContents,
+        upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl,
+        modelRoutes: profile.modelRoutes
+      };
+    } else if (profile.relayMode === "official" && !profile.officialMixApiKey && next.officialMixApiKey && profile.inactiveMixedApi) {
+      next = { ...next, ...profile.inactiveMixedApi, inactiveMixedApi: void 0 };
+    }
     if (isAggregateRelayProfile(next)) {
       return normalizeAggregateRelayProfile(next, null);
     }

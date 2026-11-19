@@ -164,6 +164,7 @@ pub fn api_key_preview(key: &str) -> String {
 fn masked_profile_value(profile: &RelayProfile) -> anyhow::Result<Value> {
     let mut value = serde_json::to_value(profile)?;
     if let Some(object) = value.as_object_mut() {
+        object.remove("inactiveMixedApi");
         let keys = profile
             .api_keys
             .iter()
@@ -228,6 +229,28 @@ pub fn restore_masked_api_keys(profile: &mut Value, source: Option<&RelayProfile
         return;
     };
     object.remove("gatewayManaged");
+    if object.get("relayMode").and_then(Value::as_str) == Some("official")
+        && let Some(source) = source
+        && let Some(snapshot) = &source.inactive_mixed_api
+    {
+        if object.get("officialMixApiKey").and_then(Value::as_bool) != Some(true) {
+            object.insert("inactiveMixedApi".into(), json!(snapshot));
+        } else if source.relay_mode == RelayMode::Official && !source.official_mix_api_key {
+            let config = object.get("configContents").and_then(Value::as_str).unwrap_or_default();
+            if config.trim().is_empty() || config == source.config_contents {
+                object.insert("configContents".into(), json!(snapshot.config_contents));
+            }
+            let upstream = object.get("upstreamBaseUrl").and_then(Value::as_str).unwrap_or_default();
+            if upstream.is_empty() || upstream == source.upstream_base_url {
+                object.insert("upstreamBaseUrl".into(), json!(snapshot.upstream_base_url));
+                object.insert("baseUrl".into(), json!(snapshot.upstream_base_url));
+            }
+            if object.get("modelRoutes").is_none_or(|routes| *routes == json!(source.model_routes)) {
+                object.insert("modelRoutes".into(), json!(snapshot.model_routes));
+            }
+            object.remove("inactiveMixedApi");
+        }
+    }
     let Some(keys) = object.get_mut("apiKeys").and_then(Value::as_array_mut) else {
         return;
     };

@@ -73,6 +73,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive_mixed_api: Option<InactiveMixedApi>,
     /// 供应商引用的网关/账号凭证；留空时沿用供应商自己的 auth 快照。
     #[serde(rename = "officialAccountRef", default, skip_serializing_if = "String::is_empty")]
     pub official_account_ref: String,
@@ -370,6 +372,15 @@ pub struct AggregateRelayProfile {
     pub auto_review_relay_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InactiveMixedApi {
+    pub config_contents: String,
+    pub upstream_base_url: String,
+    #[serde(default)]
+    pub model_routes: Vec<RelayModelRoute>,
+}
+
 impl Default for RelayProfile {
     fn default() -> Self {
         Self {
@@ -384,6 +395,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -1718,6 +1730,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                inactive_mixed_api: None,
                 official_account_ref: String::new(),
                 no_auth: false,
                 hide_official_usage_alert: false,
@@ -1793,6 +1806,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -3593,6 +3607,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "protocol",
     "relayMode",
     "officialMixApiKey",
+    "inactiveMixedApi",
     "officialAccountRef",
     "noAuth",
     "hideOfficialUsageAlert",

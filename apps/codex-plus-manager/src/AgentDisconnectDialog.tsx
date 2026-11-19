@@ -18,6 +18,7 @@ export function AgentDisconnectDialog({
   busy,
   onApply,
   onFullSwitch,
+  onAddDirectProvider,
   onClose,
 }: {
   agent: Pick<GatewayAgentView, "agent" | "name">;
@@ -26,6 +27,7 @@ export function AgentDisconnectDialog({
   onApply: (previewToken: string) => Promise<boolean>;
   /** 没法逐项预览时的「完整切换并断开」（disable_gateway_binding_full_switch）；不传就不提供这条路。 */
   onFullSwitch?: (previewToken: string) => Promise<boolean>;
+  onAddDirectProvider?: () => void;
   onClose: () => void;
 }) {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
@@ -109,6 +111,9 @@ export function AgentDisconnectDialog({
           {preview ? (
             <>
               {preview.warnings.length ? <ul className="gw-disconnect-warnings">{preview.warnings.map((warning, index) => <li key={index}>{t(warning)}</li>)}</ul> : null}
+              {agent.agent === "codex" && preview.needsDirectProvider && onAddDirectProvider ? (
+                <Button disabled={blocked} onClick={() => { close(); onAddDirectProvider(); }} size="sm" type="button" variant="secondary">{t("添加直连供应商")}</Button>
+              ) : null}
               {preview.files.map((file, index) => (
                 <section className="gw-disconnect-file" key={`${file.path}:${index}`}>
                   <div className="gw-disconnect-file-head">

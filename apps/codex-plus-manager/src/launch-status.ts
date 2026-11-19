@@ -17,8 +17,10 @@ export function launchCompletionNotice(status: LaunchStatusSnapshot | null, requ
   if (resolution === "failed") {
     return { status: "failed", message: status?.message || "Codex 启动失败。" };
   }
-  return { status: "ok", message: status?.status === "running_degraded"
-    ? "Codex 已启动，增强功能仍在等待页面连接。" : "Codex 已成功启动。" };
+  if (status?.status === "running_degraded") {
+    return { status: "accepted", message: "Codex 已启动，增强功能仍在等待页面连接。" };
+  }
+  return { status: "ok", message: "Codex 已成功启动。" };
 }
 
 export function resolveLaunchStatus(

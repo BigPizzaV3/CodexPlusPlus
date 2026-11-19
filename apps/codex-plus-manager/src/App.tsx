@@ -721,6 +721,7 @@ export type RelayProfile = {
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
   officialMixApiKey: boolean;
+  inactiveMixedApi?: Pick<RelayProfile, "configContents" | "upstreamBaseUrl" | "modelRoutes">;
   officialAccountRef?: string;
   hideOfficialUsageAlert: boolean;
   testModel: string;
@@ -1824,6 +1825,7 @@ export function App() {
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [legacyDisconnectOpen, setLegacyDisconnectOpen] = useState(false);
+  const [addDirectProviderRequested, setAddDirectProviderRequested] = useState(false);
   // 外部改设置时要拿「上次读到的设置」与当前编辑比对，监听回调里读这个 ref 拿最新值。
   const settingsRef = useRef<SettingsResult | null>(null);
   settingsRef.current = settings;
@@ -1918,6 +1920,7 @@ export function App() {
   }, []);
   // 「会话」页默认看所有 Agent；切到 Codex 页签才是带删除 / 归档 / 修复的完整会话管理。
   const [sessionTab, setSessionTab] = useState<SessionTab>("all");
+  const [recoveryRefreshRequest, setRecoveryRefreshRequest] = useState(0);
   /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
   const [requestLogFocus, setRequestLogFocus] = useState<RequestLogFocus>({});
@@ -3138,8 +3141,12 @@ export function App() {
       if (!navigation) return false;
       const destination = managerNavigationDestination(navigation);
       await refreshSettings(true);
-      if (destination.route === "enhance" || destination.route === "pluginMarket" || destination.route === "weixin") {
+      if (destination.route === "enhance" || destination.route === "pluginMarket" || destination.route === "weixin" || destination.route === "sessions") {
         setActiveTool("codex");
+      }
+      if (destination.route === "sessions") {
+        setSessionTab("codex");
+        setRecoveryRefreshRequest(current => current + 1);
       }
       setRoute(destination.route);
       if (destination.route === "weixin") await refreshWeixinStatus(true);
@@ -4471,6 +4478,11 @@ export function App() {
   trayRequestHandlerRef.current = async (request: TrayRequest): Promise<TrayResult> => {
     const revealMainWindow = () => void invoke("tray_panel_action", { action: "open" }).catch(() => {});
     if (request.kind === "navigate") {
+      if (request.route === "addDirectProvider") {
+        setAddDirectProviderRequested(true);
+        await switchTool("codex", "relay");
+        return { id: request.id, ok: true };
+      }
       if (request.route === "sessions" || request.route === "requestLog") setActiveTool("codex");
       await navigate(request.route);
       return { id: request.id, ok: true };
@@ -4519,7 +4531,7 @@ export function App() {
       setProviderSyncProgress((current) => current.active ? current : ({ active: false, percent: 0, message: result.message, result }));
     }).catch(() => {});
     return () => { disposed = true; };
-  }, [route]);
+  }, [route, recoveryRefreshRequest]);
 
   useEffect(() => {
     if (route !== "sessions") return;
@@ -5309,6 +5321,7 @@ export function App() {
             }
           }}
           onClose={() => setLegacyDisconnectOpen(false)}
+          onAddDirectProvider={() => setAddDirectProviderRequested(true)}
         />
       ) : null}
       {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
@@ -5362,6 +5375,8 @@ export function App() {
               旧入口 relayEnvironment 打开同一页并展开「高级」。 */}
           {route === "relay" || route === "relayEnvironment" ? (
             <RelayScreen
+              addDirectProviderRequested={addDirectProviderRequested}
+              onRequestedProviderOpened={() => setAddDirectProviderRequested(false)}
               settings={settings}
               relayFiles={relayFiles}
               envConflicts={envConflicts}
@@ -5553,7 +5568,10 @@ export function App() {
               }
               codexRun={codexRun}
               notify={actions.showMessage}
-              onOpenCodexProviderSettings={() => { void switchTool("codex", "relay"); }}
+              onOpenCodexProviderSettings={(addDirectProvider) => {
+                if (addDirectProvider) setAddDirectProviderRequested(true);
+                void switchTool("codex", "relay");
+              }}
               onTabChange={(tab) => void navigate(gatewayRouteByTab[tab])}
               tab={gatewayTabByRoute[route]}
             />
@@ -7931,6 +7949,8 @@ function PoolLinkControl({ link, profileId }: { link: CodexPoolLink; profileId: 
 }
 
 function RelayScreen({
+  addDirectProviderRequested,
+  onRequestedProviderOpened,
   settings,
   relayFiles,
   envConflicts,
@@ -7942,6 +7962,8 @@ function RelayScreen({
   advancedOpen = false,
   onOpenGateway,
 }: {
+  addDirectProviderRequested: boolean;
+  onRequestedProviderOpened: () => void;
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
   envConflicts: EnvConflictsResult | null;
@@ -7972,6 +7994,13 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
+  useEffect(() => {
+    if (!addDirectProviderRequested) return;
+    setNewProfileDraft(null);
+    setDetailProfileId(null);
+    setProviderCatalogOpen(true);
+    onRequestedProviderOpened();
+  }, [addDirectProviderRequested, onRequestedProviderOpened]);
   // 目录页的搜索词放在这里：从模板进入编辑页再返回时，目录页会重新挂载，搜索不能丢。
   const [providerCatalogQuery, setProviderCatalogQuery] = useState("");
   // 进入时停在当前供应商所在的分区；找不到当前供应商时，没有直连项就展示协议转换分区。
@@ -8328,12 +8357,10 @@ function RelayScreen({
                 </div>
               ) : null}
             </div>
-            {takenOverByGateway ? null : (
-              <button className="cx-primary" onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }} type="button">
+              <button className="cx-primary" onClick={openCatalog} type="button">
                 <Plus />
-                {t("添加供应商")}
+                {takenOverByGateway ? t("添加直连供应商") : t("添加供应商")}
               </button>
-            )}
           </>
         )}
       />
@@ -8353,17 +8380,19 @@ function RelayScreen({
           <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
         </CxBanner>
       ) : null}
-      {/* Codex 被网关接管：直连供应商整块隐藏，只留一行说明被谁接管、怎么回到直连。
-          直连供应商在接入期间不生效，改它们会让「断开并还原」出错；要编辑、删除去「多开」页，
-          要迁到网关去「供应商池」→「添加供应商 → 导入」。 */}
       {normalized.relayProfilesEnabled && takenOverByGateway ? (
         <CxCard className="cx-takeover">
           <CxEmpty
-            detail={tf("{0} 个直连供应商在接入网关期间不生效，已隐藏。点上方「直连」断开网关后恢复；要把它们加进供应商池，去「供应商池」→「添加供应商」→「导入」。", [directProfiles.length])}
+            detail={t("可以先添加或编辑直连档案。保存后继续使用网关，点上方「直连」预览并确认还原。")}
             title={t("Codex 正由 Codex++ 网关接管")}
           >
             {onOpenGateway ? <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
           </CxEmpty>
+          {directProfiles.map((profile) => (
+            <CxRow key={profile.id} title={profile.name || t("未命名供应商")} detail={relayProfileModeLabel(profile)}>
+              <button className="cx-secondary" onClick={() => void editRelayProfile(profile.id)} type="button">{t("编辑档案")}</button>
+            </CxRow>
+          ))}
         </CxCard>
       ) : null}
       {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}

@@ -68,7 +68,7 @@
     {
       "name": "42-provider-editing.generated.js",
       "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
-      "lines": 3237
+      "lines": 3246
     },
     {
       "name": "43-provider-page.js",
@@ -133,7 +133,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 664
+      "lines": 678
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -188,7 +188,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 912
+      "lines": 929
     },
     {
       "name": "92-extension-host.js",

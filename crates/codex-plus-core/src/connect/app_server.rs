@@ -110,7 +110,7 @@ fn collect_stderr_tail(sink: &Arc<Mutex<VecDeque<String>>>) -> String {
 }
 
 /// 留空或托管路径失效时，Windows 选用桌面版维护的标准 CLI，
-/// 其余平台沿用 PATH 里的 codex（macOS 桌面版内置路径本来就可执行）。
+/// macOS 优先复用桌面版的 CLI，找不到时再使用 PATH。
 fn resolve_startup_executable(configured: &str) -> String {
     #[cfg(windows)]
     {
@@ -124,8 +124,27 @@ fn resolve_startup_executable(configured: &str) -> String {
         if !configured.is_empty() {
             return configured.to_string();
         }
+        #[cfg(target_os = "macos")]
+        {
+            let settings = crate::settings::SettingsStore::default().load().ok();
+            let app_dir = crate::app_paths::resolve_codex_app_dir_with_saved(
+                None,
+                settings.as_ref().map(|settings| settings.codex_app_path.as_str()),
+            );
+            return macos_startup_executable(app_dir.as_deref());
+        }
+        #[cfg(not(target_os = "macos"))]
         "codex".to_string()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_startup_executable(app_dir: Option<&Path>) -> String {
+    app_dir
+        .and_then(crate::app_paths::find_bundled_codex_cli)
+        .filter(|path| validate_codex_executable(&path.to_string_lossy()).is_ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "codex".to_string())
 }
 
 #[cfg(windows)]
@@ -2353,11 +2372,30 @@ mod tests {
             resolve_startup_executable("C:/x/codex.exe"),
             "C:/x/codex.exe"
         );
+        #[cfg(not(target_os = "macos"))]
         let fallback = resolve_startup_executable("");
+        #[cfg(target_os = "macos")]
+        let fallback = macos_startup_executable(None);
         assert!(
             fallback == "codex" || fallback.to_ascii_lowercase().ends_with("codex.exe"),
             "{fallback}"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_weixin_uses_an_executable_bundled_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("ChatGPT.app");
+        for suffix in ["codex", "codex-cli/bin/codex"] {
+            let cli = app.join("Contents/Resources").join(suffix);
+            std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+            std::fs::write(&cli, "fixture").unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(macos_startup_executable(Some(&app)), cli.to_string_lossy());
+        }
+        assert_eq!(resolve_startup_executable("my-cli"), "my-cli");
     }
 
     #[test]

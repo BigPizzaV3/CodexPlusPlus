@@ -87,7 +87,7 @@ export function AgentsView({
   run: Run;
   notify: Notify;
   onManage: () => void;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
   codexRun?: CodexRunControls;
 }) {
@@ -158,7 +158,7 @@ export function AgentConnectDialog({
   run: Run;
   notify: Notify;
   onManage: () => void;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   onClose: () => void;
 }) {
   // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。
@@ -197,7 +197,7 @@ function AgentRow({
   expanded: boolean;
   onToggleExpand: () => void;
   onManage: () => void;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   run: Run;
   notify: Notify;
 }) {
@@ -353,7 +353,7 @@ function AgentRow({
                   <>
                     <span>{t("供应商配置切换已关闭，在供应商配置页打开后才能切换")}</span>
                     {onOpenCodexProviderSettings ? (
-                      <button className="gw-link gw-drift-reconnect" onClick={onOpenCodexProviderSettings} type="button">
+                      <button className="gw-link gw-drift-reconnect" onClick={() => onOpenCodexProviderSettings()} type="button">
                         {t("打开供应商页")}
                       </button>
                     ) : null}
@@ -439,6 +439,7 @@ function AgentRow({
       ) : null}
       {disconnectTarget ? (
         <AgentDisconnectDialog
+          onAddDirectProvider={onOpenCodexProviderSettings && (() => onOpenCodexProviderSettings(true))}
           agent={agent}
           busy={busy !== null}
           onApply={(previewToken) => disconnectTarget === "disconnect"

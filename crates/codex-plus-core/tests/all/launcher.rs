@@ -399,6 +399,11 @@ fn app_paths_finds_macos_bundled_codex_cli() {
     std::fs::write(&cli, "").unwrap();
 
     assert_eq!(find_bundled_codex_cli(&app).as_deref(), Some(cli.as_path()));
+
+    let current_cli = app.join("Contents/Resources/codex-cli/bin/codex");
+    std::fs::create_dir_all(current_cli.parent().unwrap()).unwrap();
+    std::fs::write(&current_cli, "").unwrap();
+    assert_eq!(find_bundled_codex_cli(&app).as_deref(), Some(current_cli.as_path()));
 }
 
 #[test]
@@ -2160,6 +2165,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             protocol: RelayProtocol::ChatCompletions,
             relay_mode: codex_plus_core::settings::RelayMode::MixedApi,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,

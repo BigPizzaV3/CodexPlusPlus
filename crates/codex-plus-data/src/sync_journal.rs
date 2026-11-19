@@ -146,6 +146,8 @@ struct FileChange {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct JournalRollout {
     pub path: PathBuf,
+    #[serde(skip)]
+    pub recovery_path: Option<PathBuf>,
     pub before_sha256: String,
     pub after_sha256: String,
     pub original_meta_lines: Vec<String>,
@@ -242,15 +244,20 @@ impl SyncJournal {
         let roots = ["sessions", "archived_sessions"]
             .iter()
             .filter_map(|name| std::fs::canonicalize(home.join(name)).ok())
+            .filter(|root| root.parent() == Some(home.as_path()))
             .collect::<Vec<_>>();
-        for rollout in &journal.rollouts {
+        let mut invalid = Vec::new();
+        for rollout in &mut journal.rollouts {
             if rollout.restored || rollout.applied == Some(false) {
                 continue;
             }
-            let canonical = std::fs::canonicalize(&rollout.path)?;
-            if !roots.iter().any(|root| canonical.starts_with(root)) {
-                anyhow::bail!("journal rollout is outside managed session directories");
+            match recovery_rollout_path(&rollout.path, &roots) {
+                Ok(path) => rollout.recovery_path = Some(path),
+                Err(error) => invalid.push(format!("{}: {error:#}", rollout.path.display())),
             }
+        }
+        if !invalid.is_empty() {
+            anyhow::bail!("{}", invalid.join("\n"));
         }
         journal.path = path.to_path_buf();
         Ok(journal)
@@ -493,6 +500,25 @@ impl SyncJournal {
         }
         errors
     }
+}
+
+fn recovery_rollout_path(path: &Path, roots: &[PathBuf]) -> anyhow::Result<PathBuf> {
+    let name = path.file_name().and_then(|name| name.to_str())
+        .filter(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        .ok_or_else(|| anyhow::anyhow!("unsupported journal rollout filename"))?;
+    let parent = std::fs::canonicalize(path.parent().unwrap())?;
+    anyhow::ensure!(roots.iter().any(|root| parent.starts_with(root)),
+        "journal rollout is outside managed session directories");
+    let plain = parent.join(name);
+    for candidate in [&plain, &plain.with_extension("jsonl.zst")] {
+        match std::fs::symlink_metadata(candidate) {
+            Ok(metadata) if metadata.is_file() => return Ok(candidate.to_owned()),
+            Ok(_) => anyhow::bail!("journal rollout is not a regular file: {}", candidate.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(plain)
 }
 
 fn where_clause(keys: &Row) -> (String, Vec<Value>) {
