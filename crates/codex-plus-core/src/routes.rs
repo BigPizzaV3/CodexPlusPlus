@@ -1750,9 +1750,10 @@ fn backend_status_value(
             .unwrap_or_default();
         object.insert("settingsRevision".to_string(), Value::from(revision));
         match crate::connect::desktop_sync::revision(home) {
-            Ok(revision) => {
+            Ok(Some(revision)) => {
                 object.insert("weixinDesktopSyncRevision".to_string(), Value::from(revision));
             }
+            Ok(None) => {}
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "weixin.desktop_sync_revision_failed",
