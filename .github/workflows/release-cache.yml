@@ -25,8 +25,12 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows release deps
-    runs-on: windows-latest
+    name: Windows release deps (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
