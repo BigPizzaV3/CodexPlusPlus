@@ -467,11 +467,14 @@ fn price_from_match(found: crate::model_pricing::PriceMatch) -> ProviderPrice {
 /// 一键同步：按公开价格表更新一个供应商所有模型的价格。查得到的覆盖（包括手动填过的），
 /// 查不到的保留原值。返回（查到几个，一共几个模型）。
 pub async fn sync_public_prices(store: &GatewayStore, id: &str) -> anyhow::Result<(usize, usize)> {
-    let relay = store
-        .load()?
+    let gateway = store.load()?;
+    let provider = gateway
         .provider(id)
-        .map(|provider| provider.relay.clone())
         .ok_or_else(|| anyhow::anyhow!("供应商不存在：{id}"))?;
+    if crate::gateway::workbuddy_provider::is_workbuddy_provider(&provider.source) {
+        bail!("WorkBuddy 使用积分倍率与实际扣分，不同步公开货币价格");
+    }
+    let relay = provider.relay.clone();
     let models = crate::gateway::route::relay_models(&relay);
     let (catalog, _) = crate::model_pricing::load_catalog(false).await?;
     let found: Vec<(String, ProviderPrice)> = models
@@ -513,7 +516,9 @@ pub async fn fill_missing_prices(
         .providers
         .iter()
         .filter(|provider| {
-            only.is_none_or(|id| provider.relay.id == id) && provider.price.is_none()
+            only.is_none_or(|id| provider.relay.id == id)
+                && provider.price.is_none()
+                && !crate::gateway::workbuddy_provider::is_workbuddy_provider(&provider.source)
         })
         .map(|provider| {
             let missing = crate::gateway::route::relay_models(&provider.relay)
@@ -563,6 +568,23 @@ mod tests {
     use super::*;
     use crate::gateway::store::GatewayProvider;
 
+    #[tokio::test]
+    async fn workbuddy_prices_do_not_fall_back_to_public_currency_prices() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        let mut gateway = GatewaySettings::default();
+        let mut provider = provider_with(RelayProfile {
+            id: "wb".into(),
+            model_list: "gpt-6".into(),
+            ..RelayProfile::default()
+        });
+        provider.source = "workbuddy:cn".into();
+        gateway.providers.push(provider);
+        store.save(&gateway).unwrap();
+        assert_eq!(fill_missing_prices(&store, Some("wb")).await.unwrap(), 0);
+        assert!(sync_public_prices(&store, "wb").await.is_err());
+        assert!(store.load().unwrap().provider("wb").unwrap().model_prices.is_empty());
+    }
     #[test]
     fn diff_ignores_case_and_reports_both_sides() {
         let current = vec!["GPT-6".to_string(), "old".to_string()];

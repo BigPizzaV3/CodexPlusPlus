@@ -1398,17 +1398,59 @@ pub fn create_gateway_provider(
     )
 }
 
+/// 核实调用 Key 的版本，再添加独立的 WorkBuddy 供应商。
+#[tauri::command]
+pub async fn create_gateway_workbuddy_lane(
+    realm: String,
+    base_url: String,
+    api_key: String,
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = codex_plus_core::gateway::workbuddy_provider::create_workbuddy_lane(
+        &GatewayStore::default(),
+        &realm,
+        &base_url,
+        &api_key,
+        skip_agents.as_deref(),
+    )
+    .await;
+    respond(
+        "已接入独立的 WorkBuddy 供应商",
+        "接入 WorkBuddy 失败",
+        refresh_added(result),
+    )
+}
+
 /// 编辑网关供应商；Key 留空表示不改。
 #[tauri::command]
-pub fn update_gateway_provider(
+pub async fn update_gateway_provider(
     id: String,
-    input: ProviderInput,
+    mut input: ProviderInput,
 ) -> CommandResult<Option<GatewayPayload>> {
-    let result = refresh_agents(apply::update_provider(
-        &GatewayStore::default(),
-        &id,
-        &input,
-    ));
+    let store = GatewayStore::default();
+    let result = async {
+        let gateway = store.load()?;
+        if let Some(provider) = gateway.provider(&id)
+            && let Some(realm) =
+                codex_plus_core::gateway::workbuddy_provider::workbuddy_realm(&provider.source)
+        {
+            input.base_url = codex_plus_core::gateway::workbuddy_provider::workbuddy_url(&input.base_url)?;
+            anyhow::ensure!(
+                input.protocol == RelayProtocol::Responses,
+                "WorkBuddy 独立线路使用 Responses 协议"
+            );
+            anyhow::ensure!(
+                input.base_url == provider.relay.base_url,
+                "请保留此线路的服务地址；更换地址需重新接入"
+            );
+            for key in input.keys.iter().filter(|value| !value.trim().is_empty()) {
+                codex_plus_core::gateway::workbuddy_provider::validate_workbuddy_key(&input.base_url, key, realm)
+                    .await?;
+            }
+        }
+        refresh_agents(apply::update_provider(&store, &id, &input))
+    }
+    .await;
     // 表单里可能改了模型列表：新模型按公开价格表补价格。
     if result.is_ok() {
         autofill_prices(Some(id));
@@ -1418,32 +1460,45 @@ pub fn update_gateway_provider(
 }
 
 /// 给网关供应商再加一个 Key（#2782，在供应商池的详情里操作）。
+async fn validate_gateway_provider_key(
+    store: &GatewayStore,
+    id: &str,
+    key: &str,
+) -> anyhow::Result<()> {
+    let gateway = store.load()?;
+    if let Some(provider) = gateway.provider(id)
+        && let Some(realm) = codex_plus_core::gateway::workbuddy_provider::workbuddy_realm(&provider.source)
+    {
+        codex_plus_core::gateway::workbuddy_provider::validate_workbuddy_key(&provider.relay.base_url, key, realm)
+            .await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub fn add_gateway_provider_key(id: String, key: String) -> CommandResult<Option<GatewayPayload>> {
-    respond(
-        "Key 已添加。",
-        "添加 Key 失败",
-        refresh_agents(apply::add_provider_key(&GatewayStore::default(), &id, &key)),
-    )
+pub async fn add_gateway_provider_key(
+    id: String,
+    key: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    let store = GatewayStore::default();
+    let result = validate_gateway_provider_key(&store, &id, &key)
+        .await
+        .and_then(|_| refresh_agents(apply::add_provider_key(&store, &id, &key)));
+    respond("Key 已添加。", "添加 Key 失败", result)
 }
 
 /// 把供应商的某个 Key 换成新值（按 Key 的标识找，#2782）。
 #[tauri::command]
-pub fn replace_gateway_provider_key(
+pub async fn replace_gateway_provider_key(
     id: String,
     key_id: String,
     key: String,
 ) -> CommandResult<Option<GatewayPayload>> {
-    respond(
-        "Key 已替换。",
-        "替换 Key 失败",
-        refresh_agents(apply::replace_provider_key(
-            &GatewayStore::default(),
-            &id,
-            &key_id,
-            &key,
-        )),
-    )
+    let store = GatewayStore::default();
+    let result = validate_gateway_provider_key(&store, &id, &key)
+        .await
+        .and_then(|_| refresh_agents(apply::replace_provider_key(&store, &id, &key_id, &key)));
+    respond("Key 已替换。", "替换 Key 失败", result)
 }
 
 /// 删掉供应商的某个 Key（按 Key 的标识找，至少保留一个，#2782）。
@@ -3358,18 +3413,18 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
                 arg::<Option<String>>(&args, "source")?.unwrap_or_else(|| "custom".to_string()),
                 arg(&args, "skipAgents")?,
             )),
-            "update_gateway_provider" => to_value(update_gateway_provider(arg(&args, "id")?, arg(&args, "input")?)),
+            "update_gateway_provider" => to_value(tauri::async_runtime::block_on(update_gateway_provider(arg(&args, "id")?, arg(&args, "input")?))),
             "delete_gateway_provider" => to_value(delete_gateway_provider(arg(&args, "id")?)),
             "set_gateway_provider_enabled" => {
                 to_value(set_gateway_provider_enabled(arg(&args, "id")?, arg(&args, "enabled")?))
             }
             "reorder_gateway_providers" => to_value(reorder_gateway_providers(arg(&args, "ids")?)),
-            "add_gateway_provider_key" => to_value(add_gateway_provider_key(arg(&args, "id")?, arg(&args, "key")?)),
-            "replace_gateway_provider_key" => to_value(replace_gateway_provider_key(
+            "add_gateway_provider_key" => to_value(tauri::async_runtime::block_on(add_gateway_provider_key(arg(&args, "id")?, arg(&args, "key")?))),
+            "replace_gateway_provider_key" => to_value(tauri::async_runtime::block_on(replace_gateway_provider_key(
                 arg(&args, "id")?,
                 arg(&args, "keyId")?,
                 arg(&args, "key")?,
-            )),
+            ))),
             "delete_gateway_provider_key" => {
                 to_value(delete_gateway_provider_key(arg(&args, "id")?, arg(&args, "keyId")?))
             }

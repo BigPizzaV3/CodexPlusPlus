@@ -46,6 +46,7 @@ pub mod images;
 pub mod key_pool;
 pub mod meta_sync;
 pub mod model_sync;
+pub mod workbuddy_provider;
 pub mod opencode;
 pub mod own_models;
 pub mod pipeline;

@@ -477,6 +477,7 @@ pub fn run() {
             gateway_commands::save_gateway_subagent_model_policy,
             gateway_commands::reset_gateway_key_health,
             gateway_commands::create_gateway_provider,
+            gateway_commands::create_gateway_workbuddy_lane,
             gateway_commands::update_gateway_provider,
             gateway_commands::get_native_auth_state,
             gateway_commands::set_native_auth_account,

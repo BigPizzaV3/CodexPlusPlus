@@ -5,6 +5,12 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "接入 WorkBuddy": "Connect WorkBuddy",
+  "本地服务地址": "Local service URL",
+  "模型调用 Key": "Model API key",
+  "在 WorkBuddy Manager 建立这个版本专用的调用 Key。Codex++ 会验证 Key 的版本，并只导入对应模型。": "Create a key for this edition in WorkBuddy Manager. Codex++ verifies the key's edition and imports only matching models.",
+  "WorkBuddy 国内版": "WorkBuddy China",
+  "WorkBuddy 国际版": "WorkBuddy International",
   "多个 Agent 安装": "Installed in multiple agents",
   "仅保留本地版本，不再跟随 GitHub 更新？": "Keep this as a local version and stop receiving GitHub updates?",
   "仅本地管理": "Manage locally",

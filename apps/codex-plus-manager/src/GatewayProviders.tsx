@@ -535,6 +535,7 @@ export function ProviderAdder({
   const [importOnly, setImportOnly] = useState(startWith === "import");
   const [form, setForm] = useState<FormState | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [workbuddyRealm, setWorkbuddyRealm] = useState<WorkBuddyRealm | null>(null);
   const { login, dialog } = useAccountLogin(payload, run, notify);
   const agentPicks = <AgentPicks onChange={setPicked} payload={payload} picked={picked} />;
   const submit = async (draft: ProviderDraft) => {
@@ -551,6 +552,7 @@ export function ProviderAdder({
           notify={notify}
           onClose={onClose}
           onCustom={() => { setCatalogOpen(false); setForm({ mode: "custom" }); }}
+          onWorkBuddy={(realm) => { setCatalogOpen(false); setWorkbuddyRealm(realm); }}
           onLogin={(kind) => {
             setCatalogOpen(false);
             setLoggingIn(true);
@@ -578,8 +580,54 @@ export function ProviderAdder({
         />
       ) : null}
       {loggingIn ? dialog : null}
+      {workbuddyRealm ? <WorkBuddyConnectDialog realm={workbuddyRealm} busy={busy !== null} onClose={onClose}
+        onSave={async (baseUrl, apiKey) => {
+          if (await run("add:workbuddy", "create_gateway_workbuddy_lane", { realm: workbuddyRealm, baseUrl, apiKey, skipAgents }, t("接入 WorkBuddy"))) onClose();
+        }}
+      /> : null}
       {form ? <ProviderFormDialog agentPicks={agentPicks} busy={busy} form={form} onCancel={onClose} onSubmit={(draft) => void submit(draft)} /> : null}
     </>
+  );
+}
+
+type WorkBuddyRealm = "cn" | "global";
+
+function WorkBuddyConnectDialog({ realm, busy, onClose, onSave }: {
+  realm: WorkBuddyRealm;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (baseUrl: string, apiKey: string) => Promise<void>;
+}) {
+  const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:7864");
+  const [apiKey, setApiKey] = useState("");
+  const title = t(realm === "cn" ? "WorkBuddy 国内版" : "WorkBuddy 国际版");
+  useEscapeLayer(true, () => { if (!busy) onClose(); });
+  return createPortal(
+    <div className="gw-modal-backdrop gw-portal">
+      <form className="gw-modal gw-device-modal" role="dialog" aria-modal="true" aria-label={title}
+        onSubmit={event => { event.preventDefault(); if (!busy) void onSave(baseUrl.trim(), apiKey.trim()); }}>
+        <header>
+          <strong>{title}</strong>
+          <button aria-label={t("关闭")} className="gw-icon-button" disabled={busy} onClick={onClose} type="button"><X className="h-4 w-4" /></button>
+        </header>
+        <div className="gw-modal-body">
+          <p className="gw-muted">{t("在 WorkBuddy Manager 建立这个版本专用的调用 Key。Codex++ 会验证 Key 的版本，并只导入对应模型。")}</p>
+          <label className="pf-field">
+            <span>{t("本地服务地址")}</span>
+            <input required type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} />
+          </label>
+          <label className="pf-field">
+            <span>{t("模型调用 Key")}</span>
+            <input required type="password" autoComplete="off" value={apiKey} onChange={event => setApiKey(event.target.value)} />
+          </label>
+        </div>
+        <footer>
+          <button className="gw-soft-button" disabled={busy} onClick={onClose} type="button">{t("取消")}</button>
+          <button className="gw-primary-button" disabled={busy || !baseUrl.trim() || !apiKey.trim()} type="submit">{t("接入 WorkBuddy")}</button>
+        </footer>
+      </form>
+    </div>,
+    document.body,
   );
 }
 
@@ -1128,6 +1176,7 @@ function ProviderCatalog({
   onClose,
   onPreset,
   onCustom,
+  onWorkBuddy,
   onLogin,
   agentPicks,
   skipAgents,
@@ -1139,6 +1188,7 @@ function ProviderCatalog({
   onClose: () => void;
   onPreset: (preset: GatewayPreset) => void;
   onCustom: () => void;
+  onWorkBuddy: (realm: WorkBuddyRealm) => void;
   onLogin: (kind: AccountKind) => void;
   agentPicks: ReactNode;
   skipAgents: GatewayAgentId[];
@@ -1170,6 +1220,11 @@ function ProviderCatalog({
     }));
   const local: CatalogItem[] = [
     ...presetItems("local"),
+    ...(["cn", "global"] as const).map(realm => ({
+      key: `workbuddy:${realm}`, name: t(realm === "cn" ? "WorkBuddy 国内版" : "WorkBuddy 国际版"),
+      added: Boolean(payload?.pool.some(entry => entry.source === `workbuddy:${realm}`)),
+      onClick: () => onWorkBuddy(realm),
+    })).filter(item => hit(item.name)),
     ...(hit(t("自定义")) ? [{ key: "custom", name: t("自定义"), icon: <span className="gw-avatar gw-avatar-plus" data-size="sm"><Plus className="h-3.5 w-3.5" /></span>, onClick: onCustom }] : []),
   ];
   const sections: Array<{ key: string; title: string; hint: string; items: CatalogItem[] }> = [
