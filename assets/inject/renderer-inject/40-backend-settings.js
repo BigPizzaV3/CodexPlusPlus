@@ -212,6 +212,8 @@
   let codexPlusBackendFailureCount = 0;
   /** 上次心跳成功读取的设置版本。 */
   let codexPlusBackendSettingsRevision = "";
+  let codexPlusWeixinSyncRevision = null;
+  let codexPlusWeixinSyncHeartbeat = null;
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
   // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
@@ -301,15 +303,20 @@
         // 渲染进程主线程切碎。后端在 status 里带上快照版本，这里只比对字符串。
         // 老后端不带版本（空串）时退回原来的每次全量拉取，行为不变。
         const revision = typeof nextStatus.settingsRevision === "string" ? nextStatus.settingsRevision : "";
+        const weixinRevision = nextStatus.weixinDesktopSyncRevision ?? null;
         const settingsStale = !revision
           || !codexPlusBackendSettingsLoaded
-          || revision !== codexPlusBackendSettingsRevision;
+          || revision !== codexPlusBackendSettingsRevision
+          || weixinRevision !== codexPlusWeixinSyncRevision;
         if (settingsStale) {
           void syncBackendSettingsFromHeartbeat().then((loaded) => {
             if (loaded && codexPlusBackendGeneration === window.__codexPlusBackendGeneration) {
               codexPlusBackendSettingsRevision = revision;
+              codexPlusWeixinSyncRevision = weixinRevision;
             }
           }).catch(() => {});
+        } else {
+          codexPlusWeixinSyncHeartbeat?.();
         }
       } else {
         codexPlusBackendFailureCount += 1;

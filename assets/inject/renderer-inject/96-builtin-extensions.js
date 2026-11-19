@@ -339,7 +339,12 @@
 
   /** 微信会话同步：微信写入的会话通知桌面目录，读到设置（含心跳）时按设置里的待同步清单跑一次。 */
   function codexPlusWeixinDesktopSyncExtension(ctx) {
-    ctx.on("settings/loaded", () => void syncWeixinDesktopThreads());
+    const sync = () => void syncWeixinDesktopThreads();
+    ctx.on("settings/loaded", sync);
+    ctx.effect(() => {
+      codexPlusWeixinSyncHeartbeat = sync;
+      return () => { codexPlusWeixinSyncHeartbeat = null; };
+    });
   }
 
   /**
